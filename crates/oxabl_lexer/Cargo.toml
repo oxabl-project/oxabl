@@ -1,0 +1,10 @@
+[package]
+name = "oxabl_lexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+string_cache = "0.9.0"
+
+[build-dependencies]
+string_cache_codegen = "0.6"

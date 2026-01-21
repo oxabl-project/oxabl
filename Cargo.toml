@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/oxabl",
+   "crates/oxabl_parser",
+   "crates/oxabl_lexer"
+]
+resolver = "2"
