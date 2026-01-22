@@ -1,8 +1,9 @@
 [workspace]
 members = [
     "crates/oxabl",
-   "crates/oxabl_parser",
-   "crates/oxabl_lexer",
-   "crates/oxabl_common"
+    "crates/oxabl_parser",
+    "crates/oxabl_lexer",
+    "crates/oxabl_common",
+    "crates/oxabl_codegen",
 ]
 resolver = "2"
