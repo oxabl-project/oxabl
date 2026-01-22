@@ -1,0 +1,3 @@
+# Exclude resource files that have nothing to do with source code
+resources/*.html
+resources/*.json
