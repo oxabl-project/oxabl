@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 oxabl_parser = { path = "../oxabl_parser" }
+oxabl_lexer = { path = "../oxabl_lexer" }
+oxabl_common = { path = "../oxabl_common" }

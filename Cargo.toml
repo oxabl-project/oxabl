@@ -2,6 +2,7 @@
 members = [
     "crates/oxabl",
    "crates/oxabl_parser",
-   "crates/oxabl_lexer"
+   "crates/oxabl_lexer",
+   "crates/oxabl_common"
 ]
 resolver = "2"
