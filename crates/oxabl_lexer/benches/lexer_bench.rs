@@ -15,8 +15,7 @@ fn bench_file_path() -> std::path::PathBuf {
 
 /// Benchmark tokenizing a comprehensive ABL file with many keywords
 fn bench_tokenize_keywords(c: &mut Criterion) {
-    let source = fs::read_to_string(bench_file_path())
-        .expect("Failed to read bench_keywords.abl");
+    let source = fs::read_to_string(bench_file_path()).expect("Failed to read bench_keywords.abl");
 
     let mut group = c.benchmark_group("lexer");
     group.throughput(Throughput::Bytes(source.len() as u64));
@@ -30,8 +29,10 @@ fn bench_tokenize_keywords(c: &mut Criterion) {
 
 /// Benchmark tokenizing with token count reporting
 fn bench_tokenize_with_stats(c: &mut Criterion) {
-    let source = fs::read_to_string(bench_file_path())
-        .expect("Failed to read bench_keywords.abl");
+    let source = fs::read_to_string(bench_file_path()).expect("Failed to read bench_keywords.abl");
+
+    let mut group = c.benchmark_group("lexer");
+    group.throughput(Throughput::Bytes(source.len() as u64));
 
     // Print stats once
     let tokens = tokenize(&source);
@@ -41,7 +42,9 @@ fn bench_tokenize_with_stats(c: &mut Criterion) {
         tokens.len()
     );
 
-    c.bench_function("tokenize_full", |b| b.iter(|| tokenize(black_box(&source))));
+    group.bench_function("tokenize_full", |b| b.iter(|| tokenize(black_box(&source))));
+
+    group.finish();
 }
 
 criterion_group!(benches, bench_tokenize_keywords, bench_tokenize_with_stats);
