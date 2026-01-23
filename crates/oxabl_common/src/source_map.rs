@@ -27,6 +27,12 @@ impl SourceMap {
     /// Lookup line and column for a byte offset
     /// Returns (line, column) as 1-indexed values
     /// Inline to hopefully reduce overhead
+    ///
+    /// Example
+    ///
+    /// ```rust
+    /// let (line_number, column_number) = source_map.lookup(token.start);
+    /// ```
     #[inline]
     pub fn lookup(&self, offset: usize) -> (usize, usize) {
         // Binary search to find line, partition_point returns the first index
