@@ -1,0 +1,110 @@
+# ABL Keyword Overrides
+# This file supplements the official Progress keyword index with missing or corrected entries.
+#
+# Sections:
+#   [[add]]      - Add keywords not in official docs
+#   [[override]] - Override properties of existing keywords
+#   [[remove]]   - Remove keywords (deprecated/invalid entries)
+
+# =============================================================================
+# COMPOUND ASSIGNMENT OPERATORS
+# Progress ABL supports these but they're not in the keyword index
+# =============================================================================
+
+[[add]]
+name = "+="
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "-="
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "*="
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "/="
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "::"
+reserved = true
+keyword_type = "Punctuation"
+
+[[add]]
+name = "("
+keyword_type = "Punctuation"
+
+[[add]]
+name = ")"
+keyword_type = "Punctuation"
+
+[[add]]
+name = "{"
+keyword_type = "Punctuation"
+
+[[add]]
+name = "}"
+keyword_type = "Punctuation"
+
+[[add]]
+name = "["
+keyword_type = "Punctuation"
+
+[[add]]
+name = "]"
+keyword_type = "Punctuation"
+
+[[add]]
+name = ","
+keyword_type = "Punctuation"
+
+# Disp is both a keyword (same as DISPLAY) and an abbreviation of DISPLAY
+[[remove]]
+name = "disp"
+keyword_type = "Statement"
+
+# =============================================================================
+# COMMENT MARKERS
+# These are used for comments but not listed as keywords
+# =============================================================================
+
+[[add]]
+name = "//"
+reserved = true
+keyword_type = "Operator"
+min_abbreviation = ""
+
+[[add]]
+name = "/*"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "*/"
+reserved = true
+keyword_type = "Operator"
+
+# =============================================================================
+# OVERRIDES
+# Correct misclassifications or add missing info
+# =============================================================================
+
+# Example:
+# [[override]]
+# name = "SOME-KEYWORD"
+# keyword_type = "Statement"
+
+# =============================================================================
+# REMOVALS
+# Remove deprecated or invalid entries
+# =============================================================================
+
+# Example:
+# [[remove]]
+# name = "OBSOLETE-KEYWORD"
