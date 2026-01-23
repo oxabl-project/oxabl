@@ -82,6 +82,11 @@ I don't know anything about these techniques! But I'm excited to learn. Here's w
   - Tokens are short lived, so this eliminates an allocation and deallocation for every single token, and improves caching.
   - Instead of pushing a new token, allocate all tokens into an Arena, then drop the whole thing after parsing.
   - **How it sounds to a noob:** Neat, makes sense.
+- **Perfect Hash Table**
+  - create a "perfect hash table", which could drop our 1600+ keyword comparison (which eats up 93% of our lexing time) to a 1-2 hash lookups + bounds check.
+- **Skip case conversion**
+  - ABL treats upper and lowercase as valid for keywords, so we are converting everything to lowercase, which requires an allocation.
+  - We could inline a case-insensitive comparison.
 
 ## CodeGen
 
