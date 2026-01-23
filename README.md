@@ -1,5 +1,7 @@
 # Oxabl
 
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/oxabl-project/oxabl?utm_source=badge)
+
 High performance oxidized tooling for Progress ABL, written in Rust.
 
 ## Unofficial
@@ -52,10 +54,12 @@ Benchmarks are run under `bench` with `cargo bench -p <lib>` such as `oxabl_lexe
 **Benchmark:**
 | Test Name               | Time (min) | Time (avg) | Time (max) | Throughput Min | Throughput Avg | Throughput Max |
 | ----------------------- | ---------- | ---------- | ---------- | -------------- | -------------- | -------------- |
-| lexer/tokenize_keywords | 1.4692 ms  | 1.4762 ms  | 1.4838 ms  | 11.121 MiB/s   | 11.179 MiB/s   | 11.232 MiB/s   |
-| lexer/tokenize_full     | 1.4929 ms  | 1.5098 ms  | 1.5262 ms  | 10.812 MiB/s   | 10.929 MiB/s   | 11.054 MiB/s   |
+| lexer/tokenize_keywords | 1.4692 ms  | 1.4762 ms  | 1.4838 ms  | 11.121 MiB/s   | 11.179 MiB/s   | 11.232 MiB/s   |
+| lexer/tokenize_full     | 1.4929 ms  | 1.5098 ms  | 1.5262 ms  | 10.812 MiB/s   | 10.929 MiB/s   | 11.054 MiB/s   |
 
-~8.5MiB/s throughput is pretty good for a handrolled lexer MVP, so we're aiming for ~8.5MiB/s or higher from here on. The long term goal is to *increase* this number. A release should never *decrease*  without good reason. But we're only human.
+~11MiB/s throughput is pretty good for a handrolled lexer MVP, so we're aiming for ~11MiB/s or higher from here on. The long term goal is to *increase* this number. A release should never *decrease*  without good reason. But we're only human.
+
+I haven't run this benchmark in an optimized environment- it's running in WSL2, on a Windows PC with lots of browers and tasks running, similar to how it would run if a developer were actually using it. I'm sure these numbers could be much higher on a better PC with less background noise.
 
 **Full token dump**:
 `cargo run -p oxabl_lexer --example dump_tokens`

@@ -8,7 +8,7 @@ rust_decimal = "1.40.0"
 string_cache = "0.9.0"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 oxabl_common = {path = "../oxabl_common" }
 
 [build-dependencies]
