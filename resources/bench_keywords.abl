@@ -1,0 +1,632 @@
+/*------------------------------------------------------------------------------
+    Oxabl Lexer Benchmark File
+
+    This file contains a comprehensive collection of ABL keywords, operators,
+    literals, and language constructs for benchmarking the lexer. It exercises
+    many token types while remaining syntactically valid ABL.
+
+    **Important:** This file will not compile as it contains constructs like
+    events and classes and enums, which need to be in their own files or class
+    files. Everything is defined in one large file just for benchmarking.
+    The individual pieces have been taken out and compiled on their own to
+    confirm they are syntatically correct.
+------------------------------------------------------------------------------*/
+
+/* Block configuration */
+block-level on error undo, throw.
+
+/* Variable definitions using different data types */
+define variable cString     as character   no-undo.
+define variable iInteger    as integer     no-undo.
+define variable lLogical    as logical     no-undo.
+define variable deDecimal   as decimal     no-undo.
+define variable dtDate      as date        no-undo.
+define variable dtDateTime  as datetime    no-undo.
+define variable dtDateTimeTz as datetime-tz no-undo.
+define variable hHandle     as handle      no-undo.
+define variable rRowid      as rowid       no-undo.
+define variable lcLongchar  as longchar    no-undo.
+define variable mpMemptr    as memptr      no-undo.
+define variable raRaw       as raw         no-undo.
+define variable rcRecid     as recid       no-undo.
+define variable coComHandle as com-handle  no-undo.
+
+/* Variable with initial values */
+def var iCount      as int init 0 no-undo.
+def var cName       as char init "Test String" no-undo.
+def var cName2      as char init 'Single Quoted' no-undo.
+def var lEnabled    as log init true no-undo.
+def var lDisabled   as log init false no-undo.
+def var deAmount    as dec init 123.456 no-undo.
+def var iUnknown    as int init ? no-undo.
+
+/* Array/extent variables */
+define variable cArray as character extent 10 no-undo.
+define variable iExtent as integer extent no-undo.
+
+/* Buffer definitions */
+define buffer bCustomer for customer.
+define buffer bOrder for ordhdr.
+
+/* Temp-table definitions */
+define temp-table ttPerson no-undo
+    field personId   as integer
+    field firstName  as character
+    field lastName   as character
+    field birthDate  as date
+    field isActive   as logical
+    field salary     as decimal
+    index idxPrimary is primary unique personId
+    index idxName firstName lastName.
+
+define temp-table ttAddress no-undo
+    field addressId  as integer
+    field personId   as integer
+    field street     as character
+    field city       as character
+    field state      as character
+    field zipCode    as character
+    index idxPrimary is primary unique addressId
+    index idxPerson personId.
+
+/* Dataset definition */
+define dataset dsPerson for ttPerson, ttAddress
+    data-relation drPersonAddress for ttPerson, ttAddress
+    relation-fields (personId, personId).
+
+/* Stream definitions */
+define stream sInput.
+define stream sOutput.
+
+/* Query and data-source definitions */
+define query qPerson for ttPerson scrolling.
+define data-source dsPerson for query qPerson.
+
+/* Work-table (legacy) */
+define work-table wtTemp
+    field wtField1 as character
+    field wtField2 as integer.
+
+/* Frame definition */
+define frame fMain
+    cString label "String"
+    iInteger label "Integer"
+    deDecimal label "Decimal"
+    with side-labels width 80 row 1 column 1.
+
+/* Event definitions */
+define event onDataChanged signature void (input pcData as character).
+
+/* Preprocessor directives */
+&if defined(DEBUG) &then
+&message "Debug mode enabled"
+&scoped-define LOG_LEVEL 3
+&global-define APP_NAME "OxablBench"
+&endif
+
+&if {&OPSYS} = "WIN32" &then
+&scoped-define PATH_SEP "~\"
+&else
+&scoped-define PATH_SEP "/"
+&endif
+
+/* Function forward declarations */
+function fnCalculateTotal returns decimal
+    (input piQty as integer, input pdPrice as decimal) forward.
+
+function fnFormatName returns character
+    (input pcFirst as character, input pcLast as character) forward.
+
+function fnIsValidEmail returns logical
+    (input pcEmail as character) forward.
+
+/* Procedure definition */
+procedure procProcessData:
+    define input  parameter pcInputData  as character no-undo.
+    define output parameter pcOutputData as character no-undo.
+    define input-output parameter piCounter as integer no-undo.
+
+    /* Local variables */
+    define variable cLocal as character no-undo.
+
+    /* Assignment statement */
+    assign
+        cLocal = pcInputData
+        piCounter = piCounter + 1
+        pcOutputData = "Processed: " + cLocal.
+
+    /* Conditional statements */
+    if piCounter > 10 then do:
+        message "Counter exceeded 10" view-as alert-box.
+        return.
+    end.
+    else if piCounter < 0 then do:
+        message "Counter is negative" view-as alert-box warning.
+    end.
+    else do:
+        message "Counter is: " piCounter view-as alert-box information.
+    end.
+
+    /* Case statement */
+    case cLocal:
+        when "A" then
+            pcOutputData = "Option A selected".
+        when "B" or when "C" then
+            pcOutputData = "Option B or C selected".
+        otherwise
+            pcOutputData = "Unknown option".
+    end case.
+
+end procedure.
+
+/* Internal procedure with error handling */
+procedure procWithErrorHandling:
+    define variable iResult as integer no-undo.
+
+    do on error undo, throw:
+        /* Simulate some processing */
+        iResult = integer("not a number").
+
+        catch eAppError as Progress.Lang.AppError:
+            message "Application Error: " eAppError:GetMessage(1)
+                view-as alert-box error.
+            undo, throw eAppError.
+        end catch.
+
+        catch eSysError as Progress.Lang.SysError:
+            message "System Error: " eSysError:GetMessage(1)
+                view-as alert-box error.
+        end catch.
+
+        finally:
+            /* Cleanup code */
+            iResult = 0.
+        end finally.
+    end.
+
+end procedure.
+
+/* Loop constructs */
+procedure procLoopExamples:
+    define variable iIdx as integer no-undo.
+    define variable cItem as character no-undo.
+
+    /* DO loop with counter */
+    do iIdx = 1 to 100 by 2:
+        if iIdx modulo 10 = 0 then
+            next.
+        if iIdx > 50 then
+            leave.
+    end.
+
+    /* DO WHILE loop */
+    iIdx = 0.
+    do while iIdx < 10:
+        iIdx = iIdx + 1.
+    end.
+
+    /* REPEAT loop */
+    iIdx = 0.
+    repeat:
+        iIdx = iIdx + 1.
+        if iIdx >= 5 then leave.
+    end.
+
+    /* FOR EACH with query */
+    for each ttPerson where ttPerson.isActive = true
+        no-lock
+        break by ttPerson.lastName:
+
+        if first-of(ttPerson.lastName) then
+            display "First of group: " ttPerson.lastName.
+
+        if last-of(ttPerson.lastName) then
+            display "Last of group: " ttPerson.lastName.
+
+        accumulate ttPerson.salary (total count average minimum maximum).
+    end.
+
+    /* Display accumulated values */
+    display
+        accum total ttPerson.salary
+        accum count ttPerson.salary
+        accum average ttPerson.salary
+        accum minimum ttPerson.salary
+        accum maximum ttPerson.salary.
+
+end procedure.
+
+/* Database operations */
+procedure procDatabaseOps:
+    define variable hQuery as handle no-undo.
+
+    /* Find operations */
+    find first ttPerson where ttPerson.personId > 0 no-lock no-error.
+
+    if available ttPerson then do:
+        display ttPerson.firstName ttPerson.lastName.
+    end.
+    else if not available ttPerson then do:
+        message "No person found" view-as alert-box.
+    end.
+
+    /* Can-find */
+    if can-find(first ttPerson where ttPerson.isActive) then
+        message "Active persons exist".
+
+    /* Create record */
+    create ttPerson.
+    assign
+        ttPerson.personId = 1
+        ttPerson.firstName = "John"
+        ttPerson.lastName = "Doe"
+        ttPerson.isActive = true
+        ttPerson.salary = 50000.00.
+
+    /* Buffer copy */
+    buffer-copy ttPerson to bCustomer.
+
+    /* Delete */
+    delete ttPerson.
+
+    /* Release */
+    release ttPerson.
+
+    /* Dynamic query */
+    create query hQuery.
+    hQuery:set-buffers(buffer ttPerson:handle).
+    hQuery:query-prepare("for each ttPerson").
+    hQuery:query-open().
+
+    do while hQuery:get-next():
+        /* Process record */
+    end.
+
+    hQuery:query-close().
+    delete object hQuery.
+
+end procedure.
+
+/* String functions */
+procedure procStringFunctions:
+    define variable cResult as character no-undo.
+    define variable iPos    as integer   no-undo.
+
+    /* Various string functions */
+    cResult = caps("lowercase").
+    cResult = lc("UPPERCASE").
+    cResult = trim("  spaces  ").
+    cResult = left-trim("  left").
+    cResult = right-trim("right  ").
+    cResult = replace("hello world", "world", "there").
+    cResult = substring("hello", 1, 3).
+    cResult = entry(1, "a,b,c", ",").
+    cResult = fill("*", 10).
+    cResult = string(12345).
+    cResult = quoter("quote me").
+    cResult = chr(65).
+
+    iPos = index("hello", "l").
+    iPos = r-index("hello", "l").
+    iPos = length("hello").
+    iPos = num-entries("a,b,c", ",").
+    iPos = lookup("b", "a,b,c", ",").
+    iPos = asc("A").
+
+    /* String comparisons */
+    if cResult begins "test" then
+        message "Begins with test".
+    if cResult matches "*pattern*" then
+        message "Matches pattern".
+    if cResult = "" or cResult = ? then
+        message "Empty or unknown".
+
+end procedure.
+
+/* Math functions */
+procedure procMathFunctions:
+    define variable deResult as decimal no-undo.
+    define variable iResult  as integer no-undo.
+
+    deResult = absolute(-123.45).
+    deResult = round(123.456, 2).
+    deResult = truncate(123.789, 0).
+    deResult = sqrt(144).
+    deResult = exp(2.0, 2).
+    deResult = log(100, 10).
+
+    iResult = minimum(1, 2, 3).
+    iResult = maximum(1, 2, 3).
+    iResult = random(1, 100).
+    iResult = integer(123.99).
+
+    /* Arithmetic operators */
+    deResult = 10 + 5.
+    deResult = 10 - 5.
+    deResult = 10 * 5.
+    deResult = 10 / 5.
+    deResult = 10 modulo 3.
+
+    /* Comparison operators */
+    if deResult > 0 then message "Greater than".
+    if deResult >= 0 then message "Greater or equal".
+    if deResult < 100 then message "Less than".
+    if deResult <= 100 then message "Less or equal".
+    if deResult = 50 then message "Equal".
+    if deResult <> 50 then message "Not equal".
+
+    /* Compound assignment */
+    deResult += 10.
+    deResult -= 5.
+    deResult *= 2.
+    deResult /= 2.
+
+    /* Logical operators */
+    if true and false then message "Both true".
+    if true or false then message "At least one true".
+    if not false then message "Negated".
+
+end procedure.
+
+/* Date and time functions */
+procedure procDateTimeFunctions:
+    define variable dtResult   as date       no-undo.
+    define variable dtmResult  as datetime   no-undo.
+    define variable dtmtzResult as datetime-tz no-undo.
+    define variable iResult    as integer    no-undo.
+
+    dtResult = today.
+    dtmResult = now.
+    dtmtzResult = now.
+
+    iResult = year(dtResult).
+    iResult = month(dtResult).
+    iResult = day(dtResult).
+    iResult = weekday(dtResult).
+
+    iResult = mtime(dtmResult).
+
+    dtResult = add-interval(dtResult, 1, "months").
+    dtResult = date(12, 31, 2024).
+    dtmResult = datetime(12, 31, 2024, 23, 59, 59).
+
+    iResult = interval(today, today + 30, "days").
+    iResult = etime.
+
+end procedure.
+
+/* Handle operations */
+procedure procHandleOps:
+    define variable hProc   as handle no-undo.
+    define variable hWidget as handle no-undo.
+    define variable hBuffer as handle no-undo.
+    define variable hField  as handle no-undo.
+
+    define variable iLoop  as integer   no-undo.
+    /* Run persistent procedure */
+    run myproc.p persistent set hProc.
+
+    if valid-handle(hProc) then do:
+        run internalProc in hProc.
+        delete procedure hProc.
+    end.
+
+    /* Widget operations */
+    hWidget = session:first-child.
+
+    do while valid-handle(hWidget):
+        if hWidget:type = "WINDOW" then
+            display hWidget:title.
+        hWidget = hWidget:next-sibling.
+    end.
+
+    /* Buffer handle operations */
+    hBuffer = buffer ttPerson:handle.
+
+    do iLoop = 1 to hBuffer:num-fields:
+        hField = hBuffer:buffer-field(iLoop).
+        display hField:name hField:data-type.
+    end.
+
+    /* Dynamic object creation */
+    create buffer hBuffer for table "ttPerson".
+    delete object hBuffer.
+
+end procedure.
+
+/* File and stream operations */
+procedure procFileOps:
+    define variable cLine    as character no-undo.
+    define variable cFile    as character no-undo.
+    define variable lExists  as logical   no-undo.
+
+    cFile = "test.txt".
+
+    /* File functions */
+    lExists = search(cFile) <> ?.
+
+    if file-info:full-pathname <> ? then
+        display file-info:full-pathname
+                file-info:file-size
+                file-info:file-mod-date.
+
+    /* Input from file */
+    input stream sInput from value(cFile).
+    repeat:
+        import stream sInput unformatted cLine.
+        display cLine.
+    end.
+    input stream sInput close.
+
+    /* Output to file */
+    output stream sOutput to value("output.txt").
+    put stream sOutput unformatted "Header line" skip.
+    export stream sOutput delimiter "," iCount cName deAmount.
+    output stream sOutput close.
+
+    /* OS commands */
+    os-copy value(cFile) value("backup.txt").
+    os-rename value("backup.txt") value("backup2.txt").
+    os-delete value("backup2.txt").
+    os-create-dir value("newdir").
+
+end procedure.
+
+/* Transaction control */
+procedure procTransactions:
+
+    do transaction:
+        create ttPerson.
+        assign ttPerson.personId = 999.
+
+        /* Validate before commit */
+        validate ttPerson.
+
+        /* Check for errors */
+        if error-status:error then do:
+            undo, leave.
+        end.
+    end.
+
+    /* Nested transaction */
+    do transaction:
+        subTrans:
+        do transaction on error undo subTrans, leave subTrans:
+            create ttPerson.
+            ttPerson.personId = 1000.
+        end.
+    end.
+
+end procedure.
+
+/* OO constructs */
+class MyClass inherits Progress.Lang.Object
+    implements IMyInterface
+    use-widget-pool
+    final
+    serializable:
+
+    define public property PropValue as character no-undo
+        get.
+        set.
+
+    define private variable mPrivateVar as integer no-undo.
+    define protected variable mProtectedVar as character no-undo.
+    define public static variable mStaticVar as logical no-undo.
+
+    constructor public MyClass():
+        super().
+        assign mPrivateVar = 0.
+    end constructor.
+
+    constructor public MyClass(input piValue as integer):
+        this-object().
+        mPrivateVar = piValue.
+    end constructor.
+
+    destructor public MyClass():
+        /* Cleanup */
+    end destructor.
+
+    method public void DoSomething():
+        define variable oChild as MyClass no-undo.
+        oChild = new MyClass(10).
+
+        if type-of(oChild, MyClass) then
+            message "Is MyClass".
+
+        cast(oChild, Progress.Lang.Object):ToString().
+
+        delete object oChild.
+    end method.
+
+    method public override character ToString():
+        return "MyClass instance".
+    end method.
+
+    method public static void StaticMethod():
+        MyClass:mStaticVar = true.
+    end method.
+
+end class.
+
+interface IMyInterface:
+    method public void DoSomething().
+
+    define public property InterfaceProp as character no-undo
+        get.
+        set.
+end interface.
+
+/* Enum definition */
+enum MyEnum:
+    define enum
+        Value1
+        Value2 = 10
+        Value3.
+end enum.
+
+/* Function implementations */
+function fnCalculateTotal returns decimal
+    (input piQty as integer, input pdPrice as decimal):
+
+    return piQty * pdPrice.
+
+end function.
+
+function fnFormatName returns character
+    (input pcFirst as character, input pcLast as character):
+
+    return trim(pcFirst) + " " + trim(pcLast).
+
+end function.
+
+function fnIsValidEmail returns logical
+    (input pcEmail as character):
+
+    if index(pcEmail, "@") > 0 and index(pcEmail, ".") > 0 then
+        return true.
+    else
+        return false.
+
+end function.
+
+/* Main block */
+define variable iLoop as integer no-undo.
+
+/* Display startup message */
+message "Starting benchmark test file" view-as alert-box.
+
+/* Initialize data */
+do iLoop = 1 to 100:
+    create ttPerson.
+    assign
+        ttPerson.personId = iLoop
+        ttPerson.firstName = "First" + string(iLoop)
+        ttPerson.lastName = "Last" + string(iLoop)
+        ttPerson.isActive = (iLoop modulo 2 = 0)
+        ttPerson.salary = iLoop * 1000.00.
+end.
+
+/* Run procedures */
+run procProcessData (input "TestData", output cString, input-output iCount).
+run procWithErrorHandling.
+run procLoopExamples.
+run procDatabaseOps.
+run procStringFunctions.
+run procMathFunctions.
+run procDateTimeFunctions.
+run procFileOps.
+run procTransactions.
+
+/* Cleanup */
+empty temp-table ttPerson.
+empty temp-table ttAddress.
+
+/* Final message */
+message "Benchmark test file completed" skip
+        "Records processed: " iCount
+        view-as alert-box information buttons ok.
+
+/* Return value */
+return "0".

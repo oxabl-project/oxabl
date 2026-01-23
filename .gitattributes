@@ -1,3 +1,4 @@
 # Exclude resource files that have nothing to do with source code
 resources/*.html linguist-vendored
 resources/*.json linguist-vendored
+resources/*.abl linguist-vendored
