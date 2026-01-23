@@ -4,7 +4,7 @@ High performance oxidized tooling for Progress ABL, written in Rust.
 
 ## Unofficial
 
-No affilation with Progress.
+No affiliation with Progress.
 
 ## Status
 
@@ -30,7 +30,7 @@ Requirements:
   - `oxabl_lexer` and the `oxabl_ast` make up the foundation of the foundation.
 - `oxabl_fmt`    - CLI tool for formatting ABL code.
 - `oxabl_lint`   - CLI tool for linting ABL code.
-- `oxabl_minify` - CLI tool for removing dead code, shortening syntax, and code obsfucation.
+- `oxabl_minify` - CLI tool for removing dead code, shortening syntax, and code obfuscation.
 - `oxabl_build`  - CLI tool for *assisting* in the compilation of ABL.
 - `oxabl_run`    - CLI tool for *assisting* in the running of ABL.
 - `oxabl_test`   - CLI tool for *assisting* in the testing of ABL.
@@ -44,7 +44,7 @@ Requirements:
 We generate code for all the keywords and operators to use within the project. Use these commands to generate the code:
 
 ```rust
-cargo run -p oxabl_codeget -- <command> >> <file>
+cargo run -p oxabl_codegen -- <command> >> <file>
 ```
 
 Valid commands are:
@@ -61,4 +61,4 @@ Valid commands are:
 
 You need to provide a file, as these functions simply return strings, they don't manipulate files directly.
 
-**They also do not clear files** so running the command against a file that already has contents will just concat the contents, potentially duplicating code. Be aware of your actions.
+**They also do not clear files** so running the command against a file that already has contents will just concat the contents, potentially duplicating code. Be aware of your actions. **Use >* to overwrite the file contents.
