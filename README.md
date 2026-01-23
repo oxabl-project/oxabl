@@ -11,10 +11,10 @@ No affiliation with Progress.
 The first library will be `oxabl_parser`.
 
 Requirements:
-- `oxabl_lexer`: Work has started in `crates/oxabl_lexer`.
-  - It's able to produce tokens against a variety of simple tests.
-  - Needs real-world tests and more test coverage.
-  - Has a few TODO items left, but overall, seems to be producing tokens with correct kinds, offsets, and values.
+- `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer`.
+  - Produces tokens against all known ABL keywords, primitive datatypes, operators, and identifiers.
+  - Fairly comprehensive test coverage at 27 tests to verify we can produce tokens in a variety of scenarios.
+  - Needs to be run and validated against a real-world ABL code base, but for an MVP, it's in good shape.
 - `source_map`: Work has started in `crates/oxabl_common`.
   - It's able to produce line and column numbers from byte offsets stored in tokens.
   - Needs test coverage.
