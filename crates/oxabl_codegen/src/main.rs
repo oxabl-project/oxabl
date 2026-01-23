@@ -474,12 +474,12 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
     output.push_str("    Comment,\n");
     output.push_str("\n");
 
-    // Literals
+    // Literals (suffixed with "Literal" to avoid collision with ABL type keywords)
     output.push_str("    // Literals\n");
-    output.push_str("    Integer,\n");
-    output.push_str("    BigInt,\n");
-    output.push_str("    Decimal,\n");
-    output.push_str("    String,\n");
+    output.push_str("    IntegerLiteral,\n");
+    output.push_str("    BigIntLiteral,\n");
+    output.push_str("    DecimalLiteral,\n");
+    output.push_str("    StringLiteral,\n");
     output.push_str("\n");
 
     // Collect keywords by category, tracking seen variant names to avoid duplicates
@@ -491,10 +491,10 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
         "Invalid",
         "Identifier",
         "Comment",
-        "Integer",
-        "BigInt",
-        "Decimal",
-        "String",
+        "IntegerLiteral",
+        "BigIntLiteral",
+        "DecimalLiteral",
+        "StringLiteral",
     ] {
         seen_variants.insert(name.to_string());
     }
