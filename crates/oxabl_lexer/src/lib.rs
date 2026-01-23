@@ -1,7 +1,9 @@
 /// OxAbl Lexer
 /// A Lexer written in Rust for Progress ABL
-// TODO - include more keywords
 // TODO - more test coverage
+// TODO - handle preprocessor definitions
+// TODO - add bigint detection to return a big int or regular int
+// TODO - add better carriage return handling, \r\n and \n
 use std::str::Chars;
 extern crate string_cache;
 mod oxabl_atom {
@@ -9,7 +11,11 @@ mod oxabl_atom {
 }
 use rust_decimal::Decimal;
 
-use crate::oxabl_atom::OxablAtom;
+mod kind;
+use crate::{
+    kind::{Kind, match_keyword},
+    oxabl_atom::OxablAtom,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
@@ -33,64 +39,6 @@ pub enum TokenValue {
     Decimal(Decimal),
     String(OxablAtom),
     Boolean(bool),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Kind {
-    Eof, // End of file
-
-    // operators
-    Add, // +
-    Subtract,
-    Multiply,
-    Divide,
-    Modulo,
-    Equal,
-    NotEqual,
-    Not,
-    And,
-    Or,
-    LessThan,
-    GreaterThan,
-    LessThanOrEqual,
-    GreaterThanOrEqual,
-    AddAndAssign,
-    SubtractAndAssign,
-    MultiplyAndAssign,
-    DivideAndAssign,
-    Colon,
-    DoubleColon,
-
-    // literals
-    Integer,
-    BigInt,
-    Decimal,
-    String,
-    True,
-    False,
-    UnknownValue, // as in '?' the literal null/unknown
-
-    // keywords
-    If,
-    While,
-    For,
-    Do,
-    Define,
-    Variable,
-
-    // Punctuation
-    LeftParen,
-    RightParen,
-    LeftBracket,
-    RightBracket,
-    LeftBrace,
-    RightBrace,
-    Comma,
-    StatementEnd, // '.' periods
-
-    Comment,
-    Identifier,
-    Invalid, // Meaning we could not resolve it
 }
 
 struct Lexer<'a> {
@@ -125,7 +73,7 @@ impl<'a> Lexer<'a> {
                 '+' => match self.peek() {
                     Some('=') => {
                         self.advance();
-                        return Kind::AddAndAssign;
+                        return Kind::PlusEquals;
                     }
                     _ => {
                         return Kind::Add;
@@ -134,26 +82,26 @@ impl<'a> Lexer<'a> {
                 '-' => match self.peek() {
                     Some('=') => {
                         self.advance();
-                        return Kind::SubtractAndAssign;
+                        return Kind::MinusEquals;
                     }
                     _ => {
-                        return Kind::Subtract;
+                        return Kind::Minus;
                     }
                 },
                 '*' => match self.peek() {
                     Some('=') => {
                         self.advance();
-                        return Kind::MultiplyAndAssign;
+                        return Kind::StarEquals;
                     }
                     _ => {
-                        return Kind::Multiply;
+                        return Kind::Star;
                     }
                 },
                 // could be divide, could be a comment
                 '/' => match self.peek() {
                     Some('=') => {
                         self.advance();
-                        return Kind::DivideAndAssign;
+                        return Kind::SlashEquals;
                     }
                     Some('/') => {
                         self.advance();
@@ -164,14 +112,14 @@ impl<'a> Lexer<'a> {
                         return self.skip_block_comment();
                     }
                     _ => {
-                        return Kind::Divide;
+                        return Kind::Slash;
                     }
                 },
                 '%' => {
                     return Kind::Modulo;
                 }
                 '=' => {
-                    return Kind::Equal;
+                    return Kind::Equals;
                 }
                 '>' => match self.peek() {
                     Some('=') => {
@@ -196,7 +144,7 @@ impl<'a> Lexer<'a> {
                     }
                 },
                 '?' => {
-                    return Kind::UnknownValue;
+                    return Kind::Question;
                 }
 
                 // If it starts with a quote, must be a string literal
@@ -216,7 +164,7 @@ impl<'a> Lexer<'a> {
                 // If it doesn't start with a decimal or letter,
                 // and it's a '.', must be a terminator
                 '.' => {
-                    return Kind::StatementEnd;
+                    return Kind::Period;
                 }
 
                 // Colons are always on their own, can't be used in identifiers or keywords
@@ -243,15 +191,26 @@ impl<'a> Lexer<'a> {
                 ']' => {
                     return Kind::RightBracket;
                 }
-                '{' => {
-                    return Kind::LeftBrace;
-                }
+                '{' => match self.peek() {
+                    // Prepropcessor references {&thing}
+                    Some('&') => {
+                        self.advance();
+                        // TODO - proper preprocessor resolution
+                        return Kind::PreprocProcessArchitecture;
+                    }
+                    _ => {
+                        return Kind::LeftBrace;
+                    }
+                },
                 '}' => {
                     return Kind::RightBrace;
                 }
                 ',' => {
                     return Kind::Comma;
                 }
+
+                // Preprocessor directives
+                '&' => {}
                 _ => {
                     return Kind::Invalid;
                 }
@@ -309,8 +268,8 @@ impl<'a> Lexer<'a> {
                     self.source[start + 1..end - 1].to_string(),
                 ));
             }
-            Kind::True => value = TokenValue::Boolean(true),
-            Kind::False => value = TokenValue::Boolean(false),
+            Kind::KwTrue => value = TokenValue::Boolean(true),
+            Kind::KwFalse => value = TokenValue::Boolean(false),
             // Tokens with no value (operators and keywords) just don't set a value
             _ => {}
         }
@@ -339,43 +298,6 @@ impl<'a> Lexer<'a> {
         self.chars.clone().next()
     }
 
-    /// Returns a reserved keyword or Kind::Identifier if it's not a keyword
-    fn resolve_keyword(&self, ident: &str) -> Kind {
-        let lower = ident.to_lowercase();
-
-        if Self::matches_keyword(&lower, "define", 3) {
-            return Kind::Define;
-        }
-        if Self::matches_keyword(&lower, "variable", 3) {
-            return Kind::Variable;
-        }
-
-        match lower.as_str() {
-            "if" => Kind::If,
-            "while" => Kind::While,
-            "for" => Kind::For,
-            "do" => Kind::Do,
-            "eq" => Kind::Equal,
-            "ne" => Kind::NotEqual,
-            "lt" => Kind::LessThan,
-            "gt" => Kind::GreaterThan,
-            "le" => Kind::LessThanOrEqual,
-            "ge" => Kind::GreaterThanOrEqual,
-            "or" => Kind::Or,
-            "and" => Kind::And,
-            "not" => Kind::Not,
-            "true" | "yes" => Kind::True,
-            "false" | "no" => Kind::False,
-            _ => Kind::Identifier,
-        }
-    }
-
-    // Progress allows keywords to be short-form, i.e. def == define, need to match them up
-    // "def", "defi", "defin", "define" all match DEFINE
-    fn matches_keyword(input: &str, full_keyword: &str, min_length: usize) -> bool {
-        input.len() >= min_length && full_keyword.starts_with(&input)
-    }
-
     /// Reads the word that will resolve to either a keyword or identifer
     fn read_identifier_or_keyword(&mut self, start: usize) -> Kind {
         // Keep consuming alphanumeric chars, underscores, and hyphens
@@ -393,7 +315,8 @@ impl<'a> Lexer<'a> {
 
         // NOW we have the full word - check if it's a keyword
         let text = &self.source[start..self.offset()];
-        self.resolve_keyword(text)
+        let keyword = match_keyword(text);
+        keyword.unwrap_or(Kind::Identifier)
     }
 
     /// Reads the word till the end of whatever quotes we started with
@@ -481,21 +404,349 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn identify_add() {
-        let source = "+";
+    fn collect_tokens(source: &str) -> Vec<Token> {
         let mut lexer = Lexer::new(source);
-        let token = lexer.read_next_token();
-        println!("Token created: {:?}", token);
+        let mut tokens = Vec::new();
+        loop {
+            let token = lexer.read_next_token();
+            let is_eof = token.kind == Kind::Eof;
+            tokens.push(token);
+            if is_eof {
+                break;
+            }
+        }
+        tokens
+    }
+
+    /// Helper to assert a token matches expected kind, offsets, and value
+    fn assert_token(
+        token: &Token,
+        expected_kind: Kind,
+        expected_start: usize,
+        expected_end: usize,
+        expected_value: TokenValue,
+        source: &str,
+    ) {
         assert_eq!(
-            token,
-            Token {
-                kind: Kind::Add,
-                start: 0,
-                end: 1,
-                value: TokenValue::None
-            },
-            "Ensure + characters become tokens of Kind::Add, value None"
+            token.kind,
+            expected_kind,
+            "Kind mismatch at {}..{}: expected {:?}, got {:?}. Source slice: {:?}",
+            expected_start,
+            expected_end,
+            expected_kind,
+            token.kind,
+            &source[token.start..token.end]
         );
+        assert_eq!(
+            token.start, expected_start,
+            "Start offset mismatch for {:?}: expected {}, got {}",
+            expected_kind, expected_start, token.start
+        );
+        assert_eq!(
+            token.end, expected_end,
+            "End offset mismatch for {:?}: expected {}, got {}",
+            expected_kind, expected_end, token.end
+        );
+        assert_eq!(
+            token.value, expected_value,
+            "Value mismatch for {:?}: expected {:?}, got {:?}",
+            expected_kind, expected_value, token.value
+        );
+    }
+
+    #[test]
+    fn single_operator() {
+        let source = "+";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2); // + and Eof
+        assert_token(&tokens[0], Kind::Add, 0, 1, TokenValue::None, source);
+        assert_token(&tokens[1], Kind::Eof, 1, 1, TokenValue::None, source);
+    }
+
+    #[test]
+    fn variable_definition_with_assignment() {
+        // No leading newline - offsets are straightforward
+        // "def var myCount as int no-undo."
+        //  0123456789...
+        let source = "def var myCount as int no-undo.\nassign myCount = 42.";
+        let tokens = collect_tokens(source);
+
+        // Line 1: def var myCount as int no-undo.
+        // def: 0-3, var: 4-7, myCount: 8-15, as: 16-18, int: 19-22, no-undo: 23-30, .: 30-31
+        // Line 2 starts at 32: assign myCount = 42.
+        // assign: 32-38, myCount: 39-46, =: 47-48, 42: 49-51, .: 51-52
+
+        let expected = vec![
+            (Kind::Define, 0, 3, TokenValue::None),
+            (Kind::Var, 4, 7, TokenValue::None),
+            (Kind::Identifier, 8, 15, TokenValue::None), // myCount
+            (Kind::KwAs, 16, 18, TokenValue::None),
+            (Kind::Int, 19, 22, TokenValue::None),
+            (Kind::NoUndo, 23, 30, TokenValue::None),
+            (Kind::Period, 30, 31, TokenValue::None),
+            (Kind::Assign, 32, 38, TokenValue::None),
+            (Kind::Identifier, 39, 46, TokenValue::None), // myCount
+            (Kind::Equals, 47, 48, TokenValue::None),
+            (Kind::Integer, 49, 51, TokenValue::Integer(42)),
+            (Kind::Period, 51, 52, TokenValue::None),
+            (Kind::Eof, 52, 52, TokenValue::None),
+        ];
+
+        assert_eq!(tokens.len(), expected.len(), "Token count mismatch");
+        for (i, (kind, start, end, value)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, value, source);
+        }
+    }
+
+    #[test]
+    fn procedure_with_control_flow() {
+        // Simpler version without deep nesting to keep offsets manageable
+        let source = "do i = 1 to 10:\n    message \"hello\".\nend.";
+        let tokens = collect_tokens(source);
+
+        // do: 0-2, i: 3-4, =: 5-6, 1: 7-8, to: 9-11, 10: 12-14, :: 14-15
+        // \n at 15, spaces 16-19
+        // message: 20-27, "hello": 28-35, .: 35-36
+        // \n at 36
+        // end: 37-40, .: 40-41
+
+        let expected = vec![
+            (Kind::Do, 0, 2, TokenValue::None),
+            (Kind::Identifier, 3, 4, TokenValue::None), // i
+            (Kind::Equals, 5, 6, TokenValue::None),
+            (Kind::Integer, 7, 8, TokenValue::Integer(1)),
+            (Kind::To, 9, 11, TokenValue::None),
+            (Kind::Integer, 12, 14, TokenValue::Integer(10)),
+            (Kind::Colon, 14, 15, TokenValue::None),
+            (Kind::Message, 20, 27, TokenValue::None),
+            (
+                Kind::String,
+                28,
+                35,
+                TokenValue::String(OxablAtom::from("hello".to_string())),
+            ),
+            (Kind::Period, 35, 36, TokenValue::None),
+            (Kind::End, 37, 40, TokenValue::None),
+            (Kind::Period, 40, 41, TokenValue::None),
+            (Kind::Eof, 41, 41, TokenValue::None),
+        ];
+
+        assert_eq!(
+            tokens.len(),
+            expected.len(),
+            "Token count mismatch. Got: {:?}",
+            tokens
+        );
+        for (i, (kind, start, end, value)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, value, source);
+        }
+    }
+
+    #[test]
+    fn keyword_abbreviations() {
+        // Test that abbreviations produce correct tokens with correct offsets
+        let test_cases = vec![
+            ("def", Kind::Define, 3),
+            ("defi", Kind::Define, 4),
+            ("defin", Kind::Define, 5),
+            ("define", Kind::Define, 6),
+            ("disp", Kind::Display, 4),
+            ("displ", Kind::Display, 5),
+            ("displa", Kind::Display, 6),
+            ("display", Kind::Display, 7),
+            ("avail", Kind::Available, 5),
+            ("availa", Kind::Available, 6),
+            ("availab", Kind::Available, 7),
+            ("availabl", Kind::Available, 8),
+            ("available", Kind::Available, 9),
+        ];
+
+        for (source, expected_kind, expected_len) in test_cases {
+            let tokens = collect_tokens(source);
+            assert_eq!(
+                tokens.len(),
+                2,
+                "Expected 2 tokens for '{}', got {}",
+                source,
+                tokens.len()
+            );
+            assert_token(
+                &tokens[0],
+                expected_kind,
+                0,
+                expected_len,
+                TokenValue::None,
+                source,
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_number() {
+        let source = "123.456";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::Decimal,
+            0,
+            7,
+            TokenValue::Decimal("123.456".parse().unwrap()),
+            source,
+        );
+    }
+
+    #[test]
+    fn string_with_escapes() {
+        // ABL uses ~ for escapes, e.g. ~n for newline
+        let source = r#""hello~nworld""#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::String,
+            0,
+            14,
+            TokenValue::String(OxablAtom::from("hello~nworld".to_string())),
+            source,
+        );
+    }
+
+    #[test]
+    fn comments_line() {
+        let source = "def // this is a comment\nvar";
+        let tokens = collect_tokens(source);
+        // def, comment, var, eof
+        assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
+        assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
+        assert_token(&tokens[1], Kind::Comment, 4, 25, TokenValue::None, source);
+        assert_token(&tokens[2], Kind::Var, 25, 28, TokenValue::None, source);
+    }
+
+    #[test]
+    fn comments_block() {
+        let source = "def /* block */ var";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
+        assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
+        assert_token(&tokens[1], Kind::Comment, 4, 15, TokenValue::None, source);
+        assert_token(&tokens[2], Kind::Var, 16, 19, TokenValue::None, source);
+    }
+
+    #[test]
+    fn operators_comparison() {
+        let source = "> >= < <= <> =";
+        let tokens = collect_tokens(source);
+        let expected = vec![
+            (Kind::GreaterThan, 0, 1),
+            (Kind::GreaterThanOrEqual, 2, 4),
+            (Kind::LessThan, 5, 6),
+            (Kind::LessThanOrEqual, 7, 9),
+            (Kind::NotEqual, 10, 12),
+            (Kind::Equals, 13, 14),
+            (Kind::Eof, 14, 14),
+        ];
+        assert_eq!(tokens.len(), expected.len());
+        for (i, (kind, start, end)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, TokenValue::None, source);
+        }
+    }
+
+    #[test]
+    fn complex_procedure_file() {
+        let source = r#"/* my test file */
+
+/*
+this is a multi line comment
+*/
+
+// my test procedure
+procedure my_test_proc:
+   var int MyInt = 1.
+   var int MyOtherInt = 2.
+   var int result.
+   result = MyOtherInt - MyInt.
+   return result.
+end."#;
+
+        let tokens = collect_tokens(source);
+
+        // Calculate offsets:
+        // Line 1: "/* my test file */" = 0-17 (18 chars), \n at 18
+        // Line 2: empty \n at 19
+        // Line 3-5: "/*\nthis is a multi line comment\n*/" = 20-53, \n at 54
+        // Line 6: empty \n at 55
+        // Line 7: "// my test procedure" = 56-75 (20 chars), \n at 76
+        // Line 8: "procedure" 77-85, " " 86, "my_test_proc" 87-98, ":" 99, \n 100
+        // Line 9: "   " 101-103, "var" 104-106, " " 107, "int" 108-110, " " 111,
+        //         "MyInt" 112-116, " " 117, "=" 118, " " 119, "1" 120, "." 121, \n 122
+        // Line 10: "   " 123-125, "var" 126-128, " " 129, "int" 130-132, " " 133,
+        //          "MyOtherInt" 134-143, " " 144, "=" 145, " " 146, "2" 147, "." 148, \n 149
+        // Line 11: "   " 150-152, "var" 153-155, " " 156, "int" 157-159, " " 160,
+        //          "result" 161-166, "." 167, \n 168
+        // Line 12: "   " 169-171, "result" 172-177, " " 178, "=" 179, " " 180,
+        //          "MyOtherInt" 181-190, " " 191, "-" 192, " " 193, "MyInt" 194-198, "." 199, \n 200
+        // Line 13: "   " 201-203, "return" 204-209, " " 210, "result" 211-216, "." 217, \n 218
+        // Line 14: "end" 219-221, "." 222
+
+        let expected = vec![
+            // Block comment 1
+            (Kind::Comment, 0, 18, TokenValue::None),
+            // Block comment 2 (multi-line)
+            (Kind::Comment, 20, 54, TokenValue::None),
+            // Line comment
+            (Kind::Comment, 56, 77, TokenValue::None),
+            // procedure my_test_proc:
+            (Kind::Procedure, 77, 86, TokenValue::None),
+            (Kind::Identifier, 87, 99, TokenValue::None), // my_test_proc
+            (Kind::Colon, 99, 100, TokenValue::None),
+            // var int MyInt = 1.
+            (Kind::Var, 104, 107, TokenValue::None),
+            (Kind::Int, 108, 111, TokenValue::None),
+            (Kind::Identifier, 112, 117, TokenValue::None), // MyInt
+            (Kind::Equals, 118, 119, TokenValue::None),
+            (Kind::Integer, 120, 121, TokenValue::Integer(1)),
+            (Kind::Period, 121, 122, TokenValue::None),
+            // var int MyOtherInt = 2.
+            (Kind::Var, 126, 129, TokenValue::None),
+            (Kind::Int, 130, 133, TokenValue::None),
+            (Kind::Identifier, 134, 144, TokenValue::None), // MyOtherInt
+            (Kind::Equals, 145, 146, TokenValue::None),
+            (Kind::Integer, 147, 148, TokenValue::Integer(2)),
+            (Kind::Period, 148, 149, TokenValue::None),
+            // var int result.
+            (Kind::Var, 153, 156, TokenValue::None),
+            (Kind::Int, 157, 160, TokenValue::None),
+            (Kind::Identifier, 161, 167, TokenValue::None), // result
+            (Kind::Period, 167, 168, TokenValue::None),
+            // result = MyOtherInt - MyInt.
+            (Kind::Identifier, 172, 178, TokenValue::None), // result
+            (Kind::Equals, 179, 180, TokenValue::None),
+            (Kind::Identifier, 181, 191, TokenValue::None), // MyOtherInt
+            (Kind::Minus, 192, 193, TokenValue::None),
+            (Kind::Identifier, 194, 199, TokenValue::None), // MyInt
+            (Kind::Period, 199, 200, TokenValue::None),
+            // return result.
+            (Kind::KwReturn, 204, 210, TokenValue::None),
+            (Kind::Identifier, 211, 217, TokenValue::None), // result
+            (Kind::Period, 217, 218, TokenValue::None),
+            // end.
+            (Kind::End, 219, 222, TokenValue::None),
+            (Kind::Period, 222, 223, TokenValue::None),
+            (Kind::Eof, 223, 223, TokenValue::None),
+        ];
+
+        assert_eq!(
+            tokens.len(),
+            expected.len(),
+            "Token count mismatch. Expected {}, got {}.\nTokens: {:?}",
+            expected.len(),
+            tokens.len(),
+            tokens
+        );
+
+        for (i, (kind, start, end, value)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, value, source);
+        }
     }
 }
