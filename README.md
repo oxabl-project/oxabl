@@ -35,7 +35,7 @@ Requirements:
 - `oxabl_run`    - CLI tool for *assisting* in the running of ABL.
 - `oxabl_test`   - CLI tool for *assisting* in the testing of ABL.
 
-**Disclaimer**: There is no long-term plan to take all of these stand-alone libraries and executables and create a cohesive experience. For now, it will be ductaping things together. Perhaps an `oxabl` CLI?
+**Disclaimer**: There is no long-term plan to take all of these stand-alone libraries and executables and create a cohesive experience. For now, it will be duct-taping things together. Perhaps an `oxabl` CLI?
 
 **Assisting?**: Some of these are stand alone executables or libraries that *assist* the developer working with ABL, they don't do everything. ABL is closed source, and you cannot compile ABL to byte code without the ABL compiler. That being said, you can make the process faster and more enjoyable. Because you need the AVM and compiler at the end of the day, what Oxabl can accomplish is limited.
 
@@ -52,8 +52,8 @@ Benchmarks are run under `bench` with `cargo bench -p <lib>` such as `oxabl_lexe
 **Benchmark:**
 | Test Name               | Time (min) | Time (avg) | Time (max) | Throughput Min | Throughput Avg | Throughput Max |
 | ----------------------- | ---------- | ---------- | ---------- | -------------- | -------------- | -------------- |
-| lexer/tokenize_keywords | 1.8565 ms  | 1.9489 ms  | 2.0620 ms  | 8.0026 MiB/s   | 8.4672 MiB/s   | 8.8886 MiB/s   |
-| lexer/tokenize_full     | 1.8369 ms  | 1.8853 ms  | 1.9364 ms  | —              | —              | —              |
+| lexer/tokenize_keywords | 1.4692 ms  | 1.4762 ms  | 1.4838 ms  | 11.121 MiB/s   | 11.179 MiB/s   | 11.232 MiB/s   |
+| lexer/tokenize_full     | 1.4929 ms  | 1.5098 ms  | 1.5262 ms  | 10.812 MiB/s   | 10.929 MiB/s   | 11.054 MiB/s   |
 
 ~8.5MiB/s throughput is pretty good for a handrolled lexer MVP, so we're aiming for ~8.5MiB/s or higher from here on. The long term goal is to *increase* this number. A release should never *decrease*  without good reason. But we're only human.
 
@@ -74,7 +74,7 @@ I don't know anything about these techniques! But I'm excited to learn. Here's w
   - Process more bytes at once using CPU vector instructions instead of looping byte-by-byte.
   - **How it sounds to a noob:** Pretty cool.
 - **Branchless state machines**
-  - replace if/match with lookup tables
+  - Replace if/match with lookup tables
   - Build a table of `transitions[state][byte] -> next_state` and index directly, `current_state = table[current_state][byte]
   - **How it sounds to a noob:** A lot of work for diminishing returns? Idk.
 - **Arena Allocation**
@@ -105,4 +105,4 @@ Valid commands are:
 
 You need to provide a file, as these functions simply return strings, they don't manipulate files directly.
 
-**They also do not clear files** so running the command against a file that already has contents will just concat the contents, potentially duplicating code. Be aware of your actions. **Use >* to overwrite the file contents.
+**They also do not clear files** so running the command against a file that already has contents will just concat the contents, potentially duplicating code. Be aware of your actions. *Use `>`* to overwrite the file contents.
