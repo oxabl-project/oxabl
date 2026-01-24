@@ -4,16 +4,35 @@
 /// Produces tokens from
 use std::str::Chars;
 extern crate string_cache;
+#[allow(dead_code)]
 mod oxabl_atom {
     include!(concat!(env!("OUT_DIR"), "/oxabl_atom.rs"));
 }
 use rust_decimal::Decimal;
 
 mod kind;
+pub use kind::Kind;
 use crate::{
-    kind::{Kind, match_keyword},
+    kind::match_keyword,
     oxabl_atom::OxablAtom,
 };
+
+/// Tokenize ABL source code into a vector of tokens.
+///
+/// This is the main public entry point for the lexer.
+pub fn tokenize(source: &str) -> Vec<Token> {
+    let mut lexer = Lexer::new(source);
+    let mut tokens = Vec::new();
+    loop {
+        let token = lexer.read_next_token();
+        let is_eof = token.kind == Kind::Eof;
+        tokens.push(token);
+        if is_eof {
+            break;
+        }
+    }
+    tokens
+}
 
 /// A representation of an token created from ABL source code.
 ///
@@ -233,7 +252,7 @@ impl<'a> Lexer<'a> {
         let end = self.offset();
         let mut value = TokenValue::None;
         match kind {
-            Kind::Integer => {
+            Kind::IntegerLiteral => {
                 let text = &self.source[start..end];
                 match text.parse::<i32>() {
                     Ok(int) => {
@@ -241,7 +260,7 @@ impl<'a> Lexer<'a> {
                     }
                     Err(_) => match text.parse::<i64>() {
                         Ok(big_int) => {
-                            kind = Kind::BigInt;
+                            kind = Kind::BigIntLiteral;
                             value = TokenValue::BigInt(big_int);
                         }
                         Err(e) => {
@@ -250,7 +269,7 @@ impl<'a> Lexer<'a> {
                     },
                 }
             }
-            Kind::BigInt => {
+            Kind::BigIntLiteral => {
                 let parsed_big_int = self.source[start..end].parse();
                 match parsed_big_int {
                     Ok(big_int) => {
@@ -261,7 +280,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
             }
-            Kind::Decimal => {
+            Kind::DecimalLiteral => {
                 let parsed_decimal = self.source[start..end].parse();
                 match parsed_decimal {
                     Ok(decimal) => {
@@ -272,7 +291,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
             }
-            Kind::String => {
+            Kind::StringLiteral => {
                 // use +1 and -1 to remove the quotes from our string literal
                 // NOTE - We store escaped characters (~n) as-is to retain
                 // original source mapping, any escapes can be handled later on
@@ -337,7 +356,7 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 Some(c) if c == quote_type => {
                     self.advance(); //consume closing quote
-                    return Kind::String;
+                    return Kind::StringLiteral;
                 }
                 Some('~') => {
                     self.advance(); // consume tilde
@@ -373,11 +392,11 @@ impl<'a> Lexer<'a> {
                 while matches!(self.peek(), Some('0'..='9')) {
                     self.advance();
                 }
-                return Kind::Decimal;
+                return Kind::DecimalLiteral;
             }
         }
 
-        Kind::Integer
+        Kind::IntegerLiteral
     }
 
     /// Reads a preprocessor reference like {&variable} or {&batch-mode}
@@ -527,7 +546,7 @@ mod tests {
             (Kind::Assign, 32, 38, TokenValue::None),
             (Kind::Identifier, 39, 46, TokenValue::None), // myCount
             (Kind::Equals, 47, 48, TokenValue::None),
-            (Kind::Integer, 49, 51, TokenValue::Integer(42)),
+            (Kind::IntegerLiteral, 49, 51, TokenValue::Integer(42)),
             (Kind::Period, 51, 52, TokenValue::None),
             (Kind::Eof, 52, 52, TokenValue::None),
         ];
@@ -554,13 +573,13 @@ mod tests {
             (Kind::Do, 0, 2, TokenValue::None),
             (Kind::Identifier, 3, 4, TokenValue::None), // i
             (Kind::Equals, 5, 6, TokenValue::None),
-            (Kind::Integer, 7, 8, TokenValue::Integer(1)),
+            (Kind::IntegerLiteral, 7, 8, TokenValue::Integer(1)),
             (Kind::To, 9, 11, TokenValue::None),
-            (Kind::Integer, 12, 14, TokenValue::Integer(10)),
+            (Kind::IntegerLiteral, 12, 14, TokenValue::Integer(10)),
             (Kind::Colon, 14, 15, TokenValue::None),
             (Kind::Message, 20, 27, TokenValue::None),
             (
-                Kind::String,
+                Kind::StringLiteral,
                 28,
                 35,
                 TokenValue::String(OxablAtom::from("hello".to_string())),
@@ -628,7 +647,7 @@ mod tests {
         assert_eq!(tokens.len(), 2);
         assert_token(
             &tokens[0],
-            Kind::Decimal,
+            Kind::DecimalLiteral,
             0,
             7,
             TokenValue::Decimal("123.456".parse().unwrap()),
@@ -644,7 +663,7 @@ mod tests {
         assert_eq!(tokens.len(), 2);
         assert_token(
             &tokens[0],
-            Kind::String,
+            Kind::StringLiteral,
             0,
             14,
             TokenValue::String(OxablAtom::from("hello~nworld".to_string())),
@@ -745,14 +764,14 @@ end."#;
             (Kind::Int, 108, 111, TokenValue::None),
             (Kind::Identifier, 112, 117, TokenValue::None), // MyInt
             (Kind::Equals, 118, 119, TokenValue::None),
-            (Kind::Integer, 120, 121, TokenValue::Integer(1)),
+            (Kind::IntegerLiteral, 120, 121, TokenValue::Integer(1)),
             (Kind::Period, 121, 122, TokenValue::None),
             // var int MyOtherInt = 2.
             (Kind::Var, 126, 129, TokenValue::None),
             (Kind::Int, 130, 133, TokenValue::None),
             (Kind::Identifier, 134, 144, TokenValue::None), // MyOtherInt
             (Kind::Equals, 145, 146, TokenValue::None),
-            (Kind::Integer, 147, 148, TokenValue::Integer(2)),
+            (Kind::IntegerLiteral, 147, 148, TokenValue::Integer(2)),
             (Kind::Period, 148, 149, TokenValue::None),
             // var int result.
             (Kind::Var, 153, 156, TokenValue::None),
@@ -810,7 +829,7 @@ end."#;
             (Kind::PreprocThen, 18, 23, TokenValue::None),
             (Kind::PreprocScopedDefine, 24, 38, TokenValue::None),
             (Kind::Identifier, 39, 44, TokenValue::None), // myvar
-            (Kind::Integer, 45, 46, TokenValue::Integer(1)),
+            (Kind::IntegerLiteral, 45, 46, TokenValue::Integer(1)),
             (Kind::PreprocEndif, 47, 53, TokenValue::None),
             (Kind::Eof, 53, 53, TokenValue::None),
         ];
@@ -938,7 +957,7 @@ end."#;
         assert_eq!(tokens.len(), 2);
         assert_token(
             &tokens[0],
-            Kind::String,
+            Kind::StringLiteral,
             0,
             13,
             TokenValue::String(OxablAtom::from("hello world".to_string())),
@@ -953,7 +972,7 @@ end."#;
         assert_eq!(tokens.len(), 2);
         assert_token(
             &tokens[0],
-            Kind::String,
+            Kind::StringLiteral,
             0,
             2,
             TokenValue::String(OxablAtom::from("".to_string())),
@@ -970,7 +989,7 @@ end."#;
         assert_eq!(tokens.len(), 4);
         assert_token(
             &tokens[0],
-            Kind::Integer,
+            Kind::IntegerLiteral,
             0,
             2,
             TokenValue::Integer(42),
@@ -987,7 +1006,7 @@ end."#;
         let expected = vec![
             (Kind::Identifier, 0, 3, TokenValue::None),
             (Kind::LeftBracket, 3, 4, TokenValue::None),
-            (Kind::Integer, 4, 5, TokenValue::Integer(0)),
+            (Kind::IntegerLiteral, 4, 5, TokenValue::Integer(0)),
             (Kind::RightBracket, 5, 6, TokenValue::None),
             (Kind::Equals, 7, 8, TokenValue::None),
             (Kind::Preprop, 9, 15, TokenValue::None),
@@ -1079,7 +1098,7 @@ end."#;
         assert_eq!(tokens.len(), 2);
         assert_token(
             &tokens[0],
-            Kind::BigInt,
+            Kind::BigIntLiteral,
             0,
             10,
             TokenValue::BigInt(3000000000),

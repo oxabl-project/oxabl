@@ -9,10 +9,10 @@ pub enum Kind {
     Comment,
 
     // Literals
-    Integer,
-    BigInt,
-    Decimal,
-    String,
+    IntegerLiteral,
+    BigIntLiteral,
+    DecimalLiteral,
+    StringLiteral,
 
     // Punctuation
     Plus,
@@ -209,6 +209,7 @@ pub enum Kind {
     Dbtaskid,
     Dbtype,
     Dbversion,
+    Decimal,
     Decrypt,
     DynamicEnum,
     DynamicFunction,
@@ -253,6 +254,7 @@ pub enum Kind {
     HexEncode,
     Input,
     Int64,
+    Integer,
     IsAttrSpace,
     IsLeadByte,
     Kblabel,
@@ -340,6 +342,7 @@ pub enum Kind {
     NextSibling,
     Null,
     PrevSibling,
+    String,
     Title,
     User,
     Value,
