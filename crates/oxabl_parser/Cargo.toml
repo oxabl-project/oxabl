@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+oxabl_ast = { path = "../oxabl_ast" }
+oxabl_lexer = { path = "../oxabl_lexer" }
+rust_decimal = "1.40.0"

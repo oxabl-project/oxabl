@@ -1,11 +1,12 @@
-/// OxAbl Lexer
-/// A Lexer written in Rust for Progress ABL
-///
-/// Produces tokens from
+//! OxAbl Lexer
+//! A Lexer written in Rust for Progress ABL
+//!
+//! Produces tokens from ABL source code.
+//! TODO - remove BigInt, we don't *really* need the distinction.
 use std::str::Chars;
 extern crate string_cache;
 #[allow(dead_code)]
-mod oxabl_atom {
+pub mod oxabl_atom {
     include!(concat!(env!("OUT_DIR"), "/oxabl_atom.rs"));
 }
 use rust_decimal::Decimal;

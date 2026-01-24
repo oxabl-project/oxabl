@@ -658,9 +658,17 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 name = "oxabl"
 version = "0.1.0"
 dependencies = [
+ "oxabl_ast",
  "oxabl_common",
  "oxabl_lexer",
  "oxabl_parser",
+]
+
+[[package]]
+name = "oxabl_ast"
+version = "0.1.0"
+dependencies = [
+ "rust_decimal",
 ]
 
 [[package]]
@@ -691,6 +699,11 @@ dependencies = [
 [[package]]
 name = "oxabl_parser"
 version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_lexer",
+ "rust_decimal",
+]
 
 [[package]]
 name = "parking_lot"
