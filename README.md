@@ -15,9 +15,10 @@ The first library will be `oxabl_parser`.
 Requirements:
 - `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer`.
   - Produces tokens against all known ABL keywords, primitive datatypes, operators, and identifiers.
-  - Fairly comprehensive test coverage at 27 tests to verify we can produce tokens in a variety of scenarios.
-  - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl` provide a 'real-world' example, a 17KB file containing 2421 tokens can be tokenized in ~1.9ms.
-- `source_map`: Work has started in `crates/oxabl_common`.
+  - Comprehensive test coverage.
+  - Run against a realistc 390kb syntactically correct ABL file and correctly tokenized it.
+  - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl`.
+- `source_map`: MVP has been completed in `crates/oxabl_common`.
   - It's able to produce line and column numbers from byte offsets stored in tokens.
   - Needs test coverage.
   - Used in our token dumps and benchmarks, appears to be accurate.
@@ -72,25 +73,31 @@ I haven't run this benchmark in an optimized environment- it's running in WSL2, 
 
 ## Optimizations
 
-I don't know anything about these techniques! But I'm excited to learn. Here's what's on the roadmap for the lexer:
+I don't know anything about these techniques! But I'm excited to learn.
 
-- **SIMD scanning**
-  - Process more bytes at once using CPU vector instructions instead of looping byte-by-byte.
-  - **How it sounds to a noob:** Pretty cool.
-- **Branchless state machines**
-  - Replace if/match with lookup tables
-  - Build a table of `transitions[state][byte] -> next_state` and index directly, `current_state = table[current_state][byte]
-  - **How it sounds to a noob:** A lot of work for diminishing returns? Idk.
+I consider the Lexer "production-grade" with the current benchmarks, it's more than within the realm of being usable for developer tooling, if you ran it on-save in your editor, it would only be ms to tokenize the entire file, which is more-or-less instant in an editor. Still, I love optimizing things, so we're certainly going to aim for better. Why not tokenize the entire codebase on save?? (Jokes)
+
+Here's what's on the roadmap for the lexer:
+
+- **Perfect Hash Table**
+  - create a "perfect hash table", which could drop our 1600+ keyword comparison (which eats up 93% of our lexing time) to a 1-2 hash lookups + bounds check.
+  - **Priority:** High, impacts the process we spend the most amount of time in.
+- **Skip case conversion**
+  - ABL treats upper and lowercase as valid for keywords, so we are converting everything to lowercase, which requires an allocation.
+  - We could inline a case-insensitive comparison.
+  - **Priority:** High, impacts the process we spend the 2nd most amount of time in.
 - **Arena Allocation**
   - Allocate many small objects into a single buffer and free everything at once instead of individual deallocations.
   - Tokens are short lived, so this eliminates an allocation and deallocation for every single token, and improves caching.
   - Instead of pushing a new token, allocate all tokens into an Arena, then drop the whole thing after parsing.
-  - **How it sounds to a noob:** Neat, makes sense.
-- **Perfect Hash Table**
-  - create a "perfect hash table", which could drop our 1600+ keyword comparison (which eats up 93% of our lexing time) to a 1-2 hash lookups + bounds check.
-- **Skip case conversion**
-  - ABL treats upper and lowercase as valid for keywords, so we are converting everything to lowercase, which requires an allocation.
-  - We could inline a case-insensitive comparison.
+  - **Priority:** Medium, not as complex as some optimizations while still offering decent returns.
+- **SIMD scanning**
+  - Process more bytes at once using CPU vector instructions instead of looping byte-by-byte.
+  - **Priority:** Low, could be another significant speed-up, but after implementation, lexer will be harder to maintain, so leave it for now.
+- **Branchless state machines**
+  - Replace if/match with lookup tables
+  - Build a table of `transitions[state][byte] -> next_state` and index directly, `current_state = table[current_state][byte]
+  - **Priority:** None, might not be worth our effort.
 
 ## CodeGen
 
