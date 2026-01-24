@@ -14,11 +14,11 @@ Requirements:
 - `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer`.
   - Produces tokens against all known ABL keywords, primitive datatypes, operators, and identifiers.
   - Fairly comprehensive test coverage at 27 tests to verify we can produce tokens in a variety of scenarios.
-  - Needs to be run and validated against a real-world ABL code base, but for an MVP, it's in good shape.
+  - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl` provide a 'real-world' example, a 17KB file containing 2421 tokens can be tokenized in ~1.9ms.
 - `source_map`: Work has started in `crates/oxabl_common`.
   - It's able to produce line and column numbers from byte offsets stored in tokens.
   - Needs test coverage.
-  - If it can generate accurate line and column numbers, it's done. But it hasn't been tested at all. Looks good in theory.
+  - Used in our token dumps and benchmarks, appears to be accurate.
 - `oxabl_ast`: Not started
 - `oxabl_parser`: Not started (well, the building blocks of it have been, i.e. lexer and source map.)
 
@@ -38,6 +38,50 @@ Requirements:
 **Disclaimer**: There is no long-term plan to take all of these stand-alone libraries and executables and create a cohesive experience. For now, it will be ductaping things together. Perhaps an `oxabl` CLI?
 
 **Assisting?**: Some of these are stand alone executables or libraries that *assist* the developer working with ABL, they don't do everything. ABL is closed source, and you cannot compile ABL to byte code without the ABL compiler. That being said, you can make the process faster and more enjoyable. Because you need the AVM and compiler at the end of the day, what Oxabl can accomplish is limited.
+
+## Benchmarks
+
+As a high performance oriented library, Oxabl is focused on hitting low numbers and keeping them low across versions.
+
+Benchmarks are run under `bench` with `cargo bench -p <lib>` such as `oxabl_lexer`. Each library will have a benchmark so we can track the performance of individual components in the toolset.
+
+### Lexer
+
+- **Comparison:** I haven't used any other ABL lexers while working as an ABL developer, so I don't really know how to use what's out there. If you have access to an ABL lexer and can run a benchmark, please provide those numbers, it's much appreciated!
+
+**Benchmark:**
+| Test Name               | Time (min) | Time (avg) | Time (max) | Throughput Min | Throughput Avg | Throughput Max |
+| ----------------------- | ---------- | ---------- | ---------- | -------------- | -------------- | -------------- |
+| lexer/tokenize_keywords | 1.8565 ms  | 1.9489 ms  | 2.0620 ms  | 8.0026 MiB/s   | 8.4672 MiB/s   | 8.8886 MiB/s   |
+| lexer/tokenize_full     | 1.8369 ms  | 1.8853 ms  | 1.9364 ms  | —              | —              | —              |
+
+~8.5MiB/s throughput is pretty good for a handrolled lexer MVP, so we're aiming for ~8.5MiB/s or higher from here on. The long term goal is to *increase* this number. A release should never *decrease*  without good reason. But we're only human.
+
+**Full token dump**:
+`cargo run -p oxabl_lexer --example dump_tokens`
+
+**Just errors**
+`cargo run -p oxabl_lexer --example dump_tokens -- --errors`
+
+**Just summary**
+`cargo run -p oxabl_lexer --example dump_tokens -- --summary`
+
+## Optimizations
+
+I don't know anything about these techniques! But I'm excited to learn. Here's what's on the roadmap for the lexer:
+
+- **SIMD scanning**
+  - Process more bytes at once using CPU vector instructions instead of looping byte-by-byte.
+  - **How it sounds to a noob:** Pretty cool.
+- **Branchless state machines**
+  - replace if/match with lookup tables
+  - Build a table of `transitions[state][byte] -> next_state` and index directly, `current_state = table[current_state][byte]
+  - **How it sounds to a noob:** A lot of work for diminishing returns? Idk.
+- **Arena Allocation**
+  - Allocate many small objects into a single buffer and free everything at once instead of individual deallocations.
+  - Tokens are short lived, so this eliminates an allocation and deallocation for every single token, and improves caching.
+  - Instead of pushing a new token, allocate all tokens into an Arena, then drop the whole thing after parsing.
+  - **How it sounds to a noob:** Neat, makes sense.
 
 ## CodeGen
 

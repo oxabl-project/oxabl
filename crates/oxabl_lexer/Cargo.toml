@@ -7,5 +7,13 @@ edition = "2024"
 rust_decimal = "1.40.0"
 string_cache = "0.9.0"
 
+[dev-dependencies]
+criterion = "0.5"
+oxabl_common = {path = "../oxabl_common" }
+
 [build-dependencies]
 string_cache_codegen = "0.6"
+
+[[bench]]
+name = "lexer_bench"
+harness = false
