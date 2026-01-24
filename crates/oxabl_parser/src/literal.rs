@@ -2,7 +2,6 @@ use oxabl_ast::{
     BooleanLiteral, DecimalLiteral, IntegerLiteral, Literal, Span, StringLiteral, UnknownLiteral,
 };
 use oxabl_lexer::{Kind, Token, TokenValue};
-use rust_decimal::Decimal;
 
 // pub fn parse_literal(tokens: &mut TokenStream) -> Literal {
 
@@ -22,14 +21,14 @@ pub fn token_to_literal<'a>(token: &'a Token, source: &str) -> Option<Literal<'a
                 start: token.start as u32,
                 end: token.end as u32,
             },
-            value: *v as i64,
+            value: *v,
         })),
         (Kind::DecimalLiteral, TokenValue::Decimal(v)) => Some(Literal::Decimal(DecimalLiteral {
             span: Span {
                 start: token.start as u32,
                 end: token.end as u32,
             },
-            value: *v as Decimal,
+            value: *v,
         })),
         (Kind::StringLiteral, TokenValue::String(v)) => Some(Literal::String(StringLiteral {
             span: Span {
@@ -50,7 +49,7 @@ pub fn token_to_literal<'a>(token: &'a Token, source: &str) -> Option<Literal<'a
                     start: token.start as u32,
                     end: token.end as u32,
                 },
-                value: *v as bool,
+                value: *v,
             }))
         }
         _ => None,
@@ -62,6 +61,7 @@ pub fn token_to_literal<'a>(token: &'a Token, source: &str) -> Option<Literal<'a
 mod tests {
     use super::*;
     use oxabl_lexer::tokenize;
+    use rust_decimal::Decimal;
     use std::str::FromStr;
 
     fn assert_integer(
@@ -136,11 +136,7 @@ mod tests {
         )
     }
 
-    fn assert_unknown(
-        literal: Literal,
-        expected_start: u32,
-        expected_end: u32,
-    ) {
+    fn assert_unknown(literal: Literal, expected_start: u32, expected_end: u32) {
         assert_eq!(
             literal,
             Literal::Unknown(UnknownLiteral {
