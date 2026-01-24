@@ -22,8 +22,12 @@ Requirements:
   - It's able to produce line and column numbers from byte offsets stored in tokens.
   - Needs test coverage.
   - Used in our token dumps and benchmarks, appears to be accurate.
-- `oxabl_ast`: Not started
-- `oxabl_parser`: Not started (well, the building blocks of it have been, i.e. lexer and source map.)
+- `oxabl_ast`: Started in `crates/oxabl_ast`
+  - Defines literals
+  - Needs expressions
+- `oxabl_parser`: Started in `crates/oxabl_parser`
+  - Started simple literal parsing
+  - Expressions next
 
 ## Roadmap
 
