@@ -1,9 +1,7 @@
 /// OxAbl Lexer
 /// A Lexer written in Rust for Progress ABL
-// TODO - more test coverage
-// TODO - handle preprocessor definitions
-// TODO - add bigint detection to return a big int or regular int
-// TODO - add better carriage return handling, \r\n and \n
+///
+/// Produces tokens from
 use std::str::Chars;
 extern crate string_cache;
 mod oxabl_atom {
@@ -17,9 +15,13 @@ use crate::{
     oxabl_atom::OxablAtom,
 };
 
+/// A representation of an token created from ABL source code.
+///
+///
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
-    /// Token Type
+    /// The kind of token this is, a list can be found in `crates/oxabl_lexer/kind.rs`.
+    /// Valid kinds are operators, identifiers, or keywords
     pub kind: Kind,
 
     /// Start offset in source
@@ -28,6 +30,9 @@ pub struct Token {
     /// End offset in source
     pub end: usize,
 
+    /// The value of the token.
+    /// For literals it will be the value of the literal (2, 1.3, "Thing", true)
+    /// For identifiers and keywords the value will be None
     pub value: TokenValue,
 }
 
@@ -58,7 +63,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some(' ' | '\t' | '\n')) {
+        while matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r')) {
             self.advance();
         }
     }
@@ -192,11 +197,10 @@ impl<'a> Lexer<'a> {
                     return Kind::RightBracket;
                 }
                 '{' => match self.peek() {
-                    // Prepropcessor references {&thing}
+                    // Preprocessor references {&thing}
                     Some('&') => {
-                        self.advance();
-                        // TODO - proper preprocessor resolution
-                        return Kind::PreprocProcessArchitecture;
+                        self.advance(); // consume '&'
+                        return self.read_preprocessor_reference(start);
                     }
                     _ => {
                         return Kind::LeftBrace;
@@ -209,8 +213,10 @@ impl<'a> Lexer<'a> {
                     return Kind::Comma;
                 }
 
-                // Preprocessor directives
-                '&' => {}
+                // Preprocessor directives like &if, &scoped-define
+                '&' => {
+                    return self.read_preprocessor_directive(start);
+                }
                 _ => {
                     return Kind::Invalid;
                 }
@@ -223,19 +229,25 @@ impl<'a> Lexer<'a> {
     fn read_next_token(&mut self) -> Token {
         self.skip_whitespace();
         let start = self.offset();
-        let kind = self.read_next_kind(start);
+        let mut kind = self.read_next_kind(start);
         let end = self.offset();
         let mut value = TokenValue::None;
         match kind {
             Kind::Integer => {
-                let parsed_int = self.source[start..end].parse();
-                match parsed_int {
+                let text = &self.source[start..end];
+                match text.parse::<i32>() {
                     Ok(int) => {
                         value = TokenValue::Integer(int);
                     }
-                    Err(e) => {
-                        println!("Error parsing integer: {:?}", e);
-                    }
+                    Err(_) => match text.parse::<i64>() {
+                        Ok(big_int) => {
+                            kind = Kind::BigInt;
+                            value = TokenValue::BigInt(big_int);
+                        }
+                        Err(e) => {
+                            println!("Error parsing integer: {:?}", e);
+                        }
+                    },
                 }
             }
             Kind::BigInt => {
@@ -368,7 +380,36 @@ impl<'a> Lexer<'a> {
         Kind::Integer
     }
 
-    // TODO review
+    /// Reads a preprocessor reference like {&variable} or {&batch-mode}
+    /// Called after '{&' has been consumed, consumes up to and including '}'
+    fn read_preprocessor_reference(&mut self, start: usize) -> Kind {
+        // Consume characters until we hit '}' or EOF
+        while let Some(c) = self.peek() {
+            if c == '}' {
+                self.advance(); // consume the closing '}'
+                break;
+            }
+            self.advance();
+        }
+
+        // Try to match the full text including {& and } against known preprocessor keywords
+        let text = &self.source[start..self.offset()];
+        match_keyword(text).unwrap_or(Kind::Preprop)
+    }
+
+    /// Reads a preprocessor directive like &if, &scoped-define
+    /// Called after '&' has been consumed
+    fn read_preprocessor_directive(&mut self, start: usize) -> Kind {
+        // Consume alphanumeric characters and hyphens (like regular identifiers)
+        while matches!(self.peek(), Some('a'..='z' | 'A'..='Z' | '0'..='9' | '-')) {
+            self.advance();
+        }
+
+        // Try to match the full text including & against known preprocessor keywords
+        let text = &self.source[start..self.offset()];
+        match_keyword(text).unwrap_or(Kind::Invalid)
+    }
+
     fn skip_line_comment(&mut self) -> Kind {
         loop {
             // consume chars until we hit a new line (or EoF)
@@ -381,7 +422,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    // TODO review
     fn skip_block_comment(&mut self) -> Kind {
         loop {
             // consume chars until we hit a *
@@ -748,5 +788,312 @@ end."#;
         for (i, (kind, start, end, value)) in expected.into_iter().enumerate() {
             assert_token(&tokens[i], kind, start, end, value, source);
         }
+    }
+
+    #[test]
+    fn preprocessor_directive_ampersand() {
+        // Test &if, &else, &endif, &scoped-define, &global-define
+        let source = "&if defined(test) &then\n&scoped-define myvar 1\n&endif";
+        let tokens = collect_tokens(source);
+
+        // &if: 0-3, defined: 4-11, (: 11-12, test: 12-16, ): 16-17
+        // &then: 18-23, \n at 23
+        // &scoped-define: 24-38 (14 chars), myvar: 39-44, 1: 45-46, \n at 46
+        // &endif: 47-53
+
+        let expected = vec![
+            (Kind::PreprocIf, 0, 3, TokenValue::None),
+            (Kind::Defined, 4, 11, TokenValue::None), // defined is a keyword
+            (Kind::LeftParen, 11, 12, TokenValue::None),
+            (Kind::Identifier, 12, 16, TokenValue::None), // test
+            (Kind::RightParen, 16, 17, TokenValue::None),
+            (Kind::PreprocThen, 18, 23, TokenValue::None),
+            (Kind::PreprocScopedDefine, 24, 38, TokenValue::None),
+            (Kind::Identifier, 39, 44, TokenValue::None), // myvar
+            (Kind::Integer, 45, 46, TokenValue::Integer(1)),
+            (Kind::PreprocEndif, 47, 53, TokenValue::None),
+            (Kind::Eof, 53, 53, TokenValue::None),
+        ];
+
+        assert_eq!(
+            tokens.len(),
+            expected.len(),
+            "Token count mismatch. Got: {:?}",
+            tokens
+        );
+        for (i, (kind, start, end, value)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, value, source);
+        }
+    }
+
+    #[test]
+    fn preprocessor_reference_braces() {
+        // Test {&variable} and {&batch-mode}
+        let source = "message {&myvar}.\nif {&batch-mode} then quit.";
+        let tokens = collect_tokens(source);
+
+        // message: 0-7, {&myvar}: 8-16 (Preprop - user variable), .: 16-17, \n at 17
+        // if: 18-20, {&batch-mode}: 21-34 (PreprocBatchMode), then: 35-39, quit: 40-44, .: 44-45
+
+        let expected = vec![
+            (Kind::Message, 0, 7, TokenValue::None),
+            (Kind::Preprop, 8, 16, TokenValue::None), // {&myvar} - user-defined
+            (Kind::Period, 16, 17, TokenValue::None),
+            (Kind::KwIf, 18, 20, TokenValue::None),
+            (Kind::PreprocBatchMode, 21, 34, TokenValue::None), // {&batch-mode}
+            (Kind::Then, 35, 39, TokenValue::None),
+            (Kind::Quit, 40, 44, TokenValue::None),
+            (Kind::Period, 44, 45, TokenValue::None),
+            (Kind::Eof, 45, 45, TokenValue::None),
+        ];
+
+        assert_eq!(
+            tokens.len(),
+            expected.len(),
+            "Token count mismatch. Got: {:?}",
+            tokens
+        );
+        for (i, (kind, start, end, value)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, value, source);
+        }
+    }
+
+    #[test]
+    fn preprocessor_abbreviations() {
+        // Test that preprocessor abbreviations work like regular keywords
+        let test_cases = vec![
+            ("&glob", Kind::PreprocGlobalDefine, 5),
+            ("&global-define", Kind::PreprocGlobalDefine, 14),
+            ("&scop", Kind::PreprocScopedDefine, 5),
+            ("&scoped-define", Kind::PreprocScopedDefine, 14),
+            ("&undef", Kind::PreprocUndefine, 6),
+            ("&undefine", Kind::PreprocUndefine, 9),
+        ];
+
+        for (source, expected_kind, expected_len) in test_cases {
+            let tokens = collect_tokens(source);
+            assert_eq!(
+                tokens.len(),
+                2,
+                "Expected 2 tokens for '{}', got {}",
+                source,
+                tokens.len()
+            );
+            assert_token(
+                &tokens[0],
+                expected_kind,
+                0,
+                expected_len,
+                TokenValue::None,
+                source,
+            );
+        }
+    }
+
+    #[test]
+    fn compound_assignment_operators() {
+        let source = "+= -= *= /=";
+        let tokens = collect_tokens(source);
+        let expected = vec![
+            (Kind::PlusEquals, 0, 2),
+            (Kind::MinusEquals, 3, 5),
+            (Kind::StarEquals, 6, 8),
+            (Kind::SlashEquals, 9, 11),
+            (Kind::Eof, 11, 11),
+        ];
+        assert_eq!(tokens.len(), expected.len());
+        for (i, (kind, start, end)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, TokenValue::None, source);
+        }
+    }
+
+    #[test]
+    fn double_colon_static_access() {
+        let source = "MyClass::StaticMethod";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 4);
+        assert_token(&tokens[0], Kind::Identifier, 0, 7, TokenValue::None, source);
+        assert_token(
+            &tokens[1],
+            Kind::DoubleColon,
+            7,
+            9,
+            TokenValue::None,
+            source,
+        );
+        assert_token(
+            &tokens[2],
+            Kind::Identifier,
+            9,
+            21,
+            TokenValue::None,
+            source,
+        );
+    }
+
+    #[test]
+    fn single_quote_string() {
+        let source = "'hello world'";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::String,
+            0,
+            13,
+            TokenValue::String(OxablAtom::from("hello world".to_string())),
+            source,
+        );
+    }
+
+    #[test]
+    fn empty_string() {
+        let source = "\"\"";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::String,
+            0,
+            2,
+            TokenValue::String(OxablAtom::from("".to_string())),
+            source,
+        );
+    }
+
+    #[test]
+    fn integer_followed_by_period_not_decimal() {
+        // 42. followed by identifier should be integer + period + identifier
+        // Using "foo" instead of "method" since "method" is a keyword
+        let source = "42.foo";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 4);
+        assert_token(
+            &tokens[0],
+            Kind::Integer,
+            0,
+            2,
+            TokenValue::Integer(42),
+            source,
+        );
+        assert_token(&tokens[1], Kind::Period, 2, 3, TokenValue::None, source);
+        assert_token(&tokens[2], Kind::Identifier, 3, 6, TokenValue::None, source);
+    }
+
+    #[test]
+    fn brackets_and_braces() {
+        let source = "arr[0] = {&var}";
+        let tokens = collect_tokens(source);
+        let expected = vec![
+            (Kind::Identifier, 0, 3, TokenValue::None),
+            (Kind::LeftBracket, 3, 4, TokenValue::None),
+            (Kind::Integer, 4, 5, TokenValue::Integer(0)),
+            (Kind::RightBracket, 5, 6, TokenValue::None),
+            (Kind::Equals, 7, 8, TokenValue::None),
+            (Kind::Preprop, 9, 15, TokenValue::None),
+            (Kind::Eof, 15, 15, TokenValue::None),
+        ];
+        assert_eq!(tokens.len(), expected.len());
+        for (i, (kind, start, end, value)) in expected.into_iter().enumerate() {
+            assert_token(&tokens[i], kind, start, end, value, source);
+        }
+    }
+
+    #[test]
+    fn boolean_literals() {
+        let source = "true false";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 3);
+        assert_token(
+            &tokens[0],
+            Kind::KwTrue,
+            0,
+            4,
+            TokenValue::Boolean(true),
+            source,
+        );
+        assert_token(
+            &tokens[1],
+            Kind::KwFalse,
+            5,
+            10,
+            TokenValue::Boolean(false),
+            source,
+        );
+    }
+
+    #[test]
+    fn question_mark_unknown() {
+        let source = "var int x = ?.";
+        let tokens = collect_tokens(source);
+        // var, int, x, =, ?, ., eof
+        assert_eq!(tokens.len(), 7);
+        assert_token(&tokens[4], Kind::Question, 12, 13, TokenValue::None, source);
+    }
+
+    #[test]
+    fn unterminated_string() {
+        let source = "\"hello";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].kind, Kind::Invalid);
+    }
+
+    #[test]
+    fn unterminated_block_comment() {
+        let source = "def /* unterminated";
+        let tokens = collect_tokens(source);
+        // def, then invalid comment
+        assert_eq!(tokens[1].kind, Kind::Invalid);
+    }
+
+    #[test]
+    fn hyphenated_identifier() {
+        // ABL allows hyphens in identifiers
+        let source = "my-variable-name";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::Identifier,
+            0,
+            16,
+            TokenValue::None,
+            source,
+        );
+    }
+
+    #[test]
+    fn modulo_operator() {
+        let source = "10 % 3";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 4);
+        assert_token(&tokens[1], Kind::Modulo, 3, 4, TokenValue::None, source);
+    }
+
+    #[test]
+    fn bigint_overflow() {
+        // Test that integers larger than i32::MAX become BigInt
+        let source = "3000000000";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::BigInt,
+            0,
+            10,
+            TokenValue::BigInt(3000000000),
+            source,
+        );
+    }
+
+    #[test]
+    fn temp_table_definition() {
+        let source = "def temp-table tt field f1 as int.";
+        let tokens = collect_tokens(source);
+        // Verify it tokenizes without errors and has correct structure
+        assert!(tokens.iter().all(|t| t.kind != Kind::Invalid));
+        assert_eq!(tokens[0].kind, Kind::Define);
+        assert_eq!(tokens[1].kind, Kind::TempTable);
     }
 }

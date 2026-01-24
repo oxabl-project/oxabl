@@ -1080,7 +1080,6 @@ pub enum Kind {
     Disabled,
     DisableDumpTriggers,
     DisableLoadTriggers,
-    Disp,
     DisplayMessage,
     Distinct,
     Double,
@@ -1636,7 +1635,10 @@ pub enum Kind {
     YesNo,
     YesNoCancel,
     YOf,
+    Preprop,
+
 }
+
 /// Match a string to a keyword Kind
 /// Handles ABL prefix abbreviations and case-insensitive matching
 /// e.g., "def", "defi", "defin", "define" all match Kind::Define
@@ -2712,6 +2714,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "&webstream" => Some(Kind::PreprocWebstream),
         "{&window-syst" | "{&window-syste" | "{&window-system" | "{&window-system}" => Some(Kind::PreprocWindowSystem),
         "preproc" | "preproce" | "preproces" | "preprocess" => Some(Kind::Preprocess),
+        "preprop" => Some(Kind::Preprop),
         "presel" | "presele" | "preselec" | "preselect" => Some(Kind::Preselect),
         "prev" => Some(Kind::Prev),
         "prev-column" => Some(Kind::PrevColumn),

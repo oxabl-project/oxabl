@@ -70,6 +70,15 @@ name = "disp"
 keyword_type = "Statement"
 
 # =============================================================================
+# PREPROCESSOR
+# Unmatched preprocessor variable references like {&variable}
+# =============================================================================
+
+[[add]]
+name = "preprop"
+keyword_type = "Preprocessor"
+
+# =============================================================================
 # COMMENT MARKERS
 # These are used for comments but not listed as keywords
 # =============================================================================
