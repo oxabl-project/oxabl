@@ -1639,7 +1639,6 @@ pub enum Kind {
     YesNoCancel,
     YOf,
     Preprop,
-
 }
 
 /// Match a string to a keyword Kind
@@ -1689,7 +1688,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "any" => Some(Kind::Any),
         "anywhere" => Some(Kind::Anywhere),
         "append" => Some(Kind::Append),
-        "appl-alert" | "appl-alert-" | "appl-alert-b" | "appl-alert-bo" | "appl-alert-box" | "appl-alert-boxe" | "appl-alert-boxes" => Some(Kind::ApplAlertBoxes),
+        "appl-alert" | "appl-alert-" | "appl-alert-b" | "appl-alert-bo" | "appl-alert-box"
+        | "appl-alert-boxe" | "appl-alert-boxes" => Some(Kind::ApplAlertBoxes),
         "appl-context-id" => Some(Kind::ApplContextId),
         "application" => Some(Kind::Application),
         "apply" => Some(Kind::Apply),
@@ -1707,14 +1707,17 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "asynchronous" => Some(Kind::Asynchronous),
         "at" => Some(Kind::At),
         "attached-pairlist" => Some(Kind::AttachedPairlist),
-        "attr" | "attr-" | "attr-s" | "attr-sp" | "attr-spa" | "attr-spac" | "attr-space" => Some(Kind::AttrSpace),
+        "attr" | "attr-" | "attr-s" | "attr-sp" | "attr-spa" | "attr-spac" | "attr-space" => {
+            Some(Kind::AttrSpace)
+        }
         "audit-control" => Some(Kind::AuditControl),
         "audit-enabled" => Some(Kind::AuditEnabled),
         "audit-event-context" => Some(Kind::AuditEventContext),
         "audit-policy" => Some(Kind::AuditPolicy),
         "authentication-failed" => Some(Kind::AuthenticationFailed),
         "authorization" => Some(Kind::Authorization),
-        "auto-comp" | "auto-compl" | "auto-comple" | "auto-complet" | "auto-completi" | "auto-completio" | "auto-completion" => Some(Kind::AutoCompletion),
+        "auto-comp" | "auto-compl" | "auto-comple" | "auto-complet" | "auto-completi"
+        | "auto-completio" | "auto-completion" => Some(Kind::AutoCompletion),
         "auto-end-key" => Some(Kind::AutoEndKey),
         "auto-endkey" => Some(Kind::AutoEndkey),
         "auto-go" => Some(Kind::AutoGo),
@@ -1728,13 +1731,17 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "available-formats" => Some(Kind::AvailableFormats),
         "ave" | "aver" | "avera" | "averag" | "average" => Some(Kind::Average),
         "avg" => Some(Kind::Avg),
-        "back" | "backg" | "backgr" | "backgro" | "backgrou" | "backgroun" | "background" => Some(Kind::Background),
+        "back" | "backg" | "backgr" | "backgro" | "backgrou" | "backgroun" | "background" => {
+            Some(Kind::Background)
+        }
         "backward" | "backwards" => Some(Kind::Backwards),
         "base64-decode" => Some(Kind::Base64Decode),
         "base64-encode" => Some(Kind::Base64Encode),
         "base-ade" => Some(Kind::BaseAde),
         "base-key" => Some(Kind::BaseKey),
-        "batch" | "batch-" | "batch-m" | "batch-mo" | "batch-mod" | "batch-mode" => Some(Kind::BatchMode),
+        "batch" | "batch-" | "batch-m" | "batch-mo" | "batch-mod" | "batch-mode" => {
+            Some(Kind::BatchMode)
+        }
         "batch-size" => Some(Kind::BatchSize),
         "before-h" | "before-hi" | "before-hid" | "before-hide" => Some(Kind::BeforeHide),
         "begin-event-group" => Some(Kind::BeginEventGroup),
@@ -1749,15 +1756,47 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "blank" => Some(Kind::Blank),
         "block-iteration-display" => Some(Kind::BlockIterationDisplay),
         "block-lev" | "block-leve" | "block-level" => Some(Kind::BlockLevel),
-        "border-b" | "border-bo" | "border-bot" | "border-bott" | "border-botto" | "border-bottom" | "border-bottom-" | "border-bottom-c" | "border-bottom-ch" | "border-bottom-cha" | "border-bottom-char" | "border-bottom-chars" => Some(Kind::BorderBottomChars),
-        "border-bottom-p" | "border-bottom-pi" | "border-bottom-pix" | "border-bottom-pixe" | "border-bottom-pixel" | "border-bottom-pixels" => Some(Kind::BorderBottomPixels),
-        "border-l" | "border-le" | "border-lef" | "border-left" | "border-left-" | "border-left-c" | "border-left-ch" | "border-left-cha" | "border-left-char" | "border-left-chars" => Some(Kind::BorderLeftChars),
-        "border-left-p" | "border-left-pi" | "border-left-pix" | "border-left-pixe" | "border-left-pixel" | "border-left-pixels" => Some(Kind::BorderLeftPixels),
-        "border-r" | "border-ri" | "border-rig" | "border-righ" | "border-right" | "border-right-" | "border-right-c" | "border-right-ch" | "border-right-cha" | "border-right-char" | "border-right-chars" => Some(Kind::BorderRightChars),
-        "border-right-p" | "border-right-pi" | "border-right-pix" | "border-right-pixe" | "border-right-pixel" | "border-right-pixels" => Some(Kind::BorderRightPixels),
-        "border-t" | "border-to" | "border-top" | "border-top-" | "border-top-c" | "border-top-ch" | "border-top-cha" | "border-top-char" | "border-top-chars" => Some(Kind::BorderTopChars),
-        "border-top-p" | "border-top-pi" | "border-top-pix" | "border-top-pixe" | "border-top-pixel" | "border-top-pixels" => Some(Kind::BorderTopPixels),
-        "box-select" | "box-selecta" | "box-selectab" | "box-selectabl" | "box-selectable" => Some(Kind::BoxSelectable),
+        "border-b"
+        | "border-bo"
+        | "border-bot"
+        | "border-bott"
+        | "border-botto"
+        | "border-bottom"
+        | "border-bottom-"
+        | "border-bottom-c"
+        | "border-bottom-ch"
+        | "border-bottom-cha"
+        | "border-bottom-char"
+        | "border-bottom-chars" => Some(Kind::BorderBottomChars),
+        "border-bottom-p"
+        | "border-bottom-pi"
+        | "border-bottom-pix"
+        | "border-bottom-pixe"
+        | "border-bottom-pixel"
+        | "border-bottom-pixels" => Some(Kind::BorderBottomPixels),
+        "border-l" | "border-le" | "border-lef" | "border-left" | "border-left-"
+        | "border-left-c" | "border-left-ch" | "border-left-cha" | "border-left-char"
+        | "border-left-chars" => Some(Kind::BorderLeftChars),
+        "border-left-p" | "border-left-pi" | "border-left-pix" | "border-left-pixe"
+        | "border-left-pixel" | "border-left-pixels" => Some(Kind::BorderLeftPixels),
+        "border-r" | "border-ri" | "border-rig" | "border-righ" | "border-right"
+        | "border-right-" | "border-right-c" | "border-right-ch" | "border-right-cha"
+        | "border-right-char" | "border-right-chars" => Some(Kind::BorderRightChars),
+        "border-right-p"
+        | "border-right-pi"
+        | "border-right-pix"
+        | "border-right-pixe"
+        | "border-right-pixel"
+        | "border-right-pixels" => Some(Kind::BorderRightPixels),
+        "border-t" | "border-to" | "border-top" | "border-top-" | "border-top-c"
+        | "border-top-ch" | "border-top-cha" | "border-top-char" | "border-top-chars" => {
+            Some(Kind::BorderTopChars)
+        }
+        "border-top-p" | "border-top-pi" | "border-top-pix" | "border-top-pixe"
+        | "border-top-pixel" | "border-top-pixels" => Some(Kind::BorderTopPixels),
+        "box-select" | "box-selecta" | "box-selectab" | "box-selectabl" | "box-selectable" => {
+            Some(Kind::BoxSelectable)
+        }
         "browse" => Some(Kind::Browse),
         "buffer" => Some(Kind::Buffer),
         "buffer-chars" => Some(Kind::BufferChars),
@@ -1796,7 +1835,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "caps" => Some(Kind::Caps),
         "careful-paint" => Some(Kind::CarefulPaint),
         "case" => Some(Kind::Case),
-        "case-sen" | "case-sens" | "case-sensi" | "case-sensit" | "case-sensiti" | "case-sensitiv" | "case-sensitive" => Some(Kind::CaseSensitive),
+        "case-sen" | "case-sens" | "case-sensi" | "case-sensit" | "case-sensiti"
+        | "case-sensitiv" | "case-sensitive" => Some(Kind::CaseSensitive),
         "cast" => Some(Kind::Cast),
         "catch" => Some(Kind::Catch),
         "cdecl" => Some(Kind::Cdecl),
@@ -1814,7 +1854,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "clear" => Some(Kind::Clear),
         "clear-appl-context" => Some(Kind::ClearApplContext),
         "clear-log" => Some(Kind::ClearLog),
-        "clear-select" | "clear-selecti" | "clear-selectio" | "clear-selection" => Some(Kind::ClearSelection),
+        "clear-select" | "clear-selecti" | "clear-selectio" | "clear-selection" => {
+            Some(Kind::ClearSelection)
+        }
         "clear-sort-arrow" | "clear-sort-arrows" => Some(Kind::ClearSortArrows),
         "client-connection-id" => Some(Kind::ClientConnectionId),
         "client-principal" => Some(Kind::ClientPrincipal),
@@ -1899,9 +1941,18 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "current-changed" => Some(Kind::CurrentChanged),
         "current-column" => Some(Kind::CurrentColumn),
         "current_date" => Some(Kind::CurrentDate),
-        "current-env" | "current-envi" | "current-envir" | "current-enviro" | "current-environ" | "current-environm" | "current-environme" | "current-environmen" | "current-environment" => Some(Kind::CurrentEnvironment),
+        "current-env"
+        | "current-envi"
+        | "current-envir"
+        | "current-enviro"
+        | "current-environ"
+        | "current-environm"
+        | "current-environme"
+        | "current-environmen"
+        | "current-environment" => Some(Kind::CurrentEnvironment),
         "current-iteration" => Some(Kind::CurrentIteration),
-        "current-lang" | "current-langu" | "current-langua" | "current-languag" | "current-language" => Some(Kind::CurrentLanguage),
+        "current-lang" | "current-langu" | "current-langua" | "current-languag"
+        | "current-language" => Some(Kind::CurrentLanguage),
         "current-query" => Some(Kind::CurrentQuery),
         "current-request-info" => Some(Kind::CurrentRequestInfo),
         "current-response-info" => Some(Kind::CurrentResponseInfo),
@@ -1914,8 +1965,11 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "cursor-line" => Some(Kind::CursorLine),
         "cursor-offset" => Some(Kind::CursorOffset),
         "data-bind" => Some(Kind::DataBind),
-        "data-entry-ret" | "data-entry-retu" | "data-entry-retur" | "data-entry-return" => Some(Kind::DataEntryReturn),
-        "data-rel" | "data-rela" | "data-relat" | "data-relati" | "data-relatio" | "data-relation" => Some(Kind::DataRelation),
+        "data-entry-ret" | "data-entry-retu" | "data-entry-retur" | "data-entry-return" => {
+            Some(Kind::DataEntryReturn)
+        }
+        "data-rel" | "data-rela" | "data-relat" | "data-relati" | "data-relatio"
+        | "data-relation" => Some(Kind::DataRelation),
         "data-source" => Some(Kind::DataSource),
         "data-source-complete-map" => Some(Kind::DataSourceCompleteMap),
         "data-source-modified" => Some(Kind::DataSourceModified),
@@ -1926,7 +1980,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "dataset" => Some(Kind::Dataset),
         "dataset-handle" => Some(Kind::DatasetHandle),
         "date" => Some(Kind::Date),
-        "date-f" | "date-fo" | "date-for" | "date-form" | "date-forma" | "date-format" => Some(Kind::DateFormat),
+        "date-f" | "date-fo" | "date-for" | "date-form" | "date-forma" | "date-format" => {
+            Some(Kind::DateFormat)
+        }
         "day" => Some(Kind::Day),
         "db-context" => Some(Kind::DbContext),
         "db-references" => Some(Kind::DbReferences),
@@ -1934,7 +1990,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "dbcollation" => Some(Kind::Dbcollation),
         "dbname" => Some(Kind::Dbname),
         "dbparam" => Some(Kind::Dbparam),
-        "dbrest" | "dbrestr" | "dbrestri" | "dbrestric" | "dbrestrict" | "dbrestricti" | "dbrestrictio" | "dbrestriction" | "dbrestrictions" => Some(Kind::Dbrestrictions),
+        "dbrest" | "dbrestr" | "dbrestri" | "dbrestric" | "dbrestrict" | "dbrestricti"
+        | "dbrestrictio" | "dbrestriction" | "dbrestrictions" => Some(Kind::Dbrestrictions),
         "dbtaskid" => Some(Kind::Dbtaskid),
         "dbtype" => Some(Kind::Dbtype),
         "dbvers" | "dbversi" | "dbversio" | "dbversion" => Some(Kind::Dbversion),
@@ -1957,9 +2014,13 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "decrypt" => Some(Kind::Decrypt),
         "default" => Some(Kind::Default),
         "default-buffer-handle" => Some(Kind::DefaultBufferHandle),
-        "default-" | "default-b" | "default-bu" | "default-but" | "default-butt" | "default-butto" | "default-button" => Some(Kind::DefaultButton),
+        "default-" | "default-b" | "default-bu" | "default-but" | "default-butt"
+        | "default-butto" | "default-button" => Some(Kind::DefaultButton),
         "default-commit" => Some(Kind::DefaultCommit),
-        "default-ex" | "default-ext" | "default-exte" | "default-exten" | "default-extens" | "default-extensi" | "default-extensio" | "default-extension" => Some(Kind::DefaultExtension),
+        "default-ex" | "default-ext" | "default-exte" | "default-exten" | "default-extens"
+        | "default-extensi" | "default-extensio" | "default-extension" => {
+            Some(Kind::DefaultExtension)
+        }
         "default-untranslatable" => Some(Kind::DefaultUntranslatable),
         "default-value" => Some(Kind::DefaultValue),
         "default-window" => Some(Kind::DefaultWindow),
@@ -1977,14 +2038,18 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "delete-selected-rows" => Some(Kind::DeleteSelectedRows),
         "delimiter" => Some(Kind::Delimiter),
         "desc" => Some(Kind::Desc),
-        "desce" | "descen" | "descend" | "descendi" | "descendin" | "descending" => Some(Kind::Descending),
+        "desce" | "descen" | "descend" | "descendi" | "descendin" | "descending" => {
+            Some(Kind::Descending)
+        }
         "deselect-focused-row" => Some(Kind::DeselectFocusedRow),
         "deselect-rows" => Some(Kind::DeselectRows),
         "deselect-selected-row" => Some(Kind::DeselectSelectedRow),
         "deselection" => Some(Kind::Deselection),
         "destructor" => Some(Kind::Destructor),
         "dialog-box" => Some(Kind::DialogBox),
-        "dict" | "dicti" | "dictio" | "diction" | "dictiona" | "dictionar" | "dictionary" => Some(Kind::Dictionary),
+        "dict" | "dicti" | "dictio" | "diction" | "dictiona" | "dictionar" | "dictionary" => {
+            Some(Kind::Dictionary)
+        }
         "dir" => Some(Kind::Dir),
         "disable" => Some(Kind::Disable),
         "disable-auto-zap" => Some(Kind::DisableAutoZap),
@@ -2018,8 +2083,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "dynamic-invoke" => Some(Kind::DynamicInvoke),
         "each" => Some(Kind::Each),
         "echo" => Some(Kind::Echo),
-        "edge" | "edge-" | "edge-c" | "edge-ch" | "edge-cha" | "edge-char" | "edge-chars" => Some(Kind::EdgeChars),
-        "edge-p" | "edge-pi" | "edge-pix" | "edge-pixe" | "edge-pixel" | "edge-pixels" => Some(Kind::EdgePixels),
+        "edge" | "edge-" | "edge-c" | "edge-ch" | "edge-cha" | "edge-char" | "edge-chars" => {
+            Some(Kind::EdgeChars)
+        }
+        "edge-p" | "edge-pi" | "edge-pix" | "edge-pixe" | "edge-pixel" | "edge-pixels" => {
+            Some(Kind::EdgePixels)
+        }
         "edit-can-paste" => Some(Kind::EditCanPaste),
         "edit-can-undo" => Some(Kind::EditCanUndo),
         "edit-clear" => Some(Kind::EditClear),
@@ -2071,7 +2140,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "events" => Some(Kind::Events),
         "except" => Some(Kind::Except),
         "exclusive-id" => Some(Kind::ExclusiveId),
-        "exclusive" | "exclusive-" | "exclusive-l" | "exclusive-lo" | "exclusive-loc" | "exclusive-lock" => Some(Kind::ExclusiveLock),
+        "exclusive" | "exclusive-" | "exclusive-l" | "exclusive-lo" | "exclusive-loc"
+        | "exclusive-lock" => Some(Kind::ExclusiveLock),
         "exclusive-web-user" => Some(Kind::ExclusiveWebUser),
         "execute" => Some(Kind::Execute),
         "exists" => Some(Kind::Exists),
@@ -2127,9 +2197,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "first-form" => Some(Kind::FirstForm),
         "first-object" => Some(Kind::FirstObject),
         "first-of" => Some(Kind::FirstOf),
-        "first-proc" | "first-proce" | "first-proced" | "first-procedu" | "first-procedur" | "first-procedure" => Some(Kind::FirstProcedure),
+        "first-proc" | "first-proce" | "first-proced" | "first-procedu" | "first-procedur"
+        | "first-procedure" => Some(Kind::FirstProcedure),
         "first-server" => Some(Kind::FirstServer),
-        "first-tab-i" | "first-tab-it" | "first-tab-ite" | "first-tab-item" => Some(Kind::FirstTabItem),
+        "first-tab-i" | "first-tab-it" | "first-tab-ite" | "first-tab-item" => {
+            Some(Kind::FirstTabItem)
+        }
         "fit-last-column" => Some(Kind::FitLastColumn),
         "fixed-only" => Some(Kind::FixedOnly),
         "flat-button" => Some(Kind::FlatButton),
@@ -2140,7 +2213,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "font" => Some(Kind::Font),
         "font-table" => Some(Kind::FontTable),
         "force-file" => Some(Kind::ForceFile),
-        "fore" | "foreg" | "foregr" | "foregro" | "foregrou" | "foregroun" | "foreground" => Some(Kind::Foreground),
+        "fore" | "foreg" | "foregr" | "foregro" | "foregrou" | "foregroun" | "foreground" => {
+            Some(Kind::Foreground)
+        }
         "form" => Some(Kind::Form),
         "form input" => Some(Kind::FormInput),
         "form-long-input" => Some(Kind::FormLongInput),
@@ -2159,20 +2234,30 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "frame-line" => Some(Kind::FrameLine),
         "frame-name" => Some(Kind::FrameName),
         "frame-row" => Some(Kind::FrameRow),
-        "frame-spa" | "frame-spac" | "frame-spaci" | "frame-spacin" | "frame-spacing" => Some(Kind::FrameSpacing),
+        "frame-spa" | "frame-spac" | "frame-spaci" | "frame-spacin" | "frame-spacing" => {
+            Some(Kind::FrameSpacing)
+        }
         "frame-val" | "frame-valu" | "frame-value" => Some(Kind::FrameValue),
         "frame-x" => Some(Kind::FrameX),
         "frame-y" => Some(Kind::FrameY),
         "frequency" => Some(Kind::Frequency),
         "from" => Some(Kind::From),
         "from-c" | "from-ch" | "from-cha" | "from-char" | "from-chars" => Some(Kind::FromChars),
-        "from-cur" | "from-curr" | "from-curre" | "from-curren" | "from-current" => Some(Kind::FromCurrent),
-        "from-p" | "from-pi" | "from-pix" | "from-pixe" | "from-pixel" | "from-pixels" => Some(Kind::FromPixels),
-        "full-height" | "full-height-" | "full-height-c" | "full-height-ch" | "full-height-cha" | "full-height-char" | "full-height-chars" => Some(Kind::FullHeightChars),
-        "full-height-p" | "full-height-pi" | "full-height-pix" | "full-height-pixe" | "full-height-pixel" | "full-height-pixels" => Some(Kind::FullHeightPixels),
+        "from-cur" | "from-curr" | "from-curre" | "from-curren" | "from-current" => {
+            Some(Kind::FromCurrent)
+        }
+        "from-p" | "from-pi" | "from-pix" | "from-pixe" | "from-pixel" | "from-pixels" => {
+            Some(Kind::FromPixels)
+        }
+        "full-height" | "full-height-" | "full-height-c" | "full-height-ch" | "full-height-cha"
+        | "full-height-char" | "full-height-chars" => Some(Kind::FullHeightChars),
+        "full-height-p" | "full-height-pi" | "full-height-pix" | "full-height-pixe"
+        | "full-height-pixel" | "full-height-pixels" => Some(Kind::FullHeightPixels),
         "full-pathn" | "full-pathna" | "full-pathnam" | "full-pathname" => Some(Kind::FullPathname),
-        "full-width" | "full-width-" | "full-width-c" | "full-width-ch" | "full-width-cha" | "full-width-char" | "full-width-chars" => Some(Kind::FullWidthChars),
-        "full-width-p" | "full-width-pi" | "full-width-pix" | "full-width-pixe" | "full-width-pixel" | "full-width-pixels" => Some(Kind::FullWidthPixels),
+        "full-width" | "full-width-" | "full-width-c" | "full-width-ch" | "full-width-cha"
+        | "full-width-char" | "full-width-chars" => Some(Kind::FullWidthChars),
+        "full-width-p" | "full-width-pi" | "full-width-pix" | "full-width-pixe"
+        | "full-width-pixel" | "full-width-pixels" => Some(Kind::FullWidthPixels),
         "function" => Some(Kind::Function),
         "function-call-type" => Some(Kind::FunctionCallType),
         "gateway" | "gateways" => Some(Kind::Gateways),
@@ -2185,7 +2270,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "get-attr-call-type" => Some(Kind::GetAttrCallType),
         "get-attribute-node" => Some(Kind::GetAttributeNode),
         "get-binary-data" => Some(Kind::GetBinaryData),
-        "get-blue" | "get-blue-" | "get-blue-v" | "get-blue-va" | "get-blue-val" | "get-blue-valu" | "get-blue-value" => Some(Kind::GetBlueValue),
+        "get-blue" | "get-blue-" | "get-blue-v" | "get-blue-va" | "get-blue-val"
+        | "get-blue-valu" | "get-blue-value" => Some(Kind::GetBlueValue),
         "get-browse-column" => Some(Kind::GetBrowseColumn),
         "get-buffer-handle" => Some(Kind::GetBufferHandle),
         "get-byte" => Some(Kind::GetByte),
@@ -2210,7 +2296,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "get-file-offse" | "get-file-offset" => Some(Kind::GetFileOffset),
         "get-first" => Some(Kind::GetFirst),
         "get-float" => Some(Kind::GetFloat),
-        "get-green" | "get-green-" | "get-green-v" | "get-green-va" | "get-green-val" | "get-green-valu" | "get-green-value" => Some(Kind::GetGreenValue),
+        "get-green" | "get-green-" | "get-green-v" | "get-green-va" | "get-green-val"
+        | "get-green-valu" | "get-green-value" => Some(Kind::GetGreenValue),
         "get-index-by-namespace-name" => Some(Kind::GetIndexByNamespaceName),
         "get-index-by-qname" => Some(Kind::GetIndexByQname),
         "get-int64" => Some(Kind::GetInt64),
@@ -2227,19 +2314,49 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "get-printers" => Some(Kind::GetPrinters),
         "get-property" => Some(Kind::GetProperty),
         "get-qname-by-index" => Some(Kind::GetQnameByIndex),
-        "get-red" | "get-red-" | "get-red-v" | "get-red-va" | "get-red-val" | "get-red-valu" | "get-red-value" => Some(Kind::GetRedValue),
+        "get-red" | "get-red-" | "get-red-v" | "get-red-va" | "get-red-val" | "get-red-valu"
+        | "get-red-value" => Some(Kind::GetRedValue),
         "get-repositioned-row" => Some(Kind::GetRepositionedRow),
         "get-rgb-value" => Some(Kind::GetRgbValue),
-        "get-selected" | "get-selected-" | "get-selected-w" | "get-selected-wi" | "get-selected-wid" | "get-selected-widg" | "get-selected-widge" | "get-selected-widget" => Some(Kind::GetSelectedWidget),
+        "get-selected"
+        | "get-selected-"
+        | "get-selected-w"
+        | "get-selected-wi"
+        | "get-selected-wid"
+        | "get-selected-widg"
+        | "get-selected-widge"
+        | "get-selected-widget" => Some(Kind::GetSelectedWidget),
         "get-short" => Some(Kind::GetShort),
         "get-signature" => Some(Kind::GetSignature),
         "get-size" => Some(Kind::GetSize),
         "get-string" => Some(Kind::GetString),
         "get-tab-item" => Some(Kind::GetTabItem),
-        "get-text-height" | "get-text-height-" | "get-text-height-c" | "get-text-height-ch" | "get-text-height-cha" | "get-text-height-char" | "get-text-height-chars" => Some(Kind::GetTextHeightChars),
-        "get-text-height-p" | "get-text-height-pi" | "get-text-height-pix" | "get-text-height-pixe" | "get-text-height-pixel" | "get-text-height-pixels" => Some(Kind::GetTextHeightPixels),
-        "get-text-width" | "get-text-width-" | "get-text-width-c" | "get-text-width-ch" | "get-text-width-cha" | "get-text-width-char" | "get-text-width-chars" => Some(Kind::GetTextWidthChars),
-        "get-text-width-p" | "get-text-width-pi" | "get-text-width-pix" | "get-text-width-pixe" | "get-text-width-pixel" | "get-text-width-pixels" => Some(Kind::GetTextWidthPixels),
+        "get-text-height"
+        | "get-text-height-"
+        | "get-text-height-c"
+        | "get-text-height-ch"
+        | "get-text-height-cha"
+        | "get-text-height-char"
+        | "get-text-height-chars" => Some(Kind::GetTextHeightChars),
+        "get-text-height-p"
+        | "get-text-height-pi"
+        | "get-text-height-pix"
+        | "get-text-height-pixe"
+        | "get-text-height-pixel"
+        | "get-text-height-pixels" => Some(Kind::GetTextHeightPixels),
+        "get-text-width"
+        | "get-text-width-"
+        | "get-text-width-c"
+        | "get-text-width-ch"
+        | "get-text-width-cha"
+        | "get-text-width-char"
+        | "get-text-width-chars" => Some(Kind::GetTextWidthChars),
+        "get-text-width-p"
+        | "get-text-width-pi"
+        | "get-text-width-pix"
+        | "get-text-width-pixe"
+        | "get-text-width-pixel"
+        | "get-text-width-pixels" => Some(Kind::GetTextWidthPixels),
         "get-type-by-index" => Some(Kind::GetTypeByIndex),
         "get-type-by-namespace-name" => Some(Kind::GetTypeByNamespaceName),
         "get-type-by-qname" => Some(Kind::GetTypeByQname),
@@ -2256,13 +2373,51 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "go-pend" | "go-pendi" | "go-pendin" | "go-pending" => Some(Kind::GoPending),
         "grant" => Some(Kind::Grant),
         "graphic-e" | "graphic-ed" | "graphic-edg" | "graphic-edge" => Some(Kind::GraphicEdge),
-        "grid-factor-h" | "grid-factor-ho" | "grid-factor-hor" | "grid-factor-hori" | "grid-factor-horiz" | "grid-factor-horizo" | "grid-factor-horizon" | "grid-factor-horizont" | "grid-factor-horizonta" | "grid-factor-horizontal" => Some(Kind::GridFactorHorizontal),
-        "grid-factor-v" | "grid-factor-ve" | "grid-factor-ver" | "grid-factor-vert" | "grid-factor-verti" | "grid-factor-vertic" | "grid-factor-vertica" | "grid-factor-vertical" => Some(Kind::GridFactorVertical),
+        "grid-factor-h"
+        | "grid-factor-ho"
+        | "grid-factor-hor"
+        | "grid-factor-hori"
+        | "grid-factor-horiz"
+        | "grid-factor-horizo"
+        | "grid-factor-horizon"
+        | "grid-factor-horizont"
+        | "grid-factor-horizonta"
+        | "grid-factor-horizontal" => Some(Kind::GridFactorHorizontal),
+        "grid-factor-v"
+        | "grid-factor-ve"
+        | "grid-factor-ver"
+        | "grid-factor-vert"
+        | "grid-factor-verti"
+        | "grid-factor-vertic"
+        | "grid-factor-vertica"
+        | "grid-factor-vertical" => Some(Kind::GridFactorVertical),
         "grid-snap" => Some(Kind::GridSnap),
-        "grid-unit-height" | "grid-unit-height-" | "grid-unit-height-c" | "grid-unit-height-ch" | "grid-unit-height-cha" | "grid-unit-height-char" | "grid-unit-height-chars" => Some(Kind::GridUnitHeightChars),
-        "grid-unit-height-p" | "grid-unit-height-pi" | "grid-unit-height-pix" | "grid-unit-height-pixe" | "grid-unit-height-pixel" | "grid-unit-height-pixels" => Some(Kind::GridUnitHeightPixels),
-        "grid-unit-width" | "grid-unit-width-" | "grid-unit-width-c" | "grid-unit-width-ch" | "grid-unit-width-cha" | "grid-unit-width-char" | "grid-unit-width-chars" => Some(Kind::GridUnitWidthChars),
-        "grid-unit-width-p" | "grid-unit-width-pi" | "grid-unit-width-pix" | "grid-unit-width-pixe" | "grid-unit-width-pixel" | "grid-unit-width-pixels" => Some(Kind::GridUnitWidthPixels),
+        "grid-unit-height"
+        | "grid-unit-height-"
+        | "grid-unit-height-c"
+        | "grid-unit-height-ch"
+        | "grid-unit-height-cha"
+        | "grid-unit-height-char"
+        | "grid-unit-height-chars" => Some(Kind::GridUnitHeightChars),
+        "grid-unit-height-p"
+        | "grid-unit-height-pi"
+        | "grid-unit-height-pix"
+        | "grid-unit-height-pixe"
+        | "grid-unit-height-pixel"
+        | "grid-unit-height-pixels" => Some(Kind::GridUnitHeightPixels),
+        "grid-unit-width"
+        | "grid-unit-width-"
+        | "grid-unit-width-c"
+        | "grid-unit-width-ch"
+        | "grid-unit-width-cha"
+        | "grid-unit-width-char"
+        | "grid-unit-width-chars" => Some(Kind::GridUnitWidthChars),
+        "grid-unit-width-p"
+        | "grid-unit-width-pi"
+        | "grid-unit-width-pix"
+        | "grid-unit-width-pixe"
+        | "grid-unit-width-pixel"
+        | "grid-unit-width-pixels" => Some(Kind::GridUnitWidthPixels),
         "grid-visible" => Some(Kind::GridVisible),
         "group" => Some(Kind::Group),
         "gt" => Some(Kind::Gt),
@@ -2272,14 +2427,18 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "has-records" => Some(Kind::HasRecords),
         "having" => Some(Kind::Having),
         "header" => Some(Kind::Header),
-        "height" | "height-" | "height-c" | "height-ch" | "height-cha" | "height-char" | "height-chars" => Some(Kind::HeightChars),
-        "height-p" | "height-pi" | "height-pix" | "height-pixe" | "height-pixel" | "height-pixels" => Some(Kind::HeightPixels),
+        "height" | "height-" | "height-c" | "height-ch" | "height-cha" | "height-char"
+        | "height-chars" => Some(Kind::HeightChars),
+        "height-p" | "height-pi" | "height-pix" | "height-pixe" | "height-pixel"
+        | "height-pixels" => Some(Kind::HeightPixels),
         "help" => Some(Kind::Help),
         "hex-decode" => Some(Kind::HexDecode),
         "hex-encode" => Some(Kind::HexEncode),
         "hidden" => Some(Kind::Hidden),
         "hide" => Some(Kind::Hide),
-        "hori" | "horiz" | "horizo" | "horizon" | "horizont" | "horizonta" | "horizontal" => Some(Kind::Horizontal),
+        "hori" | "horiz" | "horizo" | "horizon" | "horizont" | "horizonta" | "horizontal" => {
+            Some(Kind::Horizontal)
+        }
         "host-byte-order" => Some(Kind::HostByteOrder),
         "html-charset" => Some(Kind::HtmlCharset),
         "html-end-of-line" => Some(Kind::HtmlEndOfLine),
@@ -2296,8 +2455,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "image-down" => Some(Kind::ImageDown),
         "image-insensitive" => Some(Kind::ImageInsensitive),
         "image-size" => Some(Kind::ImageSize),
-        "image-size-c" | "image-size-ch" | "image-size-cha" | "image-size-char" | "image-size-chars" => Some(Kind::ImageSizeChars),
-        "image-size-p" | "image-size-pi" | "image-size-pix" | "image-size-pixe" | "image-size-pixel" | "image-size-pixels" => Some(Kind::ImageSizePixels),
+        "image-size-c" | "image-size-ch" | "image-size-cha" | "image-size-char"
+        | "image-size-chars" => Some(Kind::ImageSizeChars),
+        "image-size-p" | "image-size-pi" | "image-size-pix" | "image-size-pixe"
+        | "image-size-pixel" | "image-size-pixels" => Some(Kind::ImageSizePixels),
         "image-up" => Some(Kind::ImageUp),
         "immediate-display" => Some(Kind::ImmediateDisplay),
         "implements" => Some(Kind::Implements),
@@ -2310,9 +2471,14 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "index-information" => Some(Kind::IndexInformation),
         "indexed-reposition" => Some(Kind::IndexedReposition),
         "indicator" => Some(Kind::Indicator),
-        "info" | "infor" | "inform" | "informa" | "informat" | "informati" | "informatio" | "information" => Some(Kind::Information),
-        "inherit-bgc" | "inherit-bgco" | "inherit-bgcol" | "inherit-bgcolo" | "inherit-bgcolor" => Some(Kind::InheritBgcolor),
-        "inherit-fgc" | "inherit-fgco" | "inherit-fgcol" | "inherit-fgcolo" | "inherit-fgcolor" => Some(Kind::InheritFgcolor),
+        "info" | "infor" | "inform" | "informa" | "informat" | "informati" | "informatio"
+        | "information" => Some(Kind::Information),
+        "inherit-bgc" | "inherit-bgco" | "inherit-bgcol" | "inherit-bgcolo" | "inherit-bgcolor" => {
+            Some(Kind::InheritBgcolor)
+        }
+        "inherit-fgc" | "inherit-fgco" | "inherit-fgcol" | "inherit-fgcolo" | "inherit-fgcolor" => {
+            Some(Kind::InheritFgcolor)
+        }
         "inherits" => Some(Kind::Inherits),
         "init" | "initi" | "initia" | "initial" => Some(Kind::Initial),
         "initial-dir" => Some(Kind::InitialDir),
@@ -2322,11 +2488,14 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "inner-chars" => Some(Kind::InnerChars),
         "inner-lines" => Some(Kind::InnerLines),
         "input" => Some(Kind::Input),
-        "input-o" | "input-ou" | "input-out" | "input-outp" | "input-outpu" | "input-output" => Some(Kind::InputOutput),
+        "input-o" | "input-ou" | "input-out" | "input-outp" | "input-outpu" | "input-output" => {
+            Some(Kind::InputOutput)
+        }
         "input-value" => Some(Kind::InputValue),
         "insert" => Some(Kind::Insert),
         "insert-attribute" => Some(Kind::InsertAttribute),
-        "insert-b" | "insert-ba" | "insert-bac" | "insert-back" | "insert-backt" | "insert-backta" | "insert-backtab" => Some(Kind::InsertBacktab),
+        "insert-b" | "insert-ba" | "insert-bac" | "insert-back" | "insert-backt"
+        | "insert-backta" | "insert-backtab" => Some(Kind::InsertBacktab),
         "insert-file" => Some(Kind::InsertFile),
         "insert-row" => Some(Kind::InsertRow),
         "insert-string" => Some(Kind::InsertString),
@@ -2339,10 +2508,13 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "into" => Some(Kind::Into),
         "invoke" => Some(Kind::Invoke),
         "is" => Some(Kind::Is),
-        "is-attr" | "is-attr-" | "is-attr-s" | "is-attr-sp" | "is-attr-spa" | "is-attr-spac" | "is-attr-space" => Some(Kind::IsAttrSpace),
+        "is-attr" | "is-attr-" | "is-attr-s" | "is-attr-sp" | "is-attr-spa" | "is-attr-spac"
+        | "is-attr-space" => Some(Kind::IsAttrSpace),
         "is-clas" | "is-class" => Some(Kind::IsClass),
         "is-json" => Some(Kind::IsJson),
-        "is-lead" | "is-lead-" | "is-lead-b" | "is-lead-by" | "is-lead-byt" | "is-lead-byte" => Some(Kind::IsLeadByte),
+        "is-lead" | "is-lead-" | "is-lead-b" | "is-lead-by" | "is-lead-byt" | "is-lead-byte" => {
+            Some(Kind::IsLeadByte)
+        }
         "is-open" => Some(Kind::IsOpen),
         "is-parameter-set" => Some(Kind::IsParameterSet),
         "is-partitione" | "is-partitioned" => Some(Kind::IsPartitioned),
@@ -2355,17 +2527,24 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "join-by-sqldb" => Some(Kind::JoinBySqldb),
         "kblabel" => Some(Kind::Kblabel),
         "keep-connection-open" => Some(Kind::KeepConnectionOpen),
-        "keep-frame-z" | "keep-frame-z-" | "keep-frame-z-o" | "keep-frame-z-or" | "keep-frame-z-ord" | "keep-frame-z-orde" | "keep-frame-z-order" => Some(Kind::KeepFrameZOrder),
+        "keep-frame-z" | "keep-frame-z-" | "keep-frame-z-o" | "keep-frame-z-or"
+        | "keep-frame-z-ord" | "keep-frame-z-orde" | "keep-frame-z-order" => {
+            Some(Kind::KeepFrameZOrder)
+        }
         "keep-messages" => Some(Kind::KeepMessages),
         "keep-security-cache" => Some(Kind::KeepSecurityCache),
         "keep-tab-order" => Some(Kind::KeepTabOrder),
         "key" => Some(Kind::Key),
         "key-code" => Some(Kind::KeyCode),
-        "key-func" | "key-funct" | "key-functi" | "key-functio" | "key-function" => Some(Kind::KeyFunction),
+        "key-func" | "key-funct" | "key-functi" | "key-functio" | "key-function" => {
+            Some(Kind::KeyFunction)
+        }
         "key-label" => Some(Kind::KeyLabel),
         "keycache-join" => Some(Kind::KeycacheJoin),
         "keycode" => Some(Kind::Keycode),
-        "keyfunc" | "keyfunct" | "keyfuncti" | "keyfunctio" | "keyfunction" => Some(Kind::Keyfunction),
+        "keyfunc" | "keyfunct" | "keyfuncti" | "keyfunctio" | "keyfunction" => {
+            Some(Kind::Keyfunction)
+        }
         "keylabel" => Some(Kind::Keylabel),
         "keys" => Some(Kind::Keys),
         "keyword" => Some(Kind::Keyword),
@@ -2389,11 +2568,19 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "where" => Some(Kind::KwWhere),
         "while" => Some(Kind::KwWhile),
         "label" => Some(Kind::Label),
-        "label-bgc" | "label-bgco" | "label-bgcol" | "label-bgcolo" | "label-bgcolor" => Some(Kind::LabelBgcolor),
-        "label-dc" | "label-dco" | "label-dcol" | "label-dcolo" | "label-dcolor" => Some(Kind::LabelDcolor),
-        "label-fgc" | "label-fgco" | "label-fgcol" | "label-fgcolo" | "label-fgcolor" => Some(Kind::LabelFgcolor),
+        "label-bgc" | "label-bgco" | "label-bgcol" | "label-bgcolo" | "label-bgcolor" => {
+            Some(Kind::LabelBgcolor)
+        }
+        "label-dc" | "label-dco" | "label-dcol" | "label-dcolo" | "label-dcolor" => {
+            Some(Kind::LabelDcolor)
+        }
+        "label-fgc" | "label-fgco" | "label-fgcol" | "label-fgcolo" | "label-fgcolor" => {
+            Some(Kind::LabelFgcolor)
+        }
         "label-font" => Some(Kind::LabelFont),
-        "label-pfc" | "label-pfco" | "label-pfcol" | "label-pfcolo" | "label-pfcolor" => Some(Kind::LabelPfcolor),
+        "label-pfc" | "label-pfco" | "label-pfcol" | "label-pfcolo" | "label-pfcolor" => {
+            Some(Kind::LabelPfcolor)
+        }
         "labels" => Some(Kind::Labels),
         "labels-have-colons" => Some(Kind::LabelsHaveColons),
         "landscape" => Some(Kind::Landscape),
@@ -2409,7 +2596,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "last-key" => Some(Kind::LastKey),
         "last-object" => Some(Kind::LastObject),
         "last-of" => Some(Kind::LastOf),
-        "last-proce" | "last-proced" | "last-procedu" | "last-procedur" | "last-procedure" => Some(Kind::LastProcedure),
+        "last-proce" | "last-proced" | "last-procedu" | "last-procedur" | "last-procedure" => {
+            Some(Kind::LastProcedure)
+        }
         "last-server" => Some(Kind::LastServer),
         "last-tab-i" | "last-tab-it" | "last-tab-ite" | "last-tab-item" => Some(Kind::LastTabItem),
         "lastkey" => Some(Kind::Lastkey),
@@ -2442,7 +2631,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "load-image-down" => Some(Kind::LoadImageDown),
         "load-image-insensitive" => Some(Kind::LoadImageInsensitive),
         "load-image-up" => Some(Kind::LoadImageUp),
-        "load-mouse-p" | "load-mouse-po" | "load-mouse-poi" | "load-mouse-poin" | "load-mouse-point" | "load-mouse-pointe" | "load-mouse-pointer" => Some(Kind::LoadMousePointer),
+        "load-mouse-p" | "load-mouse-po" | "load-mouse-poi" | "load-mouse-poin"
+        | "load-mouse-point" | "load-mouse-pointe" | "load-mouse-pointer" => {
+            Some(Kind::LoadMousePointer)
+        }
         "load-picture" => Some(Kind::LoadPicture),
         "load-small-icon" => Some(Kind::LoadSmallIcon),
         "local-name" => Some(Kind::LocalName),
@@ -2469,10 +2661,29 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "manual-highlight" => Some(Kind::ManualHighlight),
         "map" => Some(Kind::Map),
         "margin-extra" => Some(Kind::MarginExtra),
-        "margin-height" | "margin-height-" | "margin-height-c" | "margin-height-ch" | "margin-height-cha" | "margin-height-char" | "margin-height-chars" => Some(Kind::MarginHeightChars),
-        "margin-height-p" | "margin-height-pi" | "margin-height-pix" | "margin-height-pixe" | "margin-height-pixel" | "margin-height-pixels" => Some(Kind::MarginHeightPixels),
-        "margin-width" | "margin-width-" | "margin-width-c" | "margin-width-ch" | "margin-width-cha" | "margin-width-char" | "margin-width-chars" => Some(Kind::MarginWidthChars),
-        "margin-width-p" | "margin-width-pi" | "margin-width-pix" | "margin-width-pixe" | "margin-width-pixel" | "margin-width-pixels" => Some(Kind::MarginWidthPixels),
+        "margin-height"
+        | "margin-height-"
+        | "margin-height-c"
+        | "margin-height-ch"
+        | "margin-height-cha"
+        | "margin-height-char"
+        | "margin-height-chars" => Some(Kind::MarginHeightChars),
+        "margin-height-p"
+        | "margin-height-pi"
+        | "margin-height-pix"
+        | "margin-height-pixe"
+        | "margin-height-pixel"
+        | "margin-height-pixels" => Some(Kind::MarginHeightPixels),
+        "margin-width" | "margin-width-" | "margin-width-c" | "margin-width-ch"
+        | "margin-width-cha" | "margin-width-char" | "margin-width-chars" => {
+            Some(Kind::MarginWidthChars)
+        }
+        "margin-width-p"
+        | "margin-width-pi"
+        | "margin-width-pix"
+        | "margin-width-pixe"
+        | "margin-width-pixel"
+        | "margin-width-pixels" => Some(Kind::MarginWidthPixels),
         "mark-new" => Some(Kind::MarkNew),
         "mark-row-state" => Some(Kind::MarkRowState),
         "matches" => Some(Kind::Matches),
@@ -2481,14 +2692,18 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "max-chars" => Some(Kind::MaxChars),
         "max-data-guess" => Some(Kind::MaxDataGuess),
         "max-height" => Some(Kind::MaxHeight),
-        "max-height-c" | "max-height-ch" | "max-height-cha" | "max-height-char" | "max-height-chars" => Some(Kind::MaxHeightChars),
-        "max-height-p" | "max-height-pi" | "max-height-pix" | "max-height-pixe" | "max-height-pixel" | "max-height-pixels" => Some(Kind::MaxHeightPixels),
+        "max-height-c" | "max-height-ch" | "max-height-cha" | "max-height-char"
+        | "max-height-chars" => Some(Kind::MaxHeightChars),
+        "max-height-p" | "max-height-pi" | "max-height-pix" | "max-height-pixe"
+        | "max-height-pixel" | "max-height-pixels" => Some(Kind::MaxHeightPixels),
         "max-rows" => Some(Kind::MaxRows),
         "max-size" => Some(Kind::MaxSize),
         "max-val" | "max-valu" | "max-value" => Some(Kind::MaxValue),
         "max-width" => Some(Kind::MaxWidth),
-        "max-width-" | "max-width-c" | "max-width-ch" | "max-width-cha" | "max-width-char" | "max-width-chars" => Some(Kind::MaxWidthChars),
-        "max-width-p" | "max-width-pi" | "max-width-pix" | "max-width-pixe" | "max-width-pixel" | "max-width-pixels" => Some(Kind::MaxWidthPixels),
+        "max-width-" | "max-width-c" | "max-width-ch" | "max-width-cha" | "max-width-char"
+        | "max-width-chars" => Some(Kind::MaxWidthChars),
+        "max-width-p" | "max-width-pi" | "max-width-pix" | "max-width-pixe" | "max-width-pixel"
+        | "max-width-pixels" => Some(Kind::MaxWidthPixels),
         "maximize" => Some(Kind::Maximize),
         "maxi" | "maxim" | "maximu" | "maximum" => Some(Kind::Maximum),
         "maximum-level" => Some(Kind::MaximumLevel),
@@ -2509,25 +2724,59 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "method" => Some(Kind::Method),
         "min" => Some(Kind::Min),
         "min-button" => Some(Kind::MinButton),
-        "min-column-width-c" | "min-column-width-ch" | "min-column-width-cha" | "min-column-width-char" | "min-column-width-chars" => Some(Kind::MinColumnWidthChars),
-        "min-column-width-p" | "min-column-width-pi" | "min-column-width-pix" | "min-column-width-pixe" | "min-column-width-pixel" | "min-column-width-pixels" => Some(Kind::MinColumnWidthPixels),
-        "min-height" | "min-height-" | "min-height-c" | "min-height-ch" | "min-height-cha" | "min-height-char" | "min-height-chars" => Some(Kind::MinHeightChars),
-        "min-height-p" | "min-height-pi" | "min-height-pix" | "min-height-pixe" | "min-height-pixel" | "min-height-pixels" => Some(Kind::MinHeightPixels),
+        "min-column-width-c"
+        | "min-column-width-ch"
+        | "min-column-width-cha"
+        | "min-column-width-char"
+        | "min-column-width-chars" => Some(Kind::MinColumnWidthChars),
+        "min-column-width-p"
+        | "min-column-width-pi"
+        | "min-column-width-pix"
+        | "min-column-width-pixe"
+        | "min-column-width-pixel"
+        | "min-column-width-pixels" => Some(Kind::MinColumnWidthPixels),
+        "min-height" | "min-height-" | "min-height-c" | "min-height-ch" | "min-height-cha"
+        | "min-height-char" | "min-height-chars" => Some(Kind::MinHeightChars),
+        "min-height-p" | "min-height-pi" | "min-height-pix" | "min-height-pixe"
+        | "min-height-pixel" | "min-height-pixels" => Some(Kind::MinHeightPixels),
         "min-size" => Some(Kind::MinSize),
         "min-val" | "min-valu" | "min-value" => Some(Kind::MinValue),
-        "min-width" | "min-width-" | "min-width-c" | "min-width-ch" | "min-width-cha" | "min-width-char" | "min-width-chars" => Some(Kind::MinWidthChars),
-        "min-width-p" | "min-width-pi" | "min-width-pix" | "min-width-pixe" | "min-width-pixel" | "min-width-pixels" => Some(Kind::MinWidthPixels),
+        "min-width" | "min-width-" | "min-width-c" | "min-width-ch" | "min-width-cha"
+        | "min-width-char" | "min-width-chars" => Some(Kind::MinWidthChars),
+        "min-width-p" | "min-width-pi" | "min-width-pix" | "min-width-pixe" | "min-width-pixel"
+        | "min-width-pixels" => Some(Kind::MinWidthPixels),
         "mini" | "minim" | "minimu" | "minimum" => Some(Kind::Minimum),
         "modified" => Some(Kind::Modified),
         "mod" | "modu" | "modul" | "modulo" => Some(Kind::Modulo),
         "month" => Some(Kind::Month),
         "mouse" => Some(Kind::Mouse),
-        "mouse-p" | "mouse-po" | "mouse-poi" | "mouse-poin" | "mouse-point" | "mouse-pointe" | "mouse-pointer" => Some(Kind::MousePointer),
+        "mouse-p" | "mouse-po" | "mouse-poi" | "mouse-poin" | "mouse-point" | "mouse-pointe"
+        | "mouse-pointer" => Some(Kind::MousePointer),
         "movable" => Some(Kind::Movable),
-        "move-after" | "move-after-" | "move-after-t" | "move-after-ta" | "move-after-tab" | "move-after-tab-" | "move-after-tab-i" | "move-after-tab-it" | "move-after-tab-ite" | "move-after-tab-item" => Some(Kind::MoveAfterTabItem),
-        "move-befor" | "move-before" | "move-before-" | "move-before-t" | "move-before-ta" | "move-before-tab" | "move-before-tab-" | "move-before-tab-i" | "move-before-tab-it" | "move-before-tab-ite" | "move-before-tab-item" => Some(Kind::MoveBeforeTabItem),
+        "move-after"
+        | "move-after-"
+        | "move-after-t"
+        | "move-after-ta"
+        | "move-after-tab"
+        | "move-after-tab-"
+        | "move-after-tab-i"
+        | "move-after-tab-it"
+        | "move-after-tab-ite"
+        | "move-after-tab-item" => Some(Kind::MoveAfterTabItem),
+        "move-befor"
+        | "move-before"
+        | "move-before-"
+        | "move-before-t"
+        | "move-before-ta"
+        | "move-before-tab"
+        | "move-before-tab-"
+        | "move-before-tab-i"
+        | "move-before-tab-it"
+        | "move-before-tab-ite"
+        | "move-before-tab-item" => Some(Kind::MoveBeforeTabItem),
         "move-col" | "move-colu" | "move-colum" | "move-column" => Some(Kind::MoveColumn),
-        "move-to-b" | "move-to-bo" | "move-to-bot" | "move-to-bott" | "move-to-botto" | "move-to-bottom" => Some(Kind::MoveToBottom),
+        "move-to-b" | "move-to-bo" | "move-to-bot" | "move-to-bott" | "move-to-botto"
+        | "move-to-bottom" => Some(Kind::MoveToBottom),
         "move-to-eof" => Some(Kind::MoveToEof),
         "move-to-t" | "move-to-to" | "move-to-top" => Some(Kind::MoveToTop),
         "mpe" => Some(Kind::Mpe),
@@ -2558,8 +2807,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "no-apply" => Some(Kind::NoApply),
         "no-array-message" => Some(Kind::NoArrayMessage),
         "no-assign" => Some(Kind::NoAssign),
-        "no-attr" | "no-attr-" | "no-attr-l" | "no-attr-li" | "no-attr-lis" | "no-attr-list" => Some(Kind::NoAttrList),
-        "no-attr-s" | "no-attr-sp" | "no-attr-spa" | "no-attr-spac" | "no-attr-space" => Some(Kind::NoAttrSpace),
+        "no-attr" | "no-attr-" | "no-attr-l" | "no-attr-li" | "no-attr-lis" | "no-attr-list" => {
+            Some(Kind::NoAttrList)
+        }
+        "no-attr-s" | "no-attr-sp" | "no-attr-spa" | "no-attr-spac" | "no-attr-space" => {
+            Some(Kind::NoAttrSpace)
+        }
         "no-auto-validate" => Some(Kind::NoAutoValidate),
         "no-bind-where" => Some(Kind::NoBindWhere),
         "no-box" => Some(Kind::NoBox),
@@ -2577,8 +2830,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "no-help" => Some(Kind::NoHelp),
         "no-hide" => Some(Kind::NoHide),
         "no-index-hint" => Some(Kind::NoIndexHint),
-        "no-inherit-bgc" | "no-inherit-bgco" | "no-inherit-bgcol" | "no-inherit-bgcolo" | "no-inherit-bgcolor" => Some(Kind::NoInheritBgcolor),
-        "no-inherit-fgc" | "no-inherit-fgco" | "no-inherit-fgcol" | "no-inherit-fgcolo" | "no-inherit-fgcolor" => Some(Kind::NoInheritFgcolor),
+        "no-inherit-bgc" | "no-inherit-bgco" | "no-inherit-bgcol" | "no-inherit-bgcolo"
+        | "no-inherit-bgcolor" => Some(Kind::NoInheritBgcolor),
+        "no-inherit-fgc" | "no-inherit-fgco" | "no-inherit-fgcol" | "no-inherit-fgcolo"
+        | "no-inherit-fgcolor" => Some(Kind::NoInheritFgcolor),
         "no-join-by-sqldb" => Some(Kind::NoJoinBySqldb),
         "no-keycache-join" => Some(Kind::NoKeycacheJoin),
         "no-label" | "no-labels" => Some(Kind::NoLabels),
@@ -2594,9 +2849,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "no-separate-connection" => Some(Kind::NoSeparateConnection),
         "no-separators" => Some(Kind::NoSeparators),
         "no-tab-stop" => Some(Kind::NoTabStop),
-        "no-und" | "no-unde" | "no-under" | "no-underl" | "no-underli" | "no-underlin" | "no-underline" => Some(Kind::NoUnderline),
+        "no-und" | "no-unde" | "no-under" | "no-underl" | "no-underli" | "no-underlin"
+        | "no-underline" => Some(Kind::NoUnderline),
         "no-undo" => Some(Kind::NoUndo),
-        "no-val" | "no-vali" | "no-valid" | "no-valida" | "no-validat" | "no-validate" => Some(Kind::NoValidate),
+        "no-val" | "no-vali" | "no-valid" | "no-valida" | "no-validat" | "no-validate" => {
+            Some(Kind::NoValidate)
+        }
         "no-wait" => Some(Kind::NoWait),
         "no-word-wrap" => Some(Kind::NoWordWrap),
         "node-value-to-memptr" => Some(Kind::NodeValueToMemptr),
@@ -2608,10 +2866,16 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "not-active" => Some(Kind::NotActive),
         "now" => Some(Kind::Now),
         "null" => Some(Kind::Null),
-        "num-ali" | "num-alia" | "num-alias" | "num-aliase" | "num-aliases" => Some(Kind::NumAliases),
+        "num-ali" | "num-alia" | "num-alias" | "num-aliase" | "num-aliases" => {
+            Some(Kind::NumAliases)
+        }
         "num-buffers" => Some(Kind::NumBuffers),
-        "num-but" | "num-butt" | "num-butto" | "num-button" | "num-buttons" => Some(Kind::NumButtons),
-        "num-col" | "num-colu" | "num-colum" | "num-column" | "num-columns" => Some(Kind::NumColumns),
+        "num-but" | "num-butt" | "num-butto" | "num-button" | "num-buttons" => {
+            Some(Kind::NumButtons)
+        }
+        "num-col" | "num-colu" | "num-colum" | "num-column" | "num-columns" => {
+            Some(Kind::NumColumns)
+        }
         "num-copies" => Some(Kind::NumCopies),
         "num-dbs" => Some(Kind::NumDbs),
         "num-dropped-files" => Some(Kind::NumDroppedFiles),
@@ -2621,19 +2885,29 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "num-items" => Some(Kind::NumItems),
         "num-iterations" => Some(Kind::NumIterations),
         "num-lines" => Some(Kind::NumLines),
-        "num-locked-col" | "num-locked-colu" | "num-locked-colum" | "num-locked-column" | "num-locked-columns" => Some(Kind::NumLockedColumns),
+        "num-locked-col" | "num-locked-colu" | "num-locked-colum" | "num-locked-column"
+        | "num-locked-columns" => Some(Kind::NumLockedColumns),
         "num-messages" => Some(Kind::NumMessages),
         "num-parameters" => Some(Kind::NumParameters),
         "num-references" => Some(Kind::NumReferences),
         "num-replaced" => Some(Kind::NumReplaced),
         "num-results" => Some(Kind::NumResults),
         "num-selected-rows" => Some(Kind::NumSelectedRows),
-        "num-selected" | "num-selected-" | "num-selected-w" | "num-selected-wi" | "num-selected-wid" | "num-selected-widg" | "num-selected-widge" | "num-selected-widget" | "num-selected-widgets" => Some(Kind::NumSelectedWidgets),
+        "num-selected"
+        | "num-selected-"
+        | "num-selected-w"
+        | "num-selected-wi"
+        | "num-selected-wid"
+        | "num-selected-widg"
+        | "num-selected-widge"
+        | "num-selected-widget"
+        | "num-selected-widgets" => Some(Kind::NumSelectedWidgets),
         "num-tabs" => Some(Kind::NumTabs),
         "num-to-retain" => Some(Kind::NumToRetain),
         "num-visible-columns" => Some(Kind::NumVisibleColumns),
         "numeric" => Some(Kind::Numeric),
-        "numeric-f" | "numeric-fo" | "numeric-for" | "numeric-form" | "numeric-forma" | "numeric-format" => Some(Kind::NumericFormat),
+        "numeric-f" | "numeric-fo" | "numeric-for" | "numeric-form" | "numeric-forma"
+        | "numeric-format" => Some(Kind::NumericFormat),
         "octet-length" => Some(Kind::OctetLength),
         "of" => Some(Kind::Of),
         "off" => Some(Kind::Off),
@@ -2641,7 +2915,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "ok-cancel" => Some(Kind::OkCancel),
         "old" => Some(Kind::Old),
         "on" => Some(Kind::On),
-        "on-frame" | "on-frame-" | "on-frame-b" | "on-frame-bo" | "on-frame-bor" | "on-frame-bord" | "on-frame-borde" | "on-frame-border" => Some(Kind::OnFrameBorder),
+        "on-frame" | "on-frame-" | "on-frame-b" | "on-frame-bo" | "on-frame-bor"
+        | "on-frame-bord" | "on-frame-borde" | "on-frame-border" => Some(Kind::OnFrameBorder),
         "open" => Some(Kind::Open),
         "opsys" => Some(Kind::Opsys),
         "option" => Some(Kind::Option),
@@ -2682,14 +2957,19 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "password-field" => Some(Kind::PasswordField),
         "pathname" => Some(Kind::Pathname),
         "pause" => Some(Kind::Pause),
-        "pbe-hash-alg" | "pbe-hash-algo" | "pbe-hash-algor" | "pbe-hash-algori" | "pbe-hash-algorit" | "pbe-hash-algorith" | "pbe-hash-algorithm" => Some(Kind::PbeHashAlgorithm),
+        "pbe-hash-alg" | "pbe-hash-algo" | "pbe-hash-algor" | "pbe-hash-algori"
+        | "pbe-hash-algorit" | "pbe-hash-algorith" | "pbe-hash-algorithm" => {
+            Some(Kind::PbeHashAlgorithm)
+        }
         "pbe-key-rounds" => Some(Kind::PbeKeyRounds),
         "pdbname" => Some(Kind::Pdbname),
         "persist" | "persiste" | "persisten" | "persistent" => Some(Kind::Persistent),
         "persistent-cache-disabled" => Some(Kind::PersistentCacheDisabled),
         "pfc" | "pfco" | "pfcol" | "pfcolo" | "pfcolor" => Some(Kind::Pfcolor),
         "pixels" => Some(Kind::Pixels),
-        "pixels-per-col" | "pixels-per-colu" | "pixels-per-colum" | "pixels-per-column" => Some(Kind::PixelsPerColumn),
+        "pixels-per-col" | "pixels-per-colu" | "pixels-per-colum" | "pixels-per-column" => {
+            Some(Kind::PixelsPerColumn)
+        }
         "pixels-per-row" => Some(Kind::PixelsPerRow),
         "popup-m" | "popup-me" | "popup-men" | "popup-menu" => Some(Kind::PopupMenu),
         "popup-o" | "popup-on" | "popup-onl" | "popup-only" => Some(Kind::PopupOnly),
@@ -2699,23 +2979,32 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "prefer-dataset" => Some(Kind::PreferDataset),
         "prepare-string" => Some(Kind::PrepareString),
         "prepared" => Some(Kind::Prepared),
-        "{&batch-" | "{&batch-m" | "{&batch-mo" | "{&batch-mod" | "{&batch-mode" | "{&batch-mode}" => Some(Kind::PreprocBatchMode),
+        "{&batch-" | "{&batch-m" | "{&batch-mo" | "{&batch-mod" | "{&batch-mode"
+        | "{&batch-mode}" => Some(Kind::PreprocBatchMode),
         "&else" => Some(Kind::PreprocElse),
         "&elseif" => Some(Kind::PreprocElseif),
         "&endif" => Some(Kind::PreprocEndif),
         "{&file-name}" => Some(Kind::PreprocFileName),
-        "&glob" | "&globa" | "&global" | "&global-" | "&global-d" | "&global-de" | "&global-def" | "&global-defi" | "&global-defin" | "&global-define" => Some(Kind::PreprocGlobalDefine),
+        "&glob" | "&globa" | "&global" | "&global-" | "&global-d" | "&global-de"
+        | "&global-def" | "&global-defi" | "&global-defin" | "&global-define" => {
+            Some(Kind::PreprocGlobalDefine)
+        }
         "&if" => Some(Kind::PreprocIf),
         "{&line-number" | "{&line-number}" => Some(Kind::PreprocLineNumber),
         "&message" => Some(Kind::PreprocMessage),
         "{&opsys}" => Some(Kind::PreprocOpsys),
         "{&process-architecture}" => Some(Kind::PreprocProcessArchitecture),
-        "&scop" | "&scope" | "&scoped" | "&scoped-" | "&scoped-d" | "&scoped-de" | "&scoped-def" | "&scoped-defi" | "&scoped-defin" | "&scoped-define" => Some(Kind::PreprocScopedDefine),
+        "&scop" | "&scope" | "&scoped" | "&scoped-" | "&scoped-d" | "&scoped-de"
+        | "&scoped-def" | "&scoped-defi" | "&scoped-defin" | "&scoped-define" => {
+            Some(Kind::PreprocScopedDefine)
+        }
         "{&sequence}" => Some(Kind::PreprocSequence),
         "&then" => Some(Kind::PreprocThen),
         "&undef" | "&undefi" | "&undefin" | "&undefine" => Some(Kind::PreprocUndefine),
         "&webstream" => Some(Kind::PreprocWebstream),
-        "{&window-syst" | "{&window-syste" | "{&window-system" | "{&window-system}" => Some(Kind::PreprocWindowSystem),
+        "{&window-syst" | "{&window-syste" | "{&window-system" | "{&window-system}" => {
+            Some(Kind::PreprocWindowSystem)
+        }
         "preproc" | "preproce" | "preproces" | "preprocess" => Some(Kind::Preprocess),
         "preprop" => Some(Kind::Preprop),
         "presel" | "presele" | "preselec" | "preselect" => Some(Kind::Preselect),
@@ -2733,8 +3022,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "private" => Some(Kind::Private),
         "private-d" | "private-da" | "private-dat" | "private-data" => Some(Kind::PrivateData),
         "privileges" => Some(Kind::Privileges),
-        "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => Some(Kind::ProcHandle),
-        "proc-st" | "proc-sta" | "proc-stat" | "proc-statu" | "proc-status" => Some(Kind::ProcStatus),
+        "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => {
+            Some(Kind::ProcHandle)
+        }
+        "proc-st" | "proc-sta" | "proc-stat" | "proc-statu" | "proc-status" => {
+            Some(Kind::ProcStatus)
+        }
         "proc-text" => Some(Kind::ProcText),
         "proc-text-buffer" => Some(Kind::ProcTextBuffer),
         "proce" | "proced" | "procedu" | "procedur" | "procedure" => Some(Kind::Procedure),
@@ -2744,7 +3037,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "profiler" => Some(Kind::Profiler),
         "program-name" => Some(Kind::ProgramName),
         "progress" => Some(Kind::Progress),
-        "progress-s" | "progress-so" | "progress-sou" | "progress-sour" | "progress-sourc" | "progress-source" => Some(Kind::ProgressSource),
+        "progress-s" | "progress-so" | "progress-sou" | "progress-sour" | "progress-sourc"
+        | "progress-source" => Some(Kind::ProgressSource),
         "prompt" => Some(Kind::Prompt),
         "prompt-f" | "prompt-fo" | "prompt-for" => Some(Kind::PromptFor),
         "promsgs" => Some(Kind::Promsgs),
@@ -2785,7 +3079,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "random" => Some(Kind::Random),
         "raw" => Some(Kind::Raw),
         "raw-transfer" => Some(Kind::RawTransfer),
-        "rcode-info" | "rcode-infor" | "rcode-inform" | "rcode-informa" | "rcode-informat" | "rcode-informati" | "rcode-informatio" | "rcode-information" => Some(Kind::RcodeInformation),
+        "rcode-info" | "rcode-infor" | "rcode-inform" | "rcode-informa" | "rcode-informat"
+        | "rcode-informati" | "rcode-informatio" | "rcode-information" => {
+            Some(Kind::RcodeInformation)
+        }
         "read-available" => Some(Kind::ReadAvailable),
         "read-exact-num" => Some(Kind::ReadExactNum),
         "read-file" => Some(Kind::ReadFile),
@@ -2828,7 +3125,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "retain-shape" => Some(Kind::RetainShape),
         "retry" => Some(Kind::Retry),
         "retry-cancel" => Some(Kind::RetryCancel),
-        "return-ins" | "return-inse" | "return-inser" | "return-insert" | "return-inserte" | "return-inserted" => Some(Kind::ReturnInserted),
+        "return-ins" | "return-inse" | "return-inser" | "return-insert" | "return-inserte"
+        | "return-inserted" => Some(Kind::ReturnInserted),
         "return-to-start-di" | "return-to-start-dir" => Some(Kind::ReturnToStartDir),
         "return-val" | "return-valu" | "return-value" => Some(Kind::ReturnValue),
         "return-value-data-type" => Some(Kind::ReturnValueDataType),
@@ -2843,8 +3141,11 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "round" => Some(Kind::Round),
         "routine-level" => Some(Kind::RoutineLevel),
         "row" => Some(Kind::Row),
-        "row-he" | "row-hei" | "row-heig" | "row-heigh" | "row-height" | "row-height-" | "row-height-c" | "row-height-ch" | "row-height-cha" | "row-height-char" | "row-height-chars" => Some(Kind::RowHeightChars),
-        "row-height-p" | "row-height-pi" | "row-height-pix" | "row-height-pixe" | "row-height-pixel" | "row-height-pixels" => Some(Kind::RowHeightPixels),
+        "row-he" | "row-hei" | "row-heig" | "row-heigh" | "row-height" | "row-height-"
+        | "row-height-c" | "row-height-ch" | "row-height-cha" | "row-height-char"
+        | "row-height-chars" => Some(Kind::RowHeightChars),
+        "row-height-p" | "row-height-pi" | "row-height-pix" | "row-height-pixe"
+        | "row-height-pixel" | "row-height-pixels" => Some(Kind::RowHeightPixels),
         "row-markers" => Some(Kind::RowMarkers),
         "row-of" => Some(Kind::RowOf),
         "row-resizable" => Some(Kind::RowResizable),
@@ -2884,12 +3185,31 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "scroll-delta" => Some(Kind::ScrollDelta),
         "scroll-offset" => Some(Kind::ScrollOffset),
         "scroll-to-current-row" => Some(Kind::ScrollToCurrentRow),
-        "scroll-to-i" | "scroll-to-it" | "scroll-to-ite" | "scroll-to-item" => Some(Kind::ScrollToItem),
+        "scroll-to-i" | "scroll-to-it" | "scroll-to-ite" | "scroll-to-item" => {
+            Some(Kind::ScrollToItem)
+        }
         "scroll-to-selected-row" => Some(Kind::ScrollToSelectedRow),
         "scrollable" => Some(Kind::Scrollable),
-        "scrollbar-h" | "scrollbar-ho" | "scrollbar-hor" | "scrollbar-hori" | "scrollbar-horiz" | "scrollbar-horizo" | "scrollbar-horizon" | "scrollbar-horizont" | "scrollbar-horizonta" | "scrollbar-horizontal" => Some(Kind::ScrollbarHorizontal),
-        "scrollbar-v" | "scrollbar-ve" | "scrollbar-ver" | "scrollbar-vert" | "scrollbar-verti" | "scrollbar-vertic" | "scrollbar-vertica" | "scrollbar-vertical" => Some(Kind::ScrollbarVertical),
-        "scrolled-row-pos" | "scrolled-row-posi" | "scrolled-row-posit" | "scrolled-row-positi" | "scrolled-row-positio" | "scrolled-row-position" => Some(Kind::ScrolledRowPosition),
+        "scrollbar-h"
+        | "scrollbar-ho"
+        | "scrollbar-hor"
+        | "scrollbar-hori"
+        | "scrollbar-horiz"
+        | "scrollbar-horizo"
+        | "scrollbar-horizon"
+        | "scrollbar-horizont"
+        | "scrollbar-horizonta"
+        | "scrollbar-horizontal" => Some(Kind::ScrollbarHorizontal),
+        "scrollbar-v" | "scrollbar-ve" | "scrollbar-ver" | "scrollbar-vert" | "scrollbar-verti"
+        | "scrollbar-vertic" | "scrollbar-vertica" | "scrollbar-vertical" => {
+            Some(Kind::ScrollbarVertical)
+        }
+        "scrolled-row-pos"
+        | "scrolled-row-posi"
+        | "scrolled-row-posit"
+        | "scrolled-row-positi"
+        | "scrolled-row-positio"
+        | "scrolled-row-position" => Some(Kind::ScrolledRowPosition),
         "scrolling" => Some(Kind::Scrolling),
         "sdbname" => Some(Kind::Sdbname),
         "seal" => Some(Kind::Seal),
@@ -2914,7 +3234,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "selection-start" => Some(Kind::SelectionStart),
         "selection-text" => Some(Kind::SelectionText),
         "send" => Some(Kind::Send),
-        "send-sql" | "send-sql-" | "send-sql-s" | "send-sql-st" | "send-sql-sta" | "send-sql-stat" | "send-sql-state" | "send-sql-statem" | "send-sql-stateme" | "send-sql-statemen" | "send-sql-statement" => Some(Kind::SendSqlStatement),
+        "send-sql" | "send-sql-" | "send-sql-s" | "send-sql-st" | "send-sql-sta"
+        | "send-sql-stat" | "send-sql-state" | "send-sql-statem" | "send-sql-stateme"
+        | "send-sql-statemen" | "send-sql-statement" => Some(Kind::SendSqlStatement),
         "sensitive" => Some(Kind::Sensitive),
         "separate-connection" => Some(Kind::SeparateConnection),
         "separator-fgcolor" => Some(Kind::SeparatorFgcolor),
@@ -2934,7 +3256,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "set-appl-context" => Some(Kind::SetApplContext),
         "set-attr-call-type" => Some(Kind::SetAttrCallType),
         "set-attribute-node" => Some(Kind::SetAttributeNode),
-        "set-blue" | "set-blue-" | "set-blue-v" | "set-blue-va" | "set-blue-val" | "set-blue-valu" | "set-blue-value" => Some(Kind::SetBlueValue),
+        "set-blue" | "set-blue-" | "set-blue-v" | "set-blue-va" | "set-blue-val"
+        | "set-blue-valu" | "set-blue-value" => Some(Kind::SetBlueValue),
         "set-break" => Some(Kind::SetBreak),
         "set-buffers" => Some(Kind::SetBuffers),
         "set-callback" => Some(Kind::SetCallback),
@@ -2945,14 +3268,16 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "set-db-client" => Some(Kind::SetDbClient),
         "set-dynamic" => Some(Kind::SetDynamic),
         "set-event-manager-option" => Some(Kind::SetEventManagerOption),
-        "set-green" | "set-green-" | "set-green-v" | "set-green-va" | "set-green-val" | "set-green-valu" | "set-green-value" => Some(Kind::SetGreenValue),
+        "set-green" | "set-green-" | "set-green-v" | "set-green-va" | "set-green-val"
+        | "set-green-valu" | "set-green-value" => Some(Kind::SetGreenValue),
         "set-input-source" => Some(Kind::SetInputSource),
         "set-option" => Some(Kind::SetOption),
         "set-output-destination" => Some(Kind::SetOutputDestination),
         "set-parameter" => Some(Kind::SetParameter),
         "set-pointer-value" => Some(Kind::SetPointerValue),
         "set-property" => Some(Kind::SetProperty),
-        "set-red" | "set-red-" | "set-red-v" | "set-red-va" | "set-red-val" | "set-red-valu" | "set-red-value" => Some(Kind::SetRedValue),
+        "set-red" | "set-red-" | "set-red-v" | "set-red-va" | "set-red-val" | "set-red-valu"
+        | "set-red-value" => Some(Kind::SetRedValue),
         "set-repositioned-row" => Some(Kind::SetRepositionedRow),
         "set-rgb-value" => Some(Kind::SetRgbValue),
         "set-rollback" => Some(Kind::SetRollback),
@@ -2962,11 +3287,14 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "set-wait-state" => Some(Kind::SetWaitState),
         "setuser" | "setuseri" | "setuserid" => Some(Kind::Setuserid),
         "sha1-digest" => Some(Kind::Sha1Digest),
-        "share" | "share-" | "share-l" | "share-lo" | "share-loc" | "share-lock" => Some(Kind::ShareLock),
+        "share" | "share-" | "share-l" | "share-lo" | "share-loc" | "share-lock" => {
+            Some(Kind::ShareLock)
+        }
         "shared" => Some(Kind::Shared),
         "show-in-taskbar" => Some(Kind::ShowInTaskbar),
         "show-stat" | "show-stats" => Some(Kind::ShowStats),
-        "side-label-h" | "side-label-ha" | "side-label-han" | "side-label-hand" | "side-label-handl" | "side-label-handle" => Some(Kind::SideLabelHandle),
+        "side-label-h" | "side-label-ha" | "side-label-han" | "side-label-hand"
+        | "side-label-handl" | "side-label-handle" => Some(Kind::SideLabelHandle),
         "side-lab" | "side-labe" | "side-label" | "side-labels" => Some(Kind::SideLabels),
         "signature" => Some(Kind::Signature),
         "signature-value" => Some(Kind::SignatureValue),
@@ -2977,7 +3305,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "singleton" => Some(Kind::Singleton),
         "size" => Some(Kind::Size),
         "size-c" | "size-ch" | "size-cha" | "size-char" | "size-chars" => Some(Kind::SizeChars),
-        "size-p" | "size-pi" | "size-pix" | "size-pixe" | "size-pixel" | "size-pixels" => Some(Kind::SizePixels),
+        "size-p" | "size-pi" | "size-pix" | "size-pixe" | "size-pixel" | "size-pixels" => {
+            Some(Kind::SizePixels)
+        }
         "skip" => Some(Kind::Skip),
         "skip-deleted-record" => Some(Kind::SkipDeletedRecord),
         "slider" => Some(Kind::Slider),
@@ -3011,7 +3341,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "stop-object" => Some(Kind::StopObject),
         "stop-parsing" => Some(Kind::StopParsing),
         "stoppe" | "stopped" => Some(Kind::Stopped),
-        "stored-proc" | "stored-proce" | "stored-proced" | "stored-procedu" | "stored-procedur" | "stored-procedure" => Some(Kind::StoredProcedure),
+        "stored-proc" | "stored-proce" | "stored-proced" | "stored-procedu" | "stored-procedur"
+        | "stored-procedure" => Some(Kind::StoredProcedure),
         "stream" => Some(Kind::Stream),
         "stream-handle" => Some(Kind::StreamHandle),
         "stream-io" => Some(Kind::StreamIo),
@@ -3021,25 +3352,39 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "string" => Some(Kind::String),
         "string-value" => Some(Kind::StringValue),
         "string-xref" => Some(Kind::StringXref),
-        "sub-ave" | "sub-aver" | "sub-avera" | "sub-averag" | "sub-average" => Some(Kind::SubAverage),
+        "sub-ave" | "sub-aver" | "sub-avera" | "sub-averag" | "sub-average" => {
+            Some(Kind::SubAverage)
+        }
         "sub-count" => Some(Kind::SubCount),
-        "sub-max" | "sub-maxi" | "sub-maxim" | "sub-maximu" | "sub-maximum" => Some(Kind::SubMaximum),
+        "sub-max" | "sub-maxi" | "sub-maxim" | "sub-maximu" | "sub-maximum" => {
+            Some(Kind::SubMaximum)
+        }
         "sub-" | "sub-m" | "sub-me" | "sub-men" | "sub-menu" => Some(Kind::SubMenu),
-        "sub-min" | "sub-mini" | "sub-minim" | "sub-minimu" | "sub-minimum" => Some(Kind::SubMinimum),
+        "sub-min" | "sub-mini" | "sub-minim" | "sub-minimu" | "sub-minimum" => {
+            Some(Kind::SubMinimum)
+        }
         "sub-total" => Some(Kind::SubTotal),
         "subscribe" => Some(Kind::Subscribe),
-        "subst" | "substi" | "substit" | "substitu" | "substitut" | "substitute" => Some(Kind::Substitute),
+        "subst" | "substi" | "substit" | "substitu" | "substitut" | "substitute" => {
+            Some(Kind::Substitute)
+        }
         "substr" | "substri" | "substrin" | "substring" => Some(Kind::Substring),
         "subtype" => Some(Kind::Subtype),
         "sum" => Some(Kind::Sum),
         "super-procedures" => Some(Kind::SuperProcedures),
         "suppress-namespace-processing" => Some(Kind::SuppressNamespaceProcessing),
-        "suppress-w" | "suppress-wa" | "suppress-war" | "suppress-warn" | "suppress-warni" | "suppress-warnin" | "suppress-warning" | "suppress-warnings" => Some(Kind::SuppressWarnings),
+        "suppress-w" | "suppress-wa" | "suppress-war" | "suppress-warn" | "suppress-warni"
+        | "suppress-warnin" | "suppress-warning" | "suppress-warnings" => {
+            Some(Kind::SuppressWarnings)
+        }
         "symmetric-encryption-algorithm" => Some(Kind::SymmetricEncryptionAlgorithm),
         "symmetric-encryption-iv" => Some(Kind::SymmetricEncryptionIv),
         "symmetric-encryption-key" => Some(Kind::SymmetricEncryptionKey),
         "symmetric-support" => Some(Kind::SymmetricSupport),
-        "system-alert" | "system-alert-" | "system-alert-b" | "system-alert-bo" | "system-alert-box" | "system-alert-boxe" | "system-alert-boxes" => Some(Kind::SystemAlertBoxes),
+        "system-alert" | "system-alert-" | "system-alert-b" | "system-alert-bo"
+        | "system-alert-box" | "system-alert-boxe" | "system-alert-boxes" => {
+            Some(Kind::SystemAlertBoxes)
+        }
         "system-dialog" => Some(Kind::SystemDialog),
         "system-help" => Some(Kind::SystemHelp),
         "system-id" => Some(Kind::SystemId),
@@ -3051,7 +3396,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "table-scan" => Some(Kind::TableScan),
         "target" => Some(Kind::Target),
         "target-procedure" => Some(Kind::TargetProcedure),
-        "temp-dir" | "temp-dire" | "temp-direc" | "temp-direct" | "temp-directo" | "temp-director" | "temp-directory" => Some(Kind::TempDirectory),
+        "temp-dir" | "temp-dire" | "temp-direc" | "temp-direct" | "temp-directo"
+        | "temp-director" | "temp-directory" => Some(Kind::TempDirectory),
         "temp-table" => Some(Kind::TempTable),
         "temp-table-prepare" => Some(Kind::TempTablePrepare),
         "term" => Some(Kind::Term),
@@ -3073,9 +3419,15 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "time" => Some(Kind::Time),
         "time-source" => Some(Kind::TimeSource),
         "title" => Some(Kind::Title),
-        "title-bgc" | "title-bgco" | "title-bgcol" | "title-bgcolo" | "title-bgcolor" => Some(Kind::TitleBgcolor),
-        "title-dc" | "title-dco" | "title-dcol" | "title-dcolo" | "title-dcolor" => Some(Kind::TitleDcolor),
-        "title-fgc" | "title-fgco" | "title-fgcol" | "title-fgcolo" | "title-fgcolor" => Some(Kind::TitleFgcolor),
+        "title-bgc" | "title-bgco" | "title-bgcol" | "title-bgcolo" | "title-bgcolor" => {
+            Some(Kind::TitleBgcolor)
+        }
+        "title-dc" | "title-dco" | "title-dcol" | "title-dcolo" | "title-dcolor" => {
+            Some(Kind::TitleDcolor)
+        }
+        "title-fgc" | "title-fgco" | "title-fgcol" | "title-fgcolo" | "title-fgcolor" => {
+            Some(Kind::TitleFgcolor)
+        }
         "title-fo" | "title-fon" | "title-font" => Some(Kind::TitleFont),
         "to" => Some(Kind::To),
         "to-rowid" => Some(Kind::ToRowid),
@@ -3102,7 +3454,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "unbuff" | "unbuffe" | "unbuffer" | "unbuffere" | "unbuffered" => Some(Kind::Unbuffered),
         "underl" | "underli" | "underlin" | "underline" => Some(Kind::Underline),
         "undo" => Some(Kind::Undo),
-        "unform" | "unforma" | "unformat" | "unformatt" | "unformatte" | "unformatted" => Some(Kind::Unformatted),
+        "unform" | "unforma" | "unformat" | "unformatt" | "unformatte" | "unformatted" => {
+            Some(Kind::Unformatted)
+        }
         "union" => Some(Kind::Union),
         "unique" => Some(Kind::Unique),
         "unique-id" => Some(Kind::UniqueId),
@@ -3154,10 +3508,32 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "view" => Some(Kind::View),
         "view-as" => Some(Kind::ViewAs),
         "view-first-column-on-reopen" => Some(Kind::ViewFirstColumnOnReopen),
-        "virtual-height" | "virtual-height-" | "virtual-height-c" | "virtual-height-ch" | "virtual-height-cha" | "virtual-height-char" | "virtual-height-chars" => Some(Kind::VirtualHeightChars),
-        "virtual-height-p" | "virtual-height-pi" | "virtual-height-pix" | "virtual-height-pixe" | "virtual-height-pixel" | "virtual-height-pixels" => Some(Kind::VirtualHeightPixels),
-        "virtual-width" | "virtual-width-" | "virtual-width-c" | "virtual-width-ch" | "virtual-width-cha" | "virtual-width-char" | "virtual-width-chars" => Some(Kind::VirtualWidthChars),
-        "virtual-width-p" | "virtual-width-pi" | "virtual-width-pix" | "virtual-width-pixe" | "virtual-width-pixel" | "virtual-width-pixels" => Some(Kind::VirtualWidthPixels),
+        "virtual-height"
+        | "virtual-height-"
+        | "virtual-height-c"
+        | "virtual-height-ch"
+        | "virtual-height-cha"
+        | "virtual-height-char"
+        | "virtual-height-chars" => Some(Kind::VirtualHeightChars),
+        "virtual-height-p"
+        | "virtual-height-pi"
+        | "virtual-height-pix"
+        | "virtual-height-pixe"
+        | "virtual-height-pixel"
+        | "virtual-height-pixels" => Some(Kind::VirtualHeightPixels),
+        "virtual-width"
+        | "virtual-width-"
+        | "virtual-width-c"
+        | "virtual-width-ch"
+        | "virtual-width-cha"
+        | "virtual-width-char"
+        | "virtual-width-chars" => Some(Kind::VirtualWidthChars),
+        "virtual-width-p"
+        | "virtual-width-pi"
+        | "virtual-width-pix"
+        | "virtual-width-pixe"
+        | "virtual-width-pixel"
+        | "virtual-width-pixels" => Some(Kind::VirtualWidthPixels),
         "visible" => Some(Kind::Visible),
         "void" => Some(Kind::Void),
         "wait" => Some(Kind::Wait),
@@ -3167,16 +3543,26 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "weekday" => Some(Kind::Weekday),
         "when" => Some(Kind::When),
         "widget" => Some(Kind::Widget),
-        "widget-e" | "widget-en" | "widget-ent" | "widget-ente" | "widget-enter" => Some(Kind::WidgetEnter),
+        "widget-e" | "widget-en" | "widget-ent" | "widget-ente" | "widget-enter" => {
+            Some(Kind::WidgetEnter)
+        }
         "widget-id" => Some(Kind::WidgetId),
-        "widget-l" | "widget-le" | "widget-lea" | "widget-leav" | "widget-leave" => Some(Kind::WidgetLeave),
+        "widget-l" | "widget-le" | "widget-lea" | "widget-leav" | "widget-leave" => {
+            Some(Kind::WidgetLeave)
+        }
         "widget-pool" => Some(Kind::WidgetPool),
         "width" => Some(Kind::Width),
-        "width-" | "width-c" | "width-ch" | "width-cha" | "width-char" | "width-chars" => Some(Kind::WidthChars),
-        "width-p" | "width-pi" | "width-pix" | "width-pixe" | "width-pixel" | "width-pixels" => Some(Kind::WidthPixels),
+        "width-" | "width-c" | "width-ch" | "width-cha" | "width-char" | "width-chars" => {
+            Some(Kind::WidthChars)
+        }
+        "width-p" | "width-pi" | "width-pix" | "width-pixe" | "width-pixel" | "width-pixels" => {
+            Some(Kind::WidthPixels)
+        }
         "window" => Some(Kind::Window),
-        "window-maxim" | "window-maximi" | "window-maximiz" | "window-maximize" | "window-maximized" => Some(Kind::WindowMaximized),
-        "window-minim" | "window-minimi" | "window-minimiz" | "window-minimize" | "window-minimized" => Some(Kind::WindowMinimized),
+        "window-maxim" | "window-maximi" | "window-maximiz" | "window-maximize"
+        | "window-maximized" => Some(Kind::WindowMaximized),
+        "window-minim" | "window-minimi" | "window-minimiz" | "window-minimize"
+        | "window-minimized" => Some(Kind::WindowMinimized),
         "window-name" => Some(Kind::WindowName),
         "window-normal" => Some(Kind::WindowNormal),
         "window-sta" | "window-stat" | "window-state" => Some(Kind::WindowState),
@@ -3226,4 +3612,3 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         _ => None,
     }
 }
-
