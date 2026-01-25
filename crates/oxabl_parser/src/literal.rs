@@ -7,7 +7,7 @@ use oxabl_lexer::{Kind, Token, TokenValue};
 
 // }
 
-pub fn token_to_literal<'a>(token: &'a Token, source: &str) -> Option<Literal<'a>> {
+pub fn token_to_literal(token: &Token) -> Option<Literal> {
     match (&token.kind, &token.value) {
         (Kind::IntegerLiteral, TokenValue::Integer(v)) => Some(Literal::Integer(IntegerLiteral {
             span: Span {
@@ -35,7 +35,7 @@ pub fn token_to_literal<'a>(token: &'a Token, source: &str) -> Option<Literal<'a
                 start: token.start as u32,
                 end: token.end as u32,
             },
-            value: v as &'a str,
+            value: v.to_string(),
         })),
         (Kind::Question, TokenValue::None) => Some(Literal::Unknown(UnknownLiteral {
             span: Span {
@@ -102,7 +102,7 @@ mod tests {
 
     fn assert_string(
         literal: Literal,
-        expected_value: &str,
+        expected_value: String,
         expected_start: u32,
         expected_end: u32,
     ) {
@@ -158,7 +158,7 @@ mod tests {
             .find(|t| t.kind == Kind::IntegerLiteral)
             .expect("expected an integer literal token");
         // convert to integer literal
-        let lit = token_to_literal(token, source);
+        let lit = token_to_literal(token);
         let lit = lit.expect("expected an integer literal span");
         assert_integer(lit, 4, 34, 35);
     }
@@ -173,7 +173,7 @@ mod tests {
             .find(|t| t.kind == Kind::DecimalLiteral)
             .expect("expected a decimal literal token");
         // convert to decimal literal
-        let lit = token_to_literal(token, source);
+        let lit = token_to_literal(token);
         let lit = lit.expect("expected a decimal literal span");
         assert_decimal(lit, Decimal::from_str("3.14").unwrap(), 34, 38);
     }
@@ -188,9 +188,9 @@ mod tests {
             .find(|t| t.kind == Kind::StringLiteral)
             .expect("expected a string literal token");
         // convert to string literal
-        let lit = token_to_literal(token, source);
+        let lit = token_to_literal(token);
         let lit = lit.expect("expected a string literal span");
-        assert_string(lit, "hello", 35, 42);
+        assert_string(lit, "hello".to_string(), 35, 42);
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
             .find(|t| t.kind == Kind::KwTrue)
             .expect("expected a boolean literal token");
         // convert to boolean literal
-        let lit = token_to_literal(token, source);
+        let lit = token_to_literal(token);
         let lit = lit.expect("expected a boolean literal span");
         assert_boolean(lit, true, 35, 39);
     }
@@ -218,7 +218,7 @@ mod tests {
             .find(|t| t.kind == Kind::Question)
             .expect("expected an unknown literal token");
         // convert to unknown literal
-        let lit = token_to_literal(token, source);
+        let lit = token_to_literal(token);
         let lit = lit.expect("expected an unknown literal span");
         assert_unknown(lit, 34, 35);
     }

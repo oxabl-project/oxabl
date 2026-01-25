@@ -2,12 +2,12 @@ use crate::Span;
 use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Literal<'a> {
+pub enum Literal {
     Integer(IntegerLiteral),
 
     Decimal(DecimalLiteral),
 
-    String(StringLiteral<'a>),
+    String(StringLiteral),
 
     Boolean(BooleanLiteral),
 
@@ -29,10 +29,10 @@ pub struct DecimalLiteral {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StringLiteral<'a> {
+pub struct StringLiteral {
     pub span: Span,
 
-    pub value: &'a str,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
