@@ -12,11 +12,8 @@ pub mod oxabl_atom {
 use rust_decimal::Decimal;
 
 mod kind;
+use crate::{kind::match_keyword, oxabl_atom::OxablAtom};
 pub use kind::Kind;
-use crate::{
-    kind::match_keyword,
-    oxabl_atom::OxablAtom,
-};
 
 /// Tokenize ABL source code into a vector of tokens.
 ///
@@ -66,7 +63,7 @@ pub enum TokenValue {
     Boolean(bool),
 }
 
-struct Lexer<'a> {
+pub struct Lexer<'a> {
     /// Source Text
     source: &'a str,
 
