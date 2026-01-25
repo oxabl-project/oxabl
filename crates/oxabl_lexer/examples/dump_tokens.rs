@@ -36,8 +36,10 @@ fn main() {
             let slice = &source[token.start..token.end];
 
             // Check for potential issues: numeric kinds with None value where source isn't a number
-            let is_numeric_kind =
-                matches!(token.kind, Kind::IntegerLiteral | Kind::BigIntLiteral | Kind::DecimalLiteral);
+            let is_numeric_kind = matches!(
+                token.kind,
+                Kind::IntegerLiteral | Kind::BigIntLiteral | Kind::DecimalLiteral
+            );
             let has_no_value = matches!(token.value, TokenValue::None);
             let looks_like_number = slice
                 .chars()
