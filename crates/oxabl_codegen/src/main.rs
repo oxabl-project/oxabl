@@ -472,7 +472,7 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
     output.push_str("    Invalid,\n");
     output.push_str("    Identifier,\n");
     output.push_str("    Comment,\n");
-    output.push_str("\n");
+    output.push('\n');
 
     // Literals (suffixed with "Literal" to avoid collision with ABL type keywords)
     output.push_str("    // Literals\n");
@@ -480,7 +480,7 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
     output.push_str("    BigIntLiteral,\n");
     output.push_str("    DecimalLiteral,\n");
     output.push_str("    StringLiteral,\n");
-    output.push_str("\n");
+    output.push('\n');
 
     // Collect keywords by category, tracking seen variant names to avoid duplicates
     let mut seen_variants: HashSet<String> = HashSet::new();
@@ -575,7 +575,7 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
             for item in items {
                 output.push_str(item);
             }
-            output.push_str("\n");
+            output.push('\n');
         }
     }
 
@@ -789,7 +789,7 @@ fn main() {
             println!("\n// ===== Keyword Match Function =====\n");
             println!("{}", generate_keyword_match(&keywords));
         }
-        "summary" | _ => {
+        _ => {
             let reserved_count = keywords.iter().filter(|k| k.reserved).count();
             let with_abbrev = keywords
                 .iter()
