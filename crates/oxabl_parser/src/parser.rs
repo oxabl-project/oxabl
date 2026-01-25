@@ -48,14 +48,43 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expression(&mut self) -> ParseResult<Expression> {
-        // parse 1 + 1
-        // TODO - operator precedence
+        self.parse_additive()
+    }
+
+    pub fn parse_additive(&mut self) -> ParseResult<Expression> {
+        let mut expr = self.parse_multiplicative()?;
+        while self.check(Kind::Add) || self.check(Kind::Minus) {
+            let operator = self.advance();
+            match operator.kind {
+                Kind::Add => {
+                    let right_exp = self.parse_multiplicative()?;
+                    expr = Expression::Add(Box::new(expr), Box::new(right_exp));
+                }
+                Kind::Minus => {
+                    let right_exp = self.parse_multiplicative()?;
+                    expr = Expression::Minus(Box::new(expr), Box::new(right_exp));
+                }
+                _ => unreachable!(),
+            }
+        }
+        Ok(expr)
+    }
+
+    pub fn parse_multiplicative(&mut self) -> ParseResult<Expression> {
         let mut expr = self.parse_primary()?;
-        // check for "+" operand
-        while self.check(Kind::Add) {
-            let _operator = self.advance();
-            let right_exp = self.parse_primary()?;
-            expr = Expression::Add(Box::new(expr), Box::new(right_exp));
+        while self.check(Kind::Star) || self.check(Kind::Slash) {
+            let operator = self.advance();
+            match operator.kind {
+                Kind::Star => {
+                    let right_exp = self.parse_primary()?;
+                    expr = Expression::Multiply(Box::new(expr), Box::new(right_exp));
+                }
+                Kind::Slash => {
+                    let right_exp = self.parse_primary()?;
+                    expr = Expression::Divide(Box::new(expr), Box::new(right_exp));
+                }
+                _ => unreachable!(),
+            }
         }
         Ok(expr)
     }
@@ -133,6 +162,129 @@ mod test {
                     span: Span { start: 8, end: 9 },
                     value: 3
                 })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_minus_expression() {
+        let tokens = tokenize("1 - 2");
+        let mut parser = Parser::new(&tokens);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            Expression::Minus(
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1
+                }))),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 2
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_double_minus_expression() {
+        let tokens = tokenize("1 - 2 - 3");
+        let mut parser = Parser::new(&tokens);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            Expression::Minus(
+                Box::new(Expression::Minus(
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1
+                    }))),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 2
+                    })))
+                )),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 8, end: 9 },
+                    value: 3
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_add_minus_expression() {
+        let tokens = tokenize("1 + 2 - 3");
+        let mut parser = Parser::new(&tokens);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            Expression::Minus(
+                Box::new(Expression::Add(
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1
+                    }))),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 2
+                    })))
+                )),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 8, end: 9 },
+                    value: 3
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_multiplication_expression() {
+        let tokens = tokenize("1 * 2");
+        let mut parser = Parser::new(&tokens);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            Expression::Multiply(
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1
+                }))),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 2
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_add_multiplication_expression() {
+        let tokens = tokenize("1 + 2 * 3");
+        let mut parser = Parser::new(&tokens);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            Expression::Add(
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1
+                }))),
+                Box::new(Expression::Multiply(
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 2
+                    }))),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 9 },
+                        value: 3
+                    })))
+                )),
             )
         );
     }
