@@ -4,5 +4,7 @@
 //! No standardized 'tree syntax' is followed, we're just vibing.
 mod literal;
 mod span;
+mod expression;
 pub use literal::*;
 pub use span::*;
+pub use expression::*;
