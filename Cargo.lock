@@ -684,6 +684,9 @@ dependencies = [
 [[package]]
 name = "oxabl_common"
 version = "0.1.0"
+dependencies = [
+ "oxabl_lexer",
+]
 
 [[package]]
 name = "oxabl_lexer"
