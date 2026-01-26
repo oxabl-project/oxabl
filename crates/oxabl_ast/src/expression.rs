@@ -7,4 +7,6 @@ pub enum Expression {
     Minus(Box<Expression>, Box<Expression>),
     Multiply(Box<Expression>, Box<Expression>),
     Divide(Box<Expression>, Box<Expression>),
+    Negate(Box<Expression>),  // Unary minus: -expr
+    Not(Box<Expression>),     // Logical NOT: NOT expr
 }
