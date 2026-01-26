@@ -32,4 +32,6 @@ pub enum Expression {
     // Unary
     Negate(Box<Expression>),  // Unary minus: -expr
     Not(Box<Expression>),     // Logical NOT: NOT expr
+    // Ternary
+    IfThenElse(Box<Expression>, Box<Expression>, Box<Expression>), // condition, then_expr, else_expr
 }
