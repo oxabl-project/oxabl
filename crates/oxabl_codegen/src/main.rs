@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -87,6 +88,8 @@ impl KeywordType {
     fn from_title(title: &str) -> Option<(String, Self)> {
         let title = title.trim();
 
+        // Order matters! More specific suffixes must come before less specific ones
+        // e.g., " system handle" before " handle", " preprocessor directive" before " preprocessor"
         let suffixes = [
             (" function", KeywordType::Function),
             (" statement", KeywordType::Statement),
@@ -99,8 +102,9 @@ impl KeywordType {
             (" widget", KeywordType::Widget),
             (" type", KeywordType::Type),
             (" operator", KeywordType::Operator),
+            (" system handle", KeywordType::Handle), // Before " handle"
             (" handle", KeywordType::Handle),
-            (" system handle", KeywordType::Handle),
+            (" preprocessor directive", KeywordType::Preprocessor), // Before " preprocessor"
             (" preprocessor", KeywordType::Preprocessor),
         ];
 
@@ -285,38 +289,46 @@ impl Keyword {
     }
 }
 
-/// Parse HTML file to extract keywords
-pub fn parse_html(path: &Path) -> Vec<HtmlKeyword> {
-    let content = fs::read_to_string(path).expect("Failed to read HTML file");
-    let document = Html::parse_document(&content);
-
-    let row_selector = Selector::parse("tbody tr").unwrap();
-    let cell_selector = Selector::parse("td").unwrap();
-    let img_selector = Selector::parse("img").unwrap();
-
+/// Parse the Progress reserved keywords file
+/// Format: "  KEYWORD NAME                    ABBREV"
+/// - Header line is skipped
+/// - Keywords and abbreviations can contain single spaces
+/// - Columns are separated by 2+ consecutive spaces
+/// - All keywords in this file are reserved
+pub fn parse_reserved_keywords(path: &Path) -> Vec<Keyword> {
+    let content = fs::read_to_string(path).expect("Failed to read reserved keywords file");
     let mut keywords = Vec::new();
 
-    for row in document.select(&row_selector) {
-        let cells: Vec<_> = row.select(&cell_selector).collect();
+    for line in content.lines().skip(1) {
+        // Skip header line
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
 
-        if cells.len() >= 3 {
-            let name = cells[0].text().collect::<String>().trim().to_string();
-            let reserved = cells[1].select(&img_selector).next().is_some();
-            let abbrev_text = cells[2].text().collect::<String>().trim().to_string();
-            let min_abbreviation =
-                if abbrev_text == "–" || abbrev_text == "-" || abbrev_text.is_empty() {
-                    None
-                } else {
-                    Some(abbrev_text)
-                };
+        // Split on 2+ consecutive spaces to handle keywords with single spaces
+        // e.g., "ACTIVE FORM                     " -> ["ACTIVE FORM"]
+        // e.g., "AUTO RETURN                     AUTO RET" -> ["AUTO RETURN", "AUTO RET"]
+        let parts: Vec<&str> = line.splitn(2, "  ").collect();
 
-            if !name.is_empty() {
-                keywords.push(HtmlKeyword {
-                    name,
-                    reserved,
-                    min_abbreviation,
-                });
-            }
+        let name = parts
+            .first()
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let min_abbreviation = parts
+            .get(1)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        if !name.is_empty() {
+            keywords.push(Keyword {
+                name,
+                reserved: true, // All keywords in this file are reserved
+                min_abbreviation,
+                keyword_type: None, // Will be enriched from JSON
+                doc_url: None,      // Will be enriched from JSON
+            });
         }
     }
 
@@ -343,29 +355,55 @@ pub fn parse_json(path: &Path) -> HashMap<String, (KeywordType, String)> {
     keyword_info
 }
 
-/// Merge HTML and JSON data into unified keyword list
-pub fn merge_keywords(
-    html_keywords: Vec<HtmlKeyword>,
-    json_info: HashMap<String, (KeywordType, String)>,
+/// Enrich reserved keywords with type info from JSON
+pub fn enrich_keywords(
+    keywords: Vec<Keyword>,
+    json_info: &HashMap<String, (KeywordType, String)>,
 ) -> Vec<Keyword> {
-    html_keywords
+    keywords
         .into_iter()
-        .map(|html| {
-            let name_upper = html.name.to_uppercase();
-            let (keyword_type, doc_url) = json_info
-                .get(&name_upper)
-                .map(|(kt, url)| (Some(kt.clone()), Some(url.clone())))
-                .unwrap_or((None, None));
-
-            Keyword {
-                name: html.name,
-                reserved: html.reserved,
-                min_abbreviation: html.min_abbreviation,
-                keyword_type,
-                doc_url,
+        .map(|mut kw| {
+            let name_upper = kw.name.to_uppercase();
+            if let Some((kt, url)) = json_info.get(&name_upper) {
+                kw.keyword_type = Some(kt.clone());
+                kw.doc_url = Some(url.clone());
             }
+            kw
         })
         .collect()
+}
+
+/// Find alternate forms (space ↔ hyphen) for keywords by checking if JSON has the other form
+/// Returns a map from keyword name (uppercase) to its alternate form (if exists in JSON)
+pub fn find_alternate_forms(
+    keywords: &[Keyword],
+    json_info: &HashMap<String, (KeywordType, String)>,
+) -> HashMap<String, String> {
+    let mut alternates = HashMap::new();
+
+    // Build a set of all JSON keyword names for quick lookup
+    let json_names: HashSet<String> = json_info.keys().cloned().collect();
+
+    for kw in keywords {
+        let name_upper = kw.name.to_uppercase();
+
+        // Check if this keyword has a space that could be a hyphen in JSON
+        if name_upper.contains(' ') {
+            let hyphenated = name_upper.replace(' ', "-");
+            if json_names.contains(&hyphenated) {
+                alternates.insert(name_upper.clone(), hyphenated);
+            }
+        }
+        // Check if this keyword has a hyphen that could be a space in JSON
+        else if name_upper.contains('-') {
+            let spaced = name_upper.replace('-', " ");
+            if json_names.contains(&spaced) {
+                alternates.insert(name_upper.clone(), spaced);
+            }
+        }
+    }
+
+    alternates
 }
 
 /// Load overrides from TOML file
@@ -634,7 +672,12 @@ pub fn generate_atom_list(keywords: &[Keyword]) -> String {
 }
 
 /// Generate a keyword matching function
-pub fn generate_keyword_match(keywords: &[Keyword]) -> String {
+/// The `alternates` map contains keywords that have both space and hyphen forms
+/// (e.g., "ACTIVE WINDOW" -> "ACTIVE-WINDOW" if both exist in sources)
+pub fn generate_keyword_match(
+    keywords: &[Keyword],
+    alternates: &HashMap<String, String>,
+) -> String {
     let mut output = String::new();
 
     output.push_str("/// Match a string to a keyword Kind\n");
@@ -648,6 +691,17 @@ pub fn generate_keyword_match(keywords: &[Keyword]) -> String {
     let mut match_to_kind: HashMap<String, String> = HashMap::new();
     let mut collisions: Vec<(String, String, String)> = Vec::new();
 
+    // Helper to add a match string, checking for collisions
+    let mut add_match = |match_str: String, variant: &str| {
+        if let Some(existing) = match_to_kind.get(&match_str) {
+            if existing != variant {
+                collisions.push((match_str, existing.clone(), variant.to_string()));
+            }
+        } else {
+            match_to_kind.insert(match_str, variant.to_string());
+        }
+    };
+
     for kw in keywords {
         // Skip punctuation - handled separately in lexer
         if kw.is_punctuation() {
@@ -656,6 +710,7 @@ pub fn generate_keyword_match(keywords: &[Keyword]) -> String {
 
         let variant = kw.to_variant_name();
         let lower = kw.name.to_lowercase();
+        let name_upper = kw.name.to_uppercase();
 
         // Determine the minimum length for prefix matching
         let min_len = if let Some(ref abbrev) = kw.min_abbreviation {
@@ -668,13 +723,21 @@ pub fn generate_keyword_match(keywords: &[Keyword]) -> String {
         // Generate all valid prefixes from min_len to full length
         for len in min_len..=lower.len() {
             let prefix = &lower[..len];
+            add_match(prefix.to_string(), &variant);
+        }
 
-            if let Some(existing) = match_to_kind.get(prefix) {
-                if existing != &variant {
-                    collisions.push((prefix.to_string(), existing.clone(), variant.clone()));
+        // If this keyword has an alternate form (space ↔ hyphen), generate those prefixes too
+        if let Some(alternate_upper) = alternates.get(&name_upper) {
+            let alternate_lower = alternate_upper.to_lowercase();
+
+            // Use the same min_len logic for the alternate form
+            // The abbreviation applies to both forms
+            for len in min_len..=alternate_lower.len() {
+                // Make sure we don't go past the string length
+                if len <= alternate_lower.len() {
+                    let prefix = &alternate_lower[..len];
+                    add_match(prefix.to_string(), &variant);
                 }
-            } else {
-                match_to_kind.insert(prefix.to_string(), variant.clone());
             }
         }
     }
@@ -740,21 +803,37 @@ fn main() {
         .unwrap()
         .join("resources");
 
-    let html_path = resources_dir.join("abl_keyword_index.html");
+    let reserved_path = resources_dir.join("abl_reserved_keywords.txt");
     let json_path = resources_dir.join("abl_keyword_index.json");
     let overrides_path = resources_dir.join("keyword_overrides.toml");
 
-    eprintln!("Parsing HTML from: {}", html_path.display());
-    let html_keywords = parse_html(&html_path);
-    eprintln!("Found {} keywords in HTML", html_keywords.len());
+    // Parse reserved keywords from the official Progress keyword index
+    eprintln!(
+        "Parsing reserved keywords from: {}",
+        reserved_path.display()
+    );
+    let reserved_keywords = parse_reserved_keywords(&reserved_path);
+    eprintln!(
+        "Found {} reserved keywords in official index",
+        reserved_keywords.len()
+    );
 
-    eprintln!("Parsing JSON from: {}", json_path.display());
+    // Parse JSON for type/URL enrichment (secondary source)
+    eprintln!("Parsing JSON for type info from: {}", json_path.display());
     let json_info = parse_json(&json_path);
     eprintln!("Found {} typed entries in JSON", json_info.len());
 
-    let mut keywords = merge_keywords(html_keywords, json_info);
+    // Enrich reserved keywords with type info from JSON where available
+    let mut keywords = enrich_keywords(reserved_keywords, &json_info);
 
-    // Load and apply overrides
+    // Find alternate forms (space ↔ hyphen) by checking if JSON has the other form
+    let alternates = find_alternate_forms(&keywords, &json_info);
+    eprintln!(
+        "Found {} keywords with alternate forms (space/hyphen variants)",
+        alternates.len()
+    );
+
+    // Load and apply TOML overrides (operators, punctuation, etc.)
     if let Some(overrides) = load_overrides(&overrides_path) {
         let add_count = overrides.add.len();
         let override_count = overrides.r#override.len();
@@ -779,7 +858,7 @@ fn main() {
             println!("{}", generate_atom_list(&keywords));
         }
         "match" => {
-            println!("{}", generate_keyword_match(&keywords));
+            println!("{}", generate_keyword_match(&keywords, &alternates));
         }
         "all" => {
             println!("// ===== Kind Enum =====\n");
@@ -787,7 +866,7 @@ fn main() {
             println!("\n// ===== Atom List for build.rs =====\n");
             println!("{}", generate_atom_list(&keywords));
             println!("\n// ===== Keyword Match Function =====\n");
-            println!("{}", generate_keyword_match(&keywords));
+            println!("{}", generate_keyword_match(&keywords, &alternates));
         }
         _ => {
             let reserved_count = keywords.iter().filter(|k| k.reserved).count();

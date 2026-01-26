@@ -11,6 +11,71 @@
 # Progress ABL supports these but they're not in the keyword index
 # =============================================================================
 
+# =============================================================================
+# COMPARISON OPERATORS
+# ABL allows word-based comparison operators as alternatives to symbols
+# =============================================================================
+
+[[add]]
+name = "EQ"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "NE"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "LT"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "LE"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "GT"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "GE"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "MATCHES"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "CONTAINS"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "%"
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = ">="
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "<="
+reserved = true
+keyword_type = "Operator"
+
+[[add]]
+name = "<>"
+reserved = true
+keyword_type = "Operator"
+
 [[add]]
 name = "+="
 reserved = true

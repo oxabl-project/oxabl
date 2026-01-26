@@ -138,7 +138,7 @@ impl<'a> Lexer<'a> {
                     }
                 },
                 '%' => {
-                    return Kind::Modulo;
+                    return Kind::Percent;
                 }
                 '=' => {
                     return Kind::Equals;
@@ -535,10 +535,10 @@ mod tests {
 
         let expected = vec![
             (Kind::Define, 0, 3, TokenValue::None),
-            (Kind::Var, 4, 7, TokenValue::None),
+            (Kind::Identifier, 4, 7, TokenValue::None), // var (not reserved)
             (Kind::Identifier, 8, 15, TokenValue::None), // myCount
             (Kind::KwAs, 16, 18, TokenValue::None),
-            (Kind::Int, 19, 22, TokenValue::None),
+            (Kind::Identifier, 19, 22, TokenValue::None), // int (not reserved)
             (Kind::NoUndo, 23, 30, TokenValue::None),
             (Kind::Period, 30, 31, TokenValue::None),
             (Kind::Assign, 32, 38, TokenValue::None),
@@ -677,7 +677,7 @@ mod tests {
         assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
         assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
         assert_token(&tokens[1], Kind::Comment, 4, 25, TokenValue::None, source);
-        assert_token(&tokens[2], Kind::Var, 25, 28, TokenValue::None, source);
+        assert_token(&tokens[2], Kind::Identifier, 25, 28, TokenValue::None, source); // var (not reserved)
     }
 
     #[test]
@@ -687,7 +687,7 @@ mod tests {
         assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
         assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
         assert_token(&tokens[1], Kind::Comment, 4, 15, TokenValue::None, source);
-        assert_token(&tokens[2], Kind::Var, 16, 19, TokenValue::None, source);
+        assert_token(&tokens[2], Kind::Identifier, 16, 19, TokenValue::None, source); // var (not reserved)
     }
 
     #[test]
@@ -754,26 +754,26 @@ end."#;
             // Line comment
             (Kind::Comment, 56, 77, TokenValue::None),
             // procedure my_test_proc:
-            (Kind::Procedure, 77, 86, TokenValue::None),
+            (Kind::Identifier, 77, 86, TokenValue::None), // procedure (not reserved)
             (Kind::Identifier, 87, 99, TokenValue::None), // my_test_proc
             (Kind::Colon, 99, 100, TokenValue::None),
             // var int MyInt = 1.
-            (Kind::Var, 104, 107, TokenValue::None),
-            (Kind::Int, 108, 111, TokenValue::None),
+            (Kind::Identifier, 104, 107, TokenValue::None), // var (not reserved)
+            (Kind::Identifier, 108, 111, TokenValue::None), // int (not reserved)
             (Kind::Identifier, 112, 117, TokenValue::None), // MyInt
             (Kind::Equals, 118, 119, TokenValue::None),
             (Kind::IntegerLiteral, 120, 121, TokenValue::Integer(1)),
             (Kind::Period, 121, 122, TokenValue::None),
             // var int MyOtherInt = 2.
-            (Kind::Var, 126, 129, TokenValue::None),
-            (Kind::Int, 130, 133, TokenValue::None),
+            (Kind::Identifier, 126, 129, TokenValue::None), // var (not reserved)
+            (Kind::Identifier, 130, 133, TokenValue::None), // int (not reserved)
             (Kind::Identifier, 134, 144, TokenValue::None), // MyOtherInt
             (Kind::Equals, 145, 146, TokenValue::None),
             (Kind::IntegerLiteral, 147, 148, TokenValue::Integer(2)),
             (Kind::Period, 148, 149, TokenValue::None),
             // var int result.
-            (Kind::Var, 153, 156, TokenValue::None),
-            (Kind::Int, 157, 160, TokenValue::None),
+            (Kind::Identifier, 153, 156, TokenValue::None), // var (not reserved)
+            (Kind::Identifier, 157, 160, TokenValue::None), // int (not reserved)
             (Kind::Identifier, 161, 167, TokenValue::None), // result
             (Kind::Period, 167, 168, TokenValue::None),
             // result = MyOtherInt - MyInt.
@@ -820,7 +820,7 @@ end."#;
 
         let expected = vec![
             (Kind::PreprocIf, 0, 3, TokenValue::None),
-            (Kind::Defined, 4, 11, TokenValue::None), // defined is a keyword
+            (Kind::Identifier, 4, 11, TokenValue::None), // defined (not reserved)
             (Kind::LeftParen, 11, 12, TokenValue::None),
             (Kind::Identifier, 12, 16, TokenValue::None), // test
             (Kind::RightParen, 16, 17, TokenValue::None),
@@ -857,7 +857,7 @@ end."#;
             (Kind::Preprop, 8, 16, TokenValue::None), // {&myvar} - user-defined
             (Kind::Period, 16, 17, TokenValue::None),
             (Kind::KwIf, 18, 20, TokenValue::None),
-            (Kind::PreprocBatchMode, 21, 34, TokenValue::None), // {&batch-mode}
+            (Kind::Preprop, 21, 34, TokenValue::None), // {&batch-mode} - also Preprop (not reserved)
             (Kind::Then, 35, 39, TokenValue::None),
             (Kind::Quit, 40, 44, TokenValue::None),
             (Kind::Period, 44, 45, TokenValue::None),
@@ -1085,7 +1085,7 @@ end."#;
         let source = "10 % 3";
         let tokens = collect_tokens(source);
         assert_eq!(tokens.len(), 4);
-        assert_token(&tokens[1], Kind::Modulo, 3, 4, TokenValue::None, source);
+        assert_token(&tokens[1], Kind::Percent, 3, 4, TokenValue::None, source);
     }
 
     #[test]
@@ -1111,6 +1111,6 @@ end."#;
         // Verify it tokenizes without errors and has correct structure
         assert!(tokens.iter().all(|t| t.kind != Kind::Invalid));
         assert_eq!(tokens[0].kind, Kind::Define);
-        assert_eq!(tokens[1].kind, Kind::TempTable);
+        assert_eq!(tokens[1].kind, Kind::Identifier); // temp-table (not reserved)
     }
 }
