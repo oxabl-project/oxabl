@@ -3,7 +3,7 @@
 //! Will panic if peek or advance are called when current cursor position
 //! is out of bounds. Contract is to check is_end before using them.
 
-use oxabl_ast::{Expression, Span};
+use oxabl_ast::{Expression, Identifier, Span};
 use oxabl_lexer::{Kind, Token};
 
 use crate::literal::token_to_literal;
@@ -19,13 +19,14 @@ pub type ParseResult<T> = Result<T, ParseError>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parser<'a> {
     tokens: &'a [Token],
+    source: &'a str,
     current: usize,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: &'a [Token]) -> Self {
+    pub fn new(tokens: &'a [Token], source: &'a str) -> Self {
         debug_assert!(!tokens.is_empty(), "Token slice must contain at least EOF");
-        Parser { tokens, current: 0 }
+        Parser { tokens, source, current: 0 }
     }
     pub fn peek(&self) -> &Token {
         &self.tokens[self.current]
@@ -48,7 +49,80 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expression(&mut self) -> ParseResult<Expression> {
-        self.parse_additive()
+        self.parse_or()
+    }
+
+    pub fn parse_or(&mut self) -> ParseResult<Expression> {
+        let mut expr = self.parse_and()?;
+        while self.check(Kind::Or) {
+            self.advance();
+            let right = self.parse_and()?;
+            expr = Expression::Or(Box::new(expr), Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    pub fn parse_and(&mut self) -> ParseResult<Expression> {
+        let mut expr = self.parse_comparison()?;
+        while self.check(Kind::And) {
+            self.advance();
+            let right = self.parse_comparison()?;
+            expr = Expression::And(Box::new(expr), Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    fn is_comparison_operator(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            Kind::Equals
+                | Kind::NotEqual
+                | Kind::LessThan
+                | Kind::LessThanOrEqual
+                | Kind::GreaterThan
+                | Kind::GreaterThanOrEqual
+                | Kind::Eq
+                | Kind::Ne
+                | Kind::Lt
+                | Kind::Le
+                | Kind::Gt
+                | Kind::Ge
+                | Kind::Begins
+                | Kind::Matches
+                | Kind::Contains
+        )
+    }
+
+    pub fn parse_comparison(&mut self) -> ParseResult<Expression> {
+        let left = self.parse_additive()?;
+
+        if !self.is_comparison_operator() {
+            return Ok(left);
+        }
+
+        let op_kind = self.advance().kind;
+        let right = self.parse_additive()?;
+
+        let expr = match op_kind {
+            Kind::Equals | Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
+            Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),
+            Kind::LessThan | Kind::Lt => Expression::LessThan(Box::new(left), Box::new(right)),
+            Kind::LessThanOrEqual | Kind::Le => {
+                Expression::LessThanOrEqual(Box::new(left), Box::new(right))
+            }
+            Kind::GreaterThan | Kind::Gt => {
+                Expression::GreaterThan(Box::new(left), Box::new(right))
+            }
+            Kind::GreaterThanOrEqual | Kind::Ge => {
+                Expression::GreaterThanOrEqual(Box::new(left), Box::new(right))
+            }
+            Kind::Begins => Expression::Begins(Box::new(left), Box::new(right)),
+            Kind::Matches => Expression::Matches(Box::new(left), Box::new(right)),
+            Kind::Contains => Expression::Contains(Box::new(left), Box::new(right)),
+            _ => unreachable!(),
+        };
+
+        Ok(expr)
     }
 
     pub fn parse_additive(&mut self) -> ParseResult<Expression> {
@@ -72,7 +146,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse_multiplicative(&mut self) -> ParseResult<Expression> {
         let mut expr = self.parse_unary()?;
-        while self.check(Kind::Star) || self.check(Kind::Slash) {
+        while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Modulo) {
             let operator = self.advance();
             match operator.kind {
                 Kind::Star => {
@@ -82,6 +156,10 @@ impl<'a> Parser<'a> {
                 Kind::Slash => {
                     let right_exp = self.parse_unary()?;
                     expr = Expression::Divide(Box::new(expr), Box::new(right_exp));
+                }
+                Kind::Modulo => {
+                    let right_exp = self.parse_unary()?;
+                    expr = Expression::Modulo(Box::new(expr), Box::new(right_exp));
                 }
                 _ => unreachable!(),
             }
@@ -140,6 +218,21 @@ impl<'a> Parser<'a> {
             return Ok(Expression::Literal(literal));
         }
 
+        // Identifiers
+        if self.check(Kind::Identifier) {
+            let token = self.advance();
+            let start = token.start;
+            let end = token.end;
+            let name = self.source[start..end].to_string();
+            return Ok(Expression::Identifier(Identifier {
+                span: Span {
+                    start: start as u32,
+                    end: end as u32,
+                },
+                name,
+            }));
+        }
+
         Err(ParseError {
             message: format!("Unexpected token {:?}", self.peek().kind),
             span: Span {
@@ -163,8 +256,9 @@ mod test {
 
     #[test]
     fn parse_simple_add_expression() {
-        let tokens = tokenize("1 + 2");
-        let mut parser = Parser::new(&tokens);
+        let source = "1 + 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         println!("{:?}", expression);
         assert_eq!(
@@ -184,8 +278,9 @@ mod test {
 
     #[test]
     fn parse_double_add_expression() {
-        let tokens = tokenize("1 + 2 + 3");
-        let mut parser = Parser::new(&tokens);
+        let source = "1 + 2 + 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         println!("{:?}", expression);
         assert_eq!(
@@ -211,8 +306,9 @@ mod test {
 
     #[test]
     fn parse_simple_minus_expression() {
-        let tokens = tokenize("1 - 2");
-        let mut parser = Parser::new(&tokens);
+        let source = "1 - 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         println!("{:?}", expression);
         assert_eq!(
@@ -232,8 +328,9 @@ mod test {
 
     #[test]
     fn parse_double_minus_expression() {
-        let tokens = tokenize("1 - 2 - 3");
-        let mut parser = Parser::new(&tokens);
+        let source = "1 - 2 - 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         println!("{:?}", expression);
         assert_eq!(
@@ -259,8 +356,9 @@ mod test {
 
     #[test]
     fn parse_add_minus_expression() {
-        let tokens = tokenize("1 + 2 - 3");
-        let mut parser = Parser::new(&tokens);
+        let source = "1 + 2 - 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         println!("{:?}", expression);
         assert_eq!(
@@ -286,8 +384,9 @@ mod test {
 
     #[test]
     fn parse_simple_multiplication_expression() {
-        let tokens = tokenize("1 * 2");
-        let mut parser = Parser::new(&tokens);
+        let source = "1 * 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         println!("{:?}", expression);
         assert_eq!(
@@ -307,8 +406,9 @@ mod test {
 
     #[test]
     fn parse_add_multiplication_expression() {
-        let tokens = tokenize("1 + 2 * 3");
-        let mut parser = Parser::new(&tokens);
+        let source = "1 + 2 * 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         println!("{:?}", expression);
         assert_eq!(
@@ -334,8 +434,9 @@ mod test {
 
     #[test]
     fn parse_simple_division_expression() {
-        let tokens = tokenize("6 / 2");
-        let mut parser = Parser::new(&tokens);
+        let source = "6 / 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -354,8 +455,9 @@ mod test {
 
     #[test]
     fn parse_parenthesized_expression() {
-        let tokens = tokenize("(1 + 2)");
-        let mut parser = Parser::new(&tokens);
+        let source = "(1 + 2)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -374,8 +476,9 @@ mod test {
 
     #[test]
     fn parse_parentheses_override_precedence() {
-        let tokens = tokenize("(1 + 2) * 3");
-        let mut parser = Parser::new(&tokens);
+        let source = "(1 + 2) * 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -400,8 +503,9 @@ mod test {
 
     #[test]
     fn parse_unary_negate() {
-        let tokens = tokenize("-5");
-        let mut parser = Parser::new(&tokens);
+        let source = "-5";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -416,8 +520,9 @@ mod test {
 
     #[test]
     fn parse_double_negate() {
-        let tokens = tokenize("--5");
-        let mut parser = Parser::new(&tokens);
+        let source = "--5";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -432,8 +537,9 @@ mod test {
 
     #[test]
     fn parse_unary_not() {
-        let tokens = tokenize("not true");
-        let mut parser = Parser::new(&tokens);
+        let source = "not true";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -448,8 +554,9 @@ mod test {
 
     #[test]
     fn parse_decimal_literal() {
-        let tokens = tokenize("3.14");
-        let mut parser = Parser::new(&tokens);
+        let source = "3.14";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -462,8 +569,9 @@ mod test {
 
     #[test]
     fn parse_string_literal() {
-        let tokens = tokenize("\"hello\"");
-        let mut parser = Parser::new(&tokens);
+        let source = "\"hello\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -476,8 +584,9 @@ mod test {
 
     #[test]
     fn parse_boolean_literals() {
-        let tokens = tokenize("true");
-        let mut parser = Parser::new(&tokens);
+        let source = "true";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
@@ -490,14 +599,241 @@ mod test {
 
     #[test]
     fn parse_unknown_literal() {
-        let tokens = tokenize("?");
-        let mut parser = Parser::new(&tokens);
+        let source = "?";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
         assert_eq!(
             expression,
             Expression::Literal(Literal::Unknown(UnknownLiteral {
                 span: Span { start: 0, end: 1 }
             }))
+        );
+    }
+
+    #[test]
+    fn parse_modulo_expression() {
+        let source = "10 mod 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Modulo(
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 2 },
+                    value: 10
+                }))),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 7, end: 8 },
+                    value: 3
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_identifier() {
+        let source = "myVar";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Identifier(Identifier {
+                span: Span { start: 0, end: 5 },
+                name: "myVar".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_hyphenated_identifier() {
+        let source = "my-hyphenated-var";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Identifier(Identifier {
+                span: Span { start: 0, end: 17 },
+                name: "my-hyphenated-var".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_equal_expression() {
+        let source = "a = b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Equal(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_not_equal_expression() {
+        let source = "a <> b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::NotEqual(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_less_than_keyword() {
+        let source = "a lt b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::LessThan(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_begins_expression() {
+        let source = "userName begins \"Jo\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Begins(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 8 },
+                    name: "userName".to_string()
+                })),
+                Box::new(Expression::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 16, end: 20 },
+                    value: "Jo".to_string()
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_contains_expression() {
+        let source = "content contains \"abc\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Contains(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 7 },
+                    name: "content".to_string()
+                })),
+                Box::new(Expression::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 17, end: 22 },
+                    value: "abc".to_string()
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_and_expression() {
+        let source = "a and b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::And(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 6, end: 7 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_or_expression() {
+        let source = "a or b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Or(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_or_and_precedence() {
+        // a or b and c should parse as a or (b and c)
+        let source = "a or b and c";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Or(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::And(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })),
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 11, end: 12 },
+                        name: "c".to_string()
+                    }))
+                ))
+            )
         );
     }
 }
