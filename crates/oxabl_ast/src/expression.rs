@@ -30,8 +30,13 @@ pub enum Expression {
     And(Box<Expression>, Box<Expression>),
     Or(Box<Expression>, Box<Expression>),
     // Unary
-    Negate(Box<Expression>),  // Unary minus: -expr
-    Not(Box<Expression>),     // Logical NOT: NOT expr
+    Negate(Box<Expression>), // Unary minus: -expr
+    Not(Box<Expression>),    // Logical NOT: NOT expr
     // Ternary
     IfThenElse(Box<Expression>, Box<Expression>, Box<Expression>), // condition, then_expr, else_expr
+    // Function call
+    FunctionCall {
+        name: Identifier,
+        arguments: Vec<Expression>,
+    },
 }

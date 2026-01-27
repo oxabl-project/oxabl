@@ -4,7 +4,7 @@
 //! is out of bounds. Contract is to check is_end before using them.
 
 use oxabl_ast::{Expression, Identifier, Span};
-use oxabl_lexer::{Kind, Token};
+use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 use crate::literal::token_to_literal;
 
@@ -26,7 +26,11 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], source: &'a str) -> Self {
         debug_assert!(!tokens.is_empty(), "Token slice must contain at least EOF");
-        Parser { tokens, source, current: 0 }
+        Parser {
+            tokens,
+            source,
+            current: 0,
+        }
     }
     pub fn peek(&self) -> &Token {
         &self.tokens[self.current]
@@ -259,19 +263,26 @@ impl<'a> Parser<'a> {
             return Ok(Expression::Literal(literal));
         }
 
-        // Identifiers
-        if self.check(Kind::Identifier) {
+        // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
+        if is_callable_kind(self.peek().kind) {
             let token = self.advance();
             let start = token.start;
             let end = token.end;
             let name = self.source[start..end].to_string();
-            return Ok(Expression::Identifier(Identifier {
+            let identifier = Identifier {
                 span: Span {
                     start: start as u32,
                     end: end as u32,
                 },
                 name,
-            }));
+            };
+
+            // Check for function call: identifier/callable followed by (
+            if self.check(Kind::LeftParen) {
+                return self.parse_function_call(identifier);
+            }
+
+            return Ok(Expression::Identifier(identifier));
         }
 
         Err(ParseError {
@@ -281,6 +292,37 @@ impl<'a> Parser<'a> {
                 end: self.peek().end as u32,
             },
         })
+    }
+
+    pub fn parse_function_call(&mut self, name: Identifier) -> ParseResult<Expression> {
+        self.advance(); // consume the left parenthesis
+
+        let mut arguments = Vec::new();
+
+        // Empty argument list
+        if !self.check(Kind::RightParen) {
+            // parse first argument
+            arguments.push(self.parse_expression()?);
+
+            // parse remaining
+            while self.check(Kind::Comma) {
+                self.advance(); // consume ','
+                arguments.push(self.parse_expression()?);
+            }
+        }
+
+        if !self.check(Kind::RightParen) {
+            return Err(ParseError {
+                message: "Expected ')' after function arguments".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance(); // consume the right parenthesis
+
+        Ok(Expression::FunctionCall { name, arguments })
     }
 }
 
@@ -1037,6 +1079,167 @@ mod test {
                         name: "yy".to_string()
                     }))
                 ))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_function_call_no_args() {
+        let source = "NOW()";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "NOW".to_string()
+                },
+                arguments: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_call_1_arg() {
+        let source = "TRIM(name)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 4 },
+                    name: "TRIM".to_string()
+                },
+                arguments: vec![Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 9 },
+                    name: "name".to_string()
+                })]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_call_multiple_args() {
+        let source = "SUBSTRING(str, 1, 5)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 9 },
+                    name: "SUBSTRING".to_string()
+                },
+                arguments: vec![
+                    Expression::Identifier(Identifier {
+                        span: Span { start: 10, end: 13 },
+                        name: "str".to_string()
+                    }),
+                    Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 15, end: 16 },
+                        value: 1
+                    })),
+                    Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 18, end: 19 },
+                        value: 5
+                    }))
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_call_with_expression_arg() {
+        let source = "ABS(x - 5)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "ABS".to_string()
+                },
+                arguments: vec![Expression::Minus(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 4, end: 5 },
+                        name: "x".to_string()
+                    })),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 9 },
+                        value: 5
+                    })))
+                )]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_nested_function_calls() {
+        let source = "TRIM(SUBSTRING(name, 1, 5))";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 4 },
+                    name: "TRIM".to_string()
+                },
+                arguments: vec![Expression::FunctionCall {
+                    name: Identifier {
+                        span: Span { start: 5, end: 14 },
+                        name: "SUBSTRING".to_string()
+                    },
+                    arguments: vec![
+                        Expression::Identifier(Identifier {
+                            span: Span { start: 15, end: 19 },
+                            name: "name".to_string()
+                        }),
+                        Expression::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 21, end: 22 },
+                            value: 1
+                        })),
+                        Expression::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 24, end: 25 },
+                            value: 5
+                        }))
+                    ]
+                }]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_in_expression() {
+        let source = "LENGTH(str) + 1";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Add(
+                Box::new(Expression::FunctionCall {
+                    name: Identifier {
+                        span: Span { start: 0, end: 6 },
+                        name: "LENGTH".to_string()
+                    },
+                    arguments: vec![Expression::Identifier(Identifier {
+                        span: Span { start: 7, end: 10 },
+                        name: "str".to_string()
+                    })]
+                }),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 1
+                })))
             )
         );
     }
