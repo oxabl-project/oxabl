@@ -49,7 +49,48 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expression(&mut self) -> ParseResult<Expression> {
-        self.parse_or()
+        self.parse_ternary()
+    }
+
+    pub fn parse_ternary(&mut self) -> ParseResult<Expression> {
+        if !self.check(Kind::KwIf) {
+            return self.parse_or();
+        }
+
+        self.advance(); // consume IF
+        let condition = self.parse_or()?; // condition can use OR/AND/comparison
+
+        if !self.check(Kind::Then) {
+            return Err(ParseError {
+                message: "Expected 'THEN' after IF condition".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance(); // consume THEN
+
+        let then_expr = self.parse_ternary()?; // recursive for nested ternary in then branch
+
+        if !self.check(Kind::KwElse) {
+            return Err(ParseError {
+                message: "Expected 'ELSE' in IF expression".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance(); // consume ELSE
+
+        let else_expr = self.parse_ternary()?; // recursive for nested ternary in else branch
+
+        Ok(Expression::IfThenElse(
+            Box::new(condition),
+            Box::new(then_expr),
+            Box::new(else_expr),
+        ))
     }
 
     pub fn parse_or(&mut self) -> ParseResult<Expression> {
@@ -146,7 +187,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse_multiplicative(&mut self) -> ParseResult<Expression> {
         let mut expr = self.parse_unary()?;
-        while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Modulo) {
+        while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Percent) {
             let operator = self.advance();
             match operator.kind {
                 Kind::Star => {
@@ -157,7 +198,7 @@ impl<'a> Parser<'a> {
                     let right_exp = self.parse_unary()?;
                     expr = Expression::Divide(Box::new(expr), Box::new(right_exp));
                 }
-                Kind::Modulo => {
+                Kind::Percent => {
                     let right_exp = self.parse_unary()?;
                     expr = Expression::Modulo(Box::new(expr), Box::new(right_exp));
                 }
@@ -613,7 +654,8 @@ mod test {
 
     #[test]
     fn parse_modulo_expression() {
-        let source = "10 mod 3";
+        // ABL uses % for modulo, not 'mod'
+        let source = "10 % 3";
         let tokens = tokenize(source);
         let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
@@ -625,7 +667,7 @@ mod test {
                     value: 10
                 }))),
                 Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 7, end: 8 },
+                    span: Span { start: 5, end: 6 },
                     value: 3
                 })))
             )
@@ -831,6 +873,168 @@ mod test {
                     Box::new(Expression::Identifier(Identifier {
                         span: Span { start: 11, end: 12 },
                         name: "c".to_string()
+                    }))
+                ))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_ternary() {
+        // IF xx > 5 THEN 10 ELSE 20
+        let source = "if xx > 5 then 10 else 20";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::IfThenElse(
+                Box::new(Expression::GreaterThan(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 3, end: 5 },
+                        name: "xx".to_string()
+                    })),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 9 },
+                        value: 5
+                    })))
+                )),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 15, end: 17 },
+                    value: 10
+                }))),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 23, end: 25 },
+                    value: 20
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_nested_ternary_in_else() {
+        // IF xx > 10 THEN 1 ELSE IF xx > 5 THEN 2 ELSE 3
+        let source = "if xx > 10 then 1 else if xx > 5 then 2 else 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::IfThenElse(
+                Box::new(Expression::GreaterThan(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 3, end: 5 },
+                        name: "xx".to_string()
+                    })),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 10 },
+                        value: 10
+                    })))
+                )),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 16, end: 17 },
+                    value: 1
+                }))),
+                Box::new(Expression::IfThenElse(
+                    Box::new(Expression::GreaterThan(
+                        Box::new(Expression::Identifier(Identifier {
+                            span: Span { start: 26, end: 28 },
+                            name: "xx".to_string()
+                        })),
+                        Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 31, end: 32 },
+                            value: 5
+                        })))
+                    )),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 38, end: 39 },
+                        value: 2
+                    }))),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 45, end: 46 },
+                        value: 3
+                    })))
+                ))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_ternary_with_complex_condition() {
+        // IF a = b AND c > d THEN 1 ELSE 0
+        let source = "if a = b and c > d then 1 else 0";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::IfThenElse(
+                Box::new(Expression::And(
+                    Box::new(Expression::Equal(
+                        Box::new(Expression::Identifier(Identifier {
+                            span: Span { start: 3, end: 4 },
+                            name: "a".to_string()
+                        })),
+                        Box::new(Expression::Identifier(Identifier {
+                            span: Span { start: 7, end: 8 },
+                            name: "b".to_string()
+                        }))
+                    )),
+                    Box::new(Expression::GreaterThan(
+                        Box::new(Expression::Identifier(Identifier {
+                            span: Span { start: 13, end: 14 },
+                            name: "c".to_string()
+                        })),
+                        Box::new(Expression::Identifier(Identifier {
+                            span: Span { start: 17, end: 18 },
+                            name: "d".to_string()
+                        }))
+                    ))
+                )),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 24, end: 25 },
+                    value: 1
+                }))),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 31, end: 32 },
+                    value: 0
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_ternary_with_expressions_in_branches() {
+        // IF cond THEN xx + yy ELSE xx - yy
+        let source = "if cond then xx + yy else xx - yy";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::IfThenElse(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 3, end: 7 },
+                    name: "cond".to_string()
+                })),
+                Box::new(Expression::Add(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 13, end: 15 },
+                        name: "xx".to_string()
+                    })),
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 18, end: 20 },
+                        name: "yy".to_string()
+                    }))
+                )),
+                Box::new(Expression::Minus(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 26, end: 28 },
+                        name: "xx".to_string()
+                    })),
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 31, end: 33 },
+                        name: "yy".to_string()
                     }))
                 ))
             )
