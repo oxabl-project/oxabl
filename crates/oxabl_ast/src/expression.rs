@@ -10,13 +10,13 @@ pub struct Identifier {
 pub enum Expression {
     Literal(Literal),
     Identifier(Identifier),
-    // Arithmetic
+    /// Arithmetic
     Add(Box<Expression>, Box<Expression>),
     Minus(Box<Expression>, Box<Expression>),
     Multiply(Box<Expression>, Box<Expression>),
     Divide(Box<Expression>, Box<Expression>),
     Modulo(Box<Expression>, Box<Expression>),
-    // Comparison
+    /// Comparison
     Equal(Box<Expression>, Box<Expression>),
     NotEqual(Box<Expression>, Box<Expression>),
     LessThan(Box<Expression>, Box<Expression>),
@@ -26,17 +26,35 @@ pub enum Expression {
     Begins(Box<Expression>, Box<Expression>),
     Matches(Box<Expression>, Box<Expression>),
     Contains(Box<Expression>, Box<Expression>),
-    // Logical
+    /// Logical
     And(Box<Expression>, Box<Expression>),
     Or(Box<Expression>, Box<Expression>),
-    // Unary
+    /// Unary
     Negate(Box<Expression>), // Unary minus: -expr
-    Not(Box<Expression>),    // Logical NOT: NOT expr
-    // Ternary
+    Not(Box<Expression>), // Logical NOT: NOT expr
+    /// Ternary
     IfThenElse(Box<Expression>, Box<Expression>, Box<Expression>), // condition, then_expr, else_expr
-    // Function call
+    /// Function call
     FunctionCall {
         name: Identifier,
         arguments: Vec<Expression>,
+    },
+    // Postfix expressions (member access, method calls, etc)
+    MemberAccess {
+        object: Box<Expression>,
+        member: Identifier,
+    },
+    MethodCall {
+        object: Box<Expression>,
+        method: Identifier,
+        arguments: Vec<Expression>,
+    },
+    ArrayAccess {
+        array: Box<Expression>,
+        index: Box<Expression>,
+    },
+    FieldAccess {
+        qualifier: Box<Expression>,
+        field: Identifier,
     },
 }
