@@ -1,0 +1,878 @@
+ Reserved Keyword                      Minimum abbreviation
+  +                                                                           
+
+  -                                                                           
+
+  .                                                                           
+
+  &ELSE                                                                       
+
+  &ELSEIF                                                                     
+
+  &ENDIF                                                                      
+
+  &GLOBAL DEFINE                    &GLOB
+
+  &IF                                                                         
+
+  &MESSAGE                                                                    
+
+  &SCOPED DEFINE                    &SCOP
+
+  &THEN                                                                       
+
+  &UNDEFINE                         &UNDEF
+
+  &WEBSTREAM
+
+  *                                                                           
+
+  /                                                                           
+
+  :                                                                           
+
+  ?                                                                           
+
+  @                                                                           
+
+  [                                                                           
+
+  ]                                                                           
+
+  ^                             
+
+'                               
+
+<                               
+
+=                               
+
+>                               
+
+ACCUM                           
+
+ACCUMULATE                      ACCUM
+
+ACTIVE FORM                     
+
+ACTIVE WINDOW                   
+
+ADD                             
+
+ALIAS                              
+
+ALL                                
+
+ALTER                              
+
+AMBIGUOUS                      AMBIG
+
+ANALYZE                        ANALYZ
+
+AND                                
+
+ANY                                
+
+APPLY                              
+
+AS                                 
+
+ASCENDING                      ASC
+
+ASSIGN                         
+
+ASYNCHRONOUS                   
+
+AT                             
+
+ATTR SPACE                      ATTR
+
+AUDIT CONTROL                 
+
+AUDIT POLICY                  
+
+AUTHORIZATION                 
+
+AUTO RETURN                     AUTO RET
+
+AVAILABLE                      AVAIL
+
+BACKGROUND                     BACK
+
+BEFORE HIDE                     BEFORE H
+
+BEGINS                           
+
+BELL                            
+
+BETWEEN                         
+
+BIG ENDIAN                      
+
+BLANK                           
+
+BREAK                           
+
+BY                             
+
+CALL                          
+
+CAN DO                        
+
+CAN FIND                      
+
+CASE                          
+
+CASE SENSITIVE                  CASE SEN
+
+CAST                         
+
+CENTERED                       CENTER
+
+CHECK                        
+
+CHR                          
+
+CLEAR                        
+
+CLIPBOARD                    
+
+CODEBASE LOCATOR             
+
+COLON                    
+
+COLOR                    
+
+COLUMN LABEL                   COLUMN LAB
+
+COLUMNS                  
+
+COMPILER                 
+
+CONNECTED                
+
+CONTROL                          
+
+COPY LOB                         
+
+COUNT OF                         
+
+CREATE                           
+
+CURRENT                          
+
+CURRENT DATE                     
+
+CURRENT CHANGED                  
+
+CURRENT LANGUAGE               CURRENT LANG
+
+CURRENT WINDOW                   
+
+CURSOR                         CURS
+
+DATABASE                         
+
+DATA RELATION                  DATA REL
+
+DATASERVERS                      
+
+DATASET                          
+
+DATASET HANDLE                   
+
+DATA SOURCE                      
+
+DBCODEPAGE                    
+
+DBCOLLATION                   
+
+DBNAME                        
+
+DBPARAM                       
+
+DBRESTRICTIONS                 DBREST
+
+DBTASKID                      
+
+DBTYPE                        
+
+DBVERSION                      DBVERS
+
+DDE                           
+
+DEBLANK                       
+
+DEBUGGER                       
+
+DEBUG LIST                     
+
+DECIMALS                       
+
+DECLARE                        
+
+DEFAULT                        
+
+DEFAULT WINDOW                     
+
+DEFINE                         DEF
+
+DELETE                         DEL
+
+DELIMITER                          
+
+DESCENDING                     DESC
+
+DICTIONARY                     DICT
+
+DISABLE                            
+
+DISABLE AUTO ZAP                   
+
+DISCONNECT                     DISCON
+
+DISP                        
+
+DISPLAY                        DISP
+
+DISTINCT                    
+
+DO                          
+
+DOS                         
+
+DOWN                        
+
+DROP                        
+
+DYNAMIC ENUM                
+
+DYNAMIC FUNCTION            
+
+DYNAMIC INVOKE              
+
+EACH                        
+
+EDITING                            
+
+ELSE                               
+
+ENABLE                             
+
+ENCODE                             
+
+END                                
+
+ENTRY                              
+
+ERROR STATUS                   ERROR STAT
+
+ESCAPE                           
+
+ETIME                            
+
+EVENT PROCEDURE                  
+
+EXCEPT                           
+
+EXCLUSIVE LOCK                 EXCLUSIVE
+
+EXISTS                           
+
+EXPORT                           
+
+FALSE                            
+
+FETCH                            
+
+FIELD                         
+
+FIELDS                         FIELD
+
+FILE INFO                     
+
+FILL                          
+
+FIND                          
+
+FIND CASE SENSITIVE           
+
+FIND GLOBAL                   
+
+FIND NEXT OCCURRENCE          
+
+FIND PREV OCCURRENCE          
+
+FIND SELECT                   
+
+FIND WRAP AROUND              
+
+FIRST                         
+
+FIRST OF                      
+
+FOCUS                         
+
+FONT                          
+
+FOR                           
+
+FORM                          
+
+FORMAT                         FORM
+
+FRAME                          FRAM
+
+FRAME COL                     
+
+FRAME DB                     
+
+FRAME DOWN                   
+
+FRAME FIELD                  
+
+FRAME FILE                   
+
+FRAME INDEX                   FRAME INDE
+
+FRAME LINE                   
+
+FRAME NAME                   
+
+FRAME ROW                    
+
+FRAME VALUE                   FRAME VAL
+
+FROM                         
+
+FROM CHARS                    FROM C
+
+FROM PIXELS                   FROM P
+
+FUNCTION CALL TYPE           
+
+GATEWAYS                      GATEWAY
+
+GET ATTR CALL TYPE           
+
+GET BUFFER HANDLE                    
+
+GETBYTE                              
+
+GET BYTE                             
+
+GET CODEPAGE                         
+
+GET CODEPAGES                        
+
+GET COLLATIONS                       
+
+GET ERROR COLUMN                     
+
+GET ERROR ROW                        
+
+GET FILE NAME                        
+
+GET FILE OFFSET               GET FILE OFFSE
+
+GET KEY VALUE                 GET KEY VAL
+
+GLOBAL                           
+
+GO ON                            
+
+GO PENDING                    GO PEND
+
+GRANT                            
+
+GRAPHIC EDGE                  GRAPHIC E
+
+GROUP                            
+
+HAVING                           
+
+HEADER                           
+
+HELP                             
+
+HIDE                             
+
+HOST BYTE ORDER                  
+
+IF                              
+
+IMPORT                          
+
+IN                              
+
+INDEX                           
+
+INDICATOR                       
+
+INPUT                             
+
+INPUT-OUTPUT                   INPUT-O
+
+INSERT                            
+
+INTO                              
+
+IS                                
+
+IS-ATTR-SPACE                  IS-ATTR
+
+IS-LEAD-BYTE                   IS-ATTR
+
+JOIN                          
+
+KBLABEL                       
+
+KEYCODE                       
+
+KEY-CODE                      
+
+KEYFUNCTION                    KEYFUNC
+
+KEY-FUNCTION                   KEY-FUNC
+
+KEYLABEL                      
+
+KEY-LABEL                     
+
+KEYS                          
+
+KEYWORD                       
+
+LABEL                         
+
+LAST                         
+
+LAST-EVENT                    LAST-EVEN
+
+LASTKEY                      
+
+LAST-KEY                     
+
+LAST-OF                      
+
+LDBNAME                      
+
+LEAVE                        
+
+LIBRARY                      
+
+LIKE                         
+
+LIKE-SEQUENTIAL              
+
+LINE-COUNTER                  LINE-COUNT
+
+LISTING                       LISTI
+
+LITTLE-ENDIAN                       
+
+LOCKED                              
+
+LOG-MANAGER                         
+
+LOOKUP                        
+
+MAP                           
+
+MEMBER                        
+
+MESSAGE                          
+
+MESSAGE-LINES                    
+
+MOUSE                            
+
+MPE                             
+
+NEW                             
+
+NEXT                            
+
+NEXT-PROMPT                     
+
+NO                              
+
+NO-ATTR-LIST                 NO-ATTR
+
+NO-ATTR-SPACE                NO-ATTR
+
+NO-ERROR                             
+
+NO-FILL                       NO-F
+
+NO-FOCUS                             
+
+NO-HIDE                              
+
+NO-LABELS                     NO-LABEL
+
+NO-LOBS                              
+
+NO-LOCK                              
+
+NO-MAP                               
+
+NO-MESSAGE                    NO-MES
+
+NO-PAUSE                             
+
+NO-PREFETCH                   NO-PREFE
+
+NOT                             
+
+NO-UNDO                         
+
+NO-VALIDATE                  NO-VAL
+
+NOW                             
+
+NO-WAIT                         
+
+NULL                            
+
+NUM-ALIASES                  NUM-ALI
+
+NUM-DBS                         
+
+NUM-ENTRIES                     
+
+OF                            
+
+OFF                           
+
+OLD                           
+
+ON                            
+
+OPEN                          
+
+OPSYS                         
+
+OPTION                        
+
+OR                            
+
+OS-APPEND                     
+
+OS-COMMAND                    
+
+OS-COPY                       
+
+OS-CREATE-DIR                 
+
+OS-DELETE                     
+
+OS-DIR                        
+
+OS-RENAME                     
+
+OTHERWISE                          
+
+OUTPUT                             
+
+OVERLAY                            
+
+PAGE                               
+
+PAGE-BOTTOM                   PAGE-BOT
+
+PAGE-NUMBER                   PAGE-NUM
+
+PAGE-TOP                           
+
+PARAMETER                     PARAM
+
+PASSWORD-FIELD                     
+
+PAUSE                              
+
+PDBNAME                            
+
+PERSISTENT                    PERSIST
+
+PIXELS                             
+
+PREPROCESS                   PREPROC
+
+PRIVILEGES                      
+
+PROCEDURE-CALL-TYPE             
+
+PROCESS                         
+
+PROC-HANDLE                  PROC-HA
+
+PROC-STATUS                  PROC-ST
+
+PROFILER                        
+
+PROGRAM-NAME                    
+
+PROGRESS                   
+
+PROMPT-FOR                  PROMPT-F
+
+PROMSGS                    
+
+PROPATH                    
+
+PROVERSION                  PROVERS
+
+PUT                        
+
+PUTBYTE                    
+
+PUT-BYTE                   
+
+PUT-KEY-VALUE               PUT-KEY-VAL
+
+QUERY                      
+
+QUERY-CLOSE                
+
+QUERY-OFF-END              
+
+QUERY-TUNING                     
+
+QUIT                             
+
+RCODE-INFORMATION             RCODE-INFO
+
+READ-AVAILABLE                   
+
+READ-EXACT-NUM                   
+
+READKEY                          
+
+RECID                            
+
+RECTANGLE                     RECT
+
+RELEASE                          
+
+REPEAT                           
+
+REPOSITION                      
+
+REPOSITION-BACKWARD             
+
+REPOSITION-FORWARD              
+
+REPOSITION-TO-ROW               
+
+REPOSITION-TO-ROWID             
+
+RETAIN                          
+
+RETRY                           
+
+RETURN                          
+
+RETURNS                         
+
+REVERT                          
+
+REVOKE                          
+
+R-INDEX                         
+
+ROWID                       
+
+RUN                         
+
+SAVE                        
+
+SAX-COMPLETE                 SAX-COMPLE
+
+SAX-PARSER-ERROR            
+
+SAX-RUNNING                 
+
+SAX-UNINITIALIZED           
+
+SAX-WRITE-BEGIN             
+
+SAX-WRITE-COMPLETE          
+
+SAX-WRITE-CONTENT           
+
+SAX-WRITE-ELEMENT           
+
+SAX-WRITE-ERROR             
+
+SAX-WRITE-IDLE              
+
+SAX-WRITE-TAG               
+
+SCHEMA                          
+
+SCREEN                          
+
+SCREEN-IO                       
+
+SCREEN-LINES                    
+
+SCROLL                          
+
+SDBNAME                         
+
+SEARCH                          
+
+SEARCH-SELF                     
+
+SEARCH-TARGER                   
+
+SECURITY-POLICY                 
+
+SEEK                            
+
+SELECT                          
+
+SELF                                     
+
+SESSION                                  
+
+SET                                      
+
+SET-ATTR-CALL-TYPE                       
+
+SETUSERID                      SETUSER
+
+SHARED                            
+
+SHARE-LOCK                     SHARE
+
+SHOW-STATS                     SHOW-STAT
+
+SINGLE-RUN                   
+
+SKIP                         
+
+SKIP-DELETED-RECORD          
+
+SOME                         
+
+SPACE                        
+
+STATUS                                 
+
+STREAM                                 
+
+STREAM-HANDLE                          
+
+STREAM-IO                              
+
+SYSTEM-DIALOG                           
+
+TABLE                                   
+
+TABLE-NUMBER                            
+
+TERM                                    
+
+TERMINAL                       TERM
+
+TEXT                                    
+
+TEXT-CURSOR                             
+
+THEN                                    
+
+THIS-OBJECT                             
+
+THIS-PROCEDURE                          
+
+THREAD-SAFE                             
+
+TIME                          
+
+TITLE                         
+
+TO                            
+
+TOP-ONLY                      
+
+TO-ROWID                      
+
+TRANS                         
+
+TRANSACTION                   
+
+TRIGGER                       
+
+TRIGGERS                      
+
+TRIM                          
+
+TRUE                          
+
+UNDERLINE                  UNDERL
+
+UNDO                      
+
+UNFORMATTED                UNFORM
+
+UNION                     
+
+UNIQUE                    
+
+UNIX                      
+
+UP                        
+
+UPDATE                    
+
+USE-INDEX                 
+
+USERID                    
+
+USING                                
+
+V6FRAME                              
+
+VALUE                                
+
+VALUE-CHANGED                        
+
+VALUES                               
+
+VIEW                                 
+
+VIEW-AS                              
+
+WAIT-FOR                             
+
+WHEN                             
+
+WHERE                            
+
+WHILE                            
+
+WINDOW                           
+
+WINDOW-MAXIMIZED              WINDOW-MAXIM
+
+WINDOW-MINIMIZED              WINDOW-MINIM
+
+WINDOW-NORMAL                    
+
+WITH                             
+
+WORKFILE                         
+
+WORK-TABLE                    WORK-TAB
+
+WRITE                            
+
+XCODE                                      
+
+XREF                                       
+
+XREF-XML                                   
+
+YES                                        
