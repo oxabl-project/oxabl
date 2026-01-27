@@ -4,7 +4,7 @@
 //! is out of bounds. Contract is to check is_end before using them.
 
 use oxabl_ast::{Expression, Identifier, Span};
-use oxabl_lexer::{Kind, Token, is_callable_kind};
+use oxabl_lexer::{is_callable_kind, Kind, Token};
 
 use crate::literal::token_to_literal;
 
@@ -223,7 +223,150 @@ impl<'a> Parser<'a> {
             let expr = self.parse_unary()?;
             return Ok(Expression::Not(Box::new(expr)));
         }
-        self.parse_primary()
+        self.parse_postfix()
+    }
+
+    pub fn parse_postfix(&mut self) -> ParseResult<Expression> {
+        let mut expr = self.parse_primary()?;
+
+        loop {
+            if self.check(Kind::Colon) {
+                expr = self.parse_member_or_method(expr)?;
+            } else if self.check(Kind::LeftBracket) {
+                expr = self.parse_array_access(expr)?;
+            } else if self.check(Kind::Period) && !self.is_decimal_ahead() {
+                expr = self.parse_field_access(expr)?;
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    pub fn parse_member_or_method(&mut self, object: Expression) -> ParseResult<Expression> {
+        self.advance(); // consumes ':'
+
+        // Expect identifier after ':'
+        if !self.check(Kind::Identifier) {
+            return Err(ParseError {
+                message: format!(
+                    "Expected identifier after ':', found {:?}",
+                    self.peek().kind
+                ),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+
+        let token = self.advance().clone();
+        let member = Identifier {
+            span: Span {
+                start: token.start as u32,
+                end: token.end as u32,
+            },
+            name: self.source[token.start..token.end].to_string(),
+        };
+
+        // Check for method call: member followed by (
+        if self.check(Kind::LeftParen) {
+            self.advance(); // Consume '('
+
+            // consume and store all arguments
+            let mut arguments = Vec::new();
+            if !self.check(Kind::RightParen) {
+                arguments.push(self.parse_expression()?);
+
+                while self.check(Kind::Comma) {
+                    self.advance(); // Consume ','
+                    arguments.push(self.parse_expression()?);
+                }
+            }
+
+            // if after parsing all arguments we don't find the
+            // closing ), throw error
+            if !self.check(Kind::RightParen) {
+                return Err(ParseError {
+                    message: "Expected ')' after method arguments".to_string(),
+                    span: Span {
+                        start: self.peek().start as u32,
+                        end: self.peek().end as u32,
+                    },
+                });
+            }
+            self.advance(); // consume ')'
+
+            return Ok(Expression::MethodCall {
+                object: Box::new(object),
+                method: member,
+                arguments,
+            });
+        }
+
+        Ok(Expression::MemberAccess {
+            object: Box::new(object),
+            member,
+        })
+    }
+
+    pub fn parse_array_access(&mut self, array: Expression) -> ParseResult<Expression> {
+        self.advance(); // consume the '['
+
+        let index = self.parse_expression()?;
+
+        if !self.check(Kind::RightBracket) {
+            return Err(ParseError {
+                message: "Expected ']' after array index".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance(); // consume ']'
+
+        Ok(Expression::ArrayAccess {
+            array: Box::new(array),
+            index: Box::new(index),
+        })
+    }
+
+    pub fn is_decimal_ahead(&mut self) -> bool {
+        // TODO - improve this? Technically decimals have
+        // already been parsed, so checking for decimals when
+        // parsing postfix expressions is a bit redundant.
+        false
+    }
+
+    pub fn parse_field_access(&mut self, qualifier: Expression) -> ParseResult<Expression> {
+        self.advance(); // consume '.'
+
+        // Expect identifier after '.'
+        if !self.check(Kind::Identifier) {
+            return Err(ParseError {
+                message: "Expected field name after '.'".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+
+        let token = self.advance().clone();
+        let field = Identifier {
+            span: Span {
+                start: token.start as u32,
+                end: token.end as u32,
+            },
+            name: self.source[token.start..token.end].to_string(),
+        };
+
+        Ok(Expression::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field,
+        })
     }
 
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
@@ -1241,6 +1384,454 @@ mod test {
                     value: 1
                 })))
             )
+        );
+    }
+
+    #[test]
+    fn parse_simple_array_access() {
+        let source = "arr[1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::ArrayAccess {
+                array: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "arr".to_string()
+                })),
+                index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 1
+                })))
+            }
+        )
+    }
+
+    #[test]
+    fn parse_array_access_with_expression_index() {
+        let source = "arr[i + 1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::ArrayAccess {
+                array: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "arr".to_string()
+                })),
+                index: Box::new(Expression::Add(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 4, end: 5 },
+                        name: "i".to_string()
+                    })),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 9 },
+                        value: 1
+                    })))
+                ))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_hyphenated_array_access() {
+        let source = "month-quota[3]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::ArrayAccess {
+                array: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 11 },
+                    name: "month-quota".to_string()
+                })),
+                index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 12, end: 13 },
+                    value: 3
+                })))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_multidimensional_array() {
+        let source = "matrix[row][col]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::ArrayAccess {
+                array: Box::new(Expression::ArrayAccess {
+                    array: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 6 },
+                        name: "matrix".to_string()
+                    })),
+                    index: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 7, end: 10 },
+                        name: "row".to_string()
+                    }))
+                }),
+                index: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 12, end: 15 },
+                    name: "col".to_string()
+                }))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_array_in_arithmetic() {
+        let source = "arr[1] + arr[2]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Add(
+                Box::new(Expression::ArrayAccess {
+                    array: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 3 },
+                        name: "arr".to_string()
+                    })),
+                    index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 1
+                    })))
+                }),
+                Box::new(Expression::ArrayAccess {
+                    array: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 9, end: 12 },
+                        name: "arr".to_string()
+                    })),
+                    index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 13, end: 14 },
+                        value: 2
+                    })))
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_member_access() {
+        let source = "handle:PRIVATE-DATA";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::MemberAccess {
+                object: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "handle".to_string()
+                })),
+                member: Identifier {
+                    span: Span { start: 7, end: 19 },
+                    name: "PRIVATE-DATA".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_simple_method_call() {
+        let source = "buffer:FIND-FIRST()";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::MethodCall {
+                object: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "buffer".to_string()
+                })),
+                method: Identifier {
+                    span: Span { start: 7, end: 17 },
+                    name: "FIND-FIRST".to_string()
+                },
+                arguments: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_method_call_with_args() {
+        let source = "widget:MOVE(10, 20)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::MethodCall {
+                object: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "widget".to_string()
+                })),
+                method: Identifier {
+                    span: Span { start: 7, end: 11 },
+                    name: "MOVE".to_string()
+                },
+                arguments: vec![
+                    Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 12, end: 14 },
+                        value: 10
+                    })),
+                    Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 16, end: 18 },
+                        value: 20
+                    }))
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_chained_member_access() {
+        let source = "obj:property:nested";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::MemberAccess {
+                object: Box::new(Expression::MemberAccess {
+                    object: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 3 },
+                        name: "obj".to_string()
+                    })),
+                    member: Identifier {
+                        span: Span { start: 4, end: 12 },
+                        name: "property".to_string()
+                    }
+                }),
+                member: Identifier {
+                    span: Span { start: 13, end: 19 },
+                    name: "nested".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_member_then_method() {
+        let source = "obj:prop:method()";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::MethodCall {
+                object: Box::new(Expression::MemberAccess {
+                    object: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 3 },
+                        name: "obj".to_string()
+                    })),
+                    member: Identifier {
+                        span: Span { start: 4, end: 8 },
+                        name: "prop".to_string()
+                    }
+                }),
+                method: Identifier {
+                    span: Span { start: 9, end: 15 },
+                    name: "method".to_string()
+                },
+                arguments: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_member_access_with_array() {
+        let source = "myBuf:myField[1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::ArrayAccess {
+                array: Box::new(Expression::MemberAccess {
+                    object: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 5 },
+                        name: "myBuf".to_string()
+                    })),
+                    member: Identifier {
+                        span: Span { start: 6, end: 13 },
+                        name: "myField".to_string()
+                    }
+                }),
+                index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 1
+                })))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_member_in_expression() {
+        let source = "myObj:myVal + 5";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Add(
+                Box::new(Expression::MemberAccess {
+                    object: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 5 },
+                        name: "myObj".to_string()
+                    })),
+                    member: Identifier {
+                        span: Span { start: 6, end: 11 },
+                        name: "myVal".to_string()
+                    }
+                }),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 5
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_field_access() {
+        let source = "Customer.CustNum";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::FieldAccess {
+                qualifier: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 8 },
+                    name: "Customer".to_string()
+                })),
+                field: Identifier {
+                    span: Span { start: 9, end: 16 },
+                    name: "CustNum".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_qualified_field_access() {
+        let source = "Sports2020.Customer.Name";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::FieldAccess {
+                qualifier: Box::new(Expression::FieldAccess {
+                    qualifier: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 10 },
+                        name: "Sports2020".to_string()
+                    })),
+                    field: Identifier {
+                        span: Span { start: 11, end: 19 },
+                        name: "Customer".to_string()
+                    }
+                }),
+                field: Identifier {
+                    span: Span { start: 20, end: 24 },
+                    name: "Name".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_field_access_with_array() {
+        let source = "myTable.myField[extent]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::ArrayAccess {
+                array: Box::new(Expression::FieldAccess {
+                    qualifier: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 7 },
+                        name: "myTable".to_string()
+                    })),
+                    field: Identifier {
+                        span: Span { start: 8, end: 15 },
+                        name: "myField".to_string()
+                    }
+                }),
+                index: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 16, end: 22 },
+                    name: "extent".to_string()
+                }))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_field_in_comparison() {
+        let source = "Customer.Balance > 1000";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::GreaterThan(
+                Box::new(Expression::FieldAccess {
+                    qualifier: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 8 },
+                        name: "Customer".to_string()
+                    })),
+                    field: Identifier {
+                        span: Span { start: 9, end: 16 },
+                        name: "Balance".to_string()
+                    }
+                }),
+                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 19, end: 23 },
+                    value: 1000
+                })))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_mixed_access_operators() {
+        // Combines field access, member access, and array indexing
+        let source = "myDb.myTable:buffer[1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::ArrayAccess {
+                array: Box::new(Expression::MemberAccess {
+                    object: Box::new(Expression::FieldAccess {
+                        qualifier: Box::new(Expression::Identifier(Identifier {
+                            span: Span { start: 0, end: 4 },
+                            name: "myDb".to_string()
+                        })),
+                        field: Identifier {
+                            span: Span { start: 5, end: 12 },
+                            name: "myTable".to_string()
+                        }
+                    }),
+                    member: Identifier {
+                        span: Span { start: 13, end: 19 },
+                        name: "buffer".to_string()
+                    }
+                }),
+                index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 20, end: 21 },
+                    value: 1
+                })))
+            }
         );
     }
 }
