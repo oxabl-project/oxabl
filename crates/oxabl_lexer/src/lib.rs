@@ -11,8 +11,10 @@ pub mod oxabl_atom {
 }
 use rust_decimal::Decimal;
 
+mod callable;
 mod kind;
 use crate::{kind::match_keyword, oxabl_atom::OxablAtom};
+pub use callable::{is_callable_kind, CALLABLE_FUNCTION_KINDS};
 pub use kind::Kind;
 
 /// Tokenize ABL source code into a vector of tokens.
