@@ -108,20 +108,18 @@ Here's what's on the roadmap for the lexer:
 We generate code for all the keywords and operators to use within the project. Use these commands to generate the code:
 
 ```rust
-cargo run -p oxabl_codegen -- <command> >> <file>
+cargo run -p oxabl_codegen -- <command>
 ```
 
 Valid commands are:
-- kind
+- `kind`
   - generates the `kind.rs` file for the lexer.
-- atoms
-  - generate the atom list used by `build.rs` for the lexer.
-- match
-  - generate the keyword match function used by the lexer.
-- all
-  - all of the above
-- summary or nothing
+- `atoms`
+  - generates the `build.rs` file for the lexer.
+- `summary`
   - outputs status and usage
+- No command
+  - generates all files
 
 You need to provide a file, as these functions simply return strings, they don't manipulate files directly.
 
