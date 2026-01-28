@@ -33,22 +33,18 @@ cargo check
 The lexer uses generated code for ABL keywords, operators, and the keyword matching function. The `oxabl_codegen` crate parses reference HTML/JSON files from `resources/` and generates Rust code.
 
 ```bash
-# Show summary and usage
+# Write all generated files (default)
 cargo run -p oxabl_codegen
 
-# Generate kind.rs (token type enum)
-cargo run -p oxabl_codegen -- kind > crates/oxabl_lexer/src/kind.rs
+# Write specific file(s)
+cargo run -p oxabl_codegen -- kind     # Writes kind.rs (enum + match function)
+cargo run -p oxabl_codegen -- atoms    # Writes build.rs (complete file)
 
-# Append keyword match function to kind.rs
-cargo run -p oxabl_codegen -- match >> crates/oxabl_lexer/src/kind.rs
-
-# Generate atom list (inner content only, for manual insertion into build.rs)
-cargo run -p oxabl_codegen -- atoms
+# Show statistics without writing files
+cargo run -p oxabl_codegen -- summary
 ```
 
-**Important**:
-- The `atoms` command only outputs the `string_cache_codegen` call, not the full `build.rs` file. You must manually wrap it with `use std::env; use std::path::Path;` and `fn main() { ... }`.
-- Use `>` to overwrite or `>>` to append. The codegen does not clear files automatically.
+Generated files are written directly to their target locations and include a "DO NOT EDIT" header.
 
 ## Architecture
 
