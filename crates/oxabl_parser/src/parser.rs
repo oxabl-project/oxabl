@@ -3,8 +3,8 @@
 //! Will panic if peek or advance are called when current cursor position
 //! is out of bounds. Contract is to check is_end before using them.
 
-use oxabl_ast::{Expression, Identifier, Span};
-use oxabl_lexer::{is_callable_kind, Kind, Token};
+use oxabl_ast::{Expression, Identifier, Span, Statement};
+use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 use crate::literal::token_to_literal;
 
@@ -118,6 +118,7 @@ impl<'a> Parser<'a> {
     }
 
     fn is_comparison_operator(&self) -> bool {
+        println!("self.peek().kind: {:?}", self.peek().kind);
         matches!(
             self.peek().kind,
             Kind::Equals
@@ -140,13 +141,17 @@ impl<'a> Parser<'a> {
 
     pub fn parse_comparison(&mut self) -> ParseResult<Expression> {
         let left = self.parse_additive()?;
+        println!("left: {:?}", left);
 
         if !self.is_comparison_operator() {
+            println!("not a comparison operator");
             return Ok(left);
         }
 
         let op_kind = self.advance().kind;
+        println!("op_kind: {:?}", op_kind);
         let right = self.parse_additive()?;
+        println!("right: {:?}", right);
 
         let expr = match op_kind {
             Kind::Equals | Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
@@ -234,7 +239,10 @@ impl<'a> Parser<'a> {
                 expr = self.parse_member_or_method(expr)?;
             } else if self.check(Kind::LeftBracket) {
                 expr = self.parse_array_access(expr)?;
-            } else if self.check(Kind::Period) && !self.is_decimal_ahead() {
+            } else if self.check(Kind::Period)
+                && self.is_field_access_ahead()
+                && Self::can_have_field_access(&expr)
+            {
                 expr = self.parse_field_access(expr)?;
             } else {
                 break;
@@ -248,7 +256,7 @@ impl<'a> Parser<'a> {
         self.advance(); // consumes ':'
 
         // Expect identifier after ':'
-        if !self.check(Kind::Identifier) {
+        if !is_callable_kind(self.peek().kind) {
             return Err(ParseError {
                 message: format!(
                     "Expected identifier after ':', found {:?}",
@@ -333,11 +341,25 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub fn is_decimal_ahead(&mut self) -> bool {
-        // TODO - improve this? Technically decimals have
-        // already been parsed, so checking for decimals when
-        // parsing postfix expressions is a bit redundant.
-        false
+    /// Check if we're looking at field access, rather that a statement terminator
+    pub fn is_field_access_ahead(&mut self) -> bool {
+        // skip if it's not a period
+        if !self.check(Kind::Period) {
+            return false;
+        }
+
+        // return true if there is an identifer after the period
+        self.tokens
+            .get(self.current + 1)
+            .is_some_and(|t| t.kind == Kind::Identifier)
+    }
+
+    /// Check if an expression can be the base of field access (Table.Field)
+    fn can_have_field_access(expr: &Expression) -> bool {
+        matches!(
+            expr,
+            Expression::Identifier(_) | Expression::FieldAccess { .. }
+        )
     }
 
     pub fn parse_field_access(&mut self, qualifier: Expression) -> ParseResult<Expression> {
@@ -466,6 +488,121 @@ impl<'a> Parser<'a> {
         self.advance(); // consume the right parenthesis
 
         Ok(Expression::FunctionCall { name, arguments })
+    }
+
+    pub fn parse_statement(&mut self) -> ParseResult<Statement> {
+        println!("current token: {:?}", self.tokens[self.current]);
+        // Skip empty statements
+        if self.check(Kind::Period) {
+            self.advance();
+            return Ok(Statement::Empty);
+        }
+
+        // Parse left-hand assignment, stop before comparison operators
+        let left = self.parse_additive()?;
+        println!("left: {:?}", left);
+
+        if self.check(Kind::Equals) {
+            self.advance(); // consume the "="
+            let value = self.parse_expression()?;
+            println!("value: {:?}", value);
+            self.expect_period()?;
+            return Ok(Statement::Assignment {
+                target: left,
+                value,
+            });
+        }
+
+        // not an assignment, continue parsing as full expression
+        let expr = self.finish_expression(left)?;
+        self.expect_period()?;
+        Ok(Statement::ExpressionStatement(expr))
+    }
+
+    /// Continue parsing an expression after additive level has been parsed
+    fn finish_expression(&mut self, left: Expression) -> ParseResult<Expression> {
+        // Handle comparison operators (except = which we already checked)
+        let expr = if self.is_non_equals_comparison_operator() {
+            let op_kind = self.advance().kind;
+            let right = self.parse_additive()?;
+            self.make_comparison(left, op_kind, right)
+        } else {
+            left
+        };
+
+        // Handle AND
+        let mut expr = expr;
+        while self.check(Kind::And) {
+            self.advance();
+            let right = self.parse_comparison()?;
+            expr = Expression::And(Box::new(expr), Box::new(right));
+        }
+
+        // Handle OR
+        while self.check(Kind::Or) {
+            self.advance();
+            let right = self.parse_and()?;
+            expr = Expression::Or(Box::new(expr), Box::new(right));
+        }
+
+        Ok(expr)
+    }
+
+    fn is_non_equals_comparison_operator(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            Kind::NotEqual
+                | Kind::LessThan
+                | Kind::LessThanOrEqual
+                | Kind::GreaterThan
+                | Kind::GreaterThanOrEqual
+                | Kind::Ne
+                | Kind::Lt
+                | Kind::Le
+                | Kind::Gt
+                | Kind::Ge
+                | Kind::Begins
+                | Kind::Matches
+                | Kind::Contains
+        )
+    }
+
+    fn make_comparison(&self, left: Expression, op: Kind, right: Expression) -> Expression {
+        match op {
+            Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),
+            Kind::LessThan | Kind::Lt => Expression::LessThan(Box::new(left), Box::new(right)),
+            // ... etc for other operators
+            _ => unreachable!(),
+        }
+    }
+
+    /// Expect and consume a period, or return an error
+    fn expect_period(&mut self) -> ParseResult<()> {
+        if !self.check(Kind::Period) {
+            return Err(ParseError {
+                message: format!(
+                    "Expected '.' to end statement, found {:?}",
+                    self.peek().kind
+                ),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance();
+        Ok(())
+    }
+
+    /// Parse multiple statements until we hit a terminator
+    pub fn parse_statements(&mut self) -> ParseResult<Vec<Statement>> {
+        let mut statements = Vec::new();
+
+        while !self.at_end() {
+            statements.push(self.parse_statement()?);
+        }
+
+        Ok(statements)
     }
 }
 
@@ -1833,5 +1970,165 @@ mod test {
                 })))
             }
         );
+    }
+
+    #[test]
+    fn parse_simple_assignment() {
+        let source = "x = 5.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Assignment {
+                target: Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "x".to_string()
+                }),
+                value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 5
+                }))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_assignment_with_expression() {
+        let source = "total = price * quantity.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Assignment {
+                target: Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 5 },
+                    name: "total".to_string()
+                }),
+                value: Expression::Multiply(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 8, end: 13 },
+                        name: "price".to_string()
+                    })),
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 16, end: 24 },
+                        name: "quantity".to_string()
+                    }))
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn parse_array_assignment() {
+        let source = "arr[1] = 10.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Assignment {
+                target: Expression::ArrayAccess {
+                    array: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 3 },
+                        name: "arr".to_string()
+                    })),
+                    index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 1
+                    })))
+                },
+                value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 9, end: 11 },
+                    value: 10
+                }))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_field_assignment() {
+        let source = "Customer.Name = \"John\".";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Assignment {
+                target: Expression::FieldAccess {
+                    qualifier: Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 0, end: 8 },
+                        name: "Customer".to_string()
+                    })),
+                    field: Identifier {
+                        span: Span { start: 9, end: 13 },
+                        name: "Name".to_string()
+                    }
+                },
+                value: Expression::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 16, end: 22 },
+                    value: "John".to_string()
+                }))
+            }
+        );
+    }
+
+    #[test]
+    fn parse_expression_statement() {
+        let source = "calculateTotals().";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::ExpressionStatement(Expression::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 15 },
+                    name: "calculateTotals".to_string()
+                },
+                arguments: vec![]
+            })
+        );
+    }
+
+    #[test]
+    fn parse_method_call_statement() {
+        let source = "buffer:save-row-changes().";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::ExpressionStatement(Expression::MethodCall {
+                object: Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "buffer".to_string()
+                })),
+                method: Identifier {
+                    span: Span { start: 7, end: 23 },
+                    name: "save-row-changes".to_string()
+                },
+                arguments: vec![]
+            })
+        );
+    }
+
+    #[test]
+    fn parse_empty_statement() {
+        let source = ".";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(stmt, Statement::Empty);
+    }
+
+    #[test]
+    fn parse_multiple_statements() {
+        let source = "x = 1. y = 2. z = x + y.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmts = parser.parse_statements().expect("Expected statements");
+        assert_eq!(stmts.len(), 3);
     }
 }
