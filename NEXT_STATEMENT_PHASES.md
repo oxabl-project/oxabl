@@ -2,6 +2,7 @@
 
 This document continues from `NEXT_5_PHASES.md` (expression parsing) and covers statement parsing. Statements are the executable units of ABL programs - they *do* things rather than *evaluate* to values.
 
+**Currently on phase 8**
 ---
 
 ## Table of Contents

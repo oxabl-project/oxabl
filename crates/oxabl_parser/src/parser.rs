@@ -3,7 +3,7 @@
 //! Will panic if peek or advance are called when current cursor position
 //! is out of bounds. Contract is to check is_end before using them.
 
-use oxabl_ast::{Expression, Identifier, Span, Statement};
+use oxabl_ast::{DataType, Expression, Identifier, Span, Statement};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 use crate::literal::token_to_literal;
@@ -498,6 +498,22 @@ impl<'a> Parser<'a> {
             return Ok(Statement::Empty);
         }
 
+        // Check for traditional define statement
+        // def var name as type [no-undo] [initial value] [extent n].
+        if self.check(Kind::Define) {
+            return self.parse_define_statement();
+        }
+
+        // Check for new var statement
+        // var char name [=] [5].
+        if self.check(Kind::Identifier) {
+            let token = self.peek();
+            let text = &self.source[token.start..token.end];
+            if text.eq_ignore_ascii_case("var") {
+                return self.parse_var_statement();
+            }
+        }
+
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
         println!("left: {:?}", left);
@@ -517,6 +533,163 @@ impl<'a> Parser<'a> {
         let expr = self.finish_expression(left)?;
         self.expect_period()?;
         Ok(Statement::ExpressionStatement(expr))
+    }
+
+    // parse define variable as type [no-undo] [initial]
+    fn parse_define_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume DEFINE
+
+        // Variable
+        if !self.check(Kind::Identifier) {
+            return Err(ParseError {
+                message: "Expected variable name after DEFINE".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        // buffer
+        // todo
+        // temp-table
+        // todo
+
+        let define_what = self.peek();
+        let define_text = &self.source[define_what.start..define_what.end];
+
+        if !define_text.eq_ignore_ascii_case("variable") &&
+        !define_text.eq_ignore_ascii_case("var") {
+            return Err(ParseError {
+                message: "Expected VARIABLE or VAR after DEFINE".to_string(),
+                span: Span {
+                    start: define_what.start as u32,
+                    end: define_what.end as u32,
+                },
+            });
+        }
+        self.advance(); // consume VARIABLE or VAR
+
+        // Name
+        if !is_callable_kind(self.peek().kind) {
+            return Err(ParseError {
+                message: "Expected variable name after DEFINE VARIABLE".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+
+        let name_token = self.advance().clone();
+        let name = Identifier {
+            span: Span {
+                start: name_token.start as u32,
+                end: name_token.end as u32,
+            },
+            name: self.source[name_token.start..name_token.end].to_string(),
+        };
+
+        // expect As
+        if !self.check(Kind::KwAs) {
+            return Err(ParseError {
+                message: "Expected AS after variable name".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance(); // consume AS
+
+        // parse data type
+        let data_type = self.parse_data_type()?;
+
+        // parse optional no-undo, initial, and extent
+        let mut no_undo = false;
+        let mut initial_value = None;
+        let mut extent = None;
+
+        loop {
+            if self.check(Kind::NoUndo) {
+                self.advance();
+                no_undo = true;
+            } else if self.check(Kind::Identifier) {
+                let token = self.peek();
+                let text = &self.source[token.start..token.end];
+
+                if text.eq_ignore_ascii_case("initial") ||
+                text.eq_ignore_ascii_case("init") {
+                    self.advance(); // Consume init
+                    initial_value = Some(self.parse_expression()?);
+                } else if text.eq_ignore_ascii_case("extent") {
+                    self.advance(); // Consume extent
+
+                    // Extent can be followed by number or nothing (dynamic)
+                    if self.check(Kind::IntegerLiteral) {
+                        let ext_token = self.advance().clone();
+                        if let Ok(n) = self.source[ext_token.start..ext_token.end].parse::<u32>() {
+                            extent = Some(n);
+                        } else {
+                            extent = Some(0); // dynamic
+                        }
+                    } // extent check if it's set or dynamic
+                } else { // check for initial or extent
+                    break; // not intial or extent, exit loop
+                }
+            } else {
+                break; // not an identifier, exit loop
+            }
+        }
+
+        self.expect_period()?;
+
+        Ok(Statement::VariableDeclaration { name, data_type, initial_value, no_undo, extent })
+
+    }
+
+    /// Parse: VAR type name [= value].
+    fn parse_var_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume VAR
+
+        // Parse data type
+        let data_type = self.parse_data_type()?;
+
+        // Parse variable name
+        if !is_callable_kind(self.peek().kind) {
+            return Err(ParseError {
+                message: "Expected variable name".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        let name_token = self.advance().clone();
+        let name = Identifier {
+            span: Span {
+                start: name_token.start as u32,
+                end: name_token.end as u32,
+            },
+            name: self.source[name_token.start..name_token.end].to_string(),
+        };
+
+        // Optional initial value
+        let initial_value = if self.check(Kind::Equals) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        self.expect_period()?;
+
+        Ok(Statement::VariableDeclaration {
+            name,
+            data_type,
+            initial_value,
+            no_undo: true, // VAR implies NO-UNDO
+            extent: None,
+        })
     }
 
     /// Continue parsing an expression after additive level has been parsed
@@ -603,6 +776,43 @@ impl<'a> Parser<'a> {
         }
 
         Ok(statements)
+    }
+
+    fn parse_data_type(&mut self) -> ParseResult<DataType> {
+        let token = self.peek();
+        let type_str = self.source[token.start..token.end].to_uppercase();
+
+        let data_type = match type_str.as_str() {
+            "INTEGER" | "INT" => DataType::Integer,
+            "INT64" => DataType::Int64,
+            "DECIMAL" | "DEC" => DataType::Decimal,
+            "CHARACTER" | "CHAR" => DataType::Character,
+            "LOGICAL" | "LOG" => DataType::Logical,
+            "DATE" => DataType::Date,
+            "DATETIME" => DataType::DateTime,
+            "DATETIME-TZ" => DataType::DateTimeTz,
+            "HANDLE" => DataType::Handle,
+            "ROWID" => DataType::Rowid,
+            "RECID" => DataType::Recid,
+            "RAW" => DataType::Raw,
+            "MEMPTR" => DataType::Memptr,
+            "LONGCHAR" => DataType::Longchar,
+            "CLOB" => DataType::Clob,
+            "BLOB" => DataType::Blob,
+            "COM-HANDLE" => DataType::Com,
+            _ => {
+                return Err(ParseError {
+                    message: format!("Unknown data type: {}", type_str),
+                    span: Span {
+                        start: token.start as u32,
+                        end: token.end as u32,
+                    },
+                })
+            }
+        };
+
+        self.advance();
+        Ok(data_type)
     }
 }
 
@@ -2130,5 +2340,137 @@ mod test {
         let mut parser = Parser::new(&tokens, source);
         let stmts = parser.parse_statements().expect("Expected statements");
         assert_eq!(stmts.len(), 3);
+    }
+
+    #[test]
+    fn parse_define_variable_simple() {
+        let source = "DEFINE VARIABLE myVar AS INTEGER NO-UNDO.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::VariableDeclaration {
+                name: Identifier {
+                    span: Span { start: 16, end: 21 },
+                    name: "myVar".to_string()
+                },
+                data_type: DataType::Integer,
+                initial_value: None,
+                no_undo: true,
+                extent: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_define_variable_with_initial() {
+        let source = "DEFINE VARIABLE counter AS INTEGER INITIAL 0.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::VariableDeclaration {
+                name: Identifier {
+                    span: Span { start: 16, end: 23 },
+                    name: "counter".to_string()
+                },
+                data_type: DataType::Integer,
+                initial_value: Some(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 43, end: 44 },
+                    value: 0
+                }))),
+                no_undo: false,
+                extent: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_define_variable_character() {
+        let source = "DEFINE VARIABLE name AS CHARACTER NO-UNDO INITIAL \"unknown\".";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::VariableDeclaration {
+                data_type,
+                no_undo,
+                initial_value,
+                ..
+            } => {
+                assert_eq!(data_type, DataType::Character);
+                assert!(no_undo);
+                assert!(initial_value.is_some());
+            }
+            _ => panic!("Expected VariableDeclaration"),
+        }
+    }
+
+    #[test]
+    fn parse_var_statement_simple() {
+        let source = "VAR INTEGER myCount.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::VariableDeclaration {
+                name: Identifier {
+                    span: Span { start: 12, end: 19 },
+                    name: "myCount".to_string()
+                },
+                data_type: DataType::Integer,
+                initial_value: None,
+                no_undo: true,
+                extent: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_var_statement_with_initial() {
+        let source = "VAR DECIMAL total = 100.50.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::VariableDeclaration {
+                name,
+                data_type,
+                initial_value,
+                no_undo,
+                ..
+            } => {
+                assert_eq!(name.name, "total");
+                assert_eq!(data_type, DataType::Decimal);
+                assert!(no_undo);
+                assert!(initial_value.is_some());
+            }
+            _ => panic!("Expected VariableDeclaration"),
+        }
+    }
+
+    #[test]
+    fn parse_var_logical() {
+        let source = "VAR LOGICAL isActive = TRUE.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::VariableDeclaration {
+                data_type,
+                initial_value,
+                ..
+            } => {
+                assert_eq!(data_type, DataType::Logical);
+                assert!(matches!(
+                    initial_value,
+                    Some(Expression::Literal(Literal::Boolean(_)))
+                ));
+            }
+            _ => panic!("Expected VariableDeclaration"),
+        }
     }
 }
