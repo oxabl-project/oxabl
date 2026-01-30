@@ -234,6 +234,12 @@ impl<'a> Parser<'a> {
     pub fn parse_postfix(&mut self) -> ParseResult<Expression> {
         let mut expr = self.parse_primary()?;
 
+        // Literals can't have postfix operations (member access, method calls, etc.)
+        // Return early to avoid incorrectly parsing following tokens like ':' in "do i = 1 to 10:"
+        if matches!(expr, Expression::Literal(_)) {
+            return Ok(expr);
+        }
+
         loop {
             if self.check(Kind::Colon) {
                 expr = self.parse_member_or_method(expr)?;
@@ -392,6 +398,9 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
+        println!("parsing primary");
+        println!("token: {:?}", self.tokens[self.current]);
+
         // Parenthesized expression
         if self.check(Kind::LeftParen) {
             self.advance();
@@ -498,6 +507,11 @@ impl<'a> Parser<'a> {
             return Ok(Statement::Empty);
         }
 
+        // DO blocks
+        if self.check(Kind::Do) {
+            return self.parse_do_statement();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -557,8 +571,8 @@ impl<'a> Parser<'a> {
         let define_what = self.peek();
         let define_text = &self.source[define_what.start..define_what.end];
 
-        if !define_text.eq_ignore_ascii_case("variable") &&
-        !define_text.eq_ignore_ascii_case("var") {
+        if !define_text.eq_ignore_ascii_case("variable") && !define_text.eq_ignore_ascii_case("var")
+        {
             return Err(ParseError {
                 message: "Expected VARIABLE or VAR after DEFINE".to_string(),
                 span: Span {
@@ -617,8 +631,7 @@ impl<'a> Parser<'a> {
                 let token = self.peek();
                 let text = &self.source[token.start..token.end];
 
-                if text.eq_ignore_ascii_case("initial") ||
-                text.eq_ignore_ascii_case("init") {
+                if text.eq_ignore_ascii_case("initial") || text.eq_ignore_ascii_case("init") {
                     self.advance(); // Consume init
                     initial_value = Some(self.parse_expression()?);
                 } else if text.eq_ignore_ascii_case("extent") {
@@ -633,7 +646,8 @@ impl<'a> Parser<'a> {
                             extent = Some(0); // dynamic
                         }
                     } // extent check if it's set or dynamic
-                } else { // check for initial or extent
+                } else {
+                    // check for initial or extent
                     break; // not intial or extent, exit loop
                 }
             } else {
@@ -643,8 +657,13 @@ impl<'a> Parser<'a> {
 
         self.expect_period()?;
 
-        Ok(Statement::VariableDeclaration { name, data_type, initial_value, no_undo, extent })
-
+        Ok(Statement::VariableDeclaration {
+            name,
+            data_type,
+            initial_value,
+            no_undo,
+            extent,
+        })
     }
 
     /// Parse: VAR type name [= value].
@@ -778,6 +797,122 @@ impl<'a> Parser<'a> {
         Ok(statements)
     }
 
+    fn parse_do_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // Consume DO
+
+        let mut loop_var = None;
+        let mut from = None;
+        let mut to = None;
+        let mut by = None;
+        let mut while_condition = None;
+
+        // check for loop
+        if is_callable_kind(self.peek().kind) {
+            // peek ahead to see if this is 'var = start to end'
+            let saved_pos = self.current;
+            let potential_var = self.advance().clone();
+            println!("Potential var: {:?}", potential_var);
+
+            if self.check(Kind::Equals) {
+                println!("Equals found");
+                // It's a counting loop
+                let var_name = Identifier {
+                    span: Span {
+                        start: potential_var.start as u32,
+                        end: potential_var.end as u32,
+                    },
+                    name: self.source[potential_var.start..potential_var.end].to_string(),
+                };
+
+                loop_var = Some(var_name);
+
+                self.advance(); // consume =
+                from = Some(self.parse_expression()?);
+                println!("From parsed: {:?}", from);
+
+                // Expect TO, because we have a var and consume  =
+                if !self.check(Kind::To) {
+                    return Err(ParseError {
+                        message: "Expected TO in DO loop".to_string(),
+                        span: Span {
+                            start: self.peek().start as u32,
+                            end: self.peek().end as u32,
+                        },
+                    });
+                }
+                let our_token = self.advance().clone(); // Consume TO
+                println!("our token: {:?}", our_token);
+                to = Some(self.parse_expression()?);
+                println!("To parsed: {:?}", to);
+
+                // Optional BY
+                if self.check(Kind::By) {
+                    self.advance();
+                    by = Some(self.parse_expression()?);
+                }
+            } else {
+                println!("Not a counting loop");
+                // not a counting loop
+                self.current = saved_pos;
+            }
+        }
+
+        println!("Current token: {:?}", self.tokens[self.current]);
+
+        // check for WHILE
+        if self.check(Kind::KwWhile) {
+            self.advance();
+            while_condition = Some(self.parse_expression()?);
+        }
+
+        if !self.check(Kind::Colon) {
+            return Err(ParseError {
+                message: "Expected ':' after DO".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance(); // consume :
+
+        let body = self.parse_block_body()?;
+
+        Ok(Statement::Do {
+            loop_var,
+            from,
+            to,
+            by,
+            while_condition,
+            body,
+        })
+    }
+
+    // Parse the block body for code blocks like DO, consume till END.
+    fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
+        let mut statements = Vec::new();
+
+        while !self.check(Kind::End) && !self.at_end() {
+            statements.push(self.parse_statement()?);
+        }
+
+        // Comsume the END
+        if !self.check(Kind::End) {
+            return Err(ParseError {
+                message: "Expected END to close block".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+
+        self.advance();
+        self.expect_period()?;
+
+        Ok(statements)
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
         let type_str = self.source[token.start..token.end].to_uppercase();
@@ -807,7 +942,7 @@ impl<'a> Parser<'a> {
                         start: token.start as u32,
                         end: token.end as u32,
                     },
-                })
+                });
             }
         };
 
@@ -2471,6 +2606,90 @@ mod test {
                 ));
             }
             _ => panic!("Expected VariableDeclaration"),
+        }
+    }
+
+    #[test]
+    fn parse_simple_do_block() {
+        let source = "DO: x = 1. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Do { body, loop_var, .. } => {
+                assert!(loop_var.is_none());
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("Expected Do statement"),
+        }
+    }
+
+    #[test]
+    fn parse_do_counting_loop() {
+        let source = "DO i = 1 TO 10: x = i. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Do {
+                loop_var,
+                from,
+                to,
+                body,
+                ..
+            } => {
+                assert!(loop_var.is_some());
+                assert_eq!(loop_var.unwrap().name, "i");
+                assert!(from.is_some());
+                assert!(to.is_some());
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("Expected Do statement"),
+        }
+    }
+
+    #[test]
+    fn parse_do_with_by() {
+        let source = "DO i = 0 TO 100 BY 10: total = total + i. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Do { by, .. } => {
+                assert!(by.is_some());
+            }
+            _ => panic!("Expected Do statement"),
+        }
+    }
+
+    #[test]
+    fn parse_do_while() {
+        let source = "DO WHILE x < 10: x = x + 1. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Do {
+                while_condition, ..
+            } => {
+                assert!(while_condition.is_some());
+            }
+            _ => panic!("Expected Do statement"),
+        }
+    }
+
+    #[test]
+    fn parse_nested_do_blocks() {
+        let source = "DO i = 1 TO 3: DO j = 1 TO 3: x = i * j. END. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Do { body, .. } => {
+                assert_eq!(body.len(), 1);
+                assert!(matches!(body[0], Statement::Do { .. }));
+            }
+            _ => panic!("Expected Do statement"),
         }
     }
 }
