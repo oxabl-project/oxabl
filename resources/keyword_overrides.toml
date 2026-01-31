@@ -57,9 +57,10 @@ reserved = true
 keyword_type = "Operator"
 
 [[add]]
-name = "%"
+name = "MODULO"
 reserved = true
 keyword_type = "Operator"
+min_abbreviation = "MOD"
 
 [[add]]
 name = ">="
