@@ -64,29 +64,11 @@ impl<'a> Parser<'a> {
         self.advance(); // consume IF
         let condition = self.parse_or()?; // condition can use OR/AND/comparison
 
-        if !self.check(Kind::Then) {
-            return Err(ParseError {
-                message: "Expected 'THEN' after IF condition".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        self.advance(); // consume THEN
+        self.expect_kind(Kind::Then, "Expected 'THEN' after IF condition")?;
 
         let then_expr = self.parse_ternary()?; // recursive for nested ternary in then branch
 
-        if !self.check(Kind::KwElse) {
-            return Err(ParseError {
-                message: "Expected 'ELSE' in IF expression".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        self.advance(); // consume ELSE
+        self.expect_kind(Kind::KwElse, "Expected 'ELSE' in IF expression")?;
 
         let else_expr = self.parse_ternary()?; // recursive for nested ternary in else branch
 
@@ -301,16 +283,7 @@ impl<'a> Parser<'a> {
 
             // if after parsing all arguments we don't find the
             // closing ), throw error
-            if !self.check(Kind::RightParen) {
-                return Err(ParseError {
-                    message: "Expected ')' after method arguments".to_string(),
-                    span: Span {
-                        start: self.peek().start as u32,
-                        end: self.peek().end as u32,
-                    },
-                });
-            }
-            self.advance(); // consume ')'
+            self.expect_kind(Kind::RightParen, "Expected ')' after method arguments")?;
 
             return Ok(Expression::MethodCall {
                 object: Box::new(object),
@@ -330,16 +303,7 @@ impl<'a> Parser<'a> {
 
         let index = self.parse_expression()?;
 
-        if !self.check(Kind::RightBracket) {
-            return Err(ParseError {
-                message: "Expected ']' after array index".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        self.advance(); // consume ']'
+        self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
 
         Ok(Expression::ArrayAccess {
             array: Box::new(array),
@@ -405,16 +369,7 @@ impl<'a> Parser<'a> {
         if self.check(Kind::LeftParen) {
             self.advance();
             let expr = self.parse_expression()?;
-            if !self.check(Kind::RightParen) {
-                return Err(ParseError {
-                    message: "Expected ')' after expression".to_string(),
-                    span: Span {
-                        start: self.peek().start as u32,
-                        end: self.peek().end as u32,
-                    },
-                });
-            }
-            self.advance();
+            self.expect_kind(Kind::RightParen, "Expected ')' after expression")?;
             return Ok(expr);
         }
 
@@ -485,16 +440,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        if !self.check(Kind::RightParen) {
-            return Err(ParseError {
-                message: "Expected ')' after function arguments".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        self.advance(); // consume the right parenthesis
+        self.expect_kind(Kind::RightParen, "Expected ')' after function arguments")?;
 
         Ok(Expression::FunctionCall { name, arguments })
     }
@@ -541,7 +487,7 @@ impl<'a> Parser<'a> {
             self.advance(); // consume the "="
             let value = self.parse_expression()?;
             println!("value: {:?}", value);
-            self.expect_period()?;
+            self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
             return Ok(Statement::Assignment {
                 target: left,
                 value,
@@ -550,7 +496,7 @@ impl<'a> Parser<'a> {
 
         // not an assignment, continue parsing as full expression
         let expr = self.finish_expression(left)?;
-        self.expect_period()?;
+        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
         Ok(Statement::ExpressionStatement(expr))
     }
 
@@ -609,16 +555,7 @@ impl<'a> Parser<'a> {
         };
 
         // expect As
-        if !self.check(Kind::KwAs) {
-            return Err(ParseError {
-                message: "Expected AS after variable name".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        self.advance(); // consume AS
+        self.expect_kind(Kind::KwAs, "Expected AS after variable name")?;
 
         // parse data type
         let data_type = self.parse_data_type()?;
@@ -660,7 +597,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.expect_period()?;
+        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
 
         Ok(Statement::VariableDeclaration {
             name,
@@ -705,7 +642,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        self.expect_period()?;
+        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
 
         Ok(Statement::VariableDeclaration {
             name,
@@ -773,24 +710,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Expect and consume a period, or return an error
-    fn expect_period(&mut self) -> ParseResult<()> {
-        if !self.check(Kind::Period) {
-            return Err(ParseError {
-                message: format!(
-                    "Expected '.' to end statement, found {:?}",
-                    self.peek().kind
-                ),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        self.advance();
-        Ok(())
-    }
-
     /// Parse multiple statements until we hit a terminator
     pub fn parse_statements(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
@@ -836,17 +755,7 @@ impl<'a> Parser<'a> {
                 println!("From parsed: {:?}", from);
 
                 // Expect TO, because we have a var and consume  =
-                if !self.check(Kind::To) {
-                    return Err(ParseError {
-                        message: "Expected TO in DO loop".to_string(),
-                        span: Span {
-                            start: self.peek().start as u32,
-                            end: self.peek().end as u32,
-                        },
-                    });
-                }
-                let our_token = self.advance().clone(); // Consume TO
-                println!("our token: {:?}", our_token);
+                self.expect_kind(Kind::To, "Expected TO in DO loop")?;
                 to = Some(self.parse_expression()?);
                 println!("To parsed: {:?}", to);
 
@@ -870,16 +779,7 @@ impl<'a> Parser<'a> {
             while_condition = Some(self.parse_expression()?);
         }
 
-        if !self.check(Kind::Colon) {
-            return Err(ParseError {
-                message: "Expected ':' after DO".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        self.advance(); // consume :
+        self.expect_kind(Kind::Colon, "Expected ':' after DO")?;
 
         let body = self.parse_block_body()?;
 
@@ -939,19 +839,9 @@ impl<'a> Parser<'a> {
             statements.push(self.parse_statement()?);
         }
 
-        // Comsume the END
-        if !self.check(Kind::End) {
-            return Err(ParseError {
-                message: "Expected END to close block".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-
-        self.advance();
-        self.expect_period()?;
+        // Consume the END
+        self.expect_kind(Kind::End, "Expected END to close block")?;
+        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
 
         Ok(statements)
     }
