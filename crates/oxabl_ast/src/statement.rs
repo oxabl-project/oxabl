@@ -47,6 +47,21 @@ pub enum Statement {
         else_branch: Option<Box<Statement>>,
     },
 
+    /// REPEAT block
+    Repeat {
+        while_condition: Option<Expression>,
+        body: Vec<Statement>,
+    },
+
+    /// Leave statement - exist innermost loop
+    Leave,
+
+    /// Next statement - skip to next iteration
+    Next,
+
+    /// Return statement to return [expression]
+    Return(Option<Expression>),
+
     /// Empty (just a period)
     Empty,
 }
