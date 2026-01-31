@@ -26,6 +26,20 @@ pub enum Statement {
     /// Code block
     Block(Vec<Statement>),
 
+    /// DO block with optional loop
+    Do {
+        /// loop variable assignment
+        loop_var: Option<Identifier>,
+        /// the from start value for loops
+        from: Option<Expression>,
+        /// End value for loops
+        to: Option<Expression>,
+        /// Step value for loops
+        by: Option<Expression>,
+        while_condition: Option<Expression>,
+        body: Vec<Statement>,
+    },
+
     /// Empty (just a period)
     Empty,
 }
