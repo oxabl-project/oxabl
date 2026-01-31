@@ -637,7 +637,9 @@ pub fn generate_build_rs(keywords: &[Keyword]) -> String {
     output.push_str("fn main() {\n");
 
     // Atom list content
-    output.push_str("    string_cache_codegen::AtomType::new(\"oxabl_atom::OxablAtom\", \"atom!\")\n");
+    output.push_str(
+        "    string_cache_codegen::AtomType::new(\"oxabl_atom::OxablAtom\", \"atom!\")\n",
+    );
     output.push_str("        .atoms(&[\n");
 
     // Collect unique strings - lowercase versions of keywords for case-insensitive matching
@@ -825,7 +827,9 @@ pub fn generate_callable_rs(keywords: &[Keyword]) -> String {
     function_variants.dedup();
 
     // Generate the function
-    output.push_str("/// Returns true if the given Kind can be used as a callable (function call position).\n");
+    output.push_str(
+        "/// Returns true if the given Kind can be used as a callable (function call position).\n",
+    );
     output.push_str("/// This includes user-defined identifiers and all built-in ABL functions.\n");
     output.push_str("///\n");
     output.push_str("/// # Example\n");

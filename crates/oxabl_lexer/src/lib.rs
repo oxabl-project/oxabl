@@ -14,7 +14,7 @@ use rust_decimal::Decimal;
 mod callable;
 mod kind;
 use crate::{kind::match_keyword, oxabl_atom::OxablAtom};
-pub use callable::{is_callable_kind, CALLABLE_FUNCTION_KINDS};
+pub use callable::{CALLABLE_FUNCTION_KINDS, is_callable_kind};
 pub use kind::Kind;
 
 /// Tokenize ABL source code into a vector of tokens.
@@ -679,7 +679,14 @@ mod tests {
         assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
         assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
         assert_token(&tokens[1], Kind::Comment, 4, 25, TokenValue::None, source);
-        assert_token(&tokens[2], Kind::Identifier, 25, 28, TokenValue::None, source); // var (not reserved)
+        assert_token(
+            &tokens[2],
+            Kind::Identifier,
+            25,
+            28,
+            TokenValue::None,
+            source,
+        ); // var (not reserved)
     }
 
     #[test]
@@ -689,7 +696,14 @@ mod tests {
         assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
         assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
         assert_token(&tokens[1], Kind::Comment, 4, 15, TokenValue::None, source);
-        assert_token(&tokens[2], Kind::Identifier, 16, 19, TokenValue::None, source); // var (not reserved)
+        assert_token(
+            &tokens[2],
+            Kind::Identifier,
+            16,
+            19,
+            TokenValue::None,
+            source,
+        ); // var (not reserved)
     }
 
     #[test]
