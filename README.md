@@ -23,11 +23,11 @@ Requirements:
   - Needs test coverage.
   - Used in our token dumps and benchmarks, appears to be accurate.
 - `oxabl_ast`: Started in `crates/oxabl_ast`
-  - Defines literals
-  - Needs expressions
+  - Defines literals, statements, expressions, variable definitions, and do blocks.
 - `oxabl_parser`: Started in `crates/oxabl_parser`
-  - Started simple literal parsing
-  - Expressions next
+  - Parses literals, statements, expressions, variable definitions, and do blocks.
+
+Current Work: IF statements, more loops, and REPEATs.
 
 ## Roadmap
 
