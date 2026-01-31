@@ -40,6 +40,13 @@ pub enum Statement {
         body: Vec<Statement>,
     },
 
+    /// IF statements
+    If {
+        condition: Expression,
+        then_branch: Box<Statement>,
+        else_branch: Option<Box<Statement>>,
+    },
+
     /// Empty (just a period)
     Empty,
 }
