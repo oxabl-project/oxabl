@@ -463,6 +463,30 @@ impl<'a> Parser<'a> {
             return self.parse_if_statement();
         }
 
+        // Repeat block
+        if self.check(Kind::Repeat) {
+            return self.parse_repeat_statement();
+        }
+
+        // LEAVE
+        if self.check(Kind::Leave) {
+            self.advance();
+            self.expect_kind(Kind::Period, "Expected '.' to come after LEAVE")?;
+            return Ok(Statement::Leave);
+        }
+
+        // Next
+        if self.check(Kind::Next) {
+            self.advance();
+            self.expect_kind(Kind::Period, "Expected '.' to come after NEXT")?;
+            return Ok(Statement::Next);
+        }
+
+        // Return
+        if self.check(Kind::KwReturn) {
+            return self.parse_return_statement();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -829,6 +853,39 @@ impl<'a> Parser<'a> {
             then_branch: Box::new(then_branch),
             else_branch,
         })
+    }
+
+    fn parse_repeat_statement(&mut self) -> ParseResult<Statement>{
+        self.advance(); // consume REPEAT
+
+        // Optional WHILE
+        let while_condition = if self.check(Kind::KwWhile) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Expect collor
+        self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
+
+        let body = self.parse_block_body()?;
+
+        Ok(Statement::Repeat { while_condition, body })
+    }
+
+    fn parse_return_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume RETURN
+
+        // Check if there's a return value (not just a period)
+        let value = if !self.check(Kind::Period) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        self.expect_kind(Kind::Period, "Expected a '.' after RETURN")?;
+        Ok(Statement::Return(value))
     }
 
     // Parse the block body for code blocks like DO, consume till END.
@@ -2717,6 +2774,90 @@ mod test {
                 assert!(matches!(*then_branch, Statement::If { .. }));
             }
             _ => panic!("Expected If statement"),
+        }
+    }
+
+    #[test]
+    fn parse_simple_repeat() {
+        let source = "REPEAT: x = x + 1. IF x > 10 THEN LEAVE. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Repeat { body, while_condition } => {
+                assert!(while_condition.is_none());
+                assert_eq!(body.len(), 2);
+            }
+            _ => panic!("Expected Repeat statement"),
+        }
+    }
+
+    #[test]
+    fn parse_repeat_while() {
+        let source = "REPEAT WHILE x < 100: x = x * 2. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Repeat { while_condition, .. } => {
+                assert!(while_condition.is_some());
+            }
+            _ => panic!("Expected Repeat statement"),
+        }
+    }
+
+    #[test]
+    fn parse_leave_statement() {
+        let source = "LEAVE.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(stmt, Statement::Leave);
+    }
+
+    #[test]
+    fn parse_next_statement() {
+        let source = "NEXT.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(stmt, Statement::Next);
+    }
+
+    #[test]
+    fn parse_return_no_value() {
+        let source = "RETURN.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(stmt, Statement::Return(None));
+    }
+
+    #[test]
+    fn parse_return_with_value() {
+        let source = "RETURN x + 1.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Return(Some(expr)) => {
+                assert!(matches!(expr, Expression::Add(_, _)));
+            }
+            _ => panic!("Expected Return with value"),
+        }
+    }
+
+    #[test]
+    fn parse_loop_with_leave_and_next() {
+        let source = "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Do { body, .. } => {
+                assert_eq!(body.len(), 3);
+            }
+            _ => panic!("Expected Do statement"),
         }
     }
 }
