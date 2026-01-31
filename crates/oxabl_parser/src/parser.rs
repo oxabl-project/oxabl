@@ -512,6 +512,11 @@ impl<'a> Parser<'a> {
             return self.parse_do_statement();
         }
 
+        // IF statement
+        if self.check(Kind::KwIf) {
+            return self.parse_if_statement();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -888,6 +893,44 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_if_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // Consumes IF
+
+        // If "condition" THEN
+        let condition = self.parse_expression()?;
+
+        // Expect THEN
+        self.expect_kind(Kind::Then, "Expected THEN after IF condition")?;
+
+        // parse then branch, may be a DO block or single statement
+        let then_branch = if self.check(Kind::Do) {
+            self.parse_do_statement()?
+        } else {
+            self.parse_statement()?
+        };
+
+        // optional ELSE
+        let else_branch = if self.check(Kind::KwElse) {
+            self.advance();
+            let else_stmt = if self.check(Kind::Do) {
+                self.parse_do_statement()?
+            } else if self.check(Kind::KwIf) {
+                self.parse_if_statement()?
+            } else {
+                self.parse_statement()?
+            };
+            Some(Box::new(else_stmt))
+        } else {
+            None
+        };
+
+        Ok(Statement::If {
+            condition,
+            then_branch: Box::new(then_branch),
+            else_branch,
+        })
+    }
+
     // Parse the block body for code blocks like DO, consume till END.
     fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
@@ -948,6 +991,23 @@ impl<'a> Parser<'a> {
 
         self.advance();
         Ok(data_type)
+    }
+
+    /// Checks for a specific kind
+    /// If not found, throws a ParseError with a message and span
+    /// If available, advances the cursor
+    fn expect_kind(&mut self, kind: Kind, msg: &str) -> ParseResult<()> {
+        if !self.check(kind) {
+            return Err(ParseError {
+                message: msg.to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        self.advance();
+        Ok(())
     }
 }
 
@@ -2690,6 +2750,83 @@ mod test {
                 assert!(matches!(body[0], Statement::Do { .. }));
             }
             _ => panic!("Expected Do statement"),
+        }
+    }
+
+    #[test]
+    fn parse_if_then_simple() {
+        let source = "IF x > 0 THEN y = 1.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                assert!(matches!(condition, Expression::GreaterThan(_, _)));
+                assert!(matches!(*then_branch, Statement::Assignment { .. }));
+                assert!(else_branch.is_none());
+            }
+            _ => panic!("Expected If statement"),
+        }
+    }
+
+    #[test]
+    fn parse_if_then_else() {
+        let source = "IF x > 0 THEN y = 1. ELSE y = 0.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::If { else_branch, .. } => {
+                assert!(else_branch.is_some());
+            }
+            _ => panic!("Expected If statement"),
+        }
+    }
+
+    #[test]
+    fn parse_if_then_do_block() {
+        let source = "IF x > 0 THEN DO: y = 1. z = 2. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::If { then_branch, .. } => {
+                assert!(matches!(*then_branch, Statement::Do { .. }));
+            }
+            _ => panic!("Expected If statement"),
+        }
+    }
+
+    #[test]
+    fn parse_if_else_if_chain() {
+        let source = "IF x > 10 THEN y = 3. ELSE IF x > 5 THEN y = 2. ELSE y = 1.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::If { else_branch, .. } => {
+                let else_stmt = else_branch.expect("Should have else");
+                assert!(matches!(*else_stmt, Statement::If { .. }));
+            }
+            _ => panic!("Expected If statement"),
+        }
+    }
+
+    #[test]
+    fn parse_nested_if() {
+        let source = "IF a THEN IF b THEN x = 1.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::If { then_branch, .. } => {
+                assert!(matches!(*then_branch, Statement::If { .. }));
+            }
+            _ => panic!("Expected If statement"),
         }
     }
 }
