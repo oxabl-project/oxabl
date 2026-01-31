@@ -501,7 +501,6 @@ pub enum Kind {
     XrefXml,
     Yes,
     Preprop,
-
 }
 
 /// Match a string to a keyword Kind
@@ -523,17 +522,25 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "and" => Some(Kind::And),
         "any" => Some(Kind::Any),
         "apply" => Some(Kind::Apply),
-        "asc" | "asce" | "ascen" | "ascend" | "ascendi" | "ascendin" | "ascending" => Some(Kind::Ascending),
+        "asc" | "asce" | "ascen" | "ascend" | "ascendi" | "ascendin" | "ascending" => {
+            Some(Kind::Ascending)
+        }
         "assign" => Some(Kind::Assign),
         "asynchronous" => Some(Kind::Asynchronous),
         "at" => Some(Kind::At),
-        "attr" | "attr " | "attr-" | "attr s" | "attr-s" | "attr sp" | "attr-sp" | "attr spa" | "attr-spa" | "attr spac" | "attr-spac" | "attr space" | "attr-space" => Some(Kind::AttrSpace),
+        "attr" | "attr " | "attr-" | "attr s" | "attr-s" | "attr sp" | "attr-sp" | "attr spa"
+        | "attr-spa" | "attr spac" | "attr-spac" | "attr space" | "attr-space" => {
+            Some(Kind::AttrSpace)
+        }
         "audit control" | "audit-control" => Some(Kind::AuditControl),
         "audit policy" | "audit-policy" => Some(Kind::AuditPolicy),
         "authorization" => Some(Kind::Authorization),
-        "auto ret" | "auto-ret" | "auto retu" | "auto-retu" | "auto retur" | "auto-retur" | "auto return" | "auto-return" => Some(Kind::AutoReturn),
+        "auto ret" | "auto-ret" | "auto retu" | "auto-retu" | "auto retur" | "auto-retur"
+        | "auto return" | "auto-return" => Some(Kind::AutoReturn),
         "avail" | "availa" | "availab" | "availabl" | "available" => Some(Kind::Available),
-        "back" | "backg" | "backgr" | "backgro" | "backgrou" | "backgroun" | "background" => Some(Kind::Background),
+        "back" | "backg" | "backgr" | "backgro" | "backgrou" | "backgroun" | "background" => {
+            Some(Kind::Background)
+        }
         "before h" | "before hi" | "before hid" | "before hide" => Some(Kind::BeforeHide),
         "begins" => Some(Kind::Begins),
         "bell" => Some(Kind::Bell),
@@ -545,7 +552,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "can do" | "can-do" => Some(Kind::CanDo),
         "can find" | "can-find" => Some(Kind::CanFind),
         "case" => Some(Kind::Case),
-        "case sen" | "case-sen" | "case sens" | "case-sens" | "case sensi" | "case-sensi" | "case sensit" | "case-sensit" | "case sensiti" | "case-sensiti" | "case sensitiv" | "case-sensitiv" | "case sensitive" | "case-sensitive" => Some(Kind::CaseSensitive),
+        "case sen" | "case-sen" | "case sens" | "case-sens" | "case sensi" | "case-sensi"
+        | "case sensit" | "case-sensit" | "case sensiti" | "case-sensiti" | "case sensitiv"
+        | "case-sensitiv" | "case sensitive" | "case-sensitive" => Some(Kind::CaseSensitive),
         "cast" => Some(Kind::Cast),
         "center" | "centere" | "centered" => Some(Kind::Centered),
         "check" => Some(Kind::Check),
@@ -555,7 +564,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "codebase locator" | "codebase-locator" => Some(Kind::CodebaseLocator),
         "colon" => Some(Kind::Colon),
         "color" => Some(Kind::Color),
-        "column lab" | "column-lab" | "column labe" | "column-labe" | "column label" | "column-label" => Some(Kind::ColumnLabel),
+        "column lab" | "column-lab" | "column labe" | "column-labe" | "column label"
+        | "column-label" => Some(Kind::ColumnLabel),
         "columns" => Some(Kind::Columns),
         "compiler" => Some(Kind::Compiler),
         "connected" => Some(Kind::Connected),
@@ -567,10 +577,13 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "current" => Some(Kind::Current),
         "current changed" | "current-changed" => Some(Kind::CurrentChanged),
         "current date" => Some(Kind::CurrentDate),
-        "current lang" | "current-lang" | "current langu" | "current-langu" | "current langua" | "current-langua" | "current languag" | "current-languag" | "current language" | "current-language" => Some(Kind::CurrentLanguage),
+        "current lang" | "current-lang" | "current langu" | "current-langu" | "current langua"
+        | "current-langua" | "current languag" | "current-languag" | "current language"
+        | "current-language" => Some(Kind::CurrentLanguage),
         "current window" | "current-window" => Some(Kind::CurrentWindow),
         "curs" | "curso" | "cursor" => Some(Kind::Cursor),
-        "data rel" | "data rela" | "data relat" | "data relati" | "data relatio" | "data relation" => Some(Kind::DataRelation),
+        "data rel" | "data rela" | "data relat" | "data relati" | "data relatio"
+        | "data relation" => Some(Kind::DataRelation),
         "data source" | "data-source" => Some(Kind::DataSource),
         "database" => Some(Kind::Database),
         "dataservers" => Some(Kind::Dataservers),
@@ -580,7 +593,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "dbcollation" => Some(Kind::Dbcollation),
         "dbname" => Some(Kind::Dbname),
         "dbparam" => Some(Kind::Dbparam),
-        "dbrest" | "dbrestr" | "dbrestri" | "dbrestric" | "dbrestrict" | "dbrestricti" | "dbrestrictio" | "dbrestriction" | "dbrestrictions" => Some(Kind::Dbrestrictions),
+        "dbrest" | "dbrestr" | "dbrestri" | "dbrestric" | "dbrestrict" | "dbrestricti"
+        | "dbrestrictio" | "dbrestriction" | "dbrestrictions" => Some(Kind::Dbrestrictions),
         "dbtaskid" => Some(Kind::Dbtaskid),
         "dbtype" => Some(Kind::Dbtype),
         "dbvers" | "dbversi" | "dbversio" | "dbversion" => Some(Kind::Dbversion),
@@ -595,8 +609,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "def" | "defi" | "defin" | "define" => Some(Kind::Define),
         "del" | "dele" | "delet" | "delete" => Some(Kind::Delete),
         "delimiter" => Some(Kind::Delimiter),
-        "desc" | "desce" | "descen" | "descend" | "descendi" | "descendin" | "descending" => Some(Kind::Descending),
-        "dict" | "dicti" | "dictio" | "diction" | "dictiona" | "dictionar" | "dictionary" => Some(Kind::Dictionary),
+        "desc" | "desce" | "descen" | "descend" | "descendi" | "descendin" | "descending" => {
+            Some(Kind::Descending)
+        }
+        "dict" | "dicti" | "dictio" | "diction" | "dictiona" | "dictionar" | "dictionary" => {
+            Some(Kind::Dictionary)
+        }
         "disable" => Some(Kind::Disable),
         "disable auto zap" | "disable-auto-zap" => Some(Kind::DisableAutoZap),
         "discon" | "disconn" | "disconne" | "disconnec" | "disconnect" => Some(Kind::Disconnect),
@@ -616,12 +634,14 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "end" => Some(Kind::End),
         "entry" => Some(Kind::Entry),
         "eq" => Some(Kind::Eq),
-        "error stat" | "error-stat" | "error statu" | "error-statu" | "error status" | "error-status" => Some(Kind::ErrorStatus),
+        "error stat" | "error-stat" | "error statu" | "error-statu" | "error status"
+        | "error-status" => Some(Kind::ErrorStatus),
         "escape" => Some(Kind::Escape),
         "etime" => Some(Kind::Etime),
         "event procedure" | "event-procedure" => Some(Kind::EventProcedure),
         "except" => Some(Kind::Except),
-        "exclusive" | "exclusive " | "exclusive l" | "exclusive lo" | "exclusive loc" | "exclusive lock" => Some(Kind::ExclusiveLock),
+        "exclusive" | "exclusive " | "exclusive l" | "exclusive lo" | "exclusive loc"
+        | "exclusive lock" => Some(Kind::ExclusiveLock),
         "exists" => Some(Kind::Exists),
         "export" => Some(Kind::Export),
         "fetch" => Some(Kind::Fetch),
@@ -652,10 +672,14 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "frame line" | "frame-line" => Some(Kind::FrameLine),
         "frame name" | "frame-name" => Some(Kind::FrameName),
         "frame row" | "frame-row" => Some(Kind::FrameRow),
-        "frame val" | "frame-val" | "frame valu" | "frame-valu" | "frame value" | "frame-value" => Some(Kind::FrameValue),
+        "frame val" | "frame-val" | "frame valu" | "frame-valu" | "frame value" | "frame-value" => {
+            Some(Kind::FrameValue)
+        }
         "from" => Some(Kind::From),
         "from c" | "from ch" | "from cha" | "from char" | "from chars" => Some(Kind::FromChars),
-        "from p" | "from pi" | "from pix" | "from pixe" | "from pixel" | "from pixels" => Some(Kind::FromPixels),
+        "from p" | "from pi" | "from pix" | "from pixe" | "from pixel" | "from pixels" => {
+            Some(Kind::FromPixels)
+        }
         "function call type" => Some(Kind::FunctionCallType),
         "gateway" | "gateways" => Some(Kind::Gateways),
         "ge" => Some(Kind::Ge),
@@ -669,13 +693,16 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "get error row" => Some(Kind::GetErrorRow),
         "get file name" => Some(Kind::GetFileName),
         "get file offse" | "get file offset" => Some(Kind::GetFileOffset),
-        "get key val" | "get-key-val" | "get key valu" | "get-key-valu" | "get key value" | "get-key-value" => Some(Kind::GetKeyValue),
+        "get key val" | "get-key-val" | "get key valu" | "get-key-valu" | "get key value"
+        | "get-key-value" => Some(Kind::GetKeyValue),
         "getbyte" => Some(Kind::Getbyte),
         "global" => Some(Kind::Global),
         "go on" => Some(Kind::GoOn),
-        "go pend" | "go-pend" | "go pendi" | "go-pendi" | "go pendin" | "go-pendin" | "go pending" | "go-pending" => Some(Kind::GoPending),
+        "go pend" | "go-pend" | "go pendi" | "go-pendi" | "go pendin" | "go-pendin"
+        | "go pending" | "go-pending" => Some(Kind::GoPending),
         "grant" => Some(Kind::Grant),
-        "graphic e" | "graphic-e" | "graphic ed" | "graphic-ed" | "graphic edg" | "graphic-edg" | "graphic edge" | "graphic-edge" => Some(Kind::GraphicEdge),
+        "graphic e" | "graphic-e" | "graphic ed" | "graphic-ed" | "graphic edg" | "graphic-edg"
+        | "graphic edge" | "graphic-edge" => Some(Kind::GraphicEdge),
         "group" => Some(Kind::Group),
         "gt" => Some(Kind::Gt),
         "having" => Some(Kind::Having),
@@ -687,19 +714,28 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "index" => Some(Kind::Index),
         "indicator" => Some(Kind::Indicator),
         "input" => Some(Kind::Input),
-        "input-o" | "input-ou" | "input-out" | "input-outp" | "input-outpu" | "input-output" => Some(Kind::InputOutput),
+        "input-o" | "input-ou" | "input-out" | "input-outp" | "input-outpu" | "input-output" => {
+            Some(Kind::InputOutput)
+        }
         "insert" => Some(Kind::Insert),
         "into" => Some(Kind::Into),
         "is" => Some(Kind::Is),
-        "is-attr" | "is-attr-" | "is-attr-s" | "is-attr-sp" | "is-attr-spa" | "is-attr-spac" | "is-attr-space" => Some(Kind::IsAttrSpace),
-        "is-lead" | "is-lead-" | "is-lead-b" | "is-lead-by" | "is-lead-byt" | "is-lead-byte" => Some(Kind::IsLeadByte),
+        "is-attr" | "is-attr-" | "is-attr-s" | "is-attr-sp" | "is-attr-spa" | "is-attr-spac"
+        | "is-attr-space" => Some(Kind::IsAttrSpace),
+        "is-lead" | "is-lead-" | "is-lead-b" | "is-lead-by" | "is-lead-byt" | "is-lead-byte" => {
+            Some(Kind::IsLeadByte)
+        }
         "join" => Some(Kind::Join),
         "kblabel" => Some(Kind::Kblabel),
         "key-code" => Some(Kind::KeyCode),
-        "key-func" | "key-funct" | "key-functi" | "key-functio" | "key-function" => Some(Kind::KeyFunction),
+        "key-func" | "key-funct" | "key-functi" | "key-functio" | "key-function" => {
+            Some(Kind::KeyFunction)
+        }
         "key-label" => Some(Kind::KeyLabel),
         "keycode" => Some(Kind::Keycode),
-        "keyfunc" | "keyfunct" | "keyfuncti" | "keyfunctio" | "keyfunction" => Some(Kind::Keyfunction),
+        "keyfunc" | "keyfunct" | "keyfuncti" | "keyfunctio" | "keyfunction" => {
+            Some(Kind::Keyfunction)
+        }
         "keylabel" => Some(Kind::Keylabel),
         "keys" => Some(Kind::Keys),
         "keyword" => Some(Kind::Keyword),
@@ -746,8 +782,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "next" => Some(Kind::Next),
         "next-prompt" => Some(Kind::NextPrompt),
         "no" => Some(Kind::No),
-        "no-attr" | "no-attr-" | "no-attr-l" | "no-attr-li" | "no-attr-lis" | "no-attr-list" => Some(Kind::NoAttrList),
-        "no-attr-s" | "no-attr-sp" | "no-attr-spa" | "no-attr-spac" | "no-attr-space" => Some(Kind::NoAttrSpace),
+        "no-attr" | "no-attr-" | "no-attr-l" | "no-attr-li" | "no-attr-lis" | "no-attr-list" => {
+            Some(Kind::NoAttrList)
+        }
+        "no-attr-s" | "no-attr-sp" | "no-attr-spa" | "no-attr-spac" | "no-attr-space" => {
+            Some(Kind::NoAttrSpace)
+        }
         "no-error" => Some(Kind::NoError),
         "no-f" | "no-fi" | "no-fil" | "no-fill" => Some(Kind::NoFill),
         "no-focus" => Some(Kind::NoFocus),
@@ -760,12 +800,16 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "no-pause" => Some(Kind::NoPause),
         "no-prefe" | "no-prefet" | "no-prefetc" | "no-prefetch" => Some(Kind::NoPrefetch),
         "no-undo" => Some(Kind::NoUndo),
-        "no-val" | "no-vali" | "no-valid" | "no-valida" | "no-validat" | "no-validate" => Some(Kind::NoValidate),
+        "no-val" | "no-vali" | "no-valid" | "no-valida" | "no-validat" | "no-validate" => {
+            Some(Kind::NoValidate)
+        }
         "no-wait" => Some(Kind::NoWait),
         "not" => Some(Kind::Not),
         "now" => Some(Kind::Now),
         "null" => Some(Kind::Null),
-        "num-ali" | "num-alia" | "num-alias" | "num-aliase" | "num-aliases" => Some(Kind::NumAliases),
+        "num-ali" | "num-alia" | "num-alias" | "num-aliase" | "num-aliases" => {
+            Some(Kind::NumAliases)
+        }
         "num-dbs" => Some(Kind::NumDbs),
         "num-entries" => Some(Kind::NumEntries),
         "of" => Some(Kind::Of),
@@ -799,18 +843,28 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "&else" => Some(Kind::PreprocElse),
         "&elseif" => Some(Kind::PreprocElseif),
         "&endif" => Some(Kind::PreprocEndif),
-        "&glob" | "&globa" | "&global" | "&global " | "&global-" | "&global d" | "&global-d" | "&global de" | "&global-de" | "&global def" | "&global-def" | "&global defi" | "&global-defi" | "&global defin" | "&global-defin" | "&global define" | "&global-define" => Some(Kind::PreprocGlobalDefine),
+        "&glob" | "&globa" | "&global" | "&global " | "&global-" | "&global d" | "&global-d"
+        | "&global de" | "&global-de" | "&global def" | "&global-def" | "&global defi"
+        | "&global-defi" | "&global defin" | "&global-defin" | "&global define"
+        | "&global-define" => Some(Kind::PreprocGlobalDefine),
         "&if" => Some(Kind::PreprocIf),
         "&message" => Some(Kind::PreprocMessage),
-        "&scop" | "&scope" | "&scoped" | "&scoped " | "&scoped-" | "&scoped d" | "&scoped-d" | "&scoped de" | "&scoped-de" | "&scoped def" | "&scoped-def" | "&scoped defi" | "&scoped-defi" | "&scoped defin" | "&scoped-defin" | "&scoped define" | "&scoped-define" => Some(Kind::PreprocScopedDefine),
+        "&scop" | "&scope" | "&scoped" | "&scoped " | "&scoped-" | "&scoped d" | "&scoped-d"
+        | "&scoped de" | "&scoped-de" | "&scoped def" | "&scoped-def" | "&scoped defi"
+        | "&scoped-defi" | "&scoped defin" | "&scoped-defin" | "&scoped define"
+        | "&scoped-define" => Some(Kind::PreprocScopedDefine),
         "&then" => Some(Kind::PreprocThen),
         "&undef" | "&undefi" | "&undefin" | "&undefine" => Some(Kind::PreprocUndefine),
         "&webstream" => Some(Kind::PreprocWebstream),
         "preproc" | "preproce" | "preproces" | "preprocess" => Some(Kind::Preprocess),
         "preprop" => Some(Kind::Preprop),
         "privileges" => Some(Kind::Privileges),
-        "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => Some(Kind::ProcHandle),
-        "proc-st" | "proc-sta" | "proc-stat" | "proc-statu" | "proc-status" => Some(Kind::ProcStatus),
+        "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => {
+            Some(Kind::ProcHandle)
+        }
+        "proc-st" | "proc-sta" | "proc-stat" | "proc-statu" | "proc-status" => {
+            Some(Kind::ProcStatus)
+        }
         "procedure-call-type" => Some(Kind::ProcedureCallType),
         "process" => Some(Kind::Process),
         "profiler" => Some(Kind::Profiler),
@@ -830,7 +884,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "query-tuning" => Some(Kind::QueryTuning),
         "quit" => Some(Kind::Quit),
         "r-index" => Some(Kind::RIndex),
-        "rcode-info" | "rcode-infor" | "rcode-inform" | "rcode-informa" | "rcode-informat" | "rcode-informati" | "rcode-informatio" | "rcode-information" => Some(Kind::RcodeInformation),
+        "rcode-info" | "rcode-infor" | "rcode-inform" | "rcode-informa" | "rcode-informat"
+        | "rcode-informati" | "rcode-informatio" | "rcode-information" => {
+            Some(Kind::RcodeInformation)
+        }
         "read-available" => Some(Kind::ReadAvailable),
         "read-exact-num" => Some(Kind::ReadExactNum),
         "readkey" => Some(Kind::Readkey),
@@ -878,7 +935,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "set" => Some(Kind::Set),
         "set-attr-call-type" => Some(Kind::SetAttrCallType),
         "setuser" | "setuseri" | "setuserid" => Some(Kind::Setuserid),
-        "share" | "share-" | "share-l" | "share-lo" | "share-loc" | "share-lock" => Some(Kind::ShareLock),
+        "share" | "share-" | "share-l" | "share-lo" | "share-loc" | "share-lock" => {
+            Some(Kind::ShareLock)
+        }
         "shared" => Some(Kind::Shared),
         "show-stat" | "show-stats" => Some(Kind::ShowStats),
         "single-run" => Some(Kind::SingleRun),
@@ -913,7 +972,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "trim" => Some(Kind::Trim),
         "underl" | "underli" | "underlin" | "underline" => Some(Kind::Underline),
         "undo" => Some(Kind::Undo),
-        "unform" | "unforma" | "unformat" | "unformatt" | "unformatte" | "unformatted" => Some(Kind::Unformatted),
+        "unform" | "unforma" | "unformat" | "unformatt" | "unformatte" | "unformatted" => {
+            Some(Kind::Unformatted)
+        }
         "union" => Some(Kind::Union),
         "unique" => Some(Kind::Unique),
         "unix" => Some(Kind::Unix),
@@ -932,8 +993,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "wait-for" => Some(Kind::WaitFor),
         "when" => Some(Kind::When),
         "window" => Some(Kind::Window),
-        "window-maxim" | "window-maximi" | "window-maximiz" | "window-maximize" | "window-maximized" => Some(Kind::WindowMaximized),
-        "window-minim" | "window-minimi" | "window-minimiz" | "window-minimize" | "window-minimized" => Some(Kind::WindowMinimized),
+        "window-maxim" | "window-maximi" | "window-maximiz" | "window-maximize"
+        | "window-maximized" => Some(Kind::WindowMaximized),
+        "window-minim" | "window-minimi" | "window-minimiz" | "window-minimize"
+        | "window-minimized" => Some(Kind::WindowMinimized),
         "window-normal" => Some(Kind::WindowNormal),
         "with" => Some(Kind::With),
         "work-tab" | "work-tabl" | "work-table" => Some(Kind::WorkTable),
