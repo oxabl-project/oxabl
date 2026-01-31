@@ -135,6 +135,42 @@ keyword_type = "Punctuation"
 name = "disp"
 keyword_type = "Statement"
 
+# The keyword file defines no lock, exclusive lock, and share lock very poorly
+[[remove]]
+name = "share lock"
+keyword_type = "Statement"
+min_abbreviation = "share"
+[[remove]]
+name = "share"
+keyword_type = "Statement"
+
+[[add]]
+name= "exclusive-lock"
+keyword_type = "Statement"
+
+[[add]]
+name= "no-lock"
+keyword_type = "Statement"
+
+[[add]]
+name= "exclusive lock"
+keyword_type = "Statement"
+min_abbreviation = "exclusive"
+
+[[add]]
+name= "no lock"
+keyword_type = "Statement"
+
+[[add]]
+name= "share lock"
+keyword_type = "Statement"
+[[add]]
+name= "share-lock"
+keyword_type = "Statement"
+
+[[remove]]
+name = "no"
+keyword_type = "Statement"
 # =============================================================================
 # PREPROCESSOR
 # Unmatched preprocessor variable references like {&variable}
@@ -164,6 +200,34 @@ keyword_type = "Operator"
 name = "*/"
 reserved = true
 keyword_type = "Operator"
+
+# =============================================================================
+# LOCK TYPE ALTERNATE FORMS
+# ABL allows both space and hyphen forms for lock types
+# =============================================================================
+
+# EXCLUSIVE-LOCK is in reserved keywords as "EXCLUSIVE LOCK" (space)
+# Add the hyphenated form
+# [[add]]
+# name = "EXCLUSIVE-LOCK"
+# reserved = true
+# keyword_type = "Option"
+# min_abbreviation = "EXCLUSIVE-"
+
+# # NO-LOCK is in reserved keywords as "NO-LOCK" (hyphen)
+# # Add the space-separated form
+# [[add]]
+# name = "NO LOCK"
+# reserved = true
+# keyword_type = "Option"
+
+# # SHARE-LOCK is in reserved keywords as "SHARE-LOCK" (hyphen)
+# # Add the space-separated form
+# [[add]]
+# name = "SHARE LOCK"
+# reserved = true
+# keyword_type = "Option"
+# min_abbreviation = "SHARE"
 
 # =============================================================================
 # OVERRIDES

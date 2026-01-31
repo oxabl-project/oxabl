@@ -53,6 +53,16 @@ pub enum Statement {
         body: Vec<Statement>,
     },
 
+    /// FOR EACH
+    ForEach {
+        buffer: Identifier,
+        // Optional join to parent records
+        of_relation: Option<Identifier>,
+        where_clause: Option<Expression>,
+        lock_type: LockType,
+        body: Vec<Statement>,
+    },
+
     /// Leave statement - exist innermost loop
     Leave,
 
@@ -88,4 +98,12 @@ pub enum DataType {
     Com,
     /// Class type with fully qualified name
     Class(String),
+}
+
+/// ABL Record Lock Types
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockType {
+    NoLock,
+    ShareLock,
+    ExclusiveLock,
 }
