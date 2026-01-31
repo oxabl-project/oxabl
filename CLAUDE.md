@@ -52,7 +52,8 @@ Generated files are written directly to their target locations and include a "DO
 
 - `crates/oxabl` - Main library (future unified API)
 - `crates/oxabl_lexer` - Tokenizer for ABL source code (MVP complete)
-- `crates/oxabl_parser` - Parser (not yet started, depends on lexer)
+- `crates/oxabl_ast` - AST node definitions (expressions, statements, literals)
+- `crates/oxabl_parser` - Parser for ABL source code (actively developed)
 - `crates/oxabl_common` - Shared utilities including `SourceMap`
 - `crates/oxabl_codegen` - Code generation tool for lexer keywords
 
@@ -77,6 +78,26 @@ ABL-specific features handled:
 
 Converts byte offsets (stored in tokens) to human-readable line/column positions. Uses binary search over precomputed line start offsets for O(log n) lookups.
 
+### AST (`oxabl_ast`)
+
+Defines AST nodes for the parser. Key types:
+
+- **Literals**: Integer, Decimal, String, Boolean, Unknown (ABL's `?` literal)
+- **Expressions**: Arithmetic, comparison, logical, string comparison (BEGINS/MATCHES/CONTAINS), unary, ternary (IF/THEN/ELSE), function calls, postfix operations (member access, method calls, array access, field access)
+- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, Empty
+- **Data Types**: Integer, Int64, Decimal, Character, Logical, Date, DateTime, DateTimeTz, Handle, Rowid, Recid, Raw, Memptr, Longchar, Clob, Blob, Com, Class
+
+### Parser (`oxabl_parser`)
+
+Parses ABL source code into an AST. Key capabilities:
+
+- **Expression parsing** with proper operator precedence (ternary → or → and → comparison → additive → multiplicative → unary → postfix → primary)
+- **Statement parsing**: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN
+- **Postfix operations**: Method calls (object:method()), member access (object.member), array access (arr[i]), field access (table.field)
+- **Function calls** with argument lists
+
+Not yet implemented: procedure/function definitions, database operations, CLASS definitions, streams, frames, buffers, temp-tables.
+
 ### Code Generation (`oxabl_codegen`)
 
 Parses ABL keyword reference data from:
@@ -93,5 +114,5 @@ Generates:
 
 - `oxabl_lexer`: MVP complete with 27 tests
 - `oxabl_common/source_map`: Implemented but needs test coverage
-- `oxabl_ast`: Not started
-- `oxabl_parser`: Not started
+- `oxabl_ast`: Implemented with expressions, statements, and data types
+- `oxabl_parser`: Actively developed with 91 tests; parses expressions, control flow, and variable declarations

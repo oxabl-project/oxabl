@@ -22,12 +22,14 @@ Requirements:
   - It's able to produce line and column numbers from byte offsets stored in tokens.
   - Needs test coverage.
   - Used in our token dumps and benchmarks, appears to be accurate.
-- `oxabl_ast`: Started in `crates/oxabl_ast`
-  - Defines literals, statements, expressions, variable definitions, and do blocks.
-- `oxabl_parser`: Started in `crates/oxabl_parser`
-  - Parses literals, statements, expressions, variable definitions, and do blocks.
+- `oxabl_ast`: Implemented in `crates/oxabl_ast`
+  - Defines literals, statements, expressions, variable definitions, control flow, and data types.
+- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 91 tests
+  - Parses expressions with proper operator precedence
+  - Parses statements: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN
+  - Parses postfix operations: method calls, member access, array access, field access
 
-Current Work: IF statements, more loops, and REPEATs.
+Current Work: Procedure/function definitions, more statement types.
 
 ## Roadmap
 
