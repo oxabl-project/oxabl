@@ -21,162 +21,45 @@ The parser has a solid foundation covering:
 - `DO` blocks (simple, counting loops with `TO`/`BY`, `WHILE`)
 - `IF`/`THEN`/`ELSE`
 - `REPEAT`
+- `FOR EACH` with lock types, `WHERE`, `OF` clauses
 - `LEAVE`, `NEXT`, `RETURN`
 - Empty statements
 
+### Lexer
+- Lock types (`NO-LOCK`, `SHARE-LOCK`, `EXCLUSIVE-LOCK`) support both hyphenated and space-separated forms
+
 ### Tests
-- 80+ tests covering expression parsing and statement parsing
+- 119+ parser tests covering expression parsing and statement parsing
+- 37 lexer tests including lock type handling
 
 ---
 
-## Immediate Fixes Needed
+## Priority 1: FIND Statement (Single Record Lookup)
 
-### 1. Remove Debug Print Statements
-
-The parser has `println!` calls that should be removed for production:
-
-```rust
-// parser.rs:103, 126, 129, 134, 136, 365, 366, 449, 508, 513, 762, 765, 779, 784, 792, 798
-```
-
-Consider using the `log` crate with `debug!` macro instead, which can be disabled at compile time.
-
-### 2. Complete `make_comparison` Function
-
-The `make_comparison` function at line 728 is incomplete - it only handles two operators:
-
-```rust
-fn make_comparison(&self, left: Expression, op: Kind, right: Expression) -> Expression {
-    match op {
-        Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),
-        Kind::LessThan | Kind::Lt => Expression::LessThan(Box::new(left), Box::new(right)),
-        // Missing: LessThanOrEqual, GreaterThan, GreaterThanOrEqual, Begins, Matches, Contains
-        _ => unreachable!(),
-    }
-}
-```
-
-Add the missing operators to match `is_non_equals_comparison_operator()`.
-
----
-
-## Next Features by Priority
-
-### Priority 1: FOR EACH Statement (Database Queries)
-
-This is the most important ABL feature for real-world code. ABL's `FOR EACH` is how you query and iterate over database records.
-
-**Syntax:**
-```abl
-FOR EACH Customer WHERE Customer.Balance > 1000 NO-LOCK:
-    DISPLAY Customer.Name Customer.Balance.
-END.
-
-FOR EACH Order OF Customer NO-LOCK,
-    EACH OrderLine OF Order NO-LOCK:
-    total = total + OrderLine.Price.
-END.
-```
-
-**Concept:** `FOR EACH` combines a database query with iteration. It's similar to SQL's `SELECT` wrapped in a `foreach` loop.
-
-**AST Addition:**
-```rust
-// In statement.rs
-ForEach {
-    /// The record buffer being queried
-    buffer: Identifier,
-    /// Optional join to parent record (OF clause)
-    of_relation: Option<Identifier>,
-    /// WHERE clause filter
-    where_clause: Option<Expression>,
-    /// Lock type: NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK
-    lock_type: LockType,
-    /// Body statements
-    body: Vec<Statement>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LockType {
-    NoLock,
-    ShareLock,
-    ExclusiveLock,
-}
-```
-
-**Parser Implementation:**
-```rust
-fn parse_for_each(&mut self) -> ParseResult<Statement> {
-    self.advance(); // consume FOR
-    self.expect_kind(Kind::Each, "Expected EACH after FOR")?;
-
-    // Parse buffer name
-    let buffer = self.parse_identifier()?;
-
-    // Optional OF clause
-    let of_relation = if self.check(Kind::Of) {
-        self.advance();
-        Some(self.parse_identifier()?)
-    } else {
-        None
-    };
-
-    // Optional WHERE clause
-    let where_clause = if self.check(Kind::Where) {
-        self.advance();
-        Some(self.parse_expression()?)
-    } else {
-        None
-    };
-
-    // Lock type (default NO-LOCK for queries)
-    let lock_type = self.parse_lock_type()?;
-
-    self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
-    let body = self.parse_block_body()?;
-
-    Ok(Statement::ForEach { buffer, of_relation, where_clause, lock_type, body })
-}
-```
-
-**Tests to Write:**
-```rust
-#[test]
-fn parse_simple_for_each() {
-    let source = "FOR EACH Customer NO-LOCK: x = Customer.Name. END.";
-    // ...
-}
-
-#[test]
-fn parse_for_each_with_where() {
-    let source = "FOR EACH Customer WHERE Customer.Balance > 1000 NO-LOCK: END.";
-    // ...
-}
-
-#[test]
-fn parse_for_each_with_of() {
-    let source = "FOR EACH Order OF Customer NO-LOCK: END.";
-    // ...
-}
-```
-
----
-
-### Priority 2: FIND Statement (Single Record Lookup)
+**Status:** AST defined, parser not implemented
 
 **Syntax:**
 ```abl
 FIND FIRST Customer WHERE Customer.CustNum = 1 NO-LOCK NO-ERROR.
+FIND LAST Order WHERE Order.OrderDate > TODAY NO-LOCK.
 FIND Customer 1 NO-LOCK.
+FIND NEXT Customer NO-LOCK.
 ```
 
-**Concept:** `FIND` retrieves a single record into a buffer. Unlike `FOR EACH`, it doesn't iterate - it either finds one record or fails.
+**Concept:** `FIND` retrieves a single record into a buffer. Unlike `FOR EACH`, it doesn't iterate - it either finds one record or fails. The `NO-ERROR` option suppresses runtime errors when no record is found.
 
-**AST Addition:**
+**Key Value Syntax:** The key value can be any expression matching the primary index field's data type - not just numeric. Examples:
+- `FIND Customer 1 NO-LOCK.` (integer key)
+- `FIND Customer "ACME" NO-LOCK.` (character key)
+- `FIND Order TODAY NO-LOCK.` (date key)
+- `FIND Customer custVar NO-LOCK.` (variable as key)
+
+**AST Addition (in `oxabl_ast/src/lib.rs`):**
 ```rust
 Find {
     find_type: FindType,  // FIRST, LAST, NEXT, PREV, or none (unique)
     buffer: Identifier,
+    key_value: Option<Expression>,  // For FIND Customer <key> syntax (any data type)
     where_clause: Option<Expression>,
     lock_type: LockType,
     no_error: bool,
@@ -192,9 +75,114 @@ pub enum FindType {
 }
 ```
 
+**Parser Implementation (in `oxabl_parser/src/parser.rs`):**
+```rust
+fn parse_find_statement(&mut self) -> ParseResult<Statement> {
+    self.advance(); // consume FIND
+
+    // Parse optional find type (FIRST, LAST, NEXT, PREV)
+    let find_type = match self.peek().kind {
+        Kind::First => { self.advance(); FindType::First }
+        Kind::Last => { self.advance(); FindType::Last }
+        Kind::Next => { self.advance(); FindType::Next }
+        Kind::Prev => { self.advance(); FindType::Prev }
+        _ => FindType::Unique,
+    };
+
+    // Parse buffer/table name
+    let buffer = self.parse_identifier()?;
+
+    // Parse optional key value (FIND Customer <key> syntax)
+    // Key value is present if next token is NOT a clause keyword, lock type, or terminator
+    let key_value = if !self.is_find_clause_start() {
+        Some(self.parse_expression()?)
+    } else {
+        None
+    };
+
+    // Parse optional WHERE clause
+    let where_clause = if self.check(Kind::KwWhere) {
+        self.advance();
+        Some(self.parse_expression()?)
+    } else {
+        None
+    };
+
+    // Parse lock type (defaults to SHARE-LOCK if not specified)
+    let lock_type = self.parse_lock_type()?;
+
+    // Parse optional NO-ERROR
+    let no_error = if self.check(Kind::NoError) {
+        self.advance();
+        true
+    } else {
+        false
+    };
+
+    self.expect_kind(Kind::Period, "Expected '.' after FIND statement")?;
+
+    Ok(Statement::Find {
+        find_type,
+        buffer,
+        key_value,
+        where_clause,
+        lock_type,
+        no_error,
+    })
+}
+
+/// Check if current token starts a FIND clause (WHERE, lock type, NO-ERROR, or terminator)
+fn is_find_clause_start(&self) -> bool {
+    matches!(
+        self.peek().kind,
+        Kind::KwWhere
+            | Kind::NoLock
+            | Kind::ShareLock
+            | Kind::ExclusiveLock
+            | Kind::NoError
+            | Kind::Period
+    )
+}
+```
+
+**Test Cases to Add:**
+```rust
+#[test]
+fn parse_find_first_with_where() {
+    let source = "find first Customer where Customer.CustNum = 1 no-lock.";
+    // ...
+}
+
+#[test]
+fn parse_find_by_integer_key() {
+    let source = "find Customer 1 no-lock.";
+    // ...
+}
+
+#[test]
+fn parse_find_by_string_key() {
+    let source = r#"find Customer "ACME" no-lock."#;
+    // ...
+}
+
+#[test]
+fn parse_find_by_variable_key() {
+    let source = "find Customer custId no-lock.";
+    // ...
+}
+
+#[test]
+fn parse_find_with_no_error() {
+    let source = "find first Customer where active = true no-lock no-error.";
+    // ...
+}
+```
+
 ---
 
-### Priority 3: CASE Statement
+## Priority 2: CASE Statement
+
+**Status:** AST not defined, parser not implemented
 
 **Syntax:**
 ```abl
@@ -208,14 +196,20 @@ CASE CustomerType:
 END CASE.
 ```
 
-**Concept:** ABL's `CASE` is similar to `switch` in other languages. The `WHEN` clauses test equality against the case expression.
+**Concept:** ABL's `CASE` is similar to `switch` in other languages. The `WHEN` clauses test equality against the case expression. Multiple values can be tested with `WHEN "a" OR WHEN "b"`.
 
 **AST Addition:**
 ```rust
 Case {
     expression: Expression,
-    when_branches: Vec<(Expression, Vec<Statement>)>,
+    when_branches: Vec<WhenBranch>,
     otherwise: Option<Vec<Statement>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhenBranch {
+    pub values: Vec<Expression>,  // Supports WHEN "a" OR WHEN "b"
+    pub body: Vec<Statement>,
 }
 ```
 
@@ -230,7 +224,15 @@ fn parse_case_statement(&mut self) -> ParseResult<Statement> {
 
     while self.check(Kind::When) {
         self.advance();
-        let value = self.parse_expression()?;
+        let mut values = vec![self.parse_expression()?];
+
+        // Handle WHEN "a" OR WHEN "b" syntax
+        while self.check(Kind::Or) {
+            self.advance();
+            self.expect_kind(Kind::When, "Expected WHEN after OR")?;
+            values.push(self.parse_expression()?);
+        }
+
         self.expect_kind(Kind::Then, "Expected THEN after WHEN value")?;
 
         // Parse statements until next WHEN, OTHERWISE, or END
@@ -241,7 +243,7 @@ fn parse_case_statement(&mut self) -> ParseResult<Statement> {
         {
             body.push(self.parse_statement()?);
         }
-        when_branches.push((value, body));
+        when_branches.push(WhenBranch { values, body });
     }
 
     let otherwise = if self.check(Kind::Otherwise) {
@@ -265,34 +267,36 @@ fn parse_case_statement(&mut self) -> ParseResult<Statement> {
 
 ---
 
-### Priority 4: Procedure Definitions
+## Priority 3: Procedure Definitions
+
+**Status:** AST not defined, parser not implemented
 
 **Syntax:**
 ```abl
 PROCEDURE calculate-total:
-    DEFINE INPUT PARAMETER pPrice AS DECIMAL.
-    DEFINE INPUT PARAMETER pQty AS INTEGER.
-    DEFINE OUTPUT PARAMETER pTotal AS DECIMAL.
+    DEFINE INPUT PARAMETER pPrice AS DECIMAL NO-UNDO.
+    DEFINE INPUT PARAMETER pQty AS INTEGER NO-UNDO.
+    DEFINE OUTPUT PARAMETER pTotal AS DECIMAL NO-UNDO.
 
     pTotal = pPrice * pQty.
 END PROCEDURE.
 ```
 
-**Concept:** Procedures are ABL's basic unit of reusable code. They can have INPUT, OUTPUT, and INPUT-OUTPUT parameters.
+**Concept:** Procedures are ABL's basic unit of reusable code. They can have INPUT, OUTPUT, and INPUT-OUTPUT parameters. Parameters are defined with `DEFINE ... PARAMETER` statements inside the procedure.
 
 **AST Addition:**
 ```rust
 Procedure {
     name: Identifier,
-    parameters: Vec<Parameter>,
-    body: Vec<Statement>,
+    body: Vec<Statement>,  // Parameters are parsed as DEFINE PARAMETER statements
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Parameter {
-    pub direction: ParameterDirection,
-    pub name: Identifier,
-    pub data_type: DataType,
+// Extend existing VariableDeclaration or add new variant:
+DefineParameter {
+    direction: ParameterDirection,
+    name: Identifier,
+    data_type: DataType,
+    no_undo: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,29 +307,435 @@ pub enum ParameterDirection {
 }
 ```
 
----
+**Parser Implementation:**
+```rust
+fn parse_procedure(&mut self) -> ParseResult<Statement> {
+    self.advance(); // consume PROCEDURE
 
-### Priority 5: DISPLAY / MESSAGE Statements
+    let name = self.parse_identifier()?;
+    self.expect_kind(Kind::Colon, "Expected ':' after procedure name")?;
 
-**Syntax:**
-```abl
-DISPLAY Customer.Name Customer.Balance WITH FRAME f1.
-MESSAGE "Hello, " + userName VIEW-AS ALERT-BOX.
+    // Parse body statements until END PROCEDURE
+    let mut body = Vec::new();
+    while !self.check(Kind::End) {
+        body.push(self.parse_statement()?);
+    }
+
+    self.expect_kind(Kind::End, "Expected END")?;
+
+    // END PROCEDURE or just END. are both valid
+    if self.check(Kind::Procedure) {
+        self.advance();
+    }
+
+    self.expect_kind(Kind::Period, "Expected '.' after END PROCEDURE")?;
+
+    Ok(Statement::Procedure { name, body })
+}
+
+// Extend parse_define_statement to handle parameters:
+fn parse_define_statement(&mut self) -> ParseResult<Statement> {
+    self.advance(); // consume DEFINE
+
+    match self.peek().kind {
+        Kind::Variable | Kind::Var => self.parse_define_variable(),
+        Kind::Input | Kind::Output | Kind::InputOutput => self.parse_define_parameter(),
+        // ... other DEFINE variants
+        _ => Err(ParseError { ... }),
+    }
+}
+
+fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
+    let direction = match self.peek().kind {
+        Kind::Input => { self.advance(); ParameterDirection::Input }
+        Kind::Output => { self.advance(); ParameterDirection::Output }
+        Kind::InputOutput => { self.advance(); ParameterDirection::InputOutput }
+        _ => return Err(ParseError { ... }),
+    };
+
+    self.expect_kind(Kind::Parameter, "Expected PARAMETER")?;
+    let name = self.parse_identifier()?;
+    self.expect_kind(Kind::KwAs, "Expected AS")?;
+    let data_type = self.parse_data_type()?;
+
+    let no_undo = if self.check(Kind::NoUndo) {
+        self.advance();
+        true
+    } else {
+        false
+    };
+
+    self.expect_kind(Kind::Period, "Expected '.'")?;
+
+    Ok(Statement::DefineParameter { direction, name, data_type, no_undo })
+}
 ```
 
-**Concept:** These are ABL's output statements. `DISPLAY` shows data in a frame (UI grid), while `MESSAGE` shows alert dialogs or console output.
-
 ---
 
-### Priority 6: RUN Statement (Calling Procedures)
+## Priority 4: RUN Statement (Calling Procedures)
+
+**Status:** AST not defined, parser not implemented
 
 **Syntax:**
 ```abl
 RUN calculate-total (INPUT 100, INPUT 5, OUTPUT result).
+RUN calculate-total.
 RUN external-prog.p (INPUT "data").
+RUN VALUE(procName).
 ```
 
-**Concept:** `RUN` executes an internal procedure or external `.p` file, passing parameters.
+**Concept:** `RUN` executes an internal procedure or external `.p` file, passing parameters. The procedure name can be a literal, identifier, or `VALUE(expression)` for dynamic dispatch.
+
+**AST Addition:**
+```rust
+Run {
+    target: RunTarget,
+    arguments: Vec<RunArgument>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunTarget {
+    Literal(String),           // RUN my-proc or RUN "file.p"
+    Dynamic(Expression),       // RUN VALUE(expr)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunArgument {
+    pub direction: ParameterDirection,
+    pub expression: Expression,
+}
+```
+
+**Parser Implementation:**
+```rust
+fn parse_run_statement(&mut self) -> ParseResult<Statement> {
+    self.advance(); // consume RUN
+
+    // Parse target: VALUE(expr) or procedure-name
+    let target = if self.check(Kind::Value) {
+        self.advance();
+        self.expect_kind(Kind::LeftParen, "Expected '(' after VALUE")?;
+        let expr = self.parse_expression()?;
+        self.expect_kind(Kind::RightParen, "Expected ')'")?;
+        RunTarget::Dynamic(expr)
+    } else {
+        // Procedure name (may contain hyphens, dots for .p files)
+        let name = self.parse_procedure_name()?;
+        RunTarget::Literal(name)
+    };
+
+    // Parse optional arguments
+    let arguments = if self.check(Kind::LeftParen) {
+        self.advance();
+        let mut args = Vec::new();
+
+        if !self.check(Kind::RightParen) {
+            loop {
+                let direction = match self.peek().kind {
+                    Kind::Input => { self.advance(); ParameterDirection::Input }
+                    Kind::Output => { self.advance(); ParameterDirection::Output }
+                    Kind::InputOutput => { self.advance(); ParameterDirection::InputOutput }
+                    _ => ParameterDirection::Input, // Default to INPUT
+                };
+
+                let expression = self.parse_expression()?;
+                args.push(RunArgument { direction, expression });
+
+                if !self.check(Kind::Comma) {
+                    break;
+                }
+                self.advance(); // consume comma
+            }
+        }
+
+        self.expect_kind(Kind::RightParen, "Expected ')'")?;
+        args
+    } else {
+        Vec::new()
+    };
+
+    self.expect_kind(Kind::Period, "Expected '.' after RUN statement")?;
+
+    Ok(Statement::Run { target, arguments })
+}
+
+// Helper to parse procedure names that may include dots (e.g., "file.p")
+fn parse_procedure_name(&mut self) -> ParseResult<String> {
+    let start = self.peek().start;
+    self.advance(); // consume first identifier
+
+    // Handle dotted names like "myproc.p"
+    while self.check(Kind::Period) {
+        // Peek ahead - if next is an identifier, it's part of the name
+        let saved = self.position;
+        self.advance(); // consume period
+        if self.check_identifier() {
+            self.advance(); // consume extension
+        } else {
+            // It's the statement terminator, rollback
+            self.position = saved;
+            break;
+        }
+    }
+
+    let end = self.previous().end;
+    Ok(self.source[start..end].to_string())
+}
+```
+
+---
+
+## Priority 5: DISPLAY Statement
+
+**Status:** AST not defined, parser not implemented
+
+**Syntax:**
+```abl
+DISPLAY Customer.Name Customer.Balance.
+DISPLAY "Total:" total WITH FRAME f1.
+DISPLAY x y z WITH FRAME results 2 COLUMNS.
+DISPLAY Customer EXCEPT CustNum WITH FRAME cust-frame.
+```
+
+**Concept:** `DISPLAY` outputs field/variable values to the screen or a frame. It's one of ABL's primary output statements for UI applications.
+
+**AST Addition:**
+```rust
+Display {
+    items: Vec<DisplayItem>,
+    frame: Option<FrameClause>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayItem {
+    pub expression: Expression,
+    pub label: Option<String>,       // Optional "label" format
+    pub format: Option<String>,      // Optional FORMAT "xxx"
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameClause {
+    pub name: Identifier,
+    pub columns: Option<u32>,        // N COLUMNS
+    pub down: Option<u32>,           // N DOWN
+    pub except: Vec<Identifier>,     // EXCEPT field-list
+}
+```
+
+**Parser Implementation:**
+```rust
+fn parse_display_statement(&mut self) -> ParseResult<Statement> {
+    self.advance(); // consume DISPLAY
+
+    let mut items = Vec::new();
+
+    // Parse display items until WITH or period
+    while !self.check(Kind::With) && !self.check(Kind::Period) {
+        let expression = self.parse_expression()?;
+
+        // Optional label
+        let label = if self.check(Kind::StringLiteral) {
+            let token = self.advance().clone();
+            Some(self.source[token.start+1..token.end-1].to_string())
+        } else {
+            None
+        };
+
+        // Optional FORMAT
+        let format = if self.check(Kind::Format) {
+            self.advance();
+            let token = self.expect_kind(Kind::StringLiteral, "Expected format string")?;
+            Some(self.source[token.start+1..token.end-1].to_string())
+        } else {
+            None
+        };
+
+        items.push(DisplayItem { expression, label, format });
+    }
+
+    // Parse optional WITH FRAME clause
+    let frame = if self.check(Kind::With) {
+        self.advance();
+        Some(self.parse_frame_clause()?)
+    } else {
+        None
+    };
+
+    self.expect_kind(Kind::Period, "Expected '.' after DISPLAY")?;
+
+    Ok(Statement::Display { items, frame })
+}
+
+fn parse_frame_clause(&mut self) -> ParseResult<FrameClause> {
+    self.expect_kind(Kind::Frame, "Expected FRAME")?;
+    let name = self.parse_identifier()?;
+
+    let mut columns = None;
+    let mut down = None;
+    let mut except = Vec::new();
+
+    // Parse frame options
+    loop {
+        if self.check(Kind::IntegerLiteral) {
+            let num = self.parse_integer()?;
+            if self.check(Kind::Columns) {
+                self.advance();
+                columns = Some(num);
+            } else if self.check(Kind::Down) {
+                self.advance();
+                down = Some(num);
+            }
+        } else if self.check(Kind::Except) {
+            self.advance();
+            while self.check_identifier() && !self.check(Kind::Period) && !self.check(Kind::With) {
+                except.push(self.parse_identifier()?);
+            }
+        } else {
+            break;
+        }
+    }
+
+    Ok(FrameClause { name, columns, down, except })
+}
+```
+
+---
+
+## Priority 6: MESSAGE Statement
+
+**Status:** AST not defined, parser not implemented
+
+**Syntax:**
+```abl
+MESSAGE "Hello, World!".
+MESSAGE "Error:" errMsg VIEW-AS ALERT-BOX ERROR.
+MESSAGE "Confirm delete?" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE lChoice.
+MESSAGE Customer.Name SKIP Customer.Balance.
+```
+
+**Concept:** `MESSAGE` displays messages to the user. It can show simple console output or UI alert boxes with buttons.
+
+**AST Addition:**
+```rust
+Message {
+    items: Vec<MessageItem>,
+    view_as: Option<AlertBoxOptions>,
+    update: Option<Identifier>,  // Variable to store button response
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageItem {
+    Expression(Expression),
+    Skip,                        // SKIP keyword for newline
+    SkipCount(u32),              // SKIP(n)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlertBoxOptions {
+    pub alert_type: Option<AlertType>,  // ERROR, WARNING, INFO, QUESTION
+    pub buttons: Option<ButtonType>,     // YES-NO, YES-NO-CANCEL, OK, OK-CANCEL, RETRY-CANCEL
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlertType {
+    Error,
+    Warning,
+    Info,
+    Question,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ButtonType {
+    YesNo,
+    YesNoCancel,
+    Ok,
+    OkCancel,
+    RetryCancel,
+}
+```
+
+**Parser Implementation:**
+```rust
+fn parse_message_statement(&mut self) -> ParseResult<Statement> {
+    self.advance(); // consume MESSAGE
+
+    let mut items = Vec::new();
+
+    // Parse message items until VIEW-AS, UPDATE, or period
+    while !self.check(Kind::ViewAs) && !self.check(Kind::Update) && !self.check(Kind::Period) {
+        if self.check(Kind::Skip) {
+            self.advance();
+            if self.check(Kind::LeftParen) {
+                self.advance();
+                let count = self.parse_integer()?;
+                self.expect_kind(Kind::RightParen, "Expected ')'")?;
+                items.push(MessageItem::SkipCount(count));
+            } else {
+                items.push(MessageItem::Skip);
+            }
+        } else {
+            items.push(MessageItem::Expression(self.parse_expression()?));
+        }
+    }
+
+    // Parse optional VIEW-AS ALERT-BOX
+    let view_as = if self.check(Kind::ViewAs) {
+        self.advance();
+        self.expect_kind(Kind::AlertBox, "Expected ALERT-BOX after VIEW-AS")?;
+        Some(self.parse_alert_box_options()?)
+    } else {
+        None
+    };
+
+    // Parse optional UPDATE variable
+    let update = if self.check(Kind::Update) {
+        self.advance();
+        Some(self.parse_identifier()?)
+    } else {
+        None
+    };
+
+    self.expect_kind(Kind::Period, "Expected '.' after MESSAGE")?;
+
+    Ok(Statement::Message { items, view_as, update })
+}
+
+fn parse_alert_box_options(&mut self) -> ParseResult<AlertBoxOptions> {
+    let mut alert_type = None;
+    let mut buttons = None;
+    let mut title = None;
+
+    loop {
+        match self.peek().kind {
+            Kind::Error => { self.advance(); alert_type = Some(AlertType::Error); }
+            Kind::Warning => { self.advance(); alert_type = Some(AlertType::Warning); }
+            Kind::Information => { self.advance(); alert_type = Some(AlertType::Info); }
+            Kind::Question => { self.advance(); alert_type = Some(AlertType::Question); }
+            Kind::Buttons => {
+                self.advance();
+                buttons = Some(match self.peek().kind {
+                    Kind::YesNo => { self.advance(); ButtonType::YesNo }
+                    Kind::YesNoCancel => { self.advance(); ButtonType::YesNoCancel }
+                    Kind::Ok => { self.advance(); ButtonType::Ok }
+                    Kind::OkCancel => { self.advance(); ButtonType::OkCancel }
+                    Kind::RetryCancel => { self.advance(); ButtonType::RetryCancel }
+                    _ => return Err(ParseError { message: "Expected button type".into(), .. }),
+                });
+            }
+            Kind::Title => {
+                self.advance();
+                let token = self.expect_kind(Kind::StringLiteral, "Expected title string")?;
+                title = Some(self.source[token.start+1..token.end-1].to_string());
+            }
+            _ => break,
+        }
+    }
+
+    Ok(AlertBoxOptions { alert_type, buttons, title })
+}
+```
 
 ---
 
@@ -424,10 +834,13 @@ pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         Kind::Do => self.parse_do_statement(),
         Kind::KwIf => self.parse_if_statement(),
         Kind::Repeat => self.parse_repeat_statement(),
-        Kind::For => self.parse_for_each(),
+        Kind::KwFor => self.parse_for_each(),
         Kind::Find => self.parse_find_statement(),
         Kind::Case => self.parse_case_statement(),
         Kind::Procedure => self.parse_procedure(),
+        Kind::Run => self.parse_run_statement(),
+        Kind::Display => self.parse_display_statement(),
+        Kind::Message => self.parse_message_statement(),
         Kind::Leave => { self.advance(); self.expect_period()?; Ok(Statement::Leave) }
         Kind::Next => { self.advance(); self.expect_period()?; Ok(Statement::Next) }
         Kind::KwReturn => self.parse_return_statement(),
@@ -451,7 +864,7 @@ fn synchronize(&mut self) {
         }
         // Also sync on statement-starting keywords
         if matches!(self.peek().kind,
-            Kind::Do | Kind::KwIf | Kind::For | Kind::Define | Kind::End
+            Kind::Do | Kind::KwIf | Kind::KwFor | Kind::Define | Kind::End
         ) {
             return;
         }
@@ -486,12 +899,20 @@ Add tests for:
 
 ## Summary Checklist
 
+### Completed
+- [x] `FOR EACH` statement with lock types
+- [x] Lock type lexer support (hyphenated and space-separated forms)
+
+### In Progress / Next Up
+- [ ] `FIND` statement (AST exists, parser needed)
+- [ ] `CASE` statement (AST and parser needed)
+- [ ] `PROCEDURE` definition (AST and parser needed)
+- [ ] `RUN` statement (AST and parser needed)
+- [ ] `DISPLAY` statement (AST and parser needed)
+- [ ] `MESSAGE` statement (AST and parser needed)
+
+### Cleanup
 - [ ] Remove debug `println!` statements
-- [ ] Complete `make_comparison()` function
 - [ ] Add `parse_identifier()` helper
-- [ ] Implement `FOR EACH` statement
-- [ ] Implement `FIND` statement
-- [ ] Implement `CASE` statement
-- [ ] Implement `PROCEDURE` definition
 - [ ] Add tests for each new feature
 - [ ] Consider error recovery strategy

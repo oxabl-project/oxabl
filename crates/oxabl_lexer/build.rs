@@ -383,6 +383,7 @@ fn main() {
             "preproc",
             "preprocess",
             "preprop",
+            "prev",
             "privileges",
             "proc-ha",
             "proc-handle",

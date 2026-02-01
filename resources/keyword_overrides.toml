@@ -130,10 +130,25 @@ keyword_type = "Punctuation"
 name = ","
 keyword_type = "Punctuation"
 
+# =============================================================================
+# Keywords
+# Specific keywords we don't want or are missing from our files
+# =============================================================================
+
 # Disp is both a keyword (same as DISPLAY) and an abbreviation of DISPLAY
 [[remove]]
 name = "disp"
 keyword_type = "Statement"
+
+# Prev for Find Prev is missing from our keyword index
+[[add]]
+name = "prev"
+keyword_type = "Statement"
+
+# =============================================================================
+# Lock Types
+# no-lock, share-lock, exclusive-lock
+# =============================================================================
 
 # The keyword file defines no lock, exclusive lock, and share lock very poorly.
 # Remove the space-separated forms and the "no" entry (which has wrong abbreviation).
@@ -142,9 +157,11 @@ keyword_type = "Statement"
 [[remove]]
 name = "share lock"
 keyword_type = "Statement"
+
 [[remove]]
 name = "exclusive lock"
 keyword_type = "Statement"
+
 [[remove]]
 name = "no"
 keyword_type = "Statement"
@@ -163,6 +180,7 @@ min_abbreviation = "no-lock"
 [[add]]
 name = "exclusive-lock"
 keyword_type = "Statement"
+
 # =============================================================================
 # PREPROCESSOR
 # Unmatched preprocessor variable references like {&variable}
