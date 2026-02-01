@@ -178,7 +178,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse_multiplicative(&mut self) -> ParseResult<Expression> {
         let mut expr = self.parse_unary()?;
-        while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Percent) {
+        while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Modulo) {
             let operator = self.advance();
             match operator.kind {
                 Kind::Star => {
@@ -189,7 +189,7 @@ impl<'a> Parser<'a> {
                     let right_exp = self.parse_unary()?;
                     expr = Expression::Divide(Box::new(expr), Box::new(right_exp));
                 }
-                Kind::Percent => {
+                Kind::Modulo => {
                     let right_exp = self.parse_unary()?;
                     expr = Expression::Modulo(Box::new(expr), Box::new(right_exp));
                 }
@@ -729,7 +729,18 @@ impl<'a> Parser<'a> {
         match op {
             Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),
             Kind::LessThan | Kind::Lt => Expression::LessThan(Box::new(left), Box::new(right)),
-            // ... etc for other operators
+            Kind::LessThanOrEqual | Kind::Le => {
+                Expression::LessThanOrEqual(Box::new(left), Box::new(right))
+            }
+            Kind::GreaterThan | Kind::Gt => {
+                Expression::GreaterThan(Box::new(left), Box::new(right))
+            }
+            Kind::GreaterThanOrEqual | Kind::Ge => {
+                Expression::GreaterThanOrEqual(Box::new(left), Box::new(right))
+            }
+            Kind::Begins => Expression::Begins(Box::new(left), Box::new(right)),
+            Kind::Matches => Expression::Matches(Box::new(left), Box::new(right)),
+            Kind::Contains => Expression::Contains(Box::new(left), Box::new(right)),
             _ => unreachable!(),
         }
     }
@@ -855,7 +866,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_repeat_statement(&mut self) -> ParseResult<Statement>{
+    fn parse_repeat_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume REPEAT
 
         // Optional WHILE
@@ -871,7 +882,10 @@ impl<'a> Parser<'a> {
 
         let body = self.parse_block_body()?;
 
-        Ok(Statement::Repeat { while_condition, body })
+        Ok(Statement::Repeat {
+            while_condition,
+            body,
+        })
     }
 
     fn parse_return_statement(&mut self) -> ParseResult<Statement> {
@@ -1328,8 +1342,8 @@ mod test {
 
     #[test]
     fn parse_modulo_expression() {
-        // ABL uses % for modulo, not 'mod'
-        let source = "10 % 3";
+        // ABL uses mod/modulo keyword for modulo
+        let source = "10 mod 3";
         let tokens = tokenize(source);
         let mut parser = Parser::new(&tokens, source);
         let expression = parser.parse_expression().expect("Expected an expression");
@@ -1341,7 +1355,7 @@ mod test {
                     value: 10
                 }))),
                 Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 5, end: 6 },
+                    span: Span { start: 7, end: 8 },
                     value: 3
                 })))
             )
@@ -1549,6 +1563,276 @@ mod test {
                         name: "c".to_string()
                     }))
                 ))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_less_than_symbol() {
+        let source = "a < b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::LessThan(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_less_than_or_equal_symbol() {
+        let source = "a <= b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::LessThanOrEqual(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_less_than_or_equal_keyword() {
+        let source = "a le b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::LessThanOrEqual(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_symbol() {
+        let source = "a > b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::GreaterThan(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_keyword() {
+        let source = "a gt b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::GreaterThan(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_or_equal_symbol() {
+        let source = "a >= b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::GreaterThanOrEqual(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_or_equal_keyword() {
+        let source = "a ge b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::GreaterThanOrEqual(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_not_equal_keyword() {
+        let source = "a ne b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::NotEqual(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_equal_keyword() {
+        let source = "a eq b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Equal(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_not_expression() {
+        let source = "not a";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Not(Box::new(Expression::Identifier(Identifier {
+                span: Span { start: 4, end: 5 },
+                name: "a".to_string()
+            })))
+        );
+    }
+
+    #[test]
+    fn parse_not_with_comparison() {
+        // In ABL, NOT has higher precedence than comparison operators
+        // so "not a = b" is parsed as "(not a) = b"
+        let source = "not a = b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Equal(
+                Box::new(Expression::Not(Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "a".to_string()
+                })))),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 8, end: 9 },
+                    name: "b".to_string()
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_not_with_parenthesized_comparison() {
+        // To negate an entire comparison, use parentheses
+        let source = "not (a = b)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Not(Box::new(Expression::Equal(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "a".to_string()
+                })),
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 9, end: 10 },
+                    name: "b".to_string()
+                }))
+            )))
+        );
+    }
+
+    #[test]
+    fn parse_matches_expression() {
+        let source = "name matches \"*son\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expression = parser.parse_expression().expect("Expected an expression");
+        assert_eq!(
+            expression,
+            Expression::Matches(
+                Box::new(Expression::Identifier(Identifier {
+                    span: Span { start: 0, end: 4 },
+                    name: "name".to_string()
+                })),
+                Box::new(Expression::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 13, end: 19 },
+                    value: "*son".to_string()
+                })))
             )
         );
     }
@@ -2784,7 +3068,10 @@ mod test {
         let mut parser = Parser::new(&tokens, source);
         let stmt = parser.parse_statement().expect("Expected a statement");
         match stmt {
-            Statement::Repeat { body, while_condition } => {
+            Statement::Repeat {
+                body,
+                while_condition,
+            } => {
                 assert!(while_condition.is_none());
                 assert_eq!(body.len(), 2);
             }
@@ -2799,7 +3086,9 @@ mod test {
         let mut parser = Parser::new(&tokens, source);
         let stmt = parser.parse_statement().expect("Expected a statement");
         match stmt {
-            Statement::Repeat { while_condition, .. } => {
+            Statement::Repeat {
+                while_condition, ..
+            } => {
                 assert!(while_condition.is_some());
             }
             _ => panic!("Expected Repeat statement"),
@@ -2849,7 +3138,8 @@ mod test {
 
     #[test]
     fn parse_loop_with_leave_and_next() {
-        let source = "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
+        let source =
+            "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
         let tokens = tokenize(source);
         let mut parser = Parser::new(&tokens, source);
         let stmt = parser.parse_statement().expect("Expected a statement");
