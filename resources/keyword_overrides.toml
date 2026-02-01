@@ -135,41 +135,33 @@ keyword_type = "Punctuation"
 name = "disp"
 keyword_type = "Statement"
 
-# The keyword file defines no lock, exclusive lock, and share lock very poorly
+# The keyword file defines no lock, exclusive lock, and share lock very poorly.
+# Remove the space-separated forms and the "no" entry (which has wrong abbreviation).
+# Override hyphenated forms to have no abbreviations - they must be exact matches.
+# Space-separated forms will be handled by lexer lookahead.
 [[remove]]
 name = "share lock"
 keyword_type = "Statement"
-min_abbreviation = "share"
 [[remove]]
-name = "share"
+name = "exclusive lock"
 keyword_type = "Statement"
-
-[[add]]
-name= "exclusive-lock"
-keyword_type = "Statement"
-
-[[add]]
-name= "no-lock"
-keyword_type = "Statement"
-
-[[add]]
-name= "exclusive lock"
-keyword_type = "Statement"
-min_abbreviation = "exclusive"
-
-[[add]]
-name= "no lock"
-keyword_type = "Statement"
-
-[[add]]
-name= "share lock"
-keyword_type = "Statement"
-[[add]]
-name= "share-lock"
-keyword_type = "Statement"
-
 [[remove]]
 name = "no"
+keyword_type = "Statement"
+
+# Override lock types to require exact match (no abbreviation)
+# share-lock and no-lock exist in reserved keywords, so override their abbreviations
+[[override]]
+name = "share-lock"
+min_abbreviation = "share-lock"
+
+[[override]]
+name = "no-lock"
+min_abbreviation = "no-lock"
+
+# exclusive-lock doesn't exist (only "exclusive lock" space form), so add it
+[[add]]
+name = "exclusive-lock"
 keyword_type = "Statement"
 # =============================================================================
 # PREPROCESSOR
