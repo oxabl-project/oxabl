@@ -139,9 +139,6 @@ impl<'a> Lexer<'a> {
                         return Kind::Slash;
                     }
                 },
-                '%' => {
-                    return Kind::Percent;
-                }
                 '=' => {
                     return Kind::Equals;
                 }
@@ -1098,10 +1095,10 @@ end."#;
 
     #[test]
     fn modulo_operator() {
-        let source = "10 % 3";
+        let source = "10 mod 3";
         let tokens = collect_tokens(source);
         assert_eq!(tokens.len(), 4);
-        assert_token(&tokens[1], Kind::Percent, 3, 4, TokenValue::None, source);
+        assert_token(&tokens[1], Kind::Modulo, 3, 6, TokenValue::None, source);
     }
 
     #[test]
