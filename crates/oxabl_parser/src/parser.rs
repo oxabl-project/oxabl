@@ -3,7 +3,7 @@
 //! Will panic if peek or advance are called when current cursor position
 //! is out of bounds. Contract is to check is_end before using them.
 
-use oxabl_ast::{DataType, Expression, Identifier, Span, Statement};
+use oxabl_ast::{DataType, Expression, Identifier, LockType, Span, Statement};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 use crate::literal::token_to_literal;
@@ -487,6 +487,11 @@ impl<'a> Parser<'a> {
             return self.parse_return_statement();
         }
 
+        // FOR EACH
+        if self.check(Kind::KwFor) {
+            return self.parse_for_each();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -902,6 +907,46 @@ impl<'a> Parser<'a> {
         Ok(Statement::Return(value))
     }
 
+    fn parse_for_each(&mut self) -> ParseResult<Statement> {
+        self.advance(); // Consume FOR
+        self.expect_kind(Kind::Each, "Expected EACH after FOR")?;
+
+        // Parse buffer name
+        let buffer = self.parse_identifier()?;
+
+        // optional OF clause
+        let of_relation = if self.check(Kind::Of) {
+            self.advance();
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+
+        // optional WHERE clause
+        let where_clause = if self.check(Kind::KwWhere) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Lock type (default is SHARE-LOCK if not explicit)
+        println!("current token before lock: {:?}", self.peek());
+        let lock_type = self.parse_lock_type();
+        println!("lock type: {:?}", lock_type);
+
+        self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
+        let body = self.parse_block_body()?;
+
+        Ok(Statement::ForEach {
+            buffer,
+            of_relation,
+            where_clause,
+            lock_type,
+            body,
+        })
+    }
+
     // Parse the block body for code blocks like DO, consume till END.
     fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
@@ -961,14 +1006,56 @@ impl<'a> Parser<'a> {
         if !self.check(kind) {
             return Err(ParseError {
                 message: msg.to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
+                span: self.current_span(),
             });
         }
         self.advance();
         Ok(())
+    }
+
+    /// Parses an Identifier
+    fn parse_identifier(&mut self) -> ParseResult<Identifier> {
+        if !is_callable_kind(self.peek().kind) {
+            return Err(ParseError {
+                message: "Expected identifier".to_string(),
+                span: self.current_span(),
+            });
+        }
+        let token = self.advance().clone();
+        Ok(Identifier {
+            span: Span {
+                start: token.start as u32,
+                end: token.end as u32,
+            },
+            name: self.source[token.start..token.end].to_string(),
+        })
+    }
+
+    fn current_span(&self) -> Span {
+        Span {
+            start: self.peek().start as u32,
+            end: self.peek().end as u32,
+        }
+    }
+
+    /// Parses an optional lock type (NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK)
+    /// Returns ShareLock if no lock type is specified (ABL default)
+    fn parse_lock_type(&mut self) -> LockType {
+        match self.peek().kind {
+            Kind::NoLock => {
+                self.advance();
+                LockType::NoLock
+            }
+            Kind::ShareLock => {
+                self.advance();
+                LockType::ShareLock
+            }
+            Kind::ExclusiveLock => {
+                self.advance();
+                LockType::ExclusiveLock
+            }
+            _ => LockType::ShareLock, // Default in ABL
+        }
     }
 }
 
@@ -976,7 +1063,7 @@ impl<'a> Parser<'a> {
 mod test {
     use super::*;
     use oxabl_ast::{
-        BooleanLiteral, DecimalLiteral, IntegerLiteral, Literal, Span, StringLiteral,
+        BooleanLiteral, DecimalLiteral, IntegerLiteral, Literal, LockType, Span, StringLiteral,
         UnknownLiteral,
     };
     use oxabl_lexer::tokenize;
@@ -1782,10 +1869,12 @@ mod test {
         assert_eq!(
             expression,
             Expression::Equal(
-                Box::new(Expression::Not(Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 4, end: 5 },
-                    name: "a".to_string()
-                })))),
+                Box::new(Expression::Not(Box::new(Expression::Identifier(
+                    Identifier {
+                        span: Span { start: 4, end: 5 },
+                        name: "a".to_string()
+                    }
+                )))),
                 Box::new(Expression::Identifier(Identifier {
                     span: Span { start: 8, end: 9 },
                     name: "b".to_string()
@@ -3149,5 +3238,296 @@ mod test {
             }
             _ => panic!("Expected Do statement"),
         }
+    }
+
+    // ==================== FOR EACH Tests ====================
+
+    #[test]
+    fn parse_simple_for_each() {
+        let source = "FOR EACH Customer NO-LOCK: x = Customer.Name. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach {
+                buffer,
+                of_relation,
+                where_clause,
+                lock_type,
+                body,
+            } => {
+                assert_eq!(buffer.name, "Customer");
+                assert!(of_relation.is_none());
+                assert!(where_clause.is_none());
+                assert_eq!(lock_type, LockType::NoLock);
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_with_where() {
+        let source = "FOR EACH Customer WHERE Customer.Balance > 1000 NO-LOCK: END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach {
+                buffer,
+                where_clause,
+                lock_type,
+                ..
+            } => {
+                assert_eq!(buffer.name, "Customer");
+                assert!(where_clause.is_some());
+                assert!(matches!(
+                    where_clause.unwrap(),
+                    Expression::GreaterThan(_, _)
+                ));
+                assert_eq!(lock_type, LockType::NoLock);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_with_of() {
+        let source = "FOR EACH Order OF Customer NO-LOCK: END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach {
+                buffer,
+                of_relation,
+                lock_type,
+                ..
+            } => {
+                assert_eq!(buffer.name, "Order");
+                assert!(of_relation.is_some());
+                assert_eq!(of_relation.unwrap().name, "Customer");
+                assert_eq!(lock_type, LockType::NoLock);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_share_lock() {
+        let source = "FOR EACH Customer SHARE-LOCK: x = 1. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach { lock_type, .. } => {
+                assert_eq!(lock_type, LockType::ShareLock);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_exclusive_lock() {
+        let source = "FOR EACH Customer EXCLUSIVE-LOCK: Customer.Balance = 0. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach {
+                lock_type, body, ..
+            } => {
+                assert_eq!(lock_type, LockType::ExclusiveLock);
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_default_lock() {
+        // When no lock type is specified, default is SHARE-LOCK
+        let source = "FOR EACH Customer: x = 1. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach { lock_type, .. } => {
+                assert_eq!(lock_type, LockType::ShareLock);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_with_of_and_where() {
+        let source = "FOR EACH OrderLine OF Order WHERE OrderLine.Qty > 0 NO-LOCK: END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach {
+                buffer,
+                of_relation,
+                where_clause,
+                lock_type,
+                ..
+            } => {
+                assert_eq!(buffer.name, "OrderLine");
+                assert!(of_relation.is_some());
+                assert_eq!(of_relation.unwrap().name, "Order");
+                assert!(where_clause.is_some());
+                assert_eq!(lock_type, LockType::NoLock);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_with_complex_where() {
+        let source =
+            "FOR EACH Customer WHERE Customer.Balance > 1000 AND Customer.Active NO-LOCK: END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach { where_clause, .. } => {
+                assert!(where_clause.is_some());
+                assert!(matches!(where_clause.unwrap(), Expression::And(_, _)));
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_with_multiple_statements() {
+        // Use simple assignments to avoid the period ambiguity (field access vs statement terminator)
+        let source = "FOR EACH Customer NO-LOCK: x = 1. y = 2. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach { body, .. } => {
+                assert_eq!(body.len(), 2);
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_nested_for_each() {
+        let source = "FOR EACH Customer NO-LOCK: FOR EACH Order OF Customer NO-LOCK: END. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach { body, .. } => {
+                assert_eq!(body.len(), 1);
+                assert!(matches!(body[0], Statement::ForEach { .. }));
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_with_leave() {
+        let source = "FOR EACH Customer NO-LOCK: IF Customer.Balance < 0 THEN LEAVE. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach { body, .. } => {
+                assert_eq!(body.len(), 1);
+                assert!(matches!(body[0], Statement::If { .. }));
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_for_each_with_field_access_in_expression() {
+        // Field access works when not immediately before statement-terminating period
+        let source = "FOR EACH Customer NO-LOCK: total = total + Customer.Balance. END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::ForEach { body, .. } => {
+                assert_eq!(body.len(), 1);
+                match &body[0] {
+                    Statement::Assignment { value, .. } => {
+                        assert!(matches!(value, Expression::Add(_, _)));
+                    }
+                    _ => panic!("Expected Assignment statement"),
+                }
+            }
+            _ => panic!("Expected ForEach statement"),
+        }
+    }
+
+    #[test]
+    fn parse_simple_for_each_no_lock_space() {
+        // Full verification of parsed structure
+        let source = "FOR EACH Customer NO LOCK: END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::ForEach {
+                buffer: Identifier {
+                    span: Span { start: 9, end: 17 },
+                    name: "Customer".to_string()
+                },
+                of_relation: None,
+                where_clause: None,
+                lock_type: LockType::NoLock,
+                body: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_simple_for_each_share_lock_space() {
+        // Full verification of parsed structure
+        let source = "FOR EACH Customer SHARE LOCK: END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::ForEach {
+                buffer: Identifier {
+                    span: Span { start: 9, end: 17 },
+                    name: "Customer".to_string()
+                },
+                of_relation: None,
+                where_clause: None,
+                lock_type: LockType::ShareLock,
+                body: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_simple_for_each_exclusive_lock_space() {
+        // Full verification of parsed structure
+        let source = "FOR EACH Customer EXCLUSIVE LOCK: END.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::ForEach {
+                buffer: Identifier {
+                    span: Span { start: 9, end: 17 },
+                    name: "Customer".to_string()
+                },
+                of_relation: None,
+                where_clause: None,
+                lock_type: LockType::ExclusiveLock,
+                body: vec![]
+            }
+        );
     }
 }
