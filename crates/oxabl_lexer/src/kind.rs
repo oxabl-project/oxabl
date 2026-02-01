@@ -137,6 +137,7 @@ pub enum Kind {
     Using,
     View,
     Prev,
+    Procedure,
     ExclusiveLock,
 
     // Functions
@@ -812,6 +813,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "privileges" => Some(Kind::Privileges),
         "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => Some(Kind::ProcHandle),
         "proc-st" | "proc-sta" | "proc-stat" | "proc-statu" | "proc-status" => Some(Kind::ProcStatus),
+        "procedure" => Some(Kind::Procedure),
         "procedure-call-type" => Some(Kind::ProcedureCallType),
         "process" => Some(Kind::Process),
         "profiler" => Some(Kind::Profiler),

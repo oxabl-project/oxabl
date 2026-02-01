@@ -81,6 +81,19 @@ pub enum Statement {
         otherwise: Option<Vec<Statement>>,
     },
 
+    /// Procedures
+    Procedure {
+        name: Identifier,
+        body: Vec<Statement>, // parameters are parsed as DEFINE PARAMTER statements
+    },
+
+    DefineParamter {
+        direction: ParamterDirection,
+        name: Identifier,
+        data_type: DataType,
+        no_undo: bool,
+    },
+
     /// Leave statement - exist innermost loop
     Leave,
 
@@ -141,4 +154,11 @@ pub enum FindType {
 pub struct WhenBranch {
     pub values: Vec<Expression>, // Supports WHEN "a" OR WHEN "b"
     pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParamterDirection {
+    Input,
+    Output,
+    InputOutput,
 }

@@ -145,6 +145,11 @@ keyword_type = "Statement"
 name = "prev"
 keyword_type = "Statement"
 
+# Procedure is, for some reason, not in our keyword file.
+[[add]]
+name = "procedure"
+keyword_type = "Statement"
+
 # =============================================================================
 # Lock Types
 # no-lock, share-lock, exclusive-lock
