@@ -1,6 +1,10 @@
 //! Statement parsing for the Oxabl parser
 
-use oxabl_ast::{Expression, FindType, Identifier, LockType, ParamterDirection, Span, Statement, WhenBranch};
+use std::fmt::Arguments;
+
+use oxabl_ast::{
+    Expression, FindType, Identifier, LockType, ParamterDirection, RunArgument, RunTarget, Span, Statement, WhenBranch
+};
 use oxabl_lexer::{Kind, is_callable_kind};
 
 use super::{ParseError, ParseResult, Parser};
@@ -735,6 +739,58 @@ impl Parser<'_> {
         Ok(Statement::Procedure { name, body })
     }
 
+    // parse RUN statements
+    fn parse_run_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume RUN
+
+        let target = if self.check(Kind::Value) {
+            self.advance();
+            self.expect_kind(Kind::LeftParen, "Expected '(' after VALUE")?;
+            let expr = self.parse_expression()?;
+            self.expect_kind(Kind::RightParen, "Expected ')' after VALUE expression")?;
+            RunTarget::Dynamic(expr)
+        } else {
+            // Procedure name (may contain hyphens, dots for .p files)
+            let name = self.parse_procedure_name()?;
+            RunTarget::Literal(name)
+        };
+
+        // parse optional arguments
+        let arguments = if self.check(Kind::LeftParen) {
+            self.advance();
+            let mut args = Vec::new();
+
+            if !self.check(Kind::RightParen) {
+                loop {
+                    // TODO - finish, add tests, make not broken.
+                    let direction = match.self.peek().kind {
+                        Kind::Input => { self.advance(); ParameterDirection::Input }
+                        Kind::Output => { self.advance(); ParameterDirection::Output }
+                        Kind::InputOutput => { self.advance(); ParameterDirection::InputOutput }
+                        _ => ParameterDirection::Input, // Default to INPUT
+                    };
+
+                    let expression = self.parse_expression()?;
+                    args.push(RunArgument {direction, expression});
+
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance(); // consume comma
+                }
+            }
+
+            self.expect_kind(Kind::RightParen, "Expected ')' after argument statement")?;
+            args
+        } else {
+            Vec::new()
+        };
+
+        self.expect_kind(Kind::Period, "Expected ',' after RUN statement")?;
+
+        Ok(Statement::Run { target, arguments })
+    }
+
     // Parse the block body for code blocks like DO, consume till END.
     fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
@@ -768,6 +824,10 @@ impl Parser<'_> {
             }
             _ => LockType::ShareLock, // Default in ABL
         }
+    }
+
+    fn parse_procedure_name(&mut self) -> ParseResult<String> {
+        todo!()
     }
 
     /// Check if the current token is the start of a find clause (WHERE, lock, no-error, terminator)
