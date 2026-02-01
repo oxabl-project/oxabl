@@ -179,6 +179,15 @@ impl Parser<'_> {
 
         loop {
             if self.check(Kind::Colon) {
+                // Only parse as member/method access if the next token is a valid member name
+                // This avoids consuming ':' in block delimiters like "CASE x:" or "DO:"
+                let next_is_member = self
+                    .tokens
+                    .get(self.current + 1)
+                    .is_some_and(|t| is_callable_kind(t.kind));
+                if !next_is_member {
+                    break;
+                }
                 expr = self.parse_member_or_method(expr)?;
             } else if self.check(Kind::LeftBracket) {
                 expr = self.parse_array_access(expr)?;

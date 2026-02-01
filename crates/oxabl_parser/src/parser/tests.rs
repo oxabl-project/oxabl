@@ -1,7 +1,7 @@
 use super::*;
 use oxabl_ast::{
     BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, Span, Statement, StringLiteral, UnknownLiteral,
+    Literal, LockType, Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -2702,5 +2702,273 @@ fn parse_find_default_lock() {
             assert_eq!(lock_type, LockType::ShareLock);
         }
         _ => panic!("Expected Find statement"),
+    }
+}
+
+// ==================== CASE Statement Tests ====================
+
+#[test]
+fn parse_simple_case_statement() {
+    let source = "CASE x: WHEN 1 THEN y = 1. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            expression,
+            when_branches,
+            otherwise,
+        } => {
+            assert!(matches!(expression, Expression::Identifier(_)));
+            assert_eq!(when_branches.len(), 1);
+            assert_eq!(when_branches[0].values.len(), 1);
+            assert_eq!(when_branches[0].body.len(), 1);
+            assert!(otherwise.is_none());
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_multiple_when_branches() {
+    let source = "CASE myStatus: WHEN 1 THEN x = 1. WHEN 2 THEN x = 2. WHEN 3 THEN x = 3. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches,
+            otherwise,
+            ..
+        } => {
+            assert_eq!(when_branches.len(), 3);
+            assert!(otherwise.is_none());
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_otherwise() {
+    let source = "CASE x: WHEN 1 THEN y = 1. OTHERWISE y = 0. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches,
+            otherwise,
+            ..
+        } => {
+            assert_eq!(when_branches.len(), 1);
+            assert!(otherwise.is_some());
+            assert_eq!(otherwise.unwrap().len(), 1);
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_or_when() {
+    // WHEN "a" OR WHEN "b" syntax for multiple matching values
+    let source = r#"CASE letter: WHEN "a" OR WHEN "b" THEN x = 1. END CASE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches, ..
+        } => {
+            assert_eq!(when_branches.len(), 1);
+            // The single WHEN branch has two values
+            assert_eq!(when_branches[0].values.len(), 2);
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_string_values() {
+    let source = r#"CASE name: WHEN "John" THEN x = 1. WHEN "Jane" THEN x = 2. END CASE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches, ..
+        } => {
+            assert_eq!(when_branches.len(), 2);
+            assert!(matches!(
+                &when_branches[0].values[0],
+                Expression::Literal(Literal::String(_))
+            ));
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_multiple_statements_in_when() {
+    let source = "CASE x: WHEN 1 THEN a = 1. b = 2. c = 3. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches, ..
+        } => {
+            assert_eq!(when_branches.len(), 1);
+            assert_eq!(when_branches[0].body.len(), 3);
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_multiple_statements_in_otherwise() {
+    let source = "CASE x: WHEN 1 THEN y = 1. OTHERWISE a = 0. b = 0. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case { otherwise, .. } => {
+            assert!(otherwise.is_some());
+            assert_eq!(otherwise.unwrap().len(), 2);
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_expression_condition() {
+    let source = "CASE x + 1: WHEN 2 THEN y = 1. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case { expression, .. } => {
+            assert!(matches!(expression, Expression::Add(_, _)));
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_full_structure() {
+    let source = "CASE myVal: WHEN 1 THEN x = 1. WHEN 2 THEN x = 2. OTHERWISE x = 0. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert_eq!(
+        stmt,
+        Statement::Case {
+            expression: Expression::Identifier(Identifier {
+                span: Span { start: 5, end: 10 },
+                name: "myVal".to_string()
+            }),
+            when_branches: vec![
+                WhenBranch {
+                    values: vec![Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 17, end: 18 },
+                        value: 1
+                    }))],
+                    body: vec![Statement::Assignment {
+                        target: Expression::Identifier(Identifier {
+                            span: Span { start: 24, end: 25 },
+                            name: "x".to_string()
+                        }),
+                        value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 28, end: 29 },
+                            value: 1
+                        }))
+                    }]
+                },
+                WhenBranch {
+                    values: vec![Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 36, end: 37 },
+                        value: 2
+                    }))],
+                    body: vec![Statement::Assignment {
+                        target: Expression::Identifier(Identifier {
+                            span: Span { start: 43, end: 44 },
+                            name: "x".to_string()
+                        }),
+                        value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 47, end: 48 },
+                            value: 2
+                        }))
+                    }]
+                }
+            ],
+            otherwise: Some(vec![Statement::Assignment {
+                target: Expression::Identifier(Identifier {
+                    span: Span { start: 60, end: 61 },
+                    name: "x".to_string()
+                }),
+                value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 64, end: 65 },
+                    value: 0
+                }))
+            }])
+        }
+    );
+}
+
+#[test]
+fn parse_case_with_nested_if() {
+    let source = "CASE x: WHEN 1 THEN IF y > 0 THEN z = 1. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches, ..
+        } => {
+            assert_eq!(when_branches.len(), 1);
+            assert!(matches!(when_branches[0].body[0], Statement::If { .. }));
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_boolean_values() {
+    let source = "CASE isActive: WHEN TRUE THEN x = 1. WHEN FALSE THEN x = 0. END CASE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches, ..
+        } => {
+            assert_eq!(when_branches.len(), 2);
+            assert!(matches!(
+                &when_branches[0].values[0],
+                Expression::Literal(Literal::Boolean(BooleanLiteral { value: true, .. }))
+            ));
+            assert!(matches!(
+                &when_branches[1].values[0],
+                Expression::Literal(Literal::Boolean(BooleanLiteral { value: false, .. }))
+            ));
+        }
+        _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_case_with_triple_or_when() {
+    // Test WHEN with multiple OR WHEN clauses
+    let source = r#"CASE grade: WHEN "A" OR WHEN "B" OR WHEN "C" THEN passed = TRUE. END CASE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Case {
+            when_branches, ..
+        } => {
+            assert_eq!(when_branches.len(), 1);
+            assert_eq!(when_branches[0].values.len(), 3);
+        }
+        _ => panic!("Expected Case statement"),
     }
 }

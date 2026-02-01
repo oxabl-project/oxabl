@@ -1,6 +1,6 @@
 //! Statement parsing for the Oxabl parser
 
-use oxabl_ast::{Expression, FindType, Identifier, LockType, Span, Statement};
+use oxabl_ast::{Expression, FindType, Identifier, LockType, Span, Statement, WhenBranch};
 use oxabl_lexer::{Kind, is_callable_kind};
 
 use super::{ParseError, ParseResult, Parser};
@@ -56,6 +56,11 @@ impl Parser<'_> {
         // FIND statement
         if self.check(Kind::Find) {
             return self.parse_find_statement();
+        }
+
+        // CASE statement
+        if self.check(Kind::Case) {
+            return self.parse_case_statement();
         }
 
         // Check for traditional define statement
@@ -578,6 +583,61 @@ impl Parser<'_> {
             where_clause,
             lock_type,
             no_error,
+        })
+    }
+
+    // Parse Case statement and when clauses
+    fn parse_case_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume CASE
+        let expression = self.parse_expression()?;
+        self.expect_kind(Kind::Colon, "Expected a ':' after CASE expression")?;
+
+        let mut when_branches = Vec::new();
+
+        while self.check(Kind::When) {
+            self.advance();
+            // Use parse_and() instead of parse_expression() to avoid consuming OR
+            // This allows WHEN "a" OR WHEN "b" syntax to work correctly
+            let mut values = vec![self.parse_and()?];
+
+            // handle WHEN "a" OR WHEN "b" syntax
+            while self.check(Kind::Or) {
+                self.advance();
+                self.expect_kind(Kind::When, "Expected WHEN after OR")?;
+                values.push(self.parse_and()?);
+            }
+
+            self.expect_kind(Kind::Then, "Expected THEN after WHEN value")?;
+
+            // parse statements until next WHEN, OTHERWISE, or END
+            let mut body = Vec::new();
+            while !self.check(Kind::When) && !self.check(Kind::Otherwise) && !self.check(Kind::End)
+            {
+                body.push(self.parse_statement()?);
+            }
+
+            when_branches.push(WhenBranch { values, body });
+        }
+
+        let otherwise = if self.check(Kind::Otherwise) {
+            self.advance();
+            let mut body = Vec::new();
+            while !self.check(Kind::End) {
+                body.push(self.parse_statement()?);
+            }
+            Some(body)
+        } else {
+            None
+        };
+
+        self.expect_kind(Kind::End, "Expected END")?;
+        self.expect_kind(Kind::Case, "Expected CASE after END")?;
+        self.expect_kind(Kind::Period, "Expected '.' after END CASE")?;
+
+        Ok(Statement::Case {
+            expression,
+            when_branches,
+            otherwise,
         })
     }
 
