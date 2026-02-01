@@ -87,11 +87,18 @@ pub enum Statement {
         body: Vec<Statement>, // parameters are parsed as DEFINE PARAMTER statements
     },
 
+    /// Define input/output params
     DefineParamter {
         direction: ParamterDirection,
         name: Identifier,
         data_type: DataType,
         no_undo: bool,
+    },
+
+    /// Run statements
+    Run {
+        target: RunTarget,
+        arguments: Vec<RunArgument>,
     },
 
     /// Leave statement - exist innermost loop
@@ -161,4 +168,16 @@ pub enum ParamterDirection {
     Input,
     Output,
     InputOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunTarget {
+    Literal(String),     // RUN my-proc.p or RUN "file.p"
+    Dynamic(Expression), // RUN value(expr)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunArgument {
+    pub direction: ParamterDirection,
+    pub expression: Expression,
 }
