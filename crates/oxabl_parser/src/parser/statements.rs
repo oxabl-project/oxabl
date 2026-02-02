@@ -1,6 +1,6 @@
 //! Statement parsing for the Oxabl parser
 
-use oxabl_ast::{Expression, FindType, Identifier, LockType, Span, Statement, WhenBranch};
+use oxabl_ast::{Expression, FindType, Identifier, LockType, ParamterDirection, Span, Statement, WhenBranch};
 use oxabl_lexer::{Kind, is_callable_kind};
 
 use super::{ParseError, ParseResult, Parser};
@@ -260,7 +260,67 @@ impl Parser<'_> {
     }
 
     fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
-        todo!()
+        // Parse direction (we already know it's INPUT, OUTPUT, or INPUT-OUTPUT)
+        let direction = match self.peek().kind {
+            Kind::Input => {
+                self.advance();
+                ParamterDirection::Input
+            }
+            Kind::Output => {
+                self.advance();
+                ParamterDirection::Output
+            }
+            Kind::InputOutput => {
+                self.advance();
+                ParamterDirection::InputOutput
+            }
+            _ => unreachable!("parse_define_parameter called without INPUT/OUTPUT token"),
+        };
+
+        // Expect PARAMETER keyword
+        self.expect_kind(Kind::Parameter, "Expected PARAMETER after INPUT/OUTPUT")?;
+
+        // Parse parameter name
+        if !is_callable_kind(self.peek().kind) {
+            return Err(ParseError {
+                message: "Expected parameter name".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+        let name_token = self.advance().clone();
+        let name = Identifier {
+            span: Span {
+                start: name_token.start as u32,
+                end: name_token.end as u32,
+            },
+            name: self.source[name_token.start..name_token.end].to_string(),
+        };
+
+        // Expect AS
+        self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
+
+        // Parse data type
+        let data_type = self.parse_data_type()?;
+
+        // Optional NO-UNDO
+        let no_undo = if self.check(Kind::NoUndo) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        self.expect_kind(Kind::Period, "Expected '.' after parameter definition")?;
+
+        Ok(Statement::DefineParamter {
+            direction,
+            name,
+            data_type,
+            no_undo,
+        })
     }
 
     /// Continue parsing an expression after additive level has been parsed
