@@ -326,6 +326,55 @@ impl<'a> Lexer<'a> {
         self.chars.clone().next()
     }
 
+    /// Try to read a space-separated lock type (e.g., "NO LOCK", "SHARE LOCK", "EXCLUSIVE LOCK").
+    /// Called after reading a word that could be the first part of a lock type.
+    /// Returns Some(Kind) if successful, None if not a lock type (iterator unchanged).
+    fn try_read_space_separated_lock(&mut self, first_word: &str) -> Option<Kind> {
+        // Check if first word is one that could start a lock type
+        let first_lower = first_word.to_lowercase();
+        let lock_kind = match first_lower.as_str() {
+            "no" => Kind::NoLock,
+            "share" => Kind::ShareLock,
+            "exclusive" => Kind::ExclusiveLock,
+            _ => return None,
+        };
+
+        // Save iterator state for potential rollback
+        let saved_chars = self.chars.clone();
+
+        // Skip horizontal whitespace (spaces and tabs, NOT newlines)
+        let mut has_whitespace = false;
+        while matches!(self.peek(), Some(' ' | '\t')) {
+            self.advance();
+            has_whitespace = true;
+        }
+
+        // Must have at least some whitespace between words
+        if !has_whitespace {
+            self.chars = saved_chars;
+            return None;
+        }
+
+        // Check if next word is "lock" (case-insensitive)
+        let word_start = self.offset();
+        while matches!(
+            self.peek(),
+            Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-')
+        ) {
+            self.advance();
+        }
+
+        let next_word = &self.source[word_start..self.offset()];
+        if next_word.eq_ignore_ascii_case("lock") {
+            // Success - we consumed "WORD <whitespace> LOCK"
+            Some(lock_kind)
+        } else {
+            // Not a lock type - rollback
+            self.chars = saved_chars;
+            None
+        }
+    }
+
     /// Reads the word that will resolve to either a keyword or identifer
     fn read_identifier_or_keyword(&mut self, start: usize) -> Kind {
         // Keep consuming alphanumeric chars, underscores, and hyphens
@@ -341,8 +390,17 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
 
-        // NOW we have the full word - check if it's a keyword
+        // NOW we have the full word
         let text = &self.source[start..self.offset()];
+
+        // Check for space-separated lock types (e.g., "NO LOCK", "SHARE LOCK")
+        // This must be done BEFORE checking keywords since "no", "share", etc.
+        // are not keywords on their own.
+        if let Some(lock_kind) = self.try_read_space_separated_lock(text) {
+            return lock_kind;
+        }
+
+        // Check if it's a keyword
         let keyword = match_keyword(text);
         keyword.unwrap_or(Kind::Identifier)
     }
@@ -1125,5 +1183,209 @@ end."#;
         assert!(tokens.iter().all(|t| t.kind != Kind::Invalid));
         assert_eq!(tokens[0].kind, Kind::Define);
         assert_eq!(tokens[1].kind, Kind::Identifier); // temp-table (not reserved)
+    }
+
+    // =========================================================================
+    // Lock Type Tests
+    // =========================================================================
+
+    #[test]
+    fn lock_type_hyphenated() {
+        // Hyphenated forms should produce single tokens
+        let test_cases = vec![
+            ("NO-LOCK", Kind::NoLock),
+            ("no-lock", Kind::NoLock),
+            ("SHARE-LOCK", Kind::ShareLock),
+            ("share-lock", Kind::ShareLock),
+            ("EXCLUSIVE-LOCK", Kind::ExclusiveLock),
+            ("exclusive-lock", Kind::ExclusiveLock),
+        ];
+
+        for (source, expected_kind) in test_cases {
+            let tokens = collect_tokens(source);
+            assert_eq!(
+                tokens.len(),
+                2,
+                "Expected 2 tokens for '{}', got {}",
+                source,
+                tokens.len()
+            );
+            assert_eq!(
+                tokens[0].kind, expected_kind,
+                "Wrong kind for '{}': expected {:?}, got {:?}",
+                source, expected_kind, tokens[0].kind
+            );
+            assert_eq!(
+                tokens[0].start, 0,
+                "Wrong start for '{}'",
+                source
+            );
+            assert_eq!(
+                tokens[0].end,
+                source.len(),
+                "Wrong end for '{}'",
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn lock_type_space_separated() {
+        // Space-separated forms should produce single tokens
+        let test_cases = vec![
+            ("NO LOCK", Kind::NoLock, 7),
+            ("no lock", Kind::NoLock, 7),
+            ("SHARE LOCK", Kind::ShareLock, 10),
+            ("share lock", Kind::ShareLock, 10),
+            ("EXCLUSIVE LOCK", Kind::ExclusiveLock, 14),
+            ("exclusive lock", Kind::ExclusiveLock, 14),
+        ];
+
+        for (source, expected_kind, expected_end) in test_cases {
+            let tokens = collect_tokens(source);
+            assert_eq!(
+                tokens.len(),
+                2,
+                "Expected 2 tokens for '{}', got {}: {:?}",
+                source,
+                tokens.len(),
+                tokens
+            );
+            assert_eq!(
+                tokens[0].kind, expected_kind,
+                "Wrong kind for '{}': expected {:?}, got {:?}",
+                source, expected_kind, tokens[0].kind
+            );
+            assert_eq!(
+                tokens[0].start, 0,
+                "Wrong start for '{}'",
+                source
+            );
+            assert_eq!(
+                tokens[0].end, expected_end,
+                "Wrong end for '{}': expected {}, got {}",
+                source, expected_end, tokens[0].end
+            );
+        }
+    }
+
+    #[test]
+    fn lock_type_multiple_spaces() {
+        // Multiple spaces between words should still work
+        let source = "NO    LOCK";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].kind, Kind::NoLock);
+        assert_eq!(tokens[0].end, 10);
+    }
+
+    #[test]
+    fn lock_type_with_tabs() {
+        // Tabs between words should work
+        let source = "SHARE\tLOCK";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].kind, Kind::ShareLock);
+    }
+
+    #[test]
+    fn lock_type_newline_does_not_match() {
+        // Newline between words should NOT match as lock type
+        let source = "NO\nLOCK";
+        let tokens = collect_tokens(source);
+        // Should be: Identifier("NO"), Identifier("LOCK"), Eof
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, Kind::Identifier);
+        assert_eq!(tokens[1].kind, Kind::Identifier); // LOCK alone is not a keyword
+    }
+
+    #[test]
+    fn lock_type_standalone_words_are_identifiers() {
+        // Standalone "share", "exclusive", "no" should be identifiers
+        let test_cases = vec!["share", "SHARE", "exclusive", "EXCLUSIVE", "no", "NO"];
+
+        for source in test_cases {
+            let tokens = collect_tokens(source);
+            assert_eq!(
+                tokens.len(),
+                2,
+                "Expected 2 tokens for '{}', got {}",
+                source,
+                tokens.len()
+            );
+            assert_eq!(
+                tokens[0].kind,
+                Kind::Identifier,
+                "Expected Identifier for '{}', got {:?}",
+                source,
+                tokens[0].kind
+            );
+        }
+    }
+
+    #[test]
+    fn lock_type_in_for_each_context() {
+        // Test lock types in a FOR EACH statement context
+        let source = "for each customer no-lock:";
+        let tokens = collect_tokens(source);
+        // for, each, customer, no-lock, :, eof
+        assert_eq!(tokens.len(), 6, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::KwFor);
+        assert_eq!(tokens[1].kind, Kind::Each);
+        assert_eq!(tokens[2].kind, Kind::Identifier); // customer
+        assert_eq!(tokens[3].kind, Kind::NoLock);
+        assert_eq!(tokens[4].kind, Kind::Colon);
+    }
+
+    #[test]
+    fn lock_type_space_in_for_each_context() {
+        // Test space-separated lock types in FOR EACH
+        let source = "for each customer no lock:";
+        let tokens = collect_tokens(source);
+        // for, each, customer, no lock, :, eof
+        assert_eq!(tokens.len(), 6, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::KwFor);
+        assert_eq!(tokens[1].kind, Kind::Each);
+        assert_eq!(tokens[2].kind, Kind::Identifier); // customer
+        assert_eq!(tokens[3].kind, Kind::NoLock);
+        assert_eq!(tokens[4].kind, Kind::Colon);
+    }
+
+    #[test]
+    fn lock_type_followed_by_other_tokens() {
+        // Ensure lock type doesn't consume more than it should
+        let source = "no-lock where x = 1";
+        let tokens = collect_tokens(source);
+        // no-lock, where, x, =, 1, eof
+        assert_eq!(tokens.len(), 6, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::NoLock);
+        assert_eq!(tokens[1].kind, Kind::KwWhere);
+    }
+
+    #[test]
+    fn lock_type_case_insensitive() {
+        // Mixed case should work
+        let test_cases = vec![
+            ("No Lock", Kind::NoLock),
+            ("nO lOcK", Kind::NoLock),
+            ("Share Lock", Kind::ShareLock),
+            ("Exclusive Lock", Kind::ExclusiveLock),
+        ];
+
+        for (source, expected_kind) in test_cases {
+            let tokens = collect_tokens(source);
+            assert_eq!(
+                tokens.len(),
+                2,
+                "Expected 2 tokens for '{}', got {}",
+                source,
+                tokens.len()
+            );
+            assert_eq!(
+                tokens[0].kind, expected_kind,
+                "Wrong kind for '{}'",
+                source
+            );
+        }
     }
 }
