@@ -74,6 +74,13 @@ pub enum Statement {
         no_error: bool,
     },
 
+    /// Case statement
+    Case {
+        expression: Expression,
+        when_branches: Vec<WhenBranch>,
+        otherwise: Option<Vec<Statement>>,
+    },
+
     /// Leave statement - exist innermost loop
     Leave,
 
@@ -127,4 +134,11 @@ pub enum FindType {
     Next,
     Prev,
     Unique, // No qualifier
+}
+
+/// When branch for case statements
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhenBranch {
+    pub values: Vec<Expression>, // Supports WHEN "a" OR WHEN "b"
+    pub body: Vec<Statement>,
 }
