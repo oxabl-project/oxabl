@@ -389,6 +389,7 @@ fn main() {
             "proc-handle",
             "proc-st",
             "proc-status",
+            "procedure",
             "procedure-call-type",
             "process",
             "profiler",

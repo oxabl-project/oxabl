@@ -825,7 +825,7 @@ end."#;
             // Line comment
             (Kind::Comment, 56, 77, TokenValue::None),
             // procedure my_test_proc:
-            (Kind::Identifier, 77, 86, TokenValue::None), // procedure (not reserved)
+            (Kind::Procedure, 77, 86, TokenValue::None), // procedure (not reserved)
             (Kind::Identifier, 87, 99, TokenValue::None), // my_test_proc
             (Kind::Colon, 99, 100, TokenValue::None),
             // var int MyInt = 1.
@@ -1215,17 +1215,8 @@ end."#;
                 "Wrong kind for '{}': expected {:?}, got {:?}",
                 source, expected_kind, tokens[0].kind
             );
-            assert_eq!(
-                tokens[0].start, 0,
-                "Wrong start for '{}'",
-                source
-            );
-            assert_eq!(
-                tokens[0].end,
-                source.len(),
-                "Wrong end for '{}'",
-                source
-            );
+            assert_eq!(tokens[0].start, 0, "Wrong start for '{}'", source);
+            assert_eq!(tokens[0].end, source.len(), "Wrong end for '{}'", source);
         }
     }
 
@@ -1256,11 +1247,7 @@ end."#;
                 "Wrong kind for '{}': expected {:?}, got {:?}",
                 source, expected_kind, tokens[0].kind
             );
-            assert_eq!(
-                tokens[0].start, 0,
-                "Wrong start for '{}'",
-                source
-            );
+            assert_eq!(tokens[0].start, 0, "Wrong start for '{}'", source);
             assert_eq!(
                 tokens[0].end, expected_end,
                 "Wrong end for '{}': expected {}, got {}",
@@ -1381,11 +1368,7 @@ end."#;
                 source,
                 tokens.len()
             );
-            assert_eq!(
-                tokens[0].kind, expected_kind,
-                "Wrong kind for '{}'",
-                source
-            );
+            assert_eq!(tokens[0].kind, expected_kind, "Wrong kind for '{}'", source);
         }
     }
 }
