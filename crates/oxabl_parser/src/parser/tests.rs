@@ -1,7 +1,8 @@
 use super::*;
 use oxabl_ast::{
     BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
+    Literal, LockType, ParamterDirection, Span, Statement, StringLiteral, UnknownLiteral,
+    WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -2970,5 +2971,142 @@ fn parse_case_with_triple_or_when() {
             assert_eq!(when_branches[0].values.len(), 3);
         }
         _ => panic!("Expected Case statement"),
+    }
+}
+
+#[test]
+fn parse_define_input_parameter() {
+    let source = "DEFINE INPUT PARAMETER name AS CHARACTER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParamter {
+            direction,
+            name,
+            data_type,
+            no_undo,
+        } => {
+            assert_eq!(direction, ParamterDirection::Input);
+            assert_eq!(name.name, "name");
+            assert_eq!(data_type, DataType::Character);
+            assert!(!no_undo);
+        }
+        _ => panic!("Expected DefineParameter statement"),
+    }
+}
+
+#[test]
+fn parse_define_output_parameter() {
+    let source = "DEFINE OUTPUT PARAMETER result AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParamter {
+            direction,
+            name,
+            data_type,
+            no_undo,
+        } => {
+            assert_eq!(direction, ParamterDirection::Output);
+            assert_eq!(name.name, "result");
+            assert_eq!(data_type, DataType::Integer);
+            assert!(!no_undo);
+        }
+        _ => panic!("Expected DefineParameter statement"),
+    }
+}
+
+#[test]
+fn parse_define_input_output_parameter() {
+    let source = "DEFINE INPUT-OUTPUT PARAMETER data AS LOGICAL.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParamter {
+            direction,
+            name,
+            data_type,
+            no_undo,
+        } => {
+            assert_eq!(direction, ParamterDirection::InputOutput);
+            assert_eq!(name.name, "data");
+            assert_eq!(data_type, DataType::Logical);
+            assert!(!no_undo);
+        }
+        _ => panic!("Expected DefineParameter statement"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_with_no_undo() {
+    let source = "DEFINE INPUT PARAMETER name AS CHARACTER NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParamter {
+            direction,
+            name,
+            data_type,
+            no_undo,
+        } => {
+            assert_eq!(direction, ParamterDirection::Input);
+            assert_eq!(name.name, "name");
+            assert_eq!(data_type, DataType::Character);
+            assert!(no_undo);
+        }
+        _ => panic!("Expected DefineParameter statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_with_parameters() {
+    let source = r#"
+PROCEDURE my-proc:
+    DEFINE INPUT PARAMETER name AS CHARACTER.
+    DEFINE OUTPUT PARAMETER result AS INTEGER.
+    result = 42.
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Procedure { name, body } => {
+            assert_eq!(name.name, "my-proc");
+            assert_eq!(body.len(), 3);
+            // First statement should be input parameter
+            match &body[0] {
+                Statement::DefineParamter {
+                    direction,
+                    name,
+                    data_type,
+                    ..
+                } => {
+                    assert_eq!(*direction, ParamterDirection::Input);
+                    assert_eq!(name.name, "name");
+                    assert_eq!(*data_type, DataType::Character);
+                }
+                _ => panic!("Expected DefineParameter"),
+            }
+            // Second statement should be output parameter
+            match &body[1] {
+                Statement::DefineParamter {
+                    direction,
+                    name,
+                    data_type,
+                    ..
+                } => {
+                    assert_eq!(*direction, ParamterDirection::Output);
+                    assert_eq!(name.name, "result");
+                    assert_eq!(*data_type, DataType::Integer);
+                }
+                _ => panic!("Expected DefineParameter"),
+            }
+        }
+        _ => panic!("Expected Procedure statement"),
     }
 }
