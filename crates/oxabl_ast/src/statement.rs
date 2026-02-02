@@ -63,6 +63,17 @@ pub enum Statement {
         body: Vec<Statement>,
     },
 
+    /// FIND statement
+    Find {
+        find_type: FindType,
+        buffer: Identifier,
+        /// Key value for direct lookup (FIND Customer 1 syntax)
+        key_value: Option<Expression>,
+        where_clause: Option<Expression>,
+        lock_type: LockType,
+        no_error: bool,
+    },
+
     /// Leave statement - exist innermost loop
     Leave,
 
@@ -106,4 +117,14 @@ pub enum LockType {
     NoLock,
     ShareLock,
     ExclusiveLock,
+}
+
+/// ABL Find Type
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindType {
+    First,
+    Last,
+    Next,
+    Prev,
+    Unique, // No qualifier
 }

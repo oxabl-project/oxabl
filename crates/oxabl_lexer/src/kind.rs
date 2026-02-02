@@ -136,6 +136,7 @@ pub enum Kind {
     Update,
     Using,
     View,
+    Prev,
     ExclusiveLock,
 
     // Functions
@@ -807,6 +808,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "&webstream" => Some(Kind::PreprocWebstream),
         "preproc" | "preproce" | "preproces" | "preprocess" => Some(Kind::Preprocess),
         "preprop" => Some(Kind::Preprop),
+        "prev" => Some(Kind::Prev),
         "privileges" => Some(Kind::Privileges),
         "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => Some(Kind::ProcHandle),
         "proc-st" | "proc-sta" | "proc-stat" | "proc-statu" | "proc-status" => Some(Kind::ProcStatus),

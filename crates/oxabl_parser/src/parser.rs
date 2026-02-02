@@ -3,7 +3,7 @@
 //! Will panic if peek or advance are called when current cursor position
 //! is out of bounds. Contract is to check is_end before using them.
 
-use oxabl_ast::{DataType, Expression, Identifier, LockType, Span, Statement};
+use oxabl_ast::{DataType, Expression, FindType, Identifier, LockType, Span, Statement};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 use crate::literal::token_to_literal;
@@ -492,6 +492,11 @@ impl<'a> Parser<'a> {
             return self.parse_for_each();
         }
 
+        // FIND statement
+        if self.check(Kind::Find) {
+            return self.parse_find_statement();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -947,6 +952,74 @@ impl<'a> Parser<'a> {
         })
     }
 
+    // parse find statements
+    fn parse_find_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // Consume FIND
+
+        // parse optional find type
+        let find_type = match self.peek().kind {
+            Kind::First => {
+                self.advance();
+                FindType::First
+            }
+            Kind::Last => {
+                self.advance();
+                FindType::Last
+            }
+            Kind::Next => {
+                self.advance();
+                FindType::Next
+            }
+            Kind::Prev => {
+                self.advance();
+                FindType::Prev
+            }
+            _ => FindType::Unique,
+        };
+
+        // parse buffer/table name
+        let buffer = self.parse_identifier()?;
+
+        // parse optional key-value (FIND customer <key> syntax,
+        // equivalent to find customer where customer.primary-index field eq 1)
+        // Key value is present if next token is NOT a clause keyword, lock type, or terminator.
+        let key_value = if !self.is_find_clause_start() {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // parse optional where clause
+        let where_clause = if self.check(Kind::KwWhere) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // parse lock type, defaults to share lock if none is present
+        let lock_type = self.parse_lock_type();
+
+        // parse optional no error
+        let no_error = if self.check(Kind::NoError) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        self.expect_kind(Kind::Period, "Expected '.' after FIND statement")?;
+
+        Ok(Statement::Find {
+            find_type,
+            buffer,
+            key_value,
+            where_clause,
+            lock_type,
+            no_error,
+        })
+    }
+
     // Parse the block body for code blocks like DO, consume till END.
     fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
@@ -1057,14 +1130,27 @@ impl<'a> Parser<'a> {
             _ => LockType::ShareLock, // Default in ABL
         }
     }
+
+    /// Check if the current token is the start of a find clause (WHERE, lock, no-error, terminator)
+    fn is_find_clause_start(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            Kind::KwWhere
+                | Kind::NoLock
+                | Kind::ShareLock
+                | Kind::ExclusiveLock
+                | Kind::NoError
+                | Kind::Period
+        )
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use oxabl_ast::{
-        BooleanLiteral, DecimalLiteral, IntegerLiteral, Literal, LockType, Span, StringLiteral,
-        UnknownLiteral,
+        BooleanLiteral, DecimalLiteral, FindType, IntegerLiteral, Literal, LockType, Span,
+        StringLiteral, UnknownLiteral,
     };
     use oxabl_lexer::tokenize;
     use rust_decimal::Decimal;
@@ -3529,5 +3615,242 @@ mod test {
                 body: vec![]
             }
         );
+    }
+
+    #[test]
+    fn parse_find_first_with_where() {
+        let source = "find first Customer where Customer.CustNum = 1 no-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Find {
+                find_type: FindType::First,
+                buffer: Identifier {
+                    span: Span { start: 11, end: 19 },
+                    name: "Customer".to_string()
+                },
+                key_value: None,
+                where_clause: Some(Expression::Equal(
+                    Box::new(Expression::FieldAccess {
+                        qualifier: Box::new(Expression::Identifier(Identifier {
+                            span: Span { start: 26, end: 34 },
+                            name: "Customer".to_string()
+                        })),
+                        field: Identifier {
+                            span: Span { start: 35, end: 42 },
+                            name: "CustNum".to_string()
+                        }
+                    }),
+                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 45, end: 46 },
+                        value: 1
+                    })))
+                )),
+                lock_type: LockType::NoLock,
+                no_error: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_find_by_integer_key() {
+        let source = "find Customer 1 no-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Find {
+                find_type: FindType::Unique,
+                buffer: Identifier {
+                    span: Span { start: 5, end: 13 },
+                    name: "Customer".to_string()
+                },
+                key_value: Some(Expression::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 1
+                }))),
+                where_clause: None,
+                lock_type: LockType::NoLock,
+                no_error: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_find_by_string_key() {
+        let source = r#"find Customer "ACME" no-lock."#;
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Find {
+                find_type: FindType::Unique,
+                buffer: Identifier {
+                    span: Span { start: 5, end: 13 },
+                    name: "Customer".to_string()
+                },
+                key_value: Some(Expression::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 14, end: 20 },
+                    value: "ACME".to_string()
+                }))),
+                where_clause: None,
+                lock_type: LockType::NoLock,
+                no_error: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_find_by_variable_key() {
+        let source = "find Customer custId no-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Find {
+                find_type: FindType::Unique,
+                buffer: Identifier {
+                    span: Span { start: 5, end: 13 },
+                    name: "Customer".to_string()
+                },
+                key_value: Some(Expression::Identifier(Identifier {
+                    span: Span { start: 14, end: 20 },
+                    name: "custId".to_string()
+                })),
+                where_clause: None,
+                lock_type: LockType::NoLock,
+                no_error: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_find_with_no_error() {
+        let source = "find first Customer where active = true no-lock no-error.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert_eq!(
+            stmt,
+            Statement::Find {
+                find_type: FindType::First,
+                buffer: Identifier {
+                    span: Span { start: 11, end: 19 },
+                    name: "Customer".to_string()
+                },
+                key_value: None,
+                where_clause: Some(Expression::Equal(
+                    Box::new(Expression::Identifier(Identifier {
+                        span: Span { start: 26, end: 32 },
+                        name: "active".to_string()
+                    })),
+                    Box::new(Expression::Literal(Literal::Boolean(BooleanLiteral {
+                        span: Span { start: 35, end: 39 },
+                        value: true
+                    })))
+                )),
+                lock_type: LockType::NoLock,
+                no_error: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_find_last() {
+        let source = "find last Order no-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Find {
+                find_type, buffer, ..
+            } => {
+                assert_eq!(find_type, FindType::Last);
+                assert_eq!(buffer.name, "Order");
+            }
+            _ => panic!("Expected Find statement"),
+        }
+    }
+
+    #[test]
+    fn parse_find_next() {
+        let source = "find next Customer no-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Find {
+                find_type, buffer, ..
+            } => {
+                assert_eq!(find_type, FindType::Next);
+                assert_eq!(buffer.name, "Customer");
+            }
+            _ => panic!("Expected Find statement"),
+        }
+    }
+
+    #[test]
+    fn parse_find_prev() {
+        let source = "find prev Customer no-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Find {
+                find_type, buffer, ..
+            } => {
+                assert_eq!(find_type, FindType::Prev);
+                assert_eq!(buffer.name, "Customer");
+            }
+            _ => panic!("Expected Find statement"),
+        }
+    }
+
+    #[test]
+    fn parse_find_exclusive_lock() {
+        let source = "find first Customer exclusive-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Find { lock_type, .. } => {
+                assert_eq!(lock_type, LockType::ExclusiveLock);
+            }
+            _ => panic!("Expected Find statement"),
+        }
+    }
+
+    #[test]
+    fn parse_find_share_lock() {
+        let source = "find first Customer share-lock.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Find { lock_type, .. } => {
+                assert_eq!(lock_type, LockType::ShareLock);
+            }
+            _ => panic!("Expected Find statement"),
+        }
+    }
+
+    #[test]
+    fn parse_find_default_lock() {
+        // When no lock type is specified, defaults to ShareLock
+        let source = "find first Customer.";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt {
+            Statement::Find { lock_type, .. } => {
+                assert_eq!(lock_type, LockType::ShareLock);
+            }
+            _ => panic!("Expected Find statement"),
+        }
     }
 }
