@@ -20,7 +20,7 @@ Requirements:
   - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl`.
 - `source_map`: MVP has been completed in `crates/oxabl_common`.
   - It's able to produce line and column numbers from byte offsets stored in tokens.
-  - Needs test coverage.
+  - Test coverage
   - Used in our token dumps and benchmarks, appears to be accurate.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
