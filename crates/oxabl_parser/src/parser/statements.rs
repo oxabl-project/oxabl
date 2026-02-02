@@ -63,6 +63,11 @@ impl Parser<'_> {
             return self.parse_case_statement();
         }
 
+        // PROCEDURE statement
+        if self.check(Kind::Procedure) {
+            return self.parse_procedure();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -104,6 +109,11 @@ impl Parser<'_> {
     fn parse_define_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DEFINE
 
+        // parse INPUT/OUTPUT parameters
+        if self.check(Kind::Input) || self.check(Kind::Output) || self.check(Kind::InputOutput) {
+            return self.parse_define_parameter();
+        }
+
         // Variable
         if !self.check(Kind::Identifier) {
             return Err(ParseError {
@@ -114,10 +124,6 @@ impl Parser<'_> {
                 },
             });
         }
-        // buffer
-        // todo
-        // temp-table
-        // todo
 
         let define_what = self.peek();
         let define_text = &self.source[define_what.start..define_what.end];
@@ -251,6 +257,10 @@ impl Parser<'_> {
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
         })
+    }
+
+    fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
+        todo!()
     }
 
     /// Continue parsing an expression after additive level has been parsed
@@ -639,6 +649,30 @@ impl Parser<'_> {
             when_branches,
             otherwise,
         })
+    }
+
+    fn parse_procedure(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume PROCEDURE
+
+        let name = self.parse_identifier()?;
+        self.expect_kind(Kind::Colon, "Expected ':' after procedure name")?;
+
+        // parse body until END
+        let mut body = Vec::new();
+        while !self.check(Kind::End) {
+            body.push(self.parse_statement()?);
+        }
+
+        self.expect_kind(Kind::End, "Expected END at end of PROCEDURE body")?;
+
+        // END PROCEDURE or just END. both are valid.
+        if self.check(Kind::Procedure) {
+            self.advance();
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after END PROCEDURE")?;
+
+        Ok(Statement::Procedure { name, body })
     }
 
     // Parse the block body for code blocks like DO, consume till END.
