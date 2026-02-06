@@ -1,9 +1,8 @@
 //! Statement parsing for the Oxabl parser
 
-use std::fmt::Arguments;
-
 use oxabl_ast::{
-    Expression, FindType, Identifier, LockType, ParamterDirection, RunArgument, RunTarget, Span, Statement, WhenBranch
+    Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument, RunTarget, Span,
+    Statement, WhenBranch,
 };
 use oxabl_lexer::{Kind, is_callable_kind};
 
@@ -65,6 +64,11 @@ impl Parser<'_> {
         // CASE statement
         if self.check(Kind::Case) {
             return self.parse_case_statement();
+        }
+
+        // RUN statement
+        if self.check(Kind::Run) {
+            return self.parse_run_statement();
         }
 
         // PROCEDURE statement
@@ -268,15 +272,15 @@ impl Parser<'_> {
         let direction = match self.peek().kind {
             Kind::Input => {
                 self.advance();
-                ParamterDirection::Input
+                ParameterDirection::Input
             }
             Kind::Output => {
                 self.advance();
-                ParamterDirection::Output
+                ParameterDirection::Output
             }
             Kind::InputOutput => {
                 self.advance();
-                ParamterDirection::InputOutput
+                ParameterDirection::InputOutput
             }
             _ => unreachable!("parse_define_parameter called without INPUT/OUTPUT token"),
         };
@@ -763,15 +767,27 @@ impl Parser<'_> {
             if !self.check(Kind::RightParen) {
                 loop {
                     // TODO - finish, add tests, make not broken.
-                    let direction = match.self.peek().kind {
-                        Kind::Input => { self.advance(); ParameterDirection::Input }
-                        Kind::Output => { self.advance(); ParameterDirection::Output }
-                        Kind::InputOutput => { self.advance(); ParameterDirection::InputOutput }
+                    let direction = match self.peek().kind {
+                        Kind::Input => {
+                            self.advance();
+                            ParameterDirection::Input
+                        }
+                        Kind::Output => {
+                            self.advance();
+                            ParameterDirection::Output
+                        }
+                        Kind::InputOutput => {
+                            self.advance();
+                            ParameterDirection::InputOutput
+                        }
                         _ => ParameterDirection::Input, // Default to INPUT
                     };
 
                     let expression = self.parse_expression()?;
-                    args.push(RunArgument {direction, expression});
+                    args.push(RunArgument {
+                        direction,
+                        expression,
+                    });
 
                     if !self.check(Kind::Comma) {
                         break;
@@ -826,8 +842,27 @@ impl Parser<'_> {
         }
     }
 
+    // Helper to parse procedure names that may include dots (e.g., "file.p")
     fn parse_procedure_name(&mut self) -> ParseResult<String> {
-        todo!()
+        let start = self.peek().start;
+        self.advance(); // consume first identifier
+
+        // Handle dotted names like "myproc.p"
+        while self.check(Kind::Period) {
+            // Peek ahead - if next is an identifier, it's part of the name
+            let saved = self.current;
+            self.advance(); // consume period
+            if self.check(Kind::Identifier) {
+                self.advance(); // consume extension
+            } else {
+                // It's the statement terminator, rollback
+                self.current = saved;
+                break;
+            }
+        }
+
+        let end = self.tokens[self.current - 1].end;
+        Ok(self.source[start..end].to_string())
     }
 
     /// Check if the current token is the start of a find clause (WHERE, lock, no-error, terminator)

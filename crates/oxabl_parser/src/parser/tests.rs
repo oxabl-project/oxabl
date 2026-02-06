@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
     BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, ParamterDirection, Span, Statement, StringLiteral, UnknownLiteral,
-    WhenBranch,
+    Literal, LockType, ParameterDirection, RunTarget, Span, Statement, StringLiteral,
+    UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -2165,8 +2165,7 @@ fn parse_return_with_value() {
 
 #[test]
 fn parse_loop_with_leave_and_next() {
-    let source =
-        "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
+    let source = "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -2732,7 +2731,8 @@ fn parse_simple_case_statement() {
 
 #[test]
 fn parse_case_with_multiple_when_branches() {
-    let source = "CASE myStatus: WHEN 1 THEN x = 1. WHEN 2 THEN x = 2. WHEN 3 THEN x = 3. END CASE.";
+    let source =
+        "CASE myStatus: WHEN 1 THEN x = 1. WHEN 2 THEN x = 2. WHEN 3 THEN x = 3. END CASE.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -2777,9 +2777,7 @@ fn parse_case_with_or_when() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             // The single WHEN branch has two values
             assert_eq!(when_branches[0].values.len(), 2);
@@ -2795,9 +2793,7 @@ fn parse_case_with_string_values() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
                 &when_branches[0].values[0],
@@ -2815,9 +2811,7 @@ fn parse_case_with_multiple_statements_in_when() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].body.len(), 3);
         }
@@ -2922,9 +2916,7 @@ fn parse_case_with_nested_if() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert!(matches!(when_branches[0].body[0], Statement::If { .. }));
         }
@@ -2939,9 +2931,7 @@ fn parse_case_boolean_values() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
                 &when_branches[0].values[0],
@@ -2964,9 +2954,7 @@ fn parse_case_with_triple_or_when() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].values.len(), 3);
         }
@@ -2987,7 +2975,7 @@ fn parse_define_input_parameter() {
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::Input);
+            assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
             assert_eq!(data_type, DataType::Character);
             assert!(!no_undo);
@@ -3009,7 +2997,7 @@ fn parse_define_output_parameter() {
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::Output);
+            assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(name.name, "result");
             assert_eq!(data_type, DataType::Integer);
             assert!(!no_undo);
@@ -3031,7 +3019,7 @@ fn parse_define_input_output_parameter() {
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::InputOutput);
+            assert_eq!(direction, ParameterDirection::InputOutput);
             assert_eq!(name.name, "data");
             assert_eq!(data_type, DataType::Logical);
             assert!(!no_undo);
@@ -3053,7 +3041,7 @@ fn parse_define_parameter_with_no_undo() {
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::Input);
+            assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
             assert_eq!(data_type, DataType::Character);
             assert!(no_undo);
@@ -3086,7 +3074,7 @@ END PROCEDURE.
                     data_type,
                     ..
                 } => {
-                    assert_eq!(*direction, ParamterDirection::Input);
+                    assert_eq!(*direction, ParameterDirection::Input);
                     assert_eq!(name.name, "name");
                     assert_eq!(*data_type, DataType::Character);
                 }
@@ -3100,7 +3088,7 @@ END PROCEDURE.
                     data_type,
                     ..
                 } => {
-                    assert_eq!(*direction, ParamterDirection::Output);
+                    assert_eq!(*direction, ParameterDirection::Output);
                     assert_eq!(name.name, "result");
                     assert_eq!(*data_type, DataType::Integer);
                 }
@@ -3108,5 +3096,177 @@ END PROCEDURE.
             }
         }
         _ => panic!("Expected Procedure statement"),
+    }
+}
+
+// ==================== RUN Statement Tests ====================
+
+#[test]
+fn parse_run_simple_procedure() {
+    let source = "RUN my-proc.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert_eq!(
+        stmt,
+        Statement::Run {
+            target: RunTarget::Literal("my-proc".to_string()),
+            arguments: vec![],
+        }
+    );
+}
+
+#[test]
+fn parse_run_dotted_procedure_name() {
+    let source = "RUN my-proc.p.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert_eq!(
+        stmt,
+        Statement::Run {
+            target: RunTarget::Literal("my-proc.p".to_string()),
+            arguments: vec![],
+        }
+    );
+}
+
+#[test]
+fn parse_run_dynamic_value() {
+    let source = "RUN VALUE(procName).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, arguments } => {
+            assert!(matches!(target, RunTarget::Dynamic(_)));
+            assert!(arguments.is_empty());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_input_argument() {
+    let source = "RUN my-proc (INPUT myVal).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, arguments } => {
+            assert_eq!(target, RunTarget::Literal("my-proc".to_string()));
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_output_argument() {
+    let source = "RUN my-proc (OUTPUT result).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, arguments } => {
+            assert_eq!(target, RunTarget::Literal("my-proc".to_string()));
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Output);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_multiple_arguments() {
+    let source = "RUN my-proc (INPUT x, OUTPUT y).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { arguments, .. } => {
+            assert_eq!(arguments.len(), 2);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+            assert_eq!(arguments[1].direction, ParameterDirection::Output);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_input_output_argument() {
+    let source = "RUN my-proc (INPUT-OUTPUT data).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { arguments, .. } => {
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::InputOutput);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_default_input_direction() {
+    // When no direction keyword, defaults to INPUT
+    let source = "RUN my-proc (x).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { arguments, .. } => {
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_expression_argument() {
+    let source = "RUN my-proc (INPUT x + 1).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { arguments, .. } => {
+            assert_eq!(arguments.len(), 1);
+            assert!(matches!(arguments[0].expression, Expression::Add(_, _)));
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_no_arguments() {
+    let source = "RUN cleanup.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert_eq!(
+        stmt,
+        Statement::Run {
+            target: RunTarget::Literal("cleanup".to_string()),
+            arguments: vec![],
+        }
+    );
+}
+
+#[test]
+fn parse_run_dynamic_with_arguments() {
+    let source = "RUN VALUE(procName) (INPUT 42).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, arguments } => {
+            assert!(matches!(target, RunTarget::Dynamic(_)));
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Run statement"),
     }
 }

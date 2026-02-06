@@ -89,7 +89,7 @@ pub enum Statement {
 
     /// Define input/output params
     DefineParamter {
-        direction: ParamterDirection,
+        direction: ParameterDirection,
         name: Identifier,
         data_type: DataType,
         no_undo: bool,
@@ -164,7 +164,7 @@ pub struct WhenBranch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParamterDirection {
+pub enum ParameterDirection {
     Input,
     Output,
     InputOutput,
@@ -178,6 +178,6 @@ pub enum RunTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunArgument {
-    pub direction: ParamterDirection,
+    pub direction: ParameterDirection,
     pub expression: Expression,
 }
