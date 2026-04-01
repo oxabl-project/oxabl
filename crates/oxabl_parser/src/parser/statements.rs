@@ -807,6 +807,40 @@ impl Parser<'_> {
             None
         };
 
+        // parse optional PERSISTENT [SET handle]
+        let (persistent, persistent_handle) = if self.check(Kind::Persistent) {
+            self.advance();
+            let h = if self.check(Kind::Set) {
+                self.advance();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            (true, h)
+        } else {
+            (false, None)
+        };
+
+        // parse optional ASYNCHRONOUS [SET handle] [EVENT-PROCEDURE expr]
+        let (asynchronous, async_handle, event_procedure) = if self.check(Kind::Asynchronous) {
+            self.advance();
+            let h = if self.check(Kind::Set) {
+                self.advance();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            let ep = if self.check(Kind::EventProcedure) {
+                self.advance();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            (true, h, ep)
+        } else {
+            (false, None, None)
+        };
+
         // parse optional NO-ERROR
         let no_error = if self.check(Kind::NoError) {
             self.advance();
@@ -821,6 +855,11 @@ impl Parser<'_> {
             target,
             arguments,
             in_handle,
+            persistent,
+            persistent_handle,
+            asynchronous,
+            async_handle,
+            event_procedure,
             no_error,
         })
     }
