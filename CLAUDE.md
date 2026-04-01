@@ -110,6 +110,39 @@ Generates:
 - Atom list for `string_cache_codegen`
 - `match_keyword()` function handling abbreviations and case-insensitive matching
 
+## CI & Release Process
+
+### CI (`.github/workflows/ci.yml`)
+
+Runs on every push and PR to `master`. All checks must pass before merging:
+
+- `cargo check` — fast compilation check
+- `cargo test` — full test suite
+- `cargo fmt --check` — formatting enforcement
+- `cargo clippy -D warnings` — lint enforcement
+
+### Automated Releases (`.github/workflows/release.yml`)
+
+Uses [Release Please](https://github.com/googleapis/release-please) for fully automated versioning and changelogs.
+
+**How it works:**
+
+1. Write commits using [Conventional Commits](https://www.conventionalcommits.org/) format:
+   - `feat: add X` — bumps minor version
+   - `fix: correct Y` — bumps patch version
+   - `feat!: breaking change` or footer `BREAKING CHANGE:` — bumps major version
+   - Other prefixes (`chore:`, `docs:`, `refactor:`, `test:`) don't trigger a release but appear in the changelog
+2. Release Please accumulates merged commits and maintains an open PR (e.g. "chore(main): release 0.2.0") with a generated changelog and version bumps across all workspace `Cargo.toml` files
+3. When you merge that release PR, a GitHub Release and git tag are created automatically
+4. A build+test verification step runs against the release
+
+**Config files:**
+
+- `release-please-config.json` — release type and which `Cargo.toml` files to update
+- `.release-please-manifest.json` — tracks the current version
+
+While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor instead of major.
+
 ## Current Status
 
 - `oxabl_lexer`: MVP complete with 27 tests
