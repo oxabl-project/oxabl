@@ -12,7 +12,7 @@ pub mod statements;
 #[cfg(test)]
 mod tests;
 
-use oxabl_ast::{DataType, Identifier, Span};
+use oxabl_ast::{DataType, Identifier, Span, Statement};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
@@ -24,6 +24,26 @@ pub struct ParseError {
 
 /// Alias for parser results.
 pub type ParseResult<T> = Result<T, ParseError>;
+
+/// The result of parsing an ABL source file.
+///
+/// Contains all successfully parsed statements and any errors encountered.
+/// When error recovery is active, the parser continues past errors, so a
+/// `Program` may contain both statements and errors.
+#[derive(Debug)]
+pub struct Program {
+    /// Successfully parsed statements.
+    pub statements: Vec<Statement>,
+    /// Errors encountered during parsing.
+    pub errors: Vec<ParseError>,
+}
+
+impl Program {
+    /// Returns true if parsing completed without errors.
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
 
 /// A recursive-descent parser for ABL source code.
 ///
@@ -43,6 +63,47 @@ impl<'a> Parser<'a> {
             tokens,
             source,
             current: 0,
+        }
+    }
+
+    /// Parse the entire token stream into a [`Program`] with error recovery.
+    ///
+    /// Unlike [`parse_statements`], this method does not bail on the first error.
+    /// Instead, it records the error, skips to the next statement boundary via
+    /// [`synchronize`], and continues parsing.
+    pub fn parse_program(&mut self) -> Program {
+        let mut statements = Vec::new();
+        let mut errors = Vec::new();
+
+        while !self.at_end() {
+            match self.parse_statement() {
+                Ok(stmt) => statements.push(stmt),
+                Err(err) => {
+                    errors.push(err);
+                    self.synchronize();
+                }
+            }
+        }
+
+        Program { statements, errors }
+    }
+
+    /// Skip tokens until we reach a statement boundary.
+    ///
+    /// A statement boundary is either:
+    /// - A `.` (period) — ABL's statement terminator. Consumed.
+    /// - A statement-starting keyword — not consumed, left for the next
+    ///   `parse_statement` call.
+    fn synchronize(&mut self) {
+        while !self.at_end() {
+            if self.check(Kind::Period) {
+                self.advance(); // consume the period
+                return;
+            }
+            if statements::can_start_statement(self.peek().kind) {
+                return; // don't consume — it starts the next statement
+            }
+            self.advance();
         }
     }
     pub fn peek(&self) -> &Token {
