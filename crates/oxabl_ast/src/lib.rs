@@ -1,7 +1,8 @@
-//! Oxabl AST
+//! AST node definitions for Progress ABL source code.
 //!
-//! Creates an abstract syntax tree of ABL expressions and statements
-//! No standardized 'tree syntax' is followed, we're just vibing.
+//! This crate defines the abstract syntax tree types used by the parser to
+//! represent parsed ABL programs, including [`Expression`] variants, [`Statement`]
+//! variants, [`Literal`] types, and source location tracking via [`Span`].
 mod expression;
 mod literal;
 mod span;
