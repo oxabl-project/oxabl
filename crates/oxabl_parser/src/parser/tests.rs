@@ -1,6 +1,6 @@
 use super::*;
 use oxabl_ast::{
-    BooleanLiteral, DataType, DecimalLiteral, DisplayItem, Expression, FindType, Identifier,
+    BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier,
     IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, Span, Statement,
     StringLiteral, UnknownLiteral, WhenBranch,
 };
@@ -3202,6 +3202,48 @@ fn parse_display_with_when() {
         Statement::Display { items, .. } => {
             assert_eq!(items.len(), 1);
             assert!(items[0].when_condition.is_some());
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_format() {
+    let source = r#"DISPLAY x FORMAT "x(20)" y FORMAT "9(5)"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 2);
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_column_label() {
+    let source = r#"DISPLAY x COLUMN-LABEL "Name" y COLUMN-LABEL "Balance"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 2);
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_format_and_column_label() {
+    let source = r#"DISPLAY x FORMAT "x(20)" COLUMN-LABEL "Name"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 1);
         }
         _ => panic!("Expected Display statement"),
     }
