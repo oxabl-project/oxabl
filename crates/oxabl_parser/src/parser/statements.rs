@@ -739,14 +739,20 @@ impl Parser<'_> {
     fn parse_run_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume RUN
 
+        // Parse target: VALUE(expr), string literal, or procedure name
         let target = if self.check(Kind::Value) {
             self.advance();
             self.expect_kind(Kind::LeftParen, "Expected '(' after VALUE")?;
             let expr = self.parse_expression()?;
             self.expect_kind(Kind::RightParen, "Expected ')' after VALUE expression")?;
             RunTarget::Dynamic(expr)
+        } else if self.check(Kind::StringLiteral) {
+            // String literal target: RUN "my-proc.p".
+            let token = self.advance().clone();
+            let name = self.source[token.start + 1..token.end - 1].to_string();
+            RunTarget::Literal(name)
         } else {
-            // Procedure name (may contain hyphens, dots for .p files)
+            // Procedure name (may contain hyphens, dots for .p/.w/.r/.i/.cls files)
             let name = self.parse_procedure_name()?;
             RunTarget::Literal(name)
         };
@@ -793,9 +799,30 @@ impl Parser<'_> {
             Vec::new()
         };
 
+        // parse optional IN handle
+        let in_handle = if self.check(Kind::KwIn) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // parse optional NO-ERROR
+        let no_error = if self.check(Kind::NoError) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         self.expect_kind(Kind::Period, "Expected '.' after RUN statement")?;
 
-        Ok(Statement::Run { target, arguments })
+        Ok(Statement::Run {
+            target,
+            arguments,
+            in_handle,
+            no_error,
+        })
     }
 
     // Parse the block body for code blocks like DO, consume till END.
@@ -833,8 +860,47 @@ impl Parser<'_> {
         }
     }
 
+    /// Parse a procedure name for RUN statements.
+    ///
+    /// ABL procedure names can contain hyphens (e.g., `calculate-total`) and may have
+    /// file extensions (e.g., `my-proc.p`). Known ABL extensions are `.p`, `.w`, `.r`,
+    /// `.i`, and `.cls`. A period followed by a non-extension token is treated as the
+    /// statement terminator, not part of the name.
     fn parse_procedure_name(&mut self) -> ParseResult<String> {
-        todo!()
+        if !is_callable_kind(self.peek().kind) {
+            return Err(ParseError {
+                message: "Expected procedure name after RUN".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
+
+        let start = self.peek().start;
+        self.advance(); // consume the first identifier token
+
+        // Check for dotted extension (e.g., my-proc.p)
+        // Only consume the dot + extension if it's a known ABL file extension
+        if self.check(Kind::Period) {
+            if let Some(next) = self.tokens.get(self.current + 1) {
+                if next.kind == Kind::Identifier {
+                    let ext = &self.source[next.start..next.end];
+                    if ext.eq_ignore_ascii_case("p")
+                        || ext.eq_ignore_ascii_case("w")
+                        || ext.eq_ignore_ascii_case("r")
+                        || ext.eq_ignore_ascii_case("i")
+                        || ext.eq_ignore_ascii_case("cls")
+                    {
+                        self.advance(); // consume the period
+                        self.advance(); // consume the extension
+                    }
+                }
+            }
+        }
+
+        let end = self.tokens[self.current - 1].end;
+        Ok(self.source[start..end].to_string())
     }
 
     /// Check if the current token is the start of a find clause (WHERE, lock, no-error, terminator)
