@@ -1,7 +1,7 @@
 use super::*;
 use oxabl_ast::{
     BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, ParamterDirection, Span, Statement, StringLiteral, UnknownLiteral,
+    Literal, LockType, ParameterDirection, Span, Statement, StringLiteral, UnknownLiteral,
     WhenBranch,
 };
 use oxabl_lexer::tokenize;
@@ -2981,13 +2981,13 @@ fn parse_define_input_parameter() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
             name,
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::Input);
+            assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
             assert_eq!(data_type, DataType::Character);
             assert!(!no_undo);
@@ -3003,13 +3003,13 @@ fn parse_define_output_parameter() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
             name,
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::Output);
+            assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(name.name, "result");
             assert_eq!(data_type, DataType::Integer);
             assert!(!no_undo);
@@ -3025,13 +3025,13 @@ fn parse_define_input_output_parameter() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
             name,
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::InputOutput);
+            assert_eq!(direction, ParameterDirection::InputOutput);
             assert_eq!(name.name, "data");
             assert_eq!(data_type, DataType::Logical);
             assert!(!no_undo);
@@ -3047,13 +3047,13 @@ fn parse_define_parameter_with_no_undo() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
             name,
             data_type,
             no_undo,
         } => {
-            assert_eq!(direction, ParamterDirection::Input);
+            assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
             assert_eq!(data_type, DataType::Character);
             assert!(no_undo);
@@ -3080,13 +3080,13 @@ END PROCEDURE.
             assert_eq!(body.len(), 3);
             // First statement should be input parameter
             match &body[0] {
-                Statement::DefineParamter {
+                Statement::DefineParameter {
                     direction,
                     name,
                     data_type,
                     ..
                 } => {
-                    assert_eq!(*direction, ParamterDirection::Input);
+                    assert_eq!(*direction, ParameterDirection::Input);
                     assert_eq!(name.name, "name");
                     assert_eq!(*data_type, DataType::Character);
                 }
@@ -3094,13 +3094,13 @@ END PROCEDURE.
             }
             // Second statement should be output parameter
             match &body[1] {
-                Statement::DefineParamter {
+                Statement::DefineParameter {
                     direction,
                     name,
                     data_type,
                     ..
                 } => {
-                    assert_eq!(*direction, ParamterDirection::Output);
+                    assert_eq!(*direction, ParameterDirection::Output);
                     assert_eq!(name.name, "result");
                     assert_eq!(*data_type, DataType::Integer);
                 }
