@@ -95,10 +95,17 @@ pub enum Statement {
         no_undo: bool,
     },
 
-    /// Run statements
+    /// RUN statement — executes an internal procedure or external `.p` file.
+    ///
+    /// Supports static names (`RUN my-proc.`), dynamic dispatch (`RUN VALUE(expr).`),
+    /// persistent procedure handles (`RUN proc IN hServer.`), and `NO-ERROR`.
     Run {
         target: RunTarget,
         arguments: Vec<RunArgument>,
+        /// Handle for `RUN ... IN handle` (persistent procedure calls).
+        in_handle: Option<Expression>,
+        /// Whether `NO-ERROR` was specified.
+        no_error: bool,
     },
 
     /// Leave statement - exit innermost loop
