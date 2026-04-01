@@ -1,9 +1,12 @@
-//! Statement parsing for the Oxabl parser
-
-use std::fmt::Arguments;
+//! Statement parsing for the Oxabl parser.
+//!
+//! Handles DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops),
+//! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, RUN, LEAVE, NEXT,
+//! and RETURN statements.
 
 use oxabl_ast::{
-    Expression, FindType, Identifier, LockType, ParamterDirection, RunArgument, RunTarget, Span, Statement, WhenBranch
+    Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument, RunTarget, Span,
+    Statement, WhenBranch,
 };
 use oxabl_lexer::{Kind, is_callable_kind};
 
@@ -11,7 +14,6 @@ use super::{ParseError, ParseResult, Parser};
 
 impl Parser<'_> {
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
-        println!("current token: {:?}", self.tokens[self.current]);
         // Skip empty statements
         if self.check(Kind::Period) {
             self.advance();
@@ -72,6 +74,11 @@ impl Parser<'_> {
             return self.parse_procedure();
         }
 
+        // RUN statement
+        if self.check(Kind::Run) {
+            return self.parse_run_statement();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -90,12 +97,10 @@ impl Parser<'_> {
 
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
-        println!("left: {:?}", left);
 
         if self.check(Kind::Equals) {
             self.advance(); // consume the "="
             let value = self.parse_expression()?;
-            println!("value: {:?}", value);
             self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
             return Ok(Statement::Assignment {
                 target: left,
@@ -199,8 +204,8 @@ impl Parser<'_> {
                         }
                     } // extent check if it's set or dynamic
                 } else {
-                    // check for initial or extent
-                    break; // not intial or extent, exit loop
+                    // not initial or extent
+                    break;
                 }
             } else {
                 break; // not an identifier, exit loop
@@ -268,15 +273,15 @@ impl Parser<'_> {
         let direction = match self.peek().kind {
             Kind::Input => {
                 self.advance();
-                ParamterDirection::Input
+                ParameterDirection::Input
             }
             Kind::Output => {
                 self.advance();
-                ParamterDirection::Output
+                ParameterDirection::Output
             }
             Kind::InputOutput => {
                 self.advance();
-                ParamterDirection::InputOutput
+                ParameterDirection::InputOutput
             }
             _ => unreachable!("parse_define_parameter called without INPUT/OUTPUT token"),
         };
@@ -319,7 +324,7 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::Period, "Expected '.' after parameter definition")?;
 
-        Ok(Statement::DefineParamter {
+        Ok(Statement::DefineParameter {
             direction,
             name,
             data_type,
@@ -420,10 +425,8 @@ impl Parser<'_> {
             // peek ahead to see if this is 'var = start to end'
             let saved_pos = self.current;
             let potential_var = self.advance().clone();
-            println!("Potential var: {:?}", potential_var);
 
             if self.check(Kind::Equals) {
-                println!("Equals found");
                 // It's a counting loop
                 let var_name = Identifier {
                     span: Span {
@@ -437,12 +440,10 @@ impl Parser<'_> {
 
                 self.advance(); // consume =
                 from = Some(self.parse_expression()?);
-                println!("From parsed: {:?}", from);
 
-                // Expect TO, because we have a var and consume  =
+                // Expect TO, because we have a var and consumed =
                 self.expect_kind(Kind::To, "Expected TO in DO loop")?;
                 to = Some(self.parse_expression()?);
-                println!("To parsed: {:?}", to);
 
                 // Optional BY
                 if self.check(Kind::By) {
@@ -450,13 +451,10 @@ impl Parser<'_> {
                     by = Some(self.parse_expression()?);
                 }
             } else {
-                println!("Not a counting loop");
                 // not a counting loop
                 self.current = saved_pos;
             }
         }
-
-        println!("Current token: {:?}", self.tokens[self.current]);
 
         // check for WHILE
         if self.check(Kind::KwWhile) {
@@ -527,7 +525,7 @@ impl Parser<'_> {
             None
         };
 
-        // Expect collor
+        // Expect colon
         self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
 
         let body = self.parse_block_body()?;
@@ -576,9 +574,7 @@ impl Parser<'_> {
         };
 
         // Lock type (default is SHARE-LOCK if not explicit)
-        println!("current token before lock: {:?}", self.peek());
         let lock_type = self.parse_lock_type();
-        println!("lock type: {:?}", lock_type);
 
         self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
         let body = self.parse_block_body()?;
@@ -762,16 +758,27 @@ impl Parser<'_> {
 
             if !self.check(Kind::RightParen) {
                 loop {
-                    // TODO - finish, add tests, make not broken.
-                    let direction = match.self.peek().kind {
-                        Kind::Input => { self.advance(); ParameterDirection::Input }
-                        Kind::Output => { self.advance(); ParameterDirection::Output }
-                        Kind::InputOutput => { self.advance(); ParameterDirection::InputOutput }
+                    let direction = match self.peek().kind {
+                        Kind::Input => {
+                            self.advance();
+                            ParameterDirection::Input
+                        }
+                        Kind::Output => {
+                            self.advance();
+                            ParameterDirection::Output
+                        }
+                        Kind::InputOutput => {
+                            self.advance();
+                            ParameterDirection::InputOutput
+                        }
                         _ => ParameterDirection::Input, // Default to INPUT
                     };
 
                     let expression = self.parse_expression()?;
-                    args.push(RunArgument {direction, expression});
+                    args.push(RunArgument {
+                        direction,
+                        expression,
+                    });
 
                     if !self.check(Kind::Comma) {
                         break;
@@ -780,13 +787,13 @@ impl Parser<'_> {
                 }
             }
 
-            self.expect_kind(Kind::RightParen, "Expected ')' after argument statement")?;
+            self.expect_kind(Kind::RightParen, "Expected ')' after RUN arguments")?;
             args
         } else {
             Vec::new()
         };
 
-        self.expect_kind(Kind::Period, "Expected ',' after RUN statement")?;
+        self.expect_kind(Kind::Period, "Expected '.' after RUN statement")?;
 
         Ok(Statement::Run { target, arguments })
     }
