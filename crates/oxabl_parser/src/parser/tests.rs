@@ -3674,3 +3674,106 @@ fn parse_run_asynchronous_with_event_procedure() {
         _ => panic!("Expected Run statement"),
     }
 }
+
+// ===================== TEMP-TABLE tests =====================
+
+#[test]
+fn parse_define_temp_table_simple() {
+    let source = r#"
+DEFINE TEMP-TABLE ttCustomer NO-UNDO
+    FIELD CustNum AS INTEGER
+    FIELD Name AS CHARACTER
+    FIELD Balance AS DECIMAL.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            name,
+            no_undo,
+            fields,
+            indexes,
+        } => {
+            assert_eq!(name.name, "ttCustomer");
+            assert!(no_undo);
+            assert_eq!(fields.len(), 3);
+            assert_eq!(fields[0].name.name, "CustNum");
+            assert_eq!(fields[0].data_type, DataType::Integer);
+            assert_eq!(fields[1].name.name, "Name");
+            assert_eq!(fields[1].data_type, DataType::Character);
+            assert_eq!(fields[2].name.name, "Balance");
+            assert_eq!(fields[2].data_type, DataType::Decimal);
+            assert!(indexes.is_empty());
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_with_index() {
+    let source = r#"
+DEFINE TEMP-TABLE ttOrder NO-UNDO
+    FIELD OrderNum AS INTEGER
+    FIELD CustNum AS INTEGER
+    INDEX idx1 IS PRIMARY UNIQUE OrderNum
+    INDEX idx2 CustNum.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            fields, indexes, ..
+        } => {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(indexes.len(), 2);
+            assert_eq!(indexes[0].name.name, "idx1");
+            assert!(indexes[0].is_primary);
+            assert!(indexes[0].is_unique);
+            assert_eq!(indexes[0].fields.len(), 1);
+            assert_eq!(indexes[0].fields[0].name, "OrderNum");
+            assert_eq!(indexes[1].name.name, "idx2");
+            assert!(!indexes[1].is_primary);
+            assert!(!indexes[1].is_unique);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_no_undo_false() {
+    let source = r#"
+DEFINE TEMP-TABLE ttSimple
+    FIELD x AS INTEGER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            name, no_undo, ..
+        } => {
+            assert_eq!(name.name, "ttSimple");
+            assert!(!no_undo);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+// ===================== BUFFER tests =====================
+
+#[test]
+fn parse_define_buffer() {
+    let source = "DEFINE BUFFER bCust FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { name, table } => {
+            assert_eq!(name.name, "bCust");
+            assert_eq!(table.name, "Customer");
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}

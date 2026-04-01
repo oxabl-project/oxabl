@@ -143,6 +143,35 @@ pub enum Statement {
         set_targets: Vec<Identifier>,
     },
 
+    /// DEFINE TEMP-TABLE statement.
+    ///
+    /// ```abl
+    /// DEFINE TEMP-TABLE ttCustomer NO-UNDO
+    ///     FIELD CustNum AS INTEGER
+    ///     FIELD Name AS CHARACTER
+    ///     INDEX idx1 IS PRIMARY UNIQUE CustNum.
+    /// ```
+    DefineTempTable {
+        /// Table name.
+        name: Identifier,
+        /// Whether NO-UNDO was specified.
+        no_undo: bool,
+        /// Field definitions.
+        fields: Vec<TempTableField>,
+        /// Index definitions.
+        indexes: Vec<TempTableIndex>,
+    },
+
+    /// DEFINE BUFFER statement.
+    ///
+    /// `DEFINE BUFFER bCust FOR Customer.`
+    DefineBuffer {
+        /// Buffer name.
+        name: Identifier,
+        /// The table this buffer is for.
+        table: Identifier,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -246,4 +275,26 @@ pub struct DisplayItem {
     pub expression: Expression,
     /// Optional `WHEN condition` — controls whether this item is displayed.
     pub when_condition: Option<Expression>,
+}
+
+/// A field definition in a DEFINE TEMP-TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempTableField {
+    /// Field name.
+    pub name: Identifier,
+    /// Field data type.
+    pub data_type: DataType,
+}
+
+/// An index definition in a DEFINE TEMP-TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempTableIndex {
+    /// Index name.
+    pub name: Identifier,
+    /// Whether this is a PRIMARY index.
+    pub is_primary: bool,
+    /// Whether this index enforces UNIQUE values.
+    pub is_unique: bool,
+    /// Fields in this index.
+    pub fields: Vec<Identifier>,
 }
