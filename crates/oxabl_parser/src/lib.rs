@@ -6,4 +6,4 @@
 mod literal;
 mod parser;
 
-pub use parser::{ParseError, ParseResult, Parser};
+pub use parser::{ParseError, ParseResult, Parser, Program};
