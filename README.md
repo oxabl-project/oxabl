@@ -24,12 +24,12 @@ Requirements:
   - Used in our token dumps and benchmarks, appears to be accurate.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
-- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 91 tests
+- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 147 tests
   - Parses expressions with proper operator precedence
-  - Parses statements: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN
+  - Parses statements: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN, CASE, FIND, FOR EACH, PROCEDURE
   - Parses postfix operations: method calls, member access, array access, field access
 
-Current Work: Procedure/function definitions, more statement types.
+Current Work: RUN statement (in progress), DISPLAY and MESSAGE statements next.
 
 ## Roadmap
 
@@ -123,6 +123,4 @@ Valid commands are:
 - No command
   - generates all files
 
-You need to provide a file, as these functions simply return strings, they don't manipulate files directly.
-
-**They also do not clear files** so running the command against a file that already has contents will just concat the contents, potentially duplicating code. Be aware of your actions. *Use `>`* to overwrite the file contents.
+Commands write generated files directly to their target locations. Generated files include a "DO NOT EDIT" header. No manual file redirection is needed.
