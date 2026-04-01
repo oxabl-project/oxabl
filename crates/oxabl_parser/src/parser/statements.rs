@@ -6,7 +6,7 @@
 
 use oxabl_ast::{
     DisplayItem, Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument,
-    RunTarget, Span, Statement, WhenBranch,
+    RunTarget, Span, Statement, TempTableField, TempTableIndex, WhenBranch,
 };
 use oxabl_lexer::{Kind, is_callable_kind};
 
@@ -138,10 +138,10 @@ impl Parser<'_> {
             return self.parse_define_parameter();
         }
 
-        // Variable
-        if !self.check(Kind::Identifier) {
+        // Check what we're defining
+        if !is_callable_kind(self.peek().kind) {
             return Err(ParseError {
-                message: "Expected variable name after DEFINE".to_string(),
+                message: "Expected keyword after DEFINE (VARIABLE, TEMP-TABLE, BUFFER, etc.)".to_string(),
                 span: Span {
                     start: self.peek().start as u32,
                     end: self.peek().end as u32,
@@ -152,10 +152,20 @@ impl Parser<'_> {
         let define_what = self.peek();
         let define_text = &self.source[define_what.start..define_what.end];
 
+        // DEFINE TEMP-TABLE
+        if define_text.eq_ignore_ascii_case("temp-table") {
+            return self.parse_define_temp_table();
+        }
+
+        // DEFINE BUFFER
+        if define_text.eq_ignore_ascii_case("buffer") {
+            return self.parse_define_buffer();
+        }
+
         if !define_text.eq_ignore_ascii_case("variable") && !define_text.eq_ignore_ascii_case("var")
         {
             return Err(ParseError {
-                message: "Expected VARIABLE or VAR after DEFINE".to_string(),
+                message: "Expected VARIABLE, VAR, TEMP-TABLE, or BUFFER after DEFINE".to_string(),
                 span: Span {
                     start: define_what.start as u32,
                     end: define_what.end as u32,
@@ -345,6 +355,111 @@ impl Parser<'_> {
             data_type,
             no_undo,
         })
+    }
+
+    // Parse DEFINE TEMP-TABLE
+    fn parse_define_temp_table(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume TEMP-TABLE
+
+        let name = self.parse_identifier()?;
+
+        // Optional NO-UNDO
+        let no_undo = if self.check(Kind::NoUndo) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        let mut fields = Vec::new();
+        let mut indexes = Vec::new();
+
+        // Parse FIELD and INDEX definitions until period
+        while !self.check(Kind::Period) && !self.at_end() {
+            if self.check(Kind::Field) {
+                self.advance(); // consume FIELD
+                let field_name = self.parse_identifier()?;
+                self.expect_kind(Kind::KwAs, "Expected AS after field name")?;
+                let data_type = self.parse_data_type()?;
+                fields.push(TempTableField {
+                    name: field_name,
+                    data_type,
+                });
+            } else if self.check(Kind::Index) {
+                self.advance(); // consume INDEX
+                let index_name = self.parse_identifier()?;
+
+                let mut is_primary = false;
+                let mut is_unique = false;
+
+                // Parse optional IS PRIMARY UNIQUE or IS UNIQUE etc.
+                // IS has Kind::Is (not Identifier), PRIMARY is Identifier, UNIQUE has Kind::Unique
+                if self.check(Kind::Is) {
+                    self.advance(); // consume IS
+
+                    // Check for PRIMARY
+                    if self.check(Kind::Identifier) {
+                        let token = self.peek();
+                        let text = &self.source[token.start..token.end];
+                        if text.eq_ignore_ascii_case("primary") {
+                            self.advance();
+                            is_primary = true;
+                        }
+                    }
+
+                    // Check for UNIQUE
+                    if self.check(Kind::Unique) {
+                        self.advance();
+                        is_unique = true;
+                    }
+                } else if self.check(Kind::Unique) {
+                    // INDEX idx UNIQUE (without IS)
+                    self.advance();
+                    is_unique = true;
+                }
+
+                // Parse index field names
+                let mut index_fields = Vec::new();
+                while is_callable_kind(self.peek().kind)
+                    && !self.check(Kind::Field)
+                    && !self.check(Kind::Index)
+                    && !self.check(Kind::Period)
+                {
+                    index_fields.push(self.parse_identifier()?);
+                }
+
+                indexes.push(TempTableIndex {
+                    name: index_name,
+                    is_primary,
+                    is_unique,
+                    fields: index_fields,
+                });
+            } else {
+                // Skip unknown tokens in temp-table definition
+                self.advance();
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after DEFINE TEMP-TABLE")?;
+
+        Ok(Statement::DefineTempTable {
+            name,
+            no_undo,
+            fields,
+            indexes,
+        })
+    }
+
+    // Parse DEFINE BUFFER name FOR table.
+    fn parse_define_buffer(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume BUFFER
+
+        let name = self.parse_identifier()?;
+        self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
+        let table = self.parse_identifier()?;
+        self.expect_kind(Kind::Period, "Expected '.' after DEFINE BUFFER")?;
+
+        Ok(Statement::DefineBuffer { name, table })
     }
 
     /// Continue parsing an expression after additive level has been parsed
