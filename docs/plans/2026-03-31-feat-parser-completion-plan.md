@@ -133,9 +133,9 @@ The pattern `Span { start: token.start as u32, end: token.end as u32 }` appears 
 
 The current `Statement::Run` only has `target` and `arguments`. Two additional fields are needed because they are extremely common in production ABL and reference variables a linter must track:
 
-- [ ] Add `in_handle: Option<Expression>` — for `RUN myProc IN hServer.` (persistent procedure handles)
-- [ ] Add `no_error: bool` — for `RUN myProc NO-ERROR.`
-- [ ] Change `RunTarget::Literal(String)` → `RunTarget::Literal(Identifier)` to preserve source span
+- [x] Add `in_handle: Option<Expression>` — for `RUN myProc IN hServer.` (persistent procedure handles)
+- [x] Add `no_error: bool` — for `RUN myProc NO-ERROR.`
+- [ ] Change `RunTarget::Literal(String)` → `RunTarget::Literal(Identifier)` to preserve source span (deferred to cleanup pass)
 
 ```rust
 Run {
@@ -152,38 +152,38 @@ Deferred (uncommon, can be added later): `ON SERVER`, `PERSISTENT SET`, `ASYNCHR
 
 This is the trickiest part of RUN parsing due to the `.p` extension vs statement-terminating period ambiguity.
 
-- [ ] Parse identifiers that may contain hyphens (lexer already supports hyphenated identifiers)
-- [ ] Handle dotted names: after consuming a `.`, peek ahead — if next token is an identifier matching a known ABL file extension (`p`, `w`, `r`, `i`, `cls`), treat it as part of the name; otherwise, it's the statement terminator
-- [ ] Handle string literal targets: `RUN "my-proc.p".` — if current token is a string literal, use it directly (no ambiguity)
-- [ ] Return an `Identifier` (not `String`) to preserve span
+- [x] Parse identifiers that may contain hyphens (lexer already supports hyphenated identifiers)
+- [x] Handle dotted names: after consuming a `.`, peek ahead — if next token is an identifier matching a known ABL file extension (`p`, `w`, `r`, `i`, `cls`), treat it as part of the name; otherwise, it's the statement terminator
+- [x] Handle string literal targets: `RUN "my-proc.p".` — if current token is a string literal, use it directly (no ambiguity)
+- [ ] Return an `Identifier` (not `String`) to preserve span (deferred to cleanup pass)
 
 #### 2.3 Complete RUN Parser Logic
-- [ ] Parse `IN handle` clause after arguments: `if self.check(Kind::KwIn) { ... }`
-- [ ] Parse `NO-ERROR` flag: `if self.check(Kind::NoError) { ... }`
-- [ ] Verify `RunTarget::Literal` path works for simple names (`RUN calculate-total.`)
-- [ ] Verify `RunTarget::Dynamic` path works for `VALUE(expr)` syntax
-- [ ] Verify argument parsing with `INPUT`, `OUTPUT`, `INPUT-OUTPUT` directions
-- [ ] Handle RUN with no arguments (`RUN my-proc.`)
-- [ ] Handle RUN with dotted names (`RUN external-prog.p`)
-- [ ] Ensure RUN with no arguments works correctly (`RUN myProc.` — no parens allowed)
+- [x] Parse `IN handle` clause after arguments: `if self.check(Kind::KwIn) { ... }`
+- [x] Parse `NO-ERROR` flag: `if self.check(Kind::NoError) { ... }`
+- [x] Verify `RunTarget::Literal` path works for simple names (`RUN calculate-total.`)
+- [x] Verify `RunTarget::Dynamic` path works for `VALUE(expr)` syntax
+- [x] Verify argument parsing with `INPUT`, `OUTPUT`, `INPUT-OUTPUT` directions
+- [x] Handle RUN with no arguments (`RUN my-proc.`)
+- [x] Handle RUN with dotted names (`RUN external-prog.p`)
+- [x] Ensure RUN with no arguments works correctly (`RUN myProc.` — no parens allowed)
 
 #### 2.4 Add RUN Tests
-- [ ] `RUN simple-proc.` — no args
-- [ ] `RUN calculate-total (INPUT 100, INPUT 5, OUTPUT result).` — mixed directions
-- [ ] `RUN VALUE(procName).` — dynamic dispatch
-- [ ] `RUN external-prog.p (INPUT "data").` — dotted filename with args
-- [ ] `RUN my-proc.` — hyphenated name
-- [ ] `RUN some-proc (INPUT 1 + 2, OUTPUT x).` — expressions as args
-- [ ] `RUN "my-proc.p".` — string literal target
-- [ ] `RUN myProc IN hServer.` — IN handle
-- [ ] `RUN myProc NO-ERROR.` — no-error flag
-- [ ] `RUN myProc (OUTPUT result) NO-ERROR.` — args + no-error
-- [ ] Error case: missing period after RUN
+- [x] `RUN simple-proc.` — no args
+- [x] `RUN calculate-total (INPUT 100, INPUT 5, OUTPUT result).` — mixed directions
+- [x] `RUN VALUE(procName).` — dynamic dispatch
+- [x] `RUN external-prog.p (INPUT "data").` — dotted filename with args
+- [x] `RUN my-proc.` — hyphenated name
+- [x] `RUN some-proc (INPUT 1 + 2, OUTPUT x).` — expressions as args
+- [x] `RUN "my-proc.p".` — string literal target
+- [x] `RUN myProc IN hServer.` — IN handle
+- [x] `RUN myProc NO-ERROR.` — no-error flag
+- [x] `RUN myProc (OUTPUT result) NO-ERROR.` — args + no-error
+- [x] Error case: missing period after RUN
 
 #### 2.5 Validate
-- [ ] `cargo test -p oxabl_parser` — all tests pass
-- [ ] `cargo test` — full workspace passes
-- [ ] `cargo check --workspace` — no warnings
+- [x] `cargo test -p oxabl_parser` — all 158 tests pass
+- [x] `cargo test` — full workspace passes (206 total)
+- [x] `cargo check --workspace` — no warnings
 
 ### Research Insights (Phase 2)
 
