@@ -1,4 +1,8 @@
-//! Expression parsing for the Oxabl parser
+//! Expression parsing for the Oxabl parser.
+//!
+//! Precedence levels (lowest to highest):
+//! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative
+//! > unary > postfix (member access, method calls, array/field access) > primary.
 
 use oxabl_ast::{Expression, Identifier, Span};
 use oxabl_lexer::{Kind, is_callable_kind};
@@ -55,7 +59,6 @@ impl Parser<'_> {
     }
 
     pub(super) fn is_comparison_operator(&self) -> bool {
-        println!("self.peek().kind: {:?}", self.peek().kind);
         matches!(
             self.peek().kind,
             Kind::Equals
@@ -78,17 +81,13 @@ impl Parser<'_> {
 
     pub fn parse_comparison(&mut self) -> ParseResult<Expression> {
         let left = self.parse_additive()?;
-        println!("left: {:?}", left);
 
         if !self.is_comparison_operator() {
-            println!("not a comparison operator");
             return Ok(left);
         }
 
         let op_kind = self.advance().kind;
-        println!("op_kind: {:?}", op_kind);
         let right = self.parse_additive()?;
-        println!("right: {:?}", right);
 
         let expr = match op_kind {
             Kind::Equals | Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
@@ -326,9 +325,6 @@ impl Parser<'_> {
     }
 
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
-        println!("parsing primary");
-        println!("token: {:?}", self.tokens[self.current]);
-
         // Parenthesized expression
         if self.check(Kind::LeftParen) {
             self.advance();
