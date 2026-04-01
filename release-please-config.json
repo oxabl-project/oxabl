@@ -1,0 +1,18 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "crates/oxabl/Cargo.toml",
+        "crates/oxabl_lexer/Cargo.toml",
+        "crates/oxabl_parser/Cargo.toml",
+        "crates/oxabl_ast/Cargo.toml",
+        "crates/oxabl_common/Cargo.toml",
+        "crates/oxabl_codegen/Cargo.toml"
+      ]
+    }
+  },
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
+}
