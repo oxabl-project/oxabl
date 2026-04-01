@@ -216,6 +216,26 @@ pub enum Statement {
     /// `UNDO, THROW NEW Progress.Lang.AppError("msg").`
     Throw(Expression),
 
+    /// ASSIGN statement — multi-target assignment.
+    ///
+    /// `ASSIGN x = 1 y = 2 z = "hello".`
+    Assign {
+        /// One or more target = value pairs.
+        assignments: Vec<AssignPair>,
+    },
+
+    /// FUNCTION definition.
+    ///
+    /// `FUNCTION name RETURNS type (params): body END FUNCTION.`
+    Function {
+        /// Function name.
+        name: Identifier,
+        /// Return data type.
+        return_type: DataType,
+        /// Function body statements (parameters are parsed as DEFINE PARAMETER).
+        body: Vec<Statement>,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -387,4 +407,13 @@ pub enum BufferTarget {
     Table(Identifier),
     /// Buffer for a temp-table: `FOR TEMP-TABLE ttCustomer`
     TempTable(Identifier),
+}
+
+/// A single target = value pair in an ASSIGN statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignPair {
+    /// The assignment target (variable or field reference).
+    pub target: Expression,
+    /// The value to assign.
+    pub value: Expression,
 }
