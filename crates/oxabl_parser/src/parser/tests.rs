@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
     BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, ParameterDirection, Span, Statement, StringLiteral, UnknownLiteral,
-    WhenBranch,
+    Literal, LockType, ParameterDirection, RunTarget, Span, Statement, StringLiteral,
+    UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -3109,4 +3109,198 @@ END PROCEDURE.
         }
         _ => panic!("Expected Procedure statement"),
     }
+}
+
+// ===================== RUN statement tests =====================
+
+#[test]
+fn parse_run_simple_procedure() {
+    let source = "RUN simple-proc.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            arguments,
+            in_handle,
+            no_error,
+        } => {
+            assert_eq!(target, RunTarget::Literal("simple-proc".to_string()));
+            assert!(arguments.is_empty());
+            assert!(in_handle.is_none());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_mixed_direction_args() {
+    let source = "RUN calculate-total (INPUT 100, INPUT 5, OUTPUT result).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target, arguments, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("calculate-total".to_string()));
+            assert_eq!(arguments.len(), 3);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+            assert_eq!(arguments[1].direction, ParameterDirection::Input);
+            assert_eq!(arguments[2].direction, ParameterDirection::Output);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_dynamic_value() {
+    let source = "RUN VALUE(procName).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, .. } => {
+            assert!(matches!(target, RunTarget::Dynamic(_)));
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_dotted_filename_with_args() {
+    let source = r#"RUN external-prog.p (INPUT "data")."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target, arguments, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("external-prog.p".to_string()));
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_hyphenated_name() {
+    let source = "RUN my-proc.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, .. } => {
+            assert_eq!(target, RunTarget::Literal("my-proc".to_string()));
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_expression_args() {
+    let source = "RUN some-proc (INPUT 1 + 2, OUTPUT x).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target, arguments, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("some-proc".to_string()));
+            assert_eq!(arguments.len(), 2);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+            // First arg should be an Add expression
+            assert!(matches!(arguments[0].expression, Expression::Add(_, _)));
+            assert_eq!(arguments[1].direction, ParameterDirection::Output);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_string_literal_target() {
+    let source = r#"RUN "my-proc.p"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, .. } => {
+            assert_eq!(target, RunTarget::Literal("my-proc.p".to_string()));
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_in_handle() {
+    let source = "RUN myProc IN hServer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            in_handle,
+            no_error,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert!(in_handle.is_some());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_no_error() {
+    let source = "RUN myProc NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target, no_error, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert!(no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_args_and_no_error() {
+    let source = "RUN myProc (OUTPUT result) NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            arguments,
+            no_error,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Output);
+            assert!(no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_missing_period() {
+    let source = "RUN myProc";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
 }
