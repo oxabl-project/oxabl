@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
-    BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, ParameterDirection, Span, Statement, StringLiteral, UnknownLiteral,
-    WhenBranch,
+    BooleanLiteral, DataType, DecimalLiteral, DisplayItem, Expression, FindType, Identifier,
+    IntegerLiteral, Literal, LockType, ParameterDirection, Span, Statement, StringLiteral,
+    UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -3108,5 +3108,217 @@ END PROCEDURE.
             }
         }
         _ => panic!("Expected Procedure statement"),
+    }
+}
+
+// ===================== DISPLAY statement tests =====================
+
+#[test]
+fn parse_display_simple_field_access() {
+    let source = "DISPLAY Customer.Name Customer.Balance.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display {
+            items,
+            except,
+            frame,
+        } => {
+            assert_eq!(items.len(), 2);
+            assert!(items[0].when_condition.is_none());
+            assert!(items[1].when_condition.is_none());
+            assert!(except.is_empty());
+            assert!(frame.is_none());
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_frame() {
+    let source = r#"DISPLAY "Total:" total WITH FRAME f1."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, frame, .. } => {
+            assert_eq!(items.len(), 2);
+            assert!(frame.is_some());
+            assert_eq!(frame.unwrap().name, "f1");
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_frame_columns() {
+    let source = "DISPLAY x y z WITH FRAME results 2 COLUMNS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, frame, .. } => {
+            assert_eq!(items.len(), 3);
+            assert!(frame.is_some());
+            assert_eq!(frame.unwrap().name, "results");
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_except_with_frame() {
+    let source = "DISPLAY Customer EXCEPT CustNum WITH FRAME cust-frame.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display {
+            items,
+            except,
+            frame,
+        } => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(except.len(), 1);
+            assert_eq!(except[0].name, "CustNum");
+            assert!(frame.is_some());
+            assert_eq!(frame.unwrap().name, "cust-frame");
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_expression() {
+    let source = "DISPLAY 1 + 2.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 1);
+            assert!(matches!(items[0].expression, Expression::Add(_, _)));
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_when() {
+    let source = "DISPLAY x WHEN showIt.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 1);
+            assert!(items[0].when_condition.is_some());
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+// ===================== MESSAGE statement tests =====================
+
+#[test]
+fn parse_message_simple() {
+    let source = r#"MESSAGE "Hello, World!"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message {
+            items,
+            set_targets,
+        } => {
+            assert_eq!(items.len(), 1);
+            assert!(set_targets.is_empty());
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_view_as_alert_box() {
+    let source = r#"MESSAGE "Error:" errMsg VIEW-AS ALERT-BOX ERROR."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message {
+            items,
+            set_targets,
+        } => {
+            assert_eq!(items.len(), 2); // "Error:" and errMsg
+            assert!(set_targets.is_empty());
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_with_update() {
+    let source = r#"MESSAGE "Confirm?" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE lChoice."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message {
+            items,
+            set_targets,
+        } => {
+            assert_eq!(items.len(), 1); // "Confirm?"
+            assert_eq!(set_targets.len(), 1);
+            assert_eq!(set_targets[0].name, "lChoice");
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_with_skip() {
+    let source = "MESSAGE Customer.Name SKIP Customer.Balance.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, .. } => {
+            assert_eq!(items.len(), 2); // Customer.Name and Customer.Balance (SKIP is skipped)
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_with_skip_count() {
+    let source = r#"MESSAGE "Line 1" SKIP(2) "Line 4"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, .. } => {
+            assert_eq!(items.len(), 2); // "Line 1" and "Line 4" (SKIP(2) is skipped)
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_update_without_view_as() {
+    let source = r#"MESSAGE "Enter name:" UPDATE cName."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message {
+            items,
+            set_targets,
+        } => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(set_targets.len(), 1);
+            assert_eq!(set_targets[0].name, "cName");
+        }
+        _ => panic!("Expected Message statement"),
     }
 }
