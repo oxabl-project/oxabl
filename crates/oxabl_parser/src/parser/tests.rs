@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
-    BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression, FieldTypeSource, FindType,
-    Identifier, IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, SortDirection,
-    Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
+    AssignPair, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
+    FieldTypeSource, FindType, Identifier, IntegerLiteral, Literal, LockType, ParameterDirection,
+    RunTarget, SortDirection, Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -4491,5 +4491,159 @@ END.
             assert!(matches!(body[1], Statement::Catch { .. }));
         }
         _ => panic!("Expected Do statement"),
+    }
+}
+
+// ===================== ASSIGN statement tests =====================
+
+#[test]
+fn parse_assign_single() {
+    let source = "ASSIGN x = 1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+#[test]
+fn parse_assign_multiple() {
+    let source = r#"ASSIGN x = 1 y = 2 z = "hello"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 3);
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+#[test]
+fn parse_assign_field_access() {
+    let source = "ASSIGN Customer.Name = cName Customer.Balance = 100.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2);
+            assert!(matches!(
+                assignments[0].target,
+                Expression::FieldAccess { .. }
+            ));
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+#[test]
+fn parse_assign_with_expression() {
+    let source = "ASSIGN total = price * quantity.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+            assert!(matches!(assignments[0].value, Expression::Multiply(_, _)));
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+// ===================== FUNCTION definition tests =====================
+
+#[test]
+fn parse_function_simple() {
+    let source = r#"
+FUNCTION get-greeting RETURNS CHARACTER:
+    RETURN "Hello".
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function {
+            name,
+            return_type,
+            body,
+        } => {
+            assert_eq!(name.name, "get-greeting");
+            assert_eq!(return_type, DataType::Character);
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_with_params() {
+    let source = r#"
+FUNCTION calc-total RETURNS INTEGER (INPUT x AS INTEGER, INPUT y AS INTEGER):
+    RETURN x + y.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function {
+            name,
+            return_type,
+            body,
+        } => {
+            assert_eq!(name.name, "calc-total");
+            assert_eq!(return_type, DataType::Integer);
+            assert_eq!(body.len(), 1); // RETURN x + y.
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_end_without_keyword() {
+    let source = r#"
+FUNCTION get-value RETURNS LOGICAL:
+    RETURN TRUE.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function {
+            name, return_type, ..
+        } => {
+            assert_eq!(name.name, "get-value");
+            assert_eq!(return_type, DataType::Logical);
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_with_body() {
+    let source = r#"
+FUNCTION calc RETURNS INTEGER:
+    DEFINE VARIABLE result AS INTEGER.
+    result = 42.
+    RETURN result.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function { body, .. } => {
+            assert_eq!(body.len(), 3); // DEFINE, assignment, RETURN
+        }
+        _ => panic!("Expected Function statement"),
     }
 }
