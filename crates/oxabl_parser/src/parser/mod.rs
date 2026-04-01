@@ -1,7 +1,11 @@
-//! Oxabl parser for navigating through our AST
+//! Recursive-descent parser for ABL source code.
 //!
-//! Will panic if peek or advance are called when current cursor position
-//! is out of bounds. Contract is to check is_end before using them.
+//! The parser walks a token slice using a cursor. Expression parsing uses
+//! precedence climbing (see [`expressions`]). Statement dispatch uses
+//! keyword-based if/else chains (see [`statements`]).
+//!
+//! Will panic if `peek` or `advance` are called when the cursor is past the
+//! end of the token slice. Callers must check [`Parser::at_end`] first.
 
 pub mod expressions;
 pub mod statements;
@@ -11,14 +15,20 @@ mod tests;
 use oxabl_ast::{DataType, Identifier, Span};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
+/// An error encountered during parsing, with a human-readable message and source [`Span`].
 #[derive(Debug)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
 }
 
+/// Alias for parser results.
 pub type ParseResult<T> = Result<T, ParseError>;
 
+/// A recursive-descent parser for ABL source code.
+///
+/// Holds a borrowed token slice and the original source string, advancing a
+/// cursor as it recognizes language constructs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parser<'a> {
     tokens: &'a [Token],
