@@ -1082,20 +1082,19 @@ impl Parser<'_> {
 
         // Check for dotted extension (e.g., my-proc.p)
         // Only consume the dot + extension if it's a known ABL file extension
-        if self.check(Kind::Period) {
-            if let Some(next) = self.tokens.get(self.current + 1) {
-                if next.kind == Kind::Identifier {
-                    let ext = &self.source[next.start..next.end];
-                    if ext.eq_ignore_ascii_case("p")
-                        || ext.eq_ignore_ascii_case("w")
-                        || ext.eq_ignore_ascii_case("r")
-                        || ext.eq_ignore_ascii_case("i")
-                        || ext.eq_ignore_ascii_case("cls")
-                    {
-                        self.advance(); // consume the period
-                        self.advance(); // consume the extension
-                    }
-                }
+        if self.check(Kind::Period)
+            && let Some(next) = self.tokens.get(self.current + 1)
+            && next.kind == Kind::Identifier
+        {
+            let ext = &self.source[next.start..next.end];
+            if ext.eq_ignore_ascii_case("p")
+                || ext.eq_ignore_ascii_case("w")
+                || ext.eq_ignore_ascii_case("r")
+                || ext.eq_ignore_ascii_case("i")
+                || ext.eq_ignore_ascii_case("cls")
+            {
+                self.advance(); // consume the period
+                self.advance(); // consume the extension
             }
         }
 
