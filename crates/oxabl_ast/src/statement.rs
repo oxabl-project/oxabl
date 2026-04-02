@@ -119,6 +119,30 @@ pub enum Statement {
         no_error: bool,
     },
 
+    /// DISPLAY statement — outputs field/variable values to the screen or a frame.
+    ///
+    /// Each item is an expression with an optional per-item WHEN condition.
+    /// The EXCEPT clause excludes fields, and WITH FRAME names the target frame.
+    Display {
+        /// Expressions to display, each with an optional WHEN condition.
+        items: Vec<DisplayItem>,
+        /// Fields to exclude (`DISPLAY Customer EXCEPT CustNum`).
+        except: Vec<Identifier>,
+        /// Optional frame name (`WITH FRAME f1`).
+        frame: Option<Identifier>,
+    },
+
+    /// MESSAGE statement — displays messages to the user (console or alert box).
+    ///
+    /// Items are the expressions in the message body. SET/UPDATE targets are
+    /// variables that receive user input (e.g., button responses).
+    Message {
+        /// Expressions in the message body.
+        items: Vec<Expression>,
+        /// Variables bound by SET or UPDATE clauses.
+        set_targets: Vec<Identifier>,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -210,4 +234,16 @@ pub enum RunTarget {
 pub struct RunArgument {
     pub direction: ParameterDirection,
     pub expression: Expression,
+}
+
+/// A single item in a DISPLAY statement.
+///
+/// Each display item is an expression with an optional WHEN condition
+/// that controls whether it is displayed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayItem {
+    /// The expression to display.
+    pub expression: Expression,
+    /// Optional `WHEN condition` — controls whether this item is displayed.
+    pub when_condition: Option<Expression>,
 }
