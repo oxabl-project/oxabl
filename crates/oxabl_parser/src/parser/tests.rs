@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
-    BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier,
-    IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, Span, Statement,
-    StringLiteral, UnknownLiteral, WhenBranch,
+    BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
+    Literal, LockType, ParameterDirection, RunTarget, Span, Statement, StringLiteral,
+    UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
