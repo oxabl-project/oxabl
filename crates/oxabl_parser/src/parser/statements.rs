@@ -1,4 +1,8 @@
-//! Statement parsing for the Oxabl parser
+//! Statement parsing for the Oxabl parser.
+//!
+//! Handles DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops),
+//! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, RUN, LEAVE, NEXT,
+//! and RETURN statements.
 
 use oxabl_ast::{
     Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument, RunTarget, Span,
@@ -10,7 +14,6 @@ use super::{ParseError, ParseResult, Parser};
 
 impl Parser<'_> {
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
-        println!("current token: {:?}", self.tokens[self.current]);
         // Skip empty statements
         if self.check(Kind::Period) {
             self.advance();
@@ -76,6 +79,11 @@ impl Parser<'_> {
             return self.parse_procedure();
         }
 
+        // RUN statement
+        if self.check(Kind::Run) {
+            return self.parse_run_statement();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -94,12 +102,10 @@ impl Parser<'_> {
 
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
-        println!("left: {:?}", left);
 
         if self.check(Kind::Equals) {
             self.advance(); // consume the "="
             let value = self.parse_expression()?;
-            println!("value: {:?}", value);
             self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
             return Ok(Statement::Assignment {
                 target: left,
@@ -203,8 +209,8 @@ impl Parser<'_> {
                         }
                     } // extent check if it's set or dynamic
                 } else {
-                    // check for initial or extent
-                    break; // not intial or extent, exit loop
+                    // not initial or extent
+                    break;
                 }
             } else {
                 break; // not an identifier, exit loop
@@ -323,7 +329,7 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::Period, "Expected '.' after parameter definition")?;
 
-        Ok(Statement::DefineParamter {
+        Ok(Statement::DefineParameter {
             direction,
             name,
             data_type,
@@ -424,10 +430,8 @@ impl Parser<'_> {
             // peek ahead to see if this is 'var = start to end'
             let saved_pos = self.current;
             let potential_var = self.advance().clone();
-            println!("Potential var: {:?}", potential_var);
 
             if self.check(Kind::Equals) {
-                println!("Equals found");
                 // It's a counting loop
                 let var_name = Identifier {
                     span: Span {
@@ -441,12 +445,10 @@ impl Parser<'_> {
 
                 self.advance(); // consume =
                 from = Some(self.parse_expression()?);
-                println!("From parsed: {:?}", from);
 
-                // Expect TO, because we have a var and consume  =
+                // Expect TO, because we have a var and consumed =
                 self.expect_kind(Kind::To, "Expected TO in DO loop")?;
                 to = Some(self.parse_expression()?);
-                println!("To parsed: {:?}", to);
 
                 // Optional BY
                 if self.check(Kind::By) {
@@ -454,13 +456,10 @@ impl Parser<'_> {
                     by = Some(self.parse_expression()?);
                 }
             } else {
-                println!("Not a counting loop");
                 // not a counting loop
                 self.current = saved_pos;
             }
         }
-
-        println!("Current token: {:?}", self.tokens[self.current]);
 
         // check for WHILE
         if self.check(Kind::KwWhile) {
@@ -531,7 +530,7 @@ impl Parser<'_> {
             None
         };
 
-        // Expect collor
+        // Expect colon
         self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
 
         let body = self.parse_block_body()?;
@@ -580,9 +579,7 @@ impl Parser<'_> {
         };
 
         // Lock type (default is SHARE-LOCK if not explicit)
-        println!("current token before lock: {:?}", self.peek());
         let lock_type = self.parse_lock_type();
-        println!("lock type: {:?}", lock_type);
 
         self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
         let body = self.parse_block_body()?;
@@ -747,14 +744,20 @@ impl Parser<'_> {
     fn parse_run_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume RUN
 
+        // Parse target: VALUE(expr), string literal, or procedure name
         let target = if self.check(Kind::Value) {
             self.advance();
             self.expect_kind(Kind::LeftParen, "Expected '(' after VALUE")?;
             let expr = self.parse_expression()?;
             self.expect_kind(Kind::RightParen, "Expected ')' after VALUE expression")?;
             RunTarget::Dynamic(expr)
+        } else if self.check(Kind::StringLiteral) {
+            // String literal target: RUN "my-proc.p".
+            let token = self.advance().clone();
+            let name = self.source[token.start + 1..token.end - 1].to_string();
+            RunTarget::Literal(name)
         } else {
-            // Procedure name (may contain hyphens, dots for .p files)
+            // Procedure name (may contain hyphens, dots for .p/.w/.r/.i/.cls files)
             let name = self.parse_procedure_name()?;
             RunTarget::Literal(name)
         };
@@ -766,7 +769,6 @@ impl Parser<'_> {
 
             if !self.check(Kind::RightParen) {
                 loop {
-                    // TODO - finish, add tests, make not broken.
                     let direction = match self.peek().kind {
                         Kind::Input => {
                             self.advance();
@@ -796,15 +798,75 @@ impl Parser<'_> {
                 }
             }
 
-            self.expect_kind(Kind::RightParen, "Expected ')' after argument statement")?;
+            self.expect_kind(Kind::RightParen, "Expected ')' after RUN arguments")?;
             args
         } else {
             Vec::new()
         };
 
-        self.expect_kind(Kind::Period, "Expected ',' after RUN statement")?;
+        // parse optional IN handle
+        let in_handle = if self.check(Kind::KwIn) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
 
-        Ok(Statement::Run { target, arguments })
+        // parse optional PERSISTENT [SET handle]
+        let (persistent, persistent_handle) = if self.check(Kind::Persistent) {
+            self.advance();
+            let h = if self.check(Kind::Set) {
+                self.advance();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            (true, h)
+        } else {
+            (false, None)
+        };
+
+        // parse optional ASYNCHRONOUS [SET handle] [EVENT-PROCEDURE expr]
+        let (asynchronous, async_handle, event_procedure) = if self.check(Kind::Asynchronous) {
+            self.advance();
+            let h = if self.check(Kind::Set) {
+                self.advance();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            let ep = if self.check(Kind::EventProcedure) {
+                self.advance();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            (true, h, ep)
+        } else {
+            (false, None, None)
+        };
+
+        // parse optional NO-ERROR
+        let no_error = if self.check(Kind::NoError) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        self.expect_kind(Kind::Period, "Expected '.' after RUN statement")?;
+
+        Ok(Statement::Run {
+            target,
+            arguments,
+            in_handle,
+            persistent,
+            persistent_handle,
+            asynchronous,
+            async_handle,
+            event_procedure,
+            no_error,
+        })
     }
 
     // Parse the block body for code blocks like DO, consume till END.
@@ -842,22 +904,42 @@ impl Parser<'_> {
         }
     }
 
-    // Helper to parse procedure names that may include dots (e.g., "file.p")
+    /// Parse a procedure name for RUN statements.
+    ///
+    /// ABL procedure names can contain hyphens (e.g., `calculate-total`) and may have
+    /// file extensions (e.g., `my-proc.p`). Known ABL extensions are `.p`, `.w`, `.r`,
+    /// `.i`, and `.cls`. A period followed by a non-extension token is treated as the
+    /// statement terminator, not part of the name.
     fn parse_procedure_name(&mut self) -> ParseResult<String> {
-        let start = self.peek().start;
-        self.advance(); // consume first identifier
+        if !is_callable_kind(self.peek().kind) {
+            return Err(ParseError {
+                message: "Expected procedure name after RUN".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        }
 
-        // Handle dotted names like "myproc.p"
-        while self.check(Kind::Period) {
-            // Peek ahead - if next is an identifier, it's part of the name
-            let saved = self.current;
-            self.advance(); // consume period
-            if self.check(Kind::Identifier) {
-                self.advance(); // consume extension
-            } else {
-                // It's the statement terminator, rollback
-                self.current = saved;
-                break;
+        let start = self.peek().start;
+        self.advance(); // consume the first identifier token
+
+        // Check for dotted extension (e.g., my-proc.p)
+        // Only consume the dot + extension if it's a known ABL file extension
+        if self.check(Kind::Period) {
+            if let Some(next) = self.tokens.get(self.current + 1) {
+                if next.kind == Kind::Identifier {
+                    let ext = &self.source[next.start..next.end];
+                    if ext.eq_ignore_ascii_case("p")
+                        || ext.eq_ignore_ascii_case("w")
+                        || ext.eq_ignore_ascii_case("r")
+                        || ext.eq_ignore_ascii_case("i")
+                        || ext.eq_ignore_ascii_case("cls")
+                    {
+                        self.advance(); // consume the period
+                        self.advance(); // consume the extension
+                    }
+                }
             }
         }
 
