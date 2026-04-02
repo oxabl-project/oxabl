@@ -1,12 +1,12 @@
 //! Statement parsing for the Oxabl parser.
 //!
 //! Handles DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops),
-//! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, RUN, LEAVE, NEXT,
-//! and RETURN statements.
+//! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, RUN, DISPLAY,
+//! MESSAGE, LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument, RunTarget, Span,
-    Statement, WhenBranch,
+    DisplayItem, Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument,
+    RunTarget, Span, Statement, WhenBranch,
 };
 use oxabl_lexer::{Kind, is_callable_kind};
 
@@ -82,6 +82,16 @@ impl Parser<'_> {
         // RUN statement
         if self.check(Kind::Run) {
             return self.parse_run_statement();
+        }
+
+        // DISPLAY statement
+        if self.check(Kind::Display) {
+            return self.parse_display_statement();
+        }
+
+        // MESSAGE statement
+        if self.check(Kind::Message) {
+            return self.parse_message_statement();
         }
 
         // Check for traditional define statement
@@ -867,6 +877,152 @@ impl Parser<'_> {
             event_procedure,
             no_error,
         })
+    }
+
+    // Parse DISPLAY statement
+    fn parse_display_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume DISPLAY
+
+        let mut items = Vec::new();
+        let mut except = Vec::new();
+        let mut frame = None;
+
+        // Parse display items until WITH, EXCEPT, or period
+        while !self.check(Kind::With)
+            && !self.check(Kind::Except)
+            && !self.check(Kind::Period)
+            && !self.at_end()
+        {
+            let expression = self.parse_expression()?;
+
+            // Optional per-item WHEN condition
+            let when_condition = if self.check(Kind::When) {
+                self.advance();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+
+            // Skip FORMAT "string" and COLUMN-LABEL "string" if present (no variable refs)
+            while self.check(Kind::Format) || self.check(Kind::ColumnLabel) {
+                self.advance();
+                if self.check(Kind::StringLiteral) {
+                    self.advance();
+                }
+            }
+
+            items.push(DisplayItem {
+                expression,
+                when_condition,
+            });
+        }
+
+        // Parse optional EXCEPT clause
+        if self.check(Kind::Except) {
+            self.advance();
+            while !self.check(Kind::With) && !self.check(Kind::Period) && !self.at_end() {
+                except.push(self.parse_identifier()?);
+            }
+        }
+
+        // Parse optional WITH FRAME clause
+        if self.check(Kind::With) {
+            self.advance();
+            if self.check(Kind::Frame) {
+                self.advance();
+                frame = Some(self.parse_identifier()?);
+
+                // Skip remaining frame options until period
+                while !self.check(Kind::Period) && !self.at_end() {
+                    self.advance();
+                }
+            } else {
+                // WITH without FRAME — skip to period
+                while !self.check(Kind::Period) && !self.at_end() {
+                    self.advance();
+                }
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after DISPLAY statement")?;
+
+        Ok(Statement::Display {
+            items,
+            except,
+            frame,
+        })
+    }
+
+    // Parse MESSAGE statement
+    fn parse_message_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume MESSAGE
+
+        let mut items = Vec::new();
+        let mut set_targets = Vec::new();
+
+        // Parse message items until VIEW-AS, SET, UPDATE, or period
+        while !self.check(Kind::ViewAs)
+            && !self.check(Kind::Set)
+            && !self.check(Kind::Update)
+            && !self.check(Kind::Period)
+            && !self.at_end()
+        {
+            // Recognize SKIP / SKIP(n) as formatting directives — don't treat as identifiers
+            if self.check(Kind::Skip) {
+                self.advance();
+                // SKIP(n) — consume the parenthesized integer
+                if self.check(Kind::LeftParen) {
+                    self.advance();
+                    if self.check(Kind::IntegerLiteral) {
+                        self.advance();
+                    }
+                    if self.check(Kind::RightParen) {
+                        self.advance();
+                    }
+                }
+                continue; // SKIP has no variable refs, skip it
+            }
+
+            items.push(self.parse_expression()?);
+        }
+
+        // Parse optional VIEW-AS ALERT-BOX clause — skip over without failing
+        if self.check(Kind::ViewAs) {
+            self.advance(); // consume VIEW-AS
+            // Skip tokens until we hit SET, UPDATE, or period
+            while !self.check(Kind::Set)
+                && !self.check(Kind::Update)
+                && !self.check(Kind::Period)
+                && !self.at_end()
+            {
+                self.advance();
+            }
+        }
+
+        // Parse optional SET or UPDATE variable list
+        if self.check(Kind::Set) || self.check(Kind::Update) {
+            self.advance(); // consume SET or UPDATE
+            // Parse variable names until period or another clause
+            while !self.check(Kind::Period) && !self.at_end() {
+                // Skip FORMAT "string" if present after a variable
+                if self.check(Kind::Format) {
+                    self.advance();
+                    if self.check(Kind::StringLiteral) {
+                        self.advance();
+                    }
+                    continue;
+                }
+                if is_callable_kind(self.peek().kind) {
+                    set_targets.push(self.parse_identifier()?);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after MESSAGE statement")?;
+
+        Ok(Statement::Message { items, set_targets })
     }
 
     // Parse the block body for code blocks like DO, consume till END.
