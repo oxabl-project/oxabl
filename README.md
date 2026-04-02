@@ -105,6 +105,36 @@ Here's what's on the roadmap for the lexer:
   - Build a table of `transitions[state][byte] -> next_state` and index directly, `current_state = table[current_state][byte]
   - **Priority:** None, might not be worth our effort.
 
+## Contributing
+
+### CI
+
+Every push and PR to `master` runs the following checks (all must pass):
+
+- `cargo check` — compilation
+- `cargo test` — full test suite
+- `cargo fmt --check` — formatting
+- `cargo clippy -D warnings` — lints
+
+### Commit Messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) format. This drives the automated release process:
+
+- `feat: add X` — new feature (bumps minor version)
+- `fix: correct Y` — bug fix (bumps patch version)
+- `feat!: breaking change` — breaking change (bumps major, or minor while pre-1.0)
+- `chore:`, `docs:`, `refactor:`, `test:` — won't trigger a release, but appear in the changelog
+
+### Releases
+
+Releases are fully automated via [Release Please](https://github.com/googleapis/release-please):
+
+1. Merge PRs with conventional commit messages into `master`
+2. Release Please accumulates commits and maintains an open release PR with a generated changelog and version bumps across all `Cargo.toml` files
+3. When the release PR is merged, a GitHub Release and git tag are created automatically
+
+No manual version bumping is needed.
+
 ## CodeGen
 
 We generate code for all the keywords and operators to use within the project. Use these commands to generate the code:
