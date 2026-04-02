@@ -69,6 +69,11 @@ impl Parser<'_> {
             return self.parse_case_statement();
         }
 
+        // RUN statement
+        if self.check(Kind::Run) {
+            return self.parse_run_statement();
+        }
+
         // PROCEDURE statement
         if self.check(Kind::Procedure) {
             return self.parse_procedure();
