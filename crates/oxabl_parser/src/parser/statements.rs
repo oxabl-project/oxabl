@@ -903,8 +903,8 @@ impl Parser<'_> {
                 None
             };
 
-            // Skip FORMAT "string" if present (string literal, no variable refs)
-            if self.check(Kind::Format) {
+            // Skip FORMAT "string" and COLUMN-LABEL "string" if present (no variable refs)
+            while self.check(Kind::Format) || self.check(Kind::ColumnLabel) {
                 self.advance();
                 if self.check(Kind::StringLiteral) {
                     self.advance();
