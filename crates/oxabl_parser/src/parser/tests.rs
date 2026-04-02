@@ -3125,6 +3125,7 @@ fn parse_run_simple_procedure() {
             arguments,
             in_handle,
             no_error,
+            ..
         } => {
             assert_eq!(target, RunTarget::Literal("simple-proc".to_string()));
             assert!(arguments.is_empty());
@@ -3303,4 +3304,143 @@ fn parse_run_missing_period() {
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_statement();
     assert!(result.is_err());
+}
+
+#[test]
+fn parse_run_input_output_arg() {
+    let source = "RUN some-proc (INPUT-OUTPUT x).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { arguments, .. } => {
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::InputOutput);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_in_super() {
+    let source = "RUN myMethod IN SUPER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target, in_handle, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myMethod".to_string()));
+            assert!(in_handle.is_some());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_persistent_no_handle() {
+    let source = "RUN proc.p PERSISTENT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            persistent,
+            persistent_handle,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("proc.p".to_string()));
+            assert!(persistent);
+            assert!(persistent_handle.is_none());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_persistent_set_handle() {
+    let source = "RUN proc.p PERSISTENT SET hServer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            persistent,
+            persistent_handle,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("proc.p".to_string()));
+            assert!(persistent);
+            assert!(persistent_handle.is_some());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_asynchronous_no_handle() {
+    let source = "RUN proc ASYNCHRONOUS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            asynchronous,
+            async_handle,
+            event_procedure,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("proc".to_string()));
+            assert!(asynchronous);
+            assert!(async_handle.is_none());
+            assert!(event_procedure.is_none());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_asynchronous_set_handle() {
+    let source = "RUN proc ASYNCHRONOUS SET hAsync.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            asynchronous,
+            async_handle,
+            event_procedure,
+            ..
+        } => {
+            assert!(asynchronous);
+            assert!(async_handle.is_some());
+            assert!(event_procedure.is_none());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_asynchronous_with_event_procedure() {
+    let source = r#"RUN proc ASYNCHRONOUS SET hAsync EVENT-PROCEDURE "my-ep.p"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            asynchronous,
+            async_handle,
+            event_procedure,
+            ..
+        } => {
+            assert!(asynchronous);
+            assert!(async_handle.is_some());
+            assert!(event_procedure.is_some());
+        }
+        _ => panic!("Expected Run statement"),
+    }
 }
