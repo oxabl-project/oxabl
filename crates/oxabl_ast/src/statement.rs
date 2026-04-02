@@ -88,26 +88,44 @@ pub enum Statement {
     },
 
     /// Define input/output params
-    DefineParamter {
+    DefineParameter {
         direction: ParameterDirection,
         name: Identifier,
         data_type: DataType,
         no_undo: bool,
     },
 
-    /// Run statements
+    /// RUN statement — executes an internal procedure or external `.p` file.
+    ///
+    /// Supports static names (`RUN my-proc.`), dynamic dispatch (`RUN VALUE(expr).`),
+    /// `IN handle`, `PERSISTENT [SET handle]`, `ASYNCHRONOUS [SET handle] [EVENT-PROCEDURE expr]`,
+    /// and `NO-ERROR`.
     Run {
         target: RunTarget,
         arguments: Vec<RunArgument>,
+        /// Handle for `RUN ... IN handle` (run on a persistent server).
+        in_handle: Option<Expression>,
+        /// Whether `PERSISTENT` was specified.
+        persistent: bool,
+        /// Handle variable for `PERSISTENT SET hProc`.
+        persistent_handle: Option<Expression>,
+        /// Whether `ASYNCHRONOUS` was specified.
+        asynchronous: bool,
+        /// Handle variable for `ASYNCHRONOUS SET hAsync`.
+        async_handle: Option<Expression>,
+        /// Event procedure for `ASYNCHRONOUS ... EVENT-PROCEDURE expr`.
+        event_procedure: Option<Expression>,
+        /// Whether `NO-ERROR` was specified.
+        no_error: bool,
     },
 
-    /// Leave statement - exist innermost loop
+    /// Leave statement - exit innermost loop
     Leave,
 
     /// Next statement - skip to next iteration
     Next,
 
-    /// Return statement to return [expression]
+    /// Return statement with an optional return value expression.
     Return(Option<Expression>),
 
     /// Empty (just a period)
@@ -156,26 +174,38 @@ pub enum FindType {
     Unique, // No qualifier
 }
 
-/// When branch for case statements
+/// A single WHEN branch in a CASE statement.
+///
+/// Supports multiple match values via `WHEN "a" OR WHEN "b"` syntax.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhenBranch {
-    pub values: Vec<Expression>, // Supports WHEN "a" OR WHEN "b"
+    /// One or more values to match against the CASE expression.
+    pub values: Vec<Expression>,
+    /// Statements to execute when a value matches.
     pub body: Vec<Statement>,
 }
 
+/// Direction qualifier for a procedure parameter (INPUT, OUTPUT, or INPUT-OUTPUT).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParameterDirection {
+    /// Parameter is passed into the procedure.
     Input,
+    /// Parameter is returned from the procedure.
     Output,
+    /// Parameter is both passed in and returned.
     InputOutput,
 }
 
+/// Target of a RUN statement -- either a static procedure name or a dynamic expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunTarget {
-    Literal(String),     // RUN my-proc.p or RUN "file.p"
-    Dynamic(Expression), // RUN value(expr)
+    /// Static procedure name, e.g. `RUN my-proc.p` or `RUN "file.p"`.
+    Literal(String),
+    /// Dynamic target via `RUN VALUE(expr)`.
+    Dynamic(Expression),
 }
 
+/// A single argument passed to a RUN statement, with its [`ParameterDirection`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunArgument {
     pub direction: ParameterDirection,

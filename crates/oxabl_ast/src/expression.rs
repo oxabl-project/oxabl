@@ -1,14 +1,23 @@
+//! Expression AST nodes for Progress ABL.
+//!
+//! Expressions are parsed with the following precedence (lowest to highest):
+//! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative > unary > postfix > primary.
+
 use crate::{Literal, Span};
 
+/// A named identifier with its source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identifier {
     pub span: Span,
     pub name: String,
 }
 
+/// An ABL expression node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expression {
+    /// A literal value (integer, decimal, string, boolean, or unknown `?`).
     Literal(Literal),
+    /// A variable or buffer reference.
     Identifier(Identifier),
     /// Arithmetic
     Add(Box<Expression>, Box<Expression>),
@@ -39,20 +48,23 @@ pub enum Expression {
         name: Identifier,
         arguments: Vec<Expression>,
     },
-    // Postfix expressions (member access, method calls, etc)
+    /// Object member access via colon syntax (`object:member`).
     MemberAccess {
         object: Box<Expression>,
         member: Identifier,
     },
+    /// Object method call via colon syntax (`object:method(args)`).
     MethodCall {
         object: Box<Expression>,
         method: Identifier,
         arguments: Vec<Expression>,
     },
+    /// Array/extent subscript access (`arr[index]`).
     ArrayAccess {
         array: Box<Expression>,
         index: Box<Expression>,
     },
+    /// Database field access via dot syntax (`table.field`).
     FieldAccess {
         qualifier: Box<Expression>,
         field: Identifier,
