@@ -2165,8 +2165,7 @@ fn parse_return_with_value() {
 
 #[test]
 fn parse_loop_with_leave_and_next() {
-    let source =
-        "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
+    let source = "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -2732,7 +2731,8 @@ fn parse_simple_case_statement() {
 
 #[test]
 fn parse_case_with_multiple_when_branches() {
-    let source = "CASE myStatus: WHEN 1 THEN x = 1. WHEN 2 THEN x = 2. WHEN 3 THEN x = 3. END CASE.";
+    let source =
+        "CASE myStatus: WHEN 1 THEN x = 1. WHEN 2 THEN x = 2. WHEN 3 THEN x = 3. END CASE.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -2777,9 +2777,7 @@ fn parse_case_with_or_when() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             // The single WHEN branch has two values
             assert_eq!(when_branches[0].values.len(), 2);
@@ -2795,9 +2793,7 @@ fn parse_case_with_string_values() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
                 &when_branches[0].values[0],
@@ -2815,9 +2811,7 @@ fn parse_case_with_multiple_statements_in_when() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].body.len(), 3);
         }
@@ -2922,9 +2916,7 @@ fn parse_case_with_nested_if() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert!(matches!(when_branches[0].body[0], Statement::If { .. }));
         }
@@ -2939,9 +2931,7 @@ fn parse_case_boolean_values() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
                 &when_branches[0].values[0],
@@ -2964,9 +2954,7 @@ fn parse_case_with_triple_or_when() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Case {
-            when_branches, ..
-        } => {
+        Statement::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].values.len(), 3);
         }
