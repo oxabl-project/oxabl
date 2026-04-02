@@ -95,10 +95,28 @@ pub enum Statement {
         no_undo: bool,
     },
 
-    /// Run statements
+    /// RUN statement — executes an internal procedure or external `.p` file.
+    ///
+    /// Supports static names (`RUN my-proc.`), dynamic dispatch (`RUN VALUE(expr).`),
+    /// `IN handle`, `PERSISTENT [SET handle]`, `ASYNCHRONOUS [SET handle] [EVENT-PROCEDURE expr]`,
+    /// and `NO-ERROR`.
     Run {
         target: RunTarget,
         arguments: Vec<RunArgument>,
+        /// Handle for `RUN ... IN handle` (run on a persistent server).
+        in_handle: Option<Expression>,
+        /// Whether `PERSISTENT` was specified.
+        persistent: bool,
+        /// Handle variable for `PERSISTENT SET hProc`.
+        persistent_handle: Option<Expression>,
+        /// Whether `ASYNCHRONOUS` was specified.
+        asynchronous: bool,
+        /// Handle variable for `ASYNCHRONOUS SET hAsync`.
+        async_handle: Option<Expression>,
+        /// Event procedure for `ASYNCHRONOUS ... EVENT-PROCEDURE expr`.
+        event_procedure: Option<Expression>,
+        /// Whether `NO-ERROR` was specified.
+        no_error: bool,
     },
 
     /// DISPLAY statement — outputs field/variable values to the screen or a frame.
