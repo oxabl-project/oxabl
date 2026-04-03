@@ -156,6 +156,12 @@ pub enum Statement {
         name: Identifier,
         /// Whether NO-UNDO was specified.
         no_undo: bool,
+        /// Table to inherit structure from (`LIKE table-name`).
+        like_table: Option<Identifier>,
+        /// Whether VALIDATE was specified with LIKE.
+        validate: bool,
+        /// USE-INDEX clauses for LIKE.
+        use_indexes: Vec<UseIndex>,
         /// Field definitions.
         fields: Vec<TempTableField>,
         /// Index definitions.
@@ -277,13 +283,36 @@ pub struct DisplayItem {
     pub when_condition: Option<Expression>,
 }
 
+/// Source of a temp-table field's type — either explicit or inherited via LIKE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldTypeSource {
+    /// Explicit type: `FIELD x AS INTEGER`
+    Explicit(DataType),
+    /// Inherited type: `FIELD x LIKE Customer.CustNum [VALIDATE]`
+    Like {
+        source: Identifier,
+        validate: bool,
+    },
+}
+
 /// A field definition in a DEFINE TEMP-TABLE statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TempTableField {
     /// Field name.
     pub name: Identifier,
-    /// Field data type.
-    pub data_type: DataType,
+    /// Type source — either explicit (AS type) or inherited (LIKE field).
+    pub type_source: FieldTypeSource,
+    /// Optional initial value(s). Scalar fields have one element; array fields may have multiple.
+    pub initial_value: Option<Vec<Expression>>,
+    /// Extent/array size. None for scalar, Some(0) for dynamic extent.
+    pub extent: Option<u32>,
+}
+
+/// A USE-INDEX clause in a DEFINE TEMP-TABLE LIKE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseIndex {
+    pub name: Identifier,
+    pub as_primary: bool,
 }
 
 /// An index definition in a DEFINE TEMP-TABLE statement.

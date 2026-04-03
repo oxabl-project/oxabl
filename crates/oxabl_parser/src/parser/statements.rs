@@ -5,8 +5,8 @@
 //! MESSAGE, LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    DisplayItem, Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument,
-    RunTarget, Span, Statement, TempTableField, TempTableIndex, WhenBranch,
+    DisplayItem, Expression, FieldTypeSource, FindType, Identifier, LockType, ParameterDirection,
+    RunArgument, RunTarget, Span, Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
 use oxabl_lexer::Kind;
 
@@ -366,6 +366,39 @@ impl Parser<'_> {
             false
         };
 
+        // Optional LIKE / LIKE-SEQUENTIAL clause
+        let mut like_table = None;
+        let mut validate = false;
+        let mut use_indexes = Vec::new();
+
+        if self.check(Kind::Like) || self.check(Kind::LikeSequential) {
+            self.advance(); // consume LIKE or LIKE-SEQUENTIAL
+            like_table = Some(self.parse_identifier()?);
+
+            // Optional VALIDATE
+            if self.check(Kind::Validate) {
+                self.advance();
+                validate = true;
+            }
+
+            // Optional USE-INDEX clauses
+            while self.check(Kind::UseIndex) {
+                self.advance(); // consume USE-INDEX
+                let idx_name = self.parse_identifier()?;
+                let as_primary = if self.check(Kind::KwAs) {
+                    self.advance();
+                    self.expect_kind(Kind::Primary, "Expected PRIMARY after AS in USE-INDEX")?;
+                    true
+                } else {
+                    false
+                };
+                use_indexes.push(UseIndex {
+                    name: idx_name,
+                    as_primary,
+                });
+            }
+        }
+
         let mut fields = Vec::new();
         let mut indexes = Vec::new();
 
@@ -374,11 +407,87 @@ impl Parser<'_> {
             if self.check(Kind::Field) {
                 self.advance(); // consume FIELD
                 let field_name = self.parse_identifier()?;
-                self.expect_kind(Kind::KwAs, "Expected AS after field name")?;
-                let data_type = self.parse_data_type()?;
+
+                // Parse type source: AS type or LIKE field
+                let type_source = if self.check(Kind::Like) {
+                    self.advance();
+                    let source = self.parse_qualified_identifier()?;
+                    let field_validate = if self.check(Kind::Validate) {
+                        self.advance();
+                        true
+                    } else {
+                        false
+                    };
+                    FieldTypeSource::Like {
+                        source,
+                        validate: field_validate,
+                    }
+                } else {
+                    self.expect_kind(Kind::KwAs, "Expected AS or LIKE after field name")?;
+                    FieldTypeSource::Explicit(self.parse_data_type()?)
+                };
+
+                // Parse optional field options
+                let mut initial_value = None;
+                let mut extent = None;
+
+                loop {
+                    match self.peek().kind {
+                        Kind::Initial => {
+                            self.advance();
+                            // Handle array initial syntax: INITIAL [val1, val2, ...]
+                            if self.check(Kind::LeftBracket) {
+                                self.advance(); // consume [
+                                let mut values = Vec::new();
+                                if !self.check(Kind::RightBracket) {
+                                    values.push(self.parse_expression()?);
+                                    while self.check(Kind::Comma) {
+                                        self.advance();
+                                        values.push(self.parse_expression()?);
+                                    }
+                                }
+                                self.expect_kind(
+                                    Kind::RightBracket,
+                                    "Expected ']' after initial values",
+                                )?;
+                                initial_value = Some(values);
+                            } else {
+                                // Scalar initial value
+                                initial_value = Some(vec![self.parse_expression()?]);
+                            }
+                        }
+                        Kind::Extent => {
+                            self.advance();
+                            if self.check(Kind::IntegerLiteral) {
+                                let ext_token = self.advance().clone();
+                                if let Ok(n) =
+                                    self.source[ext_token.start..ext_token.end].parse::<u32>()
+                                {
+                                    extent = Some(n);
+                                } else {
+                                    extent = Some(0); // dynamic
+                                }
+                            }
+                        }
+                        // Skip known field options we don't store in the AST
+                        Kind::Format | Kind::Label | Kind::ColumnLabel => {
+                            self.advance(); // consume keyword
+                            // Skip the value (usually a string literal)
+                            if self.check(Kind::StringLiteral) {
+                                self.advance();
+                            }
+                        }
+                        // Break on field/index/period boundaries
+                        Kind::Field | Kind::Index | Kind::Period => break,
+                        _ => break,
+                    }
+                }
+
                 fields.push(TempTableField {
                     name: field_name,
-                    data_type,
+                    type_source,
+                    initial_value,
+                    extent,
                 });
             } else if self.check(Kind::Index) {
                 self.advance(); // consume INDEX
@@ -388,7 +497,6 @@ impl Parser<'_> {
                 let mut is_unique = false;
 
                 // Parse optional [IS|AS] [PRIMARY] [UNIQUE] flags
-                // All three (IS/AS prefix, PRIMARY, UNIQUE) are optional and can appear in any order
                 if self.check(Kind::Is) || self.check(Kind::KwAs) {
                     self.advance(); // consume IS or AS
                 }
@@ -435,6 +543,9 @@ impl Parser<'_> {
         Ok(Statement::DefineTempTable {
             name,
             no_undo,
+            like_table,
+            validate,
+            use_indexes,
             fields,
             indexes,
         })

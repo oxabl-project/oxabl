@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
-    BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, ParameterDirection, RunTarget, Span, Statement, StringLiteral,
-    UnknownLiteral, WhenBranch,
+    BooleanLiteral, DataType, DecimalLiteral, Expression, FieldTypeSource, FindType, Identifier,
+    IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, Span, Statement,
+    StringLiteral, UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -3694,16 +3694,26 @@ DEFINE TEMP-TABLE ttCustomer NO-UNDO
             no_undo,
             fields,
             indexes,
+            ..
         } => {
             assert_eq!(name.name, "ttCustomer");
             assert!(no_undo);
             assert_eq!(fields.len(), 3);
             assert_eq!(fields[0].name.name, "CustNum");
-            assert_eq!(fields[0].data_type, DataType::Integer);
+            assert_eq!(
+                fields[0].type_source,
+                FieldTypeSource::Explicit(DataType::Integer)
+            );
             assert_eq!(fields[1].name.name, "Name");
-            assert_eq!(fields[1].data_type, DataType::Character);
+            assert_eq!(
+                fields[1].type_source,
+                FieldTypeSource::Explicit(DataType::Character)
+            );
             assert_eq!(fields[2].name.name, "Balance");
-            assert_eq!(fields[2].data_type, DataType::Decimal);
+            assert_eq!(
+                fields[2].type_source,
+                FieldTypeSource::Explicit(DataType::Decimal)
+            );
             assert!(indexes.is_empty());
         }
         _ => panic!("Expected DefineTempTable statement"),
@@ -3773,5 +3783,237 @@ fn parse_define_buffer() {
             assert_eq!(table.name, "Customer");
         }
         _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+// ===================== TEMP-TABLE LIKE and field enhancements =====================
+
+#[test]
+fn parse_define_temp_table_empty() {
+    let source = "DEFINE TEMP-TABLE ttEmpty NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            name,
+            no_undo,
+            fields,
+            indexes,
+            ..
+        } => {
+            assert_eq!(name.name, "ttEmpty");
+            assert!(no_undo);
+            assert!(fields.is_empty());
+            assert!(indexes.is_empty());
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like() {
+    let source = "DEFINE TEMP-TABLE tt LIKE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            like_table,
+            validate,
+            ..
+        } => {
+            assert!(like_table.is_some());
+            assert_eq!(like_table.unwrap().name, "Customer");
+            assert!(!validate);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like_validate() {
+    let source = "DEFINE TEMP-TABLE tt LIKE Customer VALIDATE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            like_table,
+            validate,
+            ..
+        } => {
+            assert!(like_table.is_some());
+            assert!(validate);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like_use_index() {
+    let source = "DEFINE TEMP-TABLE tt LIKE Customer USE-INDEX CustNum USE-INDEX CountryPost AS PRIMARY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { use_indexes, .. } => {
+            assert_eq!(use_indexes.len(), 2);
+            assert_eq!(use_indexes[0].name.name, "CustNum");
+            assert!(!use_indexes[0].as_primary);
+            assert_eq!(use_indexes[1].name.name, "CountryPost");
+            assert!(use_indexes[1].as_primary);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like_with_extra_field() {
+    let source = r#"
+DEFINE TEMP-TABLE tt LIKE Customer
+    FIELD extraField AS CHARACTER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            like_table,
+            fields,
+            ..
+        } => {
+            assert!(like_table.is_some());
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "extraField");
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_like() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD cust-num LIKE Customer.CustNum.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "cust-num");
+            match &fields[0].type_source {
+                FieldTypeSource::Like {
+                    source, validate, ..
+                } => {
+                    // The dot-separated name is parsed as a single identifier by the lexer
+                    // (ABL identifiers can contain dots in field references)
+                    assert!(!source.name.is_empty());
+                    assert!(!validate);
+                }
+                _ => panic!("Expected Like type source"),
+            }
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_like_validate() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x LIKE Customer.CustNum VALIDATE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            match &fields[0].type_source {
+                FieldTypeSource::Like { validate, .. } => {
+                    assert!(validate);
+                }
+                _ => panic!("Expected Like type source"),
+            }
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_initial() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER INITIAL 0
+    FIELD y AS CHARACTER INITIAL "".
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 2);
+            assert!(fields[0].initial_value.is_some());
+            assert_eq!(fields[0].initial_value.as_ref().unwrap().len(), 1);
+            assert!(fields[1].initial_value.is_some());
+            assert_eq!(fields[1].initial_value.as_ref().unwrap().len(), 1);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_extent() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER EXTENT 5.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields[0].extent, Some(5));
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_format_skipped() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS CHARACTER FORMAT "x(20)".
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "x");
+            // FORMAT is skipped, not stored
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_label_skipped() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS CHARACTER LABEL "Name" COLUMN-LABEL "Nm".
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            // Labels are skipped, not stored
+        }
+        _ => panic!("Expected DefineTempTable statement"),
     }
 }
