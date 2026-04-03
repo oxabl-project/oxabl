@@ -5,9 +5,9 @@
 //! MESSAGE, LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    DisplayItem, Expression, FieldTypeSource, FindType, Identifier, IndexField, LockType,
-    ParameterDirection, RunArgument, RunTarget, SortDirection, Span, Statement, TempTableField,
-    TempTableIndex, UseIndex, WhenBranch,
+    BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType, Identifier, IndexField,
+    LockType, ParameterDirection, RunArgument, RunTarget, SortDirection, Span, Statement,
+    TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
 use oxabl_lexer::Kind;
 
@@ -573,16 +573,59 @@ impl Parser<'_> {
         })
     }
 
-    // Parse DEFINE BUFFER name FOR table.
+    // Parse DEFINE BUFFER name FOR [TEMP-TABLE] table [PRESELECT] [LABEL "str"].
     fn parse_define_buffer(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER
 
         let name = self.parse_identifier()?;
         self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
-        let table = self.parse_identifier()?;
+
+        // Check for FOR TEMP-TABLE vs FOR table
+        let target = if self.check(Kind::TempTable) {
+            self.advance();
+            BufferTarget::TempTable(self.parse_identifier()?)
+        } else {
+            BufferTarget::Table(self.parse_identifier()?)
+        };
+
+        // Parse optional modifiers
+        let mut preselect = false;
+        let mut label = None;
+
+        while !self.check(Kind::Period) && !self.at_end() {
+            match self.peek().kind {
+                Kind::Preselect => {
+                    self.advance();
+                    preselect = true;
+                }
+                Kind::Label => {
+                    self.advance();
+                    if self.check(Kind::StringLiteral) {
+                        let token = self.advance().clone();
+                        // Strip quotes from string literal
+                        let raw = &self.source[token.start..token.end];
+                        label = Some(raw[1..raw.len() - 1].to_string());
+                    }
+                }
+                _ => {
+                    // Skip unknown tokens (NAMESPACE-URI, SERIALIZE-NAME, etc.)
+                    self.advance();
+                    // Skip their string value if present
+                    if self.check(Kind::StringLiteral) {
+                        self.advance();
+                    }
+                }
+            }
+        }
+
         self.expect_kind(Kind::Period, "Expected '.' after DEFINE BUFFER")?;
 
-        Ok(Statement::DefineBuffer { name, table })
+        Ok(Statement::DefineBuffer {
+            name,
+            target,
+            preselect,
+            label,
+        })
     }
 
     /// Continue parsing an expression after additive level has been parsed

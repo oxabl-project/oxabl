@@ -171,11 +171,16 @@ pub enum Statement {
     /// DEFINE BUFFER statement.
     ///
     /// `DEFINE BUFFER bCust FOR Customer.`
+    /// `DEFINE BUFFER bTT FOR TEMP-TABLE ttCustomer.`
     DefineBuffer {
         /// Buffer name.
         name: Identifier,
-        /// The table this buffer is for.
-        table: Identifier,
+        /// The target table or temp-table.
+        target: BufferTarget,
+        /// Whether PRESELECT was specified.
+        preselect: bool,
+        /// Optional label for error messages.
+        label: Option<String>,
     },
 
     /// Leave statement - exit innermost loop
@@ -343,4 +348,13 @@ pub struct IndexField {
 pub enum SortDirection {
     Ascending,
     Descending,
+}
+
+/// Target of a DEFINE BUFFER statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BufferTarget {
+    /// Buffer for a database table: `FOR Customer`
+    Table(Identifier),
+    /// Buffer for a temp-table: `FOR TEMP-TABLE ttCustomer`
+    TempTable(Identifier),
 }
