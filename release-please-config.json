@@ -1,52 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "bump-minor-pre-major": true,
-  "bump-patch-for-minor-pre-major": true,
-  "plugins": [
-    {
-      "type": "cargo-workspace"
-    },
-    {
-      "type": "linked-versions",
-      "groupName": "oxabl",
-      "components": [
-        "oxabl",
-        "oxabl_lexer",
-        "oxabl_parser",
-        "oxabl_ast",
-        "oxabl_common",
-        "oxabl_codegen"
-      ]
-    }
-  ],
+  "plugins": ["cargo-workspace"],
   "packages": {
-    ".": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
-    },
-    "crates/oxabl": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
-    },
-    "crates/oxabl_lexer": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
-    },
-    "crates/oxabl_parser": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
-    },
-    "crates/oxabl_ast": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
-    },
-    "crates/oxabl_common": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
-    },
-    "crates/oxabl_codegen": {
-      "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
-    }
+    "crates/oxabl": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_lexer": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_parser": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_ast": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_common": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_codegen": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
   }
 }
