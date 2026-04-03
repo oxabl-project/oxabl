@@ -324,6 +324,23 @@ pub struct TempTableIndex {
     pub is_primary: bool,
     /// Whether this index enforces UNIQUE values.
     pub is_unique: bool,
-    /// Fields in this index.
-    pub fields: Vec<Identifier>,
+    /// Whether this is a WORD-INDEX.
+    pub is_word_index: bool,
+    /// Fields in this index with optional sort direction.
+    pub fields: Vec<IndexField>,
+}
+
+/// A field in an index definition with optional sort direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexField {
+    pub name: Identifier,
+    /// Explicit sort direction. None means inherit from previous field (or ASCENDING by default).
+    pub direction: Option<SortDirection>,
+}
+
+/// Sort direction for index fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
 }

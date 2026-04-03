@@ -5,8 +5,9 @@
 //! MESSAGE, LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    DisplayItem, Expression, FieldTypeSource, FindType, Identifier, LockType, ParameterDirection,
-    RunArgument, RunTarget, Span, Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
+    DisplayItem, Expression, FieldTypeSource, FindType, Identifier, IndexField, LockType,
+    ParameterDirection, RunArgument, RunTarget, SortDirection, Span, Statement, TempTableField,
+    TempTableIndex, UseIndex, WhenBranch,
 };
 use oxabl_lexer::Kind;
 
@@ -495,13 +496,14 @@ impl Parser<'_> {
 
                 let mut is_primary = false;
                 let mut is_unique = false;
+                let mut is_word_index = false;
 
-                // Parse optional [IS|AS] [PRIMARY] [UNIQUE] flags
+                // Optional IS or AS prefix (both valid, or neither)
                 if self.check(Kind::Is) || self.check(Kind::KwAs) {
-                    self.advance(); // consume IS or AS
+                    self.advance();
                 }
 
-                // Parse flags in any order
+                // Parse flags in any order: PRIMARY, UNIQUE, WORD-INDEX
                 loop {
                     match self.peek().kind {
                         Kind::Primary => {
@@ -512,24 +514,44 @@ impl Parser<'_> {
                             self.advance();
                             is_unique = true;
                         }
+                        Kind::WordIndex => {
+                            self.advance();
+                            is_word_index = true;
+                        }
                         _ => break,
                     }
                 }
 
-                // Parse index field names
+                // Parse index fields with optional ASC/DESC direction
                 let mut index_fields = Vec::new();
                 while Self::can_be_identifier(self.peek().kind)
                     && !self.check(Kind::Field)
                     && !self.check(Kind::Index)
                     && !self.check(Kind::Period)
                 {
-                    index_fields.push(self.parse_identifier()?);
+                    let field_name = self.parse_identifier()?;
+                    let direction = match self.peek().kind {
+                        Kind::Ascending => {
+                            self.advance();
+                            Some(SortDirection::Ascending)
+                        }
+                        Kind::Descending => {
+                            self.advance();
+                            Some(SortDirection::Descending)
+                        }
+                        _ => None,
+                    };
+                    index_fields.push(IndexField {
+                        name: field_name,
+                        direction,
+                    });
                 }
 
                 indexes.push(TempTableIndex {
                     name: index_name,
                     is_primary,
                     is_unique,
+                    is_word_index,
                     fields: index_fields,
                 });
             } else {
