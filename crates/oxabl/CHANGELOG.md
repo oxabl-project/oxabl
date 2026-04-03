@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.3.0...oxabl-v0.3.1) (2026-04-03)
+
+
+### Bug Fixes
+
+* add versions to deps ([0d1b3d9](https://github.com/oxabl-project/oxabl/commit/0d1b3d951b3ce8b2f617c9b328644fad2ce1a551))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 0.3.0 to 0.3.1
+    * oxabl_lexer bumped from 0.3.0 to 0.3.1
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.2.0...oxabl-v0.3.0) (2026-04-03)
 
 
