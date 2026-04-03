@@ -2,6 +2,9 @@
 name = "oxabl_lexer"
 version = "0.2.0"
 edition = "2024"
+license = "MIT"
+description = "Tokenizer for Progress ABL source code"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lexer"
 
 [dependencies]
 oxabl_common = { path = "../oxabl_common" }
