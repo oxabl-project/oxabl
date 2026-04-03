@@ -79,9 +79,37 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Returns true if the given Kind can appear as an identifier.
+    ///
+    /// ABL is very permissive about using keywords as identifiers. This includes
+    /// all callable kinds (functions) plus many statement/option keywords like
+    /// BUFFER, TEMP-TABLE, PRIMARY, INITIAL, EXTENT, etc.
+    fn can_be_identifier(kind: Kind) -> bool {
+        is_callable_kind(kind)
+            || matches!(
+                kind,
+                Kind::Buffer
+                    | Kind::TempTable
+                    | Kind::Initial
+                    | Kind::Extent
+                    | Kind::Primary
+                    | Kind::Validate
+                    | Kind::BeforeTable
+                    | Kind::WordIndex
+                    | Kind::Preselect
+                    | Kind::Format
+                    | Kind::Label
+                    | Kind::ColumnLabel
+                    | Kind::Ascending
+                    | Kind::Descending
+                    | Kind::Shared
+                    | Kind::Global
+            )
+    }
+
     /// Parses an Identifier
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected identifier".to_string(),
                 span: self.current_span(),

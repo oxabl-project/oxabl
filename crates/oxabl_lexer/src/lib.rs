@@ -1182,7 +1182,7 @@ end."#;
         // Verify it tokenizes without errors and has correct structure
         assert!(tokens.iter().all(|t| t.kind != Kind::Invalid));
         assert_eq!(tokens[0].kind, Kind::Define);
-        assert_eq!(tokens[1].kind, Kind::Identifier); // temp-table (not reserved)
+        assert_eq!(tokens[1].kind, Kind::TempTable); // temp-table is a keyword
     }
 
     // =========================================================================
