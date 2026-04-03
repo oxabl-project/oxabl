@@ -8,7 +8,7 @@ use oxabl_ast::{
     DisplayItem, Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument,
     RunTarget, Span, Statement, TempTableField, TempTableIndex, WhenBranch,
 };
-use oxabl_lexer::{Kind, is_callable_kind};
+use oxabl_lexer::Kind;
 
 use super::{ParseError, ParseResult, Parser};
 
@@ -138,10 +138,36 @@ impl Parser<'_> {
             return self.parse_define_parameter();
         }
 
-        // Check what we're defining
-        if !is_callable_kind(self.peek().kind) {
+        // DEFINE TEMP-TABLE
+        if self.check(Kind::TempTable) {
+            return self.parse_define_temp_table();
+        }
+
+        // DEFINE BUFFER
+        if self.check(Kind::Buffer) {
+            return self.parse_define_buffer();
+        }
+
+        // DEFINE VARIABLE / DEFINE VAR
+        if Self::can_be_identifier(self.peek().kind) {
+            let token = self.peek();
+            let text = &self.source[token.start..token.end];
+            if text.eq_ignore_ascii_case("variable") || text.eq_ignore_ascii_case("var") {
+                self.advance(); // consume VARIABLE or VAR
+            } else {
+                return Err(ParseError {
+                    message: "Expected VARIABLE, VAR, TEMP-TABLE, or BUFFER after DEFINE"
+                        .to_string(),
+                    span: Span {
+                        start: token.start as u32,
+                        end: token.end as u32,
+                    },
+                });
+            }
+        } else {
             return Err(ParseError {
-                message: "Expected keyword after DEFINE (VARIABLE, TEMP-TABLE, BUFFER, etc.)".to_string(),
+                message: "Expected keyword after DEFINE (VARIABLE, TEMP-TABLE, BUFFER, etc.)"
+                    .to_string(),
                 span: Span {
                     start: self.peek().start as u32,
                     end: self.peek().end as u32,
@@ -149,33 +175,8 @@ impl Parser<'_> {
             });
         }
 
-        let define_what = self.peek();
-        let define_text = &self.source[define_what.start..define_what.end];
-
-        // DEFINE TEMP-TABLE
-        if define_text.eq_ignore_ascii_case("temp-table") {
-            return self.parse_define_temp_table();
-        }
-
-        // DEFINE BUFFER
-        if define_text.eq_ignore_ascii_case("buffer") {
-            return self.parse_define_buffer();
-        }
-
-        if !define_text.eq_ignore_ascii_case("variable") && !define_text.eq_ignore_ascii_case("var")
-        {
-            return Err(ParseError {
-                message: "Expected VARIABLE, VAR, TEMP-TABLE, or BUFFER after DEFINE".to_string(),
-                span: Span {
-                    start: define_what.start as u32,
-                    end: define_what.end as u32,
-                },
-            });
-        }
-        self.advance(); // consume VARIABLE or VAR
-
         // Name
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected variable name after DEFINE VARIABLE".to_string(),
                 span: Span {
@@ -206,19 +207,17 @@ impl Parser<'_> {
         let mut extent = None;
 
         loop {
-            if self.check(Kind::NoUndo) {
-                self.advance();
-                no_undo = true;
-            } else if self.check(Kind::Identifier) {
-                let token = self.peek();
-                let text = &self.source[token.start..token.end];
-
-                if text.eq_ignore_ascii_case("initial") || text.eq_ignore_ascii_case("init") {
-                    self.advance(); // Consume init
+            match self.peek().kind {
+                Kind::NoUndo => {
+                    self.advance();
+                    no_undo = true;
+                }
+                Kind::Initial => {
+                    self.advance();
                     initial_value = Some(self.parse_expression()?);
-                } else if text.eq_ignore_ascii_case("extent") {
-                    self.advance(); // Consume extent
-
+                }
+                Kind::Extent => {
+                    self.advance();
                     // Extent can be followed by number or nothing (dynamic)
                     if self.check(Kind::IntegerLiteral) {
                         let ext_token = self.advance().clone();
@@ -227,13 +226,9 @@ impl Parser<'_> {
                         } else {
                             extent = Some(0); // dynamic
                         }
-                    } // extent check if it's set or dynamic
-                } else {
-                    // not initial or extent
-                    break;
+                    }
                 }
-            } else {
-                break; // not an identifier, exit loop
+                _ => break,
             }
         }
 
@@ -256,7 +251,7 @@ impl Parser<'_> {
         let data_type = self.parse_data_type()?;
 
         // Parse variable name
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected variable name".to_string(),
                 span: Span {
@@ -315,7 +310,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::Parameter, "Expected PARAMETER after INPUT/OUTPUT")?;
 
         // Parse parameter name
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected parameter name".to_string(),
                 span: Span {
@@ -392,35 +387,30 @@ impl Parser<'_> {
                 let mut is_primary = false;
                 let mut is_unique = false;
 
-                // Parse optional IS PRIMARY UNIQUE or IS UNIQUE etc.
-                // IS has Kind::Is (not Identifier), PRIMARY is Identifier, UNIQUE has Kind::Unique
-                if self.check(Kind::Is) {
-                    self.advance(); // consume IS
+                // Parse optional [IS|AS] [PRIMARY] [UNIQUE] flags
+                // All three (IS/AS prefix, PRIMARY, UNIQUE) are optional and can appear in any order
+                if self.check(Kind::Is) || self.check(Kind::KwAs) {
+                    self.advance(); // consume IS or AS
+                }
 
-                    // Check for PRIMARY
-                    if self.check(Kind::Identifier) {
-                        let token = self.peek();
-                        let text = &self.source[token.start..token.end];
-                        if text.eq_ignore_ascii_case("primary") {
+                // Parse flags in any order
+                loop {
+                    match self.peek().kind {
+                        Kind::Primary => {
                             self.advance();
                             is_primary = true;
                         }
+                        Kind::Unique => {
+                            self.advance();
+                            is_unique = true;
+                        }
+                        _ => break,
                     }
-
-                    // Check for UNIQUE
-                    if self.check(Kind::Unique) {
-                        self.advance();
-                        is_unique = true;
-                    }
-                } else if self.check(Kind::Unique) {
-                    // INDEX idx UNIQUE (without IS)
-                    self.advance();
-                    is_unique = true;
                 }
 
                 // Parse index field names
                 let mut index_fields = Vec::new();
-                while is_callable_kind(self.peek().kind)
+                while Self::can_be_identifier(self.peek().kind)
                     && !self.check(Kind::Field)
                     && !self.check(Kind::Index)
                     && !self.check(Kind::Period)
@@ -551,7 +541,7 @@ impl Parser<'_> {
         let mut while_condition = None;
 
         // check for loop
-        if is_callable_kind(self.peek().kind) {
+        if Self::can_be_identifier(self.peek().kind) {
             // peek ahead to see if this is 'var = start to end'
             let saved_pos = self.current;
             let potential_var = self.advance().clone();
@@ -1127,7 +1117,7 @@ impl Parser<'_> {
                     }
                     continue;
                 }
-                if is_callable_kind(self.peek().kind) {
+                if Self::can_be_identifier(self.peek().kind) {
                     set_targets.push(self.parse_identifier()?);
                 } else {
                     break;
@@ -1182,7 +1172,7 @@ impl Parser<'_> {
     /// `.i`, and `.cls`. A period followed by a non-extension token is treated as the
     /// statement terminator, not part of the name.
     fn parse_procedure_name(&mut self) -> ParseResult<String> {
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
                 span: Span {
