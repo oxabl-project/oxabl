@@ -7,7 +7,7 @@ description = "Tokenizer for Progress ABL source code"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lexer"
 
 [dependencies]
-oxabl_common = { path = "../oxabl_common" }
+oxabl_common = { path = "../oxabl_common", version = "0.3.0" }
 rust_decimal = "1.40.0"
 string_cache = "0.9.0"
 
