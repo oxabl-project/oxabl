@@ -5,7 +5,7 @@
 //! > unary > postfix (member access, method calls, array/field access) > primary.
 
 use oxabl_ast::{Expression, Identifier, Span};
-use oxabl_lexer::{Kind, is_callable_kind};
+use oxabl_lexer::Kind;
 
 use super::{ParseError, ParseResult, Parser};
 use crate::literal::token_to_literal;
@@ -183,7 +183,7 @@ impl Parser<'_> {
                 let next_is_member = self
                     .tokens
                     .get(self.current + 1)
-                    .is_some_and(|t| is_callable_kind(t.kind));
+                    .is_some_and(|t| Self::can_be_identifier(t.kind));
                 if !next_is_member {
                     break;
                 }
@@ -207,7 +207,7 @@ impl Parser<'_> {
         self.advance(); // consumes ':'
 
         // Expect identifier after ':'
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: format!(
                     "Expected identifier after ':', found {:?}",
@@ -353,7 +353,7 @@ impl Parser<'_> {
         }
 
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
-        if is_callable_kind(self.peek().kind) {
+        if Self::can_be_identifier(self.peek().kind) {
             let token = self.advance();
             let start = token.start;
             let end = token.end;
