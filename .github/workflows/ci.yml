@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: moonrepo/setup-rust@v0
+      - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
       - run: cargo check --workspace
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: moonrepo/setup-rust@v0
+      - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
       - run: cargo test --workspace
@@ -35,10 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: moonrepo/setup-rust@v0
+      - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
           components: rustfmt
+          cache: false
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -46,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: moonrepo/setup-rust@v0
+      - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
           components: clippy
