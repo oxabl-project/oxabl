@@ -2,6 +2,9 @@
 name = "oxabl_codegen"
 version = "0.2.0"
 edition = "2024"
+license = "MIT"
+description = "Code generation tool for Oxabl lexer keywords and atoms"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_codegen"
 
 [[bin]]
 name = "oxabl-codegen"
