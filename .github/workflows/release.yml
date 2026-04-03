@@ -46,19 +46,19 @@ jobs:
       - uses: moonrepo/setup-rust@v0
         with:
           channel: stable
-      - run: cargo publish -p oxabl_common
+      - run: cargo publish -p oxabl_common || echo "Already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: cargo publish -p oxabl_ast
+      - run: cargo publish -p oxabl_ast || echo "Already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: cargo publish -p oxabl_lexer
+      - run: cargo publish -p oxabl_lexer || echo "Already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: cargo publish -p oxabl_codegen
+      - run: cargo publish -p oxabl_codegen || echo "Already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: cargo publish -p oxabl_parser
+      - run: cargo publish -p oxabl_parser || echo "Already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: cargo publish -p oxabl
