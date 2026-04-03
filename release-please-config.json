@@ -1,18 +1,31 @@
 {
-  "packages": {
-    ".": {
-      "release-type": "rust",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "extra-files": [
-        "crates/oxabl/Cargo.toml",
-        "crates/oxabl_lexer/Cargo.toml",
-        "crates/oxabl_parser/Cargo.toml",
-        "crates/oxabl_ast/Cargo.toml",
-        "crates/oxabl_common/Cargo.toml",
-        "crates/oxabl_codegen/Cargo.toml"
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "rust",
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "plugins": [
+    {
+      "type": "cargo-workspace"
+    },
+    {
+      "type": "linked-versions",
+      "groupName": "oxabl",
+      "components": [
+        "oxabl",
+        "oxabl_lexer",
+        "oxabl_parser",
+        "oxabl_ast",
+        "oxabl_common",
+        "oxabl_codegen"
       ]
     }
-  },
-  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
+  ],
+  "packages": {
+    "crates/oxabl": {},
+    "crates/oxabl_lexer": {},
+    "crates/oxabl_parser": {},
+    "crates/oxabl_ast": {},
+    "crates/oxabl_common": {},
+    "crates/oxabl_codegen": {}
+  }
 }
