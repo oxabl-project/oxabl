@@ -13,6 +13,31 @@ use oxabl_lexer::Kind;
 
 use super::{ParseError, ParseResult, Parser};
 
+/// Returns true if the given Kind can start a new top-level statement.
+///
+/// Used for error recovery: if we encounter a statement-starting keyword while
+/// parsing inside a DEFINE TEMP-TABLE body, it likely means a period was missed.
+fn can_start_statement(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Define
+            | Kind::Do
+            | Kind::KwIf
+            | Kind::Repeat
+            | Kind::KwFor
+            | Kind::Find
+            | Kind::Case
+            | Kind::Procedure
+            | Kind::Run
+            | Kind::Display
+            | Kind::Message
+            | Kind::KwReturn
+            | Kind::Leave
+            | Kind::Next
+            | Kind::End
+    )
+}
+
 impl Parser<'_> {
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         // Skip empty statements
@@ -554,8 +579,18 @@ impl Parser<'_> {
                     is_word_index,
                     fields: index_fields,
                 });
+            } else if can_start_statement(self.peek().kind) {
+                // A statement-starting keyword means we likely missed a period
+                return Err(ParseError {
+                    message: "Expected '.' to end DEFINE TEMP-TABLE (found statement keyword)"
+                        .to_string(),
+                    span: Span {
+                        start: self.peek().start as u32,
+                        end: self.peek().end as u32,
+                    },
+                });
             } else {
-                // Skip unknown tokens in temp-table definition
+                // Skip unknown tokens in temp-table definition (forward-compatibility)
                 self.advance();
             }
         }

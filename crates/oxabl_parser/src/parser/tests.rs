@@ -4212,3 +4212,82 @@ DEFINE TEMP-TABLE tt NO-UNDO
         _ => panic!("Expected DefineTempTable statement"),
     }
 }
+
+// ===================== Error recovery tests =====================
+
+#[test]
+fn parse_temp_table_missing_period_detected() {
+    // A DEFINE keyword in the body should trigger a missing-period error
+    let source = "DEFINE TEMP-TABLE tt FIELD x AS INTEGER DEFINE VARIABLE y AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.message.contains("Expected '.'"));
+}
+
+#[test]
+fn parse_temp_table_skips_xml_attrs() {
+    // Unknown tokens like NAMESPACE-URI should be silently skipped
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    NAMESPACE-URI "urn:foo"
+    FIELD x AS INTEGER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Should parse despite XML attrs");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "x");
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_temp_table_missing_name_error() {
+    let source = "DEFINE TEMP-TABLE .";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_temp_table_missing_field_name_error() {
+    let source = "DEFINE TEMP-TABLE tt FIELD .";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_temp_table_missing_data_type_error() {
+    let source = "DEFINE TEMP-TABLE tt FIELD x AS .";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_buffer_missing_name_error() {
+    let source = "DEFINE BUFFER FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_buffer_missing_for_error() {
+    let source = "DEFINE BUFFER bCust Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
