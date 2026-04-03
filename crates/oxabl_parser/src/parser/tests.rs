@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
-    BooleanLiteral, DataType, DecimalLiteral, Expression, FieldTypeSource, FindType, Identifier,
-    IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, SortDirection, Span,
-    Statement, StringLiteral, UnknownLiteral, WhenBranch,
+    BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression, FieldTypeSource, FindType,
+    Identifier, IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, SortDirection,
+    Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -3778,9 +3778,72 @@ fn parse_define_buffer() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineBuffer { name, table } => {
+        Statement::DefineBuffer { name, target, .. } => {
             assert_eq!(name.name, "bCust");
-            assert_eq!(table.name, "Customer");
+            match &target {
+                BufferTarget::Table(t) => assert_eq!(t.name, "Customer"),
+                _ => panic!("Expected Table target"),
+            }
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_for_temp_table() {
+    let source = "DEFINE BUFFER bTT FOR TEMP-TABLE ttCustomer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { name, target, .. } => {
+            assert_eq!(name.name, "bTT");
+            match &target {
+                BufferTarget::TempTable(t) => assert_eq!(t.name, "ttCustomer"),
+                _ => panic!("Expected TempTable target"),
+            }
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_preselect() {
+    let source = "DEFINE BUFFER bCust FOR Customer PRESELECT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { preselect, .. } => {
+            assert!(preselect);
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_label() {
+    let source = r#"DEFINE BUFFER bCust FOR Customer LABEL "Customer Buffer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { label, .. } => {
+            assert_eq!(label, Some("Customer Buffer".to_string()));
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_xml_attrs_skipped() {
+    let source = r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { name, .. } => {
+            assert_eq!(name.name, "bCust");
         }
         _ => panic!("Expected DefineBuffer statement"),
     }
