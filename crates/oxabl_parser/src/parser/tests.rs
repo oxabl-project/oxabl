@@ -3751,9 +3751,7 @@ DEFINE TEMP-TABLE ttSimple
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineTempTable {
-            name, no_undo, ..
-        } => {
+        Statement::DefineTempTable { name, no_undo, .. } => {
             assert_eq!(name.name, "ttSimple");
             assert!(!no_undo);
         }
