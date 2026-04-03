@@ -6,4 +6,3 @@ edition = "2024"
 [dependencies]
 
 [dev-dependencies]
-oxabl_lexer = { path = "../oxabl_lexer" }
