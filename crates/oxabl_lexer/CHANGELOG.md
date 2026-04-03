@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v0.2.0...oxabl_lexer-v0.3.0) (2026-04-03)
+
+
+### Features
+
+* **workspace:** Add publish job to release workflow and add required fields to crates ([e819219](https://github.com/oxabl-project/oxabl/commit/e81921955ff078af912aa3e590673ffe3ed576fa))
+* **workspace:** Add publish job to release workflow and add required… ([439b2f5](https://github.com/oxabl-project/oxabl/commit/439b2f5397bc899948fd38227fe98f7b667c18db))
+
 ## [0.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v0.1.0...oxabl_lexer-v0.2.0) (2026-04-03)
 
 
