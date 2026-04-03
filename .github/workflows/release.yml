@@ -19,9 +19,9 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          release-type: rust
-          manifest-file: .release-please-manifest.json
+          command: manifest
           config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   build:
     name: Build & Verify

@@ -1,6 +1,5 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "release-type": "rust",
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
   "plugins": [
@@ -21,11 +20,33 @@
     }
   ],
   "packages": {
-    "crates/oxabl": {},
-    "crates/oxabl_lexer": {},
-    "crates/oxabl_parser": {},
-    "crates/oxabl_ast": {},
-    "crates/oxabl_common": {},
-    "crates/oxabl_codegen": {}
+    ".": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "crates/oxabl": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "crates/oxabl_lexer": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "crates/oxabl_parser": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "crates/oxabl_ast": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "crates/oxabl_common": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "crates/oxabl_codegen": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md"
+    }
   }
 }
