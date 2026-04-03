@@ -107,6 +107,39 @@ impl<'a> Parser<'a> {
             )
     }
 
+    /// Parses a potentially dot-qualified identifier like `Customer.CustNum` or `db.table.field`.
+    ///
+    /// Used for LIKE references where the source is a qualified field name.
+    /// Returns a single Identifier whose name contains dots (e.g., "Customer.CustNum").
+    fn parse_qualified_identifier(&mut self) -> ParseResult<Identifier> {
+        let first = self.parse_identifier()?;
+        let mut name = first.name;
+        let start = first.span.start;
+        let mut end = first.span.end;
+
+        // Consume .qualifier parts
+        while self.check(Kind::Period) {
+            // Peek past the period to see if there's an identifier following
+            let saved = self.current;
+            self.advance(); // consume .
+            if Self::can_be_identifier(self.peek().kind) {
+                let next = self.advance().clone();
+                name.push('.');
+                name.push_str(&self.source[next.start..next.end]);
+                end = next.end as u32;
+            } else {
+                // Not a qualified name — put the period back
+                self.current = saved;
+                break;
+            }
+        }
+
+        Ok(Identifier {
+            span: Span { start, end },
+            name,
+        })
+    }
+
     /// Parses an Identifier
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
         if !Self::can_be_identifier(self.peek().kind) {
