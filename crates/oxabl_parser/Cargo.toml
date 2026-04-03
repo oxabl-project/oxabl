@@ -7,6 +7,6 @@ description = "Parser for Progress ABL source code"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_parser"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast" }
-oxabl_lexer = { path = "../oxabl_lexer" }
+oxabl_ast = { path = "../oxabl_ast", version = "0.3.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "0.3.0" }
 rust_decimal = "1.40.0"
