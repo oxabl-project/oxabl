@@ -245,6 +245,54 @@ keyword_type = "Operator"
 # min_abbreviation = "SHARE"
 
 # =============================================================================
+# TEMP-TABLE / BUFFER KEYWORDS
+# Keywords needed for DEFINE TEMP-TABLE and DEFINE BUFFER parsing
+# =============================================================================
+
+[[add]]
+name = "TEMP-TABLE"
+reserved = true
+keyword_type = "Statement"
+
+[[add]]
+name = "BUFFER"
+reserved = true
+keyword_type = "Statement"
+
+[[add]]
+name = "INITIAL"
+reserved = true
+keyword_type = "Option"
+min_abbreviation = "INIT"
+
+[[add]]
+name = "EXTENT"
+reserved = true
+keyword_type = "Option"
+
+[[add]]
+name = "PRIMARY"
+reserved = true
+keyword_type = "Option"
+
+[[add]]
+name = "VALIDATE"
+reserved = true
+keyword_type = "Option"
+
+[[add]]
+name = "BEFORE-TABLE"
+keyword_type = "Option"
+
+[[add]]
+name = "WORD-INDEX"
+keyword_type = "Option"
+
+[[add]]
+name = "PRESELECT"
+keyword_type = "Option"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================

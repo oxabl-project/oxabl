@@ -79,9 +79,70 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Returns true if the given Kind can appear as an identifier.
+    ///
+    /// ABL is very permissive about using keywords as identifiers. This includes
+    /// all callable kinds (functions) plus many statement/option keywords like
+    /// BUFFER, TEMP-TABLE, PRIMARY, INITIAL, EXTENT, etc.
+    fn can_be_identifier(kind: Kind) -> bool {
+        is_callable_kind(kind)
+            || matches!(
+                kind,
+                Kind::Buffer
+                    | Kind::TempTable
+                    | Kind::Initial
+                    | Kind::Extent
+                    | Kind::Primary
+                    | Kind::Validate
+                    | Kind::BeforeTable
+                    | Kind::WordIndex
+                    | Kind::Preselect
+                    | Kind::Format
+                    | Kind::Label
+                    | Kind::ColumnLabel
+                    | Kind::Ascending
+                    | Kind::Descending
+                    | Kind::Shared
+                    | Kind::Global
+            )
+    }
+
+    /// Parses a potentially dot-qualified identifier like `Customer.CustNum` or `db.table.field`.
+    ///
+    /// Used for LIKE references where the source is a qualified field name.
+    /// Returns a single Identifier whose name contains dots (e.g., "Customer.CustNum").
+    fn parse_qualified_identifier(&mut self) -> ParseResult<Identifier> {
+        let first = self.parse_identifier()?;
+        let mut name = first.name;
+        let start = first.span.start;
+        let mut end = first.span.end;
+
+        // Consume .qualifier parts
+        while self.check(Kind::Period) {
+            // Peek past the period to see if there's an identifier following
+            let saved = self.current;
+            self.advance(); // consume .
+            if Self::can_be_identifier(self.peek().kind) {
+                let next = self.advance().clone();
+                name.push('.');
+                name.push_str(&self.source[next.start..next.end]);
+                end = next.end as u32;
+            } else {
+                // Not a qualified name — put the period back
+                self.current = saved;
+                break;
+            }
+        }
+
+        Ok(Identifier {
+            span: Span { start, end },
+            name,
+        })
+    }
+
     /// Parses an Identifier
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected identifier".to_string(),
                 span: self.current_span(),

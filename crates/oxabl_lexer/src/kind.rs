@@ -139,6 +139,8 @@ pub enum Kind {
     Prev,
     Procedure,
     ExclusiveLock,
+    TempTable,
+    Buffer,
 
     // Functions
     Accum,
@@ -256,6 +258,13 @@ pub enum Kind {
 
     // Options
     NoError,
+    Initial,
+    Extent,
+    Primary,
+    Validate,
+    BeforeTable,
+    WordIndex,
+    Preselect,
 
     // Phrases
     Editing,
@@ -543,11 +552,13 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             Some(Kind::Background)
         }
         "before h" | "before hi" | "before hid" | "before hide" => Some(Kind::BeforeHide),
+        "before-table" => Some(Kind::BeforeTable),
         "begins" => Some(Kind::Begins),
         "bell" => Some(Kind::Bell),
         "between" => Some(Kind::Between),
         "big endian" => Some(Kind::BigEndian),
         "blank" => Some(Kind::Blank),
+        "buffer" => Some(Kind::Buffer),
         "by" => Some(Kind::By),
         "call" => Some(Kind::Call),
         "can do" | "can-do" => Some(Kind::CanDo),
@@ -644,6 +655,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "exclusive-lock" => Some(Kind::ExclusiveLock),
         "exists" => Some(Kind::Exists),
         "export" => Some(Kind::Export),
+        "extent" => Some(Kind::Extent),
         "fetch" => Some(Kind::Fetch),
         "field" => Some(Kind::Field),
         "fields" => Some(Kind::Fields),
@@ -713,6 +725,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "import" => Some(Kind::Import),
         "index" => Some(Kind::Index),
         "indicator" => Some(Kind::Indicator),
+        "init" | "initi" | "initia" | "initial" => Some(Kind::Initial),
         "input" => Some(Kind::Input),
         "input-o" | "input-ou" | "input-out" | "input-outp" | "input-outpu" | "input-output" => {
             Some(Kind::InputOutput)
@@ -858,7 +871,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "&webstream" => Some(Kind::PreprocWebstream),
         "preproc" | "preproce" | "preproces" | "preprocess" => Some(Kind::Preprocess),
         "preprop" => Some(Kind::Preprop),
+        "preselect" => Some(Kind::Preselect),
         "prev" => Some(Kind::Prev),
+        "primary" => Some(Kind::Primary),
         "privileges" => Some(Kind::Privileges),
         "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => {
             Some(Kind::ProcHandle)
@@ -952,6 +967,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "system-dialog" => Some(Kind::SystemDialog),
         "table" => Some(Kind::Table),
         "table-number" => Some(Kind::TableNumber),
+        "temp-table" => Some(Kind::TempTable),
         "term" => Some(Kind::Term),
         "termi" | "termin" | "termina" | "terminal" => Some(Kind::Terminal),
         "text" => Some(Kind::Text),
@@ -985,6 +1001,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "userid" => Some(Kind::Userid),
         "using" => Some(Kind::Using),
         "v6frame" => Some(Kind::V6frame),
+        "validate" => Some(Kind::Validate),
         "value" => Some(Kind::Value),
         "value-changed" => Some(Kind::ValueChanged),
         "values" => Some(Kind::Values),
@@ -999,6 +1016,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         | "window-minimized" => Some(Kind::WindowMinimized),
         "window-normal" => Some(Kind::WindowNormal),
         "with" => Some(Kind::With),
+        "word-index" => Some(Kind::WordIndex),
         "work-tab" | "work-tabl" | "work-table" => Some(Kind::WorkTable),
         "workfile" => Some(Kind::Workfile),
         "write" => Some(Kind::Write),

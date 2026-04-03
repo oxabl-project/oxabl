@@ -143,6 +143,46 @@ pub enum Statement {
         set_targets: Vec<Identifier>,
     },
 
+    /// DEFINE TEMP-TABLE statement.
+    ///
+    /// ```abl
+    /// DEFINE TEMP-TABLE ttCustomer NO-UNDO
+    ///     FIELD CustNum AS INTEGER
+    ///     FIELD Name AS CHARACTER
+    ///     INDEX idx1 IS PRIMARY UNIQUE CustNum.
+    /// ```
+    DefineTempTable {
+        /// Table name.
+        name: Identifier,
+        /// Whether NO-UNDO was specified.
+        no_undo: bool,
+        /// Table to inherit structure from (`LIKE table-name`).
+        like_table: Option<Identifier>,
+        /// Whether VALIDATE was specified with LIKE.
+        validate: bool,
+        /// USE-INDEX clauses for LIKE.
+        use_indexes: Vec<UseIndex>,
+        /// Field definitions.
+        fields: Vec<TempTableField>,
+        /// Index definitions.
+        indexes: Vec<TempTableIndex>,
+    },
+
+    /// DEFINE BUFFER statement.
+    ///
+    /// `DEFINE BUFFER bCust FOR Customer.`
+    /// `DEFINE BUFFER bTT FOR TEMP-TABLE ttCustomer.`
+    DefineBuffer {
+        /// Buffer name.
+        name: Identifier,
+        /// The target table or temp-table.
+        target: BufferTarget,
+        /// Whether PRESELECT was specified.
+        preselect: bool,
+        /// Optional label for error messages.
+        label: Option<String>,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -246,4 +286,72 @@ pub struct DisplayItem {
     pub expression: Expression,
     /// Optional `WHEN condition` — controls whether this item is displayed.
     pub when_condition: Option<Expression>,
+}
+
+/// Source of a temp-table field's type — either explicit or inherited via LIKE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldTypeSource {
+    /// Explicit type: `FIELD x AS INTEGER`
+    Explicit(DataType),
+    /// Inherited type: `FIELD x LIKE Customer.CustNum [VALIDATE]`
+    Like { source: Identifier, validate: bool },
+}
+
+/// A field definition in a DEFINE TEMP-TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempTableField {
+    /// Field name.
+    pub name: Identifier,
+    /// Type source — either explicit (AS type) or inherited (LIKE field).
+    pub type_source: FieldTypeSource,
+    /// Optional initial value(s). Scalar fields have one element; array fields may have multiple.
+    pub initial_value: Option<Vec<Expression>>,
+    /// Extent/array size. None for scalar, Some(0) for dynamic extent.
+    pub extent: Option<u32>,
+}
+
+/// A USE-INDEX clause in a DEFINE TEMP-TABLE LIKE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseIndex {
+    pub name: Identifier,
+    pub as_primary: bool,
+}
+
+/// An index definition in a DEFINE TEMP-TABLE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempTableIndex {
+    /// Index name.
+    pub name: Identifier,
+    /// Whether this is a PRIMARY index.
+    pub is_primary: bool,
+    /// Whether this index enforces UNIQUE values.
+    pub is_unique: bool,
+    /// Whether this is a WORD-INDEX.
+    pub is_word_index: bool,
+    /// Fields in this index with optional sort direction.
+    pub fields: Vec<IndexField>,
+}
+
+/// A field in an index definition with optional sort direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexField {
+    pub name: Identifier,
+    /// Explicit sort direction. None means inherit from previous field (or ASCENDING by default).
+    pub direction: Option<SortDirection>,
+}
+
+/// Sort direction for index fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+/// Target of a DEFINE BUFFER statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BufferTarget {
+    /// Buffer for a database table: `FOR Customer`
+    Table(Identifier),
+    /// Buffer for a temp-table: `FOR TEMP-TABLE ttCustomer`
+    TempTable(Identifier),
 }
