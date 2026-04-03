@@ -3837,7 +3837,8 @@ fn parse_define_buffer_label() {
 
 #[test]
 fn parse_define_buffer_xml_attrs_skipped() {
-    let source = r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
+    let source =
+        r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -3915,7 +3916,8 @@ fn parse_define_temp_table_like_validate() {
 
 #[test]
 fn parse_define_temp_table_like_use_index() {
-    let source = "DEFINE TEMP-TABLE tt LIKE Customer USE-INDEX CustNum USE-INDEX CountryPost AS PRIMARY.";
+    let source =
+        "DEFINE TEMP-TABLE tt LIKE Customer USE-INDEX CustNum USE-INDEX CountryPost AS PRIMARY.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -3942,9 +3944,7 @@ DEFINE TEMP-TABLE tt LIKE Customer
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::DefineTempTable {
-            like_table,
-            fields,
-            ..
+            like_table, fields, ..
         } => {
             assert!(like_table.is_some());
             assert_eq!(fields.len(), 1);
@@ -3993,14 +3993,12 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineTempTable { fields, .. } => {
-            match &fields[0].type_source {
-                FieldTypeSource::Like { validate, .. } => {
-                    assert!(validate);
-                }
-                _ => panic!("Expected Like type source"),
+        Statement::DefineTempTable { fields, .. } => match &fields[0].type_source {
+            FieldTypeSource::Like { validate, .. } => {
+                assert!(validate);
             }
-        }
+            _ => panic!("Expected Like type source"),
+        },
         _ => panic!("Expected DefineTempTable statement"),
     }
 }
@@ -4237,7 +4235,9 @@ DEFINE TEMP-TABLE tt NO-UNDO
 "#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Should parse despite XML attrs");
+    let stmt = parser
+        .parse_statement()
+        .expect("Should parse despite XML attrs");
     match stmt {
         Statement::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
