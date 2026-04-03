@@ -1,7 +1,7 @@
 ---
 title: "Complete TEMP-TABLE and BUFFER Parsing"
 type: feat
-status: active
+status: completed
 date: 2026-04-02
 deepened: 2026-04-02
 ---
