@@ -5,12 +5,38 @@
 //! MESSAGE, LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    DisplayItem, Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument,
-    RunTarget, Span, Statement, WhenBranch,
+    BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType, Identifier, IndexField,
+    LockType, ParameterDirection, RunArgument, RunTarget, SortDirection, Span, Statement,
+    TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
-use oxabl_lexer::{Kind, is_callable_kind};
+use oxabl_lexer::Kind;
 
 use super::{ParseError, ParseResult, Parser};
+
+/// Returns true if the given Kind can start a new top-level statement.
+///
+/// Used for error recovery: if we encounter a statement-starting keyword while
+/// parsing inside a DEFINE TEMP-TABLE body, it likely means a period was missed.
+fn can_start_statement(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Define
+            | Kind::Do
+            | Kind::KwIf
+            | Kind::Repeat
+            | Kind::KwFor
+            | Kind::Find
+            | Kind::Case
+            | Kind::Procedure
+            | Kind::Run
+            | Kind::Display
+            | Kind::Message
+            | Kind::KwReturn
+            | Kind::Leave
+            | Kind::Next
+            | Kind::End
+    )
+}
 
 impl Parser<'_> {
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
@@ -138,10 +164,36 @@ impl Parser<'_> {
             return self.parse_define_parameter();
         }
 
-        // Variable
-        if !self.check(Kind::Identifier) {
+        // DEFINE TEMP-TABLE
+        if self.check(Kind::TempTable) {
+            return self.parse_define_temp_table();
+        }
+
+        // DEFINE BUFFER
+        if self.check(Kind::Buffer) {
+            return self.parse_define_buffer();
+        }
+
+        // DEFINE VARIABLE / DEFINE VAR
+        if Self::can_be_identifier(self.peek().kind) {
+            let token = self.peek();
+            let text = &self.source[token.start..token.end];
+            if text.eq_ignore_ascii_case("variable") || text.eq_ignore_ascii_case("var") {
+                self.advance(); // consume VARIABLE or VAR
+            } else {
+                return Err(ParseError {
+                    message: "Expected VARIABLE, VAR, TEMP-TABLE, or BUFFER after DEFINE"
+                        .to_string(),
+                    span: Span {
+                        start: token.start as u32,
+                        end: token.end as u32,
+                    },
+                });
+            }
+        } else {
             return Err(ParseError {
-                message: "Expected variable name after DEFINE".to_string(),
+                message: "Expected keyword after DEFINE (VARIABLE, TEMP-TABLE, BUFFER, etc.)"
+                    .to_string(),
                 span: Span {
                     start: self.peek().start as u32,
                     end: self.peek().end as u32,
@@ -149,23 +201,8 @@ impl Parser<'_> {
             });
         }
 
-        let define_what = self.peek();
-        let define_text = &self.source[define_what.start..define_what.end];
-
-        if !define_text.eq_ignore_ascii_case("variable") && !define_text.eq_ignore_ascii_case("var")
-        {
-            return Err(ParseError {
-                message: "Expected VARIABLE or VAR after DEFINE".to_string(),
-                span: Span {
-                    start: define_what.start as u32,
-                    end: define_what.end as u32,
-                },
-            });
-        }
-        self.advance(); // consume VARIABLE or VAR
-
         // Name
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected variable name after DEFINE VARIABLE".to_string(),
                 span: Span {
@@ -196,19 +233,17 @@ impl Parser<'_> {
         let mut extent = None;
 
         loop {
-            if self.check(Kind::NoUndo) {
-                self.advance();
-                no_undo = true;
-            } else if self.check(Kind::Identifier) {
-                let token = self.peek();
-                let text = &self.source[token.start..token.end];
-
-                if text.eq_ignore_ascii_case("initial") || text.eq_ignore_ascii_case("init") {
-                    self.advance(); // Consume init
+            match self.peek().kind {
+                Kind::NoUndo => {
+                    self.advance();
+                    no_undo = true;
+                }
+                Kind::Initial => {
+                    self.advance();
                     initial_value = Some(self.parse_expression()?);
-                } else if text.eq_ignore_ascii_case("extent") {
-                    self.advance(); // Consume extent
-
+                }
+                Kind::Extent => {
+                    self.advance();
                     // Extent can be followed by number or nothing (dynamic)
                     if self.check(Kind::IntegerLiteral) {
                         let ext_token = self.advance().clone();
@@ -217,13 +252,9 @@ impl Parser<'_> {
                         } else {
                             extent = Some(0); // dynamic
                         }
-                    } // extent check if it's set or dynamic
-                } else {
-                    // not initial or extent
-                    break;
+                    }
                 }
-            } else {
-                break; // not an identifier, exit loop
+                _ => break,
             }
         }
 
@@ -246,7 +277,7 @@ impl Parser<'_> {
         let data_type = self.parse_data_type()?;
 
         // Parse variable name
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected variable name".to_string(),
                 span: Span {
@@ -305,7 +336,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::Parameter, "Expected PARAMETER after INPUT/OUTPUT")?;
 
         // Parse parameter name
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected parameter name".to_string(),
                 span: Span {
@@ -344,6 +375,291 @@ impl Parser<'_> {
             name,
             data_type,
             no_undo,
+        })
+    }
+
+    // Parse DEFINE TEMP-TABLE
+    fn parse_define_temp_table(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume TEMP-TABLE
+
+        let name = self.parse_identifier()?;
+
+        // Optional NO-UNDO
+        let no_undo = if self.check(Kind::NoUndo) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Optional LIKE / LIKE-SEQUENTIAL clause
+        let mut like_table = None;
+        let mut validate = false;
+        let mut use_indexes = Vec::new();
+
+        if self.check(Kind::Like) || self.check(Kind::LikeSequential) {
+            self.advance(); // consume LIKE or LIKE-SEQUENTIAL
+            like_table = Some(self.parse_identifier()?);
+
+            // Optional VALIDATE
+            if self.check(Kind::Validate) {
+                self.advance();
+                validate = true;
+            }
+
+            // Optional USE-INDEX clauses
+            while self.check(Kind::UseIndex) {
+                self.advance(); // consume USE-INDEX
+                let idx_name = self.parse_identifier()?;
+                let as_primary = if self.check(Kind::KwAs) {
+                    self.advance();
+                    self.expect_kind(Kind::Primary, "Expected PRIMARY after AS in USE-INDEX")?;
+                    true
+                } else {
+                    false
+                };
+                use_indexes.push(UseIndex {
+                    name: idx_name,
+                    as_primary,
+                });
+            }
+        }
+
+        let mut fields = Vec::new();
+        let mut indexes = Vec::new();
+
+        // Parse FIELD and INDEX definitions until period
+        while !self.check(Kind::Period) && !self.at_end() {
+            if self.check(Kind::Field) {
+                self.advance(); // consume FIELD
+                let field_name = self.parse_identifier()?;
+
+                // Parse type source: AS type or LIKE field
+                let type_source = if self.check(Kind::Like) {
+                    self.advance();
+                    let source = self.parse_qualified_identifier()?;
+                    let field_validate = if self.check(Kind::Validate) {
+                        self.advance();
+                        true
+                    } else {
+                        false
+                    };
+                    FieldTypeSource::Like {
+                        source,
+                        validate: field_validate,
+                    }
+                } else {
+                    self.expect_kind(Kind::KwAs, "Expected AS or LIKE after field name")?;
+                    FieldTypeSource::Explicit(self.parse_data_type()?)
+                };
+
+                // Parse optional field options
+                let mut initial_value = None;
+                let mut extent = None;
+
+                loop {
+                    match self.peek().kind {
+                        Kind::Initial => {
+                            self.advance();
+                            // Handle array initial syntax: INITIAL [val1, val2, ...]
+                            if self.check(Kind::LeftBracket) {
+                                self.advance(); // consume [
+                                let mut values = Vec::new();
+                                if !self.check(Kind::RightBracket) {
+                                    values.push(self.parse_expression()?);
+                                    while self.check(Kind::Comma) {
+                                        self.advance();
+                                        values.push(self.parse_expression()?);
+                                    }
+                                }
+                                self.expect_kind(
+                                    Kind::RightBracket,
+                                    "Expected ']' after initial values",
+                                )?;
+                                initial_value = Some(values);
+                            } else {
+                                // Scalar initial value
+                                initial_value = Some(vec![self.parse_expression()?]);
+                            }
+                        }
+                        Kind::Extent => {
+                            self.advance();
+                            if self.check(Kind::IntegerLiteral) {
+                                let ext_token = self.advance().clone();
+                                if let Ok(n) =
+                                    self.source[ext_token.start..ext_token.end].parse::<u32>()
+                                {
+                                    extent = Some(n);
+                                } else {
+                                    extent = Some(0); // dynamic
+                                }
+                            }
+                        }
+                        // Skip known field options we don't store in the AST
+                        Kind::Format | Kind::Label | Kind::ColumnLabel => {
+                            self.advance(); // consume keyword
+                            // Skip the value (usually a string literal)
+                            if self.check(Kind::StringLiteral) {
+                                self.advance();
+                            }
+                        }
+                        // Break on field/index/period boundaries
+                        Kind::Field | Kind::Index | Kind::Period => break,
+                        _ => break,
+                    }
+                }
+
+                fields.push(TempTableField {
+                    name: field_name,
+                    type_source,
+                    initial_value,
+                    extent,
+                });
+            } else if self.check(Kind::Index) {
+                self.advance(); // consume INDEX
+                let index_name = self.parse_identifier()?;
+
+                let mut is_primary = false;
+                let mut is_unique = false;
+                let mut is_word_index = false;
+
+                // Optional IS or AS prefix (both valid, or neither)
+                if self.check(Kind::Is) || self.check(Kind::KwAs) {
+                    self.advance();
+                }
+
+                // Parse flags in any order: PRIMARY, UNIQUE, WORD-INDEX
+                loop {
+                    match self.peek().kind {
+                        Kind::Primary => {
+                            self.advance();
+                            is_primary = true;
+                        }
+                        Kind::Unique => {
+                            self.advance();
+                            is_unique = true;
+                        }
+                        Kind::WordIndex => {
+                            self.advance();
+                            is_word_index = true;
+                        }
+                        _ => break,
+                    }
+                }
+
+                // Parse index fields with optional ASC/DESC direction
+                let mut index_fields = Vec::new();
+                while Self::can_be_identifier(self.peek().kind)
+                    && !self.check(Kind::Field)
+                    && !self.check(Kind::Index)
+                    && !self.check(Kind::Period)
+                {
+                    let field_name = self.parse_identifier()?;
+                    let direction = match self.peek().kind {
+                        Kind::Ascending => {
+                            self.advance();
+                            Some(SortDirection::Ascending)
+                        }
+                        Kind::Descending => {
+                            self.advance();
+                            Some(SortDirection::Descending)
+                        }
+                        _ => None,
+                    };
+                    index_fields.push(IndexField {
+                        name: field_name,
+                        direction,
+                    });
+                }
+
+                indexes.push(TempTableIndex {
+                    name: index_name,
+                    is_primary,
+                    is_unique,
+                    is_word_index,
+                    fields: index_fields,
+                });
+            } else if can_start_statement(self.peek().kind) {
+                // A statement-starting keyword means we likely missed a period
+                return Err(ParseError {
+                    message: "Expected '.' to end DEFINE TEMP-TABLE (found statement keyword)"
+                        .to_string(),
+                    span: Span {
+                        start: self.peek().start as u32,
+                        end: self.peek().end as u32,
+                    },
+                });
+            } else {
+                // Skip unknown tokens in temp-table definition (forward-compatibility)
+                self.advance();
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after DEFINE TEMP-TABLE")?;
+
+        Ok(Statement::DefineTempTable {
+            name,
+            no_undo,
+            like_table,
+            validate,
+            use_indexes,
+            fields,
+            indexes,
+        })
+    }
+
+    // Parse DEFINE BUFFER name FOR [TEMP-TABLE] table [PRESELECT] [LABEL "str"].
+    fn parse_define_buffer(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume BUFFER
+
+        let name = self.parse_identifier()?;
+        self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
+
+        // Check for FOR TEMP-TABLE vs FOR table
+        let target = if self.check(Kind::TempTable) {
+            self.advance();
+            BufferTarget::TempTable(self.parse_identifier()?)
+        } else {
+            BufferTarget::Table(self.parse_identifier()?)
+        };
+
+        // Parse optional modifiers
+        let mut preselect = false;
+        let mut label = None;
+
+        while !self.check(Kind::Period) && !self.at_end() {
+            match self.peek().kind {
+                Kind::Preselect => {
+                    self.advance();
+                    preselect = true;
+                }
+                Kind::Label => {
+                    self.advance();
+                    if self.check(Kind::StringLiteral) {
+                        let token = self.advance().clone();
+                        // Strip quotes from string literal
+                        let raw = &self.source[token.start..token.end];
+                        label = Some(raw[1..raw.len() - 1].to_string());
+                    }
+                }
+                _ => {
+                    // Skip unknown tokens (NAMESPACE-URI, SERIALIZE-NAME, etc.)
+                    self.advance();
+                    // Skip their string value if present
+                    if self.check(Kind::StringLiteral) {
+                        self.advance();
+                    }
+                }
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after DEFINE BUFFER")?;
+
+        Ok(Statement::DefineBuffer {
+            name,
+            target,
+            preselect,
+            label,
         })
     }
 
@@ -436,7 +752,7 @@ impl Parser<'_> {
         let mut while_condition = None;
 
         // check for loop
-        if is_callable_kind(self.peek().kind) {
+        if Self::can_be_identifier(self.peek().kind) {
             // peek ahead to see if this is 'var = start to end'
             let saved_pos = self.current;
             let potential_var = self.advance().clone();
@@ -1012,7 +1328,7 @@ impl Parser<'_> {
                     }
                     continue;
                 }
-                if is_callable_kind(self.peek().kind) {
+                if Self::can_be_identifier(self.peek().kind) {
                     set_targets.push(self.parse_identifier()?);
                 } else {
                     break;
@@ -1067,7 +1383,7 @@ impl Parser<'_> {
     /// `.i`, and `.cls`. A period followed by a non-extension token is treated as the
     /// statement terminator, not part of the name.
     fn parse_procedure_name(&mut self) -> ParseResult<String> {
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
                 span: Span {
