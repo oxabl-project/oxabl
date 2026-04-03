@@ -11,7 +11,7 @@ permissions:
 jobs:
   release-please:
     name: Release Please
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -27,7 +27,7 @@ jobs:
     name: Build & Verify
     needs: release-please
     if: ${{ needs.release-please.outputs.releases_created }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: moonrepo/setup-rust@v0
@@ -40,7 +40,7 @@ jobs:
     name: Publish to crates.io
     needs: [release-please, build]
     if: ${{ needs.release-please.outputs.releases_created }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: moonrepo/setup-rust@v0
