@@ -294,10 +294,7 @@ pub enum FieldTypeSource {
     /// Explicit type: `FIELD x AS INTEGER`
     Explicit(DataType),
     /// Inherited type: `FIELD x LIKE Customer.CustNum [VALIDATE]`
-    Like {
-        source: Identifier,
-        validate: bool,
-    },
+    Like { source: Identifier, validate: bool },
 }
 
 /// A field definition in a DEFINE TEMP-TABLE statement.
