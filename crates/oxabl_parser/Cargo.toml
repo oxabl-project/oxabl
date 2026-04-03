@@ -2,6 +2,9 @@
 name = "oxabl_parser"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Parser for Progress ABL source code"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_parser"
 
 [dependencies]
 oxabl_ast = { path = "../oxabl_ast" }
