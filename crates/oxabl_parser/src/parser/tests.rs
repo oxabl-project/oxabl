@@ -1,8 +1,8 @@
 use super::*;
 use oxabl_ast::{
     BooleanLiteral, DataType, DecimalLiteral, Expression, FieldTypeSource, FindType, Identifier,
-    IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, Span, Statement,
-    StringLiteral, UnknownLiteral, WhenBranch,
+    IntegerLiteral, Literal, LockType, ParameterDirection, RunTarget, SortDirection, Span,
+    Statement, StringLiteral, UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -3742,7 +3742,7 @@ DEFINE TEMP-TABLE ttOrder NO-UNDO
             assert!(indexes[0].is_primary);
             assert!(indexes[0].is_unique);
             assert_eq!(indexes[0].fields.len(), 1);
-            assert_eq!(indexes[0].fields[0].name, "OrderNum");
+            assert_eq!(indexes[0].fields[0].name.name, "OrderNum");
             assert_eq!(indexes[1].name.name, "idx2");
             assert!(!indexes[1].is_primary);
             assert!(!indexes[1].is_unique);
@@ -4013,6 +4013,138 @@ DEFINE TEMP-TABLE tt NO-UNDO
         Statement::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
             // Labels are skipped, not stored
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+// ===================== Index enhancement tests =====================
+
+#[test]
+fn parse_index_with_ascending_descending() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD a AS INTEGER
+    FIELD b AS INTEGER
+    INDEX idx1 a ASCENDING b DESCENDING.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert_eq!(indexes.len(), 1);
+            assert_eq!(indexes[0].fields.len(), 2);
+            assert_eq!(
+                indexes[0].fields[0].direction,
+                Some(SortDirection::Ascending)
+            );
+            assert_eq!(
+                indexes[0].fields[1].direction,
+                Some(SortDirection::Descending)
+            );
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_desc_propagation_stores_none() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD a AS CHARACTER
+    FIELD b AS CHARACTER
+    FIELD c AS CHARACTER
+    INDEX idx1 a DESC b c.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert_eq!(indexes[0].fields.len(), 3);
+            assert_eq!(
+                indexes[0].fields[0].direction,
+                Some(SortDirection::Descending)
+            );
+            assert_eq!(indexes[0].fields[1].direction, None);
+            assert_eq!(indexes[0].fields[2].direction, None);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_word_index() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD Name AS CHARACTER
+    INDEX idx1 IS WORD-INDEX Name.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_word_index);
+            assert_eq!(indexes[0].fields.len(), 1);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_as_unique_primary() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER
+    INDEX idx1 AS UNIQUE PRIMARY x.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_unique);
+            assert!(indexes[0].is_primary);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_flags_without_is_prefix() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER
+    INDEX idx1 PRIMARY UNIQUE x.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_primary);
+            assert!(indexes[0].is_unique);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_flags_reverse_order() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER
+    INDEX idx1 UNIQUE PRIMARY x.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_unique);
+            assert!(indexes[0].is_primary);
         }
         _ => panic!("Expected DefineTempTable statement"),
     }
