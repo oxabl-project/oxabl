@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v0.3.1...oxabl_parser-v0.4.0) (2026-04-04)
+
+
+### Features
+
+* **parser:** Add ASSIGN statement and FUNCTION definition support ([5f85a32](https://github.com/oxabl-project/oxabl/commit/5f85a323a572a36b3c2206bbc5eaddb37bcc57f0))
+* **parser:** Add ASSIGN statement and FUNCTION definition support ([e1308a1](https://github.com/oxabl-project/oxabl/commit/e1308a1af9f5f4cb90bfb1be4626028d4bfc0970))
+* **parser:** Add CATCH, FINALLY, and THROW support ([193a410](https://github.com/oxabl-project/oxabl/commit/193a410fc78869bff108e1316ee58e243809a863))
+* **parser:** Add CATCH, FINALLY, and THROW support ([c97bd34](https://github.com/oxabl-project/oxabl/commit/c97bd347d8a629675767aeb93abde8e8ec585f8a))
+* **parser:** Add error recovery with Program type and synchronize() ([7286eda](https://github.com/oxabl-project/oxabl/commit/7286eda62877fc172ea77d4b9c96fd9e87cf2725))
+* **parser:** Add error recovery with Program type and synchronize() ([1e59952](https://github.com/oxabl-project/oxabl/commit/1e59952a90a8380ce745d033403e16bef5ac0887))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 0.3.0 to 0.4.0
+
 ## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v0.3.0...oxabl_parser-v0.3.1) (2026-04-03)
 
 
