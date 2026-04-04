@@ -1,0 +1,87 @@
+/* Benchmark fixture: preprocessor directives and references */
+
+&scoped-define TABLE-NAME customer
+&scoped-define FIELD-LIST cust-id cust-name balance
+&scoped-define MAX-RECORDS 1000
+&scoped-define DEBUG-MODE true
+&scoped-define VERSION "1.0.0"
+&scoped-define APP-NAME "BenchmarkApp"
+&scoped-define LOG-LEVEL 3
+&scoped-define DELIM ","
+&scoped-define EMPTY-STRING ""
+&scoped-define DEFAULT-PAGE-SIZE 20
+
+&global-define GLOBAL-SETTING "enabled"
+&global-define GLOBAL-MAX 99999
+&global-define GLOBAL-PREFIX "GLB"
+
+define variable lv-table as character no-undo initial "{&TABLE-NAME}".
+define variable lv-max as integer no-undo initial {&MAX-RECORDS}.
+define variable lv-app as character no-undo initial {&APP-NAME}.
+define variable lv-ver as character no-undo initial {&VERSION}.
+define variable lv-level as integer no-undo initial {&LOG-LEVEL}.
+define variable lv-delim as character no-undo initial {&DELIM}.
+define variable lv-page as integer no-undo initial {&DEFAULT-PAGE-SIZE}.
+define variable lv-global as character no-undo initial {&GLOBAL-SETTING}.
+define variable lv-prefix as character no-undo initial {&GLOBAL-PREFIX}.
+
+&if defined(DEBUG-MODE) &then
+define variable lv-debug as logical no-undo initial true.
+&endif
+
+&if {&MAX-RECORDS} > 500 &then
+define variable lv-large-set as logical no-undo initial true.
+&else
+define variable lv-large-set as logical no-undo initial false.
+&endif
+
+&if defined(GLOBAL-SETTING) &then
+  &if {&LOG-LEVEL} > 2 &then
+define variable lv-verbose as logical no-undo initial true.
+  &endif
+&endif
+
+&scoped-define PROC-NAME "process-data"
+&scoped-define INPUT-TYPE character
+&scoped-define OUTPUT-TYPE logical
+
+assign lv-table = "{&TABLE-NAME}".
+assign lv-max = {&MAX-RECORDS}.
+assign lv-app = {&APP-NAME}.
+assign lv-level = {&LOG-LEVEL}.
+assign lv-page = {&DEFAULT-PAGE-SIZE}.
+
+&scoped-define CALC-1 100
+&scoped-define CALC-2 200
+&scoped-define CALC-3 300
+
+assign lv-max = {&CALC-1} + {&CALC-2} + {&CALC-3}.
+
+&if true &then
+assign lv-debug = true.
+&else
+assign lv-debug = false.
+&endif
+
+&scoped-define FIELD-1 "name"
+&scoped-define FIELD-2 "address"
+&scoped-define FIELD-3 "city"
+&scoped-define FIELD-4 "state"
+&scoped-define FIELD-5 "zip"
+
+assign lv-table = {&FIELD-1} + {&DELIM} + {&FIELD-2} + {&DELIM} + {&FIELD-3}.
+assign lv-table = {&FIELD-4} + {&DELIM} + {&FIELD-5}.
+
+&scoped-define STATUS-ACTIVE "active"
+&scoped-define STATUS-INACTIVE "inactive"
+&scoped-define STATUS-PENDING "pending"
+&scoped-define STATUS-DELETED "deleted"
+&scoped-define STATUS-ARCHIVED "archived"
+
+&undefine TABLE-NAME
+&scoped-define TABLE-NAME order
+assign lv-table = "{&TABLE-NAME}".
+
+&undefine TABLE-NAME
+&scoped-define TABLE-NAME invoice
+assign lv-table = "{&TABLE-NAME}".
