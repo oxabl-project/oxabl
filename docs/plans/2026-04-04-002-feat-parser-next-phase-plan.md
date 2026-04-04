@@ -1,7 +1,7 @@
 ---
 title: "Parser Next Phase: OO-ABL Support"
 type: feat
-status: active
+status: completed
 date: 2026-04-04
 revised: 2026-04-04
 ---

@@ -1,6 +1,6 @@
 use super::*;
 use oxabl_ast::{
-    AssignPair, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
+    AccessModifier, AssignPair, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
     FieldTypeSource, FindType, Identifier, IntegerLiteral, Literal, LockType, ParameterDirection,
     RunTarget, SortDirection, Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
 };
@@ -4856,5 +4856,461 @@ fn parse_var_with_all_data_types() {
             }
             _ => panic!("Expected VariableDeclaration for '{}'", source),
         }
+    }
+}
+
+// ===================== CLASS/OO-ABL tests =====================
+
+#[test]
+fn parse_simple_class() {
+    let source = "CLASS MyClass: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class {
+            name,
+            inherits,
+            implements,
+            is_abstract,
+            is_final,
+            body,
+        } => {
+            assert_eq!(name.name, "MyClass");
+            assert!(inherits.is_none());
+            assert!(implements.is_empty());
+            assert!(!is_abstract);
+            assert!(!is_final);
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_with_inherits() {
+    let source = "CLASS MyApp.CustomerService INHERITS BaseService: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { name, inherits, .. } => {
+            assert_eq!(name.name, "MyApp.CustomerService");
+            assert_eq!(inherits.unwrap().name, "BaseService");
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_with_implements() {
+    let source = "CLASS MyService IMPLEMENTS IService: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { implements, .. } => {
+            assert_eq!(implements.len(), 1);
+            assert_eq!(implements[0].name, "IService");
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_inherits_and_implements_multiple() {
+    let source =
+        "CLASS MyService INHERITS BaseService IMPLEMENTS IService, IDisposable: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class {
+            inherits,
+            implements,
+            ..
+        } => {
+            assert_eq!(inherits.unwrap().name, "BaseService");
+            assert_eq!(implements.len(), 2);
+            assert_eq!(implements[0].name, "IService");
+            assert_eq!(implements[1].name, "IDisposable");
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_abstract_class() {
+    let source = "CLASS ABSTRACT MyClass: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class {
+            is_abstract,
+            is_final,
+            ..
+        } => {
+            assert!(is_abstract);
+            assert!(!is_final);
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_final_class() {
+    let source = "CLASS FINAL MyClass: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { is_final, .. } => {
+            assert!(is_final);
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_method_public_void_no_params() {
+    let source = "METHOD PUBLIC VOID DoSomething(): END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            access,
+            is_static,
+            is_abstract,
+            is_override,
+            return_type,
+            name,
+            parameters,
+            body,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
+            assert!(!is_abstract);
+            assert!(!is_override);
+            assert!(return_type.is_none()); // VOID
+            assert_eq!(name.name, "DoSomething");
+            assert!(parameters.is_empty());
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_method_private_with_return_and_params() {
+    let source = "METHOD PRIVATE INTEGER Calculate(INPUT x AS INTEGER, INPUT y AS INTEGER): RETURN x + y. END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            access,
+            return_type,
+            name,
+            parameters,
+            body,
+            ..
+        } => {
+            assert_eq!(access, AccessModifier::Private);
+            assert_eq!(return_type, Some(DataType::Integer));
+            assert_eq!(name.name, "Calculate");
+            assert_eq!(parameters.len(), 2);
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_static_method() {
+    let source = "METHOD PUBLIC STATIC VOID Initialize(): END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            is_static, name, ..
+        } => {
+            assert!(is_static);
+            assert_eq!(name.name, "Initialize");
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_abstract_method() {
+    let source = "METHOD PUBLIC ABSTRACT VOID Run().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            is_abstract,
+            body,
+            name,
+            ..
+        } => {
+            assert!(is_abstract);
+            assert_eq!(name.name, "Run");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_override_method() {
+    let source = "METHOD PUBLIC OVERRIDE VOID ToString(): RETURN. END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method { is_override, .. } => {
+            assert!(is_override);
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_property_auto_get_set() {
+    let source = "DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO GET. SET.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Property {
+            access,
+            is_static,
+            name,
+            data_type,
+            no_undo,
+            get_body,
+            set_body,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
+            assert_eq!(name.name, "Name");
+            assert_eq!(data_type, DataType::Character);
+            assert!(no_undo);
+            assert_eq!(get_body, Some(Vec::new())); // auto-getter
+            assert_eq!(set_body, Some(Vec::new())); // auto-setter
+        }
+        _ => panic!("Expected Property statement"),
+    }
+}
+
+#[test]
+fn parse_property_computed_get_set() {
+    let source = r#"DEFINE PUBLIC PROPERTY FullName AS CHARACTER NO-UNDO
+        GET:
+            RETURN "hello".
+        END GET.
+        SET:
+            DEFINE VARIABLE x AS CHARACTER.
+        END SET."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Property {
+            get_body, set_body, ..
+        } => {
+            let get = get_body.unwrap();
+            assert_eq!(get.len(), 1); // RETURN "hello".
+            let set = set_body.unwrap();
+            assert_eq!(set.len(), 1); // DEFINE VARIABLE x AS CHARACTER.
+        }
+        _ => panic!("Expected Property statement"),
+    }
+}
+
+#[test]
+fn parse_property_read_only() {
+    let source = "DEFINE PUBLIC PROPERTY Count AS INTEGER NO-UNDO GET.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Property {
+            get_body, set_body, ..
+        } => {
+            assert_eq!(get_body, Some(Vec::new())); // has getter
+            assert!(set_body.is_none()); // no setter — read-only
+        }
+        _ => panic!("Expected Property statement"),
+    }
+}
+
+#[test]
+fn parse_constructor_with_params() {
+    let source = "CONSTRUCTOR PUBLIC MyClass(INPUT name AS CHARACTER): DEFINE VARIABLE x AS INTEGER. END CONSTRUCTOR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Constructor {
+            access,
+            parameters,
+            body,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert_eq!(parameters.len(), 1);
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected Constructor statement"),
+    }
+}
+
+#[test]
+fn parse_destructor() {
+    let source = "DESTRUCTOR PUBLIC MyClass(): END DESTRUCTOR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Destructor { body } => {
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Destructor statement"),
+    }
+}
+
+#[test]
+fn parse_interface_with_method_signatures() {
+    let source = "INTERFACE IService: METHOD PUBLIC ABSTRACT VOID Run(). END INTERFACE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Interface {
+            name,
+            inherits,
+            body,
+        } => {
+            assert_eq!(name.name, "IService");
+            assert!(inherits.is_empty());
+            assert_eq!(body.len(), 1);
+            match &body[0] {
+                Statement::Method { is_abstract, .. } => assert!(is_abstract),
+                _ => panic!("Expected Method in interface body"),
+            }
+        }
+        _ => panic!("Expected Interface statement"),
+    }
+}
+
+#[test]
+fn parse_interface_with_inherits() {
+    let source = "INTERFACE ISpecialService INHERITS IService: END INTERFACE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Interface { inherits, .. } => {
+            assert_eq!(inherits.len(), 1);
+            assert_eq!(inherits[0].name, "IService");
+        }
+        _ => panic!("Expected Interface statement"),
+    }
+}
+
+#[test]
+fn parse_using_qualified_name() {
+    let source = "USING Progress.Lang.Object.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Using { type_name } => {
+            assert_eq!(type_name, "Progress.Lang.Object");
+        }
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_using_wildcard() {
+    let source = "USING MyApp.Services.*.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Using { type_name } => {
+            assert_eq!(type_name, "MyApp.Services.*");
+        }
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_full_class_with_mixed_members() {
+    let source = r#"CLASS MyApp.CustomerService INHERITS BaseService:
+        DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO GET. SET.
+
+        CONSTRUCTOR PUBLIC CustomerService():
+        END CONSTRUCTOR.
+
+        METHOD PUBLIC VOID DoWork():
+            DEFINE VARIABLE x AS INTEGER.
+        END METHOD.
+
+        METHOD PUBLIC CHARACTER GetName():
+            RETURN "hello".
+        END METHOD.
+    END CLASS."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { name, body, .. } => {
+            assert_eq!(name.name, "MyApp.CustomerService");
+            // Property + Constructor + 2 Methods = 4 members
+            assert_eq!(body.len(), 4);
+            assert!(matches!(body[0], Statement::Property { .. }));
+            assert!(matches!(body[1], Statement::Constructor { .. }));
+            assert!(matches!(body[2], Statement::Method { .. }));
+            assert!(matches!(body[3], Statement::Method { .. }));
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_define_public_variable_in_class() {
+    // Access modifier before VARIABLE is accepted (modifier is ignored for now)
+    let source = "DEFINE PUBLIC VARIABLE x AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::VariableDeclaration { name, .. } => {
+            assert_eq!(name.name, "x");
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_method_with_class_return_type() {
+    let source = "METHOD PUBLIC CLASS Progress.Lang.Object GetObj(): RETURN. END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method { return_type, .. } => {
+            assert_eq!(
+                return_type,
+                Some(DataType::Class("Progress.Lang.Object".to_string()))
+            );
+        }
+        _ => panic!("Expected Method statement"),
     }
 }
