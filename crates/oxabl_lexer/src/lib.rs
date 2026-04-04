@@ -331,12 +331,14 @@ impl<'a> Lexer<'a> {
     /// Returns Some(Kind) if successful, None if not a lock type (iterator unchanged).
     fn try_read_space_separated_lock(&mut self, first_word: &str) -> Option<Kind> {
         // Check if first word is one that could start a lock type
-        let first_lower = first_word.to_lowercase();
-        let lock_kind = match first_lower.as_str() {
-            "no" => Kind::NoLock,
-            "share" => Kind::ShareLock,
-            "exclusive" => Kind::ExclusiveLock,
-            _ => return None,
+        let lock_kind = if first_word.eq_ignore_ascii_case("no") {
+            Kind::NoLock
+        } else if first_word.eq_ignore_ascii_case("share") {
+            Kind::ShareLock
+        } else if first_word.eq_ignore_ascii_case("exclusive") {
+            Kind::ExclusiveLock
+        } else {
+            return None;
         };
 
         // Save iterator state for potential rollback
