@@ -9,7 +9,7 @@ use oxabl_ast::{
     IndexField, LockType, ParameterDirection, RunArgument, RunTarget, SortDirection, Span,
     Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
-use oxabl_lexer::{Kind, is_callable_kind};
+use oxabl_lexer::Kind;
 
 use super::{ParseError, ParseResult, Parser};
 
@@ -35,6 +35,8 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Leave
             | Kind::Next
             | Kind::End
+            | Kind::Variable
+            | Kind::Function
     )
 }
 
@@ -105,11 +107,6 @@ impl Parser<'_> {
             return self.parse_procedure();
         }
 
-        // RUN statement
-        if self.check(Kind::Run) {
-            return self.parse_run_statement();
-        }
-
         // DISPLAY statement
         if self.check(Kind::Display) {
             return self.parse_display_statement();
@@ -131,16 +128,14 @@ impl Parser<'_> {
             return self.parse_define_statement();
         }
 
-        // Check for FUNCTION definition or new var statement
-        if self.check(Kind::Identifier) {
-            let token = self.peek();
-            let text = &self.source[token.start..token.end];
-            if text.eq_ignore_ascii_case("var") {
-                return self.parse_var_statement();
-            }
-            if text.eq_ignore_ascii_case("function") {
-                return self.parse_function();
-            }
+        // VAR statement: positive lookahead for data type keyword
+        if self.check(Kind::Variable) && Self::is_data_type_kind(self.peek_at(1).kind) {
+            return self.parse_var_statement();
+        }
+
+        // FUNCTION definition: negative lookahead (not an assignment)
+        if self.check(Kind::Function) && !self.check_at(1, Kind::Equals) {
+            return self.parse_function();
         }
 
         // Parse left-hand assignment, stop before comparison operators
@@ -182,25 +177,11 @@ impl Parser<'_> {
         }
 
         // DEFINE VARIABLE / DEFINE VAR
-        if Self::can_be_identifier(self.peek().kind) {
-            let token = self.peek();
-            let text = &self.source[token.start..token.end];
-            if text.eq_ignore_ascii_case("variable") || text.eq_ignore_ascii_case("var") {
-                self.advance(); // consume VARIABLE or VAR
-            } else {
-                return Err(ParseError {
-                    message: "Expected VARIABLE, VAR, TEMP-TABLE, or BUFFER after DEFINE"
-                        .to_string(),
-                    span: Span {
-                        start: token.start as u32,
-                        end: token.end as u32,
-                    },
-                });
-            }
+        if self.check(Kind::Variable) {
+            self.advance(); // consume VARIABLE or VAR
         } else {
             return Err(ParseError {
-                message: "Expected keyword after DEFINE (VARIABLE, TEMP-TABLE, BUFFER, etc.)"
-                    .to_string(),
+                message: "Expected VARIABLE, VAR, TEMP-TABLE, or BUFFER after DEFINE".to_string(),
                 span: Span {
                     start: self.peek().start as u32,
                     end: self.peek().end as u32,
@@ -1419,12 +1400,8 @@ impl Parser<'_> {
         self.expect_kind(Kind::End, "Expected END at end of FUNCTION body")?;
 
         // Optional FUNCTION keyword after END
-        if self.check(Kind::Identifier) {
-            let token = self.peek();
-            let text = &self.source[token.start..token.end];
-            if text.eq_ignore_ascii_case("function") {
-                self.advance();
-            }
+        if self.check(Kind::Function) {
+            self.advance();
         }
 
         self.expect_kind(Kind::Period, "Expected '.' after END FUNCTION")?;
@@ -1442,13 +1419,13 @@ impl Parser<'_> {
         let mut statements = Vec::new();
 
         while !self.check(Kind::End) && !self.at_end() {
-            // Check for CATCH block (identifier text)
-            if self.is_identifier_text("catch") {
+            // Check for CATCH block
+            if self.check(Kind::Catch) {
                 statements.push(self.parse_catch_block()?);
                 continue;
             }
-            // Check for FINALLY block (identifier text)
-            if self.is_identifier_text("finally") {
+            // Check for FINALLY block
+            if self.check(Kind::Finally) {
                 statements.push(self.parse_finally_block()?);
                 continue;
             }
@@ -1460,15 +1437,6 @@ impl Parser<'_> {
         self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
 
         Ok(statements)
-    }
-
-    /// Check if current token is an identifier with the given text (case-insensitive).
-    fn is_identifier_text(&self, text: &str) -> bool {
-        if !is_callable_kind(self.peek().kind) {
-            return false;
-        }
-        let token = self.peek();
-        self.source[token.start..token.end].eq_ignore_ascii_case(text)
     }
 
     // Parse CATCH e AS ClassName:
@@ -1486,13 +1454,9 @@ impl Parser<'_> {
         self.advance(); // consume first part
         while self.check(Kind::Period) {
             // Check if next is an identifier (part of class name) vs statement terminator
-            if let Some(next) = self.tokens.get(self.current + 1) {
-                if is_callable_kind(next.kind) {
-                    self.advance(); // consume dot
-                    self.advance(); // consume next part
-                } else {
-                    break;
-                }
+            if Self::can_be_identifier(self.peek_at(1).kind) {
+                self.advance(); // consume dot
+                self.advance(); // consume next part
             } else {
                 break;
             }
@@ -1510,7 +1474,7 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::End, "Expected END to close CATCH")?;
         // Optional CATCH keyword after END
-        if self.is_identifier_text("catch") {
+        if self.check(Kind::Catch) {
             self.advance();
         }
         self.expect_kind(Kind::Period, "Expected '.' after END CATCH")?;
@@ -1536,7 +1500,7 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::End, "Expected END to close FINALLY")?;
         // Optional FINALLY keyword after END
-        if self.is_identifier_text("finally") {
+        if self.check(Kind::Finally) {
             self.advance();
         }
         self.expect_kind(Kind::Period, "Expected '.' after END FINALLY")?;
@@ -1586,10 +1550,8 @@ impl Parser<'_> {
 
         // Check for dotted extension (e.g., my-proc.p)
         // Only consume the dot + extension if it's a known ABL file extension
-        if self.check(Kind::Period)
-            && let Some(next) = self.tokens.get(self.current + 1)
-            && next.kind == Kind::Identifier
-        {
+        if self.check(Kind::Period) && self.check_at(1, Kind::Identifier) {
+            let next = self.peek_at(1);
             let ext = &self.source[next.start..next.end];
             if ext.eq_ignore_ascii_case("p")
                 || ext.eq_ignore_ascii_case("w")

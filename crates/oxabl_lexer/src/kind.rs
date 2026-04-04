@@ -141,6 +141,10 @@ pub enum Kind {
     ExclusiveLock,
     TempTable,
     Buffer,
+    Variable,
+    Function,
+    Catch,
+    Finally,
 
     // Functions
     Accum,
@@ -274,6 +278,23 @@ pub enum Kind {
     // Widgets
     Rectangle,
     Text,
+
+    // Types
+    Integer,
+    Int64,
+    Decimal,
+    Character,
+    Logical,
+    Date,
+    Datetime,
+    DatetimeTz,
+    Handle,
+    Raw,
+    Memptr,
+    Longchar,
+    Clob,
+    Blob,
+    ComHandle,
 
     // Handles
     Clipboard,
@@ -558,6 +579,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "between" => Some(Kind::Between),
         "big endian" => Some(Kind::BigEndian),
         "blank" => Some(Kind::Blank),
+        "blob" => Some(Kind::Blob),
         "buffer" => Some(Kind::Buffer),
         "by" => Some(Kind::By),
         "call" => Some(Kind::Call),
@@ -568,17 +590,21 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         | "case sensit" | "case-sensit" | "case sensiti" | "case-sensiti" | "case sensitiv"
         | "case-sensitiv" | "case sensitive" | "case-sensitive" => Some(Kind::CaseSensitive),
         "cast" => Some(Kind::Cast),
+        "catch" => Some(Kind::Catch),
         "center" | "centere" | "centered" => Some(Kind::Centered),
+        "char" | "chara" | "charac" | "charact" | "characte" | "character" => Some(Kind::Character),
         "check" => Some(Kind::Check),
         "chr" => Some(Kind::Chr),
         "clear" => Some(Kind::Clear),
         "clipboard" => Some(Kind::Clipboard),
+        "clob" => Some(Kind::Clob),
         "codebase locator" | "codebase-locator" => Some(Kind::CodebaseLocator),
         "colon" => Some(Kind::Colon),
         "color" => Some(Kind::Color),
         "column lab" | "column-lab" | "column labe" | "column-labe" | "column label"
         | "column-label" => Some(Kind::ColumnLabel),
         "columns" => Some(Kind::Columns),
+        "com-handle" => Some(Kind::ComHandle),
         "compiler" => Some(Kind::Compiler),
         "connected" => Some(Kind::Connected),
         "contains" => Some(Kind::Contains),
@@ -601,6 +627,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "dataservers" => Some(Kind::Dataservers),
         "dataset" => Some(Kind::Dataset),
         "dataset handle" => Some(Kind::DatasetHandle),
+        "date" => Some(Kind::Date),
+        "datetime" => Some(Kind::Datetime),
+        "datetime-tz" => Some(Kind::DatetimeTz),
         "dbcodepage" => Some(Kind::Dbcodepage),
         "dbcollation" => Some(Kind::Dbcollation),
         "dbname" => Some(Kind::Dbname),
@@ -614,6 +643,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "deblank" => Some(Kind::Deblank),
         "debug list" => Some(Kind::DebugList),
         "debugger" => Some(Kind::Debugger),
+        "dec" | "deci" | "decim" | "decima" | "decimal" => Some(Kind::Decimal),
         "decimals" => Some(Kind::Decimals),
         "declare" => Some(Kind::Declare),
         "default" => Some(Kind::Default),
@@ -661,6 +691,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "fields" => Some(Kind::Fields),
         "file info" | "file-info" => Some(Kind::FileInfo),
         "fill" => Some(Kind::Fill),
+        "finally" => Some(Kind::Finally),
         "find" => Some(Kind::Find),
         "find case sensitive" => Some(Kind::FindCaseSensitive),
         "find global" => Some(Kind::FindGlobal),
@@ -692,6 +723,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "from p" | "from pi" | "from pix" | "from pixe" | "from pixel" | "from pixels" => {
             Some(Kind::FromPixels)
         }
+        "function" => Some(Kind::Function),
         "function call type" => Some(Kind::FunctionCallType),
         "gateway" | "gateways" => Some(Kind::Gateways),
         "ge" => Some(Kind::Ge),
@@ -717,6 +749,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         | "graphic edge" | "graphic-edge" => Some(Kind::GraphicEdge),
         "group" => Some(Kind::Group),
         "gt" => Some(Kind::Gt),
+        "handle" => Some(Kind::Handle),
         "having" => Some(Kind::Having),
         "header" => Some(Kind::Header),
         "help" => Some(Kind::Help),
@@ -731,6 +764,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             Some(Kind::InputOutput)
         }
         "insert" => Some(Kind::Insert),
+        "int64" => Some(Kind::Int64),
+        "int" | "inte" | "integ" | "intege" | "integer" => Some(Kind::Integer),
         "into" => Some(Kind::Into),
         "is" => Some(Kind::Is),
         "is-attr" | "is-attr-" | "is-attr-s" | "is-attr-sp" | "is-attr-spa" | "is-attr-spac"
@@ -781,11 +816,14 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "little-endian" => Some(Kind::LittleEndian),
         "locked" => Some(Kind::Locked),
         "log-manager" => Some(Kind::LogManager),
+        "log" | "logi" | "logic" | "logica" | "logical" => Some(Kind::Logical),
+        "longchar" => Some(Kind::Longchar),
         "lookup" => Some(Kind::Lookup),
         "lt" => Some(Kind::Lt),
         "map" => Some(Kind::Map),
         "matches" => Some(Kind::Matches),
         "member" => Some(Kind::Member),
+        "memptr" => Some(Kind::Memptr),
         "message" => Some(Kind::Message),
         "message-lines" => Some(Kind::MessageLines),
         "mod" | "modu" | "modul" | "modulo" => Some(Kind::Modulo),
@@ -901,6 +939,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "query-tuning" => Some(Kind::QueryTuning),
         "quit" => Some(Kind::Quit),
         "r-index" => Some(Kind::RIndex),
+        "raw" => Some(Kind::Raw),
         "rcode-info" | "rcode-infor" | "rcode-inform" | "rcode-informa" | "rcode-informat"
         | "rcode-informati" | "rcode-informatio" | "rcode-information" => {
             Some(Kind::RcodeInformation)
@@ -1005,6 +1044,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "value" => Some(Kind::Value),
         "value-changed" => Some(Kind::ValueChanged),
         "values" => Some(Kind::Values),
+        "var" | "vari" | "varia" | "variab" | "variabl" | "variable" => Some(Kind::Variable),
         "view" => Some(Kind::View),
         "view-as" => Some(Kind::ViewAs),
         "wait-for" => Some(Kind::WaitFor),
