@@ -16,6 +16,7 @@ jobs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # TODO: Upgrade to v5 when released (Node 24 support). Tracked: https://github.com/googleapis/release-please-action/pull/1188
       - uses: googleapis/release-please-action@v4
         id: release
         with:
@@ -29,8 +30,8 @@ jobs:
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
-      - uses: moonrepo/setup-rust@v0
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
       - run: cargo build --workspace --release
@@ -42,8 +43,8 @@ jobs:
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
-      - uses: moonrepo/setup-rust@v0
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
       - run: cargo publish -p oxabl_common || echo "Already published, skipping"
