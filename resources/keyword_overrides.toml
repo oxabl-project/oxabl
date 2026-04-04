@@ -293,6 +293,105 @@ name = "PRESELECT"
 keyword_type = "Option"
 
 # =============================================================================
+# DATA TYPE KEYWORDS
+# ABL data types need their own Kind variants for proper parser dispatch.
+# These are unreserved and currently use string comparison in parse_data_type().
+# RECID and ROWID are already in the reserved keywords file.
+# =============================================================================
+
+[[add]]
+name = "INTEGER"
+keyword_type = "Type"
+min_abbreviation = "INT"
+
+[[add]]
+name = "INT64"
+keyword_type = "Type"
+
+[[add]]
+name = "DECIMAL"
+keyword_type = "Type"
+min_abbreviation = "DEC"
+
+[[add]]
+name = "CHARACTER"
+keyword_type = "Type"
+min_abbreviation = "CHAR"
+
+[[add]]
+name = "LOGICAL"
+keyword_type = "Type"
+min_abbreviation = "LOG"
+
+[[add]]
+name = "DATE"
+keyword_type = "Type"
+
+[[add]]
+name = "DATETIME"
+keyword_type = "Type"
+
+[[add]]
+name = "DATETIME-TZ"
+keyword_type = "Type"
+
+[[add]]
+name = "HANDLE"
+keyword_type = "Type"
+
+[[add]]
+name = "RAW"
+keyword_type = "Type"
+
+[[add]]
+name = "MEMPTR"
+keyword_type = "Type"
+
+[[add]]
+name = "LONGCHAR"
+keyword_type = "Type"
+
+[[add]]
+name = "CLOB"
+keyword_type = "Type"
+
+[[add]]
+name = "BLOB"
+keyword_type = "Type"
+
+[[add]]
+name = "COM-HANDLE"
+keyword_type = "Type"
+
+# =============================================================================
+# STATEMENT KEYWORDS
+# Unreserved keywords needed for parser statement dispatch.
+# =============================================================================
+
+# VARIABLE is unreserved; VAR is its minimum abbreviation.
+[[add]]
+name = "VARIABLE"
+keyword_type = "Statement"
+min_abbreviation = "VAR"
+
+# FUNCTION is unreserved; no abbreviation.
+# Classified as Statement, not Function -- it is the statement that *defines*
+# functions, not a callable built-in. See callable.rs for the distinction.
+[[add]]
+name = "FUNCTION"
+keyword_type = "Statement"
+
+# CATCH is unreserved; no abbreviation
+[[add]]
+name = "CATCH"
+keyword_type = "Statement"
+
+# FINALLY is unreserved; no abbreviation
+[[add]]
+name = "FINALLY"
+keyword_type = "Statement"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================

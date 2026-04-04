@@ -592,10 +592,10 @@ mod tests {
 
         let expected = vec![
             (Kind::Define, 0, 3, TokenValue::None),
-            (Kind::Identifier, 4, 7, TokenValue::None), // var (not reserved)
+            (Kind::Variable, 4, 7, TokenValue::None), // var
             (Kind::Identifier, 8, 15, TokenValue::None), // myCount
             (Kind::KwAs, 16, 18, TokenValue::None),
-            (Kind::Identifier, 19, 22, TokenValue::None), // int (not reserved)
+            (Kind::Integer, 19, 22, TokenValue::None), // int
             (Kind::NoUndo, 23, 30, TokenValue::None),
             (Kind::Period, 30, 31, TokenValue::None),
             (Kind::Assign, 32, 38, TokenValue::None),
@@ -734,14 +734,7 @@ mod tests {
         assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
         assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
         assert_token(&tokens[1], Kind::Comment, 4, 25, TokenValue::None, source);
-        assert_token(
-            &tokens[2],
-            Kind::Identifier,
-            25,
-            28,
-            TokenValue::None,
-            source,
-        ); // var (not reserved)
+        assert_token(&tokens[2], Kind::Variable, 25, 28, TokenValue::None, source); // var
     }
 
     #[test]
@@ -751,14 +744,7 @@ mod tests {
         assert_eq!(tokens.len(), 4, "Got: {:?}", tokens);
         assert_token(&tokens[0], Kind::Define, 0, 3, TokenValue::None, source);
         assert_token(&tokens[1], Kind::Comment, 4, 15, TokenValue::None, source);
-        assert_token(
-            &tokens[2],
-            Kind::Identifier,
-            16,
-            19,
-            TokenValue::None,
-            source,
-        ); // var (not reserved)
+        assert_token(&tokens[2], Kind::Variable, 16, 19, TokenValue::None, source); // var
     }
 
     #[test]
@@ -829,22 +815,22 @@ end."#;
             (Kind::Identifier, 87, 99, TokenValue::None), // my_test_proc
             (Kind::Colon, 99, 100, TokenValue::None),
             // var int MyInt = 1.
-            (Kind::Identifier, 104, 107, TokenValue::None), // var (not reserved)
-            (Kind::Identifier, 108, 111, TokenValue::None), // int (not reserved)
+            (Kind::Variable, 104, 107, TokenValue::None), // var
+            (Kind::Integer, 108, 111, TokenValue::None),  // int
             (Kind::Identifier, 112, 117, TokenValue::None), // MyInt
             (Kind::Equals, 118, 119, TokenValue::None),
             (Kind::IntegerLiteral, 120, 121, TokenValue::Integer(1)),
             (Kind::Period, 121, 122, TokenValue::None),
             // var int MyOtherInt = 2.
-            (Kind::Identifier, 126, 129, TokenValue::None), // var (not reserved)
-            (Kind::Identifier, 130, 133, TokenValue::None), // int (not reserved)
+            (Kind::Variable, 126, 129, TokenValue::None), // var
+            (Kind::Integer, 130, 133, TokenValue::None),  // int
             (Kind::Identifier, 134, 144, TokenValue::None), // MyOtherInt
             (Kind::Equals, 145, 146, TokenValue::None),
             (Kind::IntegerLiteral, 147, 148, TokenValue::Integer(2)),
             (Kind::Period, 148, 149, TokenValue::None),
             // var int result.
-            (Kind::Identifier, 153, 156, TokenValue::None), // var (not reserved)
-            (Kind::Identifier, 157, 160, TokenValue::None), // int (not reserved)
+            (Kind::Variable, 153, 156, TokenValue::None), // var
+            (Kind::Integer, 157, 160, TokenValue::None),  // int
             (Kind::Identifier, 161, 167, TokenValue::None), // result
             (Kind::Period, 167, 168, TokenValue::None),
             // result = MyOtherInt - MyInt.

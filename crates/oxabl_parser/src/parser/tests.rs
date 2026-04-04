@@ -4647,3 +4647,214 @@ END FUNCTION.
         _ => panic!("Expected Function statement"),
     }
 }
+
+// ============================================================================
+// Keyword migration tests: verify unreserved keywords work as both
+// statement keywords and identifiers
+// ============================================================================
+
+#[test]
+fn parse_var_keyword_as_variable_name() {
+    // "var" used as a variable name in DEFINE VARIABLE
+    let source = "DEFINE VARIABLE var AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "var");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_function_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE function AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "function");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_catch_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE catch AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "catch");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_data_type_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE integer AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "integer");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_date_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE date AS DATE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "date");
+            assert_eq!(data_type, DataType::Date);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_variable_keyword_assignment_disambiguation() {
+    // "variable = 5." should parse as assignment, not VAR statement
+    let source = "variable = 5.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { target, .. } => match target {
+            Expression::Identifier(id) => assert_eq!(id.name, "variable"),
+            _ => panic!("Expected identifier target"),
+        },
+        _ => panic!("Expected Assignment, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_function_keyword_assignment_disambiguation() {
+    // "function = 5." should parse as assignment, not FUNCTION definition
+    let source = "function = 5.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { target, .. } => match target {
+            Expression::Identifier(id) => assert_eq!(id.name, "function"),
+            _ => panic!("Expected identifier target"),
+        },
+        _ => panic!("Expected Assignment, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_var_with_abbreviated_data_types() {
+    // INT is abbreviation for INTEGER
+    let source = "VAR INT x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+
+    // DEC is abbreviation for DECIMAL
+    let source = "VAR DEC x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Decimal);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+
+    // CHAR is abbreviation for CHARACTER
+    let source = "VAR CHAR x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Character);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+
+    // LOG is abbreviation for LOGICAL
+    let source = "VAR LOG x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Logical);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_var_with_all_data_types() {
+    let cases = vec![
+        ("VAR INTEGER x.", DataType::Integer),
+        ("VAR INT64 x.", DataType::Int64),
+        ("VAR DECIMAL x.", DataType::Decimal),
+        ("VAR CHARACTER x.", DataType::Character),
+        ("VAR LOGICAL x.", DataType::Logical),
+        ("VAR DATE x.", DataType::Date),
+        ("VAR DATETIME x.", DataType::DateTime),
+        ("VAR DATETIME-TZ x.", DataType::DateTimeTz),
+        ("VAR HANDLE x.", DataType::Handle),
+        ("VAR ROWID x.", DataType::Rowid),
+        ("VAR RECID x.", DataType::Recid),
+        ("VAR RAW x.", DataType::Raw),
+        ("VAR MEMPTR x.", DataType::Memptr),
+        ("VAR LONGCHAR x.", DataType::Longchar),
+        ("VAR CLOB x.", DataType::Clob),
+        ("VAR BLOB x.", DataType::Blob),
+        ("VAR COM-HANDLE x.", DataType::Com),
+    ];
+
+    for (source, expected_type) in cases {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("Failed to parse '{}': {}", source, e.message));
+        match stmt {
+            Statement::VariableDeclaration { data_type, .. } => {
+                assert_eq!(data_type, expected_type, "Wrong data type for '{}'", source);
+            }
+            _ => panic!("Expected VariableDeclaration for '{}'", source),
+        }
+    }
+}
