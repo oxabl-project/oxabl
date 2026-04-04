@@ -1,0 +1,89 @@
+/* Benchmark fixture: comment-heavy code for lexer comment tokenization */
+
+/* This is a simple block comment */
+define variable lv-a as integer no-undo. /* inline comment */
+
+/*
+ * Multi-line block comment
+ * with multiple lines
+ * and various content
+ */
+define variable lv-b as character no-undo.
+
+// Line comment
+define variable lv-c as decimal no-undo.
+
+// Another line comment
+// Followed by another line comment
+// And yet another line comment
+define variable lv-d as logical no-undo.
+
+assign lv-a = 1. /* assign one */
+assign lv-a = 2. /* assign two */
+assign lv-a = 3. /* assign three */
+assign lv-a = 4. /* assign four */
+assign lv-a = 5. /* assign five */
+
+/* Block before */ assign lv-a = 6. /* Block after */
+/* Block before */ assign lv-a = 7. /* Block after */
+/* Block before */ assign lv-a = 8. /* Block after */
+
+// Line comments interspersed with code
+assign lv-a = 10.
+// between statements
+assign lv-a = 20.
+// between statements
+assign lv-a = 30.
+// between statements
+assign lv-a = 40.
+// between statements
+assign lv-a = 50.
+
+/*
+ * Longer block comment with more content to process.
+ * This comment spans many lines and contains various
+ * types of content including:
+ * - bullet points
+ * - descriptions of functionality
+ * - notes about implementation details
+ * - references to other parts of the code
+ * - parameter descriptions
+ * - return value documentation
+ * - example usage patterns
+ * - known limitations and caveats
+ * - version history information
+ */
+define variable lv-e as integer no-undo.
+
+/* Short */ /* Two */ /* Adjacent */ /* Block */ /* Comments */
+assign lv-e = 1.
+
+// lots of line comments in a row
+// each one is a separate comment token
+// the lexer needs to handle each one
+// and properly identify the newline boundaries
+// five line comments should be enough
+// no wait six is better
+// actually seven for good measure
+
+assign lv-b = "actual code between comments".
+
+/*  comment with extra   spaces   inside   */
+/*comment with no spaces*/
+/* comment with
+   newlines inside
+   the block */
+
+assign lv-c = 3.14. // trailing line comment with content
+
+/* Final large comment block that exercises the block comment
+   scanning logic with a decent amount of text content that
+   the lexer needs to scan through character by character to
+   find the closing delimiter. This helps benchmark the
+   performance of block comment tokenization on larger
+   comment bodies that are common in real-world ABL code
+   where developers write extensive documentation inline. */
+
+assign lv-d = true.
+assign lv-a = lv-a + 1. /* one more */
+// done

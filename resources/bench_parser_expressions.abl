@@ -1,0 +1,66 @@
+/* Benchmark fixture: expression parsing (arithmetic, comparison, logical, ternary, function calls) */
+
+assign x = 1 + 2 * 3 - 4 / 2.
+assign y = (1 + 2) * (3 - 4) / (5 + 6).
+assign z = -1 + (-2 * 3).
+assign a = 10 modulo 3.
+
+assign lv-flag = x > 0 and y < 100.
+assign lv-flag = x >= 10 or y <= 50.
+assign lv-flag = x <> 0 and not lv-flag.
+assign lv-flag = x = 1 and y = 2.
+
+assign lv-name = "hello" begins "he".
+assign lv-flag = lv-name matches "*llo".
+assign lv-flag = lv-name contains "ell".
+
+assign lv-result = if x > 0 then "positive" else "negative".
+assign lv-result = if x > 0 and y > 0 then "both" else if x > 0 then "x only" else "neither".
+assign lv-value = if lv-flag then 1 else 0.
+
+assign lv-len = length("hello").
+assign lv-sub = substring("hello world", 1, 5).
+assign lv-idx = index("hello world", "world").
+assign lv-rep = replace("hello", "l", "r").
+assign lv-num = integer("42").
+assign lv-str = string(42).
+assign lv-min = minimum(x, y, z).
+assign lv-max = maximum(x, y, z).
+assign lv-abs = absolute(-42).
+assign lv-trunc = truncate(3.14, 0).
+assign lv-round = round(3.14, 1).
+assign lv-mod = x modulo y.
+assign lv-entry = entry(1, "a,b,c").
+assign lv-entries = num-entries("a,b,c").
+
+assign lv-combined = (x + y) * length(lv-name) - integer(substring(lv-str, 1, 2)).
+assign lv-nested = if length(lv-name) > 5 then substring(lv-name, 1, 5) else lv-name.
+assign lv-complex = maximum(x * 2 + 1, y - 3, absolute(z)).
+
+assign lv-dec = 3.14 + 2.71 * 1.41.
+assign lv-dec = (10.5 - 3.2) / 2.0 + 0.001.
+
+assign lv-flag = true.
+assign lv-flag = false.
+assign lv-flag = not true.
+assign lv-flag = true and false or true.
+assign lv-flag = (true or false) and (not false).
+
+assign x = x + 1.
+assign y = y - x * 2 + z / 3.
+assign z = (x + y + z) / 3.
+assign a = x * x + y * y.
+assign b = (a + 1) * (a - 1).
+
+assign lv-result = if x > 0 then (if y > 0 then "both pos" else "x pos") else (if y > 0 then "y pos" else "both neg").
+
+assign lv-val = entry(index("abc", "b"), "x,y,z").
+assign lv-val = substring(replace(lv-name, "old", "new"), 1, length(lv-name)).
+assign lv-val = string(integer(lv-str) + 1).
+
+assign lv-flag = x > 0 and y > 0 and z > 0 and a > 0.
+assign lv-flag = x = 0 or y = 0 or z = 0.
+assign lv-flag = not (x > 0 and y > 0) or (z < 0 and a < 0).
+
+assign lv-big = ((x + y) * (z - a)) / ((b + 1) * (x - 1)) + absolute(y - z).
+assign lv-big = maximum(x + y, z * a, b - 1) + minimum(x, y, z) * 2.
