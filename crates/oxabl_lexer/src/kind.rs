@@ -145,6 +145,11 @@ pub enum Kind {
     Function,
     Catch,
     Finally,
+    Class,
+    Interface,
+    Method,
+    Constructor,
+    Destructor,
 
     // Functions
     Accum,
@@ -269,6 +274,18 @@ pub enum Kind {
     BeforeTable,
     WordIndex,
     Preselect,
+    Inherits,
+    Implements,
+    Property,
+    Public,
+    Private,
+    Protected,
+    PackagePrivate,
+    Abstract,
+    Final,
+    Override,
+    KwStatic,
+    Get,
 
     // Phrases
     Editing,
@@ -295,6 +312,7 @@ pub enum Kind {
     Clob,
     Blob,
     ComHandle,
+    Void,
 
     // Handles
     Clipboard,
@@ -550,6 +568,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
     // SAFETY: input `s` is valid UTF-8 and to_ascii_lowercase() preserves UTF-8 validity
     let lower = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };
     match lower {
+        "abstract" => Some(Kind::Abstract),
         "accum" => Some(Kind::Accum),
         "accumu" | "accumul" | "accumula" | "accumulat" | "accumulate" => Some(Kind::Accumulate),
         "active form" => Some(Kind::ActiveForm),
@@ -605,6 +624,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "char" | "chara" | "charac" | "charact" | "characte" | "character" => Some(Kind::Character),
         "check" => Some(Kind::Check),
         "chr" => Some(Kind::Chr),
+        "class" => Some(Kind::Class),
         "clear" => Some(Kind::Clear),
         "clipboard" => Some(Kind::Clipboard),
         "clob" => Some(Kind::Clob),
@@ -617,6 +637,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "com-handle" => Some(Kind::ComHandle),
         "compiler" => Some(Kind::Compiler),
         "connected" => Some(Kind::Connected),
+        "constructor" => Some(Kind::Constructor),
         "contains" => Some(Kind::Contains),
         "control" => Some(Kind::Control),
         "copy lob" | "copy-lob" => Some(Kind::CopyLob),
@@ -664,6 +685,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "desc" | "desce" | "descen" | "descend" | "descendi" | "descendin" | "descending" => {
             Some(Kind::Descending)
         }
+        "destructor" => Some(Kind::Destructor),
         "dict" | "dicti" | "dictio" | "diction" | "dictiona" | "dictionar" | "dictionary" => {
             Some(Kind::Dictionary)
         }
@@ -701,6 +723,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "fields" => Some(Kind::Fields),
         "file info" | "file-info" => Some(Kind::FileInfo),
         "fill" => Some(Kind::Fill),
+        "final" => Some(Kind::Final),
         "finally" => Some(Kind::Finally),
         "find" => Some(Kind::Find),
         "find case sensitive" => Some(Kind::FindCaseSensitive),
@@ -737,6 +760,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "function call type" => Some(Kind::FunctionCallType),
         "gateway" | "gateways" => Some(Kind::Gateways),
         "ge" => Some(Kind::Ge),
+        "get" => Some(Kind::Get),
         "get attr call type" => Some(Kind::GetAttrCallType),
         "get buffer handle" => Some(Kind::GetBufferHandle),
         "get byte" | "get-byte" => Some(Kind::GetByte),
@@ -765,9 +789,11 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "help" => Some(Kind::Help),
         "hide" => Some(Kind::Hide),
         "host byte order" => Some(Kind::HostByteOrder),
+        "implements" => Some(Kind::Implements),
         "import" => Some(Kind::Import),
         "index" => Some(Kind::Index),
         "indicator" => Some(Kind::Indicator),
+        "inherits" => Some(Kind::Inherits),
         "init" | "initi" | "initia" | "initial" => Some(Kind::Initial),
         "input" => Some(Kind::Input),
         "input-o" | "input-ou" | "input-out" | "input-outp" | "input-outpu" | "input-output" => {
@@ -776,6 +802,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "insert" => Some(Kind::Insert),
         "int64" => Some(Kind::Int64),
         "int" | "inte" | "integ" | "intege" | "integer" => Some(Kind::Integer),
+        "interface" => Some(Kind::Interface),
         "into" => Some(Kind::Into),
         "is" => Some(Kind::Is),
         "is-attr" | "is-attr-" | "is-attr-s" | "is-attr-sp" | "is-attr-spa" | "is-attr-spac"
@@ -806,6 +833,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "in" => Some(Kind::KwIn),
         "return" => Some(Kind::KwReturn),
         "self" => Some(Kind::KwSelf),
+        "static" => Some(Kind::KwStatic),
         "true" => Some(Kind::KwTrue),
         "where" => Some(Kind::KwWhere),
         "while" => Some(Kind::KwWhile),
@@ -836,6 +864,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "memptr" => Some(Kind::Memptr),
         "message" => Some(Kind::Message),
         "message-lines" => Some(Kind::MessageLines),
+        "method" => Some(Kind::Method),
         "mod" | "modu" | "modul" | "modulo" => Some(Kind::Modulo),
         "mouse" => Some(Kind::Mouse),
         "mpe" => Some(Kind::Mpe),
@@ -891,6 +920,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "otherwise" => Some(Kind::Otherwise),
         "output" => Some(Kind::Output),
         "overlay" => Some(Kind::Overlay),
+        "override" => Some(Kind::Override),
+        "package-private" => Some(Kind::PackagePrivate),
         "page" => Some(Kind::Page),
         "page-bot" | "page-bott" | "page-botto" | "page-bottom" => Some(Kind::PageBottom),
         "page-num" | "page-numb" | "page-numbe" | "page-number" => Some(Kind::PageNumber),
@@ -922,6 +953,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "preselect" => Some(Kind::Preselect),
         "prev" => Some(Kind::Prev),
         "primary" => Some(Kind::Primary),
+        "private" => Some(Kind::Private),
         "privileges" => Some(Kind::Privileges),
         "proc-ha" | "proc-han" | "proc-hand" | "proc-handl" | "proc-handle" => {
             Some(Kind::ProcHandle)
@@ -938,7 +970,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "prompt-f" | "prompt-fo" | "prompt-for" => Some(Kind::PromptFor),
         "promsgs" => Some(Kind::Promsgs),
         "propath" => Some(Kind::Propath),
+        "property" => Some(Kind::Property),
+        "protected" => Some(Kind::Protected),
         "provers" | "proversi" | "proversio" | "proversion" => Some(Kind::Proversion),
+        "public" => Some(Kind::Public),
         "put" => Some(Kind::Put),
         "put-byte" => Some(Kind::PutByte),
         "put-key-val" | "put-key-valu" | "put-key-value" => Some(Kind::PutKeyValue),
@@ -1057,6 +1092,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "var" | "vari" | "varia" | "variab" | "variabl" | "variable" => Some(Kind::Variable),
         "view" => Some(Kind::View),
         "view-as" => Some(Kind::ViewAs),
+        "void" => Some(Kind::Void),
         "wait-for" => Some(Kind::WaitFor),
         "when" => Some(Kind::When),
         "window" => Some(Kind::Window),

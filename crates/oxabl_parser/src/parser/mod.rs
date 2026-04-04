@@ -184,6 +184,25 @@ impl<'a> Parser<'a> {
                     | Kind::Function
                     | Kind::Catch
                     | Kind::Finally
+                    // OO-ABL keywords (all unreserved except SET which is already handled)
+                    | Kind::Class
+                    | Kind::Interface
+                    | Kind::Inherits
+                    | Kind::Implements
+                    | Kind::Method
+                    | Kind::Constructor
+                    | Kind::Destructor
+                    | Kind::Property
+                    | Kind::Public
+                    | Kind::Private
+                    | Kind::Protected
+                    | Kind::PackagePrivate
+                    | Kind::Abstract
+                    | Kind::Final
+                    | Kind::Override
+                    | Kind::KwStatic
+                    | Kind::Void
+                    | Kind::Get
                     // Data type keywords (unreserved)
                     | Kind::Integer
                     | Kind::Int64
