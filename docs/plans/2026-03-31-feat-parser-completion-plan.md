@@ -1,7 +1,7 @@
 ---
 title: "Parser Completion: RUN, DISPLAY, MESSAGE & Docs"
 type: feat
-status: active
+status: completed
 date: 2026-03-31
 deepened: 2026-03-31
 ---
