@@ -4378,3 +4378,118 @@ fn parse_program_all_errors() {
     assert!(program.statements.is_empty());
     assert_eq!(program.errors.len(), 3);
 }
+
+// ===================== CATCH/FINALLY tests =====================
+
+#[test]
+fn parse_do_with_catch() {
+    let source = r#"
+DO:
+    x = 1.
+    CATCH e AS Progress.Lang.Error:
+        y = 2.
+    END CATCH.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 2); // x = 1. and CATCH block
+            match &body[1] {
+                Statement::Catch {
+                    error_var,
+                    error_type,
+                    body,
+                } => {
+                    assert_eq!(error_var.name, "e");
+                    assert_eq!(error_type, "Progress.Lang.Error");
+                    assert_eq!(body.len(), 1);
+                }
+                _ => panic!("Expected Catch statement"),
+            }
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_do_with_finally() {
+    let source = r#"
+DO:
+    x = 1.
+    FINALLY:
+        y = 2.
+    END FINALLY.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 2);
+            match &body[1] {
+                Statement::Finally { body } => {
+                    assert_eq!(body.len(), 1);
+                }
+                _ => panic!("Expected Finally statement"),
+            }
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_do_with_catch_and_finally() {
+    let source = r#"
+DO:
+    x = 1.
+    CATCH e AS Progress.Lang.AppError:
+        y = 2.
+    END CATCH.
+    FINALLY:
+        z = 3.
+    END FINALLY.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 3); // assignment, CATCH, FINALLY
+            assert!(matches!(body[1], Statement::Catch { .. }));
+            assert!(matches!(body[2], Statement::Finally { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_catch_end_without_keyword() {
+    let source = r#"
+DO:
+    x = 1.
+    CATCH e AS Progress.Lang.Error:
+        y = 2.
+    END.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // This should fail because END without CATCH closes the DO block prematurely
+    // Actually in ABL, END without qualifier is ambiguous here.
+    // Our parser expects END CATCH. Let's test that END. without CATCH works
+    // by treating the first END. as closing CATCH (the parser consumes END then
+    // checks for optional "catch" keyword).
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 2);
+            assert!(matches!(body[1], Statement::Catch { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
