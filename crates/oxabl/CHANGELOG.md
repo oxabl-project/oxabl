@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.3.1...oxabl-v0.3.2) (2026-04-04)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 0.3.1 to 0.4.0
+    * oxabl_ast bumped from 0.3.0 to 0.4.0
+
 ## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.3.0...oxabl-v0.3.1) (2026-04-03)
 
 
