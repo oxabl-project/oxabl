@@ -347,6 +347,34 @@ pub enum Statement {
         type_name: String,
     },
 
+    /// CREATE buffer-name [NO-ERROR].
+    Create { buffer: Identifier, no_error: bool },
+
+    /// DELETE buffer-name [NO-ERROR].
+    Delete { buffer: Identifier, no_error: bool },
+
+    /// RELEASE buffer-name [NO-ERROR].
+    Release { buffer: Identifier, no_error: bool },
+
+    /// VALIDATE buffer-name [NO-ERROR].
+    Validate { buffer: Identifier, no_error: bool },
+
+    /// BUFFER-COPY source TO target [ASSIGN field = expr ...] [NO-ERROR].
+    BufferCopy {
+        source: Identifier,
+        target: Identifier,
+        assignments: Vec<(Identifier, Expression)>,
+        no_error: bool,
+    },
+
+    /// BUFFER-COMPARE source TO target [SAVE RESULT IN lvar] [NO-ERROR].
+    BufferCompare {
+        source: Identifier,
+        target: Identifier,
+        result_var: Option<Identifier>,
+        no_error: bool,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 

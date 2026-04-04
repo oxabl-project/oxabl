@@ -96,13 +96,13 @@ Defines AST nodes for the parser. Key types:
 Parses ABL source code into an AST. Key capabilities:
 
 - **Expression parsing** with proper operator precedence (ternary → or → and → comparison → additive → multiplicative → unary → postfix → primary)
-- **Statement parsing**: DEFINE VARIABLE/VAR/PARAMETER/TEMP-TABLE/BUFFER/PROPERTY, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY, MESSAGE, ASSIGN, CATCH/FINALLY/THROW, LEAVE, NEXT, RETURN
+- **Statement parsing**: DEFINE VARIABLE/VAR/PARAMETER/TEMP-TABLE/BUFFER/PROPERTY, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY, MESSAGE, ASSIGN, CREATE, DELETE, RELEASE, VALIDATE, BUFFER-COPY, BUFFER-COMPARE, CATCH/FINALLY/THROW, LEAVE, NEXT, RETURN
 - **OO-ABL**: CLASS (with ABSTRACT/FINAL, INHERITS, IMPLEMENTS), INTERFACE, METHOD (with access modifiers, STATIC/ABSTRACT/OVERRIDE), DEFINE PROPERTY (auto and computed GET/SET), CONSTRUCTOR, DESTRUCTOR, USING
 - **Postfix operations**: Method calls (object:method()), member access (object.member), array access (arr[i]), field access (table.field)
 - **Function calls** with argument lists
 - **Error recovery** via `parse_program()` with synchronization on period boundaries
 
-Not yet implemented: streams, frames, database manipulation (CREATE/DELETE/RELEASE), DATASET, preprocessor statements, PUBLISH/SUBSCRIBE, ON triggers.
+Not yet implemented: streams, frames, DATASET, preprocessor statements, PUBLISH/SUBSCRIBE, ON triggers.
 
 ### Code Generation (`oxabl_codegen`)
 
