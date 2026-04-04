@@ -476,6 +476,19 @@ name = "GET"
 keyword_type = "Option"
 
 # =============================================================================
+# DATABASE MANIPULATION KEYWORDS
+# Keywords needed for parser database operation dispatch.
+# =============================================================================
+
+[[add]]
+name = "BUFFER-COPY"
+keyword_type = "Statement"
+
+[[add]]
+name = "BUFFER-COMPARE"
+keyword_type = "Statement"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================

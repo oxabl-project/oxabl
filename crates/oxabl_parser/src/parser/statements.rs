@@ -44,6 +44,12 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Method
             | Kind::Constructor
             | Kind::Destructor
+            | Kind::Create
+            | Kind::Delete
+            | Kind::Release
+            | Kind::Validate
+            | Kind::BufferCopy
+            | Kind::BufferCompare
     )
 }
 
@@ -127,6 +133,26 @@ impl Parser<'_> {
         // ASSIGN statement
         if self.check(Kind::Assign) {
             return self.parse_assign_statement();
+        }
+
+        // Database manipulation statements
+        if self.check(Kind::Create) {
+            return self.parse_create_statement();
+        }
+        if self.check(Kind::Delete) {
+            return self.parse_delete_statement();
+        }
+        if self.check(Kind::Release) {
+            return self.parse_release_statement();
+        }
+        if self.check(Kind::Validate) {
+            return self.parse_validate_statement();
+        }
+        if self.check(Kind::BufferCopy) {
+            return self.parse_buffer_copy();
+        }
+        if self.check(Kind::BufferCompare) {
+            return self.parse_buffer_compare();
         }
 
         // OO-ABL statements
@@ -1379,22 +1405,22 @@ impl Parser<'_> {
     // Parse ASSIGN statement: ASSIGN target = value [target = value ...].
     fn parse_assign_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume ASSIGN
+        let assignments = self.parse_assign_pairs()?;
+        self.expect_kind(Kind::Period, "Expected '.' after ASSIGN statement")?;
+        Ok(Statement::Assign { assignments })
+    }
 
+    /// Parse one or more `target = value` pairs for ASSIGN and BUFFER-COPY ASSIGN clauses.
+    /// Stops at period, NO-ERROR, or end of input.
+    fn parse_assign_pairs(&mut self) -> ParseResult<Vec<AssignPair>> {
         let mut assignments = Vec::new();
-
-        // Parse one or more target = value pairs
-        // Use parse_additive for target to stop before '='
-        // Use parse_additive for value to stop before the next target identifier
-        while !self.check(Kind::Period) && !self.at_end() {
+        while !self.check(Kind::Period) && !self.check(Kind::NoError) && !self.at_end() {
             let target = self.parse_additive()?;
             self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
             let value = self.parse_additive()?;
             assignments.push(AssignPair { target, value });
         }
-
-        self.expect_kind(Kind::Period, "Expected '.' after ASSIGN statement")?;
-
-        Ok(Statement::Assign { assignments })
+        Ok(assignments)
     }
 
     // Parse FUNCTION definition
@@ -2073,5 +2099,137 @@ impl Parser<'_> {
         self.expect_kind(Kind::Period, "Expected '.' after USING statement")?;
 
         Ok(Statement::Using { type_name })
+    }
+
+    // =========================================================================
+    // Database manipulation statements
+    // =========================================================================
+
+    // CREATE buffer-name [NO-ERROR].
+    fn parse_create_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume CREATE
+        let buffer = self.parse_identifier()?;
+        let no_error = self.parse_no_error();
+        self.expect_kind(Kind::Period, "Expected '.' after CREATE statement")?;
+        Ok(Statement::Create { buffer, no_error })
+    }
+
+    // DELETE buffer-name [NO-ERROR].
+    fn parse_delete_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume DELETE
+        let buffer = self.parse_identifier()?;
+        let no_error = self.parse_no_error();
+        self.expect_kind(Kind::Period, "Expected '.' after DELETE statement")?;
+        Ok(Statement::Delete { buffer, no_error })
+    }
+
+    // RELEASE buffer-name [NO-ERROR].
+    fn parse_release_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume RELEASE
+        let buffer = self.parse_identifier()?;
+        let no_error = self.parse_no_error();
+        self.expect_kind(Kind::Period, "Expected '.' after RELEASE statement")?;
+        Ok(Statement::Release { buffer, no_error })
+    }
+
+    // VALIDATE buffer-name [NO-ERROR].
+    fn parse_validate_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume VALIDATE
+        let buffer = self.parse_identifier()?;
+        let no_error = self.parse_no_error();
+        self.expect_kind(Kind::Period, "Expected '.' after VALIDATE statement")?;
+        Ok(Statement::Validate { buffer, no_error })
+    }
+
+    // BUFFER-COPY source TO target [ASSIGN field = expr ...] [NO-ERROR].
+    fn parse_buffer_copy(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume BUFFER-COPY
+        let source = self.parse_identifier()?;
+        self.expect_kind(Kind::To, "Expected TO after source buffer in BUFFER-COPY")?;
+        let target = self.parse_identifier()?;
+
+        // Optional ASSIGN clause
+        let assignments = if self.check(Kind::Assign) {
+            self.advance(); // consume ASSIGN
+            let pairs = self.parse_assign_pairs()?;
+            pairs
+                .into_iter()
+                .map(|p| {
+                    // Extract identifier from the target expression
+                    match p.target {
+                        Expression::Identifier(ident) => Ok((ident, p.value)),
+                        _ => Err(ParseError {
+                            message: "Expected identifier as ASSIGN target in BUFFER-COPY"
+                                .to_string(),
+                            span: Span { start: 0, end: 0 },
+                        }),
+                    }
+                })
+                .collect::<ParseResult<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+
+        let no_error = self.parse_no_error();
+        self.expect_kind(Kind::Period, "Expected '.' after BUFFER-COPY statement")?;
+
+        Ok(Statement::BufferCopy {
+            source,
+            target,
+            assignments,
+            no_error,
+        })
+    }
+
+    // BUFFER-COMPARE source TO target [SAVE RESULT IN lvar] [NO-ERROR].
+    fn parse_buffer_compare(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume BUFFER-COMPARE
+        let source = self.parse_identifier()?;
+        self.expect_kind(
+            Kind::To,
+            "Expected TO after source buffer in BUFFER-COMPARE",
+        )?;
+        let target = self.parse_identifier()?;
+
+        // Optional SAVE RESULT IN clause
+        // SAVE is Kind::Save, RESULT is an identifier, IN is Kind::KwIn
+        let result_var = if self.check(Kind::Save)
+            && self.is_identifier_text_at(1, "RESULT")
+            && self.check_at(2, Kind::KwIn)
+        {
+            self.advance(); // consume SAVE
+            self.advance(); // consume RESULT
+            self.advance(); // consume IN
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+
+        let no_error = self.parse_no_error();
+        self.expect_kind(Kind::Period, "Expected '.' after BUFFER-COMPARE statement")?;
+
+        Ok(Statement::BufferCompare {
+            source,
+            target,
+            result_var,
+            no_error,
+        })
+    }
+
+    /// Helper: consume NO-ERROR if present.
+    fn parse_no_error(&mut self) -> bool {
+        if self.check(Kind::NoError) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Helper: check if token at offset is an identifier with specific text (case-insensitive).
+    fn is_identifier_text_at(&self, offset: usize, text: &str) -> bool {
+        let token = self.peek_at(offset);
+        (token.kind == Kind::Identifier || Self::can_be_identifier(token.kind))
+            && self.source[token.start..token.end].eq_ignore_ascii_case(text)
     }
 }
