@@ -12,7 +12,7 @@ pub mod statements;
 #[cfg(test)]
 mod tests;
 
-use oxabl_ast::{DataType, Identifier, Span, Statement};
+use oxabl_ast::{AccessModifier, DataType, Identifier, ParameterDirection, Span, Statement};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
@@ -179,11 +179,17 @@ impl<'a> Parser<'a> {
                     | Kind::Descending
                     | Kind::Shared
                     | Kind::Global
-                    // Statement keywords (unreserved)
+                    // Statement keywords (unreserved, may appear as identifiers)
                     | Kind::Variable
                     | Kind::Function
                     | Kind::Catch
                     | Kind::Finally
+                    | Kind::Run
+                    | Kind::Display
+                    | Kind::Message
+                    | Kind::Assign
+                    | Kind::Find
+                    | Kind::Procedure
                     // OO-ABL keywords (all unreserved except SET which is already handled)
                     | Kind::Class
                     | Kind::Interface
@@ -304,6 +310,85 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an optional access modifier (PUBLIC, PRIVATE, PROTECTED, PACKAGE-PRIVATE).
+    /// Returns None if the current token is not an access modifier.
+    fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
+        match self.peek().kind {
+            Kind::Public => {
+                self.advance();
+                Some(AccessModifier::Public)
+            }
+            Kind::Private => {
+                self.advance();
+                Some(AccessModifier::Private)
+            }
+            Kind::Protected => {
+                self.advance();
+                Some(AccessModifier::Protected)
+            }
+            Kind::PackagePrivate => {
+                self.advance();
+                Some(AccessModifier::PackagePrivate)
+            }
+            _ => None,
+        }
+    }
+
+    /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR.
+    ///
+    /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
+    ///
+    /// Each parameter becomes a `Statement::DefineParameter`.
+    fn parse_parenthesized_params(&mut self) -> ParseResult<Vec<Statement>> {
+        self.expect_kind(Kind::LeftParen, "Expected '(' for parameter list")?;
+        let mut params = Vec::new();
+
+        if !self.check(Kind::RightParen) {
+            loop {
+                let direction = match self.peek().kind {
+                    Kind::Output => {
+                        self.advance();
+                        ParameterDirection::Output
+                    }
+                    Kind::InputOutput => {
+                        self.advance();
+                        ParameterDirection::InputOutput
+                    }
+                    Kind::Input => {
+                        self.advance();
+                        ParameterDirection::Input
+                    }
+                    _ => ParameterDirection::Input,
+                };
+
+                let name = self.parse_identifier()?;
+                self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
+                let data_type = self.parse_data_type()?;
+                let no_undo = if self.check(Kind::NoUndo) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+
+                params.push(Statement::DefineParameter {
+                    direction,
+                    name,
+                    data_type,
+                    no_undo,
+                });
+
+                if !self.check(Kind::Comma) {
+                    break;
+                }
+                self.advance(); // consume comma
+            }
+        }
+
+        self.expect_kind(Kind::RightParen, "Expected ')'")?;
+        Ok(params)
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
         let data_type = match token.kind {
@@ -324,6 +409,11 @@ impl<'a> Parser<'a> {
             Kind::Clob => DataType::Clob,
             Kind::Blob => DataType::Blob,
             Kind::ComHandle => DataType::Com,
+            Kind::Class => {
+                self.advance(); // consume CLASS
+                let class_name = self.parse_qualified_identifier()?;
+                return Ok(DataType::Class(class_name.name));
+            }
             _ => {
                 return Err(ParseError {
                     message: format!(
