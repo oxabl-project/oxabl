@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v0.3.0...oxabl_ast-v0.4.0) (2026-04-04)
+
+
+### Features
+
+* **parser:** Add ASSIGN statement and FUNCTION definition support ([5f85a32](https://github.com/oxabl-project/oxabl/commit/5f85a323a572a36b3c2206bbc5eaddb37bcc57f0))
+* **parser:** Add ASSIGN statement and FUNCTION definition support ([e1308a1](https://github.com/oxabl-project/oxabl/commit/e1308a1af9f5f4cb90bfb1be4626028d4bfc0970))
+* **parser:** Add CATCH, FINALLY, and THROW support ([193a410](https://github.com/oxabl-project/oxabl/commit/193a410fc78869bff108e1316ee58e243809a863))
+* **parser:** Add CATCH, FINALLY, and THROW support ([c97bd34](https://github.com/oxabl-project/oxabl/commit/c97bd347d8a629675767aeb93abde8e8ec585f8a))
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v0.2.0...oxabl_ast-v0.3.0) (2026-04-03)
 
 
