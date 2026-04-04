@@ -1,13 +1,13 @@
 //! Statement parsing for the Oxabl parser.
 //!
-//! Handles DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops),
-//! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, RUN, DISPLAY,
+//! Handles DEFINE VARIABLE, VAR, ASSIGN, assignments, DO blocks (with counting loops),
+//! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY,
 //! MESSAGE, LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType, Identifier, IndexField,
-    LockType, ParameterDirection, RunArgument, RunTarget, SortDirection, Span, Statement,
-    TempTableField, TempTableIndex, UseIndex, WhenBranch,
+    AssignPair, BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType, Identifier,
+    IndexField, LockType, ParameterDirection, RunArgument, RunTarget, SortDirection, Span,
+    Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
 use oxabl_lexer::{Kind, is_callable_kind};
 
@@ -120,19 +120,26 @@ impl Parser<'_> {
             return self.parse_message_statement();
         }
 
+        // ASSIGN statement
+        if self.check(Kind::Assign) {
+            return self.parse_assign_statement();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
             return self.parse_define_statement();
         }
 
-        // Check for new var statement
-        // var char name [=] [5].
+        // Check for FUNCTION definition or new var statement
         if self.check(Kind::Identifier) {
             let token = self.peek();
             let text = &self.source[token.start..token.end];
             if text.eq_ignore_ascii_case("var") {
                 return self.parse_var_statement();
+            }
+            if text.eq_ignore_ascii_case("function") {
+                return self.parse_function();
             }
         }
 
@@ -1339,6 +1346,94 @@ impl Parser<'_> {
         self.expect_kind(Kind::Period, "Expected '.' after MESSAGE statement")?;
 
         Ok(Statement::Message { items, set_targets })
+    }
+
+    // Parse ASSIGN statement: ASSIGN target = value [target = value ...].
+    fn parse_assign_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume ASSIGN
+
+        let mut assignments = Vec::new();
+
+        // Parse one or more target = value pairs
+        // Use parse_additive for target to stop before '='
+        // Use parse_additive for value to stop before the next target identifier
+        while !self.check(Kind::Period) && !self.at_end() {
+            let target = self.parse_additive()?;
+            self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
+            let value = self.parse_additive()?;
+            assignments.push(AssignPair { target, value });
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after ASSIGN statement")?;
+
+        Ok(Statement::Assign { assignments })
+    }
+
+    // Parse FUNCTION definition
+    // FUNCTION name RETURNS type [(params)]:
+    //   body
+    // END [FUNCTION].
+    fn parse_function(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume FUNCTION (identifier)
+
+        // Parse function name
+        let name = self.parse_identifier()?;
+
+        // Expect RETURNS
+        self.expect_kind(Kind::Returns, "Expected RETURNS after function name")?;
+
+        // Parse return type
+        let return_type = self.parse_data_type()?;
+
+        // Optional parameter list in parentheses
+        if self.check(Kind::LeftParen) {
+            self.advance();
+            // Skip parameter declarations inside parens for now
+            // Full parameter parsing would need its own implementation
+            // Parameters are typically re-declared in the body with DEFINE INPUT PARAMETER
+            let mut depth = 1;
+            while depth > 0 && !self.at_end() {
+                if self.check(Kind::LeftParen) {
+                    depth += 1;
+                } else if self.check(Kind::RightParen) {
+                    depth -= 1;
+                }
+                if depth > 0 {
+                    self.advance();
+                }
+            }
+            if self.check(Kind::RightParen) {
+                self.advance();
+            }
+        }
+
+        // Expect colon
+        self.expect_kind(Kind::Colon, "Expected ':' after FUNCTION header")?;
+
+        // Parse body until END
+        let mut body = Vec::new();
+        while !self.check(Kind::End) && !self.at_end() {
+            body.push(self.parse_statement()?);
+        }
+
+        self.expect_kind(Kind::End, "Expected END at end of FUNCTION body")?;
+
+        // Optional FUNCTION keyword after END
+        if self.check(Kind::Identifier) {
+            let token = self.peek();
+            let text = &self.source[token.start..token.end];
+            if text.eq_ignore_ascii_case("function") {
+                self.advance();
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after END FUNCTION")?;
+
+        Ok(Statement::Function {
+            name,
+            return_type,
+            body,
+        })
     }
 
     // Parse the block body for code blocks like DO, consume till END.
