@@ -5314,3 +5314,341 @@ fn parse_method_with_class_return_type() {
         _ => panic!("Expected Method statement"),
     }
 }
+
+// =============================================================================
+// Database manipulation statements
+// =============================================================================
+
+#[test]
+fn parse_create_basic() {
+    let source = "CREATE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Create statement"),
+    }
+}
+
+#[test]
+fn parse_create_no_error() {
+    let source = "CREATE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Create statement"),
+    }
+}
+
+#[test]
+fn parse_delete_basic() {
+    let source = "DELETE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Delete { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Delete statement"),
+    }
+}
+
+#[test]
+fn parse_delete_no_error() {
+    let source = "DELETE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Delete { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Delete statement"),
+    }
+}
+
+#[test]
+fn parse_release_basic() {
+    let source = "RELEASE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Release { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Release statement"),
+    }
+}
+
+#[test]
+fn parse_release_no_error() {
+    let source = "RELEASE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Release { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Release statement"),
+    }
+}
+
+#[test]
+fn parse_validate_basic() {
+    let source = "VALIDATE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Validate { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Validate statement"),
+    }
+}
+
+#[test]
+fn parse_validate_no_error() {
+    let source = "VALIDATE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Validate { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Validate statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_basic() {
+    let source = "BUFFER-COPY bSource TO bTarget.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            source,
+            target,
+            assignments,
+            no_error,
+        } => {
+            assert_eq!(source.name, "bSource");
+            assert_eq!(target.name, "bTarget");
+            assert!(assignments.is_empty());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_with_assign() {
+    let source = "BUFFER-COPY bSource TO bTarget ASSIGN field1 = 1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            source,
+            target,
+            assignments,
+            no_error,
+        } => {
+            assert_eq!(source.name, "bSource");
+            assert_eq!(target.name, "bTarget");
+            assert_eq!(assignments.len(), 1);
+            assert_eq!(assignments[0].0.name, "field1");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_with_multiple_assigns() {
+    let source = "BUFFER-COPY bSource TO bTarget ASSIGN field1 = 1 field2 = 2.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            assignments,
+            no_error,
+            ..
+        } => {
+            assert_eq!(assignments.len(), 2);
+            assert_eq!(assignments[0].0.name, "field1");
+            assert_eq!(assignments[1].0.name, "field2");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_with_assign_and_no_error() {
+    let source = "BUFFER-COPY bSource TO bTarget ASSIGN field1 = 1 NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            assignments,
+            no_error,
+            ..
+        } => {
+            assert_eq!(assignments.len(), 1);
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_no_error() {
+    let source = "BUFFER-COPY bSource TO bTarget NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            assignments,
+            no_error,
+            ..
+        } => {
+            assert!(assignments.is_empty());
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_basic() {
+    let source = "BUFFER-COMPARE bSource TO bTarget.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            source,
+            target,
+            result_var,
+            no_error,
+        } => {
+            assert_eq!(source.name, "bSource");
+            assert_eq!(target.name, "bTarget");
+            assert!(result_var.is_none());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_save_result_in() {
+    let source = "BUFFER-COMPARE bSource TO bTarget SAVE RESULT IN lResult.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            result_var,
+            no_error,
+            ..
+        } => {
+            assert_eq!(result_var.unwrap().name, "lResult");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_save_result_in_no_error() {
+    let source = "BUFFER-COMPARE bSource TO bTarget SAVE RESULT IN lResult NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            result_var,
+            no_error,
+            ..
+        } => {
+            assert!(result_var.is_some());
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_no_error() {
+    let source = "BUFFER-COMPARE bSource TO bTarget NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            result_var,
+            no_error,
+            ..
+        } => {
+            assert!(result_var.is_none());
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_create_case_insensitive() {
+    let source = "create customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create { buffer, .. } => {
+            assert_eq!(buffer.name, "customer");
+        }
+        _ => panic!("Expected Create statement"),
+    }
+}
+
+#[test]
+fn parse_db_ops_in_program() {
+    let source = r#"CREATE Customer.
+DELETE Customer NO-ERROR.
+RELEASE Customer.
+VALIDATE Customer NO-ERROR."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 4);
+    assert!(matches!(program.statements[0], Statement::Create { .. }));
+    assert!(matches!(program.statements[1], Statement::Delete { .. }));
+    assert!(matches!(program.statements[2], Statement::Release { .. }));
+    assert!(matches!(program.statements[3], Statement::Validate { .. }));
+}

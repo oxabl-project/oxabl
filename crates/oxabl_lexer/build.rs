@@ -91,6 +91,8 @@ fn main() {
             "blob",
             "break",
             "buffer",
+            "buffer-compare",
+            "buffer-copy",
             "by",
             "call",
             "can do",
