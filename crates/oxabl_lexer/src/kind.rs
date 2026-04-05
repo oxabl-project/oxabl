@@ -150,6 +150,8 @@ pub enum Kind {
     Method,
     Constructor,
     Destructor,
+    BufferCopy,
+    BufferCompare,
 
     // Functions
     Accum,
@@ -610,6 +612,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "blank" => Some(Kind::Blank),
         "blob" => Some(Kind::Blob),
         "buffer" => Some(Kind::Buffer),
+        "buffer-compare" => Some(Kind::BufferCompare),
+        "buffer-copy" => Some(Kind::BufferCopy),
         "by" => Some(Kind::By),
         "call" => Some(Kind::Call),
         "can do" | "can-do" => Some(Kind::CanDo),
