@@ -392,6 +392,90 @@ name = "FINALLY"
 keyword_type = "Statement"
 
 # =============================================================================
+# OO-ABL KEYWORDS
+# Object-oriented ABL constructs — all unreserved, no abbreviations
+# =============================================================================
+
+# Class/Interface definitions
+[[add]]
+name = "CLASS"
+keyword_type = "Statement"
+
+[[add]]
+name = "INTERFACE"
+keyword_type = "Statement"
+
+[[add]]
+name = "INHERITS"
+keyword_type = "Option"
+
+[[add]]
+name = "IMPLEMENTS"
+keyword_type = "Option"
+
+# Member definitions
+[[add]]
+name = "METHOD"
+keyword_type = "Statement"
+
+[[add]]
+name = "CONSTRUCTOR"
+keyword_type = "Statement"
+
+[[add]]
+name = "DESTRUCTOR"
+keyword_type = "Statement"
+
+[[add]]
+name = "PROPERTY"
+keyword_type = "Option"
+
+# Access modifiers
+[[add]]
+name = "PUBLIC"
+keyword_type = "Option"
+
+[[add]]
+name = "PRIVATE"
+keyword_type = "Option"
+
+[[add]]
+name = "PROTECTED"
+keyword_type = "Option"
+
+[[add]]
+name = "PACKAGE-PRIVATE"
+keyword_type = "Option"
+
+# Member qualifiers
+[[add]]
+name = "ABSTRACT"
+keyword_type = "Option"
+
+[[add]]
+name = "FINAL"
+keyword_type = "Option"
+
+[[add]]
+name = "OVERRIDE"
+keyword_type = "Option"
+
+[[add]]
+name = "STATIC"
+keyword_type = "Option"
+
+# Types
+[[add]]
+name = "VOID"
+keyword_type = "Type"
+
+# GET is unreserved; only compound forms (GET-BYTE etc.) exist as Kind variants.
+# Bare GET is needed for property accessors.
+[[add]]
+name = "GET"
+keyword_type = "Option"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================
