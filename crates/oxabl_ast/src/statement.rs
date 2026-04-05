@@ -183,6 +183,39 @@ pub enum Statement {
         label: Option<String>,
     },
 
+    /// CATCH block within a DO/REPEAT/FOR block.
+    ///
+    /// ```abl
+    /// CATCH e AS Progress.Lang.Error:
+    ///     MESSAGE e:GetMessage(1).
+    /// END CATCH.
+    /// ```
+    Catch {
+        /// The error variable name.
+        error_var: Identifier,
+        /// The error class type (e.g., "Progress.Lang.Error").
+        error_type: String,
+        /// Statements in the CATCH body.
+        body: Vec<Statement>,
+    },
+
+    /// FINALLY block within a DO/REPEAT/FOR block.
+    ///
+    /// ```abl
+    /// FINALLY:
+    ///     cleanup().
+    /// END FINALLY.
+    /// ```
+    Finally {
+        /// Statements in the FINALLY body.
+        body: Vec<Statement>,
+    },
+
+    /// UNDO/THROW statement.
+    ///
+    /// `UNDO, THROW NEW Progress.Lang.AppError("msg").`
+    Throw(Expression),
+
     /// Leave statement - exit innermost loop
     Leave,
 
