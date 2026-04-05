@@ -149,6 +149,21 @@ Uses [Release Please](https://github.com/googleapis/release-please) for fully au
 
 While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor instead of major.
 
+## Benchmarks
+
+Benchmarks use `codspeed-criterion-compat` (Criterion with CodSpeed integration). CodSpeed CI runs on every push/PR via `.github/workflows/codspeed.yml` and auto-discovers all `[[bench]]` targets.
+
+```bash
+# Run benchmarks for a specific crate
+cargo bench -p oxabl_lexer --bench lexer_bench
+cargo bench -p oxabl_parser --bench parser_bench
+cargo bench -p oxabl_common --bench source_map_bench
+```
+
+**When the `/codspeed` skills are available, use them for benchmark work** — setup, optimization, and flamegraph analysis.
+
+**When implementing new features**, consider whether a new benchmark is warranted. If the feature adds a new parsing construct, expression type, or hot path, add a benchmark or extend an existing fixture file to cover it. This ensures CodSpeed catches regressions as the codebase grows.
+
 ## Current Status
 
 - `oxabl_lexer`: MVP complete with 37 tests
