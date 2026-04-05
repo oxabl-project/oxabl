@@ -697,8 +697,20 @@ pub fn generate_keyword_match(
     output.push_str("/// Handles ABL prefix abbreviations and case-insensitive matching\n");
     output.push_str("/// e.g., \"def\", \"defi\", \"defin\", \"define\" all match Kind::Define\n");
     output.push_str("pub fn match_keyword(s: &str) -> Option<Kind> {\n");
-    output.push_str("    let lower = s.to_lowercase();\n");
-    output.push_str("    match lower.as_str() {\n");
+    output.push_str("    const MAX_KEYWORD_LEN: usize = 64;\n");
+    output.push_str("    let bytes = s.as_bytes();\n");
+    output.push_str("    if bytes.len() > MAX_KEYWORD_LEN {\n");
+    output.push_str("        return None;\n");
+    output.push_str("    }\n");
+    output.push_str("    let mut buf = [0u8; MAX_KEYWORD_LEN];\n");
+    output.push_str("    for (i, &b) in bytes.iter().enumerate() {\n");
+    output.push_str("        buf[i] = b.to_ascii_lowercase();\n");
+    output.push_str("    }\n");
+    output.push_str("    // SAFETY: input `s` is valid UTF-8 and to_ascii_lowercase() preserves UTF-8 validity\n");
+    output.push_str(
+        "    let lower = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };\n",
+    );
+    output.push_str("    match lower {\n");
 
     // Track all string -> Kind mappings, detecting collisions
     let mut match_to_kind: HashMap<String, String> = HashMap::new();
@@ -801,7 +813,16 @@ pub fn generate_keyword_match(
 
     output.push_str("        _ => None,\n");
     output.push_str("    }\n");
-    output.push_str("}\n");
+    output.push_str("}\n\n");
+
+    // Emit a compile-time assertion that the longest keyword fits in the stack buffer
+    let longest = match_to_kind.keys().map(|s| s.len()).max().unwrap_or(0);
+    output.push_str(&format!(
+        "// Compile-time check: longest keyword ({} bytes) fits in match_keyword() stack buffer\n",
+        longest
+    ));
+    output.push_str("#[allow(clippy::assertions_on_constants)]\n");
+    output.push_str(&format!("const _: () = assert!({} <= 64);\n", longest));
 
     output
 }

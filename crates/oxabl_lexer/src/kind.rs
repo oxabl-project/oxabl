@@ -538,8 +538,18 @@ pub enum Kind {
 /// Handles ABL prefix abbreviations and case-insensitive matching
 /// e.g., "def", "defi", "defin", "define" all match Kind::Define
 pub fn match_keyword(s: &str) -> Option<Kind> {
-    let lower = s.to_lowercase();
-    match lower.as_str() {
+    const MAX_KEYWORD_LEN: usize = 64;
+    let bytes = s.as_bytes();
+    if bytes.len() > MAX_KEYWORD_LEN {
+        return None;
+    }
+    let mut buf = [0u8; MAX_KEYWORD_LEN];
+    for (i, &b) in bytes.iter().enumerate() {
+        buf[i] = b.to_ascii_lowercase();
+    }
+    // SAFETY: input `s` is valid UTF-8 and to_ascii_lowercase() preserves UTF-8 validity
+    let lower = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };
+    match lower {
         "accum" => Some(Kind::Accum),
         "accumu" | "accumul" | "accumula" | "accumulat" | "accumulate" => Some(Kind::Accumulate),
         "active form" => Some(Kind::ActiveForm),
@@ -1067,3 +1077,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         _ => None,
     }
 }
+
+// Compile-time check: longest keyword (20 bytes) fits in match_keyword() stack buffer
+#[allow(clippy::assertions_on_constants)]
+const _: () = assert!(20 <= 64);

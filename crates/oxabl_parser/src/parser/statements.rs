@@ -1553,12 +1553,12 @@ impl Parser<'_> {
         if self.check(Kind::Period) && self.check_at(1, Kind::Identifier) {
             let next = self.peek_at(1);
             let ext = &self.source[next.start..next.end];
-            if ext.eq_ignore_ascii_case("p")
-                || ext.eq_ignore_ascii_case("w")
-                || ext.eq_ignore_ascii_case("r")
-                || ext.eq_ignore_ascii_case("i")
-                || ext.eq_ignore_ascii_case("cls")
-            {
+            let ext_bytes = ext.as_bytes();
+            if match ext_bytes.len() {
+                1 => matches!(ext_bytes[0] | 0x20, b'p' | b'w' | b'r' | b'i'),
+                3 => ext.eq_ignore_ascii_case("cls"),
+                _ => false,
+            } {
                 self.advance(); // consume the period
                 self.advance(); // consume the extension
             }
