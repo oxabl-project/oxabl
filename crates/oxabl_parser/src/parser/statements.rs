@@ -17,7 +17,7 @@ use super::{ParseError, ParseResult, Parser};
 ///
 /// Used for error recovery: if we encounter a statement-starting keyword while
 /// parsing inside a DEFINE TEMP-TABLE body, it likely means a period was missed.
-fn can_start_statement(kind: Kind) -> bool {
+pub(crate) fn can_start_statement(kind: Kind) -> bool {
     matches!(
         kind,
         Kind::Define
