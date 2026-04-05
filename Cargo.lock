@@ -684,6 +684,9 @@ dependencies = [
 [[package]]
 name = "oxabl_common"
 version = "0.3.0"
+dependencies = [
+ "codspeed-criterion-compat",
+]
 
 [[package]]
 name = "oxabl_lexer"
@@ -700,6 +703,7 @@ dependencies = [
 name = "oxabl_parser"
 version = "0.4.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "oxabl_ast",
  "oxabl_lexer",
  "rust_decimal",

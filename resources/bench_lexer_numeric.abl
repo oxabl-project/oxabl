@@ -1,0 +1,70 @@
+/* Benchmark fixture: numeric literal heavy code for lexer */
+
+define variable lv-i as integer no-undo.
+define variable lv-d as decimal no-undo.
+
+assign lv-i = 0.
+assign lv-i = 1.
+assign lv-i = 42.
+assign lv-i = 100.
+assign lv-i = 999.
+assign lv-i = 1000.
+assign lv-i = 9999.
+assign lv-i = 12345.
+assign lv-i = 99999.
+assign lv-i = 100000.
+assign lv-i = 999999.
+assign lv-i = 1234567.
+assign lv-i = 9999999.
+assign lv-i = 2147483647.
+
+assign lv-d = 0.0.
+assign lv-d = 1.0.
+assign lv-d = 3.14.
+assign lv-d = 2.718.
+assign lv-d = 0.001.
+assign lv-d = 99.99.
+assign lv-d = 100.50.
+assign lv-d = 999.999.
+assign lv-d = 1234.5678.
+assign lv-d = 0.123456789.
+assign lv-d = 99999.99.
+assign lv-d = 100000.001.
+
+assign lv-i = 1 + 2.
+assign lv-i = 10 - 5.
+assign lv-i = 3 * 4.
+assign lv-i = 100 / 10.
+assign lv-i = 17 modulo 5.
+assign lv-i = (1 + 2) * 3.
+assign lv-i = 10 * 20 + 30.
+assign lv-i = 100 - 50 * 2.
+assign lv-i = (100 + 200) / (3 + 7).
+assign lv-i = 1 + 2 + 3 + 4 + 5.
+assign lv-i = 10 * 10 * 10.
+assign lv-i = 1000 / 10 / 10.
+
+assign lv-d = 1.5 + 2.5.
+assign lv-d = 10.0 - 3.14.
+assign lv-d = 2.5 * 4.0.
+assign lv-d = 100.0 / 3.0.
+assign lv-d = (1.1 + 2.2) * 3.3.
+assign lv-d = 99.99 + 0.01.
+assign lv-d = 1000.0 - 0.001.
+assign lv-d = 3.14 * 2.0 * 1.5.
+assign lv-d = (100.5 + 200.3) / (3.0 + 7.2).
+assign lv-d = 0.1 + 0.2 + 0.3 + 0.4.
+
+assign lv-i = -1.
+assign lv-i = -42.
+assign lv-i = -999.
+assign lv-d = -3.14.
+assign lv-d = -0.001.
+assign lv-d = -99.99.
+
+assign lv-i = 1 + 2 * 3 - 4 / 2 + 10 * 5 - 3.
+assign lv-i = (1 + 2) * (3 + 4) * (5 + 6).
+assign lv-d = (1.1 + 2.2) * (3.3 - 4.4) / (5.5 + 6.6).
+assign lv-d = 100.0 * 0.15 + 200.0 * 0.10 - 50.0 * 0.05.
+assign lv-i = 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2.
+assign lv-d = 1.0 / 3.0 + 1.0 / 3.0 + 1.0 / 3.0.

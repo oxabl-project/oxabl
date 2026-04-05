@@ -71,16 +71,31 @@ impl<'a> Parser<'a> {
     /// Unlike [`parse_statements`], this method does not bail on the first error.
     /// Instead, it records the error, skips to the next statement boundary via
     /// [`synchronize`], and continues parsing.
+    /// Maximum number of errors before the parser bails out.
+    /// Prevents infinite loops when error recovery cannot make progress.
+    const MAX_ERRORS: usize = 50;
+
     pub fn parse_program(&mut self) -> Program {
         let mut statements = Vec::new();
         let mut errors = Vec::new();
 
         while !self.at_end() {
+            let pos_before = self.current;
             match self.parse_statement() {
                 Ok(stmt) => statements.push(stmt),
                 Err(err) => {
                     errors.push(err);
+                    if errors.len() >= Self::MAX_ERRORS {
+                        break;
+                    }
                     self.synchronize();
+                    // If neither parse_statement nor synchronize advanced the
+                    // cursor, we are stuck on a token that can_start_statement
+                    // recognises but parse_statement cannot handle (e.g. END).
+                    // Force progress to avoid an infinite loop.
+                    if self.current == pos_before {
+                        self.advance();
+                    }
                 }
             }
         }

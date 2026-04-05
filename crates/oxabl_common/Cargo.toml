@@ -9,3 +9,8 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_common"
 [dependencies]
 
 [dev-dependencies]
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
+
+[[bench]]
+name = "source_map_bench"
+harness = false

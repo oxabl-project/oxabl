@@ -1,6 +1,6 @@
 use super::*;
 use oxabl_ast::{
-    AccessModifier, AssignPair, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
+    AccessModifier, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
     FieldTypeSource, FindType, Identifier, IntegerLiteral, Literal, LockType, ParameterDirection,
     RunTarget, SortDirection, Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
 };

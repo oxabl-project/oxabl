@@ -1,0 +1,64 @@
+/* Benchmark fixture: variable and parameter declarations with all supported data types */
+
+define variable lv-int as integer no-undo.
+define variable lv-int2 as integer no-undo initial 0.
+define variable lv-int64 as int64 no-undo.
+define variable lv-int64-init as int64 no-undo initial 9999999999.
+define variable lv-dec as decimal no-undo.
+define variable lv-dec-init as decimal no-undo initial 3.14.
+define variable lv-char as character no-undo.
+define variable lv-char-init as character no-undo initial "hello".
+define variable lv-log as logical no-undo.
+define variable lv-log-init as logical no-undo initial true.
+define variable lv-date as date no-undo.
+define variable lv-datetime as datetime no-undo.
+define variable lv-datetimetz as datetime-tz no-undo.
+define variable lv-handle as handle no-undo.
+define variable lv-rowid as rowid no-undo.
+define variable lv-recid as recid no-undo.
+define variable lv-raw as raw no-undo.
+define variable lv-memptr as memptr no-undo.
+define variable lv-longchar as longchar no-undo.
+define variable lv-clob as clob no-undo.
+define variable lv-blob as blob no-undo.
+
+var integer vInt.
+var integer vInt2 = 42.
+var character vName = "test".
+var logical vFlag = false.
+var decimal vAmount = 100.50.
+var int64 vBigNum = 123456789.
+var date vDate.
+var datetime vTimestamp.
+var handle vHandle.
+
+define variable lv-arr as integer no-undo extent 10.
+define variable lv-arr2 as character no-undo extent 5 initial ["a", "b", "c", "d", "e"].
+define variable lv-arr3 as decimal no-undo extent 3.
+define variable lv-arr4 as logical no-undo extent.
+
+define variable lv-a as integer no-undo.
+define variable lv-b as integer no-undo initial 1.
+define variable lv-c as character no-undo initial "abc".
+define variable lv-d as decimal no-undo initial 1.5.
+define variable lv-e as logical no-undo initial true.
+define variable lv-f as integer no-undo.
+define variable lv-g as character no-undo.
+define variable lv-h as decimal no-undo.
+define variable lv-i as logical no-undo.
+define variable lv-j as date no-undo.
+define variable lv-k as datetime no-undo.
+define variable lv-l as int64 no-undo.
+define variable lv-m as handle no-undo.
+define variable lv-n as rowid no-undo.
+define variable lv-o as longchar no-undo.
+define variable lv-p as memptr no-undo.
+define variable lv-q as raw no-undo.
+define variable lv-r as recid no-undo.
+
+define input parameter ip-name as character no-undo.
+define input parameter ip-id as integer no-undo.
+define output parameter op-result as logical no-undo.
+define output parameter op-message as character no-undo.
+define input-output parameter iop-count as integer no-undo.
+define input-output parameter iop-data as longchar no-undo.
