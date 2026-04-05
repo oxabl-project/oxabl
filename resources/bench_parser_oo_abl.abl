@@ -1,0 +1,147 @@
+/* Benchmark fixture: OO-ABL - CLASS, INTERFACE, METHOD, PROPERTY, CONSTRUCTOR, DESTRUCTOR, USING */
+
+using Progress.Lang.*.
+using MyApp.Services.*.
+using MyApp.Models.Customer.
+using MyApp.Interfaces.IService from propath.
+
+interface MyApp.Interfaces.IService:
+    method public void Initialize().
+    method public logical Process(input pcData as character).
+    method public character GetStatus().
+end interface.
+
+interface MyApp.Interfaces.IDisposable:
+    method public void Dispose().
+end interface.
+
+class MyApp.Models.BaseEntity:
+    define public property Id as integer no-undo
+        get.
+        set.
+
+    define public property CreatedAt as datetime no-undo
+        get.
+        protected set.
+
+    define protected property IsModified as logical no-undo
+        get.
+        set.
+
+    method public void MarkModified():
+        assign this-object:IsModified = true.
+    end method.
+end class.
+
+class MyApp.Services.CustomerService inherits BaseEntity implements IService, IDisposable:
+    define private variable lv-initialized as logical no-undo.
+    define private variable lv-status as character no-undo initial "idle".
+    define private variable lv-count as integer no-undo.
+
+    define public property ServiceName as character no-undo
+        get.
+        private set.
+
+    define public property IsActive as logical no-undo
+        get():
+            return lv-initialized and lv-status = "active".
+        end get.
+
+    define public property RecordCount as integer no-undo
+        get():
+            return lv-count.
+        end get.
+        set(input pValue as integer):
+            if pValue >= 0 then
+                assign lv-count = pValue.
+        end set.
+
+    define public static property MaxInstances as integer no-undo initial 10
+        get.
+        private set.
+
+    constructor public CustomerService():
+        assign
+            this-object:ServiceName = "CustomerService"
+            lv-initialized = false
+            lv-status = "created".
+    end constructor.
+
+    constructor public CustomerService(input pcName as character):
+        assign
+            this-object:ServiceName = pcName
+            lv-initialized = false
+            lv-status = "created".
+    end constructor.
+
+    destructor public CustomerService():
+        this-object:Dispose().
+    end destructor.
+
+    method public void Initialize():
+        if lv-initialized then return.
+        assign
+            lv-initialized = true
+            lv-status = "active".
+    end method.
+
+    method public logical Process(input pcData as character):
+        define variable lv-result as logical no-undo.
+        if not lv-initialized then return false.
+        assign
+            lv-count = lv-count + 1
+            lv-result = true.
+        return lv-result.
+    end method.
+
+    method public character GetStatus():
+        return lv-status.
+    end method.
+
+    method public void Dispose():
+        assign
+            lv-initialized = false
+            lv-status = "disposed"
+            lv-count = 0.
+    end method.
+
+    method private void InternalCleanup():
+        assign lv-count = 0.
+    end method.
+
+    method public override character ToString():
+        return this-object:ServiceName + " [" + lv-status + "]".
+    end method.
+
+    method protected void ValidateState():
+        if not lv-initialized then
+            return.
+    end method.
+
+    method public static integer GetMaxInstances():
+        return MaxInstances.
+    end method.
+end class.
+
+class MyApp.Models.SpecialCustomer inherits CustomerService:
+    define private variable lv-priority as integer no-undo.
+
+    define public property Priority as integer no-undo
+        get():
+            return lv-priority.
+        end get.
+        set(input pValue as integer):
+            assign lv-priority = pValue.
+        end set.
+
+    constructor public SpecialCustomer():
+        super().
+        assign lv-priority = 1.
+    end constructor.
+
+    method public override logical Process(input pcData as character):
+        define variable lv-ok as logical no-undo.
+        assign lv-ok = super:Process(pcData).
+        return lv-ok.
+    end method.
+end class.
