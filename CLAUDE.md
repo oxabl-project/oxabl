@@ -88,7 +88,7 @@ Defines AST nodes for the parser. Key types:
 
 - **Literals**: Integer, Decimal, String, Boolean, Unknown (ABL's `?` literal)
 - **Expressions**: Arithmetic, comparison, logical, string comparison (BEGINS/MATCHES/CONTAINS), unary, ternary (IF/THEN/ELSE), function calls, postfix operations (member access, method calls, array access, field access)
-- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, Empty
+- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, Empty, Class, Method, Property, Constructor, Destructor, Interface, Using
 - **Data Types**: Integer, Int64, Decimal, Character, Logical, Date, DateTime, DateTimeTz, Handle, Rowid, Recid, Raw, Memptr, Longchar, Clob, Blob, Com, Class
 
 ### Parser (`oxabl_parser`)
@@ -96,11 +96,13 @@ Defines AST nodes for the parser. Key types:
 Parses ABL source code into an AST. Key capabilities:
 
 - **Expression parsing** with proper operator precedence (ternary → or → and → comparison → additive → multiplicative → unary → postfix → primary)
-- **Statement parsing**: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN
+- **Statement parsing**: DEFINE VARIABLE/VAR/PARAMETER/TEMP-TABLE/BUFFER/PROPERTY, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY, MESSAGE, ASSIGN, CATCH/FINALLY/THROW, LEAVE, NEXT, RETURN
+- **OO-ABL**: CLASS (with ABSTRACT/FINAL, INHERITS, IMPLEMENTS), INTERFACE, METHOD (with access modifiers, STATIC/ABSTRACT/OVERRIDE), DEFINE PROPERTY (auto and computed GET/SET), CONSTRUCTOR, DESTRUCTOR, USING
 - **Postfix operations**: Method calls (object:method()), member access (object.member), array access (arr[i]), field access (table.field)
 - **Function calls** with argument lists
+- **Error recovery** via `parse_program()` with synchronization on period boundaries
 
-Not yet implemented: procedure/function definitions, database operations, CLASS definitions, streams, frames, buffers, temp-tables.
+Not yet implemented: streams, frames, database manipulation (CREATE/DELETE/RELEASE), DATASET, preprocessor statements, PUBLISH/SUBSCRIBE, ON triggers.
 
 ### Code Generation (`oxabl_codegen`)
 
@@ -152,4 +154,4 @@ While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor 
 - `oxabl_lexer`: MVP complete with 37 tests
 - `oxabl_common/source_map`: Implemented with 10 tests
 - `oxabl_ast`: Implemented with expressions, statements, and data types
-- `oxabl_parser`: Actively developed with 239 tests; parses expressions, control flow, variable declarations, functions, procedures, temp-tables, and error handling
+- `oxabl_parser`: Actively developed with 262 tests; parses expressions, control flow, variable declarations, functions, procedures, temp-tables, error handling, and OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE)
