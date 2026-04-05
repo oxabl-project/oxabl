@@ -26,7 +26,7 @@ jobs:
   build:
     name: Build & Verify
     needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created }}
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
   publish:
     name: Publish to crates.io
     needs: [release-please, build]
-    if: ${{ needs.release-please.outputs.releases_created }}
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +61,6 @@ jobs:
       - run: cargo publish -p oxabl_parser || echo "Already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: cargo publish -p oxabl
+      - run: cargo publish -p oxabl || echo "Already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
