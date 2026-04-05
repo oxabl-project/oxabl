@@ -236,6 +236,117 @@ pub enum Statement {
         body: Vec<Statement>,
     },
 
+    /// CLASS definition.
+    ///
+    /// ```text
+    /// CLASS MyApp.CustomerService INHERITS BaseService IMPLEMENTS IService:
+    ///   /* body */
+    /// END CLASS.
+    /// ```
+    Class {
+        /// Fully qualified class name (e.g., "MyApp.CustomerService").
+        name: Identifier,
+        /// Parent class name, if any.
+        inherits: Option<Identifier>,
+        /// Implemented interfaces.
+        implements: Vec<Identifier>,
+        /// Whether ABSTRACT was specified.
+        is_abstract: bool,
+        /// Whether FINAL was specified.
+        is_final: bool,
+        /// Class body statements (methods, properties, variables, constructors).
+        body: Vec<Statement>,
+    },
+
+    /// METHOD definition inside a CLASS.
+    ///
+    /// `METHOD PUBLIC VOID DoSomething(INPUT x AS INTEGER): body END METHOD.`
+    Method {
+        /// Access modifier.
+        access: AccessModifier,
+        /// Whether STATIC was specified.
+        is_static: bool,
+        /// Whether ABSTRACT was specified (no body).
+        is_abstract: bool,
+        /// Whether OVERRIDE was specified.
+        is_override: bool,
+        /// Return type (None = VOID).
+        return_type: Option<DataType>,
+        /// Method name.
+        name: Identifier,
+        /// Parameters (reuses DefineParameter Statement variant).
+        parameters: Vec<Statement>,
+        /// Method body (empty vec if abstract).
+        body: Vec<Statement>,
+    },
+
+    /// DEFINE PROPERTY inside a CLASS.
+    ///
+    /// ```text
+    /// DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO
+    ///     GET.
+    ///     SET.
+    /// ```
+    Property {
+        /// Access modifier.
+        access: AccessModifier,
+        /// Whether STATIC was specified.
+        is_static: bool,
+        /// Property name.
+        name: Identifier,
+        /// Property data type.
+        data_type: DataType,
+        /// Whether NO-UNDO was specified.
+        no_undo: bool,
+        /// GET accessor: None = no getter, Some(vec![]) = auto-getter (`GET.`),
+        /// Some(body) = computed getter (`GET: body END GET.`).
+        get_body: Option<Vec<Statement>>,
+        /// SET accessor: None = no setter, Some(vec![]) = auto-setter (`SET.`),
+        /// Some(body) = computed setter (`SET: body END SET.`).
+        set_body: Option<Vec<Statement>>,
+    },
+
+    /// CONSTRUCTOR definition inside a CLASS.
+    ///
+    /// `CONSTRUCTOR PUBLIC MyClass(INPUT x AS INTEGER): body END CONSTRUCTOR.`
+    Constructor {
+        /// Access modifier.
+        access: AccessModifier,
+        /// Parameters (reuses DefineParameter Statement variant).
+        parameters: Vec<Statement>,
+        /// Constructor body.
+        body: Vec<Statement>,
+    },
+
+    /// DESTRUCTOR definition inside a CLASS.
+    ///
+    /// `DESTRUCTOR PUBLIC MyClass(): body END DESTRUCTOR.`
+    Destructor {
+        /// Destructor body.
+        body: Vec<Statement>,
+    },
+
+    /// INTERFACE definition.
+    ///
+    /// `INTERFACE IService: METHOD PUBLIC VOID Run(). END INTERFACE.`
+    Interface {
+        /// Interface name.
+        name: Identifier,
+        /// Interfaces this interface inherits from.
+        inherits: Vec<Identifier>,
+        /// Interface body (method signatures, property signatures).
+        body: Vec<Statement>,
+    },
+
+    /// USING statement for class imports.
+    ///
+    /// `USING MyApp.Services.*.`
+    /// `USING Progress.Lang.Object.`
+    Using {
+        /// Type name or wildcard path (e.g., "MyApp.Services.*").
+        type_name: String,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -247,6 +358,15 @@ pub enum Statement {
 
     /// Empty (just a period)
     Empty,
+}
+
+/// Access modifier for OO-ABL members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessModifier {
+    Public,
+    Private,
+    Protected,
+    PackagePrivate,
 }
 
 /// ABL data types for variable declarations

@@ -2,12 +2,13 @@
 //!
 //! Handles DEFINE VARIABLE, VAR, ASSIGN, assignments, DO blocks (with counting loops),
 //! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY,
-//! MESSAGE, LEAVE, NEXT, and RETURN statements.
+//! MESSAGE, CLASS, INTERFACE, METHOD, PROPERTY, CONSTRUCTOR, DESTRUCTOR, USING,
+//! LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    AssignPair, BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType, Identifier,
-    IndexField, LockType, ParameterDirection, RunArgument, RunTarget, SortDirection, Span,
-    Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
+    AccessModifier, AssignPair, BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType,
+    Identifier, IndexField, LockType, ParameterDirection, RunArgument, RunTarget, SortDirection,
+    Span, Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
 use oxabl_lexer::Kind;
 
@@ -37,6 +38,12 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::End
             | Kind::Variable
             | Kind::Function
+            | Kind::Class
+            | Kind::Interface
+            | Kind::Using
+            | Kind::Method
+            | Kind::Constructor
+            | Kind::Destructor
     )
 }
 
@@ -122,6 +129,26 @@ impl Parser<'_> {
             return self.parse_assign_statement();
         }
 
+        // OO-ABL statements
+        if self.check(Kind::Class) {
+            return self.parse_class();
+        }
+        if self.check(Kind::Interface) {
+            return self.parse_interface();
+        }
+        if self.check(Kind::Using) {
+            return self.parse_using();
+        }
+        if self.check(Kind::Method) {
+            return self.parse_method();
+        }
+        if self.check(Kind::Constructor) {
+            return self.parse_constructor();
+        }
+        if self.check(Kind::Destructor) {
+            return self.parse_destructor();
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -165,6 +192,26 @@ impl Parser<'_> {
         if self.check(Kind::Input) || self.check(Kind::Output) || self.check(Kind::InputOutput) {
             return self.parse_define_parameter();
         }
+
+        // OO-ABL: DEFINE [access] PROPERTY ...
+        // Check for access modifier before PROPERTY/VARIABLE/TEMP-TABLE
+        let access = self.parse_access_modifier();
+
+        // Check for STATIC after access modifier
+        let is_static = if self.check(Kind::KwStatic) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        if self.check(Kind::Property) {
+            return self.parse_define_property(access.unwrap_or(AccessModifier::Public), is_static);
+        }
+
+        // If we consumed an access modifier or STATIC but it's not PROPERTY,
+        // fall through to normal DEFINE handling (access modifier is ignored
+        // for VARIABLE/TEMP-TABLE for now — tracked in Future)
 
         // DEFINE TEMP-TABLE
         if self.check(Kind::TempTable) {
@@ -1579,5 +1626,452 @@ impl Parser<'_> {
                 | Kind::NoError
                 | Kind::Period
         )
+    }
+
+    // ===================== OO-ABL parsing =====================
+
+    /// Parse a CLASS definition.
+    ///
+    /// ```text
+    /// CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]:
+    ///     body
+    /// END CLASS.
+    /// ```
+    fn parse_class(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume CLASS
+
+        // Parse optional ABSTRACT/FINAL flags (before name, in any order)
+        let mut is_abstract = false;
+        let mut is_final = false;
+        loop {
+            if self.check(Kind::Abstract) {
+                self.advance();
+                is_abstract = true;
+            } else if self.check(Kind::Final) {
+                self.advance();
+                is_final = true;
+            } else {
+                break;
+            }
+        }
+
+        // Parse class name (dotted)
+        let name = self.parse_qualified_identifier()?;
+
+        // Parse optional INHERITS
+        let inherits = if self.check(Kind::Inherits) {
+            self.advance();
+            Some(self.parse_qualified_identifier()?)
+        } else {
+            None
+        };
+
+        // Parse optional IMPLEMENTS (comma-separated)
+        let mut implements = Vec::new();
+        if self.check(Kind::Implements) {
+            self.advance();
+            implements.push(self.parse_qualified_identifier()?);
+            while self.check(Kind::Comma) {
+                self.advance();
+                implements.push(self.parse_qualified_identifier()?);
+            }
+        }
+
+        // Expect colon to start body
+        self.expect_kind(Kind::Colon, "Expected ':' after CLASS header")?;
+
+        // Parse body until END CLASS
+        let mut body = Vec::new();
+        while !self.at_end() {
+            if self.check(Kind::End) {
+                self.advance(); // consume END
+                // Optional CLASS keyword after END
+                if self.check(Kind::Class) {
+                    self.advance();
+                }
+                self.expect_kind(Kind::Period, "Expected '.' after END CLASS")?;
+                break;
+            }
+            body.push(self.parse_statement()?);
+        }
+
+        Ok(Statement::Class {
+            name,
+            inherits,
+            implements,
+            is_abstract,
+            is_final,
+            body,
+        })
+    }
+
+    /// Parse an INTERFACE definition.
+    ///
+    /// ```text
+    /// INTERFACE name [INHERITS name, ...]:
+    ///     body (method signatures, property signatures)
+    /// END INTERFACE.
+    /// ```
+    fn parse_interface(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume INTERFACE
+
+        let name = self.parse_qualified_identifier()?;
+
+        // Parse optional INHERITS (can inherit multiple interfaces)
+        let mut inherits = Vec::new();
+        if self.check(Kind::Inherits) {
+            self.advance();
+            inherits.push(self.parse_qualified_identifier()?);
+            while self.check(Kind::Comma) {
+                self.advance();
+                inherits.push(self.parse_qualified_identifier()?);
+            }
+        }
+
+        self.expect_kind(Kind::Colon, "Expected ':' after INTERFACE header")?;
+
+        // Parse body until END INTERFACE
+        let mut body = Vec::new();
+        while !self.at_end() {
+            if self.check(Kind::End) {
+                self.advance(); // consume END
+                if self.check(Kind::Interface) {
+                    self.advance();
+                }
+                self.expect_kind(Kind::Period, "Expected '.' after END INTERFACE")?;
+                break;
+            }
+            body.push(self.parse_statement()?);
+        }
+
+        Ok(Statement::Interface {
+            name,
+            inherits,
+            body,
+        })
+    }
+
+    /// Parse a METHOD definition.
+    ///
+    /// ```text
+    /// METHOD [access] [STATIC] [ABSTRACT] [OVERRIDE] (VOID | return-type) name (params):
+    ///     body
+    /// END METHOD.
+    /// ```
+    fn parse_method(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume METHOD
+
+        let access = self
+            .parse_access_modifier()
+            .unwrap_or(AccessModifier::Public);
+
+        // Parse optional STATIC, ABSTRACT, OVERRIDE flags (in any order)
+        let mut is_static = false;
+        let mut is_abstract = false;
+        let mut is_override = false;
+        loop {
+            if self.check(Kind::KwStatic) {
+                self.advance();
+                is_static = true;
+            } else if self.check(Kind::Abstract) {
+                self.advance();
+                is_abstract = true;
+            } else if self.check(Kind::Override) {
+                self.advance();
+                is_override = true;
+            } else {
+                break;
+            }
+        }
+
+        // Parse return type: VOID or a data type
+        let return_type = if self.check(Kind::Void) {
+            self.advance();
+            None
+        } else {
+            Some(self.parse_data_type()?)
+        };
+
+        // Parse method name
+        let name = self.parse_identifier()?;
+
+        // Parse parameter list
+        let parameters = self.parse_parenthesized_params()?;
+
+        // Abstract methods have no body — just a period
+        if is_abstract {
+            self.expect_kind(Kind::Period, "Expected '.' after abstract method signature")?;
+            return Ok(Statement::Method {
+                access,
+                is_static,
+                is_abstract,
+                is_override,
+                return_type,
+                name,
+                parameters,
+                body: Vec::new(),
+            });
+        }
+
+        // Non-abstract: expect colon, parse body until END METHOD
+        self.expect_kind(Kind::Colon, "Expected ':' after METHOD header")?;
+
+        let mut body = Vec::new();
+        while !self.at_end() {
+            if self.check(Kind::End) {
+                self.advance(); // consume END
+                if self.check(Kind::Method) {
+                    self.advance();
+                }
+                self.expect_kind(Kind::Period, "Expected '.' after END METHOD")?;
+                break;
+            }
+            body.push(self.parse_statement()?);
+        }
+
+        Ok(Statement::Method {
+            access,
+            is_static,
+            is_abstract,
+            is_override,
+            return_type,
+            name,
+            parameters,
+            body,
+        })
+    }
+
+    /// Parse a DEFINE PROPERTY statement.
+    ///
+    /// Called after DEFINE [access] [STATIC] PROPERTY has been partially consumed.
+    /// The access modifier and static flag are passed in.
+    ///
+    /// ```text
+    /// DEFINE [access] [STATIC] PROPERTY name AS type [NO-UNDO]
+    ///     GET.                    -- auto-getter
+    ///     GET: body END GET.      -- computed getter
+    ///     SET.                    -- auto-setter
+    ///     SET: body END SET.      -- computed setter
+    /// ```
+    fn parse_define_property(
+        &mut self,
+        access: AccessModifier,
+        is_static: bool,
+    ) -> ParseResult<Statement> {
+        self.advance(); // consume PROPERTY
+
+        let name = self.parse_identifier()?;
+        self.expect_kind(Kind::KwAs, "Expected AS after property name")?;
+        let data_type = self.parse_data_type()?;
+
+        let no_undo = if self.check(Kind::NoUndo) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Parse GET accessor
+        let get_body = if self.check(Kind::Get) {
+            self.advance(); // consume GET
+            if self.check(Kind::Period) {
+                self.advance(); // auto-getter: GET.
+                Some(Vec::new())
+            } else if self.check(Kind::Colon) {
+                self.advance(); // computed getter: GET:
+                let mut body = Vec::new();
+                while !self.at_end() {
+                    if self.check(Kind::End) {
+                        self.advance(); // consume END
+                        if self.check(Kind::Get) {
+                            self.advance();
+                        }
+                        self.expect_kind(Kind::Period, "Expected '.' after END GET")?;
+                        break;
+                    }
+                    body.push(self.parse_statement()?);
+                }
+                Some(body)
+            } else {
+                return Err(ParseError {
+                    message: "Expected '.' or ':' after GET".to_string(),
+                    span: self.current_span(),
+                });
+            }
+        } else {
+            None
+        };
+
+        // Parse SET accessor
+        let set_body = if self.check(Kind::Set) {
+            self.advance(); // consume SET
+            if self.check(Kind::Period) {
+                self.advance(); // auto-setter: SET.
+                Some(Vec::new())
+            } else if self.check(Kind::Colon) {
+                self.advance(); // computed setter: SET:
+                let mut body = Vec::new();
+                while !self.at_end() {
+                    if self.check(Kind::End) {
+                        self.advance(); // consume END
+                        if self.check(Kind::Set) {
+                            self.advance();
+                        }
+                        self.expect_kind(Kind::Period, "Expected '.' after END SET")?;
+                        break;
+                    }
+                    body.push(self.parse_statement()?);
+                }
+                Some(body)
+            } else {
+                return Err(ParseError {
+                    message: "Expected '.' or ':' after SET".to_string(),
+                    span: self.current_span(),
+                });
+            }
+        } else {
+            None
+        };
+
+        Ok(Statement::Property {
+            access,
+            is_static,
+            name,
+            data_type,
+            no_undo,
+            get_body,
+            set_body,
+        })
+    }
+
+    /// Parse a CONSTRUCTOR definition.
+    ///
+    /// ```text
+    /// CONSTRUCTOR [access] class-name (params):
+    ///     body
+    /// END CONSTRUCTOR.
+    /// ```
+    fn parse_constructor(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume CONSTRUCTOR
+
+        let access = self
+            .parse_access_modifier()
+            .unwrap_or(AccessModifier::Public);
+
+        // Skip the class name (constructor name must match class — semantic concern)
+        if Self::can_be_identifier(self.peek().kind) {
+            self.advance();
+        }
+
+        let parameters = self.parse_parenthesized_params()?;
+
+        self.expect_kind(Kind::Colon, "Expected ':' after CONSTRUCTOR header")?;
+
+        let mut body = Vec::new();
+        while !self.at_end() {
+            if self.check(Kind::End) {
+                self.advance(); // consume END
+                if self.check(Kind::Constructor) {
+                    self.advance();
+                }
+                self.expect_kind(Kind::Period, "Expected '.' after END CONSTRUCTOR")?;
+                break;
+            }
+            body.push(self.parse_statement()?);
+        }
+
+        Ok(Statement::Constructor {
+            access,
+            parameters,
+            body,
+        })
+    }
+
+    /// Parse a DESTRUCTOR definition.
+    ///
+    /// ```text
+    /// DESTRUCTOR [PUBLIC] class-name ():
+    ///     body
+    /// END DESTRUCTOR.
+    /// ```
+    fn parse_destructor(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume DESTRUCTOR
+
+        // Optional PUBLIC
+        if self.check(Kind::Public) {
+            self.advance();
+        }
+
+        // Skip class name
+        if Self::can_be_identifier(self.peek().kind) {
+            self.advance();
+        }
+
+        // Expect empty param list
+        self.expect_kind(Kind::LeftParen, "Expected '(' after DESTRUCTOR name")?;
+        self.expect_kind(
+            Kind::RightParen,
+            "Expected ')' — destructors take no parameters",
+        )?;
+
+        self.expect_kind(Kind::Colon, "Expected ':' after DESTRUCTOR header")?;
+
+        let mut body = Vec::new();
+        while !self.at_end() {
+            if self.check(Kind::End) {
+                self.advance(); // consume END
+                if self.check(Kind::Destructor) {
+                    self.advance();
+                }
+                self.expect_kind(Kind::Period, "Expected '.' after END DESTRUCTOR")?;
+                break;
+            }
+            body.push(self.parse_statement()?);
+        }
+
+        Ok(Statement::Destructor { body })
+    }
+
+    /// Parse a USING statement.
+    ///
+    /// ```text
+    /// USING dotted-name[.*].
+    /// ```
+    fn parse_using(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume USING
+
+        // Build the type name from dotted identifiers
+        if !Self::can_be_identifier(self.peek().kind) {
+            return Err(ParseError {
+                message: "Expected type name after USING".to_string(),
+                span: self.current_span(),
+            });
+        }
+
+        let first_token = self.advance().clone();
+        let mut type_name = self.source[first_token.start..first_token.end].to_string();
+
+        // Consume .segment parts, including .* wildcard
+        while self.check(Kind::Period) {
+            // Peek past period: identifier or * continues the name, anything else is terminator
+            let next_kind = self.peek_at(1).kind;
+            if Self::can_be_identifier(next_kind) {
+                self.advance(); // consume .
+                let seg = self.advance().clone();
+                type_name.push('.');
+                type_name.push_str(&self.source[seg.start..seg.end]);
+            } else if next_kind == Kind::Star {
+                self.advance(); // consume .
+                self.advance(); // consume *
+                type_name.push_str(".*");
+                break; // wildcard is always last
+            } else {
+                break; // period is statement terminator
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after USING statement")?;
+
+        Ok(Statement::Using { type_name })
     }
 }
