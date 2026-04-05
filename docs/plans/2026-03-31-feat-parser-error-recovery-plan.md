@@ -1,7 +1,7 @@
 ---
 title: "Parser Error Recovery"
 type: feat
-status: draft
+status: completed
 date: 2026-03-31
 deepened: 2026-03-31
 ---
