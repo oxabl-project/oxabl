@@ -59,6 +59,8 @@ Generated files are written directly to their target locations and include a "DO
 
 ### Lexer (`oxabl_lexer`)
 
+The lexer should classify tokens as distinctly as possible so the parser dispatches on `Kind` enum variants (O(1) integer comparison), never on runtime string comparison or `to_uppercase()` allocations. When a new keyword is needed by the parser, add it to `keyword_overrides.toml` and regenerate — do not use `eq_ignore_ascii_case()` workarounds. This principle yielded ~8% parsing performance improvement when applied to data type and statement keywords.
+
 The lexer tokenizes ABL source code into a stream of tokens. Key components:
 
 - **Token**: Contains `kind` (token type), `start`/`end` byte offsets, and `value` (for literals)
@@ -145,7 +147,7 @@ While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor 
 
 ## Current Status
 
-- `oxabl_lexer`: MVP complete with 27 tests
-- `oxabl_common/source_map`: Implemented but needs test coverage
+- `oxabl_lexer`: MVP complete with 37 tests
+- `oxabl_common/source_map`: Implemented with 10 tests
 - `oxabl_ast`: Implemented with expressions, statements, and data types
-- `oxabl_parser`: Actively developed with 91 tests; parses expressions, control flow, and variable declarations
+- `oxabl_parser`: Actively developed with 239 tests; parses expressions, control flow, variable declarations, functions, procedures, temp-tables, and error handling
