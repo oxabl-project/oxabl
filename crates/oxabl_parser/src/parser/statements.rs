@@ -9,7 +9,7 @@ use oxabl_ast::{
     LockType, ParameterDirection, RunArgument, RunTarget, SortDirection, Span, Statement,
     TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
-use oxabl_lexer::Kind;
+use oxabl_lexer::{Kind, is_callable_kind};
 
 use super::{ParseError, ParseResult, Parser};
 
@@ -1342,10 +1342,21 @@ impl Parser<'_> {
     }
 
     // Parse the block body for code blocks like DO, consume till END.
+    // Also handles CATCH and FINALLY blocks that appear before END.
     fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
 
         while !self.check(Kind::End) && !self.at_end() {
+            // Check for CATCH block (identifier text)
+            if self.is_identifier_text("catch") {
+                statements.push(self.parse_catch_block()?);
+                continue;
+            }
+            // Check for FINALLY block (identifier text)
+            if self.is_identifier_text("finally") {
+                statements.push(self.parse_finally_block()?);
+                continue;
+            }
             statements.push(self.parse_statement()?);
         }
 
@@ -1354,6 +1365,88 @@ impl Parser<'_> {
         self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
 
         Ok(statements)
+    }
+
+    /// Check if current token is an identifier with the given text (case-insensitive).
+    fn is_identifier_text(&self, text: &str) -> bool {
+        if !is_callable_kind(self.peek().kind) {
+            return false;
+        }
+        let token = self.peek();
+        self.source[token.start..token.end].eq_ignore_ascii_case(text)
+    }
+
+    // Parse CATCH e AS ClassName:
+    //   body
+    // END CATCH.
+    fn parse_catch_block(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume CATCH
+
+        let error_var = self.parse_identifier()?;
+        self.expect_kind(Kind::KwAs, "Expected AS after CATCH variable")?;
+
+        // Parse error class type (e.g., Progress.Lang.Error)
+        // This may be a dotted name
+        let start = self.peek().start;
+        self.advance(); // consume first part
+        while self.check(Kind::Period) {
+            // Check if next is an identifier (part of class name) vs statement terminator
+            if let Some(next) = self.tokens.get(self.current + 1) {
+                if is_callable_kind(next.kind) {
+                    self.advance(); // consume dot
+                    self.advance(); // consume next part
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        let end = self.tokens[self.current - 1].end;
+        let error_type = self.source[start..end].to_string();
+
+        self.expect_kind(Kind::Colon, "Expected ':' after CATCH type")?;
+
+        // Parse body until END
+        let mut body = Vec::new();
+        while !self.check(Kind::End) && !self.at_end() {
+            body.push(self.parse_statement()?);
+        }
+
+        self.expect_kind(Kind::End, "Expected END to close CATCH")?;
+        // Optional CATCH keyword after END
+        if self.is_identifier_text("catch") {
+            self.advance();
+        }
+        self.expect_kind(Kind::Period, "Expected '.' after END CATCH")?;
+
+        Ok(Statement::Catch {
+            error_var,
+            error_type,
+            body,
+        })
+    }
+
+    // Parse FINALLY:
+    //   body
+    // END FINALLY.
+    fn parse_finally_block(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume FINALLY
+        self.expect_kind(Kind::Colon, "Expected ':' after FINALLY")?;
+
+        let mut body = Vec::new();
+        while !self.check(Kind::End) && !self.at_end() {
+            body.push(self.parse_statement()?);
+        }
+
+        self.expect_kind(Kind::End, "Expected END to close FINALLY")?;
+        // Optional FINALLY keyword after END
+        if self.is_identifier_text("finally") {
+            self.advance();
+        }
+        self.expect_kind(Kind::Period, "Expected '.' after END FINALLY")?;
+
+        Ok(Statement::Finally { body })
     }
 
     /// Parses an optional lock type (NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK)
