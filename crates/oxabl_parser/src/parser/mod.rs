@@ -122,6 +122,20 @@ impl<'a> Parser<'a> {
             .is_some_and(|t| t.kind == kind)
     }
 
+    /// Check if the token at `current + offset` has the given kind.
+    /// Safe because the token slice always ends with Kind::Eof.
+    fn check_at(&self, offset: usize, kind: Kind) -> bool {
+        self.tokens
+            .get(self.current + offset)
+            .is_some_and(|t| t.kind == kind)
+    }
+
+    /// Peek at the token `offset` positions ahead of current.
+    /// Safe because the token slice always ends with Kind::Eof.
+    fn peek_at(&self, offset: usize) -> &Token {
+        &self.tokens[self.current + offset]
+    }
+
     pub fn at_end(&self) -> bool {
         self.check(Kind::Eof)
     }
@@ -165,7 +179,52 @@ impl<'a> Parser<'a> {
                     | Kind::Descending
                     | Kind::Shared
                     | Kind::Global
+                    // Statement keywords (unreserved)
+                    | Kind::Variable
+                    | Kind::Function
+                    | Kind::Catch
+                    | Kind::Finally
+                    // Data type keywords (unreserved)
+                    | Kind::Integer
+                    | Kind::Int64
+                    | Kind::Decimal
+                    | Kind::Character
+                    | Kind::Logical
+                    | Kind::Date
+                    | Kind::Datetime
+                    | Kind::DatetimeTz
+                    | Kind::Handle
+                    | Kind::Raw
+                    | Kind::Memptr
+                    | Kind::Longchar
+                    | Kind::Clob
+                    | Kind::Blob
+                    | Kind::ComHandle
             )
+    }
+
+    /// Returns true if the given Kind is a data type keyword.
+    fn is_data_type_kind(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Integer
+                | Kind::Int64
+                | Kind::Decimal
+                | Kind::Character
+                | Kind::Logical
+                | Kind::Date
+                | Kind::Datetime
+                | Kind::DatetimeTz
+                | Kind::Handle
+                | Kind::Rowid
+                | Kind::Recid
+                | Kind::Raw
+                | Kind::Memptr
+                | Kind::Longchar
+                | Kind::Clob
+                | Kind::Blob
+                | Kind::ComHandle
+        )
     }
 
     /// Parses a potentially dot-qualified identifier like `Customer.CustNum` or `db.table.field`.
@@ -228,29 +287,30 @@ impl<'a> Parser<'a> {
 
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
-        let type_str = self.source[token.start..token.end].to_uppercase();
-
-        let data_type = match type_str.as_str() {
-            "INTEGER" | "INT" => DataType::Integer,
-            "INT64" => DataType::Int64,
-            "DECIMAL" | "DEC" => DataType::Decimal,
-            "CHARACTER" | "CHAR" => DataType::Character,
-            "LOGICAL" | "LOG" => DataType::Logical,
-            "DATE" => DataType::Date,
-            "DATETIME" => DataType::DateTime,
-            "DATETIME-TZ" => DataType::DateTimeTz,
-            "HANDLE" => DataType::Handle,
-            "ROWID" => DataType::Rowid,
-            "RECID" => DataType::Recid,
-            "RAW" => DataType::Raw,
-            "MEMPTR" => DataType::Memptr,
-            "LONGCHAR" => DataType::Longchar,
-            "CLOB" => DataType::Clob,
-            "BLOB" => DataType::Blob,
-            "COM-HANDLE" => DataType::Com,
+        let data_type = match token.kind {
+            Kind::Integer => DataType::Integer,
+            Kind::Int64 => DataType::Int64,
+            Kind::Decimal => DataType::Decimal,
+            Kind::Character => DataType::Character,
+            Kind::Logical => DataType::Logical,
+            Kind::Date => DataType::Date,
+            Kind::Datetime => DataType::DateTime,
+            Kind::DatetimeTz => DataType::DateTimeTz,
+            Kind::Handle => DataType::Handle,
+            Kind::Rowid => DataType::Rowid,
+            Kind::Recid => DataType::Recid,
+            Kind::Raw => DataType::Raw,
+            Kind::Memptr => DataType::Memptr,
+            Kind::Longchar => DataType::Longchar,
+            Kind::Clob => DataType::Clob,
+            Kind::Blob => DataType::Blob,
+            Kind::ComHandle => DataType::Com,
             _ => {
                 return Err(ParseError {
-                    message: format!("Unknown data type: {}", type_str),
+                    message: format!(
+                        "Unknown data type: {}",
+                        &self.source[token.start..token.end]
+                    ),
                     span: Span {
                         start: token.start as u32,
                         end: token.end as u32,
