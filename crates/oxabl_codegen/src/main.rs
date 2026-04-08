@@ -515,6 +515,9 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
     output.push_str("    Invalid,\n");
     output.push_str("    Identifier,\n");
     output.push_str("    Comment,\n");
+    output
+        .push_str("    /// Synthetic token emitted at end-of-line during `&DEFINE` directives.\n");
+    output.push_str("    PreprocEnd,\n");
     output.push('\n');
 
     // Literals (suffixed with "Literal" to avoid collision with ABL type keywords)
@@ -534,6 +537,7 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
         "Invalid",
         "Identifier",
         "Comment",
+        "PreprocEnd",
         "IntegerLiteral",
         "BigIntLiteral",
         "DecimalLiteral",
