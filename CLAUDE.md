@@ -96,14 +96,14 @@ Defines AST nodes for the parser. Key types:
 Parses ABL source code into an AST. Key capabilities:
 
 - **Expression parsing** with proper operator precedence (ternary → or → and → comparison → additive → multiplicative → unary → postfix → primary)
-- **Statement parsing**: DEFINE VARIABLE/VAR/PARAMETER/TEMP-TABLE/BUFFER/PROPERTY, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY, MESSAGE, ASSIGN, CREATE, DELETE, RELEASE, VALIDATE, BUFFER-COPY, BUFFER-COMPARE, CATCH/FINALLY/THROW, LEAVE, NEXT, RETURN
+- **Statement parsing**: DEFINE VARIABLE/VAR/PARAMETER/TEMP-TABLE/BUFFER/PROPERTY/STREAM/FRAME, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY (with STREAM clause), MESSAGE, ASSIGN, CREATE, DELETE, RELEASE, VALIDATE, BUFFER-COPY, BUFFER-COMPARE, INPUT/OUTPUT/INPUT-OUTPUT stream I/O (FROM/TO/THROUGH/CLOSE), CATCH/FINALLY/THROW, LEAVE, NEXT, RETURN
 - **OO-ABL**: CLASS (with ABSTRACT/FINAL, INHERITS, IMPLEMENTS), INTERFACE, METHOD (with access modifiers, STATIC/ABSTRACT/OVERRIDE), DEFINE PROPERTY (auto and computed GET/SET), CONSTRUCTOR, DESTRUCTOR, USING
 - **Postfix operations**: Method calls (object:method()), member access (object.member), array access (arr[i]), field access (table.field)
 - **Function calls** with argument lists
 - **Preprocessor**: &IF/&ELSEIF/&ELSE/&ENDIF at statement, expression, and data type levels via generic `PreprocIf<T>`, &SCOPED-DEFINE/&GLOBAL-DEFINE with `PreprocEnd` lexer token, &UNDEFINE, &MESSAGE, `{&variable}` references
 - **Error recovery** via `parse_program()` with synchronization on period boundaries
 
-Not yet implemented: streams, frames, DATASET, PUBLISH/SUBSCRIBE, ON triggers.
+Not yet implemented: DATASET, PUBLISH/SUBSCRIBE, ON triggers.
 
 ### Code Generation (`oxabl_codegen`)
 
@@ -170,4 +170,4 @@ cargo bench -p oxabl_common --bench source_map_bench
 - `oxabl_lexer`: MVP complete with 43 tests
 - `oxabl_common/source_map`: Implemented with 10 tests
 - `oxabl_ast`: Implemented with expressions, statements, and data types
-- `oxabl_parser`: Actively developed with 305 tests; parses expressions, control flow, variable declarations, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), and preprocessor directives
+- `oxabl_parser`: Actively developed with 330 tests; parses expressions, control flow, variable declarations, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), preprocessor directives, stream I/O, and frame definitions
