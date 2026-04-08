@@ -3,7 +3,7 @@
 //! Expressions are parsed with the following precedence (lowest to highest):
 //! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative > unary > postfix > primary.
 
-use crate::{Literal, Span};
+use crate::{Literal, PreprocIf, Span};
 
 /// A named identifier with its source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,4 +69,9 @@ pub enum Expression {
         qualifier: Box<Expression>,
         field: Identifier,
     },
+    /// Preprocessor variable reference: `{&variable}`.
+    PreprocReference(String),
+    /// Mid-expression preprocessor conditional.
+    /// The else_branch is semantically required (parser enforces this).
+    PreprocIf(Box<PreprocIf<Expression>>),
 }
