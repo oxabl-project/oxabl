@@ -325,6 +325,32 @@ impl Parser<'_> {
     }
 
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
+        // Preprocessor reference: {&variable}
+        if self.check(Kind::Preprop) {
+            let token = self.advance().clone();
+            // Strip {& and } to get the variable name
+            let raw = &self.source[token.start..token.end];
+            let name = raw
+                .strip_prefix("{&")
+                .and_then(|s| s.strip_suffix('}'))
+                .unwrap_or(raw)
+                .to_string();
+            return Ok(Expression::PreprocReference(name));
+        }
+
+        // Mid-expression preprocessor conditional: &IF cond &THEN expr &ELSE expr &ENDIF
+        if self.check(Kind::PreprocIf) {
+            self.advance(); // consume &IF
+            let preproc = self.parse_preproc_if(1, &Self::parse_expression)?;
+            if preproc.else_branch.is_none() {
+                return Err(ParseError {
+                    message: "Expression-level &IF requires &ELSE branch".to_string(),
+                    span: self.current_span(),
+                });
+            }
+            return Ok(Expression::PreprocIf(Box::new(preproc)));
+        }
+
         // Parenthesized expression
         if self.check(Kind::LeftParen) {
             self.advance();
