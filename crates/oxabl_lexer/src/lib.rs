@@ -71,6 +71,10 @@ pub struct Lexer<'a> {
 
     /// The remaining characters
     chars: Chars<'a>,
+
+    /// True while tokenizing a `&SCOPED-DEFINE` or `&GLOBAL-DEFINE` value.
+    /// When set, newlines emit `Kind::PreprocEnd` instead of being skipped.
+    in_directive: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -78,20 +82,34 @@ impl<'a> Lexer<'a> {
         Self {
             source,
             chars: source.chars(),
+            in_directive: false,
         }
     }
 
     fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r')) {
-            self.advance();
+        while let Some(c) = self.peek() {
+            match c {
+                ' ' | '\t' | '\r' => {
+                    self.advance();
+                }
+                '\n' if !self.in_directive => {
+                    self.advance();
+                }
+                _ => break,
+            }
         }
     }
 
     fn read_next_kind(&mut self, start: usize) -> Kind {
         while let Some(c) = self.advance() {
             match c {
-                // whitspace, skip (we skip earlier, this is a sanity check)
-                ' ' | '\t' | '\n' => continue,
+                // whitespace, skip (we skip earlier, this is a sanity check)
+                ' ' | '\t' => continue,
+                '\n' if self.in_directive => {
+                    self.in_directive = false;
+                    return Kind::PreprocEnd;
+                }
+                '\n' => continue,
 
                 // if it starts with an operator it must be one
                 '+' => match self.peek() {
@@ -246,6 +264,14 @@ impl<'a> Lexer<'a> {
         self.skip_whitespace();
         let start = self.offset();
         let mut kind = self.read_next_kind(start);
+
+        // If EOF reached while inside a &DEFINE directive, emit PreprocEnd first.
+        // The next call will produce Eof.
+        if kind == Kind::Eof && self.in_directive {
+            self.in_directive = false;
+            kind = Kind::PreprocEnd;
+        }
+
         let end = self.offset();
         let mut value = TokenValue::None;
         match kind {
@@ -483,7 +509,14 @@ impl<'a> Lexer<'a> {
 
         // Try to match the full text including & against known preprocessor keywords
         let text = &self.source[start..self.offset()];
-        match_keyword(text).unwrap_or(Kind::Invalid)
+        let kind = match_keyword(text).unwrap_or(Kind::Invalid);
+
+        // For define directives, enter directive mode so newlines emit PreprocEnd
+        if matches!(kind, Kind::PreprocScopedDefine | Kind::PreprocGlobalDefine) {
+            self.in_directive = true;
+        }
+
+        kind
     }
 
     fn skip_line_comment(&mut self) -> Kind {
@@ -887,6 +920,7 @@ end."#;
             (Kind::PreprocScopedDefine, 24, 38, TokenValue::None),
             (Kind::Identifier, 39, 44, TokenValue::None), // myvar
             (Kind::IntegerLiteral, 45, 46, TokenValue::Integer(1)),
+            (Kind::PreprocEnd, 46, 47, TokenValue::None), // newline ends directive
             (Kind::PreprocEndif, 47, 53, TokenValue::None),
             (Kind::Eof, 53, 53, TokenValue::None),
         ];
@@ -936,17 +970,43 @@ end."#;
 
     #[test]
     fn preprocessor_abbreviations() {
-        // Test that preprocessor abbreviations work like regular keywords
-        let test_cases = vec![
+        // Test that preprocessor abbreviations work like regular keywords.
+        // Define directives (&glob, &scop, &global-define, &scoped-define) set
+        // in_directive mode, so they emit PreprocEnd at EOF → 3 tokens total.
+        // Non-define directives (&undef*) don't → 2 tokens total.
+        let define_cases = vec![
             ("&glob", Kind::PreprocGlobalDefine, 5),
             ("&global-define", Kind::PreprocGlobalDefine, 14),
             ("&scop", Kind::PreprocScopedDefine, 5),
             ("&scoped-define", Kind::PreprocScopedDefine, 14),
+        ];
+        let non_define_cases = vec![
             ("&undef", Kind::PreprocUndefine, 6),
             ("&undefine", Kind::PreprocUndefine, 9),
         ];
 
-        for (source, expected_kind, expected_len) in test_cases {
+        for (source, expected_kind, expected_len) in define_cases {
+            let tokens = collect_tokens(source);
+            assert_eq!(
+                tokens.len(),
+                3,
+                "Expected 3 tokens for '{}' (directive + PreprocEnd + Eof), got {}",
+                source,
+                tokens.len()
+            );
+            assert_token(
+                &tokens[0],
+                expected_kind,
+                0,
+                expected_len,
+                TokenValue::None,
+                source,
+            );
+            assert_eq!(tokens[1].kind, Kind::PreprocEnd);
+            assert_eq!(tokens[2].kind, Kind::Eof);
+        }
+
+        for (source, expected_kind, expected_len) in non_define_cases {
             let tokens = collect_tokens(source);
             assert_eq!(
                 tokens.len(),
@@ -1358,5 +1418,130 @@ end."#;
             );
             assert_eq!(tokens[0].kind, expected_kind, "Wrong kind for '{}'", source);
         }
+    }
+
+    // ── PreprocEnd / in_directive tests ──────────────────────────────
+
+    #[test]
+    fn scoped_define_emits_preproc_end_on_newline() {
+        // "&scoped-define FOO 42\n" should emit:
+        //   PreprocScopedDefine, Identifier(FOO), IntegerLiteral(42), PreprocEnd, Eof
+        let source = "&scoped-define FOO 42\nDISPLAY.";
+        let tokens = collect_tokens(source);
+
+        let kinds: Vec<Kind> = tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::PreprocScopedDefine,
+                Kind::Identifier,     // FOO
+                Kind::IntegerLiteral, // 42
+                Kind::PreprocEnd,
+                Kind::Display,
+                Kind::Period,
+                Kind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn global_define_emits_preproc_end_on_newline() {
+        let source = "&global-define BAR yes\nRUN foo.";
+        let tokens = collect_tokens(source);
+
+        let kinds: Vec<Kind> = tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::PreprocGlobalDefine,
+                Kind::Identifier, // BAR
+                Kind::Yes,        // yes is a keyword
+                Kind::PreprocEnd,
+                Kind::Run,
+                Kind::Identifier, // foo
+                Kind::Period,
+                Kind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn define_value_with_operators() {
+        let source = "&scoped-define EXPR 1 + 2\nEND.";
+        let tokens = collect_tokens(source);
+
+        let kinds: Vec<Kind> = tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::PreprocScopedDefine,
+                Kind::Identifier,     // EXPR
+                Kind::IntegerLiteral, // 1
+                Kind::Add,            // +
+                Kind::IntegerLiteral, // 2
+                Kind::PreprocEnd,
+                Kind::End,
+                Kind::Period,
+                Kind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn define_with_no_value_emits_preproc_end() {
+        let source = "&scoped-define EMPTY\nEND.";
+        let tokens = collect_tokens(source);
+
+        let kinds: Vec<Kind> = tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::PreprocScopedDefine,
+                Kind::Identifier, // EMPTY
+                Kind::PreprocEnd,
+                Kind::End,
+                Kind::Period,
+                Kind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn define_at_eof_emits_preproc_end() {
+        // No trailing newline — PreprocEnd should still be emitted before Eof
+        let source = "&scoped-define NAME hello";
+        let tokens = collect_tokens(source);
+
+        let kinds: Vec<Kind> = tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::PreprocScopedDefine,
+                Kind::Identifier, // NAME
+                Kind::Identifier, // hello
+                Kind::PreprocEnd,
+                Kind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn non_define_preproc_does_not_emit_preproc_end() {
+        // &IF should NOT set in_directive — no PreprocEnd expected
+        let source = "&IF TRUE &THEN\nDISPLAY.";
+        let tokens = collect_tokens(source);
+
+        let kinds: Vec<Kind> = tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::PreprocIf,
+                Kind::KwTrue,
+                Kind::PreprocThen,
+                Kind::Display,
+                Kind::Period,
+                Kind::Eof,
+            ]
+        );
     }
 }

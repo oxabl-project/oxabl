@@ -7,8 +7,8 @@
 
 use oxabl_ast::{
     AccessModifier, AssignPair, BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType,
-    Identifier, IndexField, LockType, ParameterDirection, RunArgument, RunTarget, SortDirection,
-    Span, Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
+    Identifier, IndexField, LockType, ParameterDirection, PreprocIf, RunArgument, RunTarget,
+    SortDirection, Span, Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
 };
 use oxabl_lexer::Kind;
 
@@ -50,6 +50,11 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Validate
             | Kind::BufferCopy
             | Kind::BufferCompare
+            | Kind::PreprocIf
+            | Kind::PreprocScopedDefine
+            | Kind::PreprocGlobalDefine
+            | Kind::PreprocUndefine
+            | Kind::PreprocMessage
     )
 }
 
@@ -153,6 +158,20 @@ impl Parser<'_> {
         }
         if self.check(Kind::BufferCompare) {
             return self.parse_buffer_compare();
+        }
+
+        // Preprocessor statements
+        if self.check(Kind::PreprocIf) {
+            return self.parse_preproc_if_statement();
+        }
+        if self.check(Kind::PreprocScopedDefine) || self.check(Kind::PreprocGlobalDefine) {
+            return self.parse_preproc_define();
+        }
+        if self.check(Kind::PreprocUndefine) {
+            return self.parse_preproc_undefine();
+        }
+        if self.check(Kind::PreprocMessage) {
+            return self.parse_preproc_message();
         }
 
         // OO-ABL statements
@@ -2231,5 +2250,126 @@ impl Parser<'_> {
         let token = self.peek_at(offset);
         (token.kind == Kind::Identifier || Self::can_be_identifier(token.kind))
             && self.source[token.start..token.end].eq_ignore_ascii_case(text)
+    }
+
+    // ── Preprocessor parsing ─────────────────────────────────────────
+
+    /// Maximum preprocessor nesting depth to prevent stack overflow.
+    const MAX_PREPROC_DEPTH: u32 = 64;
+
+    /// Generic preprocessor &IF parser. The `parse_branch` closure controls
+    /// what content type is parsed inside each branch.
+    pub(super) fn parse_preproc_if<T>(
+        &mut self,
+        depth: u32,
+        parse_branch: &dyn Fn(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<PreprocIf<T>> {
+        if depth > Self::MAX_PREPROC_DEPTH {
+            return Err(ParseError {
+                message: "Preprocessor nesting too deep".to_string(),
+                span: self.current_span(),
+            });
+        }
+
+        // Already consumed &IF
+        let condition = self.parse_expression()?;
+        self.expect_kind(Kind::PreprocThen, "Expected '&THEN' after &IF condition")?;
+
+        let then_branch = parse_branch(self)?;
+
+        let mut elseif_branches = Vec::new();
+        while self.check(Kind::PreprocElseif) {
+            self.advance(); // consume &ELSEIF
+            let elseif_cond = self.parse_expression()?;
+            self.expect_kind(
+                Kind::PreprocThen,
+                "Expected '&THEN' after &ELSEIF condition",
+            )?;
+            let elseif_body = parse_branch(self)?;
+            elseif_branches.push((elseif_cond, elseif_body));
+        }
+
+        let else_branch = if self.check(Kind::PreprocElse) {
+            self.advance(); // consume &ELSE
+            Some(parse_branch(self)?)
+        } else {
+            None
+        };
+
+        self.expect_kind(Kind::PreprocEndif, "Expected '&ENDIF'")?;
+
+        Ok(PreprocIf {
+            condition,
+            then_branch,
+            elseif_branches,
+            else_branch,
+        })
+    }
+
+    /// Parse statements until a preprocessor boundary (&ELSEIF, &ELSE, &ENDIF).
+    fn parse_block_until_preproc_boundary(&mut self) -> ParseResult<Vec<Statement>> {
+        let mut stmts = Vec::new();
+        while !self.at_end()
+            && !self.check(Kind::PreprocElseif)
+            && !self.check(Kind::PreprocElse)
+            && !self.check(Kind::PreprocEndif)
+        {
+            stmts.push(self.parse_statement()?);
+        }
+        Ok(stmts)
+    }
+
+    /// &IF ... &THEN stmts [&ELSEIF ... &THEN stmts]... [&ELSE stmts] &ENDIF
+    fn parse_preproc_if_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume &IF
+        let preproc = self.parse_preproc_if(1, &Self::parse_block_until_preproc_boundary)?;
+        Ok(Statement::PreprocIf(preproc))
+    }
+
+    /// &SCOPED-DEFINE name [value tokens...] PreprocEnd
+    /// &GLOBAL-DEFINE name [value tokens...] PreprocEnd
+    fn parse_preproc_define(&mut self) -> ParseResult<Statement> {
+        let is_global = self.check(Kind::PreprocGlobalDefine);
+        self.advance(); // consume &SCOPED-DEFINE or &GLOBAL-DEFINE
+
+        let name = self.parse_identifier()?;
+
+        // Collect value span: everything from current position until PreprocEnd or Eof.
+        let value_span = if self.check(Kind::PreprocEnd) || self.at_end() {
+            None
+        } else {
+            let start = self.peek().start as u32;
+            let mut end = start;
+            while !self.check(Kind::PreprocEnd) && !self.at_end() {
+                let tok = self.advance();
+                end = tok.end as u32;
+            }
+            Some(Span { start, end })
+        };
+
+        // Consume the PreprocEnd if present
+        if self.check(Kind::PreprocEnd) {
+            self.advance();
+        }
+
+        Ok(Statement::PreprocDefine {
+            name,
+            value_span,
+            is_global,
+        })
+    }
+
+    /// &UNDEFINE name
+    fn parse_preproc_undefine(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume &UNDEFINE
+        let name = self.parse_identifier()?;
+        Ok(Statement::PreprocUndefine { name })
+    }
+
+    /// &MESSAGE expression
+    fn parse_preproc_message(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume &MESSAGE
+        let expression = self.parse_expression()?;
+        Ok(Statement::PreprocMessage { expression })
     }
 }

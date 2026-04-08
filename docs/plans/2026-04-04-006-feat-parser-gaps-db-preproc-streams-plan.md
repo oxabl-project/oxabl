@@ -351,17 +351,17 @@ Update `can_start_statement()` with: `Kind::PreprocIf`, `Kind::PreprocScopedDefi
 
 ### Acceptance Criteria
 
-- [ ] `Kind::PreprocEnd` added to codegen template; `in_directive` flag in lexer
-- [ ] Lexer tests for new `PreprocEnd` tokenization behavior
-- [ ] `PreprocIf<T>` generic struct defined in oxabl_ast
-- [ ] 4 new `Statement` variants, 2 new `Expression` variants, 1 new `DataType` variant
-- [ ] Generic `parse_preproc_if<T>()` with closure parameter
-- [ ] Statement-level preprocessor parsing with full &IF/&ELSEIF/&ELSE chain
-- [ ] Expression-level `&IF` and `{&variable}` reference parsing (else required)
-- [ ] Data type-level `&IF` for conditional types in DEFINE VARIABLE (else required)
-- [ ] Preprocessor-aware error recovery with depth tracking
-- [ ] 25+ tests covering all forms
-- [ ] `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check` pass
+- [x] `Kind::PreprocEnd` added to codegen template; `in_directive` flag in lexer
+- [x] Lexer tests for new `PreprocEnd` tokenization behavior (6 tests)
+- [x] `PreprocIf<T>` generic struct defined in oxabl_ast
+- [x] 4 new `Statement` variants, 2 new `Expression` variants, 1 new `DataType` variant
+- [x] Generic `parse_preproc_if<T>()` with closure parameter
+- [x] Statement-level preprocessor parsing with full &IF/&ELSEIF/&ELSE chain
+- [x] Expression-level `&IF` and `{&variable}` reference parsing (else required)
+- [x] Data type-level `&IF` for conditional types in DEFINE VARIABLE (else required)
+- [x] Preprocessor-aware error recovery with depth tracking
+- [x] 30 tests covering all forms (6 lexer + 24 parser)
+- [x] `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check` pass
 
 ---
 

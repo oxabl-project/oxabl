@@ -9,6 +9,8 @@ pub enum Kind {
     Invalid,
     Identifier,
     Comment,
+    /// Synthetic token emitted at end-of-line during `&DEFINE` directives.
+    PreprocEnd,
 
     // Literals
     IntegerLiteral,
