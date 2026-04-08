@@ -504,16 +504,16 @@ The `raw_span` preserves the unparsed content so a formatter can reproduce it ve
 
 ### Acceptance Criteria
 
-- [ ] `Kind::Through`, `Kind::Append`, `Kind::Close` added via codegen (if not already present)
-- [ ] `DefineStream`, `DefineFrame` (with `raw_span`), `StreamIo` variants in AST
-- [ ] `StreamDirection` (with `Copy`) and `StreamOperation` enums
-- [ ] DEFINE sub-dispatch updated for STREAM and FRAME
-- [ ] Single `parse_stream_io(direction)` function handling all 3 directions
-- [ ] Stream I/O statement parsing with named stream support
-- [ ] INPUT/OUTPUT disambiguation via lookahead
-- [ ] DISPLAY updated with optional STREAM clause
-- [ ] 20+ tests covering all forms
-- [ ] `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check` pass
+- [x] `Kind::Through`, `Kind::Thru`, `Kind::Append`, `Kind::Close` added via codegen
+- [x] `DefineStream`, `DefineFrame` (with `raw_span`), `StreamIo` variants in AST
+- [x] `StreamDirection` (with `Copy`) and `StreamOperation` enums
+- [x] DEFINE sub-dispatch updated for STREAM and FRAME
+- [x] Single `parse_stream_io(direction)` function handling all 3 directions
+- [x] Stream I/O statement parsing with named stream support
+- [x] INPUT/OUTPUT disambiguation via lookahead
+- [x] DISPLAY updated with optional STREAM clause
+- [x] 25 tests covering all forms
+- [x] `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check` pass
 
 ---
 

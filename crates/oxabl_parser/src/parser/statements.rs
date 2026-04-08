@@ -8,7 +8,8 @@
 use oxabl_ast::{
     AccessModifier, AssignPair, BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType,
     Identifier, IndexField, LockType, ParameterDirection, PreprocIf, RunArgument, RunTarget,
-    SortDirection, Span, Statement, TempTableField, TempTableIndex, UseIndex, WhenBranch,
+    SortDirection, Span, Statement, StreamDirection, StreamOperation, TempTableField,
+    TempTableIndex, UseIndex, WhenBranch,
 };
 use oxabl_lexer::Kind;
 
@@ -55,6 +56,9 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::PreprocGlobalDefine
             | Kind::PreprocUndefine
             | Kind::PreprocMessage
+            | Kind::Input
+            | Kind::Output
+            | Kind::InputOutput
     )
 }
 
@@ -174,6 +178,35 @@ impl Parser<'_> {
             return self.parse_preproc_message();
         }
 
+        // Stream I/O statements: INPUT/OUTPUT/INPUT-OUTPUT
+        // Disambiguate from parameter direction or function call via lookahead
+        if self.check(Kind::Input) {
+            let next = self.peek_at(1).kind;
+            if matches!(
+                next,
+                Kind::From | Kind::Through | Kind::Thru | Kind::Close | Kind::Stream
+            ) {
+                return self.parse_stream_io(StreamDirection::Input);
+            }
+        }
+        if self.check(Kind::Output) {
+            let next = self.peek_at(1).kind;
+            if matches!(
+                next,
+                Kind::To | Kind::Through | Kind::Thru | Kind::Close | Kind::Stream
+            ) {
+                return self.parse_stream_io(StreamDirection::Output);
+            }
+        }
+        if self.check(Kind::InputOutput) {
+            let next = self.peek_at(1).kind;
+            if matches!(
+                next,
+                Kind::Through | Kind::Thru | Kind::Close | Kind::Stream
+            ) {
+                return self.parse_stream_io(StreamDirection::InputOutput);
+            }
+        }
         // OO-ABL statements
         if self.check(Kind::Class) {
             return self.parse_class();
@@ -268,12 +301,24 @@ impl Parser<'_> {
             return self.parse_define_buffer();
         }
 
+        // DEFINE STREAM
+        if self.check(Kind::Stream) {
+            return self.parse_define_stream();
+        }
+
+        // DEFINE FRAME
+        if self.check(Kind::Frame) {
+            return self.parse_define_frame();
+        }
+
         // DEFINE VARIABLE / DEFINE VAR
         if self.check(Kind::Variable) {
             self.advance(); // consume VARIABLE or VAR
         } else {
             return Err(ParseError {
-                message: "Expected VARIABLE, VAR, TEMP-TABLE, or BUFFER after DEFINE".to_string(),
+                message:
+                    "Expected VARIABLE, VAR, TEMP-TABLE, BUFFER, STREAM, or FRAME after DEFINE"
+                        .to_string(),
                 span: Span {
                     start: self.peek().start as u32,
                     end: self.peek().end as u32,
@@ -1279,6 +1324,14 @@ impl Parser<'_> {
     fn parse_display_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DISPLAY
 
+        // Optional STREAM clause: DISPLAY STREAM stream-name ...
+        let stream_name = if self.check(Kind::Stream) {
+            self.advance();
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+
         let mut items = Vec::new();
         let mut except = Vec::new();
         let mut frame = None;
@@ -1343,6 +1396,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::Period, "Expected '.' after DISPLAY statement")?;
 
         Ok(Statement::Display {
+            stream_name,
             items,
             except,
             frame,
@@ -2250,6 +2304,134 @@ impl Parser<'_> {
         let token = self.peek_at(offset);
         (token.kind == Kind::Identifier || Self::can_be_identifier(token.kind))
             && self.source[token.start..token.end].eq_ignore_ascii_case(text)
+    }
+
+    // ── Stream / Frame parsing ───────────────────────────────────────
+
+    /// Parse DEFINE STREAM stream-name.
+    fn parse_define_stream(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume STREAM
+        let name = self.parse_identifier()?;
+        self.expect_kind(Kind::Period, "Expected '.' after DEFINE STREAM")?;
+        Ok(Statement::DefineStream { name })
+    }
+
+    /// Parse DEFINE FRAME frame-name ... .
+    /// Simplified: skips all tokens between name and period, storing the raw span.
+    fn parse_define_frame(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume FRAME
+        let name = self.parse_identifier()?;
+
+        // Record start of unparsed content
+        let raw_start = self.peek().start as u32;
+
+        // Skip tokens until period (simplified — we don't parse frame phrases)
+        while !self.check(Kind::Period) && !self.at_end() {
+            self.advance();
+        }
+
+        let raw_end = self.peek().start as u32;
+        let raw_span = Span {
+            start: raw_start,
+            end: raw_end,
+        };
+
+        self.expect_kind(Kind::Period, "Expected '.' after DEFINE FRAME")?;
+        Ok(Statement::DefineFrame { name, raw_span })
+    }
+
+    /// Parse INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.
+    ///
+    /// All three directions share this function:
+    /// 1. Advance past direction keyword
+    /// 2. Optional STREAM stream-name
+    /// 3. Dispatch on operation: FROM / TO / THROUGH / CLOSE
+    fn parse_stream_io(&mut self, direction: StreamDirection) -> ParseResult<Statement> {
+        self.advance(); // consume INPUT / OUTPUT / INPUT-OUTPUT
+
+        // Optional STREAM stream-name
+        let stream_name = if self.check(Kind::Stream) {
+            self.advance();
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+
+        // Dispatch on operation
+        let operation = if self.check(Kind::From) {
+            if direction == StreamDirection::Output {
+                return Err(ParseError {
+                    message: "OUTPUT does not support FROM".to_string(),
+                    span: Span {
+                        start: self.peek().start as u32,
+                        end: self.peek().end as u32,
+                    },
+                });
+            }
+            if direction == StreamDirection::InputOutput {
+                return Err(ParseError {
+                    message: "INPUT-OUTPUT does not support FROM".to_string(),
+                    span: Span {
+                        start: self.peek().start as u32,
+                        end: self.peek().end as u32,
+                    },
+                });
+            }
+            self.advance(); // consume FROM
+            let target = self.parse_expression()?;
+            StreamOperation::From(target)
+        } else if self.check(Kind::To) {
+            if direction == StreamDirection::Input {
+                return Err(ParseError {
+                    message: "INPUT does not support TO".to_string(),
+                    span: Span {
+                        start: self.peek().start as u32,
+                        end: self.peek().end as u32,
+                    },
+                });
+            }
+            if direction == StreamDirection::InputOutput {
+                return Err(ParseError {
+                    message: "INPUT-OUTPUT does not support TO".to_string(),
+                    span: Span {
+                        start: self.peek().start as u32,
+                        end: self.peek().end as u32,
+                    },
+                });
+            }
+            self.advance(); // consume TO
+            let target = self.parse_expression()?;
+            let append = if self.check(Kind::Append) {
+                self.advance();
+                true
+            } else {
+                false
+            };
+            StreamOperation::To { target, append }
+        } else if self.check(Kind::Through) || self.check(Kind::Thru) {
+            self.advance(); // consume THROUGH/THRU
+            let target = self.parse_expression()?;
+            StreamOperation::Through(target)
+        } else if self.check(Kind::Close) {
+            self.advance(); // consume CLOSE
+            StreamOperation::Close
+        } else {
+            return Err(ParseError {
+                message: "Expected FROM, TO, THROUGH, or CLOSE after stream direction".to_string(),
+                span: Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().end as u32,
+                },
+            });
+        };
+
+        self.expect_kind(Kind::Period, "Expected '.' after stream I/O statement")?;
+
+        Ok(Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        })
     }
 
     // ── Preprocessor parsing ─────────────────────────────────────────

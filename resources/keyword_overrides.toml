@@ -489,6 +489,29 @@ name = "BUFFER-COMPARE"
 keyword_type = "Statement"
 
 # =============================================================================
+# STREAM / FRAME KEYWORDS
+# Keywords needed for stream I/O and frame parsing.
+# =============================================================================
+
+[[add]]
+name = "THROUGH"
+keyword_type = "Option"
+
+# THRU is an alternate spelling of THROUGH, not a prefix abbreviation.
+# ABL treats them as separate keywords that are interchangeable.
+[[add]]
+name = "THRU"
+keyword_type = "Option"
+
+[[add]]
+name = "APPEND"
+keyword_type = "Option"
+
+[[add]]
+name = "CLOSE"
+keyword_type = "Statement"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================
