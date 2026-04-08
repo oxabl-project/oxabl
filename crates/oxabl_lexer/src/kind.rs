@@ -154,6 +154,7 @@ pub enum Kind {
     Destructor,
     BufferCopy,
     BufferCompare,
+    Close,
 
     // Functions
     Accum,
@@ -290,6 +291,9 @@ pub enum Kind {
     Override,
     KwStatic,
     Get,
+    Through,
+    Thru,
+    Append,
 
     // Phrases
     Editing,
@@ -585,6 +589,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "analyz" | "analyze" => Some(Kind::Analyze),
         "and" => Some(Kind::And),
         "any" => Some(Kind::Any),
+        "append" => Some(Kind::Append),
         "apply" => Some(Kind::Apply),
         "asc" | "asce" | "ascen" | "ascend" | "ascendi" | "ascendin" | "ascending" => {
             Some(Kind::Ascending)
@@ -634,6 +639,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "clear" => Some(Kind::Clear),
         "clipboard" => Some(Kind::Clipboard),
         "clob" => Some(Kind::Clob),
+        "close" => Some(Kind::Close),
         "codebase locator" | "codebase-locator" => Some(Kind::CodebaseLocator),
         "colon" => Some(Kind::Colon),
         "color" => Some(Kind::Color),
@@ -1066,6 +1072,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         "this-object" => Some(Kind::ThisObject),
         "this-procedure" => Some(Kind::ThisProcedure),
         "thread-safe" => Some(Kind::ThreadSafe),
+        "through" => Some(Kind::Through),
+        "thru" => Some(Kind::Thru),
         "time" => Some(Kind::Time),
         "title" => Some(Kind::Title),
         "to" => Some(Kind::To),

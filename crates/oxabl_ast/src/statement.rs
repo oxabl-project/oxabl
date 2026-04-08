@@ -138,6 +138,8 @@ pub enum Statement {
     /// Each item is an expression with an optional per-item WHEN condition.
     /// The EXCEPT clause excludes fields, and WITH FRAME names the target frame.
     Display {
+        /// Optional named stream (`DISPLAY STREAM s1 ...`).
+        stream_name: Option<Identifier>,
         /// Expressions to display, each with an optional WHEN condition.
         items: Vec<DisplayItem>,
         /// Fields to exclude (`DISPLAY Customer EXCEPT CustNum`).
@@ -406,6 +408,20 @@ pub enum Statement {
     /// &MESSAGE expression
     PreprocMessage { expression: Expression },
 
+    /// DEFINE STREAM stream-name.
+    DefineStream { name: Identifier },
+
+    /// DEFINE FRAME frame-name ... .
+    /// Simplified: captures name and raw span of unparsed content for formatter round-tripping.
+    DefineFrame { name: Identifier, raw_span: Span },
+
+    /// INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.
+    StreamIo {
+        direction: StreamDirection,
+        stream_name: Option<Identifier>,
+        operation: StreamOperation,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -580,6 +596,23 @@ pub struct IndexField {
 pub enum SortDirection {
     Ascending,
     Descending,
+}
+
+/// Direction for stream I/O statements.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum StreamDirection {
+    Input,
+    Output,
+    InputOutput,
+}
+
+/// Operation for stream I/O statements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamOperation {
+    From(Expression),
+    To { target: Expression, append: bool },
+    Through(Expression),
+    Close,
 }
 
 /// Target of a DEFINE BUFFER statement.
