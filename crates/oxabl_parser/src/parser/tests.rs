@@ -5652,3 +5652,408 @@ VALIDATE Customer NO-ERROR."#;
     assert!(matches!(program.statements[2], Statement::Release { .. }));
     assert!(matches!(program.statements[3], Statement::Validate { .. }));
 }
+
+// ── Preprocessor statement tests ─────────────────────────────────
+
+#[test]
+fn preproc_if_then_endif() {
+    let source = "&IF TRUE &THEN\nDISPLAY \"hello\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::Literal(_)));
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert!(preproc.elseif_branches.is_empty());
+            assert!(preproc.else_branch.is_none());
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_then_else_endif() {
+    let source = "&IF TRUE &THEN\nDISPLAY \"a\".\n&ELSE\nDISPLAY \"b\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert!(preproc.else_branch.is_some());
+            assert_eq!(preproc.else_branch.unwrap().len(), 1);
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_elseif_endif() {
+    let source = "&IF 1 = 1 &THEN\nDISPLAY \"a\".\n&ELSEIF 2 = 2 &THEN\nDISPLAY \"b\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert_eq!(preproc.elseif_branches.len(), 1);
+            assert!(preproc.else_branch.is_none());
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_elseif_else_endif() {
+    let source = "&IF 1 = 1 &THEN\nDISPLAY \"a\".\n&ELSEIF 2 = 2 &THEN\nDISPLAY \"b\".\n&ELSE\nDISPLAY \"c\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert_eq!(preproc.elseif_branches.len(), 1);
+            assert!(preproc.else_branch.is_some());
+            assert_eq!(preproc.else_branch.unwrap().len(), 1);
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_nested_if() {
+    let source = "&IF TRUE &THEN\n&IF FALSE &THEN\nDISPLAY \"inner\".\n&ENDIF\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(outer) => {
+            assert_eq!(outer.then_branch.len(), 1);
+            assert!(matches!(outer.then_branch[0], Statement::PreprocIf(_)));
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_scoped_define_with_value() {
+    let source = "&scoped-define FOO 42\nDISPLAY \"x\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 2);
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name,
+            value_span,
+            is_global,
+        } => {
+            assert_eq!(name.name, "FOO");
+            assert!(!is_global);
+            assert!(value_span.is_some());
+            let span = value_span.unwrap();
+            assert_eq!(&source[span.start as usize..span.end as usize], "42");
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_scoped_define_no_value() {
+    let source = "&scoped-define EMPTY\nDISPLAY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 2);
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name,
+            value_span,
+            is_global,
+        } => {
+            assert_eq!(name.name, "EMPTY");
+            assert!(!is_global);
+            assert!(value_span.is_none());
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_global_define() {
+    let source = "&global-define BAR yes\nDISPLAY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name,
+            value_span,
+            is_global,
+        } => {
+            assert_eq!(name.name, "BAR");
+            assert!(*is_global);
+            assert!(value_span.is_some());
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_define_complex_value() {
+    let source = "&scoped-define EXPR 1 + 2\nDISPLAY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name, value_span, ..
+        } => {
+            assert_eq!(name.name, "EXPR");
+            let span = value_span.unwrap();
+            assert_eq!(&source[span.start as usize..span.end as usize], "1 + 2");
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_undefine() {
+    let source = "&UNDEFINE FOO";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocUndefine { name } => {
+            assert_eq!(name.name, "FOO");
+        }
+        _ => panic!("Expected PreprocUndefine"),
+    }
+}
+
+#[test]
+fn preproc_message() {
+    let source = "&MESSAGE \"compile-time warning\"";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocMessage { expression } => {
+            assert!(matches!(
+                expression,
+                Expression::Literal(Literal::String(_))
+            ));
+        }
+        _ => panic!("Expected PreprocMessage"),
+    }
+}
+
+// ── Expression-level preprocessor tests ──────────────────────────
+
+#[test]
+fn preproc_reference_expression() {
+    let source = "{&myvar}";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocReference(name) => {
+            assert_eq!(name, "myvar");
+        }
+        _ => panic!("Expected PreprocReference, got {:?}", expr),
+    }
+}
+
+#[test]
+fn preproc_if_expression() {
+    let source = "&IF TRUE &THEN 1 &ELSE 2 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::Literal(_)));
+            assert!(matches!(preproc.then_branch, Expression::Literal(_)));
+            assert!(preproc.else_branch.is_some());
+            assert!(matches!(
+                preproc.else_branch.as_ref().unwrap(),
+                Expression::Literal(_)
+            ));
+        }
+        _ => panic!("Expected PreprocIf expression"),
+    }
+}
+
+#[test]
+fn preproc_if_expression_missing_else_is_error() {
+    let source = "&IF TRUE &THEN 1 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_expression();
+    assert!(result.is_err());
+}
+
+#[test]
+fn preproc_if_expression_with_function_call() {
+    // DEFINED(x) parses as a function call in the expression parser
+    let source = "&IF DEFINED(use-int) &THEN 1 &ELSE 2 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::FunctionCall { .. }));
+        }
+        _ => panic!("Expected PreprocIf expression"),
+    }
+}
+
+// ── DataType-level preprocessor tests ────────────────────────────
+
+#[test]
+fn preproc_if_data_type() {
+    let source = "DEFINE VARIABLE x AS &IF TRUE &THEN INTEGER &ELSE CHARACTER &ENDIF NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "x");
+            match data_type {
+                DataType::PreprocIf(preproc) => {
+                    assert!(matches!(preproc.then_branch, DataType::Integer));
+                    assert!(matches!(
+                        preproc.else_branch.as_ref().unwrap(),
+                        DataType::Character
+                    ));
+                }
+                _ => panic!("Expected PreprocIf DataType"),
+            }
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn preproc_if_data_type_missing_else_is_error() {
+    let source = "DEFINE VARIABLE x AS &IF TRUE &THEN INTEGER &ENDIF NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+// ── PreprocIf<T> structural consistency tests ────────────────────
+
+#[test]
+fn preproc_if_statement_with_multiple_stmts_per_branch() {
+    let source = "&IF TRUE &THEN\nDISPLAY \"a\".\nDISPLAY \"b\".\n&ELSE\nDISPLAY \"c\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 2);
+            assert_eq!(preproc.else_branch.unwrap().len(), 1);
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_with_defined_condition() {
+    let source = "&IF DEFINED(use-widget) &THEN\nDISPLAY \"yes\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::FunctionCall { .. }));
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_reference_in_assignment() {
+    // {&var} used as expression in a statement
+    let source = "x = {&default-value}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { value, .. } => {
+            assert!(matches!(value, Expression::PreprocReference(_)));
+        }
+        _ => panic!("Expected Assignment"),
+    }
+}
+
+#[test]
+fn preproc_case_insensitive() {
+    let source = "&if true &then\ndisplay \"x\".\n&endif";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert!(matches!(stmt, Statement::PreprocIf(_)));
+}
+
+#[test]
+fn preproc_program_with_mixed_statements() {
+    let source =
+        "&SCOPED-DEFINE VER 1\n&IF TRUE &THEN\nDISPLAY \"hello\".\n&ENDIF\nDISPLAY \"done\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok(), "Errors: {:?}", program.errors);
+    assert_eq!(program.statements.len(), 3);
+    assert!(matches!(
+        program.statements[0],
+        Statement::PreprocDefine { .. }
+    ));
+    assert!(matches!(program.statements[1], Statement::PreprocIf(_)));
+    assert!(matches!(program.statements[2], Statement::Display { .. }));
+}
+
+#[test]
+fn preproc_if_expression_with_elseif() {
+    let source = "&IF 1 = 1 &THEN 10 &ELSEIF 2 = 2 &THEN 20 &ELSE 30 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocIf(preproc) => {
+            assert_eq!(preproc.elseif_branches.len(), 1);
+            assert!(preproc.else_branch.is_some());
+        }
+        _ => panic!("Expected PreprocIf expression"),
+    }
+}
+
+#[test]
+fn preproc_define_at_eof() {
+    // Define at end of file with no trailing newline
+    let source = "&scoped-define NAME hello";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok(), "Errors: {:?}", program.errors);
+    assert_eq!(program.statements.len(), 1);
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name, value_span, ..
+        } => {
+            assert_eq!(name.name, "NAME");
+            let span = value_span.unwrap();
+            assert_eq!(&source[span.start as usize..span.end as usize], "hello");
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}

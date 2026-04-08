@@ -429,6 +429,17 @@ impl<'a> Parser<'a> {
                 let class_name = self.parse_qualified_identifier()?;
                 return Ok(DataType::Class(class_name.name));
             }
+            Kind::PreprocIf => {
+                self.advance(); // consume &IF
+                let preproc = self.parse_preproc_if(1, &Self::parse_data_type)?;
+                if preproc.else_branch.is_none() {
+                    return Err(ParseError {
+                        message: "Data type-level &IF requires &ELSE branch".to_string(),
+                        span: self.current_span(),
+                    });
+                }
+                return Ok(DataType::PreprocIf(Box::new(preproc)));
+            }
             _ => {
                 return Err(ParseError {
                     message: format!(
