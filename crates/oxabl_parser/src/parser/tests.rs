@@ -2,7 +2,8 @@ use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
     FieldTypeSource, FindType, Identifier, IntegerLiteral, Literal, LockType, ParameterDirection,
-    RunTarget, SortDirection, Span, Statement, StringLiteral, UnknownLiteral, WhenBranch,
+    RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation, StringLiteral,
+    UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -3112,6 +3113,7 @@ fn parse_display_simple_field_access() {
             items,
             except,
             frame,
+            ..
         } => {
             assert_eq!(items.len(), 2);
             assert!(items[0].when_condition.is_none());
@@ -3166,6 +3168,7 @@ fn parse_display_except_with_frame() {
             items,
             except,
             frame,
+            ..
         } => {
             assert_eq!(items.len(), 1);
             assert_eq!(except.len(), 1);
@@ -6055,5 +6058,448 @@ fn preproc_define_at_eof() {
             assert_eq!(&source[span.start as usize..span.end as usize], "hello");
         }
         _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+// ── Stream & Frame Tests ────────────────────────────────────────────
+
+#[test]
+fn define_stream_basic() {
+    let source = "DEFINE STREAM s1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineStream { name } => {
+            assert_eq!(name.name, "s1");
+        }
+        _ => panic!("Expected DefineStream"),
+    }
+}
+
+#[test]
+fn define_stream_case_insensitive() {
+    let source = "define stream MyStream.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineStream { name } => {
+            assert_eq!(name.name, "MyStream");
+        }
+        _ => panic!("Expected DefineStream"),
+    }
+}
+
+#[test]
+fn define_frame_basic() {
+    let source = "DEFINE FRAME f1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineFrame { name, .. } => {
+            assert_eq!(name.name, "f1");
+        }
+        _ => panic!("Expected DefineFrame"),
+    }
+}
+
+#[test]
+fn define_frame_with_content() {
+    let source = "DEFINE FRAME cust-frame x y WITH 2 COLUMNS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineFrame { name, raw_span } => {
+            assert_eq!(name.name, "cust-frame");
+            // raw_span should cover content between name and period
+            let raw_text = &source[raw_span.start as usize..raw_span.end as usize];
+            assert!(raw_text.contains("COLUMNS"));
+        }
+        _ => panic!("Expected DefineFrame"),
+    }
+}
+
+#[test]
+fn input_from_string_literal() {
+    let source = r#"INPUT FROM "data.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(stream_name.is_none());
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_from_identifier() {
+    let source = "INPUT FROM cFile.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_through() {
+    let source = r#"INPUT THROUGH "sort -r"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_thru_abbreviation() {
+    let source = r#"INPUT THRU "sort -r"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_close() {
+    let source = "INPUT CLOSE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(stream_name.is_none());
+            assert_eq!(operation, StreamOperation::Close);
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_stream_named_from() {
+    let source = r#"INPUT STREAM s1 FROM "data.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert_eq!(stream_name.unwrap().name, "s1");
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_to_basic() {
+    let source = r#"OUTPUT TO "report.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            match operation {
+                StreamOperation::To { append, .. } => assert!(!append),
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_to_with_append() {
+    let source = r#"OUTPUT TO "report.txt" APPEND."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            match operation {
+                StreamOperation::To { append, .. } => assert!(append),
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_through() {
+    let source = r#"OUTPUT THROUGH "lpr"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_close() {
+    let source = "OUTPUT CLOSE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            assert_eq!(operation, StreamOperation::Close);
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_stream_named_to() {
+    let source = r#"OUTPUT STREAM s-report TO "report.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            assert_eq!(stream_name.unwrap().name, "s-report");
+            match operation {
+                StreamOperation::To { append, .. } => assert!(!append),
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_output_through() {
+    let source = r#"INPUT-OUTPUT THROUGH "terminal"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::InputOutput);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_output_close() {
+    let source = "INPUT-OUTPUT CLOSE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::InputOutput);
+            assert_eq!(operation, StreamOperation::Close);
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_output_stream_named() {
+    let source = r#"INPUT-OUTPUT STREAM sIO THROUGH "pipe"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::InputOutput);
+            assert_eq!(stream_name.unwrap().name, "sIO");
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn display_with_stream() {
+    let source = "DISPLAY STREAM s1 x y.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::Display {
+            stream_name, items, ..
+        } => {
+            assert_eq!(stream_name.unwrap().name, "s1");
+            assert_eq!(items.len(), 2);
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn display_without_stream() {
+    let source = "DISPLAY x y.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::Display { stream_name, .. } => {
+            assert!(stream_name.is_none());
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn stream_io_case_insensitive() {
+    let source = r#"input from "data.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_does_not_support_to() {
+    let source = r#"INPUT TO "file.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // INPUT TO should not be parsed as stream I/O (TO isn't in the lookahead)
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("INPUT should not support TO"),
+        _ => {}
+    }
+}
+
+#[test]
+fn output_does_not_support_from() {
+    let source = r#"OUTPUT FROM "file.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // OUTPUT FROM should not be parsed as stream I/O (FROM isn't in the lookahead)
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("OUTPUT should not support FROM"),
+        _ => {}
+    }
+}
+
+#[test]
+fn input_output_does_not_support_from() {
+    let source = r#"INPUT-OUTPUT FROM "file.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // INPUT-OUTPUT FROM should not be parsed as stream I/O
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("INPUT-OUTPUT should not support FROM"),
+        _ => {}
+    }
+}
+
+#[test]
+fn input_as_expression_not_stream() {
+    // INPUT iParam should not parse as stream I/O — falls through to expression
+    let source = "INPUT iParam.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("INPUT(identifier) should not be StreamIo"),
+        _ => {}
     }
 }
