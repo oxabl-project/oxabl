@@ -714,8 +714,6 @@ pub fn generate_keyword_match(
     output.push_str(
         "    let lower = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };\n",
     );
-    output.push_str("    match lower {\n");
-
     // Track all string -> Kind mappings, detecting collisions
     let mut match_to_kind: HashMap<String, String> = HashMap::new();
     let mut collisions: Vec<(String, String, String)> = Vec::new();
@@ -779,40 +777,36 @@ pub fn generate_keyword_match(
         );
     }
 
-    // Group matches by Kind for cleaner output with | patterns
-    let mut kind_to_matches: HashMap<String, Vec<String>> = HashMap::new();
+    // Group matches by string length for two-level dispatch.
+    // Outer match on length produces a compact jump table; inner matches per
+    // length bucket are small enough to stay in L1 instruction cache.
+    let mut length_to_matches: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     for (match_str, kind) in &match_to_kind {
-        kind_to_matches
-            .entry(kind.clone())
+        length_to_matches
+            .entry(match_str.len())
             .or_default()
-            .push(match_str.clone());
+            .push((match_str.clone(), kind.clone()));
     }
 
-    // Sort kinds for consistent output
-    let mut kinds: Vec<_> = kind_to_matches.keys().cloned().collect();
-    kinds.sort();
+    // Sort lengths for consistent output
+    let mut lengths: Vec<_> = length_to_matches.keys().cloned().collect();
+    lengths.sort();
 
-    for kind in kinds {
-        let mut matches = kind_to_matches.remove(&kind).unwrap();
-        matches.sort_by(|a, b| {
-            // Sort by length first (shorter first), then alphabetically
-            a.len().cmp(&b.len()).then(a.cmp(b))
-        });
+    output.push_str("    match lower.len() {\n");
 
-        if matches.len() == 1 {
+    for length in lengths {
+        let mut matches = length_to_matches.remove(&length).unwrap();
+        matches.sort_by(|a, b| a.0.cmp(&b.0));
+
+        output.push_str(&format!("        {} => match lower {{\n", length));
+        for (match_str, kind) in &matches {
             output.push_str(&format!(
-                "        \"{}\" => Some(Kind::{}),\n",
-                matches[0], kind
+                "            \"{}\" => Some(Kind::{}),\n",
+                match_str, kind
             ));
-        } else {
-            // Use | pattern for multiple matches
-            let pattern = matches
-                .iter()
-                .map(|s| format!("\"{}\"", s))
-                .collect::<Vec<_>>()
-                .join(" | ");
-            output.push_str(&format!("        {} => Some(Kind::{}),\n", pattern, kind));
         }
+        output.push_str("            _ => None,\n");
+        output.push_str("        },\n");
     }
 
     output.push_str("        _ => None,\n");
