@@ -1,4 +1,18 @@
-use crate::{Expression, Identifier};
+use crate::{Expression, Identifier, Span};
+
+/// Preprocessor conditional block, generic over the content type.
+///
+/// Used as:
+/// - `Statement::PreprocIf(PreprocIf<Vec<Statement>>)` — statement level
+/// - `Expression::PreprocIf(Box<PreprocIf<Expression>>)` — expression level
+/// - `DataType::PreprocIf(Box<PreprocIf<DataType>>)` — data type level
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreprocIf<T> {
+    pub condition: Expression,
+    pub then_branch: T,
+    pub elseif_branches: Vec<(Expression, T)>,
+    pub else_branch: Option<T>,
+}
 
 /// A statement in ABL - an executable unit that performs an action.
 /// All statements are terminated by a period.
@@ -375,6 +389,23 @@ pub enum Statement {
         no_error: bool,
     },
 
+    /// Preprocessor conditional: &IF cond &THEN stmts [&ELSEIF ...] [&ELSE stmts] &ENDIF
+    PreprocIf(PreprocIf<Vec<Statement>>),
+
+    /// &SCOPED-DEFINE name value / &GLOBAL-DEFINE name value
+    PreprocDefine {
+        name: Identifier,
+        /// Byte offsets into source for the define value (not a String allocation).
+        value_span: Option<Span>,
+        is_global: bool,
+    },
+
+    /// &UNDEFINE name
+    PreprocUndefine { name: Identifier },
+
+    /// &MESSAGE expression
+    PreprocMessage { expression: Expression },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -419,6 +450,9 @@ pub enum DataType {
     Com,
     /// Class type with fully qualified name
     Class(String),
+    /// Conditional data type: &IF DEFINED(x) &THEN INTEGER &ELSE CHARACTER &ENDIF
+    /// The else_branch is semantically required (parser enforces this).
+    PreprocIf(Box<PreprocIf<DataType>>),
 }
 
 /// ABL Record Lock Types
