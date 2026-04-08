@@ -52,21 +52,44 @@ Current Work: RUN statement (in progress), DISPLAY and MESSAGE statements next.
 
 As a high performance oriented library, Oxabl is focused on hitting low numbers and keeping them low across versions.
 
-Benchmarks are run under `bench` with `cargo bench -p <lib>` such as `oxabl_lexer`. Each library will have a benchmark so we can track the performance of individual components in the toolset.
+Benchmarks are run with `cargo bench -p <crate>`. Each crate has its own benchmark so we can track the performance of individual components in the toolset.
 
-### Lexer
+These are not sanitized benchmarks — they were run on real hardware with normal background processes, similar to how a developer would actually use the tools.
 
-- **Comparison:** I haven't used any other ABL lexers while working as an ABL developer, so I don't really know how to use what's out there. If you have access to an ABL lexer and can run a benchmark, please provide those numbers, it's much appreciated!
+### Intel i7-8550U Laptop
 
-**Benchmark:**
-| Test Name               | Time (min) | Time (avg) | Time (max) | Throughput Min | Throughput Avg | Throughput Max |
-| ----------------------- | ---------- | ---------- | ---------- | -------------- | -------------- | -------------- |
-| lexer/tokenize_keywords | 1.4692 ms  | 1.4762 ms  | 1.4838 ms  | 11.121 MiB/s   | 11.179 MiB/s   | 11.232 MiB/s   |
-| lexer/tokenize_full     | 1.4929 ms  | 1.5098 ms  | 1.5262 ms  | 10.812 MiB/s   | 10.929 MiB/s   | 11.054 MiB/s   |
+**Hardware:** Intel Core i7-8550U (8) @ 4.00 GHz, 15.37 GiB RAM, Linux 6.19.10-arch1-1
 
-~11MiB/s throughput is pretty good for a handrolled lexer MVP, so we're aiming for ~11MiB/s or higher from here on. The long term goal is to *increase* this number. A release should never *decrease*  without good reason. But we're only human.
+#### Source Map (`oxabl_common`)
 
-I haven't run this benchmark in an optimized environment- it's running in WSL2, on a Windows PC with lots of browers and tasks running, similar to how it would run if a developer were actually using it. I'm sure these numbers could be much higher on a better PC with less background noise.
+| Benchmark                | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
+| ------------------------ | ----------- | ----------- | ----------- | ----------------- |
+| source_map/construction  | 30.489 µs   | 32.131 µs   | 33.730 µs   | 513.57 MiB/s      |
+| source_map/lookup        | 123.78 ns   | 129.75 ns   | 136.13 ns   | 38.536 Melem/s    |
+
+#### Lexer (`oxabl_lexer`)
+
+| Benchmark            | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
+| -------------------- | ----------- | ----------- | ----------- | ----------------- |
+| lexer/keywords       | 296.83 µs   | 311.32 µs   | 328.06 µs   | 53.004 MiB/s      |
+| lexer/strings        | 35.716 µs   | 38.389 µs   | 41.186 µs   | 52.368 MiB/s      |
+| lexer/comments       | 17.277 µs   | 18.973 µs   | 21.219 µs   | 129.89 MiB/s      |
+| lexer/numeric        | 40.489 µs   | 44.638 µs   | 48.754 µs   | 37.580 MiB/s      |
+| lexer/preprocessor   | 44.151 µs   | 46.808 µs   | 49.424 µs   | 54.888 MiB/s      |
+
+#### Parser (`oxabl_parser`)
+
+| Benchmark              | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
+| ---------------------- | ----------- | ----------- | ----------- | ----------------- |
+| parser/full_program    | 375.37 µs   | 399.65 µs   | 425.98 µs   | 41.290 MiB/s      |
+| parser/expressions     | 134.78 µs   | 148.92 µs   | 165.12 µs   | 15.459 MiB/s      |
+| parser/declarations    | 79.781 µs   | 89.965 µs   | 102.17 µs   | 28.536 MiB/s      |
+| parser/control_flow    | 123.64 µs   | 132.17 µs   | 140.54 µs   | 17.664 MiB/s      |
+| parser/oo_abl          | 113.30 µs   | 120.84 µs   | 128.50 µs   | 32.666 MiB/s      |
+| parser/temp_tables     | 67.884 µs   | 73.143 µs   | 78.881 µs   | 35.191 MiB/s      |
+| parser/procs_funcs     | 148.33 µs   | 155.05 µs   | 161.11 µs   | 22.395 MiB/s      |
+
+### Token Dumps
 
 **Full token dump**:
 `cargo run -p oxabl_lexer --example dump_tokens`
