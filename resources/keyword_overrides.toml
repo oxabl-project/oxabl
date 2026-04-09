@@ -610,6 +610,30 @@ name = "BY-VALUE"
 keyword_type = "Option"
 
 # =============================================================================
+# HYPHENATED FORM OVERRIDES
+# The HTML keyword index uses space-separated forms (e.g., "data relation")
+# but ABL source code uses hyphenated forms (e.g., "data-relation").
+# The lexer tokenizes hyphenated identifiers as single tokens, so the
+# match_keyword function needs the hyphenated form.
+# =============================================================================
+
+# DATA-RELATION exists as "data relation" (space) from the HTML index.
+# Override to add the hyphenated form that the lexer actually sees.
+[[add]]
+name = "DATA-RELATION"
+keyword_type = "Option"
+
+# DATA-SOURCE exists as "data source" (space) from the HTML index.
+[[add]]
+name = "DATA-SOURCE"
+keyword_type = "Statement"
+
+# DATASET-HANDLE exists as "dataset handle" (space) from the HTML index.
+[[add]]
+name = "DATASET-HANDLE"
+keyword_type = "Type"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================
