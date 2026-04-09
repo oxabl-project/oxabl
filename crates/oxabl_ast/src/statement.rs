@@ -104,9 +104,7 @@ pub enum Statement {
     /// Define input/output params
     DefineParameter {
         direction: ParameterDirection,
-        name: Identifier,
-        data_type: DataType,
-        no_undo: bool,
+        param_type: ParameterType,
     },
 
     /// RUN statement — executes an internal procedure or external `.p` file.
@@ -182,6 +180,8 @@ pub enum Statement {
         fields: Vec<TempTableField>,
         /// Index definitions.
         indexes: Vec<TempTableIndex>,
+        /// XML and serialization options (NAMESPACE-URI, SERIALIZE-NAME, etc.).
+        xml_options: XmlSerializeOptions,
     },
 
     /// DEFINE BUFFER statement.
@@ -197,6 +197,8 @@ pub enum Statement {
         preselect: bool,
         /// Optional label for error messages.
         label: Option<String>,
+        /// XML and serialization options (NAMESPACE-URI, SERIALIZE-NAME, etc.).
+        xml_options: XmlSerializeOptions,
     },
 
     /// CATCH block within a DO/REPEAT/FOR block.
@@ -363,8 +365,8 @@ pub enum Statement {
         type_name: String,
     },
 
-    /// CREATE buffer-name [NO-ERROR].
-    Create { buffer: Identifier, no_error: bool },
+    /// CREATE statement — record creation or dynamic object creation.
+    Create { target: CreateTarget, no_error: bool },
 
     /// DELETE buffer-name [NO-ERROR].
     Delete { buffer: Identifier, no_error: bool },
@@ -414,6 +416,39 @@ pub enum Statement {
     /// DEFINE FRAME frame-name ... .
     /// Simplified: captures name and raw span of unparsed content for formatter round-tripping.
     DefineFrame { name: Identifier, raw_span: Span },
+
+    /// DEFINE DATASET statement.
+    ///
+    /// ```abl
+    /// DEFINE DATASET dsPerson FOR ttPerson, ttAddress
+    ///     DATA-RELATION drPersonAddr FOR ttPerson, ttAddress
+    ///     RELATION-FIELDS (personId, personId).
+    /// ```
+    DefineDataset {
+        name: Identifier,
+        access: Option<AccessModifier>,
+        is_static: bool,
+        is_new_shared: bool, // TODO: Retrofit on DefineTempTable, DefineBuffer, VariableDeclaration
+        is_shared: bool,     // TODO: Retrofit on DefineTempTable, DefineBuffer, VariableDeclaration
+        serializable: bool,
+        non_serializable: bool,
+        xml_options: XmlSerializeOptions,
+        reference_only: bool,
+        buffers: Vec<Identifier>,
+        data_relations: Vec<DataRelation>,
+        parent_id_relations: Vec<ParentIdRelation>,
+    },
+
+    /// DEFINE DATA-SOURCE statement.
+    ///
+    /// `DEFINE DATA-SOURCE dsCustomer FOR Customer.`
+    DefineDataSource {
+        name: Identifier,
+        access: Option<AccessModifier>,
+        is_static: bool,
+        query: Option<Identifier>,
+        source_buffers: Vec<DataSourceBuffer>,
+    },
 
     /// INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.
     StreamIo {
@@ -631,4 +666,137 @@ pub struct AssignPair {
     pub target: Expression,
     /// The value to assign.
     pub value: Expression,
+}
+
+// =============================================================================
+// XML / Serialize options (shared across TEMP-TABLE, BUFFER, DATASET)
+// =============================================================================
+
+/// XML and serialization options shared by TEMP-TABLE, BUFFER, and DATASET definitions.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct XmlSerializeOptions {
+    pub namespace_uri: Option<Identifier>,
+    pub namespace_prefix: Option<Identifier>,
+    pub xml_node_name: Option<Identifier>,
+    pub xml_node_type: Option<Identifier>,
+    pub serialize_name: Option<Identifier>,
+    pub serialize_hidden: bool,
+}
+
+// =============================================================================
+// Dataset types
+// =============================================================================
+
+/// A DATA-RELATION clause in a DEFINE DATASET statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataRelation {
+    pub name: Option<Identifier>,
+    pub parent_buffer: Identifier,
+    pub child_buffer: Identifier,
+    /// Pairs of (parent_field, child_field) from RELATION-FIELDS.
+    pub relation_fields: Vec<(Identifier, Identifier)>,
+    pub reposition: bool,
+    pub nested: bool,
+    pub foreign_key_hidden: bool,
+    pub not_active: bool,
+    pub recursive: bool,
+}
+
+/// A PARENT-ID-RELATION clause in a DEFINE DATASET statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentIdRelation {
+    pub name: Option<Identifier>,
+    pub parent_buffer: Identifier,
+    pub child_buffer: Identifier,
+    pub id_field: Identifier,
+    pub parent_fields_before: Vec<Identifier>,
+    pub parent_fields_after: Vec<Identifier>,
+}
+
+// =============================================================================
+// Data-source types
+// =============================================================================
+
+/// A source buffer phrase in a DEFINE DATA-SOURCE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataSourceBuffer {
+    pub name: Identifier,
+    pub keys: Option<DataSourceKeys>,
+}
+
+/// KEYS clause in a DATA-SOURCE source buffer phrase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataSourceKeys {
+    /// KEYS (field1, field2, ...)
+    Fields(Vec<Identifier>),
+    /// KEYS (ROWID)
+    Rowid,
+}
+
+// =============================================================================
+// CREATE target types
+// =============================================================================
+
+/// Target of a CREATE statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateTarget {
+    /// CREATE buffer-name — record creation or any unrecognized CREATE.
+    Name(Identifier),
+    /// CREATE DATASET/DATA-SOURCE/TEMP-TABLE handle [IN WIDGET-POOL pool].
+    Handle {
+        kind: CreateTargetKind,
+        handle: Identifier,
+        widget_pool: Option<Expression>,
+    },
+}
+
+/// The type keyword in a CREATE ... handle statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateTargetKind {
+    Dataset,
+    DataSource,
+    TempTable,
+}
+
+// =============================================================================
+// Parameter types
+// =============================================================================
+
+/// The type/shape of a DEFINE PARAMETER statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParameterType {
+    /// Standard variable parameter: DEFINE INPUT PARAMETER name AS type [NO-UNDO].
+    Variable {
+        name: Identifier,
+        data_type: DataType,
+        no_undo: bool,
+    },
+    /// Handle-based parameter: TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE
+    Handle {
+        kind: HandleParamKind,
+        name: Identifier,
+        passing: HandlePassingOptions,
+    },
+    /// Buffer parameter: DEFINE PARAMETER BUFFER buf FOR table.
+    Buffer {
+        name: Identifier,
+        target: Identifier,
+    },
+}
+
+/// Discriminant for handle-based parameter types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleParamKind {
+    Table,
+    TableHandle,
+    Dataset,
+    DatasetHandle,
+}
+
+/// Passing options for handle-based parameters (APPEND, BIND, BY-VALUE).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HandlePassingOptions {
+    pub append: bool,
+    pub bind: bool,
+    pub by_value: bool,
 }

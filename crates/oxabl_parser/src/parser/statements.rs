@@ -6,10 +6,12 @@
 //! LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    AccessModifier, AssignPair, BufferTarget, DisplayItem, Expression, FieldTypeSource, FindType,
-    Identifier, IndexField, LockType, ParameterDirection, PreprocIf, RunArgument, RunTarget,
-    SortDirection, Span, Statement, StreamDirection, StreamOperation, TempTableField,
-    TempTableIndex, UseIndex, WhenBranch,
+    AccessModifier, AssignPair, BufferTarget, CreateTarget, CreateTargetKind, DataRelation,
+    DataSourceBuffer, DataSourceKeys, DisplayItem, Expression, FieldTypeSource, FindType,
+    HandleParamKind, HandlePassingOptions, Identifier, IndexField, LockType, ParameterDirection,
+    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SortDirection, Span,
+    Statement, StreamDirection, StreamOperation, TempTableField, TempTableIndex, UseIndex,
+    WhenBranch, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 
@@ -460,47 +462,109 @@ impl Parser<'_> {
         // Expect PARAMETER keyword
         self.expect_kind(Kind::Parameter, "Expected PARAMETER after INPUT/OUTPUT")?;
 
-        // Parse parameter name
-        if !Self::can_be_identifier(self.peek().kind) {
-            return Err(ParseError {
-                message: "Expected parameter name".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-        let name_token = self.advance().clone();
-        let name = Identifier {
-            span: Span {
-                start: name_token.start as u32,
-                end: name_token.end as u32,
-            },
-            name: self.source[name_token.start..name_token.end].to_string(),
-        };
-
-        // Expect AS
-        self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
-
-        // Parse data type
-        let data_type = self.parse_data_type()?;
-
-        // Optional NO-UNDO
-        let no_undo = if self.check(Kind::NoUndo) {
-            self.advance();
-            true
-        } else {
-            false
+        // Dispatch on parameter type
+        let param_type = match self.peek().kind {
+            // TABLE FOR tt-name [APPEND] [BIND] [BY-VALUE]
+            Kind::Table => {
+                self.advance();
+                self.expect_kind(Kind::KwFor, "Expected FOR after TABLE")?;
+                let name = self.parse_identifier()?;
+                let passing = self.parse_handle_passing_options();
+                ParameterType::Handle {
+                    kind: HandleParamKind::Table,
+                    name,
+                    passing,
+                }
+            }
+            // TABLE-HANDLE handle [APPEND] [BIND] [BY-VALUE]
+            Kind::TableHandle => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                let passing = self.parse_handle_passing_options();
+                ParameterType::Handle {
+                    kind: HandleParamKind::TableHandle,
+                    name,
+                    passing,
+                }
+            }
+            // DATASET FOR ds-name [APPEND] [BIND] [BY-VALUE]
+            Kind::Dataset => {
+                self.advance();
+                self.expect_kind(Kind::KwFor, "Expected FOR after DATASET")?;
+                let name = self.parse_identifier()?;
+                let passing = self.parse_handle_passing_options();
+                ParameterType::Handle {
+                    kind: HandleParamKind::Dataset,
+                    name,
+                    passing,
+                }
+            }
+            // DATASET-HANDLE handle [APPEND] [BIND] [BY-VALUE]
+            Kind::DatasetHandle => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                let passing = self.parse_handle_passing_options();
+                ParameterType::Handle {
+                    kind: HandleParamKind::DatasetHandle,
+                    name,
+                    passing,
+                }
+            }
+            // BUFFER buf FOR table
+            Kind::Buffer => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
+                let target = self.parse_identifier()?;
+                ParameterType::Buffer { name, target }
+            }
+            // Standard: name AS type [NO-UNDO]
+            _ => {
+                let name = self.parse_identifier()?;
+                self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
+                let data_type = self.parse_data_type()?;
+                let no_undo = if self.check(Kind::NoUndo) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                }
+            }
         };
 
         self.expect_kind(Kind::Period, "Expected '.' after parameter definition")?;
 
         Ok(Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type,
         })
+    }
+
+    fn parse_handle_passing_options(&mut self) -> HandlePassingOptions {
+        let mut opts = HandlePassingOptions::default();
+        loop {
+            match self.peek().kind {
+                Kind::Append => {
+                    self.advance();
+                    opts.append = true;
+                }
+                Kind::Bind => {
+                    self.advance();
+                    opts.bind = true;
+                }
+                Kind::ByValue => {
+                    self.advance();
+                    opts.by_value = true;
+                }
+                _ => break,
+            }
+        }
+        opts
     }
 
     // Parse DEFINE TEMP-TABLE
@@ -730,6 +794,7 @@ impl Parser<'_> {
             use_indexes,
             fields,
             indexes,
+            xml_options: XmlSerializeOptions::default(),
         })
     }
 
@@ -785,6 +850,7 @@ impl Parser<'_> {
             target,
             preselect,
             label,
+            xml_options: XmlSerializeOptions::default(),
         })
     }
 
@@ -2179,12 +2245,46 @@ impl Parser<'_> {
     // =========================================================================
 
     // CREATE buffer-name [NO-ERROR].
+    // CREATE DATASET/DATA-SOURCE/TEMP-TABLE handle [IN WIDGET-POOL pool] [NO-ERROR].
     fn parse_create_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CREATE
-        let buffer = self.parse_identifier()?;
+
+        let target = if let Some(kind) = self.match_create_target_kind() {
+            self.advance(); // consume the type keyword
+            let handle = self.parse_identifier()?;
+            let widget_pool = self.parse_optional_widget_pool()?;
+            CreateTarget::Handle {
+                kind,
+                handle,
+                widget_pool,
+            }
+        } else {
+            let name = self.parse_identifier()?;
+            CreateTarget::Name(name)
+        };
+
         let no_error = self.parse_no_error();
         self.expect_kind(Kind::Period, "Expected '.' after CREATE statement")?;
-        Ok(Statement::Create { buffer, no_error })
+        Ok(Statement::Create { target, no_error })
+    }
+
+    fn match_create_target_kind(&self) -> Option<CreateTargetKind> {
+        match self.peek().kind {
+            Kind::Dataset => Some(CreateTargetKind::Dataset),
+            Kind::DataSource => Some(CreateTargetKind::DataSource),
+            Kind::TempTable => Some(CreateTargetKind::TempTable),
+            _ => None,
+        }
+    }
+
+    fn parse_optional_widget_pool(&mut self) -> ParseResult<Option<Expression>> {
+        if self.check(Kind::KwIn) {
+            self.advance(); // consume IN
+            self.expect_kind(Kind::WidgetPool, "Expected WIDGET-POOL after IN")?;
+            Ok(Some(self.parse_expression()?))
+        } else {
+            Ok(None)
+        }
     }
 
     // DELETE buffer-name [NO-ERROR].
@@ -2265,7 +2365,7 @@ impl Parser<'_> {
         let target = self.parse_identifier()?;
 
         // Optional SAVE RESULT IN clause
-        // SAVE is Kind::Save, RESULT is an identifier, IN is Kind::KwIn
+        // SAVE is Kind::Save, RESULT is an identifier, IN is Kind::In
         let result_var = if self.check(Kind::Save)
             && self.is_identifier_text_at(1, "RESULT")
             && self.check_at(2, Kind::KwIn)
