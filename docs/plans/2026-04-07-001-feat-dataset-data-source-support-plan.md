@@ -1,7 +1,7 @@
 ---
 title: "feat: Add dataset and data-source parsing support"
 type: feat
-status: active
+status: completed
 date: 2026-04-07
 origin: docs/brainstorms/2026-04-07-dataset-support-brainstorm.md
 ---
@@ -544,17 +544,17 @@ Use `Option<T>` for optional single values, `Vec<T>` (empty = absent) for repeat
 
 ## Acceptance Criteria
 
-- [ ] All new keywords added to `keyword_overrides.toml` and codegen runs cleanly
-- [ ] `parse_define_dataset()` handles all documented clauses: modifiers, XML/serialize options, REFERENCE-ONLY, FOR buffers, DATA-RELATION (with RELATION-FIELDS, REPOSITION, NESTED, FOREIGN-KEY-HIDDEN, NOT-ACTIVE, RECURSIVE), PARENT-ID-RELATION (with PARENT-ID-FIELD, PARENT-FIELDS-BEFORE/AFTER)
-- [ ] `parse_define_data_source()` handles QUERY and source-buffer-phrases with KEYS
-- [ ] `parse_create_statement()` dispatches on DATASET, DATA-SOURCE, and TEMP-TABLE with optional IN WIDGET-POOL
-- [ ] `parse_define_parameter()` handles TABLE, TABLE-HANDLE, DATASET, DATASET-HANDLE, and BUFFER parameter types
-- [ ] DEFINE TEMP-TABLE and DEFINE BUFFER properly parse XML/serialize options (skip-unknown hack removed)
-- [ ] All existing tests still pass (no regressions from AST restructuring)
-- [ ] New tests cover all clause combinations listed in Phase 8
-- [ ] Benchmark fixture added and discoverable by CodSpeed
-- [ ] `cargo clippy -D warnings` passes
-- [ ] `cargo fmt --check` passes
+- [x] All new keywords added to `keyword_overrides.toml` and codegen runs cleanly
+- [x] `parse_define_dataset()` handles all documented clauses: modifiers, XML/serialize options, REFERENCE-ONLY, FOR buffers, DATA-RELATION (with RELATION-FIELDS, REPOSITION, NESTED, FOREIGN-KEY-HIDDEN, NOT-ACTIVE, RECURSIVE), PARENT-ID-RELATION (with PARENT-ID-FIELD, PARENT-FIELDS-BEFORE/AFTER)
+- [x] `parse_define_data_source()` handles QUERY and source-buffer-phrases with KEYS
+- [x] `parse_create_statement()` dispatches on DATASET, DATA-SOURCE, and TEMP-TABLE with optional IN WIDGET-POOL
+- [x] `parse_define_parameter()` handles TABLE, TABLE-HANDLE, DATASET, DATASET-HANDLE, and BUFFER parameter types
+- [x] DEFINE TEMP-TABLE and DEFINE BUFFER properly parse XML/serialize options (skip-unknown hack removed)
+- [x] All existing tests still pass (no regressions from AST restructuring)
+- [x] New tests cover all clause combinations listed in Phase 8
+- [x] Benchmark fixture added and discoverable by CodSpeed
+- [x] `cargo clippy -D warnings` passes
+- [x] `cargo fmt --check` passes
 
 ## Dependencies & Risks
 
