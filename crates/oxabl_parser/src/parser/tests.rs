@@ -2973,7 +2973,12 @@ fn parse_define_input_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            param_type: ParameterType::Variable { name, data_type, no_undo },
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -2993,7 +2998,12 @@ fn parse_define_output_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            param_type: ParameterType::Variable { name, data_type, no_undo },
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(name.name, "result");
@@ -3013,7 +3023,12 @@ fn parse_define_input_output_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            param_type: ParameterType::Variable { name, data_type, no_undo },
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::InputOutput);
             assert_eq!(name.name, "data");
@@ -3033,7 +3048,12 @@ fn parse_define_parameter_with_no_undo() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            param_type: ParameterType::Variable { name, data_type, no_undo },
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -3064,7 +3084,10 @@ END PROCEDURE.
             match &body[0] {
                 Statement::DefineParameter {
                     direction,
-                    param_type: ParameterType::Variable { name, data_type, .. },
+                    param_type:
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
                     assert_eq!(name.name, "name");
@@ -3076,7 +3099,10 @@ END PROCEDURE.
             match &body[1] {
                 Statement::DefineParameter {
                     direction,
-                    param_type: ParameterType::Variable { name, data_type, .. },
+                    param_type:
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Output);
                     assert_eq!(name.name, "result");
@@ -5318,7 +5344,10 @@ fn parse_create_basic() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Name(name), no_error } => {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
             assert_eq!(name.name, "Customer");
             assert!(!no_error);
         }
@@ -5333,7 +5362,10 @@ fn parse_create_no_error() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Name(name), no_error } => {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
             assert_eq!(name.name, "Customer");
             assert!(no_error);
         }
@@ -5621,7 +5653,10 @@ fn parse_create_case_insensitive() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Name(name), .. } => {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            ..
+        } => {
             assert_eq!(name.name, "customer");
         }
         _ => panic!("Expected Create statement"),
@@ -6502,7 +6537,13 @@ fn parse_define_dataset_basic() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataset { name, buffers, data_relations, parent_id_relations, .. } => {
+        Statement::DefineDataset {
+            name,
+            buffers,
+            data_relations,
+            parent_id_relations,
+            ..
+        } => {
             assert_eq!(name.name, "ds");
             assert_eq!(buffers.len(), 1);
             assert_eq!(buffers[0].name, "ttA");
@@ -6607,7 +6648,10 @@ fn parse_define_dataset_parent_id_relation() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataset { parent_id_relations, .. } => {
+        Statement::DefineDataset {
+            parent_id_relations,
+            ..
+        } => {
             assert_eq!(parent_id_relations.len(), 1);
             let rel = &parent_id_relations[0];
             assert_eq!(rel.name.as_ref().unwrap().name, "pidRel");
@@ -6634,7 +6678,11 @@ fn parse_define_dataset_mixed_relations() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataset { data_relations, parent_id_relations, .. } => {
+        Statement::DefineDataset {
+            data_relations,
+            parent_id_relations,
+            ..
+        } => {
             assert_eq!(data_relations.len(), 1);
             assert_eq!(parent_id_relations.len(), 1);
         }
@@ -6656,10 +6704,16 @@ fn parse_define_dataset_xml_serialize_options() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::DefineDataset { xml_options, .. } => {
-            assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:example");
+            assert_eq!(
+                xml_options.namespace_uri.as_ref().unwrap().name,
+                "urn:example"
+            );
             assert_eq!(xml_options.namespace_prefix.as_ref().unwrap().name, "ex");
             assert_eq!(xml_options.xml_node_name.as_ref().unwrap().name, "myDs");
-            assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "dataset1");
+            assert_eq!(
+                xml_options.serialize_name.as_ref().unwrap().name,
+                "dataset1"
+            );
             assert!(xml_options.serialize_hidden);
         }
         _ => panic!("Expected DefineDataset"),
@@ -6688,7 +6742,11 @@ fn parse_define_dataset_modifiers() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataset { is_new_shared, is_shared, .. } => {
+        Statement::DefineDataset {
+            is_new_shared,
+            is_shared,
+            ..
+        } => {
             assert!(is_new_shared);
             assert!(!is_shared);
         }
@@ -6701,7 +6759,13 @@ fn parse_define_dataset_modifiers() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataset { access, is_static, serializable, non_serializable, .. } => {
+        Statement::DefineDataset {
+            access,
+            is_static,
+            serializable,
+            non_serializable,
+            ..
+        } => {
             assert_eq!(access, Some(AccessModifier::Private));
             assert!(is_static);
             assert!(serializable);
@@ -6720,7 +6784,12 @@ fn parse_define_data_source_basic() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataSource { name, source_buffers, query, .. } => {
+        Statement::DefineDataSource {
+            name,
+            source_buffers,
+            query,
+            ..
+        } => {
             assert_eq!(name.name, "dsSrc");
             assert!(query.is_none());
             assert_eq!(source_buffers.len(), 1);
@@ -6738,7 +6807,11 @@ fn parse_define_data_source_with_query() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataSource { query, source_buffers, .. } => {
+        Statement::DefineDataSource {
+            query,
+            source_buffers,
+            ..
+        } => {
             assert_eq!(query.as_ref().unwrap().name, "qCust");
             assert_eq!(source_buffers.len(), 1);
             assert_eq!(source_buffers[0].name.name, "Customer");
@@ -6770,16 +6843,14 @@ fn parse_define_data_source_with_keys() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataSource { source_buffers, .. } => {
-            match &source_buffers[0].keys {
-                Some(DataSourceKeys::Fields(fields)) => {
-                    assert_eq!(fields.len(), 2);
-                    assert_eq!(fields[0].name, "CustNum");
-                    assert_eq!(fields[1].name, "Region");
-                }
-                _ => panic!("Expected Fields keys"),
+        Statement::DefineDataSource { source_buffers, .. } => match &source_buffers[0].keys {
+            Some(DataSourceKeys::Fields(fields)) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "CustNum");
+                assert_eq!(fields[1].name, "Region");
             }
-        }
+            _ => panic!("Expected Fields keys"),
+        },
         _ => panic!("Expected DefineDataSource"),
     }
 }
@@ -6792,7 +6863,10 @@ fn parse_define_data_source_with_rowid_key() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::DefineDataSource { source_buffers, .. } => {
-            assert!(matches!(source_buffers[0].keys, Some(DataSourceKeys::Rowid)));
+            assert!(matches!(
+                source_buffers[0].keys,
+                Some(DataSourceKeys::Rowid)
+            ));
         }
         _ => panic!("Expected DefineDataSource"),
     }
@@ -6805,7 +6879,9 @@ fn parse_define_data_source_access_static() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineDataSource { access, is_static, .. } => {
+        Statement::DefineDataSource {
+            access, is_static, ..
+        } => {
             assert_eq!(access, Some(AccessModifier::Private));
             assert!(is_static);
         }
@@ -6822,7 +6898,15 @@ fn parse_create_dataset() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Handle { kind, handle, widget_pool }, .. } => {
+        Statement::Create {
+            target:
+                CreateTarget::Handle {
+                    kind,
+                    handle,
+                    widget_pool,
+                },
+            ..
+        } => {
             assert_eq!(kind, CreateTargetKind::Dataset);
             assert_eq!(handle.name, "hDs");
             assert!(widget_pool.is_none());
@@ -6836,7 +6920,12 @@ fn parse_create_dataset() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Handle { kind, widget_pool, .. }, .. } => {
+        Statement::Create {
+            target: CreateTarget::Handle {
+                kind, widget_pool, ..
+            },
+            ..
+        } => {
             assert_eq!(kind, CreateTargetKind::Dataset);
             assert!(widget_pool.is_some());
         }
@@ -6851,7 +6940,10 @@ fn parse_create_data_source() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Handle { kind, handle, .. }, .. } => {
+        Statement::Create {
+            target: CreateTarget::Handle { kind, handle, .. },
+            ..
+        } => {
             assert_eq!(kind, CreateTargetKind::DataSource);
             assert_eq!(handle.name, "hDs");
         }
@@ -6866,7 +6958,10 @@ fn parse_create_temp_table() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Handle { kind, handle, .. }, .. } => {
+        Statement::Create {
+            target: CreateTarget::Handle { kind, handle, .. },
+            ..
+        } => {
             assert_eq!(kind, CreateTargetKind::TempTable);
             assert_eq!(handle.name, "hTt");
         }
@@ -6882,7 +6977,10 @@ fn parse_create_name() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { target: CreateTarget::Name(name), no_error } => {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
             assert_eq!(name.name, "Customer");
             assert!(!no_error);
         }
@@ -6901,7 +6999,12 @@ fn parse_define_parameter_dataset() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            param_type: ParameterType::Handle { kind, name, passing },
+            param_type:
+                ParameterType::Handle {
+                    kind,
+                    name,
+                    passing,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(kind, HandleParamKind::Dataset);
@@ -7017,7 +7120,11 @@ fn parse_define_temp_table_xml_options() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineTempTable { xml_options, fields, .. } => {
+        Statement::DefineTempTable {
+            xml_options,
+            fields,
+            ..
+        } => {
             assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:test");
             assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "myTable");
             assert_eq!(fields.len(), 1);
@@ -7028,7 +7135,8 @@ fn parse_define_temp_table_xml_options() {
 
 #[test]
 fn parse_define_buffer_xml_options() {
-    let source = r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
+    let source =
+        r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");

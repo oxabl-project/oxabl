@@ -312,12 +312,25 @@ impl Parser<'_> {
         }
 
         // Parse SERIALIZABLE / NON-SERIALIZABLE (dataset-specific, before DATASET keyword)
-        let serializable = self.check(Kind::Serializable) && { self.advance(); true };
-        let non_serializable = !serializable && self.check(Kind::NonSerializable) && { self.advance(); true };
+        let serializable = self.check(Kind::Serializable) && {
+            self.advance();
+            true
+        };
+        let non_serializable = !serializable && self.check(Kind::NonSerializable) && {
+            self.advance();
+            true
+        };
 
         // DEFINE DATASET
         if self.check(Kind::Dataset) {
-            return self.parse_define_dataset(access, is_static, is_new_shared, is_shared, serializable, non_serializable);
+            return self.parse_define_dataset(
+                access,
+                is_static,
+                is_new_shared,
+                is_shared,
+                serializable,
+                non_serializable,
+            );
         }
 
         // DEFINE DATA-SOURCE

@@ -366,7 +366,10 @@ pub enum Statement {
     },
 
     /// CREATE statement — record creation or dynamic object creation.
-    Create { target: CreateTarget, no_error: bool },
+    Create {
+        target: CreateTarget,
+        no_error: bool,
+    },
 
     /// DELETE buffer-name [NO-ERROR].
     Delete { buffer: Identifier, no_error: bool },

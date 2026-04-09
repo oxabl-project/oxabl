@@ -43,6 +43,7 @@ fn parser_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "oo_abl", "bench_parser_oo_abl.abl");
     bench_fixture(&mut group, "temp_tables", "bench_parser_temp_tables.abl");
     bench_fixture(&mut group, "procs_funcs", "bench_parser_procs_funcs.abl");
+    bench_fixture(&mut group, "datasets", "bench_parser_datasets.abl");
 
     group.finish();
 }
