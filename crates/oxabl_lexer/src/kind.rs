@@ -580,7 +580,6 @@ pub enum Kind {
     XrefXml,
     Yes,
     Preprop,
-
 }
 
 /// Match a string to a keyword Kind
