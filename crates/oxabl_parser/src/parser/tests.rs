@@ -1,9 +1,9 @@
 use super::*;
 use oxabl_ast::{
-    AccessModifier, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
-    FieldTypeSource, FindType, Identifier, IntegerLiteral, Literal, LockType, ParameterDirection,
-    RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation, StringLiteral,
-    UnknownLiteral, WhenBranch,
+    AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, DataType, DecimalLiteral,
+    Expression, FieldTypeSource, FindType, Identifier, IntegerLiteral, Literal, LockType,
+    ParameterDirection, ParameterType, RunTarget, SortDirection, Span, Statement, StreamDirection,
+    StreamOperation, StringLiteral, UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -2972,9 +2972,7 @@ fn parse_define_input_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type: ParameterType::Variable { name, data_type, no_undo },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -2994,9 +2992,7 @@ fn parse_define_output_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type: ParameterType::Variable { name, data_type, no_undo },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(name.name, "result");
@@ -3016,9 +3012,7 @@ fn parse_define_input_output_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type: ParameterType::Variable { name, data_type, no_undo },
         } => {
             assert_eq!(direction, ParameterDirection::InputOutput);
             assert_eq!(name.name, "data");
@@ -3038,9 +3032,7 @@ fn parse_define_parameter_with_no_undo() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type: ParameterType::Variable { name, data_type, no_undo },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -3071,9 +3063,7 @@ END PROCEDURE.
             match &body[0] {
                 Statement::DefineParameter {
                     direction,
-                    name,
-                    data_type,
-                    ..
+                    param_type: ParameterType::Variable { name, data_type, .. },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
                     assert_eq!(name.name, "name");
@@ -3085,9 +3075,7 @@ END PROCEDURE.
             match &body[1] {
                 Statement::DefineParameter {
                     direction,
-                    name,
-                    data_type,
-                    ..
+                    param_type: ParameterType::Variable { name, data_type, .. },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Output);
                     assert_eq!(name.name, "result");
@@ -5329,8 +5317,8 @@ fn parse_create_basic() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+        Statement::Create { target: CreateTarget::Name(name), no_error } => {
+            assert_eq!(name.name, "Customer");
             assert!(!no_error);
         }
         _ => panic!("Expected Create statement"),
@@ -5344,8 +5332,8 @@ fn parse_create_no_error() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+        Statement::Create { target: CreateTarget::Name(name), no_error } => {
+            assert_eq!(name.name, "Customer");
             assert!(no_error);
         }
         _ => panic!("Expected Create statement"),
@@ -5632,8 +5620,8 @@ fn parse_create_case_insensitive() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { buffer, .. } => {
-            assert_eq!(buffer.name, "customer");
+        Statement::Create { target: CreateTarget::Name(name), .. } => {
+            assert_eq!(name.name, "customer");
         }
         _ => panic!("Expected Create statement"),
     }

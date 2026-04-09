@@ -12,7 +12,9 @@ pub mod statements;
 #[cfg(test)]
 mod tests;
 
-use oxabl_ast::{AccessModifier, DataType, Identifier, ParameterDirection, Span, Statement};
+use oxabl_ast::{
+    AccessModifier, DataType, Identifier, ParameterDirection, ParameterType, Span, Statement,
+};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
@@ -388,9 +390,11 @@ impl<'a> Parser<'a> {
 
                 params.push(Statement::DefineParameter {
                     direction,
-                    name,
-                    data_type,
-                    no_undo,
+                    param_type: ParameterType::Variable {
+                        name,
+                        data_type,
+                        no_undo,
+                    },
                 });
 
                 if !self.check(Kind::Comma) {
