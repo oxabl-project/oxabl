@@ -3,7 +3,8 @@ use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
     DataType, DecimalLiteral, Expression, FieldTypeSource, FindType, HandleParamKind, Identifier,
     IntegerLiteral, Literal, LockType, ParameterDirection, ParameterType, RunTarget, SortDirection,
-    Span, Statement, StreamDirection, StreamOperation, StringLiteral, UnknownLiteral, WhenBranch,
+    Span, Statement, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget,
+    UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -7145,5 +7146,400 @@ fn parse_define_buffer_xml_options() {
             assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "cust");
         }
         _ => panic!("Expected DefineBuffer"),
+    }
+}
+
+// ── PUBLISH tests ───────────────────────────────────────────────────
+
+#[test]
+fn parse_publish_string_literal() {
+    let source = r#"PUBLISH "NewCustomer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            event_name,
+            from_handle,
+            arguments,
+        } => {
+            assert!(matches!(
+                event_name,
+                Expression::Literal(Literal::String(_))
+            ));
+            assert!(from_handle.is_none());
+            assert!(arguments.is_empty());
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+#[test]
+fn parse_publish_with_from() {
+    let source = r#"PUBLISH "NewCustomer" FROM hProc."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            from_handle,
+            arguments,
+            ..
+        } => {
+            assert!(from_handle.is_some());
+            assert!(arguments.is_empty());
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+#[test]
+fn parse_publish_with_params() {
+    let source = r#"PUBLISH "NewCustomer" (INPUT cName)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            arguments,
+            from_handle,
+            ..
+        } => {
+            assert!(from_handle.is_none());
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+#[test]
+fn parse_publish_expression_event() {
+    let source = "PUBLISH cEventName.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            event_name,
+            arguments,
+            ..
+        } => {
+            match &event_name {
+                Expression::Identifier(id) => assert_eq!(id.name, "cEventName"),
+                _ => panic!("Expected identifier event name"),
+            }
+            assert!(arguments.is_empty());
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+// ── SUBSCRIBE tests ─────────────────────────────────────────────────
+
+#[test]
+fn parse_subscribe_anywhere() {
+    let source = r#"SUBSCRIBE TO "NewCustomer" ANYWHERE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe {
+            subscriber,
+            target,
+            run_procedure,
+            no_error,
+            ..
+        } => {
+            assert!(subscriber.is_none());
+            assert_eq!(target, SubscribeTarget::Anywhere);
+            assert!(run_procedure.is_none());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_in_handle() {
+    let source = r#"SUBSCRIBE TO "NewCustomer" IN hPub."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe { target, .. } => {
+            assert!(matches!(target, SubscribeTarget::InHandle(_)));
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_with_procedure() {
+    let source = r#"SUBSCRIBE PROCEDURE hSub TO "NewCustomer" IN hPub."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe {
+            subscriber, target, ..
+        } => {
+            assert!(subscriber.is_some());
+            assert!(matches!(target, SubscribeTarget::InHandle(_)));
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_with_run_procedure() {
+    let source = r#"SUBSCRIBE TO "NewCustomer" IN hPub RUN-PROCEDURE MyHandler."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe { run_procedure, .. } => {
+            assert_eq!(run_procedure.as_ref().unwrap().name, "MyHandler");
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_no_to() {
+    let source = r#"SUBSCRIBE "NewCustomer" ANYWHERE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe { target, .. } => {
+            assert_eq!(target, SubscribeTarget::Anywhere);
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+// ── UNSUBSCRIBE tests ───────────────────────────────────────────────
+
+#[test]
+fn parse_unsubscribe_event() {
+    let source = r#"UNSUBSCRIBE TO "NewCustomer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe {
+            subscriber,
+            event_name,
+            in_handle,
+        } => {
+            assert!(subscriber.is_none());
+            assert!(event_name.is_some());
+            assert!(in_handle.is_none());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+#[test]
+fn parse_unsubscribe_all() {
+    let source = "UNSUBSCRIBE TO ALL.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe {
+            event_name,
+            in_handle,
+            ..
+        } => {
+            assert!(event_name.is_none());
+            assert!(in_handle.is_none());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+#[test]
+fn parse_unsubscribe_with_procedure() {
+    let source = r#"UNSUBSCRIBE PROCEDURE hSub TO "NewCustomer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe { subscriber, .. } => {
+            assert!(subscriber.is_some());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+#[test]
+fn parse_unsubscribe_with_in_handle() {
+    let source = r#"UNSUBSCRIBE TO "NewCustomer" IN hPub."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe { in_handle, .. } => {
+            assert!(in_handle.is_some());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+// ── DEFINE EVENT tests ──────────────────────────────────────────────
+
+#[test]
+fn parse_define_event_minimal() {
+    let source = "DEFINE EVENT MyEvent SIGNATURE VOID ().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineEvent {
+            access,
+            is_static,
+            is_abstract,
+            name,
+            parameters,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
+            assert!(!is_abstract);
+            assert_eq!(name.name, "MyEvent");
+            assert!(parameters.is_empty());
+        }
+        _ => panic!("Expected DefineEvent statement"),
+    }
+}
+
+#[test]
+fn parse_define_event_abstract() {
+    let source = "DEFINE PROTECTED ABSTRACT EVENT MyEvent SIGNATURE VOID ().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineEvent {
+            access,
+            is_abstract,
+            name,
+            ..
+        } => {
+            assert_eq!(access, AccessModifier::Protected);
+            assert!(is_abstract);
+            assert_eq!(name.name, "MyEvent");
+        }
+        _ => panic!("Expected DefineEvent statement"),
+    }
+}
+
+#[test]
+fn parse_define_event_multiple_params() {
+    let source = "DEFINE PUBLIC EVENT MyEvent SIGNATURE VOID (INPUT p1 AS INTEGER, INPUT p2 AS CHARACTER, OUTPUT p3 AS LOGICAL).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineEvent {
+            parameters, name, ..
+        } => {
+            assert_eq!(name.name, "MyEvent");
+            assert_eq!(parameters.len(), 3);
+            // Verify first param
+            match &parameters[0] {
+                Statement::DefineParameter {
+                    direction,
+                    param_type,
+                } => {
+                    assert_eq!(*direction, ParameterDirection::Input);
+                    match param_type {
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        } => {
+                            assert_eq!(name.name, "p1");
+                            assert_eq!(*data_type, DataType::Integer);
+                        }
+                        _ => panic!("Expected Variable param type"),
+                    }
+                }
+                _ => panic!("Expected DefineParameter"),
+            }
+            // Verify third param is OUTPUT
+            match &parameters[2] {
+                Statement::DefineParameter { direction, .. } => {
+                    assert_eq!(*direction, ParameterDirection::Output);
+                }
+                _ => panic!("Expected DefineParameter"),
+            }
+        }
+        _ => panic!("Expected DefineEvent statement"),
+    }
+}
+
+// ── Integration tests ───────────────────────────────────────────────
+
+#[test]
+fn parse_publish_in_do_block() {
+    let source = r#"DO:
+    PUBLISH "NewCustomer" (INPUT cName).
+END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::Publish { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_define_event_in_interface() {
+    let source = "INTERFACE IObservable:
+    DEFINE PUBLIC EVENT OnChange SIGNATURE VOID (INPUT pValue AS CHARACTER).
+END INTERFACE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Interface { body, name, .. } => {
+            assert_eq!(name.name, "IObservable");
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::DefineEvent { .. }));
+        }
+        _ => panic!("Expected Interface statement"),
+    }
+}
+
+// ── Negative / disambiguation test ──────────────────────────────────
+
+#[test]
+fn parse_publish_event_name_not_function_call() {
+    // Verify that `myEvent (INPUT x)` is parsed as event name `myEvent`
+    // with argument list `(INPUT x)`, NOT as function call `myEvent(INPUT x)`.
+    let source = "PUBLISH myEvent (INPUT x).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            event_name,
+            arguments,
+            ..
+        } => {
+            // Event name should be a plain identifier, not a function call
+            match &event_name {
+                Expression::Identifier(id) => assert_eq!(id.name, "myEvent"),
+                _ => panic!("Expected identifier event name, got {:?}", event_name),
+            }
+            // Arguments should be parsed as PUBLISH arguments
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Publish statement"),
     }
 }
