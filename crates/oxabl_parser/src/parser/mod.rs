@@ -271,6 +271,14 @@ impl<'a> Parser<'a> {
                     | Kind::ByValue
                     | Kind::Query
                     | Kind::Reposition
+                    // Event system keywords (unreserved)
+                    | Kind::Publish
+                    | Kind::Subscribe
+                    | Kind::Unsubscribe
+                    | Kind::Anywhere
+                    | Kind::Event
+                    | Kind::Signature
+                    | Kind::RunProcedure
             )
     }
 
