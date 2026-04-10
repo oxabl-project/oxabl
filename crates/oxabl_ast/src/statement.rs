@@ -509,6 +509,36 @@ pub enum Statement {
         operation: StreamOperation,
     },
 
+    /// ON trigger statement -- event handlers for UI, database, and key events.
+    ///
+    /// ```abl
+    /// ON CHOOSE OF btnOk IN FRAME f1 DO: /* ... */ END.
+    /// ON WRITE OF Customer NEW BUFFER bNew OLD BUFFER bOld DO: /* ... */ END.
+    /// ON F1 HELP.
+    /// ```
+    On { kind: OnKind },
+
+    /// TRIGGER PROCEDURE FOR event OF table [NEW/OLD clauses].
+    ///
+    /// Declares a schema trigger -- always the first statement in a trigger procedure file.
+    ///
+    /// ```abl
+    /// TRIGGER PROCEDURE FOR WRITE OF Customer
+    ///     NEW BUFFER bNew OLD BUFFER bOld.
+    /// ```
+    TriggerProcedure {
+        /// The trigger event (CREATE, DELETE, FIND, WRITE, ASSIGN, or REPLICATION-*).
+        event: DbTriggerEvent,
+        /// The target table (or table.field for ASSIGN OF form).
+        target: Identifier,
+        /// NEW/OLD BUFFER referencing (WRITE triggers).
+        referencing: TriggerReferencing,
+        /// NEW VALUE variable definition (ASSIGN triggers, mutually exclusive with OF form).
+        new_value: Option<TriggerAssignParam>,
+        /// OLD VALUE variable definition (ASSIGN NEW VALUE form).
+        old_value_param: Option<TriggerAssignParam>,
+    },
+
     /// Leave statement - exit innermost loop
     Leave,
 
@@ -864,4 +894,128 @@ pub enum SubscribeTarget {
     InHandle(Expression),
     /// Subscribe to events from any publisher.
     Anywhere,
+}
+
+// =============================================================================
+// ON trigger types
+// =============================================================================
+
+/// Discriminant for the different forms of the ON statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnKind {
+    /// UI/developer event trigger (includes "WEB-NOTIFY" ANYWHERE form):
+    /// ON event-list OF widget-list [OR event-list OF widget-list]... [ANYWHERE]
+    ///   { trigger-block | REVERT | PERSISTENT RUN proc [(args)] }
+    UiEvent {
+        /// Event/widget clauses -- at least one, chained via OR.
+        /// Empty when ANYWHERE is used standalone (e.g., ON "WEB-NOTIFY" ANYWHERE).
+        clauses: Vec<OnEventClause>,
+        /// Whether ANYWHERE was specified.
+        anywhere: bool,
+        /// The trigger action.
+        action: OnAction,
+    },
+    /// Database event trigger:
+    /// ON CREATE|DELETE|FIND|WRITE|ASSIGN OF table [referencing] [OVERRIDE]
+    ///   { trigger-block | REVERT }
+    DbEvent {
+        /// The database event.
+        event: DbTriggerEvent,
+        /// The table (or table.field for ASSIGN) the trigger is on.
+        target: Identifier,
+        /// NEW/OLD BUFFER/VALUE referencing phrases.
+        referencing: TriggerReferencing,
+        /// Whether OVERRIDE was specified.
+        is_override: bool,
+        /// The trigger action (block or REVERT).
+        action: OnAction,
+    },
+    /// Key remapping: ON key-label key-function.
+    KeyRemap {
+        /// The key label (e.g., F1, CTRL-X) -- any identifier.
+        key_label: Identifier,
+        /// The key function (e.g., HELP, ENDKEY, GO) -- any identifier.
+        key_function: Identifier,
+    },
+}
+
+/// A single event/widget-list clause in a UI ON trigger.
+///
+/// `ON CHOOSE, ENTRY OF btnOk IN FRAME f1, btnCancel`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnEventClause {
+    /// Comma-separated event names (identifiers, including keywords like LEAVE/ENTRY).
+    pub events: Vec<Identifier>,
+    /// Comma-separated widget references with optional frame/browse qualifiers.
+    pub widgets: Vec<WidgetRef>,
+}
+
+/// The action taken by an ON trigger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnAction {
+    /// A trigger block -- either a single statement or DO...END block.
+    Block(Box<Statement>),
+    /// REVERT -- removes the trigger.
+    Revert,
+    /// PERSISTENT RUN procedure [(args)].
+    PersistentRun {
+        procedure: Identifier,
+        arguments: Vec<Expression>,
+    },
+}
+
+/// Database trigger event types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbTriggerEvent {
+    Create,
+    Delete,
+    Find,
+    Write,
+    Assign,
+    ReplicationCreate,
+    ReplicationDelete,
+    ReplicationWrite,
+}
+
+/// Referencing phrase for database triggers (NEW/OLD BUFFER for WRITE, OLD VALUE for ASSIGN).
+/// Shared between ON db-event triggers and TRIGGER PROCEDURE.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TriggerReferencing {
+    /// NEW [BUFFER] alias (WRITE triggers).
+    pub new_buffer: Option<Identifier>,
+    /// OLD [BUFFER] alias (WRITE triggers).
+    pub old_buffer: Option<Identifier>,
+    /// OLD [VALUE] alias (ASSIGN triggers in ON statement).
+    pub old_value: Option<Identifier>,
+}
+
+/// Widget reference in an ON trigger, with optional frame/browse qualifier.
+///
+/// `btnOk IN FRAME main-frame` or `col1 IN BROWSE brw1`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WidgetRef {
+    pub name: Identifier,
+    pub qualifier: Option<WidgetQualifier>,
+}
+
+/// Optional qualification for a widget reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WidgetQualifier {
+    /// IN FRAME frame-name
+    InFrame(Identifier),
+    /// IN BROWSE browse-name
+    InBrowse(Identifier),
+}
+
+/// A variable-like parameter for TRIGGER PROCEDURE FOR ASSIGN NEW VALUE form.
+///
+/// ```abl
+/// TRIGGER PROCEDURE FOR ASSIGN
+///     NEW VALUE newVal AS CHARACTER
+///     OLD VALUE oldVal AS CHARACTER.
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerAssignParam {
+    pub name: Identifier,
+    pub data_type: DataType,
 }
