@@ -6,8 +6,17 @@ license = "MIT"
 description = "High-performance tooling suite for Progress ABL"
 repository = "https://github.com/oxabl-project/oxabl"
 
+[[bin]]
+name = "oxabl"
+path = "src/main.rs"
+
 [dependencies]
 oxabl_parser = { path = "../oxabl_parser", version = "0.4.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.3.1" }
 oxabl_common = { path = "../oxabl_common", version = "0.3.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "0.4.0" }
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+indicatif = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
