@@ -453,6 +453,55 @@ pub enum Statement {
         source_buffers: Vec<DataSourceBuffer>,
     },
 
+    /// PUBLISH event-name [FROM publisher-handle] [(args...)].
+    Publish {
+        /// Event name — string literal or character expression.
+        event_name: Expression,
+        /// Optional FROM publisher-handle.
+        from_handle: Option<Expression>,
+        /// Arguments passed to subscribers (reuses RunArgument).
+        arguments: Vec<RunArgument>,
+    },
+
+    /// SUBSCRIBE [PROCEDURE subscriber-handle] [TO] event-name {IN handle | ANYWHERE}
+    ///   [RUN-PROCEDURE handler-name] [NO-ERROR].
+    Subscribe {
+        /// Optional PROCEDURE subscriber-handle.
+        subscriber: Option<Expression>,
+        /// Event name — string literal or character expression.
+        event_name: Expression,
+        /// IN publisher-handle or ANYWHERE (required).
+        target: SubscribeTarget,
+        /// Optional RUN-PROCEDURE handler name.
+        run_procedure: Option<Identifier>,
+        /// Whether NO-ERROR was specified.
+        no_error: bool,
+    },
+
+    /// UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].
+    Unsubscribe {
+        /// Optional PROCEDURE subscriber-handle.
+        subscriber: Option<Expression>,
+        /// Event name, or None if ALL was specified.
+        event_name: Option<Expression>,
+        /// Optional IN publisher-handle.
+        in_handle: Option<Expression>,
+    },
+
+    /// DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).
+    DefineEvent {
+        /// Access modifier (defaults to PUBLIC).
+        access: AccessModifier,
+        /// Whether STATIC was specified.
+        is_static: bool,
+        /// Whether ABSTRACT was specified.
+        is_abstract: bool,
+        /// Event name.
+        name: Identifier,
+        /// Signature parameters (reuses DefineParameter via Vec<Statement>).
+        parameters: Vec<Statement>,
+    },
+
     /// INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.
     StreamIo {
         direction: StreamDirection,
@@ -802,4 +851,17 @@ pub struct HandlePassingOptions {
     pub append: bool,
     pub bind: bool,
     pub by_value: bool,
+}
+
+// =============================================================================
+// Event system types
+// =============================================================================
+
+/// Target for SUBSCRIBE — where to listen for events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscribeTarget {
+    /// Subscribe to events from a specific publisher handle.
+    InHandle(Expression),
+    /// Subscribe to events from any publisher.
+    Anywhere,
 }

@@ -3,6 +3,7 @@
 //! Handles DEFINE VARIABLE, VAR, ASSIGN, assignments, DO blocks (with counting loops),
 //! IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY,
 //! MESSAGE, CLASS, INTERFACE, METHOD, PROPERTY, CONSTRUCTOR, DESTRUCTOR, USING,
+//! PUBLISH, SUBSCRIBE, UNSUBSCRIBE, DEFINE EVENT,
 //! LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
@@ -10,8 +11,8 @@ use oxabl_ast::{
     DataSourceBuffer, DataSourceKeys, DisplayItem, Expression, FieldTypeSource, FindType,
     HandleParamKind, HandlePassingOptions, Identifier, IndexField, LockType, ParameterDirection,
     ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SortDirection, Span,
-    Statement, StreamDirection, StreamOperation, TempTableField, TempTableIndex, UseIndex,
-    WhenBranch, XmlSerializeOptions,
+    Statement, StreamDirection, StreamOperation, SubscribeTarget, TempTableField, TempTableIndex,
+    UseIndex, WhenBranch, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 
@@ -61,6 +62,9 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Input
             | Kind::Output
             | Kind::InputOutput
+            | Kind::Publish
+            | Kind::Subscribe
+            | Kind::Unsubscribe
     )
 }
 
@@ -124,6 +128,17 @@ impl Parser<'_> {
         // RUN statement
         if self.check(Kind::Run) {
             return self.parse_run_statement();
+        }
+
+        // Event system statements
+        if self.check(Kind::Publish) {
+            return self.parse_publish_statement();
+        }
+        if self.check(Kind::Subscribe) {
+            return self.parse_subscribe_statement();
+        }
+        if self.check(Kind::Unsubscribe) {
+            return self.parse_unsubscribe_statement();
         }
 
         // PROCEDURE statement
@@ -307,8 +322,25 @@ impl Parser<'_> {
             access
         };
 
+        // Check for ABSTRACT (used by DEFINE EVENT)
+        let is_abstract = if self.check(Kind::Abstract) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         if self.check(Kind::Property) {
             return self.parse_define_property(access.unwrap_or(AccessModifier::Public), is_static);
+        }
+
+        // DEFINE EVENT
+        if self.check(Kind::Event) {
+            return self.parse_define_event(
+                access.unwrap_or(AccessModifier::Public),
+                is_static,
+                is_abstract,
+            );
         }
 
         // Parse SERIALIZABLE / NON-SERIALIZABLE (dataset-specific, before DATASET keyword)
@@ -368,7 +400,7 @@ impl Parser<'_> {
         } else {
             return Err(ParseError {
                 message:
-                    "Expected VARIABLE, VAR, TEMP-TABLE, BUFFER, STREAM, FRAME, DATASET, or DATA-SOURCE after DEFINE"
+                    "Expected VARIABLE, VAR, TEMP-TABLE, BUFFER, STREAM, FRAME, DATASET, DATA-SOURCE, or EVENT after DEFINE"
                         .to_string(),
                 span: Span {
                     start: self.peek().start as u32,
@@ -2803,6 +2835,229 @@ impl Parser<'_> {
             target,
             result_var,
             no_error,
+        })
+    }
+
+    // ── Event system parsing ────────────────────────────────────────
+
+    /// Parse event name: string literal, VALUE(expr), or bare identifier.
+    ///
+    /// Uses a hand-rolled approach matching `parse_run_statement` to avoid
+    /// `parse_primary()` or `parse_expression()` consuming parenthesized
+    /// arguments as a function call.
+    fn parse_event_name(&mut self) -> ParseResult<Expression> {
+        if self.check(Kind::Value) {
+            // VALUE(expr)
+            self.advance();
+            self.expect_kind(Kind::LeftParen, "Expected '(' after VALUE")?;
+            let expr = self.parse_expression()?;
+            self.expect_kind(Kind::RightParen, "Expected ')' after VALUE expression")?;
+            Ok(expr)
+        } else if self.check(Kind::StringLiteral) {
+            // String literal event name — safe to use parse_primary (no function-call promotion)
+            self.parse_primary()
+        } else if Self::can_be_identifier(self.peek().kind) || self.check(Kind::Identifier) {
+            // Bare identifier — do NOT use parse_primary() which promotes identifier( to function call.
+            // Instead, parse just the identifier and return it as an Expression::Identifier.
+            let ident = self.parse_identifier()?;
+            Ok(Expression::Identifier(ident))
+        } else {
+            Err(ParseError {
+                message: "Expected event name (string literal, identifier, or VALUE expression)"
+                    .to_string(),
+                span: self.current_span(),
+            })
+        }
+    }
+
+    /// Parse RUN-style parenthesized arguments: `(INPUT x, OUTPUT y, ...)`.
+    fn parse_run_arguments(&mut self) -> ParseResult<Vec<RunArgument>> {
+        if !self.check(Kind::LeftParen) {
+            return Ok(Vec::new());
+        }
+        self.advance(); // consume (
+
+        let mut args = Vec::new();
+        if !self.check(Kind::RightParen) {
+            loop {
+                let direction = match self.peek().kind {
+                    Kind::Input => {
+                        self.advance();
+                        ParameterDirection::Input
+                    }
+                    Kind::Output => {
+                        self.advance();
+                        ParameterDirection::Output
+                    }
+                    Kind::InputOutput => {
+                        self.advance();
+                        ParameterDirection::InputOutput
+                    }
+                    _ => ParameterDirection::Input,
+                };
+
+                let expression = self.parse_expression()?;
+                args.push(RunArgument {
+                    direction,
+                    expression,
+                });
+
+                if !self.check(Kind::Comma) {
+                    break;
+                }
+                self.advance(); // consume comma
+            }
+        }
+
+        self.expect_kind(Kind::RightParen, "Expected ')' after arguments")?;
+        Ok(args)
+    }
+
+    /// PUBLISH event-name [FROM publisher-handle] [(args...)].
+    fn parse_publish_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume PUBLISH
+
+        let event_name = self.parse_event_name()?;
+
+        let from_handle = if self.check(Kind::From) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        let arguments = self.parse_run_arguments()?;
+
+        self.expect_kind(Kind::Period, "Expected '.' after PUBLISH statement")?;
+
+        Ok(Statement::Publish {
+            event_name,
+            from_handle,
+            arguments,
+        })
+    }
+
+    /// SUBSCRIBE [PROCEDURE subscriber-handle] [TO] event-name {IN handle | ANYWHERE}
+    ///   [RUN-PROCEDURE handler-name] [NO-ERROR].
+    fn parse_subscribe_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume SUBSCRIBE
+
+        // Optional PROCEDURE subscriber-handle
+        let subscriber = if self.check(Kind::Procedure) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Optional TO noise word
+        if self.check(Kind::To) {
+            self.advance();
+        }
+
+        let event_name = self.parse_event_name()?;
+
+        // Required: IN handle or ANYWHERE
+        let target = if self.check(Kind::KwIn) {
+            self.advance();
+            SubscribeTarget::InHandle(self.parse_expression()?)
+        } else if self.check(Kind::Anywhere) {
+            self.advance();
+            SubscribeTarget::Anywhere
+        } else {
+            return Err(ParseError {
+                message: "Expected IN or ANYWHERE after event name in SUBSCRIBE".to_string(),
+                span: self.current_span(),
+            });
+        };
+
+        // Optional RUN-PROCEDURE handler-name
+        let run_procedure = if self.check(Kind::RunProcedure) {
+            self.advance();
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+
+        let no_error = self.parse_no_error();
+        self.expect_kind(Kind::Period, "Expected '.' after SUBSCRIBE statement")?;
+
+        Ok(Statement::Subscribe {
+            subscriber,
+            event_name,
+            target,
+            run_procedure,
+            no_error,
+        })
+    }
+
+    /// UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].
+    fn parse_unsubscribe_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume UNSUBSCRIBE
+
+        // Optional PROCEDURE subscriber-handle
+        let subscriber = if self.check(Kind::Procedure) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Optional TO noise word
+        if self.check(Kind::To) {
+            self.advance();
+        }
+
+        // event-name or ALL
+        let event_name = if self.check(Kind::All) {
+            self.advance();
+            None
+        } else {
+            Some(self.parse_event_name()?)
+        };
+
+        // Optional IN publisher-handle
+        let in_handle = if self.check(Kind::KwIn) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        self.expect_kind(Kind::Period, "Expected '.' after UNSUBSCRIBE statement")?;
+
+        Ok(Statement::Unsubscribe {
+            subscriber,
+            event_name,
+            in_handle,
+        })
+    }
+
+    /// DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).
+    fn parse_define_event(
+        &mut self,
+        access: AccessModifier,
+        is_static: bool,
+        is_abstract: bool,
+    ) -> ParseResult<Statement> {
+        self.advance(); // consume EVENT
+
+        let name = self.parse_identifier()?;
+
+        self.expect_kind(Kind::Signature, "Expected SIGNATURE after event name")?;
+        self.expect_kind(Kind::Void, "Expected VOID after SIGNATURE")?;
+
+        // Parse parameter list using existing helper
+        let parameters = self.parse_parenthesized_params()?;
+
+        self.expect_kind(Kind::Period, "Expected '.' after DEFINE EVENT statement")?;
+
+        Ok(Statement::DefineEvent {
+            access,
+            is_static,
+            is_abstract,
+            name,
+            parameters,
         })
     }
 
