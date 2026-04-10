@@ -1,10 +1,10 @@
 use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
-    DataType, DecimalLiteral, Expression, FieldTypeSource, FindType, HandleParamKind, Identifier,
-    IntegerLiteral, Literal, LockType, ParameterDirection, ParameterType, RunTarget, SortDirection,
-    Span, Statement, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget,
-    UnknownLiteral, WhenBranch,
+    DataType, DbTriggerEvent, DecimalLiteral, Expression, FieldTypeSource, FindType,
+    HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, OnAction, OnKind,
+    ParameterDirection, ParameterType, RunTarget, SortDirection, Span, Statement, StreamDirection,
+    StreamOperation, StringLiteral, SubscribeTarget, UnknownLiteral, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -7541,5 +7541,570 @@ fn parse_publish_event_name_not_function_call() {
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
         }
         _ => panic!("Expected Publish statement"),
+    }
+}
+
+// ── ON trigger tests ────────────────────────────────────────────────
+
+#[test]
+fn parse_on_choose_of_button() {
+    let source = r#"ON CHOOSE OF btnOk DO: MESSAGE "clicked". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind:
+                OnKind::UiEvent {
+                    clauses,
+                    anywhere,
+                    action,
+                },
+        } => {
+            assert!(!anywhere);
+            assert_eq!(clauses.len(), 1);
+            assert_eq!(clauses[0].events.len(), 1);
+            assert_eq!(clauses[0].events[0].name, "CHOOSE");
+            assert_eq!(clauses[0].widgets.len(), 1);
+            assert_eq!(clauses[0].widgets[0].name.name, "btnOk");
+            assert!(clauses[0].widgets[0].qualifier.is_none());
+            assert!(matches!(action, OnAction::Block(_)));
+        }
+        _ => panic!("Expected On UiEvent statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_on_multiple_events() {
+    let source = r#"ON CHOOSE, ENTRY OF btnOk DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].events.len(), 2);
+            assert_eq!(clauses[0].events[0].name, "CHOOSE");
+            assert_eq!(clauses[0].events[1].name, "ENTRY");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_multiple_widgets() {
+    let source = r#"ON CHOOSE OF btn1, btn2 DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].widgets.len(), 2);
+            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
+            assert_eq!(clauses[0].widgets[1].name.name, "btn2");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_widget_in_frame() {
+    let source = r#"ON CHOOSE OF btnOk IN FRAME main-frame DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].widgets.len(), 1);
+            assert_eq!(clauses[0].widgets[0].name.name, "btnOk");
+            match &clauses[0].widgets[0].qualifier {
+                Some(WidgetQualifier::InFrame(frame)) => assert_eq!(frame.name, "main-frame"),
+                other => panic!("Expected InFrame qualifier, got {:?}", other),
+            }
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_or_clause() {
+    let source = r#"ON CHOOSE OF btn1 OR ENTRY OF fill1 DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses.len(), 2);
+            assert_eq!(clauses[0].events[0].name, "CHOOSE");
+            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
+            assert_eq!(clauses[1].events[0].name, "ENTRY");
+            assert_eq!(clauses[1].widgets[0].name.name, "fill1");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_anywhere() {
+    let source = r#"ON CHOOSE ANYWHERE DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent {
+                clauses, anywhere, ..
+            },
+        } => {
+            assert!(anywhere);
+            assert!(clauses.is_empty());
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_anywhere_with_widgets() {
+    let source = r#"ON CHOOSE OF btn1 ANYWHERE DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent {
+                clauses, anywhere, ..
+            },
+        } => {
+            assert!(anywhere);
+            assert_eq!(clauses.len(), 1);
+            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_single_statement() {
+    let source = r#"ON CHOOSE OF btnOk MESSAGE "clicked"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => {
+            assert!(matches!(action, OnAction::Block(_)));
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_revert() {
+    let source = "ON CHOOSE OF btnOk REVERT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => {
+            assert!(matches!(action, OnAction::Revert));
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_persistent_run() {
+    let source = "ON CHOOSE OF btnOk PERSISTENT RUN myProc.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => match action {
+            OnAction::PersistentRun {
+                procedure,
+                arguments,
+            } => {
+                assert_eq!(procedure.name, "myProc");
+                assert!(arguments.is_empty());
+            }
+            other => panic!("Expected PersistentRun, got {:?}", other),
+        },
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_persistent_run_with_args() {
+    let source = "ON CHOOSE OF btnOk PERSISTENT RUN myProc (INPUT x).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => match action {
+            OnAction::PersistentRun { arguments, .. } => {
+                assert_eq!(arguments.len(), 1);
+            }
+            other => panic!("Expected PersistentRun, got {:?}", other),
+        },
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_leave_event_name() {
+    let source = r#"ON LEAVE OF fill1 DO: MESSAGE "left". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].events[0].name, "LEAVE");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_web_notify() {
+    let source = r#"ON "WEB-NOTIFY" ANYWHERE DO: MESSAGE "notify". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { anywhere, .. },
+        } => {
+            assert!(anywhere);
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+// ── ON database event tests ─────────────────────────────────────────
+
+#[test]
+fn parse_on_create_of_table() {
+    let source = r#"ON CREATE OF Customer DO: MESSAGE "created". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind:
+                OnKind::DbEvent {
+                    event,
+                    target,
+                    is_override,
+                    ..
+                },
+        } => {
+            assert_eq!(event, DbTriggerEvent::Create);
+            assert_eq!(target.name, "Customer");
+            assert!(!is_override);
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_write_with_buffers() {
+    let source =
+        r#"ON WRITE OF Customer NEW BUFFER bNew OLD BUFFER bOld DO: MESSAGE "wrote". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent {
+                event, referencing, ..
+            },
+        } => {
+            assert_eq!(event, DbTriggerEvent::Write);
+            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
+            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_assign_of_field() {
+    let source = r#"ON ASSIGN OF Customer.Name DO: MESSAGE "assigned". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { event, target, .. },
+        } => {
+            assert_eq!(event, DbTriggerEvent::Assign);
+            assert_eq!(target.name, "Customer.Name");
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_assign_old_value() {
+    let source = r#"ON ASSIGN OF Customer.Name OLD VALUE oldName DO: MESSAGE "changed". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { referencing, .. },
+        } => {
+            assert_eq!(referencing.old_value.as_ref().unwrap().name, "oldName");
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_write_override() {
+    let source = r#"ON WRITE OF Customer OVERRIDE DO: MESSAGE "overridden". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { is_override, .. },
+        } => {
+            assert!(is_override);
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_db_revert() {
+    let source = "ON WRITE OF Customer REVERT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { action, .. },
+        } => {
+            assert!(matches!(action, OnAction::Revert));
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+// ── ON key remap tests ──────────────────────────────────────────────
+
+#[test]
+fn parse_on_key_remap() {
+    let source = "ON F1 HELP.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind:
+                OnKind::KeyRemap {
+                    key_label,
+                    key_function,
+                },
+        } => {
+            assert_eq!(key_label.name, "F1");
+            assert_eq!(key_function.name, "HELP");
+        }
+        _ => panic!("Expected On KeyRemap statement"),
+    }
+}
+
+// ── TRIGGER PROCEDURE tests ─────────────────────────────────────────
+
+#[test]
+fn parse_trigger_procedure_create() {
+    let source = "TRIGGER PROCEDURE FOR CREATE OF Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure { event, target, .. } => {
+            assert_eq!(event, DbTriggerEvent::Create);
+            assert_eq!(target.name, "Customer");
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_write() {
+    let source = "TRIGGER PROCEDURE FOR WRITE OF Customer NEW BUFFER bNew OLD BUFFER bOld.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            event, referencing, ..
+        } => {
+            assert_eq!(event, DbTriggerEvent::Write);
+            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
+            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_write_no_buffer_keyword() {
+    let source = "TRIGGER PROCEDURE FOR WRITE OF Customer NEW bNew OLD bOld.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure { referencing, .. } => {
+            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
+            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_assign_of() {
+    let source = "TRIGGER PROCEDURE FOR ASSIGN OF Customer.Name.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            event,
+            target,
+            new_value,
+            ..
+        } => {
+            assert_eq!(event, DbTriggerEvent::Assign);
+            assert_eq!(target.name, "Customer.Name");
+            assert!(new_value.is_none());
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_assign_new_value() {
+    let source = "TRIGGER PROCEDURE FOR ASSIGN NEW VALUE newVal AS CHARACTER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            event,
+            new_value,
+            old_value_param,
+            ..
+        } => {
+            assert_eq!(event, DbTriggerEvent::Assign);
+            let nv = new_value.unwrap();
+            assert_eq!(nv.name.name, "newVal");
+            assert_eq!(nv.data_type, DataType::Character);
+            assert!(old_value_param.is_none());
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_assign_new_old_value() {
+    let source =
+        "TRIGGER PROCEDURE FOR ASSIGN NEW VALUE newVal AS CHARACTER OLD VALUE oldVal AS CHARACTER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            new_value,
+            old_value_param,
+            ..
+        } => {
+            let nv = new_value.unwrap();
+            assert_eq!(nv.name.name, "newVal");
+            assert_eq!(nv.data_type, DataType::Character);
+            let ov = old_value_param.unwrap();
+            assert_eq!(ov.name.name, "oldVal");
+            assert_eq!(ov.data_type, DataType::Character);
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+// ── ON trigger integration tests ────────────────────────────────────
+
+#[test]
+fn parse_on_trigger_in_procedure() {
+    let source = r#"PROCEDURE myProc:
+    ON CHOOSE OF btnOk DO:
+        MESSAGE "clicked".
+    END.
+END PROCEDURE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Procedure { name, body } => {
+            assert_eq!(name.name, "myProc");
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::On { .. }));
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_on_trigger_inside_do_block() {
+    let source = r#"DO:
+    ON CHOOSE OF btnOk DO:
+        MESSAGE "clicked".
+    END.
+END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::On { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_on_trigger_in_class_body() {
+    let source = r#"CLASS MyApp.MyClass:
+    ON CHOOSE OF btnOk DO:
+        MESSAGE "clicked".
+    END.
+END CLASS."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Class { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::On { .. }));
+        }
+        _ => panic!("Expected Class statement"),
     }
 }
