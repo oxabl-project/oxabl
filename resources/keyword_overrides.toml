@@ -512,6 +512,128 @@ name = "CLOSE"
 keyword_type = "Statement"
 
 # =============================================================================
+# DATASET / DATA-SOURCE KEYWORDS
+# Keywords needed for DEFINE DATASET, DEFINE DATA-SOURCE, and CREATE typed
+# variants. XML/serialize keywords are shared with TEMP-TABLE and BUFFER.
+# =============================================================================
+
+# Shared XML/serialize keywords (TEMP-TABLE, BUFFER, DATASET)
+[[add]]
+name = "NAMESPACE-URI"
+keyword_type = "Option"
+
+[[add]]
+name = "NAMESPACE-PREFIX"
+keyword_type = "Option"
+
+[[add]]
+name = "XML-NODE-NAME"
+keyword_type = "Option"
+
+[[add]]
+name = "XML-NODE-TYPE"
+keyword_type = "Option"
+
+[[add]]
+name = "SERIALIZE-NAME"
+keyword_type = "Option"
+
+[[add]]
+name = "SERIALIZE-HIDDEN"
+keyword_type = "Option"
+
+# Dataset-specific keywords
+[[add]]
+name = "SERIALIZABLE"
+keyword_type = "Option"
+
+[[add]]
+name = "NON-SERIALIZABLE"
+keyword_type = "Option"
+
+[[add]]
+name = "REFERENCE-ONLY"
+keyword_type = "Option"
+
+[[add]]
+name = "RELATION-FIELDS"
+keyword_type = "Option"
+
+[[add]]
+name = "NESTED"
+keyword_type = "Option"
+
+[[add]]
+name = "FOREIGN-KEY-HIDDEN"
+keyword_type = "Option"
+
+[[add]]
+name = "NOT-ACTIVE"
+keyword_type = "Option"
+
+[[add]]
+name = "RECURSIVE"
+keyword_type = "Option"
+
+[[add]]
+name = "PARENT-ID-RELATION"
+keyword_type = "Statement"
+
+[[add]]
+name = "PARENT-ID-FIELD"
+keyword_type = "Option"
+
+[[add]]
+name = "PARENT-FIELDS-BEFORE"
+keyword_type = "Option"
+
+[[add]]
+name = "PARENT-FIELDS-AFTER"
+keyword_type = "Option"
+
+# CREATE ... IN WIDGET-POOL
+[[add]]
+name = "WIDGET-POOL"
+keyword_type = "Option"
+
+# DEFINE PARAMETER typed variants
+[[add]]
+name = "TABLE-HANDLE"
+keyword_type = "Option"
+
+[[add]]
+name = "BIND"
+keyword_type = "Option"
+
+[[add]]
+name = "BY-VALUE"
+keyword_type = "Option"
+
+# =============================================================================
+# HYPHENATED FORM OVERRIDES
+# The HTML keyword index uses space-separated forms (e.g., "data relation")
+# but ABL source code uses hyphenated forms (e.g., "data-relation").
+# The lexer tokenizes hyphenated identifiers as single tokens, so the
+# match_keyword function needs the hyphenated form.
+# =============================================================================
+
+# DATA-RELATION exists as "data relation" (space) from the HTML index.
+# Override to add the hyphenated form that the lexer actually sees.
+[[add]]
+name = "DATA-RELATION"
+keyword_type = "Option"
+
+# DATA-SOURCE exists as "data source" (space) from the HTML index.
+[[add]]
+name = "DATA-SOURCE"
+keyword_type = "Statement"
+
+# DATASET-HANDLE exists as "dataset handle" (space) from the HTML index.
+[[add]]
+name = "DATASET-HANDLE"
+keyword_type = "Type"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================

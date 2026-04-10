@@ -1,9 +1,9 @@
 use super::*;
 use oxabl_ast::{
-    AccessModifier, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression,
-    FieldTypeSource, FindType, Identifier, IntegerLiteral, Literal, LockType, ParameterDirection,
-    RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation, StringLiteral,
-    UnknownLiteral, WhenBranch,
+    AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
+    DataType, DecimalLiteral, Expression, FieldTypeSource, FindType, HandleParamKind, Identifier,
+    IntegerLiteral, Literal, LockType, ParameterDirection, ParameterType, RunTarget, SortDirection,
+    Span, Statement, StreamDirection, StreamOperation, StringLiteral, UnknownLiteral, WhenBranch,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -2972,9 +2972,12 @@ fn parse_define_input_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -2994,9 +2997,12 @@ fn parse_define_output_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(name.name, "result");
@@ -3016,9 +3022,12 @@ fn parse_define_input_output_parameter() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::InputOutput);
             assert_eq!(name.name, "data");
@@ -3038,9 +3047,12 @@ fn parse_define_parameter_with_no_undo() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -3071,9 +3083,10 @@ END PROCEDURE.
             match &body[0] {
                 Statement::DefineParameter {
                     direction,
-                    name,
-                    data_type,
-                    ..
+                    param_type:
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
                     assert_eq!(name.name, "name");
@@ -3085,9 +3098,10 @@ END PROCEDURE.
             match &body[1] {
                 Statement::DefineParameter {
                     direction,
-                    name,
-                    data_type,
-                    ..
+                    param_type:
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Output);
                     assert_eq!(name.name, "result");
@@ -5329,8 +5343,11 @@ fn parse_create_basic() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
+            assert_eq!(name.name, "Customer");
             assert!(!no_error);
         }
         _ => panic!("Expected Create statement"),
@@ -5344,8 +5361,11 @@ fn parse_create_no_error() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
+            assert_eq!(name.name, "Customer");
             assert!(no_error);
         }
         _ => panic!("Expected Create statement"),
@@ -5632,8 +5652,11 @@ fn parse_create_case_insensitive() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Create { buffer, .. } => {
-            assert_eq!(buffer.name, "customer");
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            ..
+        } => {
+            assert_eq!(name.name, "customer");
         }
         _ => panic!("Expected Create statement"),
     }
@@ -6501,5 +6524,626 @@ fn input_as_expression_not_stream() {
     match &result {
         Ok(Statement::StreamIo { .. }) => panic!("INPUT(identifier) should not be StreamIo"),
         _ => {}
+    }
+}
+
+// ── DEFINE DATASET tests ────────────────────────────────────────
+
+#[test]
+fn parse_define_dataset_basic() {
+    let source = "DEFINE DATASET ds FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            name,
+            buffers,
+            data_relations,
+            parent_id_relations,
+            ..
+        } => {
+            assert_eq!(name.name, "ds");
+            assert_eq!(buffers.len(), 1);
+            assert_eq!(buffers[0].name, "ttA");
+            assert!(data_relations.is_empty());
+            assert!(parent_id_relations.is_empty());
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_multiple_buffers() {
+    let source = "DEFINE DATASET ds FOR ttA, ttB, ttC.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { buffers, .. } => {
+            assert_eq!(buffers.len(), 3);
+            assert_eq!(buffers[0].name, "ttA");
+            assert_eq!(buffers[1].name, "ttB");
+            assert_eq!(buffers[2].name, "ttC");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_data_relation() {
+    let source = r#"DEFINE DATASET dsPerson FOR ttPerson, ttAddress
+        DATA-RELATION drPersonAddr FOR ttPerson, ttAddress
+        RELATION-FIELDS (personId, personId)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { data_relations, .. } => {
+            assert_eq!(data_relations.len(), 1);
+            let rel = &data_relations[0];
+            assert_eq!(rel.name.as_ref().unwrap().name, "drPersonAddr");
+            assert_eq!(rel.parent_buffer.name, "ttPerson");
+            assert_eq!(rel.child_buffer.name, "ttAddress");
+            assert_eq!(rel.relation_fields.len(), 1);
+            assert_eq!(rel.relation_fields[0].0.name, "personId");
+            assert_eq!(rel.relation_fields[0].1.name, "personId");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_multiple_relations() {
+    let source = r#"DEFINE DATASET ds FOR ttOrder, ttLine, ttItem
+        DATA-RELATION r1 FOR ttOrder, ttLine
+        RELATION-FIELDS (ordNum, ordNum)
+        DATA-RELATION r2 FOR ttLine, ttItem
+        RELATION-FIELDS (itemId, itemId)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { data_relations, .. } => {
+            assert_eq!(data_relations.len(), 2);
+            assert_eq!(data_relations[0].name.as_ref().unwrap().name, "r1");
+            assert_eq!(data_relations[1].name.as_ref().unwrap().name, "r2");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_relation_flags() {
+    let source = r#"DEFINE DATASET ds FOR ttA, ttB
+        DATA-RELATION FOR ttA, ttB
+        RELATION-FIELDS (id, id)
+        REPOSITION NESTED FOREIGN-KEY-HIDDEN NOT-ACTIVE RECURSIVE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { data_relations, .. } => {
+            let rel = &data_relations[0];
+            assert!(rel.name.is_none()); // unnamed relation
+            assert!(rel.reposition);
+            assert!(rel.nested);
+            assert!(rel.foreign_key_hidden);
+            assert!(rel.not_active);
+            assert!(rel.recursive);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_parent_id_relation() {
+    let source = r#"DEFINE DATASET ds FOR ttParent, ttChild
+        PARENT-ID-RELATION pidRel FOR ttParent, ttChild
+        PARENT-ID-FIELD idField
+        PARENT-FIELDS-BEFORE (field1, field2)
+        PARENT-FIELDS-AFTER (field3)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            parent_id_relations,
+            ..
+        } => {
+            assert_eq!(parent_id_relations.len(), 1);
+            let rel = &parent_id_relations[0];
+            assert_eq!(rel.name.as_ref().unwrap().name, "pidRel");
+            assert_eq!(rel.parent_buffer.name, "ttParent");
+            assert_eq!(rel.child_buffer.name, "ttChild");
+            assert_eq!(rel.id_field.name, "idField");
+            assert_eq!(rel.parent_fields_before.len(), 2);
+            assert_eq!(rel.parent_fields_before[0].name, "field1");
+            assert_eq!(rel.parent_fields_after.len(), 1);
+            assert_eq!(rel.parent_fields_after[0].name, "field3");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_mixed_relations() {
+    let source = r#"DEFINE DATASET ds FOR ttA, ttB, ttC
+        DATA-RELATION FOR ttA, ttB
+        RELATION-FIELDS (id, id)
+        PARENT-ID-RELATION FOR ttA, ttC
+        PARENT-ID-FIELD recid-field."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            data_relations,
+            parent_id_relations,
+            ..
+        } => {
+            assert_eq!(data_relations.len(), 1);
+            assert_eq!(parent_id_relations.len(), 1);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_xml_serialize_options() {
+    let source = r#"DEFINE DATASET ds
+        NAMESPACE-URI "urn:example"
+        NAMESPACE-PREFIX "ex"
+        XML-NODE-NAME "myDs"
+        SERIALIZE-NAME "dataset1"
+        SERIALIZE-HIDDEN
+        FOR ttA."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { xml_options, .. } => {
+            assert_eq!(
+                xml_options.namespace_uri.as_ref().unwrap().name,
+                "urn:example"
+            );
+            assert_eq!(xml_options.namespace_prefix.as_ref().unwrap().name, "ex");
+            assert_eq!(xml_options.xml_node_name.as_ref().unwrap().name, "myDs");
+            assert_eq!(
+                xml_options.serialize_name.as_ref().unwrap().name,
+                "dataset1"
+            );
+            assert!(xml_options.serialize_hidden);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_reference_only() {
+    let source = "DEFINE DATASET ds REFERENCE-ONLY FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { reference_only, .. } => {
+            assert!(reference_only);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_modifiers() {
+    // Test NEW SHARED
+    let source = "DEFINE NEW SHARED DATASET ds1 FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            is_new_shared,
+            is_shared,
+            ..
+        } => {
+            assert!(is_new_shared);
+            assert!(!is_shared);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+
+    // Test PRIVATE STATIC SERIALIZABLE
+    let source = "DEFINE PRIVATE STATIC SERIALIZABLE DATASET ds2 FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            access,
+            is_static,
+            serializable,
+            non_serializable,
+            ..
+        } => {
+            assert_eq!(access, Some(AccessModifier::Private));
+            assert!(is_static);
+            assert!(serializable);
+            assert!(!non_serializable);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+// ── DEFINE DATA-SOURCE tests ────────────────────────────────────
+
+#[test]
+fn parse_define_data_source_basic() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource {
+            name,
+            source_buffers,
+            query,
+            ..
+        } => {
+            assert_eq!(name.name, "dsSrc");
+            assert!(query.is_none());
+            assert_eq!(source_buffers.len(), 1);
+            assert_eq!(source_buffers[0].name.name, "Customer");
+            assert!(source_buffers[0].keys.is_none());
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_with_query() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR QUERY qCust Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource {
+            query,
+            source_buffers,
+            ..
+        } => {
+            assert_eq!(query.as_ref().unwrap().name, "qCust");
+            assert_eq!(source_buffers.len(), 1);
+            assert_eq!(source_buffers[0].name.name, "Customer");
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_multiple_buffers() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer, Order.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource { source_buffers, .. } => {
+            assert_eq!(source_buffers.len(), 2);
+            assert_eq!(source_buffers[0].name.name, "Customer");
+            assert_eq!(source_buffers[1].name.name, "Order");
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_with_keys() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer KEYS (CustNum, Region).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource { source_buffers, .. } => match &source_buffers[0].keys {
+            Some(DataSourceKeys::Fields(fields)) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "CustNum");
+                assert_eq!(fields[1].name, "Region");
+            }
+            _ => panic!("Expected Fields keys"),
+        },
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_with_rowid_key() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer KEYS (ROWID).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource { source_buffers, .. } => {
+            assert!(matches!(
+                source_buffers[0].keys,
+                Some(DataSourceKeys::Rowid)
+            ));
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_access_static() {
+    let source = "DEFINE PRIVATE STATIC DATA-SOURCE dsSrc FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource {
+            access, is_static, ..
+        } => {
+            assert_eq!(access, Some(AccessModifier::Private));
+            assert!(is_static);
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+// ── CREATE typed tests ──────────────────────────────────────────
+
+#[test]
+fn parse_create_dataset() {
+    let source = "CREATE DATASET hDs.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target:
+                CreateTarget::Handle {
+                    kind,
+                    handle,
+                    widget_pool,
+                },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::Dataset);
+            assert_eq!(handle.name, "hDs");
+            assert!(widget_pool.is_none());
+        }
+        _ => panic!("Expected Create Dataset"),
+    }
+
+    // With WIDGET-POOL
+    let source = r#"CREATE DATASET hDs IN WIDGET-POOL "myPool"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Handle {
+                kind, widget_pool, ..
+            },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::Dataset);
+            assert!(widget_pool.is_some());
+        }
+        _ => panic!("Expected Create Dataset with widget pool"),
+    }
+}
+
+#[test]
+fn parse_create_data_source() {
+    let source = "CREATE DATA-SOURCE hDs.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Handle { kind, handle, .. },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::DataSource);
+            assert_eq!(handle.name, "hDs");
+        }
+        _ => panic!("Expected Create DataSource"),
+    }
+}
+
+#[test]
+fn parse_create_temp_table() {
+    let source = "CREATE TEMP-TABLE hTt.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Handle { kind, handle, .. },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::TempTable);
+            assert_eq!(handle.name, "hTt");
+        }
+        _ => panic!("Expected Create TempTable"),
+    }
+}
+
+#[test]
+fn parse_create_name() {
+    // Existing behavior preserved
+    let source = "CREATE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
+            assert_eq!(name.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Create Name"),
+    }
+}
+
+// ── DEFINE PARAMETER typed tests ────────────────────────────────
+
+#[test]
+fn parse_define_parameter_dataset() {
+    let source = "DEFINE INPUT PARAMETER DATASET FOR dsName.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type:
+                ParameterType::Handle {
+                    kind,
+                    name,
+                    passing,
+                },
+        } => {
+            assert_eq!(direction, ParameterDirection::Input);
+            assert_eq!(kind, HandleParamKind::Dataset);
+            assert_eq!(name.name, "dsName");
+            assert!(!passing.append);
+            assert!(!passing.bind);
+        }
+        _ => panic!("Expected DefineParameter Handle Dataset"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_dataset_handle() {
+    let source = "DEFINE OUTPUT PARAMETER DATASET-HANDLE hDs.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type: ParameterType::Handle { kind, name, .. },
+        } => {
+            assert_eq!(direction, ParameterDirection::Output);
+            assert_eq!(kind, HandleParamKind::DatasetHandle);
+            assert_eq!(name.name, "hDs");
+        }
+        _ => panic!("Expected DefineParameter Handle DatasetHandle"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_table_for() {
+    let source = "DEFINE INPUT PARAMETER TABLE FOR ttName.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Handle { kind, name, .. },
+            ..
+        } => {
+            assert_eq!(kind, HandleParamKind::Table);
+            assert_eq!(name.name, "ttName");
+        }
+        _ => panic!("Expected DefineParameter Handle Table"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_table_handle() {
+    let source = "DEFINE OUTPUT PARAMETER TABLE-HANDLE hTt.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Handle { kind, name, .. },
+            ..
+        } => {
+            assert_eq!(kind, HandleParamKind::TableHandle);
+            assert_eq!(name.name, "hTt");
+        }
+        _ => panic!("Expected DefineParameter Handle TableHandle"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_buffer() {
+    let source = "DEFINE INPUT PARAMETER BUFFER bCust FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Buffer { name, target },
+            ..
+        } => {
+            assert_eq!(name.name, "bCust");
+            assert_eq!(target.name, "Customer");
+        }
+        _ => panic!("Expected DefineParameter Buffer"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_bind_append() {
+    let source = "DEFINE INPUT PARAMETER DATASET FOR dsName BIND APPEND.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Handle { passing, .. },
+            ..
+        } => {
+            assert!(passing.bind);
+            assert!(passing.append);
+            assert!(!passing.by_value);
+        }
+        _ => panic!("Expected DefineParameter Handle with passing options"),
+    }
+}
+
+// ── XML/serialize retrofit tests ────────────────────────────────
+
+#[test]
+fn parse_define_temp_table_xml_options() {
+    let source = r#"DEFINE TEMP-TABLE tt NO-UNDO
+        NAMESPACE-URI "urn:test"
+        SERIALIZE-NAME "myTable"
+        FIELD x AS INTEGER."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            xml_options,
+            fields,
+            ..
+        } => {
+            assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:test");
+            assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "myTable");
+            assert_eq!(fields.len(), 1);
+        }
+        _ => panic!("Expected DefineTempTable"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_xml_options() {
+    let source =
+        r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { xml_options, .. } => {
+            assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:foo");
+            assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "cust");
+        }
+        _ => panic!("Expected DefineBuffer"),
     }
 }
