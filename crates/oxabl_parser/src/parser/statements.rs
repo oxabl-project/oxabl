@@ -8,11 +8,12 @@
 
 use oxabl_ast::{
     AccessModifier, AssignPair, BufferTarget, CreateTarget, CreateTargetKind, DataRelation,
-    DataSourceBuffer, DataSourceKeys, DisplayItem, Expression, FieldTypeSource, FindType,
-    HandleParamKind, HandlePassingOptions, Identifier, IndexField, LockType, ParameterDirection,
-    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SortDirection, Span,
-    Statement, StreamDirection, StreamOperation, SubscribeTarget, TempTableField, TempTableIndex,
-    UseIndex, WhenBranch, XmlSerializeOptions,
+    DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, FieldTypeSource,
+    FindType, HandleParamKind, HandlePassingOptions, Identifier, IndexField, LockType, OnAction,
+    OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation, PreprocIf,
+    RunArgument, RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation,
+    SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
+    UseIndex, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 
@@ -65,6 +66,8 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Publish
             | Kind::Subscribe
             | Kind::Unsubscribe
+            | Kind::On
+            | Kind::Trigger
     )
 }
 
@@ -139,6 +142,19 @@ impl Parser<'_> {
         }
         if self.check(Kind::Unsubscribe) {
             return self.parse_unsubscribe_statement();
+        }
+
+        // ON triggers
+        // NOTE: ON in block headers (DO ON ERROR UNDO) is consumed inside
+        // parse_do_statement/parse_for_each/parse_repeat_statement.
+        // Any ON reaching here is always a trigger statement.
+        if self.check(Kind::On) {
+            return self.parse_on_statement();
+        }
+
+        // TRIGGER PROCEDURE
+        if self.check(Kind::Trigger) {
+            return self.parse_trigger_procedure();
         }
 
         // PROCEDURE statement
@@ -3325,5 +3341,531 @@ impl Parser<'_> {
         self.advance(); // consume &MESSAGE
         let expression = self.parse_expression()?;
         Ok(Statement::PreprocMessage { expression })
+    }
+
+    // =========================================================================
+    // ON triggers and TRIGGER PROCEDURE
+    // =========================================================================
+
+    /// Parse an ON statement, disambiguating between the 3 forms:
+    /// 1. UI/developer event trigger: ON event-list OF widget-list ...
+    /// 2. Database event trigger: ON CREATE/DELETE/FIND/WRITE/ASSIGN OF table ...
+    /// 3. Key remapping: ON key-label key-function.
+    fn parse_on_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume ON
+
+        // Check for string literal event name (e.g., ON "WEB-NOTIFY" ANYWHERE ...)
+        // Parsed as UiEvent with the string as the sole event name.
+        if self.check(Kind::StringLiteral) {
+            return self.parse_on_ui_event();
+        }
+
+        // Check for DB events: CREATE/DELETE/FIND/WRITE/ASSIGN followed by OF (not Comma).
+        // If followed by Comma, it's a UI event with multiple event names.
+        if self.is_db_event_kind(self.peek().kind) && self.check_at(1, Kind::Of) {
+            return self.parse_on_db_event();
+        }
+
+        // Check for key remapping: ON <ident> <ident> .
+        // Two tokens followed by a period, with no OF or comma.
+        // UI events always have OF or comma after the event list.
+        // Key labels/functions can be any keyword (HELP, ENDKEY, GO, etc.).
+        let next_kind = self.peek_at(1).kind;
+        if !matches!(next_kind, Kind::Of | Kind::Comma | Kind::Eof | Kind::Period)
+            && self.check_at(2, Kind::Period)
+        {
+            return self.parse_on_key_remap();
+        }
+
+        // Default: UI/developer event trigger
+        self.parse_on_ui_event()
+    }
+
+    /// Parse a UI/developer event trigger:
+    /// ON event-list [OF widget-list] [OR event-list OF widget-list]... [ANYWHERE]
+    ///   { trigger-block | REVERT | PERSISTENT RUN proc [(args)] }
+    fn parse_on_ui_event(&mut self) -> ParseResult<Statement> {
+        let mut clauses = Vec::new();
+        let mut anywhere = false;
+
+        loop {
+            let events = self.parse_trigger_event_list()?;
+
+            // ANYWHERE without OF — standalone form
+            if self.check(Kind::Anywhere) && !self.check_at(1, Kind::Of) {
+                anywhere = true;
+                self.advance();
+                break;
+            }
+
+            // OF widget-list
+            if self.check(Kind::Of) {
+                self.advance();
+                let widgets = self.parse_widget_ref_list()?;
+                clauses.push(OnEventClause { events, widgets });
+            } else if clauses.is_empty() && events.is_empty() {
+                return Err(ParseError {
+                    message: "Expected event name or ANYWHERE after ON".to_string(),
+                    span: self.current_span(),
+                });
+            }
+
+            // Check for OR to chain another event/widget clause
+            if self.check(Kind::Or) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        // Check for trailing ANYWHERE (after widget list)
+        if self.check(Kind::Anywhere) {
+            anywhere = true;
+            self.advance();
+        }
+
+        let action = self.parse_trigger_action()?;
+        Ok(Statement::On {
+            kind: OnKind::UiEvent {
+                clauses,
+                anywhere,
+                action,
+            },
+        })
+    }
+
+    /// Parse a database event trigger:
+    /// ON CREATE|DELETE|FIND|WRITE|ASSIGN OF table [referencing] [OVERRIDE]
+    ///   { trigger-block | REVERT }
+    fn parse_on_db_event(&mut self) -> ParseResult<Statement> {
+        let event = self.parse_db_event_kind()?;
+        self.expect_kind(Kind::Of, "Expected OF after database event")?;
+        let target = self.parse_dotted_name()?;
+
+        let mut referencing = TriggerReferencing::default();
+
+        // Parse optional referencing phrases for WRITE
+        if event == DbTriggerEvent::Write {
+            if self.check(Kind::New) {
+                self.advance();
+                // Optional BUFFER keyword
+                if self.check(Kind::Buffer) {
+                    self.advance();
+                }
+                referencing.new_buffer = Some(self.parse_identifier()?);
+            }
+            if self.check(Kind::Old) {
+                self.advance();
+                if self.check(Kind::Buffer) {
+                    self.advance();
+                }
+                referencing.old_buffer = Some(self.parse_identifier()?);
+            }
+        }
+
+        // Parse optional OLD VALUE for ASSIGN
+        if event == DbTriggerEvent::Assign && self.check(Kind::Old) {
+            self.advance();
+            if self.check(Kind::Value) {
+                self.advance();
+            }
+            referencing.old_value = Some(self.parse_identifier()?);
+        }
+
+        let is_override = if self.check(Kind::Override) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        let action = self.parse_trigger_action()?;
+        Ok(Statement::On {
+            kind: OnKind::DbEvent {
+                event,
+                target,
+                referencing,
+                is_override,
+                action,
+            },
+        })
+    }
+
+    /// Parse key remapping: ON key-label key-function.
+    /// Key labels and functions can be any identifier, including reserved keywords
+    /// like HELP, ENDKEY, GO, RETURN, STOP, ERROR, END, TAB, HOME, CLEAR, etc.
+    fn parse_on_key_remap(&mut self) -> ParseResult<Statement> {
+        let key_label = self.parse_any_keyword_as_identifier()?;
+        let key_function = self.parse_any_keyword_as_identifier()?;
+        self.expect_kind(Kind::Period, "Expected '.' after key remapping")?;
+        Ok(Statement::On {
+            kind: OnKind::KeyRemap {
+                key_label,
+                key_function,
+            },
+        })
+    }
+
+    /// Parse a trigger action: REVERT, PERSISTENT RUN, DO block, or single statement.
+    fn parse_trigger_action(&mut self) -> ParseResult<OnAction> {
+        // REVERT
+        if self.check(Kind::Revert) {
+            self.advance();
+            self.expect_kind(Kind::Period, "Expected '.' after REVERT")?;
+            return Ok(OnAction::Revert);
+        }
+
+        // PERSISTENT RUN procedure [(args)]
+        if self.check(Kind::Persistent) {
+            self.advance();
+            self.expect_kind(Kind::Run, "Expected RUN after PERSISTENT")?;
+            let procedure = self.parse_identifier()?;
+            let arguments = if self.check(Kind::LeftParen) {
+                self.parse_persistent_run_args()?
+            } else {
+                Vec::new()
+            };
+            self.expect_kind(Kind::Period, "Expected '.' after PERSISTENT RUN")?;
+            return Ok(OnAction::PersistentRun {
+                procedure,
+                arguments,
+            });
+        }
+
+        // DO...END block
+        if self.check(Kind::Do) {
+            let block = self.parse_do_statement()?;
+            return Ok(OnAction::Block(Box::new(block)));
+        }
+
+        // Single statement (terminates with its own period)
+        let stmt = self.parse_statement()?;
+        Ok(OnAction::Block(Box::new(stmt)))
+    }
+
+    /// Parse PERSISTENT RUN arguments: (INPUT expr, ...).
+    /// Simplified: just parses comma-separated expressions inside parens.
+    fn parse_persistent_run_args(&mut self) -> ParseResult<Vec<Expression>> {
+        self.expect_kind(Kind::LeftParen, "Expected '(' for arguments")?;
+        let mut args = Vec::new();
+        while !self.check(Kind::RightParen) && !self.at_end() {
+            // Skip optional INPUT keyword (only INPUT is valid for PERSISTENT RUN)
+            if self.check(Kind::Input) {
+                self.advance();
+            }
+            args.push(self.parse_expression()?);
+            if !self.check(Kind::RightParen) {
+                self.expect_kind(Kind::Comma, "Expected ',' between arguments")?;
+            }
+        }
+        self.expect_kind(Kind::RightParen, "Expected ')' after arguments")?;
+        Ok(args)
+    }
+
+    /// Parse a comma-separated list of event names (identifiers).
+    /// Accepts keywords that double as event names (LEAVE, ENTRY, CREATE, DELETE, etc.).
+    fn parse_trigger_event_list(&mut self) -> ParseResult<Vec<Identifier>> {
+        let mut events = Vec::new();
+        loop {
+            if self.can_be_event_name() {
+                events.push(self.parse_event_name_identifier()?);
+            } else {
+                break;
+            }
+            if !self.check(Kind::Comma) {
+                break;
+            }
+            self.advance(); // consume comma
+        }
+        Ok(events)
+    }
+
+    /// Check if the current token can be an event name in an ON trigger.
+    /// Event names include regular identifiers, `can_be_identifier()` keywords,
+    /// and reserved keywords that double as event names (LEAVE, ENTRY, HELP, etc.).
+    fn can_be_event_name(&self) -> bool {
+        let kind = self.peek().kind;
+        kind == Kind::Identifier
+            || kind == Kind::StringLiteral
+            || Self::can_be_identifier(kind)
+            || matches!(
+                kind,
+                Kind::Leave
+                    | Kind::Entry
+                    | Kind::Create
+                    | Kind::Delete
+                    | Kind::Close
+                    | Kind::Write
+                    | Kind::Help
+                    | Kind::GoOn
+                    | Kind::ErrorStatus
+                    | Kind::ValueChanged
+            )
+    }
+
+    /// Parse a single event name identifier, including reserved keywords
+    /// that serve as event names in ON trigger context.
+    fn parse_event_name_identifier(&mut self) -> ParseResult<Identifier> {
+        let token = self.peek();
+        let kind = token.kind;
+
+        if kind == Kind::StringLiteral {
+            // String literal event name (e.g., "WEB-NOTIFY")
+            let name = self.source[token.start..token.end].to_string();
+            let ident = Identifier {
+                name,
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+            };
+            self.advance();
+            Ok(ident)
+        } else if kind == Kind::Identifier || Self::can_be_identifier(kind) {
+            self.parse_identifier()
+        } else if matches!(
+            kind,
+            Kind::Leave
+                | Kind::Entry
+                | Kind::Create
+                | Kind::Delete
+                | Kind::Close
+                | Kind::Write
+                | Kind::Help
+                | Kind::GoOn
+                | Kind::ErrorStatus
+                | Kind::ValueChanged
+        ) {
+            // Reserved keywords that are also valid event names
+            let name = self.source[token.start..token.end].to_string();
+            let ident = Identifier {
+                name,
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+            };
+            self.advance();
+            Ok(ident)
+        } else {
+            Err(ParseError {
+                message: "Expected event name".to_string(),
+                span: self.current_span(),
+            })
+        }
+    }
+
+    /// Parse a comma-separated list of widget references, each with optional IN FRAME/BROWSE.
+    fn parse_widget_ref_list(&mut self) -> ParseResult<Vec<WidgetRef>> {
+        let mut refs = Vec::new();
+        loop {
+            let name = self.parse_identifier()?;
+            let qualifier = if self.check(Kind::KwIn) {
+                self.advance();
+                if self.check(Kind::Frame) {
+                    self.advance();
+                    Some(WidgetQualifier::InFrame(self.parse_identifier()?))
+                } else if self.check(Kind::Browse) {
+                    self.advance();
+                    Some(WidgetQualifier::InBrowse(self.parse_identifier()?))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            refs.push(WidgetRef { name, qualifier });
+            if !self.check(Kind::Comma) {
+                break;
+            }
+            self.advance(); // consume comma
+        }
+        Ok(refs)
+    }
+
+    /// Parse any token as an identifier, even reserved keywords.
+    /// Used for key labels and key functions where any keyword is valid.
+    fn parse_any_keyword_as_identifier(&mut self) -> ParseResult<Identifier> {
+        let token = self.peek();
+        if token.kind == Kind::Eof {
+            return Err(ParseError {
+                message: "Expected identifier".to_string(),
+                span: self.current_span(),
+            });
+        }
+        let name = self.source[token.start..token.end].to_string();
+        let ident = Identifier {
+            name,
+            span: Span {
+                start: token.start as u32,
+                end: token.end as u32,
+            },
+        };
+        self.advance();
+        Ok(ident)
+    }
+
+    /// Check if a Kind is a database trigger event keyword.
+    fn is_db_event_kind(&self, kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Create | Kind::Delete | Kind::Find | Kind::Write | Kind::Assign
+        )
+    }
+
+    /// Parse a database event keyword and return the corresponding DbTriggerEvent.
+    fn parse_db_event_kind(&mut self) -> ParseResult<DbTriggerEvent> {
+        let kind = self.peek().kind;
+        let event = match kind {
+            Kind::Create => DbTriggerEvent::Create,
+            Kind::Delete => DbTriggerEvent::Delete,
+            Kind::Find => DbTriggerEvent::Find,
+            Kind::Write => DbTriggerEvent::Write,
+            Kind::Assign => DbTriggerEvent::Assign,
+            _ => {
+                return Err(ParseError {
+                    message: "Expected database event (CREATE, DELETE, FIND, WRITE, or ASSIGN)"
+                        .to_string(),
+                    span: self.current_span(),
+                });
+            }
+        };
+        self.advance();
+        Ok(event)
+    }
+
+    /// Parse a dotted name like `table.field` for ASSIGN OF targets.
+    /// Returns an Identifier whose name contains the full dotted form.
+    fn parse_dotted_name(&mut self) -> ParseResult<Identifier> {
+        let first = self.parse_identifier()?;
+        // Check if a period follows and the next token is an identifier-like token
+        // (not a statement-starting keyword or end of input).
+        // This distinguishes `Customer.Name` from `Customer.` (statement terminator).
+        if self.check(Kind::Period) {
+            let next_kind = self.peek_at(1).kind;
+            if next_kind == Kind::Identifier || Self::can_be_identifier(next_kind) {
+                self.advance(); // consume period
+                let second = self.parse_identifier()?;
+                let name = format!("{}.{}", first.name, second.name);
+                let span = Span {
+                    start: first.span.start,
+                    end: second.span.end,
+                };
+                return Ok(Identifier { name, span });
+            }
+        }
+        Ok(first)
+    }
+
+    /// Parse a TRIGGER PROCEDURE statement:
+    /// TRIGGER PROCEDURE FOR event OF table [NEW/OLD clauses].
+    fn parse_trigger_procedure(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume TRIGGER
+        self.expect_kind(Kind::Procedure, "Expected PROCEDURE after TRIGGER")?;
+        self.expect_kind(Kind::KwFor, "Expected FOR after TRIGGER PROCEDURE")?;
+
+        // Parse event kind — also check for REPLICATION-* events
+        let event = if self.peek().kind == Kind::Identifier {
+            let token = self.peek();
+            let text = &self.source[token.start..token.end];
+            if text.eq_ignore_ascii_case("replication-create") {
+                self.advance();
+                DbTriggerEvent::ReplicationCreate
+            } else if text.eq_ignore_ascii_case("replication-delete") {
+                self.advance();
+                DbTriggerEvent::ReplicationDelete
+            } else if text.eq_ignore_ascii_case("replication-write") {
+                self.advance();
+                DbTriggerEvent::ReplicationWrite
+            } else {
+                self.parse_db_event_kind()?
+            }
+        } else {
+            self.parse_db_event_kind()?
+        };
+
+        // ASSIGN has two mutually exclusive forms
+        if event == DbTriggerEvent::Assign {
+            if self.check(Kind::Of) {
+                // OF table.field form
+                self.advance();
+                let target = self.parse_dotted_name()?;
+                self.expect_kind(Kind::Period, "Expected '.' after TRIGGER PROCEDURE")?;
+                return Ok(Statement::TriggerProcedure {
+                    event,
+                    target,
+                    referencing: TriggerReferencing::default(),
+                    new_value: None,
+                    old_value_param: None,
+                });
+            } else {
+                // NEW VALUE form
+                self.expect_kind(Kind::New, "Expected NEW or OF after ASSIGN")?;
+                if self.check(Kind::Value) {
+                    self.advance();
+                }
+                let new_value = self.parse_trigger_assign_param()?;
+                let old_value_param = if self.check(Kind::Old) {
+                    self.advance();
+                    if self.check(Kind::Value) {
+                        self.advance();
+                    }
+                    Some(self.parse_trigger_assign_param()?)
+                } else {
+                    None
+                };
+                self.expect_kind(Kind::Period, "Expected '.' after TRIGGER PROCEDURE")?;
+                // Use a placeholder target for the NEW VALUE form
+                let target = Identifier {
+                    name: String::new(),
+                    span: self.current_span(),
+                };
+                return Ok(Statement::TriggerProcedure {
+                    event,
+                    target,
+                    referencing: TriggerReferencing::default(),
+                    new_value: Some(new_value),
+                    old_value_param,
+                });
+            }
+        }
+
+        self.expect_kind(Kind::Of, "Expected OF after event")?;
+        let target = self.parse_dotted_name()?;
+
+        let mut referencing = TriggerReferencing::default();
+        if event == DbTriggerEvent::Write {
+            if self.check(Kind::New) {
+                self.advance();
+                if self.check(Kind::Buffer) {
+                    self.advance();
+                }
+                referencing.new_buffer = Some(self.parse_identifier()?);
+            }
+            if self.check(Kind::Old) {
+                self.advance();
+                if self.check(Kind::Buffer) {
+                    self.advance();
+                }
+                referencing.old_buffer = Some(self.parse_identifier()?);
+            }
+        }
+
+        self.expect_kind(Kind::Period, "Expected '.' after TRIGGER PROCEDURE")?;
+        Ok(Statement::TriggerProcedure {
+            event,
+            target,
+            referencing,
+            new_value: None,
+            old_value_param: None,
+        })
+    }
+
+    /// Parse a TRIGGER PROCEDURE ASSIGN parameter: name AS type.
+    fn parse_trigger_assign_param(&mut self) -> ParseResult<TriggerAssignParam> {
+        let name = self.parse_identifier()?;
+        self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
+        let data_type = self.parse_data_type()?;
+        Ok(TriggerAssignParam { name, data_type })
     }
 }

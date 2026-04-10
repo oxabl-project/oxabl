@@ -667,6 +667,26 @@ name = "RUN-PROCEDURE"
 keyword_type = "Option"
 
 # =============================================================================
+# ON TRIGGER KEYWORDS
+# Keywords needed for ON statement and TRIGGER PROCEDURE parsing.
+# =============================================================================
+
+# CHOOSE is a UI event name (unreserved)
+[[add]]
+name = "CHOOSE"
+keyword_type = "Option"
+
+# ENDKEY is a key function / event name (unreserved)
+[[add]]
+name = "ENDKEY"
+keyword_type = "Option"
+
+# BROWSE is needed for IN BROWSE widget qualifiers in ON triggers
+[[add]]
+name = "BROWSE"
+keyword_type = "Option"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================
