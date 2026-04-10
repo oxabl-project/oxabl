@@ -64,30 +64,31 @@ These are not sanitized benchmarks — they were run on real hardware with norma
 
 | Benchmark                | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
 | ------------------------ | ----------- | ----------- | ----------- | ----------------- |
-| source_map/construction  | 30.489 µs   | 32.131 µs   | 33.730 µs   | 513.57 MiB/s      |
-| source_map/lookup        | 123.78 ns   | 129.75 ns   | 136.13 ns   | 38.536 Melem/s    |
+| source_map/construction  | 22.341 µs   | 22.636 µs   | 23.002 µs   | 728.99 MiB/s      |
+| source_map/lookup        | 98.447 ns   | 98.853 ns   | 99.361 ns   | 50.580 Melem/s    |
 
 #### Lexer (`oxabl_lexer`)
 
 | Benchmark            | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
 | -------------------- | ----------- | ----------- | ----------- | ----------------- |
-| lexer/keywords       | 296.83 µs   | 311.32 µs   | 328.06 µs   | 53.004 MiB/s      |
-| lexer/strings        | 35.716 µs   | 38.389 µs   | 41.186 µs   | 52.368 MiB/s      |
-| lexer/comments       | 17.277 µs   | 18.973 µs   | 21.219 µs   | 129.89 MiB/s      |
-| lexer/numeric        | 40.489 µs   | 44.638 µs   | 48.754 µs   | 37.580 MiB/s      |
-| lexer/preprocessor   | 44.151 µs   | 46.808 µs   | 49.424 µs   | 54.888 MiB/s      |
+| lexer/keywords       | 248.71 µs   | 249.82 µs   | 250.95 µs   | 66.053 MiB/s      |
+| lexer/strings        | 24.602 µs   | 24.727 µs   | 24.862 µs   | 81.301 MiB/s      |
+| lexer/comments       | 13.988 µs   | 14.026 µs   | 14.069 µs   | 175.70 MiB/s      |
+| lexer/numeric        | 23.294 µs   | 23.396 µs   | 23.523 µs   | 71.701 MiB/s      |
+| lexer/preprocessor   | 31.775 µs   | 31.925 µs   | 32.079 µs   | 80.476 MiB/s      |
 
 #### Parser (`oxabl_parser`)
 
 | Benchmark              | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
 | ---------------------- | ----------- | ----------- | ----------- | ----------------- |
-| parser/full_program    | 375.37 µs   | 399.65 µs   | 425.98 µs   | 41.290 MiB/s      |
-| parser/expressions     | 134.78 µs   | 148.92 µs   | 165.12 µs   | 15.459 MiB/s      |
-| parser/declarations    | 79.781 µs   | 89.965 µs   | 102.17 µs   | 28.536 MiB/s      |
-| parser/control_flow    | 123.64 µs   | 132.17 µs   | 140.54 µs   | 17.664 MiB/s      |
-| parser/oo_abl          | 113.30 µs   | 120.84 µs   | 128.50 µs   | 32.666 MiB/s      |
-| parser/temp_tables     | 67.884 µs   | 73.143 µs   | 78.881 µs   | 35.191 MiB/s      |
-| parser/procs_funcs     | 148.33 µs   | 155.05 µs   | 161.11 µs   | 22.395 MiB/s      |
+| parser/full_program    | 305.47 µs   | 306.08 µs   | 306.75 µs   | 53.913 MiB/s      |
+| parser/expressions     | 93.108 µs   | 93.943 µs   | 94.915 µs   | 24.506 MiB/s      |
+| parser/declarations    | 54.445 µs   | 54.707 µs   | 55.016 µs   | 46.928 MiB/s      |
+| parser/control_flow    | 82.733 µs   | 83.156 µs   | 83.626 µs   | 28.075 MiB/s      |
+| parser/oo_abl          | 76.691 µs   | 76.973 µs   | 77.287 µs   | 51.281 MiB/s      |
+| parser/temp_tables     | 50.913 µs   | 51.169 µs   | 51.424 µs   | 50.303 MiB/s      |
+| parser/procs_funcs     | 87.470 µs   | 88.238 µs   | 88.983 µs   | 39.352 MiB/s      |
+| parser/datasets        | 46.195 µs   | 46.292 µs   | 46.405 µs   | 54.531 MiB/s      |
 
 ### Token Dumps
 
