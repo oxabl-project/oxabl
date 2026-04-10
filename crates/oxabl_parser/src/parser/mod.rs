@@ -279,6 +279,14 @@ impl<'a> Parser<'a> {
                     | Kind::Event
                     | Kind::Signature
                     | Kind::RunProcedure
+                    // ON trigger keywords (unreserved)
+                    | Kind::Trigger
+                    | Kind::Triggers
+                    | Kind::Persistent
+                    | Kind::Revert
+                    | Kind::Choose
+                    | Kind::Endkey
+                    | Kind::Browse
             )
     }
 
