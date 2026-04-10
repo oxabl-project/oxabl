@@ -242,6 +242,35 @@ impl<'a> Parser<'a> {
                     | Kind::Clob
                     | Kind::Blob
                     | Kind::ComHandle
+                    // Dataset / data-source keywords (unreserved)
+                    | Kind::Dataset
+                    | Kind::DatasetHandle
+                    | Kind::DataRelation
+                    | Kind::DataSource
+                    | Kind::NamespaceUri
+                    | Kind::NamespacePrefix
+                    | Kind::XmlNodeName
+                    | Kind::XmlNodeType
+                    | Kind::SerializeName
+                    | Kind::SerializeHidden
+                    | Kind::Serializable
+                    | Kind::NonSerializable
+                    | Kind::ReferenceOnly
+                    | Kind::RelationFields
+                    | Kind::Nested
+                    | Kind::ForeignKeyHidden
+                    | Kind::NotActive
+                    | Kind::Recursive
+                    | Kind::ParentIdRelation
+                    | Kind::ParentIdField
+                    | Kind::ParentFieldsBefore
+                    | Kind::ParentFieldsAfter
+                    | Kind::WidgetPool
+                    | Kind::TableHandle
+                    | Kind::Bind
+                    | Kind::ByValue
+                    | Kind::Query
+                    | Kind::Reposition
             )
     }
 
