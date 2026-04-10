@@ -634,6 +634,39 @@ name = "DATASET-HANDLE"
 keyword_type = "Type"
 
 # =============================================================================
+# EVENT SYSTEM KEYWORDS
+# Keywords needed for PUBLISH/SUBSCRIBE/UNSUBSCRIBE statements and DEFINE EVENT.
+# =============================================================================
+
+[[add]]
+name = "PUBLISH"
+keyword_type = "Statement"
+
+[[add]]
+name = "SUBSCRIBE"
+keyword_type = "Statement"
+
+[[add]]
+name = "UNSUBSCRIBE"
+keyword_type = "Statement"
+
+[[add]]
+name = "ANYWHERE"
+keyword_type = "Option"
+
+[[add]]
+name = "EVENT"
+keyword_type = "Option"
+
+[[add]]
+name = "SIGNATURE"
+keyword_type = "Option"
+
+[[add]]
+name = "RUN-PROCEDURE"
+keyword_type = "Option"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================
