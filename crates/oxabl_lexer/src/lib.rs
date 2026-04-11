@@ -200,9 +200,16 @@ impl<'a> Lexer<'a> {
                     return self.read_identifier_or_keyword(start);
                 }
 
-                // If it doesn't start with a decimal or letter,
-                // and it's a '.', must be a terminator
+                // A '.' followed by a digit is a decimal literal like .01, .5, .123
+                // Otherwise it's a statement terminator.
                 '.' => {
+                    if matches!(self.peek(), Some('0'..='9')) {
+                        // Consume digits after the decimal point
+                        while matches!(self.peek(), Some('0'..='9')) {
+                            self.advance();
+                        }
+                        return Kind::DecimalLiteral;
+                    }
                     return Kind::Period;
                 }
 
