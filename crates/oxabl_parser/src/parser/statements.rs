@@ -488,6 +488,10 @@ impl Parser<'_> {
                         }
                     }
                 }
+                Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
+                    self.advance();
+                    self.skip_format_value();
+                }
                 _ => break,
             }
         }
@@ -637,12 +641,20 @@ impl Parser<'_> {
             _ => {
                 let name = self.parse_identifier()?;
                 let type_source = self.parse_type_source()?;
-                let no_undo = if self.check(Kind::NoUndo) {
-                    self.advance();
-                    true
-                } else {
-                    false
-                };
+                let mut no_undo = false;
+                loop {
+                    match self.peek().kind {
+                        Kind::NoUndo => {
+                            self.advance();
+                            no_undo = true;
+                        }
+                        Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
+                            self.advance();
+                            self.skip_format_value();
+                        }
+                        _ => break,
+                    }
+                }
                 ParameterType::Variable {
                     name,
                     type_source,
