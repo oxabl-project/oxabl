@@ -347,14 +347,12 @@ impl<'a> Lexer<'a> {
                 // ABL translation suffixes like :U or :T are consumed into the token
                 // span but excluded from the stored value.
                 let bytes = self.source.as_bytes();
-                let content_end = if end >= 4
-                    && bytes[end - 2] == b':'
-                    && bytes[end - 1].is_ascii_alphabetic()
-                {
-                    end - 3 // strip closing quote + :X suffix
-                } else {
-                    end - 1 // strip closing quote only
-                };
+                let content_end =
+                    if end >= 4 && bytes[end - 2] == b':' && bytes[end - 1].is_ascii_alphabetic() {
+                        end - 3 // strip closing quote + :X suffix
+                    } else {
+                        end - 1 // strip closing quote only
+                    };
                 value = TokenValue::String(OxablAtom::from(
                     self.source[start + 1..content_end].to_string(),
                 ));
