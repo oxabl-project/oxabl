@@ -344,8 +344,17 @@ impl<'a> Lexer<'a> {
                 // use +1 and -1 to remove the quotes from our string literal
                 // NOTE - We store escaped characters (~n) as-is to retain
                 // original source mapping, any escapes can be handled later on
+                // ABL translation suffixes like :U or :T are consumed into the token
+                // span but excluded from the stored value.
+                let bytes = self.source.as_bytes();
+                let content_end =
+                    if end >= 4 && bytes[end - 2] == b':' && bytes[end - 1].is_ascii_alphabetic() {
+                        end - 3 // strip closing quote + :X suffix
+                    } else {
+                        end - 1 // strip closing quote only
+                    };
                 value = TokenValue::String(OxablAtom::from(
-                    self.source[start + 1..end - 1].to_string(),
+                    self.source[start + 1..content_end].to_string(),
                 ));
             }
             Kind::KwTrue => value = TokenValue::Boolean(true),
@@ -478,6 +487,16 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 Some(c) if c == quote_type => {
                     self.advance(); //consume closing quote
+                    // ABL supports translation suffixes like :U (untranslatable), :T (translatable)
+                    // Consume the colon and the single-letter suffix if present
+                    if matches!(self.peek(), Some(':')) {
+                        let mut chars_clone = self.chars.clone();
+                        chars_clone.next(); // skip ':'
+                        if matches!(chars_clone.next(), Some(c) if c.is_ascii_alphabetic()) {
+                            self.advance(); // consume ':'
+                            self.advance(); // consume suffix letter
+                        }
+                    }
                     return Kind::StringLiteral;
                 }
                 Some('~') => {
@@ -1166,6 +1185,22 @@ end."#;
             0,
             2,
             TokenValue::String(OxablAtom::from("".to_string())),
+            source,
+        );
+    }
+
+    #[test]
+    fn string_with_translation_suffix() {
+        // ABL allows :U (untranslatable) and :T (translatable) suffixes on string literals
+        let source = r#""adjust":U"#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::StringLiteral,
+            0,
+            10,
+            TokenValue::String(OxablAtom::from("adjust".to_string())),
             source,
         );
     }
