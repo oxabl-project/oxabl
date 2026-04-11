@@ -126,6 +126,20 @@ impl<'a> Parser<'a> {
             self.advance();
         }
     }
+
+    /// Skip tokens unconditionally until a period is consumed.
+    /// Unlike `synchronize`, this does NOT stop at statement-starting keywords —
+    /// use this when skipping the body of a known statement that may contain
+    /// keyword tokens like FOR, DO, etc. as part of its own syntax.
+    pub fn skip_to_period(&mut self) {
+        while !self.at_end() {
+            if self.check(Kind::Period) {
+                self.advance(); // consume the period
+                return;
+            }
+            self.advance();
+        }
+    }
     pub fn peek(&self) -> &Token {
         &self.tokens[self.current]
     }
@@ -320,6 +334,20 @@ impl<'a> Parser<'a> {
                     // BREAK BY group functions (callable, take a field argument)
                     | Kind::FirstOf
                     | Kind::LastOf
+                    // System handles and built-in functions used in expression position
+                    | Kind::ThisProcedure
+                    | Kind::KwSelf
+                    | Kind::FileInfo
+                    | Kind::CanDo
+                    | Kind::Entry
+                    | Kind::NumEntries
+                    | Kind::Index
+                    | Kind::Yes
+                    // Statement keywords that may also appear as identifiers/names
+                    | Kind::Empty
+                    | Kind::Form
+                    | Kind::Put
+                    | Kind::CopyLob
             )
     }
 

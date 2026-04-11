@@ -290,6 +290,58 @@ impl Parser<'_> {
             return self.parse_destructor();
         }
 
+        // EMPTY TEMP-TABLE tt-name [NO-ERROR].
+        if self.check(Kind::Empty) {
+            self.advance(); // consume EMPTY
+            // Optionally consume TEMP-TABLE or the table name directly
+            if self.check(Kind::TempTable) {
+                self.advance();
+            }
+            // Consume the table name
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance();
+            }
+            // Optional NO-ERROR
+            if self.check(Kind::NoError) {
+                self.advance();
+            }
+            self.expect_kind(Kind::Period, "Expected '.' after EMPTY TEMP-TABLE")?;
+            return Ok(Statement::Empty);
+        }
+
+        // COPY-LOB: complex LOB manipulation statement — skip to next period.
+        if self.check(Kind::CopyLob) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // PUT [STREAM s] UNFORMATTED expr. — stream output statement, skip to period.
+        if self.check(Kind::Put) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // FORM ... — legacy UI form definition, skip to period.
+        if self.check(Kind::Form) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
+        if self.check(Kind::KwEnum) {
+            self.synchronize(); // skip to end of header line
+            // Skip until END ENUM.
+            while !self.at_end() {
+                if self.check(Kind::EndEnum) {
+                    self.advance();
+                    self.expect_kind(Kind::Period, "Expected '.' after END ENUM")?;
+                    break;
+                }
+                self.advance();
+            }
+            return Ok(Statement::Empty);
+        }
+
         // Check for traditional define statement
         // def var name as type [no-undo] [initial value] [extent n].
         if self.check(Kind::Define) {
@@ -450,6 +502,18 @@ impl Parser<'_> {
         // DEFINE FRAME
         if self.check(Kind::Frame) {
             return self.parse_define_frame();
+        }
+
+        // DEFINE QUERY — skip to next period (may contain FOR, DO, etc.)
+        if self.check(Kind::Query) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to period
+        if self.check(Kind::Workfile) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
         }
 
         // DEFINE VARIABLE / DEFINE VAR
@@ -694,6 +758,11 @@ impl Parser<'_> {
                         Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
                             self.advance();
                             self.skip_format_value();
+                        }
+                        Kind::Initial => {
+                            self.advance(); // consume INIT/INITIAL
+                            // Consume the initial value expression
+                            self.parse_expression().ok();
                         }
                         _ => break,
                     }
@@ -1655,7 +1724,20 @@ impl Parser<'_> {
 
     fn parse_for_each(&mut self) -> ParseResult<Statement> {
         self.advance(); // Consume FOR
-        self.expect_kind(Kind::Each, "Expected EACH after FOR")?;
+        // FOR EACH / FOR FIRST / FOR LAST / FOR NEXT / FOR PREV are all valid
+        if self.check(Kind::Each)
+            || self.check(Kind::First)
+            || self.check(Kind::Last)
+            || self.check(Kind::Next)
+            || self.check(Kind::Prev)
+        {
+            self.advance(); // consume the qualifier
+        } else {
+            return Err(ParseError {
+                message: "Expected EACH after FOR".to_string(),
+                span: self.current_span(),
+            });
+        }
 
         // Parse buffer name
         let buffer = self.parse_identifier()?;
@@ -1687,16 +1769,23 @@ impl Parser<'_> {
             lock_type_post
         };
 
-        // Skip optional BREAK BY clause: BREAK BY field[:] ...
-        // Used for grouping; consumed without building AST nodes for now.
+        // Skip optional BREAK BY and BY clauses (sort order / grouping).
+        // Patterns:
+        //   BREAK BY field [DESCENDING] [BY field2 [DESCENDING]] ...
+        //   BY field [DESCENDING] [BY field2 ...]
         if self.check(Kind::KwBreak) {
             self.advance(); // consume BREAK
-            if self.check(Kind::By) {
-                self.advance(); // consume BY
-            }
-            // consume the break field expression (stops at ':' or '.')
+        }
+        // Consume one or more BY field [DESCENDING] clauses
+        while self.check(Kind::By) {
+            self.advance(); // consume BY
+            // consume the sort field expression (stops at ':' or '.')
             if !self.check(Kind::Colon) && !self.check(Kind::Period) {
                 self.parse_expression().ok();
+            }
+            // Optional DESCENDING / ASCENDING
+            if self.check(Kind::Descending) || self.check(Kind::Ascending) {
+                self.advance();
             }
         }
 
@@ -1933,10 +2022,18 @@ impl Parser<'_> {
                         expression,
                     });
 
-                    if !self.check(Kind::Comma) {
+                    if self.check(Kind::Comma) {
+                        self.advance(); // consume comma
+                    } else if matches!(
+                        self.peek().kind,
+                        Kind::Input | Kind::Output | Kind::InputOutput | Kind::IncludeReference
+                    ) {
+                        // An include reference (e.g. {ms/global-out.i &COMMA}) may expand
+                        // to an argument with a trailing comma — allow implicit comma here.
+                        // Similarly, a bare direction keyword may follow without a comma.
+                    } else {
                         break;
                     }
-                    self.advance(); // consume comma
                 }
             }
 
@@ -2282,8 +2379,10 @@ impl Parser<'_> {
         // Parse function name
         let name = self.parse_identifier()?;
 
-        // Expect RETURNS
-        self.expect_kind(Kind::Returns, "Expected RETURNS after function name")?;
+        // RETURNS is optional in ABL function declarations
+        if self.check(Kind::Returns) {
+            self.advance();
+        }
 
         // Parse return type
         let return_type = self.parse_data_type()?;
@@ -2310,8 +2409,31 @@ impl Parser<'_> {
             }
         }
 
-        // Expect colon
-        self.expect_kind(Kind::Colon, "Expected ':' after FUNCTION header")?;
+        // FORWARD declaration: FUNCTION name [RETURNS] type [(params)] FORWARD.
+        // FORWARD is an identifier token (not a reserved keyword).
+        let is_forward = self.check(Kind::Identifier) && {
+            let tok = self.peek();
+            self.source[tok.start..tok.end].eq_ignore_ascii_case("forward")
+        };
+        if is_forward {
+            self.advance(); // consume FORWARD
+            self.expect_kind(Kind::Period, "Expected '.' after FUNCTION FORWARD")?;
+            return Ok(Statement::Function {
+                name,
+                return_type,
+                body: Vec::new(),
+            });
+        }
+
+        // Accept either ':' or '.' to open the function body (legacy ABL uses '.')
+        if self.check(Kind::Colon) || self.check(Kind::Period) {
+            self.advance();
+        } else {
+            return Err(ParseError {
+                message: "Expected ':' after FUNCTION header".to_string(),
+                span: self.current_span(),
+            });
+        }
 
         // Parse body until END
         let mut body = Vec::new();
@@ -2843,6 +2965,22 @@ impl Parser<'_> {
         // Parse SET accessor
         let set_body = if self.check(Kind::Set) {
             self.advance(); // consume SET
+            // Optional parameter list: SET (INPUT p AS TYPE)
+            if self.check(Kind::LeftParen) {
+                let mut depth = 1;
+                self.advance(); // consume '('
+                while depth > 0 && !self.at_end() {
+                    if self.check(Kind::LeftParen) {
+                        depth += 1;
+                    } else if self.check(Kind::RightParen) {
+                        depth -= 1;
+                    }
+                    if depth > 0 {
+                        self.advance();
+                    }
+                }
+                self.advance(); // consume final ')'
+            }
             if self.check(Kind::Period) {
                 self.advance(); // auto-setter: SET.
                 Some(Vec::new())
@@ -3241,10 +3379,16 @@ impl Parser<'_> {
                     expression,
                 });
 
-                if !self.check(Kind::Comma) {
+                if self.check(Kind::Comma) {
+                    self.advance(); // consume comma
+                } else if matches!(
+                    self.peek().kind,
+                    Kind::Input | Kind::Output | Kind::InputOutput | Kind::IncludeReference
+                ) {
+                    // Implicit comma: include reference or bare direction keyword follows
+                } else {
                     break;
                 }
-                self.advance(); // consume comma
             }
         }
 
