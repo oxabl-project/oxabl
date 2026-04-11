@@ -377,7 +377,7 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / PAGE — skip to period.
+        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY / PAGE — skip to period.
         if self.check(Kind::Pause)
             || self.check(Kind::Bell)
             || self.check(Kind::Import)
@@ -385,6 +385,7 @@ impl Parser<'_> {
             || self.check(Kind::OsDir)
             || self.check(Kind::OsCreateDir)
             || self.check(Kind::OsCommand)
+            || self.check(Kind::OsCopy)
             || self.check(Kind::Page)
         {
             self.skip_to_period();
@@ -641,7 +642,26 @@ impl Parser<'_> {
                 }
                 Kind::Initial => {
                     self.advance();
-                    initial_value = Some(self.parse_expression()?);
+                    // Array initial syntax: INITIAL [val1, val2, ...]
+                    if self.check(Kind::LeftBracket) {
+                        self.advance(); // consume [
+                        let mut depth = 1;
+                        while depth > 0 && !self.at_end() {
+                            if self.check(Kind::LeftBracket) {
+                                depth += 1;
+                            } else if self.check(Kind::RightBracket) {
+                                depth -= 1;
+                            }
+                            if depth > 0 {
+                                self.advance();
+                            }
+                        }
+                        if self.check(Kind::RightBracket) {
+                            self.advance(); // consume ]
+                        }
+                    } else {
+                        initial_value = Some(self.parse_expression()?);
+                    }
                 }
                 Kind::Extent => {
                     self.advance();
@@ -2130,6 +2150,14 @@ impl Parser<'_> {
             }
         }
 
+        // lock type may also appear after USE-INDEX
+        let lock_type_post = self.parse_lock_type();
+        let lock_type = if lock_type != LockType::ShareLock {
+            lock_type
+        } else {
+            lock_type_post
+        };
+
         // parse optional NO-WAIT (can appear before or after NO-ERROR)
         if self.check(Kind::NoWait) {
             self.advance();
@@ -3556,15 +3584,15 @@ impl Parser<'_> {
                 // TABLE keyword (static or dynamic)
                 if self.check(Kind::Table) {
                     self.advance();
-                    // Dynamic: TABLE(expr) or TABLE tablename
+                    // Dynamic: TABLE(expr), TABLE tablename, or TABLE "string"
                     if self.check(Kind::LeftParen) {
                         self.advance();
                         self.parse_expression().ok();
                         if self.check(Kind::RightParen) {
                             self.advance();
                         }
-                    } else if Self::can_be_identifier(self.peek().kind) {
-                        self.advance();
+                    } else {
+                        self.parse_expression().ok();
                     }
                 }
             }
