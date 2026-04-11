@@ -755,10 +755,20 @@ impl Parser<'_> {
             ) {
                 self.advance();
             }
+            // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE for handle args
+            if matches!(
+                self.peek().kind,
+                Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+            ) {
+                self.advance();
+            }
             // parse first argument
             arguments.push(self.parse_expression()?);
             // Consume optional passing modifiers
-            while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
+            while matches!(
+                self.peek().kind,
+                Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+            ) {
                 self.advance();
             }
 
@@ -772,9 +782,19 @@ impl Parser<'_> {
                 ) {
                     self.advance();
                 }
+                // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE
+                if matches!(
+                    self.peek().kind,
+                    Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                ) {
+                    self.advance();
+                }
                 arguments.push(self.parse_expression()?);
                 // Consume optional passing modifiers
-                while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
+                while matches!(
+                    self.peek().kind,
+                    Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+                ) {
                     self.advance();
                 }
             }
