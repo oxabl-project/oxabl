@@ -61,11 +61,13 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], source: &'a str) -> Self {
         debug_assert!(!tokens.is_empty(), "Token slice must contain at least EOF");
-        Parser {
+        let mut parser = Parser {
             tokens,
             source,
             current: 0,
-        }
+        };
+        parser.skip_comments();
+        parser
     }
 
     /// Parse the entire token stream into a [`Program`] with error recovery.
@@ -130,7 +132,14 @@ impl<'a> Parser<'a> {
     pub fn advance(&mut self) -> &Token {
         let token = &self.tokens[self.current];
         self.current += 1;
+        self.skip_comments();
         token
+    }
+
+    fn skip_comments(&mut self) {
+        while self.tokens.get(self.current).is_some_and(|t| t.kind == Kind::Comment) {
+            self.current += 1;
+        }
     }
 
     pub fn check(&self, kind: Kind) -> bool {
