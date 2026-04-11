@@ -185,6 +185,20 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Consumes a string literal that may carry an ABL translation suffix (`:U`, `:T`, etc.).
+    /// After parsing `FORMAT "x(125)":U`, the `"x(125)"` is a `StringLiteral` followed by
+    /// `Colon` + `Identifier`. Call this after consuming the FORMAT/LABEL keyword.
+    fn skip_format_value(&mut self) {
+        if self.check(Kind::StringLiteral) {
+            self.advance();
+            // Consume optional :U / :T / :6 etc. translation suffix
+            if self.check(Kind::Colon) && Self::can_be_identifier(self.peek_at(1).kind) {
+                self.advance(); // colon
+                self.advance(); // suffix identifier
+            }
+        }
+    }
+
     /// Returns true if the given Kind can appear as an identifier.
     ///
     /// ABL is very permissive about using keywords as identifiers. This includes
