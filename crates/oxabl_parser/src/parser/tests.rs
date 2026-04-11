@@ -1,10 +1,10 @@
 use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
-    DataType, DbTriggerEvent, DecimalLiteral, Expression, FieldTypeSource, FindType,
-    HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, OnAction, OnKind,
-    ParameterDirection, ParameterType, RunTarget, SortDirection, Span, Statement, StreamDirection,
-    StreamOperation, StringLiteral, SubscribeTarget, UnknownLiteral, WhenBranch, WidgetQualifier,
+    DataType, DbTriggerEvent, DecimalLiteral, Expression, FindType, HandleParamKind, Identifier,
+    IntegerLiteral, Literal, LockType, OnAction, OnKind, ParameterDirection, ParameterType,
+    RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation, StringLiteral,
+    SubscribeTarget, TypeSource, UnknownLiteral, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -1810,7 +1810,7 @@ fn parse_define_variable_simple() {
                 span: Span { start: 16, end: 21 },
                 name: "myVar".to_string()
             },
-            data_type: DataType::Integer,
+            type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
             no_undo: true,
             extent: None,
@@ -1831,7 +1831,7 @@ fn parse_define_variable_with_initial() {
                 span: Span { start: 16, end: 23 },
                 name: "counter".to_string()
             },
-            data_type: DataType::Integer,
+            type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: Some(Expression::Literal(Literal::Integer(IntegerLiteral {
                 span: Span { start: 43, end: 44 },
                 value: 0
@@ -1850,12 +1850,12 @@ fn parse_define_variable_character() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            data_type,
+            type_source,
             no_undo,
             initial_value,
             ..
         } => {
-            assert_eq!(data_type, DataType::Character);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
             assert!(no_undo);
             assert!(initial_value.is_some());
         }
@@ -1876,7 +1876,7 @@ fn parse_var_statement_simple() {
                 span: Span { start: 12, end: 19 },
                 name: "myCount".to_string()
             },
-            data_type: DataType::Integer,
+            type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
             no_undo: true,
             extent: None,
@@ -1893,13 +1893,13 @@ fn parse_var_statement_with_initial() {
     match stmt {
         Statement::VariableDeclaration {
             name,
-            data_type,
+            type_source,
             initial_value,
             no_undo,
             ..
         } => {
             assert_eq!(name.name, "total");
-            assert_eq!(data_type, DataType::Decimal);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Decimal));
             assert!(no_undo);
             assert!(initial_value.is_some());
         }
@@ -1915,17 +1915,178 @@ fn parse_var_logical() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            data_type,
+            type_source,
             initial_value,
             ..
         } => {
-            assert_eq!(data_type, DataType::Logical);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Logical));
             assert!(matches!(
                 initial_value,
                 Some(Expression::Literal(Literal::Boolean(_)))
             ));
         }
         _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+// ===================== LIKE syntax tests =====================
+
+#[test]
+fn parse_define_variable_like() {
+    let source = "DEFINE VARIABLE v LIKE Customer.CustName NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name,
+            type_source,
+            no_undo,
+            ..
+        } => {
+            assert_eq!(name.name, "v");
+            assert_eq!(
+                type_source,
+                TypeSource::Like {
+                    source: Identifier {
+                        name: "Customer.CustName".to_string(),
+                        span: Span { start: 23, end: 40 }
+                    }
+                }
+            );
+            assert!(no_undo);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_define_variable_like_simple_name() {
+    let source = "DEFINE VARIABLE v LIKE iVar NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { type_source, .. } => {
+            match type_source {
+                TypeSource::Like { source } => assert_eq!(source.name, "iVar"),
+                _ => panic!("Expected Like"),
+            }
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_define_variable_like_with_initial() {
+    // LIKE + INITIAL override: verify LIKE and INITIAL can coexist
+    let source = "DEFINE VARIABLE v LIKE Customer.Balance INITIAL 0 NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { type_source, initial_value, no_undo, .. } => {
+            assert!(matches!(type_source, TypeSource::Like { .. }));
+            assert!(initial_value.is_some());
+            assert!(no_undo);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_var_like() {
+    let source = "VAR LIKE Customer.CustName vCust.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { type_source, name, no_undo, .. } => {
+            assert_eq!(name.name, "vCust");
+            assert!(matches!(type_source, TypeSource::Like { .. }));
+            assert!(no_undo); // VAR implies NO-UNDO
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_define_input_parameter_like() {
+    let source = "DEFINE INPUT PARAMETER p LIKE Customer.CustName NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type: ParameterType::Variable { name, type_source, no_undo },
+        } => {
+            assert_eq!(direction, ParameterDirection::Input);
+            assert_eq!(name.name, "p");
+            assert!(matches!(type_source, TypeSource::Like { .. }));
+            assert!(no_undo);
+        }
+        _ => panic!("Expected DefineParameter"),
+    }
+}
+
+#[test]
+fn parse_define_output_parameter_like() {
+    let source = "DEFINE OUTPUT PARAMETER p LIKE Order.Amount NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type: ParameterType::Variable { type_source, .. },
+        } => {
+            assert_eq!(direction, ParameterDirection::Output);
+            assert!(matches!(type_source, TypeSource::Like { .. }));
+        }
+        _ => panic!("Expected DefineParameter"),
+    }
+}
+
+#[test]
+fn parse_define_input_output_parameter_like() {
+    let source = "DEFINE INPUT-OUTPUT PARAMETER p LIKE Invoice.InvNum NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type: ParameterType::Variable { type_source, .. },
+        } => {
+            assert_eq!(direction, ParameterDirection::InputOutput);
+            assert!(matches!(type_source, TypeSource::Like { .. }));
+        }
+        _ => panic!("Expected DefineParameter"),
+    }
+}
+
+#[test]
+fn parse_temp_table_field_like_validate_regression() {
+    // After moving validate out of TypeSource::Like onto TempTableField,
+    // verify that VALIDATE is still correctly parsed and stored.
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD f LIKE Customer.CustName VALIDATE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            assert!(
+                matches!(&fields[0].type_source, TypeSource::Like { .. }),
+                "Expected Like type source"
+            );
+            assert!(fields[0].validate, "Expected validate = true");
+        }
+        _ => panic!("Expected DefineTempTable"),
     }
 }
 
@@ -2976,13 +3137,13 @@ fn parse_define_input_parameter() {
             param_type:
                 ParameterType::Variable {
                     name,
-                    data_type,
+                    type_source,
                     no_undo,
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
-            assert_eq!(data_type, DataType::Character);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
             assert!(!no_undo);
         }
         _ => panic!("Expected DefineParameter statement"),
@@ -3001,13 +3162,13 @@ fn parse_define_output_parameter() {
             param_type:
                 ParameterType::Variable {
                     name,
-                    data_type,
+                    type_source,
                     no_undo,
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(name.name, "result");
-            assert_eq!(data_type, DataType::Integer);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
             assert!(!no_undo);
         }
         _ => panic!("Expected DefineParameter statement"),
@@ -3026,13 +3187,13 @@ fn parse_define_input_output_parameter() {
             param_type:
                 ParameterType::Variable {
                     name,
-                    data_type,
+                    type_source,
                     no_undo,
                 },
         } => {
             assert_eq!(direction, ParameterDirection::InputOutput);
             assert_eq!(name.name, "data");
-            assert_eq!(data_type, DataType::Logical);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Logical));
             assert!(!no_undo);
         }
         _ => panic!("Expected DefineParameter statement"),
@@ -3051,13 +3212,13 @@ fn parse_define_parameter_with_no_undo() {
             param_type:
                 ParameterType::Variable {
                     name,
-                    data_type,
+                    type_source,
                     no_undo,
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
-            assert_eq!(data_type, DataType::Character);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
             assert!(no_undo);
         }
         _ => panic!("Expected DefineParameter statement"),
@@ -3086,12 +3247,12 @@ END PROCEDURE.
                     direction,
                     param_type:
                         ParameterType::Variable {
-                            name, data_type, ..
+                            name, type_source, ..
                         },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
                     assert_eq!(name.name, "name");
-                    assert_eq!(*data_type, DataType::Character);
+                    assert_eq!(*type_source, TypeSource::Explicit(DataType::Character));
                 }
                 _ => panic!("Expected DefineParameter"),
             }
@@ -3101,12 +3262,12 @@ END PROCEDURE.
                     direction,
                     param_type:
                         ParameterType::Variable {
-                            name, data_type, ..
+                            name, type_source, ..
                         },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Output);
                     assert_eq!(name.name, "result");
-                    assert_eq!(*data_type, DataType::Integer);
+                    assert_eq!(*type_source, TypeSource::Explicit(DataType::Integer));
                 }
                 _ => panic!("Expected DefineParameter"),
             }
@@ -3720,17 +3881,17 @@ DEFINE TEMP-TABLE ttCustomer NO-UNDO
             assert_eq!(fields[0].name.name, "CustNum");
             assert_eq!(
                 fields[0].type_source,
-                FieldTypeSource::Explicit(DataType::Integer)
+                TypeSource::Explicit(DataType::Integer)
             );
             assert_eq!(fields[1].name.name, "Name");
             assert_eq!(
                 fields[1].type_source,
-                FieldTypeSource::Explicit(DataType::Character)
+                TypeSource::Explicit(DataType::Character)
             );
             assert_eq!(fields[2].name.name, "Balance");
             assert_eq!(
                 fields[2].type_source,
-                FieldTypeSource::Explicit(DataType::Decimal)
+                TypeSource::Explicit(DataType::Decimal)
             );
             assert!(indexes.is_empty());
         }
@@ -3986,13 +4147,11 @@ DEFINE TEMP-TABLE tt NO-UNDO
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name.name, "cust-num");
             match &fields[0].type_source {
-                FieldTypeSource::Like {
-                    source, validate, ..
-                } => {
+                TypeSource::Like { source } => {
                     // The dot-separated name is parsed as a single identifier by the lexer
                     // (ABL identifiers can contain dots in field references)
                     assert!(!source.name.is_empty());
-                    assert!(!validate);
+                    assert!(!fields[0].validate);
                 }
                 _ => panic!("Expected Like type source"),
             }
@@ -4012,8 +4171,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::DefineTempTable { fields, .. } => match &fields[0].type_source {
-            FieldTypeSource::Like { validate, .. } => {
-                assert!(validate);
+            TypeSource::Like { .. } => {
+                assert!(fields[0].validate);
             }
             _ => panic!("Expected Like type source"),
         },
@@ -4680,10 +4839,10 @@ fn parse_var_keyword_as_variable_name() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            name, data_type, ..
+            name, type_source, ..
         } => {
             assert_eq!(name.name, "var");
-            assert_eq!(data_type, DataType::Integer);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4697,10 +4856,10 @@ fn parse_function_keyword_as_variable_name() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            name, data_type, ..
+            name, type_source, ..
         } => {
             assert_eq!(name.name, "function");
-            assert_eq!(data_type, DataType::Integer);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4714,10 +4873,10 @@ fn parse_catch_keyword_as_variable_name() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            name, data_type, ..
+            name, type_source, ..
         } => {
             assert_eq!(name.name, "catch");
-            assert_eq!(data_type, DataType::Integer);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4731,10 +4890,10 @@ fn parse_data_type_keyword_as_variable_name() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            name, data_type, ..
+            name, type_source, ..
         } => {
             assert_eq!(name.name, "integer");
-            assert_eq!(data_type, DataType::Integer);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4748,10 +4907,10 @@ fn parse_date_keyword_as_variable_name() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            name, data_type, ..
+            name, type_source, ..
         } => {
             assert_eq!(name.name, "date");
-            assert_eq!(data_type, DataType::Date);
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Date));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4797,8 +4956,8 @@ fn parse_var_with_abbreviated_data_types() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::VariableDeclaration { data_type, .. } => {
-            assert_eq!(data_type, DataType::Integer);
+        Statement::VariableDeclaration { type_source, .. } => {
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4809,8 +4968,8 @@ fn parse_var_with_abbreviated_data_types() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::VariableDeclaration { data_type, .. } => {
-            assert_eq!(data_type, DataType::Decimal);
+        Statement::VariableDeclaration { type_source, .. } => {
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Decimal));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4821,8 +4980,8 @@ fn parse_var_with_abbreviated_data_types() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::VariableDeclaration { data_type, .. } => {
-            assert_eq!(data_type, DataType::Character);
+        Statement::VariableDeclaration { type_source, .. } => {
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4833,8 +4992,8 @@ fn parse_var_with_abbreviated_data_types() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::VariableDeclaration { data_type, .. } => {
-            assert_eq!(data_type, DataType::Logical);
+        Statement::VariableDeclaration { type_source, .. } => {
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Logical));
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -4869,8 +5028,13 @@ fn parse_var_with_all_data_types() {
             .parse_statement()
             .unwrap_or_else(|e| panic!("Failed to parse '{}': {}", source, e.message));
         match stmt {
-            Statement::VariableDeclaration { data_type, .. } => {
-                assert_eq!(data_type, expected_type, "Wrong data type for '{}'", source);
+            Statement::VariableDeclaration { type_source, .. } => {
+                assert_eq!(
+                    type_source,
+                    TypeSource::Explicit(expected_type),
+                    "Wrong data type for '{}'",
+                    source
+                );
             }
             _ => panic!("Expected VariableDeclaration for '{}'", source),
         }
@@ -5950,11 +6114,11 @@ fn preproc_if_data_type() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
         Statement::VariableDeclaration {
-            name, data_type, ..
+            name, type_source, ..
         } => {
             assert_eq!(name.name, "x");
-            match data_type {
-                DataType::PreprocIf(preproc) => {
+            match type_source {
+                TypeSource::Explicit(DataType::PreprocIf(preproc)) => {
                     assert!(matches!(preproc.then_branch, DataType::Integer));
                     assert!(matches!(
                         preproc.else_branch.as_ref().unwrap(),
@@ -7456,10 +7620,10 @@ fn parse_define_event_multiple_params() {
                     assert_eq!(*direction, ParameterDirection::Input);
                     match param_type {
                         ParameterType::Variable {
-                            name, data_type, ..
+                            name, type_source, ..
                         } => {
                             assert_eq!(name.name, "p1");
-                            assert_eq!(*data_type, DataType::Integer);
+                            assert_eq!(*type_source, TypeSource::Explicit(DataType::Integer));
                         }
                         _ => panic!("Expected Variable param type"),
                     }
