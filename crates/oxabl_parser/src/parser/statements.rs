@@ -381,20 +381,22 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // VIEW [STREAM s] FRAME f — UI frame display statement, skip to period.
+        // VIEW [STREAM s] FRAME f — UI frame display statement, skip to statement end.
         if self.check(Kind::View) {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
-        // HIDE [STREAM s] FRAME f [NO-PAUSE] — UI hide statement, skip to period.
+        // HIDE [STREAM s] FRAME f [NO-PAUSE] — UI hide statement, skip to statement end.
         if self.check(Kind::Hide) {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
-        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN / REPOSITION — skip to period.
+        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN / REPOSITION — skip to statement end.
+        // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
+        // like 'order.company' in WHERE clauses are not mistaken for statement terminators.
         if self.check(Kind::Pause)
             || self.check(Kind::Bell)
             || self.check(Kind::Import)
@@ -409,7 +411,7 @@ impl Parser<'_> {
             || self.check(Kind::Down)
             || self.check(Kind::Open)
         {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
@@ -623,9 +625,9 @@ impl Parser<'_> {
             return self.parse_define_frame();
         }
 
-        // DEFINE QUERY — skip to next period (may contain FOR, DO, etc.)
+        // DEFINE QUERY — skip to statement end (may contain table.field references)
         if self.check(Kind::Query) {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
@@ -1825,7 +1827,23 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Colon, "Expected ':' after DO")?;
+        // Optional WITH FRAME name clause before block opener
+        if self.check(Kind::With) {
+            self.advance(); // consume WITH
+            if self.check(Kind::Frame) {
+                self.advance(); // consume FRAME
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance(); // consume frame name
+                }
+            }
+        }
+
+        // Accept either ':' or '.' to open the DO body (legacy ABL uses '.')
+        if self.check(Kind::Period) {
+            self.advance(); // consume '.' as body-start
+        } else {
+            self.expect_kind(Kind::Colon, "Expected ':' after DO")?;
+        }
 
         let body = self.parse_block_body()?;
 
