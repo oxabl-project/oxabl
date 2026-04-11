@@ -13,23 +13,31 @@ No affiliation with Progress.
 The first library will be `oxabl_parser`.
 
 Requirements:
-- `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer`.
+- `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer` with 57 tests.
   - Produces tokens against all known ABL keywords, primitive datatypes, operators, and identifiers.
-  - Comprehensive test coverage.
-  - Run against a realistc 390kb syntactically correct ABL file and correctly tokenized it.
+  - Run against a realistic 390kb syntactically correct ABL file and correctly tokenized it.
   - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl`.
-- `source_map`: MVP has been completed in `crates/oxabl_common`.
+- `source_map`: MVP has been completed in `crates/oxabl_common` with 11 tests.
   - It's able to produce line and column numbers from byte offsets stored in tokens.
-  - Test coverage
   - Used in our token dumps and benchmarks, appears to be accurate.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
-- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 147 tests
+- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 428 tests
   - Parses expressions with proper operator precedence
-  - Parses statements: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN, CASE, FIND, FOR EACH, PROCEDURE
+  - Parses declarations: DEFINE VARIABLE, VAR, PARAMETER, TEMP-TABLE, BUFFER, PROPERTY, STREAM, FRAME, EVENT
+  - Parses statements: DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY (with STREAM clause), MESSAGE, ASSIGN, CREATE, DELETE, RELEASE, VALIDATE, BUFFER-COPY, BUFFER-COMPARE, INPUT/OUTPUT/INPUT-OUTPUT stream I/O, CATCH/FINALLY/THROW, PUBLISH/SUBSCRIBE/UNSUBSCRIBE, ON triggers (UI events, database events, key remapping), TRIGGER PROCEDURE, LEAVE, NEXT, RETURN
+  - Parses OO-ABL: CLASS (ABSTRACT/FINAL, INHERITS, IMPLEMENTS), INTERFACE, METHOD (access modifiers, STATIC/ABSTRACT/OVERRIDE), DEFINE PROPERTY (auto and computed GET/SET), CONSTRUCTOR, DESTRUCTOR, USING
+  - Parses preprocessor: &IF/&ELSEIF/&ELSE/&ENDIF at statement/expression/data-type levels, &SCOPED-DEFINE/&GLOBAL-DEFINE, &UNDEFINE, &MESSAGE, `{&variable}` references
+  - Parses include file references (`{file.i}`, `{file.i &name=value}`) and positional argument references (`{0}`, `{1}`) at statement and expression positions
   - Parses postfix operations: method calls, member access, array access, field access
+  - Error recovery via synchronization on period boundaries
+- `oxabl check`: A CLI validation tool in `crates/oxabl` for testing parser coverage against real ABL codebases.
+  - Walks a directory (or checks a single file) for ABL files (`.p`, `.w`, `.i`, `.cls`, `.v`) and runs each through the lexer and parser.
+  - Reports pass/fail counts, error locations, and top error patterns. Supports `--json` output.
+  - Placeholder only — the parsed AST is discarded; no downstream work is performed.
+  - Usage: `cargo run -p oxabl -- check <path>`
 
-Current Work: RUN statement (in progress), DISPLAY and MESSAGE statements next.
+Current Work: DO/FOR/REPEAT block-header ON phrases (ON ERROR UNDO, ON ENDKEY UNDO) not yet implemented.
 
 ## Roadmap
 
