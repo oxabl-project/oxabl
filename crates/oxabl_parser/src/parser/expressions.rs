@@ -476,13 +476,21 @@ impl Parser<'_> {
             let end = self.tokens[self.current - 1].end;
             let class_name = self.source[start..end].to_string();
 
-            // Parse argument list
+            // Parse argument list (supports INPUT/OUTPUT direction qualifiers)
             self.expect_kind(Kind::LeftParen, "Expected '(' after class name in NEW")?;
             let mut arguments = Vec::new();
             if !self.check(Kind::RightParen) {
+                // Skip optional direction qualifier
+                if matches!(self.peek().kind, Kind::Input | Kind::Output | Kind::InputOutput) {
+                    self.advance();
+                }
                 arguments.push(self.parse_expression()?);
                 while self.check(Kind::Comma) {
                     self.advance();
+                    // Skip optional direction qualifier
+                    if matches!(self.peek().kind, Kind::Input | Kind::Output | Kind::InputOutput) {
+                        self.advance();
+                    }
                     arguments.push(self.parse_expression()?);
                 }
             }
