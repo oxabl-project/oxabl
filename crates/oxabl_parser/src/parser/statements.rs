@@ -1660,7 +1660,8 @@ impl Parser<'_> {
     fn is_non_equals_comparison_operator(&self) -> bool {
         matches!(
             self.peek().kind,
-            Kind::NotEqual
+            Kind::Eq
+                | Kind::NotEqual
                 | Kind::LessThan
                 | Kind::LessThanOrEqual
                 | Kind::GreaterThan
@@ -1678,6 +1679,7 @@ impl Parser<'_> {
 
     fn make_comparison(&self, left: Expression, op: Kind, right: Expression) -> Expression {
         match op {
+            Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
             Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),
             Kind::LessThan | Kind::Lt => Expression::LessThan(Box::new(left), Box::new(right)),
             Kind::LessThanOrEqual | Kind::Le => {
@@ -2662,9 +2664,20 @@ impl Parser<'_> {
             }
 
             // WHEN condition item — condition preceding the display item (pre-WHEN form)
+            // Also handles WHEN cond WITH/FRAME/. where there is no following display item.
             if self.check(Kind::When) {
                 self.advance(); // consume WHEN
                 self.parse_expression().ok(); // parse the condition
+                // If we're now at a statement terminator, the WHEN was trailing; restart loop
+                // so the outer while condition can exit cleanly.
+                if self.check(Kind::With)
+                    || self.check(Kind::Except)
+                    || self.check(Kind::Frame)
+                    || self.check(Kind::Period)
+                    || self.at_end()
+                {
+                    continue;
+                }
             }
 
             let expression = self.parse_expression()?;
