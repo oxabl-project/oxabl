@@ -792,9 +792,14 @@ impl Parser<'_> {
                 let target = self.parse_identifier()?;
                 ParameterType::Buffer { name, target }
             }
-            // Standard: name AS type [NO-UNDO] or name LIKE field [NO-UNDO]
+            // Standard: name [INIT value] AS type [NO-UNDO] or name [INIT value] LIKE field [NO-UNDO]
             _ => {
                 let name = self.parse_identifier()?;
+                // Consume optional INIT value before AS/LIKE (some code specifies INIT first)
+                if self.check(Kind::Initial) {
+                    self.advance();
+                    self.parse_expression().ok();
+                }
                 let type_source = self.parse_type_source()?;
                 let mut no_undo = false;
                 loop {
