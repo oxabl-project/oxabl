@@ -3189,6 +3189,31 @@ fn parse_define_output_parameter() {
 }
 
 #[test]
+fn parse_define_output_parameter_with_format() {
+    let source = r#"def output parameter v-message as character format "x(125)":U no-undo."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    type_source,
+                    no_undo,
+                },
+        } => {
+            assert_eq!(direction, ParameterDirection::Output);
+            assert_eq!(name.name, "v-message");
+            assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
+            assert!(no_undo);
+        }
+        _ => panic!("Expected DefineParameter statement"),
+    }
+}
+
+#[test]
 fn parse_define_input_output_parameter() {
     let source = "DEFINE INPUT-OUTPUT PARAMETER data AS LOGICAL.";
     let tokens = tokenize(source);
