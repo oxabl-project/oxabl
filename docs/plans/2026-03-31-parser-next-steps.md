@@ -1,3 +1,10 @@
+---
+title: "Parser Next Steps"
+type: feat
+status: completed
+date: "2026-03-31"
+---
+
 # Oxabl Parser - Next Steps
 
 ## Priority 4: RUN Statement (Calling Procedures)
@@ -529,12 +536,14 @@ Add tests for:
 ### Completed
 - [x] `FOR EACH` statement with lock types
 - [x] Lock type lexer support (hyphenated and space-separated forms)
+- [x] `FIND` statement
+- [x] `CASE` statement
+- [x] `PROCEDURE` definition
 
-### In Progress / Next Up
-- [ ] `FIND` statement (AST exists, parser needed)
-- [ ] `CASE` statement (AST and parser needed)
-- [ ] `PROCEDURE` definition (AST and parser needed)
-- [ ] `RUN` statement (AST and parser needed)
+### In Progress
+- `RUN` statement
+
+### Next Up
 - [ ] `DISPLAY` statement (AST and parser needed)
 - [ ] `MESSAGE` statement (AST and parser needed)
 

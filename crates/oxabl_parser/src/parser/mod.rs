@@ -1,24 +1,56 @@
-//! Oxabl parser for navigating through our AST
+//! Recursive-descent parser for ABL source code.
 //!
-//! Will panic if peek or advance are called when current cursor position
-//! is out of bounds. Contract is to check is_end before using them.
+//! The parser walks a token slice using a cursor. Expression parsing uses
+//! precedence climbing (see [`expressions`]). Statement dispatch uses
+//! keyword-based if/else chains (see [`statements`]).
+//!
+//! Will panic if `peek` or `advance` are called when the cursor is past the
+//! end of the token slice. Callers must check [`Parser::at_end`] first.
 
 pub mod expressions;
 pub mod statements;
 #[cfg(test)]
 mod tests;
 
-use oxabl_ast::{DataType, Identifier, Span};
+use oxabl_ast::{
+    AccessModifier, DataType, Identifier, ParameterDirection, ParameterType, Span, Statement,
+};
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
+/// An error encountered during parsing, with a human-readable message and source [`Span`].
 #[derive(Debug)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
 }
 
+/// Alias for parser results.
 pub type ParseResult<T> = Result<T, ParseError>;
 
+/// The result of parsing an ABL source file.
+///
+/// Contains all successfully parsed statements and any errors encountered.
+/// When error recovery is active, the parser continues past errors, so a
+/// `Program` may contain both statements and errors.
+#[derive(Debug)]
+pub struct Program {
+    /// Successfully parsed statements.
+    pub statements: Vec<Statement>,
+    /// Errors encountered during parsing.
+    pub errors: Vec<ParseError>,
+}
+
+impl Program {
+    /// Returns true if parsing completed without errors.
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+/// A recursive-descent parser for ABL source code.
+///
+/// Holds a borrowed token slice and the original source string, advancing a
+/// cursor as it recognizes language constructs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parser<'a> {
     tokens: &'a [Token],
@@ -35,6 +67,62 @@ impl<'a> Parser<'a> {
             current: 0,
         }
     }
+
+    /// Parse the entire token stream into a [`Program`] with error recovery.
+    ///
+    /// Unlike [`parse_statements`], this method does not bail on the first error.
+    /// Instead, it records the error, skips to the next statement boundary via
+    /// [`synchronize`], and continues parsing.
+    /// Maximum number of errors before the parser bails out.
+    /// Prevents infinite loops when error recovery cannot make progress.
+    const MAX_ERRORS: usize = 50;
+
+    pub fn parse_program(&mut self) -> Program {
+        let mut statements = Vec::new();
+        let mut errors = Vec::new();
+
+        while !self.at_end() {
+            let pos_before = self.current;
+            match self.parse_statement() {
+                Ok(stmt) => statements.push(stmt),
+                Err(err) => {
+                    errors.push(err);
+                    if errors.len() >= Self::MAX_ERRORS {
+                        break;
+                    }
+                    self.synchronize();
+                    // If neither parse_statement nor synchronize advanced the
+                    // cursor, we are stuck on a token that can_start_statement
+                    // recognises but parse_statement cannot handle (e.g. END).
+                    // Force progress to avoid an infinite loop.
+                    if self.current == pos_before {
+                        self.advance();
+                    }
+                }
+            }
+        }
+
+        Program { statements, errors }
+    }
+
+    /// Skip tokens until we reach a statement boundary.
+    ///
+    /// A statement boundary is either:
+    /// - A `.` (period) — ABL's statement terminator. Consumed.
+    /// - A statement-starting keyword — not consumed, left for the next
+    ///   `parse_statement` call.
+    fn synchronize(&mut self) {
+        while !self.at_end() {
+            if self.check(Kind::Period) {
+                self.advance(); // consume the period
+                return;
+            }
+            if statements::can_start_statement(self.peek().kind) {
+                return; // don't consume — it starts the next statement
+            }
+            self.advance();
+        }
+    }
     pub fn peek(&self) -> &Token {
         &self.tokens[self.current]
     }
@@ -49,6 +137,20 @@ impl<'a> Parser<'a> {
         self.tokens
             .get(self.current)
             .is_some_and(|t| t.kind == kind)
+    }
+
+    /// Check if the token at `current + offset` has the given kind.
+    /// Safe because the token slice always ends with Kind::Eof.
+    fn check_at(&self, offset: usize, kind: Kind) -> bool {
+        self.tokens
+            .get(self.current + offset)
+            .is_some_and(|t| t.kind == kind)
+    }
+
+    /// Peek at the token `offset` positions ahead of current.
+    /// Safe because the token slice always ends with Kind::Eof.
+    fn peek_at(&self, offset: usize) -> &Token {
+        &self.tokens[self.current + offset]
     }
 
     pub fn at_end(&self) -> bool {
@@ -69,9 +171,185 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Returns true if the given Kind can appear as an identifier.
+    ///
+    /// ABL is very permissive about using keywords as identifiers. This includes
+    /// all callable kinds (functions) plus many statement/option keywords like
+    /// BUFFER, TEMP-TABLE, PRIMARY, INITIAL, EXTENT, etc.
+    fn can_be_identifier(kind: Kind) -> bool {
+        is_callable_kind(kind)
+            || matches!(
+                kind,
+                Kind::Buffer
+                    | Kind::TempTable
+                    | Kind::Initial
+                    | Kind::Extent
+                    | Kind::Primary
+                    | Kind::Validate
+                    | Kind::BeforeTable
+                    | Kind::WordIndex
+                    | Kind::Preselect
+                    | Kind::Format
+                    | Kind::Label
+                    | Kind::ColumnLabel
+                    | Kind::Ascending
+                    | Kind::Descending
+                    | Kind::Shared
+                    | Kind::Global
+                    // Statement keywords (unreserved, may appear as identifiers)
+                    | Kind::Variable
+                    | Kind::Function
+                    | Kind::Catch
+                    | Kind::Finally
+                    | Kind::Run
+                    | Kind::Display
+                    | Kind::Message
+                    | Kind::Assign
+                    | Kind::Find
+                    | Kind::Procedure
+                    // OO-ABL keywords (all unreserved except SET which is already handled)
+                    | Kind::Class
+                    | Kind::Interface
+                    | Kind::Inherits
+                    | Kind::Implements
+                    | Kind::Method
+                    | Kind::Constructor
+                    | Kind::Destructor
+                    | Kind::Property
+                    | Kind::Public
+                    | Kind::Private
+                    | Kind::Protected
+                    | Kind::PackagePrivate
+                    | Kind::Abstract
+                    | Kind::Final
+                    | Kind::Override
+                    | Kind::KwStatic
+                    | Kind::Void
+                    | Kind::Get
+                    // Data type keywords (unreserved)
+                    | Kind::Integer
+                    | Kind::Int64
+                    | Kind::Decimal
+                    | Kind::Character
+                    | Kind::Logical
+                    | Kind::Date
+                    | Kind::Datetime
+                    | Kind::DatetimeTz
+                    | Kind::Handle
+                    | Kind::Raw
+                    | Kind::Memptr
+                    | Kind::Longchar
+                    | Kind::Clob
+                    | Kind::Blob
+                    | Kind::ComHandle
+                    // Dataset / data-source keywords (unreserved)
+                    | Kind::Dataset
+                    | Kind::DatasetHandle
+                    | Kind::DataRelation
+                    | Kind::DataSource
+                    | Kind::NamespaceUri
+                    | Kind::NamespacePrefix
+                    | Kind::XmlNodeName
+                    | Kind::XmlNodeType
+                    | Kind::SerializeName
+                    | Kind::SerializeHidden
+                    | Kind::Serializable
+                    | Kind::NonSerializable
+                    | Kind::ReferenceOnly
+                    | Kind::RelationFields
+                    | Kind::Nested
+                    | Kind::ForeignKeyHidden
+                    | Kind::NotActive
+                    | Kind::Recursive
+                    | Kind::ParentIdRelation
+                    | Kind::ParentIdField
+                    | Kind::ParentFieldsBefore
+                    | Kind::ParentFieldsAfter
+                    | Kind::WidgetPool
+                    | Kind::TableHandle
+                    | Kind::Bind
+                    | Kind::ByValue
+                    | Kind::Query
+                    | Kind::Reposition
+                    // Event system keywords (unreserved)
+                    | Kind::Publish
+                    | Kind::Subscribe
+                    | Kind::Unsubscribe
+                    | Kind::Anywhere
+                    | Kind::Event
+                    | Kind::Signature
+                    | Kind::RunProcedure
+                    // ON trigger keywords (unreserved)
+                    | Kind::Trigger
+                    | Kind::Triggers
+                    | Kind::Persistent
+                    | Kind::Revert
+                    | Kind::Choose
+                    | Kind::Endkey
+                    | Kind::Browse
+            )
+    }
+
+    /// Returns true if the given Kind is a data type keyword.
+    fn is_data_type_kind(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Integer
+                | Kind::Int64
+                | Kind::Decimal
+                | Kind::Character
+                | Kind::Logical
+                | Kind::Date
+                | Kind::Datetime
+                | Kind::DatetimeTz
+                | Kind::Handle
+                | Kind::Rowid
+                | Kind::Recid
+                | Kind::Raw
+                | Kind::Memptr
+                | Kind::Longchar
+                | Kind::Clob
+                | Kind::Blob
+                | Kind::ComHandle
+        )
+    }
+
+    /// Parses a potentially dot-qualified identifier like `Customer.CustNum` or `db.table.field`.
+    ///
+    /// Used for LIKE references where the source is a qualified field name.
+    /// Returns a single Identifier whose name contains dots (e.g., "Customer.CustNum").
+    fn parse_qualified_identifier(&mut self) -> ParseResult<Identifier> {
+        let first = self.parse_identifier()?;
+        let mut name = first.name;
+        let start = first.span.start;
+        let mut end = first.span.end;
+
+        // Consume .qualifier parts
+        while self.check(Kind::Period) {
+            // Peek past the period to see if there's an identifier following
+            let saved = self.current;
+            self.advance(); // consume .
+            if Self::can_be_identifier(self.peek().kind) {
+                let next = self.advance().clone();
+                name.push('.');
+                name.push_str(&self.source[next.start..next.end]);
+                end = next.end as u32;
+            } else {
+                // Not a qualified name — put the period back
+                self.current = saved;
+                break;
+            }
+        }
+
+        Ok(Identifier {
+            span: Span { start, end },
+            name,
+        })
+    }
+
     /// Parses an Identifier
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected identifier".to_string(),
                 span: self.current_span(),
@@ -94,31 +372,129 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an optional access modifier (PUBLIC, PRIVATE, PROTECTED, PACKAGE-PRIVATE).
+    /// Returns None if the current token is not an access modifier.
+    fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
+        match self.peek().kind {
+            Kind::Public => {
+                self.advance();
+                Some(AccessModifier::Public)
+            }
+            Kind::Private => {
+                self.advance();
+                Some(AccessModifier::Private)
+            }
+            Kind::Protected => {
+                self.advance();
+                Some(AccessModifier::Protected)
+            }
+            Kind::PackagePrivate => {
+                self.advance();
+                Some(AccessModifier::PackagePrivate)
+            }
+            _ => None,
+        }
+    }
+
+    /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR.
+    ///
+    /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
+    ///
+    /// Each parameter becomes a `Statement::DefineParameter`.
+    fn parse_parenthesized_params(&mut self) -> ParseResult<Vec<Statement>> {
+        self.expect_kind(Kind::LeftParen, "Expected '(' for parameter list")?;
+        let mut params = Vec::new();
+
+        if !self.check(Kind::RightParen) {
+            loop {
+                let direction = match self.peek().kind {
+                    Kind::Output => {
+                        self.advance();
+                        ParameterDirection::Output
+                    }
+                    Kind::InputOutput => {
+                        self.advance();
+                        ParameterDirection::InputOutput
+                    }
+                    Kind::Input => {
+                        self.advance();
+                        ParameterDirection::Input
+                    }
+                    _ => ParameterDirection::Input,
+                };
+
+                let name = self.parse_identifier()?;
+                self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
+                let data_type = self.parse_data_type()?;
+                let no_undo = if self.check(Kind::NoUndo) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+
+                params.push(Statement::DefineParameter {
+                    direction,
+                    param_type: ParameterType::Variable {
+                        name,
+                        data_type,
+                        no_undo,
+                    },
+                });
+
+                if !self.check(Kind::Comma) {
+                    break;
+                }
+                self.advance(); // consume comma
+            }
+        }
+
+        self.expect_kind(Kind::RightParen, "Expected ')'")?;
+        Ok(params)
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
-        let type_str = self.source[token.start..token.end].to_uppercase();
-
-        let data_type = match type_str.as_str() {
-            "INTEGER" | "INT" => DataType::Integer,
-            "INT64" => DataType::Int64,
-            "DECIMAL" | "DEC" => DataType::Decimal,
-            "CHARACTER" | "CHAR" => DataType::Character,
-            "LOGICAL" | "LOG" => DataType::Logical,
-            "DATE" => DataType::Date,
-            "DATETIME" => DataType::DateTime,
-            "DATETIME-TZ" => DataType::DateTimeTz,
-            "HANDLE" => DataType::Handle,
-            "ROWID" => DataType::Rowid,
-            "RECID" => DataType::Recid,
-            "RAW" => DataType::Raw,
-            "MEMPTR" => DataType::Memptr,
-            "LONGCHAR" => DataType::Longchar,
-            "CLOB" => DataType::Clob,
-            "BLOB" => DataType::Blob,
-            "COM-HANDLE" => DataType::Com,
+        let data_type = match token.kind {
+            Kind::Integer => DataType::Integer,
+            Kind::Int64 => DataType::Int64,
+            Kind::Decimal => DataType::Decimal,
+            Kind::Character => DataType::Character,
+            Kind::Logical => DataType::Logical,
+            Kind::Date => DataType::Date,
+            Kind::Datetime => DataType::DateTime,
+            Kind::DatetimeTz => DataType::DateTimeTz,
+            Kind::Handle => DataType::Handle,
+            Kind::Rowid => DataType::Rowid,
+            Kind::Recid => DataType::Recid,
+            Kind::Raw => DataType::Raw,
+            Kind::Memptr => DataType::Memptr,
+            Kind::Longchar => DataType::Longchar,
+            Kind::Clob => DataType::Clob,
+            Kind::Blob => DataType::Blob,
+            Kind::ComHandle => DataType::Com,
+            Kind::Class => {
+                self.advance(); // consume CLASS
+                let class_name = self.parse_qualified_identifier()?;
+                return Ok(DataType::Class(class_name.name));
+            }
+            Kind::PreprocIf => {
+                self.advance(); // consume &IF
+                let preproc = self.parse_preproc_if(1, &Self::parse_data_type)?;
+                if preproc.else_branch.is_none() {
+                    return Err(ParseError {
+                        message: "Data type-level &IF requires &ELSE branch".to_string(),
+                        span: self.current_span(),
+                    });
+                }
+                return Ok(DataType::PreprocIf(Box::new(preproc)));
+            }
             _ => {
                 return Err(ParseError {
-                    message: format!("Unknown data type: {}", type_str),
+                    message: format!(
+                        "Unknown data type: {}",
+                        &self.source[token.start..token.end]
+                    ),
                     span: Span {
                         start: token.start as u32,
                         end: token.end as u32,

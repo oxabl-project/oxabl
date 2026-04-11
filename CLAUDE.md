@@ -59,6 +59,10 @@ Generated files are written directly to their target locations and include a "DO
 
 ### Lexer (`oxabl_lexer`)
 
+The lexer should classify tokens as distinctly as possible so the parser dispatches on `Kind` enum variants (O(1) integer comparison), never on runtime string comparison or `to_uppercase()` allocations. When a new keyword is needed by the parser, add it to `keyword_overrides.toml` and regenerate — do not use `eq_ignore_ascii_case()` workarounds. This principle yielded ~8% parsing performance improvement when applied to data type and statement keywords.
+
+**Avoid heap allocations on hot paths.** ABL keywords are ASCII-only, so case-insensitive matching uses a `[u8; 64]` stack buffer with `to_ascii_lowercase()` byte folding — never `s.to_lowercase()` which heap-allocates a `String`. Eliminating the `to_lowercase()` allocation in `match_keyword()` (called on every token) yielded a ~20% overall performance improvement. The codegen emits a compile-time assertion that the longest keyword fits in the buffer. The same principle applies anywhere in the lexer: prefer `eq_ignore_ascii_case()` (zero-allocation byte comparison) over `to_lowercase()` + match.
+
 The lexer tokenizes ABL source code into a stream of tokens. Key components:
 
 - **Token**: Contains `kind` (token type), `start`/`end` byte offsets, and `value` (for literals)
@@ -86,7 +90,7 @@ Defines AST nodes for the parser. Key types:
 
 - **Literals**: Integer, Decimal, String, Boolean, Unknown (ABL's `?` literal)
 - **Expressions**: Arithmetic, comparison, logical, string comparison (BEGINS/MATCHES/CONTAINS), unary, ternary (IF/THEN/ELSE), function calls, postfix operations (member access, method calls, array access, field access)
-- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, IncludeReference, IncludeArgReference, Empty
+- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, IncludeReference, IncludeArgReference, Empty, Class, Method, Property, Constructor, Destructor, Interface, Using
 - **Data Types**: Integer, Int64, Decimal, Character, Logical, Date, DateTime, DateTimeTz, Handle, Rowid, Recid, Raw, Memptr, Longchar, Clob, Blob, Com, Class
 
 ### Parser (`oxabl_parser`)
@@ -94,13 +98,16 @@ Defines AST nodes for the parser. Key types:
 Parses ABL source code into an AST. Key capabilities:
 
 - **Expression parsing** with proper operator precedence (ternary → or → and → comparison → additive → multiplicative → unary → postfix → primary)
-- **Statement parsing**: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN, RUN, PROCEDURE, FOR EACH, FIND, CASE
-- **Include file references**: `{file.i}`, `{file.i args}`, `{file.i &name=value}` at both statement and expression positions
-- **Include argument references**: `{0}`, `{1}`, `{2}` at both statement and expression positions
+- **Statement parsing**: DEFINE VARIABLE/VAR/PARAMETER/TEMP-TABLE/BUFFER/PROPERTY/STREAM/FRAME/EVENT, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY (with STREAM clause), MESSAGE, ASSIGN, CREATE, DELETE, RELEASE, VALIDATE, BUFFER-COPY, BUFFER-COMPARE, INPUT/OUTPUT/INPUT-OUTPUT stream I/O (FROM/TO/THROUGH/CLOSE), CATCH/FINALLY/THROW, PUBLISH/SUBSCRIBE/UNSUBSCRIBE, ON (UI/developer event triggers with IN FRAME/IN BROWSE, database event triggers, key remapping), TRIGGER PROCEDURE, LEAVE, NEXT, RETURN
+- **OO-ABL**: CLASS (with ABSTRACT/FINAL, INHERITS, IMPLEMENTS), INTERFACE, METHOD (with access modifiers, STATIC/ABSTRACT/OVERRIDE), DEFINE PROPERTY (auto and computed GET/SET), CONSTRUCTOR, DESTRUCTOR, USING
 - **Postfix operations**: Method calls (object:method()), member access (object.member), array access (arr[i]), field access (table.field)
 - **Function calls** with argument lists
+- **Preprocessor**: &IF/&ELSEIF/&ELSE/&ENDIF at statement, expression, and data type levels via generic `PreprocIf<T>`, &SCOPED-DEFINE/&GLOBAL-DEFINE with `PreprocEnd` lexer token, &UNDEFINE, &MESSAGE, `{&variable}` references
+- **Error recovery** via `parse_program()` with synchronization on period boundaries
+- **Include file references**: `{file.i}`, `{file.i args}`, `{file.i &name=value}` at both statement and expression positions
+- **Include argument references**: `{0}`, `{1}`, `{2}` at both statement and expression positions
 
-Not yet implemented: DISPLAY, MESSAGE, CLASS definitions, streams, frames, buffers, temp-tables, include file expansion/resolution.
+Not yet implemented: DO/FOR/REPEAT block-header ON phrases (ON ERROR UNDO, ON ENDKEY UNDO).
 
 ### Code Generation (`oxabl_codegen`)
 
@@ -114,9 +121,57 @@ Generates:
 - Atom list for `string_cache_codegen`
 - `match_keyword()` function handling abbreviations and case-insensitive matching
 
+## CI & Release Process
+
+### CI (`.github/workflows/ci.yml`)
+
+Runs on every push and PR to `master`. All checks must pass before merging:
+
+- `cargo check` — fast compilation check
+- `cargo test` — full test suite
+- `cargo fmt --check` — formatting enforcement
+- `cargo clippy -D warnings` — lint enforcement
+
+### Automated Releases (`.github/workflows/release.yml`)
+
+Uses [Release Please](https://github.com/googleapis/release-please) for fully automated versioning and changelogs.
+
+**How it works:**
+
+1. Write commits using [Conventional Commits](https://www.conventionalcommits.org/) format:
+   - `feat: add X` — bumps minor version
+   - `fix: correct Y` — bumps patch version
+   - `feat!: breaking change` or footer `BREAKING CHANGE:` — bumps major version
+   - Other prefixes (`chore:`, `docs:`, `refactor:`, `test:`) don't trigger a release but appear in the changelog
+2. Release Please accumulates merged commits and maintains an open PR (e.g. "chore(main): release 0.2.0") with a generated changelog and version bumps across all workspace `Cargo.toml` files
+3. When you merge that release PR, a GitHub Release and git tag are created automatically
+4. A build+test verification step runs against the release
+
+**Config files:**
+
+- `release-please-config.json` — release type and which `Cargo.toml` files to update
+- `.release-please-manifest.json` — tracks the current version
+
+While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor instead of major.
+
+## Benchmarks
+
+Benchmarks use `codspeed-criterion-compat` (Criterion with CodSpeed integration). CodSpeed CI runs on every push/PR via `.github/workflows/codspeed.yml` and auto-discovers all `[[bench]]` targets.
+
+```bash
+# Run benchmarks for a specific crate
+cargo bench -p oxabl_lexer --bench lexer_bench
+cargo bench -p oxabl_parser --bench parser_bench
+cargo bench -p oxabl_common --bench source_map_bench
+```
+
+**When the `/codspeed` skills are available, use them for benchmark work** — setup, optimization, and flamegraph analysis.
+
+**When implementing new features**, consider whether a new benchmark is warranted. If the feature adds a new parsing construct, expression type, or hot path, add a benchmark or extend an existing fixture file to cover it. This ensures CodSpeed catches regressions as the codebase grows.
+
 ## Current Status
 
 - `oxabl_lexer`: MVP complete with 49 tests
 - `oxabl_common/source_map`: Implemented with 10 tests
 - `oxabl_ast`: Implemented with expressions, statements, and data types
-- `oxabl_parser`: Actively developed with 169 tests; parses expressions, control flow, variable declarations, include file references, RUN, PROCEDURE, FOR EACH, FIND, CASE
+- `oxabl_parser`: Actively developed with 406 tests; parses expressions, control flow, variable declarations, include file references, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), preprocessor directives, stream I/O, frame definitions, ON triggers (UI events, database events, key remapping), and TRIGGER PROCEDURE

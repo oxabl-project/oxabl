@@ -515,6 +515,9 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
     output.push_str("    Invalid,\n");
     output.push_str("    Identifier,\n");
     output.push_str("    Comment,\n");
+    output
+        .push_str("    /// Synthetic token emitted at end-of-line during `&DEFINE` directives.\n");
+    output.push_str("    PreprocEnd,\n");
     output.push('\n');
 
     // Literals (suffixed with "Literal" to avoid collision with ABL type keywords)
@@ -534,6 +537,7 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
         "Invalid",
         "Identifier",
         "Comment",
+        "PreprocEnd",
         "IntegerLiteral",
         "BigIntLiteral",
         "DecimalLiteral",
@@ -697,9 +701,19 @@ pub fn generate_keyword_match(
     output.push_str("/// Handles ABL prefix abbreviations and case-insensitive matching\n");
     output.push_str("/// e.g., \"def\", \"defi\", \"defin\", \"define\" all match Kind::Define\n");
     output.push_str("pub fn match_keyword(s: &str) -> Option<Kind> {\n");
-    output.push_str("    let lower = s.to_lowercase();\n");
-    output.push_str("    match lower.as_str() {\n");
-
+    output.push_str("    const MAX_KEYWORD_LEN: usize = 64;\n");
+    output.push_str("    let bytes = s.as_bytes();\n");
+    output.push_str("    if bytes.len() > MAX_KEYWORD_LEN {\n");
+    output.push_str("        return None;\n");
+    output.push_str("    }\n");
+    output.push_str("    let mut buf = [0u8; MAX_KEYWORD_LEN];\n");
+    output.push_str("    for (i, &b) in bytes.iter().enumerate() {\n");
+    output.push_str("        buf[i] = b.to_ascii_lowercase();\n");
+    output.push_str("    }\n");
+    output.push_str("    // SAFETY: input `s` is valid UTF-8 and to_ascii_lowercase() preserves UTF-8 validity\n");
+    output.push_str(
+        "    let lower = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };\n",
+    );
     // Track all string -> Kind mappings, detecting collisions
     let mut match_to_kind: HashMap<String, String> = HashMap::new();
     let mut collisions: Vec<(String, String, String)> = Vec::new();
@@ -763,45 +777,50 @@ pub fn generate_keyword_match(
         );
     }
 
-    // Group matches by Kind for cleaner output with | patterns
-    let mut kind_to_matches: HashMap<String, Vec<String>> = HashMap::new();
+    // Group matches by string length for two-level dispatch.
+    // Outer match on length produces a compact jump table; inner matches per
+    // length bucket are small enough to stay in L1 instruction cache.
+    let mut length_to_matches: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     for (match_str, kind) in &match_to_kind {
-        kind_to_matches
-            .entry(kind.clone())
+        length_to_matches
+            .entry(match_str.len())
             .or_default()
-            .push(match_str.clone());
+            .push((match_str.clone(), kind.clone()));
     }
 
-    // Sort kinds for consistent output
-    let mut kinds: Vec<_> = kind_to_matches.keys().cloned().collect();
-    kinds.sort();
+    // Sort lengths for consistent output
+    let mut lengths: Vec<_> = length_to_matches.keys().cloned().collect();
+    lengths.sort();
 
-    for kind in kinds {
-        let mut matches = kind_to_matches.remove(&kind).unwrap();
-        matches.sort_by(|a, b| {
-            // Sort by length first (shorter first), then alphabetically
-            a.len().cmp(&b.len()).then(a.cmp(b))
-        });
+    output.push_str("    match lower.len() {\n");
 
-        if matches.len() == 1 {
+    for length in lengths {
+        let mut matches = length_to_matches.remove(&length).unwrap();
+        matches.sort_by(|a, b| a.0.cmp(&b.0));
+
+        output.push_str(&format!("        {} => match lower {{\n", length));
+        for (match_str, kind) in &matches {
             output.push_str(&format!(
-                "        \"{}\" => Some(Kind::{}),\n",
-                matches[0], kind
+                "            \"{}\" => Some(Kind::{}),\n",
+                match_str, kind
             ));
-        } else {
-            // Use | pattern for multiple matches
-            let pattern = matches
-                .iter()
-                .map(|s| format!("\"{}\"", s))
-                .collect::<Vec<_>>()
-                .join(" | ");
-            output.push_str(&format!("        {} => Some(Kind::{}),\n", pattern, kind));
         }
+        output.push_str("            _ => None,\n");
+        output.push_str("        },\n");
     }
 
     output.push_str("        _ => None,\n");
     output.push_str("    }\n");
-    output.push_str("}\n");
+    output.push_str("}\n\n");
+
+    // Emit a compile-time assertion that the longest keyword fits in the stack buffer
+    let longest = match_to_kind.keys().map(|s| s.len()).max().unwrap_or(0);
+    output.push_str(&format!(
+        "// Compile-time check: longest keyword ({} bytes) fits in match_keyword() stack buffer\n",
+        longest
+    ));
+    output.push_str("#[allow(clippy::assertions_on_constants)]\n");
+    output.push_str(&format!("const _: () = assert!({} <= 64);\n", longest));
 
     output
 }
