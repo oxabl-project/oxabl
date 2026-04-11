@@ -2049,9 +2049,21 @@ impl Parser<'_> {
             });
         }
 
-        // Parse buffer name — may be {&preproc}-suffix form where the hyphen and suffix
-        // are separate tokens but form a compound name (e.g. {&order}-remit).
-        let mut buffer = self.parse_identifier()?;
+        // Parse buffer name — may be a preprocessor reference {&find-orders} or a
+        // compound name like {&order}-remit (hyphen and suffix are separate tokens).
+        let mut buffer = if self.check(Kind::Preprop) {
+            // {&preproc-var} used directly as table name — consume as identifier
+            let tok = self.advance().clone();
+            Identifier {
+                span: Span {
+                    start: tok.start as u32,
+                    end: tok.end as u32,
+                },
+                name: self.source[tok.start..tok.end].to_string(),
+            }
+        } else {
+            self.parse_identifier()?
+        };
         while self.check(Kind::Minus) {
             let minus_start = self.tokens[self.current].start;
             // Only treat as compound name if adjacent (no space before the minus)
@@ -2085,10 +2097,14 @@ impl Parser<'_> {
         // Lock type may appear before or after WHERE (ABL is flexible)
         let lock_type_pre = self.parse_lock_type();
 
-        // optional WHERE clause
+        // optional WHERE clause — skip if WHERE is immediately followed by ':' (empty predicate)
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
-            Some(self.parse_expression()?)
+            if self.check(Kind::Colon) || self.check(Kind::Period) {
+                None // empty WHERE clause, block-open token follows
+            } else {
+                Some(self.parse_expression()?)
+            }
         } else {
             None
         };
@@ -3759,7 +3775,13 @@ impl Parser<'_> {
 
         let parameters = self.parse_parenthesized_params()?;
 
-        self.expect_kind(Kind::Colon, "Expected ':' after CONSTRUCTOR header")?;
+        // Some include-file-heavy constructors use a period instead of colon to open the body
+        // (the include expands to include the actual ':' at preprocessing time).
+        if self.check(Kind::Period) {
+            self.advance();
+        } else {
+            self.expect_kind(Kind::Colon, "Expected ':' after CONSTRUCTOR header")?;
+        }
 
         let mut body = Vec::new();
         while !self.at_end() {

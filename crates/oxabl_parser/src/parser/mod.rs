@@ -614,9 +614,13 @@ impl<'a> Parser<'a> {
                     _ => ParameterDirection::Input,
                 };
 
-                // TABLE <name> — temp-table pass-through parameter (no AS/LIKE)
+                // TABLE [FOR] <name> — temp-table pass-through parameter (no AS/LIKE)
                 if self.check(Kind::Table) {
                     self.advance(); // consume TABLE
+                    // Optional FOR keyword: TABLE FOR ttablename passes by reference
+                    if self.check(Kind::KwFor) {
+                        self.advance();
+                    }
                     let name = self.parse_identifier()?;
                     params.push(Statement::DefineParameter {
                         direction,
@@ -680,6 +684,13 @@ impl<'a> Parser<'a> {
         } else {
             self.expect_kind(Kind::KwAs, "Expected AS or LIKE")?;
             let data_type = self.parse_data_type()?;
+            // Consume optional EXTENT [n] clause (e.g. AS CHAR EXTENT 2)
+            if self.check(Kind::Extent) {
+                self.advance();
+                if self.check(Kind::IntegerLiteral) {
+                    self.advance();
+                }
+            }
             Ok(TypeSource::Explicit(data_type))
         }
     }
