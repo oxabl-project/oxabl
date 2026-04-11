@@ -2798,15 +2798,9 @@ impl Parser<'_> {
 
             let expression = self.parse_expression()?;
 
-            // Optional per-item WHEN condition
-            let when_condition = if self.check(Kind::When) {
-                self.advance();
-                Some(self.parse_expression()?)
-            } else {
-                None
-            };
-
-            // Skip per-item display options
+            // Skip per-item display options (FORMAT, WHEN, AT, VIEW-AS, etc.)
+            // These can appear in any order after the item expression.
+            let mut when_condition = None;
             loop {
                 if self.check(Kind::Format)
                     || self.check(Kind::ColumnLabel)
@@ -2814,11 +2808,34 @@ impl Parser<'_> {
                 {
                     self.advance();
                     self.skip_format_value();
+                } else if self.check(Kind::When) {
+                    // Post-item WHEN condition (can appear after FORMAT or AT options)
+                    self.advance();
+                    when_condition = Some(self.parse_expression()?);
                 } else if self.check(Kind::At) {
-                    // AT column-number
+                    // AT column-number or @ column-reference
                     self.advance();
                     if !self.check(Kind::Period) && !self.check(Kind::With) {
                         self.parse_expression().ok();
+                    }
+                } else if self.check(Kind::ViewAs) {
+                    // VIEW-AS widget-type [SIZE[CHARS] n BY m] — consume widget descriptor
+                    self.advance(); // consume VIEW-AS
+                    // Consume widget type (text, editor, fill-in, etc.)
+                    if Self::can_be_identifier(self.peek().kind) {
+                        self.advance();
+                    }
+                    // Consume optional SIZE [SIZE-CHARS / CHARS] n BY m
+                    while matches!(
+                        self.peek().kind,
+                        Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::By
+                    ) || (Self::can_be_identifier(self.peek().kind)
+                        && !self.check(Kind::When)
+                        && !self.check(Kind::At)
+                        && !self.check(Kind::Period)
+                        && !self.check(Kind::With))
+                    {
+                        self.advance();
                     }
                 } else if self.check(Kind::NoLabels) {
                     self.advance();

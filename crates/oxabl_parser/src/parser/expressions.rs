@@ -457,6 +457,7 @@ impl Parser<'_> {
 
         // Literals
         if self.check(Kind::IntegerLiteral)
+            || self.check(Kind::BigIntLiteral)
             || self.check(Kind::DecimalLiteral)
             || self.check(Kind::StringLiteral)
             || self.check(Kind::KwTrue)
@@ -716,7 +717,8 @@ impl Parser<'_> {
             || self.check(Kind::Buffer)
             || self.check(Kind::Frame)
             || self.check(Kind::Query)
-            || self.check(Kind::Dataset))
+            || self.check(Kind::Dataset)
+            || self.check(Kind::Stream))
             && (Self::can_be_identifier(self.peek_at(1).kind) || self.check_at(1, Kind::Preprop))
         {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
@@ -770,10 +772,10 @@ impl Parser<'_> {
                 }
             }
             // field name — may be qualified (table.field) or indexed (field[i])
-            if Self::can_be_identifier(self.peek().kind) {
-                if let Ok(field_expr) = self.parse_postfix() {
-                    arguments.push(field_expr);
-                }
+            if Self::can_be_identifier(self.peek().kind)
+                && let Ok(field_expr) = self.parse_postfix()
+            {
+                arguments.push(field_expr);
             }
             return Ok(Expression::FunctionCall { name, arguments });
         }
