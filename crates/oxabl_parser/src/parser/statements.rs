@@ -488,6 +488,13 @@ impl Parser<'_> {
                         }
                     }
                 }
+                Kind::Decimals => {
+                    self.advance();
+                    // Consume optional integer argument
+                    if self.check(Kind::IntegerLiteral) {
+                        self.advance();
+                    }
+                }
                 Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
                     self.advance();
                     self.skip_format_value();
@@ -647,6 +654,13 @@ impl Parser<'_> {
                         Kind::NoUndo => {
                             self.advance();
                             no_undo = true;
+                        }
+                        Kind::Decimals => {
+                            self.advance();
+                            // Consume optional integer argument
+                            if self.check(Kind::IntegerLiteral) {
+                                self.advance();
+                            }
                         }
                         Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
                             self.advance();
@@ -880,6 +894,13 @@ impl Parser<'_> {
                                 } else {
                                     extent = Some(0); // dynamic
                                 }
+                            }
+                        }
+                        Kind::Decimals => {
+                            self.advance();
+                            // Consume optional integer argument
+                            if self.check(Kind::IntegerLiteral) {
+                                self.advance();
                             }
                         }
                         // Skip known field options we don't store in the AST
