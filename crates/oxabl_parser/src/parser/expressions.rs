@@ -640,7 +640,7 @@ impl Parser<'_> {
         // ABL allows both parenthesized and bare forms, e.g.:
         //   IF AVAILABLE order THEN ...
         //   IF AVAILABLE(order) THEN ...
-        if self.check(Kind::Available) {
+        if self.check(Kind::Available) || self.check(Kind::Ambiguous) {
             let token = self.advance().clone();
             let name = Identifier {
                 span: Span {
@@ -649,22 +649,15 @@ impl Parser<'_> {
                 },
                 name: self.source[token.start..token.end].to_string(),
             };
-            // Parenthesized form: AVAILABLE(table)
+            // Parenthesized form: AVAILABLE(table) / AMBIGUOUS(table)
             if self.check(Kind::LeftParen) {
                 return self.parse_function_call(name);
             }
-            // Bare form: AVAILABLE table — parse the table name as the sole argument
-            let arg_token = self.advance().clone();
-            let arg_name = Identifier {
-                span: Span {
-                    start: arg_token.start as u32,
-                    end: arg_token.end as u32,
-                },
-                name: self.source[arg_token.start..arg_token.end].to_string(),
-            };
+            // Bare form: AVAILABLE table / AMBIGUOUS table
+            let arg = self.parse_primary()?;
             return Ok(Expression::FunctionCall {
                 name,
-                arguments: vec![Expression::Identifier(arg_name)],
+                arguments: vec![arg],
             });
         }
 
