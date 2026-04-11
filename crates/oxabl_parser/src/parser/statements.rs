@@ -2528,8 +2528,11 @@ impl Parser<'_> {
                         }
                         _ => ParameterDirection::Input,
                     };
-                    // Skip optional TABLE keyword (for temp-table pass-through args)
-                    if self.check(Kind::Table) {
+                    // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE keyword
+                    if matches!(
+                        self.peek().kind,
+                        Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                    ) {
                         self.advance();
                     }
                     let expression = self.parse_expression()?;
@@ -2566,6 +2569,32 @@ impl Parser<'_> {
         } else {
             arguments
         };
+
+        // Optional ON SERVER servername — AppServer targeting clause
+        // SERVER is an unreserved identifier, not a keyword
+        if self.check(Kind::On) {
+            // peek past ON: if next is identifier "server", consume both + the server name
+            let next_is_server = self.peek_at(1).kind == Kind::Identifier && {
+                let t = self.peek_at(1);
+                self.source[t.start..t.end].eq_ignore_ascii_case("server")
+            };
+            if next_is_server {
+                self.advance(); // consume ON
+                self.advance(); // consume SERVER identifier
+                // consume server handle name (identifier or method call)
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance();
+                }
+            }
+        }
+
+        // Optional standalone SET handle (e.g. RUN VALUE(...) SET hHandle ON server NO-ERROR.)
+        if self.check(Kind::Set) {
+            self.advance(); // consume SET
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance(); // consume handle name
+            }
+        }
 
         // parse optional NO-ERROR
         let no_error = if self.check(Kind::NoError) {
