@@ -214,6 +214,26 @@ impl<'a> Parser<'a> {
         &self.tokens[self.current + offset]
     }
 
+    /// Peek at the nth non-comment token ahead of current (1-based: n=1 means the next token).
+    /// Used when the token stream may contain comment tokens between meaningful tokens.
+    fn peek_nth_non_comment(&self, n: usize) -> &Token {
+        let mut count = 0;
+        let mut i = self.current;
+        loop {
+            let t = &self.tokens[i];
+            if t.kind != Kind::Comment {
+                count += 1;
+                if count == n {
+                    return t;
+                }
+            }
+            if t.kind == Kind::Eof {
+                return t; // guard against running off the end
+            }
+            i += 1;
+        }
+    }
+
     pub fn at_end(&self) -> bool {
         self.check(Kind::Eof)
     }
@@ -405,6 +425,7 @@ impl<'a> Parser<'a> {
                     | Kind::Clear
                     | Kind::QueryClose
                     | Kind::RepositionToRowid
+                    | Kind::RepositionForward
                     | Kind::BufferCopy
                     | Kind::BufferCompare
                     | Kind::GetBufferHandle
