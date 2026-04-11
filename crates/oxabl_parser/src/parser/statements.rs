@@ -446,6 +446,10 @@ impl Parser<'_> {
         if self.check(Kind::Equals) {
             self.advance(); // consume the "="
             let value = self.parse_expression()?;
+            // Consume optional NO-ERROR trailing clause (e.g. x = func() NO-ERROR.)
+            if self.check(Kind::NoError) {
+                self.advance();
+            }
             self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
             return Ok(Statement::Assignment {
                 target: left,
@@ -2286,7 +2290,16 @@ impl Parser<'_> {
 
         // parse body until END
         let mut body = Vec::new();
-        while !self.check(Kind::End) {
+        while !self.check(Kind::End) && !self.at_end() {
+            // Handle CATCH and FINALLY blocks that may appear at the end of a PROCEDURE body
+            if self.check(Kind::Catch) {
+                body.push(self.parse_catch_block()?);
+                continue;
+            }
+            if self.check(Kind::Finally) {
+                body.push(self.parse_finally_block()?);
+                continue;
+            }
             body.push(self.parse_statement()?);
         }
 
@@ -3327,6 +3340,15 @@ impl Parser<'_> {
                 }
                 self.expect_kind(Kind::Period, "Expected '.' after END METHOD")?;
                 break;
+            }
+            // Handle CATCH and FINALLY blocks that may appear at the end of a METHOD body
+            if self.check(Kind::Catch) {
+                body.push(self.parse_catch_block()?);
+                continue;
+            }
+            if self.check(Kind::Finally) {
+                body.push(self.parse_finally_block()?);
+                continue;
             }
             body.push(self.parse_statement()?);
         }

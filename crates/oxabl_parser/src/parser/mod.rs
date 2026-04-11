@@ -381,6 +381,17 @@ impl<'a> Parser<'a> {
                     | Kind::NoWait
                     | Kind::ShareLock
                     | Kind::ExclusiveLock
+                    // Object method names that are also reserved keywords
+                    // (e.g. dataset:clear(), query:query-close(), table:buffer-copy())
+                    | Kind::Clear
+                    | Kind::QueryClose
+                    | Kind::RepositionToRowid
+                    | Kind::BufferCopy
+                    | Kind::BufferCompare
+                    | Kind::GetBufferHandle
+                    | Kind::Disconnect
+                    // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
+                    | Kind::PageTop
             )
     }
 
