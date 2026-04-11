@@ -377,7 +377,8 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY / PAGE — skip to period.
+        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
+        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN — skip to period.
         if self.check(Kind::Pause)
             || self.check(Kind::Bell)
             || self.check(Kind::Import)
@@ -387,6 +388,10 @@ impl Parser<'_> {
             || self.check(Kind::OsCommand)
             || self.check(Kind::OsCopy)
             || self.check(Kind::Page)
+            || self.check(Kind::Disable)
+            || self.check(Kind::Accumulate)
+            || self.check(Kind::Down)
+            || self.check(Kind::Open)
         {
             self.skip_to_period();
             return Ok(Statement::Empty);
@@ -1799,8 +1804,12 @@ impl Parser<'_> {
         // If "condition" THEN
         let condition = self.parse_expression()?;
 
-        // Expect THEN
-        self.expect_kind(Kind::Then, "Expected THEN after IF condition")?;
+        // Expect THEN (or &THEN when IF appears inside a preprocessor &ELSEIF condition)
+        if self.check(Kind::PreprocThen) {
+            self.advance();
+        } else {
+            self.expect_kind(Kind::Then, "Expected THEN after IF condition")?;
+        }
 
         // parse then branch, may be a DO block or single statement
         let then_branch = if self.check(Kind::Do) {
