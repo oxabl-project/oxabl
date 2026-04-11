@@ -370,13 +370,14 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / PAGE — skip to period.
+        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / PAGE — skip to period.
         if self.check(Kind::Pause)
             || self.check(Kind::Bell)
             || self.check(Kind::Import)
             || self.check(Kind::OsDelete)
             || self.check(Kind::OsDir)
             || self.check(Kind::OsCreateDir)
+            || self.check(Kind::OsCommand)
             || self.check(Kind::Page)
         {
             self.skip_to_period();
@@ -1640,6 +1641,26 @@ impl Parser<'_> {
         } else {
             false
         };
+
+        // DO FOR table: — buffer lock scope; consume FOR and table name
+        if self.check(Kind::KwFor) {
+            self.advance(); // consume FOR
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance(); // consume table name
+            }
+        }
+
+        // DO STOP-AFTER n: — consume STOP-AFTER and its integer argument
+        if self.check(Kind::Identifier) {
+            let tok = self.peek().clone();
+            let text = &self.source[tok.start..tok.end];
+            if text.eq_ignore_ascii_case("stop-after") {
+                self.advance(); // consume STOP-AFTER
+                if self.check(Kind::IntegerLiteral) {
+                    self.advance();
+                }
+            }
+        }
 
         // check for loop
         if Self::can_be_identifier(self.peek().kind) {
@@ -3271,6 +3292,22 @@ impl Parser<'_> {
         // Parse GET accessor
         let get_body = if self.check(Kind::Get) {
             self.advance(); // consume GET
+            // Optional parameter list: GET() or GET(INPUT p AS TYPE)
+            if self.check(Kind::LeftParen) {
+                let mut depth = 1;
+                self.advance(); // consume '('
+                while depth > 0 && !self.at_end() {
+                    if self.check(Kind::LeftParen) {
+                        depth += 1;
+                    } else if self.check(Kind::RightParen) {
+                        depth -= 1;
+                    }
+                    if depth > 0 {
+                        self.advance();
+                    }
+                }
+                self.advance(); // consume final ')'
+            }
             if self.check(Kind::Period) {
                 self.advance(); // auto-getter: GET.
                 Some(Vec::new())
