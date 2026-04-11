@@ -2567,6 +2567,12 @@ impl Parser<'_> {
                 continue;
             }
 
+            // WHEN condition item — condition preceding the display item
+            if self.check(Kind::When) {
+                self.advance(); // consume WHEN
+                self.parse_expression().ok(); // parse the condition
+            }
+
             let expression = self.parse_expression()?;
 
             // Optional per-item WHEN condition
@@ -2601,6 +2607,12 @@ impl Parser<'_> {
                     }
                 } else if self.check(Kind::Colon) {
                     // COLON n — column position specifier
+                    self.advance();
+                    if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
+                        self.advance();
+                    }
+                } else if self.check(Kind::To) {
+                    // TO n — ending column specifier
                     self.advance();
                     if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
                         self.advance();
@@ -2824,6 +2836,19 @@ impl Parser<'_> {
         if is_forward {
             self.advance(); // consume FORWARD
             self.expect_kind(Kind::Period, "Expected '.' after FUNCTION FORWARD")?;
+            return Ok(Statement::Function {
+                name,
+                return_type,
+                body: Vec::new(),
+            });
+        }
+
+        // MAP TO name IN handle — external function mapping (class context)
+        if self.check(Kind::Map) {
+            while !self.check(Kind::Period) && !self.at_end() {
+                self.advance();
+            }
+            self.expect_kind(Kind::Period, "Expected '.' after MAP TO")?;
             return Ok(Statement::Function {
                 name,
                 return_type,
