@@ -434,6 +434,10 @@ impl Parser<'_> {
 
         // not an assignment, continue parsing as full expression
         let expr = self.finish_expression(left)?;
+        // Consume optional NO-ERROR trailing clause (e.g. handle:method() NO-ERROR.)
+        if self.check(Kind::NoError) {
+            self.advance();
+        }
         self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
         Ok(Statement::ExpressionStatement(expr))
     }
