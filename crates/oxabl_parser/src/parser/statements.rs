@@ -2111,6 +2111,12 @@ impl Parser<'_> {
             }
         }
 
+        // Optional WHILE condition before block opener
+        if self.check(Kind::KwWhile) {
+            self.advance(); // consume WHILE
+            self.parse_expression().ok(); // parse the condition
+        }
+
         // Optional TRANSACTION keyword before block opener
         if self.check(Kind::Transaction) {
             self.advance();
@@ -2655,7 +2661,7 @@ impl Parser<'_> {
                 continue;
             }
 
-            // WHEN condition item — condition preceding the display item
+            // WHEN condition item — condition preceding the display item (pre-WHEN form)
             if self.check(Kind::When) {
                 self.advance(); // consume WHEN
                 self.parse_expression().ok(); // parse the condition
@@ -3839,10 +3845,18 @@ impl Parser<'_> {
 
         // Optional EXCEPT clause (skip list of fields not to copy)
         // Appears BEFORE the TO keyword: BUFFER-COPY src EXCEPT f1 f2 TO target
+        // Field names may be qualified: EXCEPT table.field or buf.field
         if self.check(Kind::Except) {
             self.advance(); // consume EXCEPT
             while Self::can_be_identifier(self.peek().kind) {
-                self.advance(); // consume field name
+                self.advance(); // consume field name (or table/buffer qualifier)
+                // Consume optional .field qualifier on same line
+                if self.check(Kind::Period) && self.is_field_access_ahead() {
+                    self.advance(); // consume '.'
+                    if Self::can_be_identifier(self.peek().kind) {
+                        self.advance(); // consume field name
+                    }
+                }
             }
         }
 
