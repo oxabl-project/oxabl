@@ -1967,12 +1967,10 @@ fn parse_define_variable_like_simple_name() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::VariableDeclaration { type_source, .. } => {
-            match type_source {
-                TypeSource::Like { source } => assert_eq!(source.name, "iVar"),
-                _ => panic!("Expected Like"),
-            }
-        }
+        Statement::VariableDeclaration { type_source, .. } => match type_source {
+            TypeSource::Like { source } => assert_eq!(source.name, "iVar"),
+            _ => panic!("Expected Like"),
+        },
         _ => panic!("Expected VariableDeclaration"),
     }
 }
@@ -1985,7 +1983,12 @@ fn parse_define_variable_like_with_initial() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::VariableDeclaration { type_source, initial_value, no_undo, .. } => {
+        Statement::VariableDeclaration {
+            type_source,
+            initial_value,
+            no_undo,
+            ..
+        } => {
             assert!(matches!(type_source, TypeSource::Like { .. }));
             assert!(initial_value.is_some());
             assert!(no_undo);
@@ -2001,7 +2004,12 @@ fn parse_var_like() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::VariableDeclaration { type_source, name, no_undo, .. } => {
+        Statement::VariableDeclaration {
+            type_source,
+            name,
+            no_undo,
+            ..
+        } => {
             assert_eq!(name.name, "vCust");
             assert!(matches!(type_source, TypeSource::Like { .. }));
             assert!(no_undo); // VAR implies NO-UNDO
@@ -2019,7 +2027,12 @@ fn parse_define_input_parameter_like() {
     match stmt {
         Statement::DefineParameter {
             direction,
-            param_type: ParameterType::Variable { name, type_source, no_undo },
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    type_source,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "p");
