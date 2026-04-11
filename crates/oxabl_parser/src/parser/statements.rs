@@ -4,6 +4,7 @@ use oxabl_ast::{
     Expression, FindType, Identifier, LockType, ParameterDirection, RunArgument, RunTarget, Span,
     Statement, WhenBranch,
 };
+use oxabl_lexer::TokenValue;
 use oxabl_lexer::{Kind, is_callable_kind};
 
 use super::{ParseError, ParseResult, Parser};
@@ -90,6 +91,16 @@ impl Parser<'_> {
             if text.eq_ignore_ascii_case("var") {
                 return self.parse_var_statement();
             }
+        }
+
+        // Include file references: {file.i}, {file.i args}
+        if self.check(Kind::IncludeReference) {
+            return self.parse_include_reference_statement();
+        }
+
+        // Include positional argument references: {0}, {1}, {2}
+        if self.check(Kind::IncludeArgReference) {
+            return self.parse_include_arg_reference_statement();
         }
 
         // Parse left-hand assignment, stop before comparison operators
@@ -876,5 +887,57 @@ impl Parser<'_> {
                 | Kind::NoError
                 | Kind::Period
         )
+    }
+
+    /// Parse an include file reference as a statement: {file.i} or {file.i args}
+    fn parse_include_reference_statement(&mut self) -> ParseResult<Statement> {
+        let token = self.advance().clone();
+        let path_and_args = match &token.value {
+            TokenValue::String(s) => s.to_string(),
+            _ => self.source[token.start + 1..token.end - 1].trim().to_string(),
+        };
+        let span = Span {
+            start: token.start as u32,
+            end: token.end as u32,
+        };
+
+        // Include references don't require a period terminator since they are
+        // preprocessor constructs that expand to arbitrary code. But consume
+        // a period if present (common in ABL: `{file.i}.`)
+        if self.check(Kind::Period) {
+            self.advance();
+        }
+
+        Ok(Statement::IncludeReference {
+            path_and_args,
+            span,
+        })
+    }
+
+    /// Parse an include positional argument reference as a statement: {0}, {1}, {2}
+    fn parse_include_arg_reference_statement(&mut self) -> ParseResult<Statement> {
+        let token = self.advance().clone();
+        let index = match &token.value {
+            TokenValue::Integer(i) => *i as i64,
+            _ => {
+                return Err(ParseError {
+                    message: "Expected integer index in include argument reference".to_string(),
+                    span: Span {
+                        start: token.start as u32,
+                        end: token.end as u32,
+                    },
+                });
+            }
+        };
+        let span = Span {
+            start: token.start as u32,
+            end: token.end as u32,
+        };
+
+        if self.check(Kind::Period) {
+            self.advance();
+        }
+
+        Ok(Statement::IncludeArgReference { index, span })
     }
 }

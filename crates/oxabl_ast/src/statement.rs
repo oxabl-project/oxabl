@@ -1,4 +1,4 @@
-use crate::{Expression, Identifier};
+use crate::{Expression, Identifier, Span};
 
 /// A statement in ABL - an executable unit that performs an action.
 /// All statements are terminated by a period.
@@ -99,6 +99,19 @@ pub enum Statement {
     Run {
         target: RunTarget,
         arguments: Vec<RunArgument>,
+    },
+
+    /// Include file reference at statement level: {file.i}, {file.i args}
+    IncludeReference {
+        /// Raw content between braces (trimmed), e.g. "file.i" or "file.i arg1 arg2"
+        path_and_args: String,
+        span: Span,
+    },
+
+    /// Include positional argument reference at statement level: {0}, {1}, {2}
+    IncludeArgReference {
+        index: i64,
+        span: Span,
     },
 
     /// Leave statement - exist innermost loop

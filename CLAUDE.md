@@ -72,6 +72,8 @@ ABL-specific features handled:
 - Tilde (`~`) as escape character in strings
 - Hyphens allowed in identifiers (`my-variable-name`)
 - Preprocessor directives (`&if`, `&scoped-define`) and references (`{&variable}`)
+- Include file references (`{file.i}`, `{file.i args}`, `{file.i &name=value}`)
+- Include positional argument references (`{0}`, `{1}`, `{2}`)
 - Line (`//`) and block (`/* */`) comments
 
 ### Source Map (`oxabl_common`)
@@ -84,7 +86,7 @@ Defines AST nodes for the parser. Key types:
 
 - **Literals**: Integer, Decimal, String, Boolean, Unknown (ABL's `?` literal)
 - **Expressions**: Arithmetic, comparison, logical, string comparison (BEGINS/MATCHES/CONTAINS), unary, ternary (IF/THEN/ELSE), function calls, postfix operations (member access, method calls, array access, field access)
-- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, Empty
+- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, IncludeReference, IncludeArgReference, Empty
 - **Data Types**: Integer, Int64, Decimal, Character, Logical, Date, DateTime, DateTimeTz, Handle, Rowid, Recid, Raw, Memptr, Longchar, Clob, Blob, Com, Class
 
 ### Parser (`oxabl_parser`)
@@ -92,11 +94,13 @@ Defines AST nodes for the parser. Key types:
 Parses ABL source code into an AST. Key capabilities:
 
 - **Expression parsing** with proper operator precedence (ternary → or → and → comparison → additive → multiplicative → unary → postfix → primary)
-- **Statement parsing**: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN
+- **Statement parsing**: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN, RUN, PROCEDURE, FOR EACH, FIND, CASE
+- **Include file references**: `{file.i}`, `{file.i args}`, `{file.i &name=value}` at both statement and expression positions
+- **Include argument references**: `{0}`, `{1}`, `{2}` at both statement and expression positions
 - **Postfix operations**: Method calls (object:method()), member access (object.member), array access (arr[i]), field access (table.field)
 - **Function calls** with argument lists
 
-Not yet implemented: procedure/function definitions, database operations, CLASS definitions, streams, frames, buffers, temp-tables.
+Not yet implemented: DISPLAY, MESSAGE, CLASS definitions, streams, frames, buffers, temp-tables, include file expansion/resolution.
 
 ### Code Generation (`oxabl_codegen`)
 
@@ -112,7 +116,7 @@ Generates:
 
 ## Current Status
 
-- `oxabl_lexer`: MVP complete with 27 tests
-- `oxabl_common/source_map`: Implemented but needs test coverage
+- `oxabl_lexer`: MVP complete with 49 tests
+- `oxabl_common/source_map`: Implemented with 10 tests
 - `oxabl_ast`: Implemented with expressions, statements, and data types
-- `oxabl_parser`: Actively developed with 91 tests; parses expressions, control flow, and variable declarations
+- `oxabl_parser`: Actively developed with 169 tests; parses expressions, control flow, variable declarations, include file references, RUN, PROCEDURE, FOR EACH, FIND, CASE
