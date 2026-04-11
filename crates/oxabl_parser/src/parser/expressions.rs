@@ -334,12 +334,12 @@ impl Parser<'_> {
             return false;
         }
 
-        // Only treat as field access if an identifier follows the period on the same line.
-        // A period followed by an identifier on the next line is a statement terminator,
-        // not a field access separator (e.g. `table.field.\n next-statement = ...`).
+        // Only treat as field access if an identifier (or keyword used as identifier) follows
+        // the period on the same line. A period followed by an identifier on the next line is
+        // a statement terminator, not a field access separator.
         let period_end = self.tokens[self.current].end;
         self.tokens.get(self.current + 1).is_some_and(|t| {
-            t.kind == Kind::Identifier && !self.source[period_end..t.start].contains('\n')
+            Self::can_be_identifier(t.kind) && !self.source[period_end..t.start].contains('\n')
         })
     }
 
@@ -356,8 +356,8 @@ impl Parser<'_> {
     pub fn parse_field_access(&mut self, qualifier: Expression) -> ParseResult<Expression> {
         self.advance(); // consume '.'
 
-        // Expect identifier after '.'
-        if !self.check(Kind::Identifier) {
+        // Expect identifier (or keyword used as field name) after '.'
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected field name after '.'".to_string(),
                 span: Span {
