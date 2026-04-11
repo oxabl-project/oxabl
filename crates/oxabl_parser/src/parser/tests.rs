@@ -2011,7 +2011,10 @@ fn parse_define_variable_decimal_decimals_extent() {
             ..
         } => {
             assert_eq!(name.name, "tax-round");
-            assert!(matches!(type_source, TypeSource::Explicit(DataType::Decimal)));
+            assert!(matches!(
+                type_source,
+                TypeSource::Explicit(DataType::Decimal)
+            ));
             assert_eq!(extent, Some(5));
         }
         _ => panic!("Expected VariableDeclaration"),
