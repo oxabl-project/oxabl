@@ -5,7 +5,7 @@
 //! > unary > postfix (member access, method calls, array/field access) > primary.
 
 use oxabl_ast::{Expression, Identifier, Span};
-use oxabl_lexer::Kind;
+use oxabl_lexer::{Kind, TokenValue};
 
 use super::{ParseError, ParseResult, Parser};
 use crate::literal::token_to_literal;
@@ -376,6 +376,40 @@ impl Parser<'_> {
                 },
             })?;
             return Ok(Expression::Literal(literal));
+        }
+
+        // Include file reference in expression position: {file.i}
+        if self.check(Kind::IncludeReference) {
+            let token = self.advance().clone();
+            let path_and_args = match &token.value {
+                TokenValue::String(s) => s.to_string(),
+                _ => self.source[token.start + 1..token.end - 1]
+                    .trim()
+                    .to_string(),
+            };
+            return Ok(Expression::IncludeReference {
+                path_and_args,
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+            });
+        }
+
+        // Include positional argument reference in expression position: {1}
+        if self.check(Kind::IncludeArgReference) {
+            let token = self.advance().clone();
+            let index = match &token.value {
+                TokenValue::Integer(i) => *i as i64,
+                _ => 0,
+            };
+            return Ok(Expression::IncludeArgReference {
+                index,
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+            });
         }
 
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)

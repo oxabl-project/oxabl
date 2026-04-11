@@ -69,6 +69,17 @@ pub enum Expression {
         qualifier: Box<Expression>,
         field: Identifier,
     },
+    /// Include file reference in expression position: {file.i}, {file.i args}
+    IncludeReference {
+        /// Raw content between braces (trimmed)
+        path_and_args: String,
+        span: Span,
+    },
+    /// Include positional argument reference in expression position: {0}, {1}, {2}
+    IncludeArgReference {
+        index: i64,
+        span: Span,
+    },
     /// Preprocessor variable reference: `{&variable}`.
     PreprocReference(String),
     /// Mid-expression preprocessor conditional.

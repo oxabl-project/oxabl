@@ -236,6 +236,32 @@ impl<'a> Lexer<'a> {
                         self.advance(); // consume '&'
                         return self.read_preprocessor_reference(start);
                     }
+                    // Include positional argument references {0}, {1}, {2}, etc.
+                    Some('0'..='9') => {
+                        return self.read_include_arg_reference(start);
+                    }
+                    // Include file references {file.i}, {path/file.i args}
+                    Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"') => {
+                        return self.read_include_reference(start);
+                    }
+                    // Leading whitespace inside braces - look ahead to determine type
+                    Some(c) if c.is_ascii_whitespace() => {
+                        // Peek past whitespace to find first meaningful char
+                        let mut lookahead = self.chars.clone();
+                        let first_non_ws = loop {
+                            match lookahead.next() {
+                                Some(ws) if ws.is_ascii_whitespace() => continue,
+                                other => break other,
+                            }
+                        };
+                        match first_non_ws {
+                            Some('0'..='9') => return self.read_include_arg_reference(start),
+                            Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"') => {
+                                return self.read_include_reference(start);
+                            }
+                            _ => return Kind::LeftBrace,
+                        }
+                    }
                     _ => {
                         return Kind::LeftBrace;
                     }
@@ -324,6 +350,19 @@ impl<'a> Lexer<'a> {
             }
             Kind::KwTrue => value = TokenValue::Boolean(true),
             Kind::KwFalse => value = TokenValue::Boolean(false),
+            Kind::IncludeReference => {
+                // Store trimmed content between braces (excluding { and })
+                let inner = &self.source[start + 1..end - 1];
+                let trimmed = inner.trim();
+                value = TokenValue::String(OxablAtom::from(trimmed));
+            }
+            Kind::IncludeArgReference => {
+                // Store the positional argument index
+                let digits = &self.source[start + 1..end - 1];
+                if let Ok(index) = digits.parse::<i32>() {
+                    value = TokenValue::Integer(index);
+                }
+            }
             // Tokens with no value (operators and keywords) just don't set a value
             _ => {}
         }
@@ -497,6 +536,40 @@ impl<'a> Lexer<'a> {
         // Try to match the full text including {& and } against known preprocessor keywords
         let text = &self.source[start..self.offset()];
         match_keyword(text).unwrap_or(Kind::Preprop)
+    }
+
+    /// Reads an include file reference like {file.i} or {file.i arg1 arg2}
+    /// Called after '{' has been consumed and we've peeked an alpha, '/', '.', or '"' char.
+    /// Consumes up to and including '}'.
+    fn read_include_reference(&mut self, _start: usize) -> Kind {
+        while let Some(c) = self.peek() {
+            if c == '}' {
+                self.advance(); // consume the closing '}'
+                return Kind::IncludeReference;
+            }
+            self.advance();
+        }
+        // Unterminated include reference
+        Kind::Invalid
+    }
+
+    /// Reads an include positional argument reference like {1} or {0}
+    /// Called after '{' has been consumed and we've peeked a digit.
+    /// Consumes up to and including '}'.
+    fn read_include_arg_reference(&mut self, _start: usize) -> Kind {
+        // Consume digits
+        while matches!(self.peek(), Some('0'..='9')) {
+            self.advance();
+        }
+
+        // Expect closing '}'
+        match self.peek() {
+            Some('}') => {
+                self.advance(); // consume '}'
+                Kind::IncludeArgReference
+            }
+            _ => Kind::Invalid,
+        }
     }
 
     /// Reads a preprocessor directive like &if, &scoped-define
@@ -1418,6 +1491,168 @@ end."#;
             );
             assert_eq!(tokens[0].kind, expected_kind, "Wrong kind for '{}'", source);
         }
+    }
+
+    // ==================== Include File Reference Tests ====================
+
+    #[test]
+    fn include_simple_file() {
+        let source = "{file.i}";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2); // IncludeReference + Eof
+        assert_token(
+            &tokens[0],
+            Kind::IncludeReference,
+            0,
+            8,
+            TokenValue::String(OxablAtom::from("file.i")),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_file_with_path() {
+        let source = "{mod/subdir/file.i}";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::IncludeReference,
+            0,
+            19,
+            TokenValue::String(OxablAtom::from("mod/subdir/file.i")),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_file_with_positional_args() {
+        let source = "{file.i NEW shared}";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::IncludeReference,
+            0,
+            19,
+            TokenValue::String(OxablAtom::from("file.i NEW shared")),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_file_with_named_args() {
+        let source = r#"{file.i &name="value" &other=test}"#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::IncludeReference,
+            0,
+            34,
+            TokenValue::String(OxablAtom::from(r#"file.i &name="value" &other=test"#)),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_file_whitespace_trimmed() {
+        let source = "{ file.i }";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::IncludeReference,
+            0,
+            10,
+            TokenValue::String(OxablAtom::from("file.i")),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_arg_reference_zero() {
+        let source = "{0}";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::IncludeArgReference,
+            0,
+            3,
+            TokenValue::Integer(0),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_arg_reference_one() {
+        let source = "{1}";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::IncludeArgReference,
+            0,
+            3,
+            TokenValue::Integer(1),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_arg_reference_multi_digit() {
+        let source = "{10}";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::IncludeArgReference,
+            0,
+            4,
+            TokenValue::Integer(10),
+            source,
+        );
+    }
+
+    #[test]
+    fn include_preprop_regression() {
+        // Ensure {&var} still works as Preprop
+        let source = "{&myvar}";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].kind, Kind::Preprop);
+    }
+
+    #[test]
+    fn include_unterminated() {
+        let source = "{file.i";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens[0].kind, Kind::Invalid);
+    }
+
+    #[test]
+    fn include_in_statement_context() {
+        // {file.i} followed by a period (statement terminator)
+        let source = "{globals/globals.i} message \"hello\".";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens[0].kind, Kind::IncludeReference);
+        assert_eq!(
+            tokens[0].value,
+            TokenValue::String(OxablAtom::from("globals/globals.i"))
+        );
+        assert_eq!(tokens[1].kind, Kind::Message);
+    }
+
+    #[test]
+    fn include_arg_in_define() {
+        // Simulates: DEF {1} SHARED TEMP-TABLE ...
+        let source = "def {1} shared";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens[0].kind, Kind::Define);
+        assert_eq!(tokens[1].kind, Kind::IncludeArgReference);
+        assert_eq!(tokens[1].value, TokenValue::Integer(1));
+        assert_eq!(tokens[2].kind, Kind::Shared);
     }
 
     // ── PreprocEnd / in_directive tests ──────────────────────────────
