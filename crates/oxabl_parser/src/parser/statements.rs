@@ -371,7 +371,7 @@ impl Parser<'_> {
         }
 
         // PAUSE [expr] [NO-MESSAGE] [MESSAGE text] [BEFORE-HIDE] [IN WINDOW w] — skip to period.
-        if self.check(Kind::Pause) {
+        if self.check(Kind::Pause) || self.check(Kind::Bell) {
             self.skip_to_period();
             return Ok(Statement::Empty);
         }
@@ -1326,11 +1326,20 @@ impl Parser<'_> {
         self.expect_kind(Kind::Comma, "Expected ',' between parent and child buffers")?;
         let child_buffer = self.parse_identifier()?;
 
-        // RELATION-FIELDS (pf1, cf1 [, pfN, cfN]...)
-        self.expect_kind(
-            Kind::RelationFields,
-            "Expected RELATION-FIELDS in DATA-RELATION",
-        )?;
+        // RELATION-FIELDS / RELATION-FIELD (pf1, cf1 [, pfN, cfN]...)
+        // Accept both plural and singular forms (RELATION-FIELD is not a registered keyword).
+        let tok = self.peek();
+        let is_relation_field = self.check(Kind::RelationFields)
+            || (self.check(Kind::Identifier)
+                && self.source[tok.start..tok.end].eq_ignore_ascii_case("relation-field"));
+        if is_relation_field {
+            self.advance();
+        } else {
+            return Err(ParseError {
+                message: "Expected RELATION-FIELDS in DATA-RELATION".to_string(),
+                span: self.current_span(),
+            });
+        }
         self.expect_kind(Kind::LeftParen, "Expected '(' after RELATION-FIELDS")?;
 
         let mut relation_fields = Vec::new();
@@ -2157,7 +2166,10 @@ impl Parser<'_> {
         };
 
         self.expect_kind(Kind::End, "Expected END")?;
-        self.expect_kind(Kind::Case, "Expected CASE after END")?;
+        // CASE keyword after END is optional in ABL — some code uses just END.
+        if self.check(Kind::Case) {
+            self.advance();
+        }
         self.expect_kind(Kind::Period, "Expected '.' after END CASE")?;
 
         Ok(Statement::Case {
