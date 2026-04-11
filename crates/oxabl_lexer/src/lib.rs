@@ -284,6 +284,17 @@ impl<'a> Lexer<'a> {
                 '&' => {
                     return self.read_preprocessor_directive(start);
                 }
+                // Tilde is a line-continuation character inside &SCOPED-DEFINE / &GLOBAL-DEFINE.
+                // Consume the ~ and the following newline without ending the directive.
+                '~' if self.in_directive => {
+                    if matches!(self.peek(), Some('\r')) {
+                        self.advance(); // consume \r
+                    }
+                    if matches!(self.peek(), Some('\n')) {
+                        self.advance(); // consume \n (do NOT emit PreprocEnd)
+                    }
+                    continue; // keep reading directive tokens
+                }
                 _ => {
                     return Kind::Invalid;
                 }
