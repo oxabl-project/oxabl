@@ -8,12 +8,12 @@
 
 use oxabl_ast::{
     AccessModifier, AssignPair, BufferTarget, CreateTarget, CreateTargetKind, DataRelation,
-    DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, FieldTypeSource,
-    FindType, HandleParamKind, HandlePassingOptions, Identifier, IndexField, LockType, OnAction,
+    DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, FindType,
+    HandleParamKind, HandlePassingOptions, Identifier, IndexField, LockType, OnAction,
     OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation, PreprocIf,
     RunArgument, RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation,
     SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
-    UseIndex, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
+    TypeSource, UseIndex, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -267,8 +267,10 @@ impl Parser<'_> {
             return self.parse_define_statement();
         }
 
-        // VAR statement: positive lookahead for data type keyword
-        if self.check(Kind::Variable) && Self::is_data_type_kind(self.peek_at(1).kind) {
+        // VAR statement: positive lookahead for data type keyword or LIKE
+        if self.check(Kind::Variable)
+            && (Self::is_data_type_kind(self.peek_at(1).kind) || self.check_at(1, Kind::Like))
+        {
             return self.parse_var_statement();
         }
 
@@ -456,11 +458,8 @@ impl Parser<'_> {
             name: self.source[name_token.start..name_token.end].to_string(),
         };
 
-        // expect As
-        self.expect_kind(Kind::KwAs, "Expected AS after variable name")?;
-
-        // parse data type
-        let data_type = self.parse_data_type()?;
+        // parse type source (AS type | LIKE field)
+        let type_source = self.parse_type_source()?;
 
         // parse optional no-undo, initial, and extent
         let mut no_undo = false;
@@ -497,7 +496,7 @@ impl Parser<'_> {
 
         Ok(Statement::VariableDeclaration {
             name,
-            data_type,
+            type_source,
             initial_value,
             no_undo,
             extent,
@@ -508,8 +507,16 @@ impl Parser<'_> {
     fn parse_var_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume VAR
 
-        // Parse data type
-        let data_type = self.parse_data_type()?;
+        // Parse type source (AS type | LIKE field).
+        // VAR has no AS keyword — the type comes positionally after VAR.
+        let type_source = if self.check(Kind::Like) {
+            self.advance(); // consume LIKE
+            TypeSource::Like {
+                source: self.parse_qualified_identifier()?,
+            }
+        } else {
+            TypeSource::Explicit(self.parse_data_type()?)
+        };
 
         // Parse variable name
         if !Self::can_be_identifier(self.peek().kind) {
@@ -542,7 +549,7 @@ impl Parser<'_> {
 
         Ok(Statement::VariableDeclaration {
             name,
-            data_type,
+            type_source,
             initial_value,
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
@@ -626,11 +633,10 @@ impl Parser<'_> {
                 let target = self.parse_identifier()?;
                 ParameterType::Buffer { name, target }
             }
-            // Standard: name AS type [NO-UNDO]
+            // Standard: name AS type [NO-UNDO] or name LIKE field [NO-UNDO]
             _ => {
                 let name = self.parse_identifier()?;
-                self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
-                let data_type = self.parse_data_type()?;
+                let type_source = self.parse_type_source()?;
                 let no_undo = if self.check(Kind::NoUndo) {
                     self.advance();
                     true
@@ -639,7 +645,7 @@ impl Parser<'_> {
                 };
                 ParameterType::Variable {
                     name,
-                    data_type,
+                    type_source,
                     no_undo,
                 }
             }
@@ -806,8 +812,8 @@ impl Parser<'_> {
                 self.advance(); // consume FIELD
                 let field_name = self.parse_identifier()?;
 
-                // Parse type source: AS type or LIKE field
-                let type_source = if self.check(Kind::Like) {
+                // Parse type source: AS type or LIKE field [VALIDATE]
+                let (type_source, validate) = if self.check(Kind::Like) {
                     self.advance();
                     let source = self.parse_qualified_identifier()?;
                     let field_validate = if self.check(Kind::Validate) {
@@ -816,13 +822,10 @@ impl Parser<'_> {
                     } else {
                         false
                     };
-                    FieldTypeSource::Like {
-                        source,
-                        validate: field_validate,
-                    }
+                    (TypeSource::Like { source }, field_validate)
                 } else {
                     self.expect_kind(Kind::KwAs, "Expected AS or LIKE after field name")?;
-                    FieldTypeSource::Explicit(self.parse_data_type()?)
+                    (TypeSource::Explicit(self.parse_data_type()?), false)
                 };
 
                 // Parse optional field options
@@ -884,6 +887,7 @@ impl Parser<'_> {
                 fields.push(TempTableField {
                     name: field_name,
                     type_source,
+                    validate,
                     initial_value,
                     extent,
                 });

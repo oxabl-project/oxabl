@@ -14,6 +14,7 @@ mod tests;
 
 use oxabl_ast::{
     AccessModifier, DataType, Identifier, ParameterDirection, ParameterType, Span, Statement,
+    TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -137,7 +138,11 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_comments(&mut self) {
-        while self.tokens.get(self.current).is_some_and(|t| t.kind == Kind::Comment) {
+        while self
+            .tokens
+            .get(self.current)
+            .is_some_and(|t| t.kind == Kind::Comment)
+        {
             self.current += 1;
         }
     }
@@ -433,8 +438,7 @@ impl<'a> Parser<'a> {
                 };
 
                 let name = self.parse_identifier()?;
-                self.expect_kind(Kind::KwAs, "Expected AS after parameter name")?;
-                let data_type = self.parse_data_type()?;
+                let type_source = self.parse_type_source()?;
                 let no_undo = if self.check(Kind::NoUndo) {
                     self.advance();
                     true
@@ -446,7 +450,7 @@ impl<'a> Parser<'a> {
                     direction,
                     param_type: ParameterType::Variable {
                         name,
-                        data_type,
+                        type_source,
                         no_undo,
                     },
                 });
@@ -460,6 +464,20 @@ impl<'a> Parser<'a> {
 
         self.expect_kind(Kind::RightParen, "Expected ')'")?;
         Ok(params)
+    }
+
+    /// Parse `AS type | LIKE field` for DEFINE VARIABLE and DEFINE PARAMETER contexts.
+    /// Consumes the `AS` or `LIKE` keyword and the following type/identifier.
+    fn parse_type_source(&mut self) -> ParseResult<TypeSource> {
+        if self.check(Kind::Like) {
+            self.advance(); // consume LIKE
+            let source = self.parse_qualified_identifier()?;
+            Ok(TypeSource::Like { source })
+        } else {
+            self.expect_kind(Kind::KwAs, "Expected AS or LIKE")?;
+            let data_type = self.parse_data_type()?;
+            Ok(TypeSource::Explicit(data_type))
+        }
     }
 
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
