@@ -609,6 +609,10 @@ keyword_type = "Option"
 name = "BY-VALUE"
 keyword_type = "Option"
 
+[[add]]
+name = "BY-REFERENCE"
+keyword_type = "Option"
+
 # =============================================================================
 # HYPHENATED FORM OVERRIDES
 # The HTML keyword index uses space-separated forms (e.g., "data relation")
