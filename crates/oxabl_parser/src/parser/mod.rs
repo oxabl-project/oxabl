@@ -317,7 +317,40 @@ impl<'a> Parser<'a> {
                     | Kind::Choose
                     | Kind::Endkey
                     | Kind::Browse
+                    // BREAK BY group functions (callable, take a field argument)
+                    | Kind::FirstOf
+                    | Kind::LastOf
             )
+    }
+
+    /// Returns true if the given Kind is "word-like" — an identifier, keyword, or
+    /// similar token that can appear as a component in a procedure file path.
+    /// This is deliberately broader than `can_be_identifier`: it includes reserved
+    /// keywords like DO, IF, FOR etc., which are valid directory or file name parts.
+    fn is_word_kind(kind: Kind) -> bool {
+        !matches!(
+            kind,
+            Kind::Slash
+                | Kind::Star
+                | Kind::Add
+                | Kind::Minus
+                | Kind::Equals
+                | Kind::Period
+                | Kind::Comma
+                | Kind::LeftParen
+                | Kind::RightParen
+                | Kind::LeftBracket
+                | Kind::RightBracket
+                | Kind::Colon
+                | Kind::IntegerLiteral
+                | Kind::DecimalLiteral
+                | Kind::StringLiteral
+                | Kind::KwTrue
+                | Kind::KwFalse
+                | Kind::Question
+                | Kind::Eof
+                | Kind::Invalid
+        )
     }
 
     /// Returns true if the given Kind is a data type keyword.
@@ -354,19 +387,24 @@ impl<'a> Parser<'a> {
         let start = first.span.start;
         let mut end = first.span.end;
 
-        // Consume .qualifier parts
+        // Consume .qualifier parts (same-line only — the period must not be a statement terminator)
         while self.check(Kind::Period) {
-            // Peek past the period to see if there's an identifier following
-            let saved = self.current;
-            self.advance(); // consume .
-            if Self::can_be_identifier(self.peek().kind) {
-                let next = self.advance().clone();
-                name.push('.');
-                name.push_str(&self.source[next.start..next.end]);
-                end = next.end as u32;
+            // Peek past the period to see if there's an identifier on the same line
+            let period_end = self.tokens[self.current].end;
+            let next_idx = self.current + 1;
+            if let Some(next_tok) = self.tokens.get(next_idx) {
+                if Self::can_be_identifier(next_tok.kind)
+                    && !self.source[period_end..next_tok.start].contains('\n')
+                {
+                    self.advance(); // consume '.'
+                    let next = self.advance().clone();
+                    name.push('.');
+                    name.push_str(&self.source[next.start..next.end]);
+                    end = next.end as u32;
+                } else {
+                    break;
+                }
             } else {
-                // Not a qualified name — put the period back
-                self.current = saved;
                 break;
             }
         }

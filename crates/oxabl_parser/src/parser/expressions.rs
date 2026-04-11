@@ -4,7 +4,7 @@
 //! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative
 //! > unary > postfix (member access, method calls, array/field access) > primary.
 
-use oxabl_ast::{Expression, Identifier, Span};
+use oxabl_ast::{Expression, FindType, Identifier, Span};
 use oxabl_lexer::{Kind, TokenValue};
 
 use super::{ParseError, ParseResult, Parser};
@@ -179,11 +179,14 @@ impl Parser<'_> {
         loop {
             if self.check(Kind::Colon) {
                 // Only parse as member/method access if the next token is a valid member name
+                // AND is on the same line as the colon.
                 // This avoids consuming ':' in block delimiters like "CASE x:" or "DO:"
-                let next_is_member = self
-                    .tokens
-                    .get(self.current + 1)
-                    .is_some_and(|t| Self::can_be_identifier(t.kind));
+                // and block-headers like "FOR EACH ... cond:".
+                let colon_end = self.tokens[self.current].end;
+                let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
+                    Self::can_be_identifier(t.kind)
+                        && !self.source[colon_end..t.start].contains('\n')
+                });
                 if !next_is_member {
                     break;
                 }
@@ -236,10 +239,24 @@ impl Parser<'_> {
             // consume and store all arguments
             let mut arguments = Vec::new();
             if !self.check(Kind::RightParen) {
+                // Skip optional INPUT/OUTPUT/INPUT-OUTPUT direction qualifier
+                if matches!(
+                    self.peek().kind,
+                    Kind::Input | Kind::Output | Kind::InputOutput
+                ) {
+                    self.advance();
+                }
                 arguments.push(self.parse_expression()?);
 
                 while self.check(Kind::Comma) {
                     self.advance(); // Consume ','
+                    // Skip optional direction qualifier
+                    if matches!(
+                        self.peek().kind,
+                        Kind::Input | Kind::Output | Kind::InputOutput
+                    ) {
+                        self.advance();
+                    }
                     arguments.push(self.parse_expression()?);
                 }
             }
@@ -281,10 +298,13 @@ impl Parser<'_> {
             return false;
         }
 
-        // return true if there is an identifer after the period
-        self.tokens
-            .get(self.current + 1)
-            .is_some_and(|t| t.kind == Kind::Identifier)
+        // Only treat as field access if an identifier follows the period on the same line.
+        // A period followed by an identifier on the next line is a statement terminator,
+        // not a field access separator (e.g. `table.field.\n next-statement = ...`).
+        let period_end = self.tokens[self.current].end;
+        self.tokens.get(self.current + 1).is_some_and(|t| {
+            t.kind == Kind::Identifier && !self.source[period_end..t.start].contains('\n')
+        })
     }
 
     /// Check if an expression can be the base of field access (Table.Field)
@@ -412,6 +432,138 @@ impl Parser<'_> {
             });
         }
 
+        // NEW ClassName(args) — object instantiation.
+        // Class names may be dotted: NEW oe.wsdeco(company, gs-userid).
+        if self.check(Kind::New) {
+            self.advance(); // consume NEW
+
+            // Parse dotted class name (e.g., "oe.wsdeco" or "Progress.Lang.Error")
+            let start = self.peek().start;
+            self.advance(); // consume first name component
+            while self.check(Kind::Period) && self.check_at(1, Kind::Identifier) {
+                self.advance(); // consume '.'
+                self.advance(); // consume next component
+            }
+            let end = self.tokens[self.current - 1].end;
+            let class_name = self.source[start..end].to_string();
+
+            // Parse argument list
+            self.expect_kind(Kind::LeftParen, "Expected '(' after class name in NEW")?;
+            let mut arguments = Vec::new();
+            if !self.check(Kind::RightParen) {
+                arguments.push(self.parse_expression()?);
+                while self.check(Kind::Comma) {
+                    self.advance();
+                    arguments.push(self.parse_expression()?);
+                }
+            }
+            self.expect_kind(Kind::RightParen, "Expected ')' after NEW arguments")?;
+
+            return Ok(Expression::New {
+                class_name,
+                arguments,
+            });
+        }
+
+        // CAN-FIND([FIRST|LAST] table [WHERE expr] [lock] [NO-ERROR])
+        // Boolean expression that checks if a record matching the phrase exists.
+        if self.check(Kind::CanFind) {
+            self.advance(); // consume CAN-FIND
+            self.expect_kind(Kind::LeftParen, "Expected '(' after CAN-FIND")?;
+
+            // Optional FIRST/LAST/CURRENT qualifier
+            let find_type = match self.peek().kind {
+                Kind::First => {
+                    self.advance();
+                    FindType::First
+                }
+                Kind::Last => {
+                    self.advance();
+                    FindType::Last
+                }
+                Kind::Current => {
+                    self.advance();
+                    FindType::Current
+                }
+                _ => FindType::Unique,
+            };
+
+            // Table/buffer name
+            let buffer = self.parse_identifier()?;
+
+            // Lock type may appear before or after WHERE (ABL is flexible).
+            let lock_type_before = self.parse_lock_type();
+
+            // Optional WHERE clause
+            let where_clause = if self.check(Kind::KwWhere) {
+                self.advance();
+                Some(Box::new(self.parse_expression()?))
+            } else {
+                None
+            };
+
+            // Trailing lock type (canonical position); prefer the first one found
+            let lock_type_after = self.parse_lock_type();
+            let lock_type = if lock_type_before != oxabl_ast::LockType::ShareLock {
+                lock_type_before
+            } else {
+                lock_type_after
+            };
+
+            // Optional NO-ERROR
+            let no_error = if self.check(Kind::NoError) {
+                self.advance();
+                true
+            } else {
+                false
+            };
+
+            self.expect_kind(
+                Kind::RightParen,
+                "Expected ')' after CAN-FIND record phrase",
+            )?;
+
+            return Ok(Expression::CanFind {
+                find_type,
+                buffer,
+                where_clause,
+                lock_type,
+                no_error,
+            });
+        }
+
+        // AVAILABLE [table] / AVAILABLE(table) — built-in record-availability predicate.
+        // ABL allows both parenthesized and bare forms, e.g.:
+        //   IF AVAILABLE order THEN ...
+        //   IF AVAILABLE(order) THEN ...
+        if self.check(Kind::Available) {
+            let token = self.advance().clone();
+            let name = Identifier {
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+                name: self.source[token.start..token.end].to_string(),
+            };
+            // Parenthesized form: AVAILABLE(table)
+            if self.check(Kind::LeftParen) {
+                return self.parse_function_call(name);
+            }
+            // Bare form: AVAILABLE table — parse the table name as the sole argument
+            let arg_token = self.advance().clone();
+            let arg_name = Identifier {
+                span: Span {
+                    start: arg_token.start as u32,
+                    end: arg_token.end as u32,
+                },
+                name: self.source[arg_token.start..arg_token.end].to_string(),
+            };
+            return Ok(Expression::FunctionCall {
+                name,
+                arguments: vec![Expression::Identifier(arg_name)],
+            });
+        }
+
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
         if Self::can_be_identifier(self.peek().kind) {
             let token = self.advance();
@@ -426,9 +578,16 @@ impl Parser<'_> {
                 name,
             };
 
-            // Check for function call: identifier/callable followed by (
+            // Check for function call: identifier/callable followed by '(' on the same line.
+            // A '(' on the next line belongs to the surrounding statement (e.g. RUN args),
+            // not to this identifier.
             if self.check(Kind::LeftParen) {
-                return self.parse_function_call(identifier);
+                let ident_end = end;
+                let paren_start = self.tokens[self.current].start;
+                let between = &self.source[ident_end..paren_start];
+                if !between.contains('\n') {
+                    return self.parse_function_call(identifier);
+                }
             }
 
             return Ok(Expression::Identifier(identifier));
