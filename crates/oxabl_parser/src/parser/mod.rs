@@ -264,6 +264,8 @@ impl<'a> Parser<'a> {
                     | Kind::Datetime
                     | Kind::DatetimeTz
                     | Kind::Handle
+                    | Kind::Rowid
+                    | Kind::Recid
                     | Kind::Raw
                     | Kind::Memptr
                     | Kind::Longchar

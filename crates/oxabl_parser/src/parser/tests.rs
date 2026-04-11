@@ -2905,6 +2905,21 @@ fn parse_find_default_lock() {
     }
 }
 
+#[test]
+fn parse_find_where_rowid() {
+    // ROWID() is a built-in function and must parse in expression position
+    let source = "find order where rowid(order) eq v-rowid no-lock no-error.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Find { where_clause, .. } => {
+            assert!(where_clause.is_some(), "Expected where clause");
+        }
+        _ => panic!("Expected Find statement"),
+    }
+}
+
 // ==================== CASE Statement Tests ====================
 
 #[test]
