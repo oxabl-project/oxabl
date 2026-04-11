@@ -2301,8 +2301,13 @@ impl Parser<'_> {
             _ => FindType::Unique,
         };
 
-        // parse buffer/table name
-        let buffer = self.parse_identifier()?;
+        // parse buffer/table name — may be a compound like b-{&preproc} (identifier + adjacent Preprop)
+        let mut buffer = self.parse_identifier()?;
+        if self.check(Kind::Preprop) && self.peek().start == buffer.span.end as usize {
+            let pp = self.advance().clone();
+            buffer.span.end = pp.end as u32;
+            buffer.name.push_str(&self.source[pp.start..pp.end]);
+        }
 
         // Optional OF clause: FIND customer OF order — shorthand for related-record find
         if self.check(Kind::Of) {
@@ -4015,6 +4020,22 @@ impl Parser<'_> {
     // DELETE buffer-name [NO-ERROR].
     fn parse_delete_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DELETE
+        // DELETE WIDGET-POOL "name" — pool deletion
+        if self.check(Kind::WidgetPool) {
+            self.advance(); // consume WIDGET-POOL
+            if self.check(Kind::StringLiteral) {
+                self.advance(); // consume pool name
+            }
+            let no_error = self.parse_no_error();
+            self.expect_kind(Kind::Period, "Expected '.' after DELETE statement")?;
+            return Ok(Statement::Delete {
+                buffer: Identifier {
+                    span: Span { start: 0, end: 0 },
+                    name: String::new(),
+                },
+                no_error,
+            });
+        }
         // Skip optional type prefixes: OBJECT, PROCEDURE, WIDGET, SERVER, etc.
         // e.g., DELETE OBJECT myObj., DELETE PROCEDURE hproc., DELETE SERVER hService.
         if Self::can_be_identifier(self.peek().kind)
