@@ -703,6 +703,56 @@ impl Parser<'_> {
             return Ok(Expression::Identifier(identifier));
         }
 
+        // ACCUM aggregate-type field  (e.g. ACCUM TOTAL amt-sale)
+        // When not followed by '(', consume the aggregate-type identifier and the field name.
+        if self.check(Kind::Accum) {
+            let token = self.advance();
+            let (ts, te) = (token.start, token.end);
+            let name = Identifier {
+                span: Span {
+                    start: ts as u32,
+                    end: te as u32,
+                },
+                name: self.source[ts..te].to_string(),
+            };
+            if self.check(Kind::LeftParen) {
+                return self.parse_function_call(name);
+            }
+            let mut arguments = Vec::new();
+            // aggregate-type (TOTAL, AVERAGE, COUNT, MINIMUM, MAXIMUM, etc.)
+            if Self::can_be_identifier(self.peek().kind) {
+                let agg = self.advance();
+                let (as_, ae) = (agg.start, agg.end);
+                arguments.push(Expression::Identifier(Identifier {
+                    span: Span {
+                        start: as_ as u32,
+                        end: ae as u32,
+                    },
+                    name: self.source[as_..ae].to_string(),
+                }));
+                // optional BY break-field
+                if self.check(Kind::By) {
+                    self.advance();
+                    if Self::can_be_identifier(self.peek().kind) {
+                        self.advance();
+                    }
+                }
+            }
+            // field name
+            if Self::can_be_identifier(self.peek().kind) {
+                let field = self.advance();
+                let (fs, fe) = (field.start, field.end);
+                arguments.push(Expression::Identifier(Identifier {
+                    span: Span {
+                        start: fs as u32,
+                        end: fe as u32,
+                    },
+                    name: self.source[fs..fe].to_string(),
+                }));
+            }
+            return Ok(Expression::FunctionCall { name, arguments });
+        }
+
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
         if Self::can_be_identifier(self.peek().kind) {
             let token = self.advance();
@@ -717,16 +767,9 @@ impl Parser<'_> {
                 name,
             };
 
-            // Check for function call: identifier/callable followed by '(' on the same line.
-            // A '(' on the next line belongs to the surrounding statement (e.g. RUN args),
-            // not to this identifier.
+            // Check for function call: identifier/callable followed by '('
             if self.check(Kind::LeftParen) {
-                let ident_end = end;
-                let paren_start = self.tokens[self.current].start;
-                let between = &self.source[ident_end..paren_start];
-                if !between.contains('\n') {
-                    return self.parse_function_call(identifier);
-                }
+                return self.parse_function_call(identifier);
             }
 
             return Ok(Expression::Identifier(identifier));
