@@ -2598,6 +2598,14 @@ impl Parser<'_> {
                     }
 
                     let expression = self.parse_expression()?;
+                    // Consume optional IN FRAME/BROWSE qualifier (e.g. field:handle IN FRAME f)
+                    if self.check(Kind::KwIn)
+                        && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+                    {
+                        self.advance(); // consume IN
+                        self.advance(); // consume FRAME or BROWSE
+                        self.advance(); // consume name
+                    }
                     let last_was_include =
                         matches!(expression, Expression::IncludeReference { .. });
                     args.push(RunArgument {
@@ -4297,6 +4305,14 @@ impl Parser<'_> {
                 }
 
                 let expression = self.parse_expression()?;
+                // Consume optional IN FRAME/BROWSE qualifier (e.g. field:handle IN FRAME f)
+                if self.check(Kind::KwIn)
+                    && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+                {
+                    self.advance(); // consume IN
+                    self.advance(); // consume FRAME or BROWSE
+                    self.advance(); // consume name
+                }
                 args.push(RunArgument {
                     direction,
                     expression,
