@@ -152,7 +152,10 @@ fn discover_files(path: &Path) -> Result<Vec<PathBuf>, String> {
     }
 
     if !path.is_dir() {
-        return Err(format!("Path is not a file or directory: {}", path.display()));
+        return Err(format!(
+            "Path is not a file or directory: {}",
+            path.display()
+        ));
     }
 
     let mut files = Vec::new();
@@ -396,5 +399,8 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) {
             .collect(),
     };
 
-    println!("{}", serde_json::to_string_pretty(&report).expect("JSON serialization failed"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("JSON serialization failed")
+    );
 }
