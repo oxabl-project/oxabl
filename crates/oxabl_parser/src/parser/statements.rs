@@ -3963,6 +3963,15 @@ impl Parser<'_> {
     fn parse_buffer_compare(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER-COMPARE
         let source = self.parse_identifier()?;
+
+        // Optional EXCEPT field-list clause (field1 field2 ...) before TO
+        if self.check(Kind::Except) {
+            self.advance(); // consume EXCEPT
+            while Self::can_be_identifier(self.peek().kind) {
+                self.advance(); // consume each excluded field
+            }
+        }
+
         self.expect_kind(
             Kind::To,
             "Expected TO after source buffer in BUFFER-COMPARE",

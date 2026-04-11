@@ -556,6 +556,37 @@ impl Parser<'_> {
             });
         }
 
+        // DYNAMIC-FUNCTION("func-name" [IN handle] [, arg1, arg2, ...])
+        if self.check(Kind::DynamicFunction) {
+            let token = self.advance();
+            let (ts, te) = (token.start, token.end);
+            let name = Identifier {
+                span: Span {
+                    start: ts as u32,
+                    end: te as u32,
+                },
+                name: self.source[ts..te].to_string(),
+            };
+            self.expect_kind(Kind::LeftParen, "Expected '(' after DYNAMIC-FUNCTION")?;
+            let mut arguments = Vec::new();
+            if !self.check(Kind::RightParen) {
+                // First arg is the function name string
+                arguments.push(self.parse_expression()?);
+                // Optional IN handle clause
+                if self.check(Kind::KwIn) {
+                    self.advance();
+                    arguments.push(self.parse_expression()?);
+                }
+                // Additional comma-separated arguments
+                while self.check(Kind::Comma) {
+                    self.advance();
+                    arguments.push(self.parse_expression()?);
+                }
+            }
+            self.expect_kind(Kind::RightParen, "Expected ')' after DYNAMIC-FUNCTION")?;
+            return Ok(Expression::FunctionCall { name, arguments });
+        }
+
         // CAN-FIND([FIRST|LAST] table [WHERE expr] [lock] [NO-ERROR])
         // Boolean expression that checks if a record matching the phrase exists.
         if self.check(Kind::CanFind) {
