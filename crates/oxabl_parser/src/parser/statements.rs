@@ -367,6 +367,12 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // PAUSE [expr] [NO-MESSAGE] [MESSAGE text] [BEFORE-HIDE] [IN WINDOW w] — skip to period.
+        if self.check(Kind::Pause) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
         if self.check(Kind::KwEnum) {
             self.synchronize(); // skip to end of header line
@@ -1960,6 +1966,17 @@ impl Parser<'_> {
         // Optional TRANSACTION keyword before block opener
         if self.check(Kind::Transaction) {
             self.advance();
+        }
+
+        // Optional WITH FRAME name clause before block opener
+        if self.check(Kind::With) {
+            self.advance(); // consume WITH
+            if self.check(Kind::Frame) {
+                self.advance(); // consume FRAME
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance(); // consume frame name
+                }
+            }
         }
 
         // ABL accepts either ':' or '.' to start the FOR EACH body.
