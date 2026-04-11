@@ -131,6 +131,17 @@ pub enum Statement {
         no_error: bool,
     },
 
+    /// Include file reference at statement level: {file.i}, {file.i args}
+    IncludeReference {
+        /// Raw content between braces (trimmed), e.g. "file.i" or "file.i arg1 arg2"
+        path_and_args: String,
+        span: Span,
+    },
+
+    /// Include positional argument reference at statement level: {0}, {1}, {2}
+    IncludeArgReference { index: i64, span: Span },
+
+    /// Leave statement - exist innermost loop
     /// DISPLAY statement — outputs field/variable values to the screen or a frame.
     ///
     /// Each item is an expression with an optional per-item WHEN condition.

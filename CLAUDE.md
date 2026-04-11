@@ -76,6 +76,8 @@ ABL-specific features handled:
 - Tilde (`~`) as escape character in strings
 - Hyphens allowed in identifiers (`my-variable-name`)
 - Preprocessor directives (`&if`, `&scoped-define`) and references (`{&variable}`)
+- Include file references (`{file.i}`, `{file.i args}`, `{file.i &name=value}`)
+- Include positional argument references (`{0}`, `{1}`, `{2}`)
 - Line (`//`) and block (`/* */`) comments
 
 ### Source Map (`oxabl_common`)
@@ -88,7 +90,7 @@ Defines AST nodes for the parser. Key types:
 
 - **Literals**: Integer, Decimal, String, Boolean, Unknown (ABL's `?` literal)
 - **Expressions**: Arithmetic, comparison, logical, string comparison (BEGINS/MATCHES/CONTAINS), unary, ternary (IF/THEN/ELSE), function calls, postfix operations (member access, method calls, array access, field access)
-- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, Empty, Class, Method, Property, Constructor, Destructor, Interface, Using
+- **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, IncludeReference, IncludeArgReference, Empty, Class, Method, Property, Constructor, Destructor, Interface, Using
 - **Data Types**: Integer, Int64, Decimal, Character, Logical, Date, DateTime, DateTimeTz, Handle, Rowid, Recid, Raw, Memptr, Longchar, Clob, Blob, Com, Class
 
 ### Parser (`oxabl_parser`)
@@ -102,6 +104,8 @@ Parses ABL source code into an AST. Key capabilities:
 - **Function calls** with argument lists
 - **Preprocessor**: &IF/&ELSEIF/&ELSE/&ENDIF at statement, expression, and data type levels via generic `PreprocIf<T>`, &SCOPED-DEFINE/&GLOBAL-DEFINE with `PreprocEnd` lexer token, &UNDEFINE, &MESSAGE, `{&variable}` references
 - **Error recovery** via `parse_program()` with synchronization on period boundaries
+- **Include file references**: `{file.i}`, `{file.i args}`, `{file.i &name=value}` at both statement and expression positions
+- **Include argument references**: `{0}`, `{1}`, `{2}` at both statement and expression positions
 
 Not yet implemented: DO/FOR/REPEAT block-header ON phrases (ON ERROR UNDO, ON ENDKEY UNDO).
 
@@ -167,7 +171,7 @@ cargo bench -p oxabl_common --bench source_map_bench
 
 ## Current Status
 
-- `oxabl_lexer`: MVP complete with 43 tests
+- `oxabl_lexer`: MVP complete with 49 tests
 - `oxabl_common/source_map`: Implemented with 10 tests
 - `oxabl_ast`: Implemented with expressions, statements, and data types
-- `oxabl_parser`: Actively developed with 406 tests; parses expressions, control flow, variable declarations, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), preprocessor directives, stream I/O, frame definitions, ON triggers (UI events, database events, key remapping), and TRIGGER PROCEDURE
+- `oxabl_parser`: Actively developed with 406 tests; parses expressions, control flow, variable declarations, include file references, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), preprocessor directives, stream I/O, frame definitions, ON triggers (UI events, database events, key remapping), and TRIGGER PROCEDURE
