@@ -80,6 +80,23 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // Block label: `LABEL: DO: ...` or `LABEL: REPEAT: ...`
+        // An identifier (or identifier-like keyword) followed by a colon where
+        // the token after the colon is a block-starting keyword.
+        if Self::can_be_identifier(self.peek().kind)
+            && self.check_at(1, Kind::Colon)
+            && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor)
+        {
+            let token = self.advance().clone(); // consume label name
+            let name = self.source[token.start..token.end].to_string();
+            self.advance(); // consume ':'
+            let body = self.parse_statement()?;
+            return Ok(Statement::Label {
+                name,
+                body: Box::new(body),
+            });
+        }
+
         // DO blocks
         if self.check(Kind::Do) {
             return self.parse_do_statement();
@@ -95,18 +112,30 @@ impl Parser<'_> {
             return self.parse_repeat_statement();
         }
 
-        // LEAVE
+        // LEAVE [label].
         if self.check(Kind::Leave) {
             self.advance();
+            let label = if Self::can_be_identifier(self.peek().kind) {
+                let token = self.advance().clone();
+                Some(self.source[token.start..token.end].to_string())
+            } else {
+                None
+            };
             self.expect_kind(Kind::Period, "Expected '.' to come after LEAVE")?;
-            return Ok(Statement::Leave);
+            return Ok(Statement::Leave(label));
         }
 
-        // Next
+        // NEXT [label].
         if self.check(Kind::Next) {
             self.advance();
+            let label = if Self::can_be_identifier(self.peek().kind) {
+                let token = self.advance().clone();
+                Some(self.source[token.start..token.end].to_string())
+            } else {
+                None
+            };
             self.expect_kind(Kind::Period, "Expected '.' to come after NEXT")?;
-            return Ok(Statement::Next);
+            return Ok(Statement::Next(label));
         }
 
         // Return
@@ -1455,6 +1484,14 @@ impl Parser<'_> {
         let mut by = None;
         let mut while_condition = None;
 
+        // Optional TRANSACTION keyword: DO TRANSACTION:
+        let transaction = if self.check(Kind::Transaction) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         // check for loop
         if Self::can_be_identifier(self.peek().kind) {
             // peek ahead to see if this is 'var = start to end'
@@ -1497,6 +1534,36 @@ impl Parser<'_> {
             while_condition = Some(self.parse_expression()?);
         }
 
+        // Skip DO/REPEAT block-header ON phrases: ON ERROR UNDO, RETRY / LEAVE / etc.
+        // These are complex error-handling annotations on block headers; we consume them
+        // without building AST nodes for now.
+        while self.check(Kind::On) {
+            self.advance(); // consume ON
+            // consume the condition (e.g., ERROR, ENDKEY, STOP, QUIT — keyword or identifier)
+            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
+                self.advance(); // consume condition keyword/identifier
+            }
+            // consume UNDO and optional label/action: UNDO [,action [label]]
+            if self.check(Kind::Undo) {
+                self.advance();
+            }
+            // consume optional action after comma: , LEAVE / RETRY / NEXT / RETURN [label]
+            if self.check(Kind::Comma) {
+                self.advance(); // consume ','
+                // consume action keyword (LEAVE, RETRY, NEXT, RETURN)
+                if matches!(
+                    self.peek().kind,
+                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn
+                ) {
+                    self.advance();
+                    // consume optional label
+                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
+                        self.advance();
+                    }
+                }
+            }
+        }
+
         self.expect_kind(Kind::Colon, "Expected ':' after DO")?;
 
         let body = self.parse_block_body()?;
@@ -1507,6 +1574,7 @@ impl Parser<'_> {
             to,
             by,
             while_condition,
+            transaction,
             body,
         })
     }
@@ -1600,6 +1668,9 @@ impl Parser<'_> {
             None
         };
 
+        // Lock type may appear before or after WHERE (ABL is flexible)
+        let lock_type_pre = self.parse_lock_type();
+
         // optional WHERE clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
@@ -1608,10 +1679,34 @@ impl Parser<'_> {
             None
         };
 
-        // Lock type (default is SHARE-LOCK if not explicit)
-        let lock_type = self.parse_lock_type();
+        // Trailing lock type (canonical position); prefer the explicit one
+        let lock_type_post = self.parse_lock_type();
+        let lock_type = if lock_type_pre != LockType::ShareLock {
+            lock_type_pre
+        } else {
+            lock_type_post
+        };
 
-        self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
+        // Skip optional BREAK BY clause: BREAK BY field[:] ...
+        // Used for grouping; consumed without building AST nodes for now.
+        if self.check(Kind::KwBreak) {
+            self.advance(); // consume BREAK
+            if self.check(Kind::By) {
+                self.advance(); // consume BY
+            }
+            // consume the break field expression (stops at ':' or '.')
+            if !self.check(Kind::Colon) && !self.check(Kind::Period) {
+                self.parse_expression().ok();
+            }
+        }
+
+        // ABL accepts either ':' or '.' to start the FOR EACH body.
+        // Some code uses 'FOR EACH table WHERE cond NO-LOCK.' with a period.
+        if self.check(Kind::Period) {
+            self.advance(); // consume '.' as body-start
+        } else {
+            self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
+        }
         let body = self.parse_block_body()?;
 
         Ok(Statement::ForEach {
@@ -1645,6 +1740,10 @@ impl Parser<'_> {
                 self.advance();
                 FindType::Prev
             }
+            Kind::Current => {
+                self.advance();
+                FindType::Current
+            }
             _ => FindType::Unique,
         };
 
@@ -1660,6 +1759,10 @@ impl Parser<'_> {
             None
         };
 
+        // In ABL, lock type may appear before or after the WHERE clause.
+        // Parse an optional leading lock type, then WHERE, then trailing lock type.
+        let lock_type_before = self.parse_lock_type();
+
         // parse optional where clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
@@ -1668,8 +1771,13 @@ impl Parser<'_> {
             None
         };
 
-        // parse lock type, defaults to share lock if none is present
-        let lock_type = self.parse_lock_type();
+        // parse trailing lock type (the canonical position); use the first one found
+        let lock_type_after = self.parse_lock_type();
+        let lock_type = if lock_type_before != LockType::ShareLock {
+            lock_type_before
+        } else {
+            lock_type_after
+        };
 
         // parse optional no error
         let no_error = if self.check(Kind::NoError) {
@@ -1814,6 +1922,10 @@ impl Parser<'_> {
                         }
                         _ => ParameterDirection::Input, // Default to INPUT
                     };
+                    // Skip optional TABLE keyword (for temp-table pass-through args)
+                    if self.check(Kind::Table) {
+                        self.advance();
+                    }
 
                     let expression = self.parse_expression()?;
                     args.push(RunArgument {
@@ -1837,7 +1949,7 @@ impl Parser<'_> {
         // parse optional IN handle
         let in_handle = if self.check(Kind::KwIn) {
             self.advance();
-            Some(self.parse_expression()?)
+            Some(self.parse_run_in_handle()?)
         } else {
             None
         };
@@ -1876,6 +1988,49 @@ impl Parser<'_> {
             (false, None, None)
         };
 
+        // parse optional argument list that appears after IN/PERSISTENT/ASYNC modifiers
+        // (ABL allows: RUN proc IN handle (args). as well as RUN proc (args) IN handle.)
+        let arguments = if arguments.is_empty() && self.check(Kind::LeftParen) {
+            self.advance();
+            let mut args = Vec::new();
+            if !self.check(Kind::RightParen) {
+                loop {
+                    let direction = match self.peek().kind {
+                        Kind::Input => {
+                            self.advance();
+                            ParameterDirection::Input
+                        }
+                        Kind::Output => {
+                            self.advance();
+                            ParameterDirection::Output
+                        }
+                        Kind::InputOutput => {
+                            self.advance();
+                            ParameterDirection::InputOutput
+                        }
+                        _ => ParameterDirection::Input,
+                    };
+                    // Skip optional TABLE keyword (for temp-table pass-through args)
+                    if self.check(Kind::Table) {
+                        self.advance();
+                    }
+                    let expression = self.parse_expression()?;
+                    args.push(RunArgument {
+                        direction,
+                        expression,
+                    });
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                }
+            }
+            self.expect_kind(Kind::RightParen, "Expected ')' after RUN arguments")?;
+            args
+        } else {
+            arguments
+        };
+
         // parse optional NO-ERROR
         let no_error = if self.check(Kind::NoError) {
             self.advance();
@@ -1897,6 +2052,47 @@ impl Parser<'_> {
             event_procedure,
             no_error,
         })
+    }
+
+    /// Parse a handle expression for `RUN ... IN <handle>`.
+    /// Restricted: parses identifier + optional colon-member/array postfix,
+    /// but NEVER treats a following `(` as a function call.
+    /// The `(` belongs to the RUN argument list.
+    fn parse_run_in_handle(&mut self) -> ParseResult<Expression> {
+        let identifier = self.parse_identifier()?;
+        let mut expr = Expression::Identifier(identifier);
+
+        loop {
+            if self.check(Kind::Colon) {
+                let colon_end = self.tokens[self.current].end;
+                let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
+                    Self::can_be_identifier(t.kind)
+                        && !self.source[colon_end..t.start].contains('\n')
+                });
+                if next_is_member {
+                    self.advance(); // consume ':'
+                    let member = self.parse_identifier()?;
+                    expr = Expression::MemberAccess {
+                        object: Box::new(expr),
+                        member,
+                    };
+                } else {
+                    break;
+                }
+            } else if self.check(Kind::LeftBracket) {
+                self.advance(); // consume '['
+                let index = self.parse_expression()?;
+                self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
+                expr = Expression::ArrayAccess {
+                    array: Box::new(expr),
+                    index: Box::new(index),
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
     }
 
     // Parse DISPLAY statement
@@ -2069,7 +2265,8 @@ impl Parser<'_> {
         while !self.check(Kind::Period) && !self.check(Kind::NoError) && !self.at_end() {
             let target = self.parse_additive()?;
             self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
-            let value = self.parse_additive()?;
+            // Use full expression parser for value to allow IF/THEN/ELSE ternary and other exprs
+            let value = self.parse_expression()?;
             assignments.push(AssignPair { target, value });
         }
         Ok(assignments)
@@ -2235,7 +2432,7 @@ impl Parser<'_> {
 
     /// Parses an optional lock type (NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK)
     /// Returns ShareLock if no lock type is specified (ABL default)
-    fn parse_lock_type(&mut self) -> LockType {
+    pub(crate) fn parse_lock_type(&mut self) -> LockType {
         match self.peek().kind {
             Kind::NoLock => {
                 self.advance();
@@ -2260,7 +2457,10 @@ impl Parser<'_> {
     /// `.i`, and `.cls`. A period followed by a non-extension token is treated as the
     /// statement terminator, not part of the name.
     fn parse_procedure_name(&mut self) -> ParseResult<String> {
-        if !Self::can_be_identifier(self.peek().kind) {
+        // Procedure names are file paths and can start with any word-like token,
+        // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`).
+        // Accept any non-operator, non-punctuation, non-literal token as a valid first component.
+        if !Self::is_word_kind(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
                 span: Span {
@@ -2272,6 +2472,12 @@ impl Parser<'_> {
 
         let start = self.peek().start;
         self.advance(); // consume the first identifier token
+
+        // Consume additional path components separated by `/` (e.g., `oe/oe_calc_order_total.p`)
+        while self.check(Kind::Slash) && Self::is_word_kind(self.peek_at(1).kind) {
+            self.advance(); // consume '/'
+            self.advance(); // consume next path component
+        }
 
         // Check for dotted extension (e.g., my-proc.p)
         // Only consume the dot + extension if it's a known ABL file extension
@@ -2857,6 +3063,17 @@ impl Parser<'_> {
     // DELETE buffer-name [NO-ERROR].
     fn parse_delete_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DELETE
+        // Skip optional OBJECT keyword (not reserved, lexed as Identifier)
+        // e.g., DELETE OBJECT myObj. vs DELETE myTable.
+        if self.check(Kind::Identifier) {
+            let token = &self.tokens[self.current];
+            if self.source[token.start..token.end].eq_ignore_ascii_case("object") {
+                // Only skip if there's another identifier following (the actual target)
+                if Self::can_be_identifier(self.peek_at(1).kind) {
+                    self.advance();
+                }
+            }
+        }
         let buffer = self.parse_identifier()?;
         let no_error = self.parse_no_error();
         self.expect_kind(Kind::Period, "Expected '.' after DELETE statement")?;
@@ -3013,6 +3230,10 @@ impl Parser<'_> {
                     }
                     _ => ParameterDirection::Input,
                 };
+                // Skip optional TABLE keyword (for temp-table pass-through args)
+                if self.check(Kind::Table) {
+                    self.advance();
+                }
 
                 let expression = self.parse_expression()?;
                 args.push(RunArgument {

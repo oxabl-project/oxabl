@@ -624,17 +624,24 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_block_comment(&mut self) -> Kind {
+        // ABL supports nested block comments: /* outer /* inner */ still-outer */
+        let mut depth: u32 = 1;
         loop {
-            // consume chars until we hit a *
             match self.advance() {
-                // check the next char, if it's /, comment is done
-                Some('*') if self.peek() == Some('/') => {
-                    self.advance();
-                    return Kind::Comment; // or skip and recurse to read_next_kind
+                // Opening a nested comment
+                Some('/') if self.peek() == Some('*') => {
+                    self.advance(); // consume '*'
+                    depth += 1;
                 }
-                // if it's None, there are no more chars to read, EoF basically
+                // Closing a comment level
+                Some('*') if self.peek() == Some('/') => {
+                    self.advance(); // consume '/'
+                    depth -= 1;
+                    if depth == 0 {
+                        return Kind::Comment;
+                    }
+                }
                 None => return Kind::Invalid, // unterminated comment
-                // else just keep going
                 _ => continue,
             }
         }

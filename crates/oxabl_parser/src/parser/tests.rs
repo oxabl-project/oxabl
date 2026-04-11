@@ -2328,7 +2328,7 @@ fn parse_leave_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(stmt, Statement::Leave);
+    assert_eq!(stmt, Statement::Leave(None));
 }
 
 #[test]
@@ -2337,7 +2337,7 @@ fn parse_next_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(stmt, Statement::Next);
+    assert_eq!(stmt, Statement::Next(None));
 }
 
 #[test]
