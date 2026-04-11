@@ -345,6 +345,7 @@ impl<'a> Parser<'a> {
                     | Kind::Yes
                     | Kind::Session
                     | Kind::ErrorStatus
+                    | Kind::Value
                     // Statement keywords that may also appear as identifiers/names
                     | Kind::Empty
                     | Kind::Form
@@ -594,6 +595,12 @@ impl<'a> Parser<'a> {
             Kind::ComHandle => DataType::Com,
             Kind::Class => {
                 self.advance(); // consume CLASS
+                let class_name = self.parse_qualified_identifier()?;
+                return Ok(DataType::Class(class_name.name));
+            }
+            // ABL allows `AS ClassName` (without CLASS keyword) for class types.
+            // Dotted names like `forms.deco_proof_form` are class references.
+            Kind::Identifier => {
                 let class_name = self.parse_qualified_identifier()?;
                 return Ok(DataType::Class(class_name.name));
             }
