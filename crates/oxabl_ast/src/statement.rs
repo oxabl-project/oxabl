@@ -21,7 +21,7 @@ pub enum Statement {
     /// Variables
     VariableDeclaration {
         name: Identifier,
-        data_type: DataType,
+        type_source: TypeSource,
         initial_value: Option<Expression>,
         no_undo: bool,
         /// Extent/Array, none for scalar, some(0) for dynamic
@@ -667,13 +667,17 @@ pub struct DisplayItem {
     pub when_condition: Option<Expression>,
 }
 
-/// Source of a temp-table field's type — either explicit or inherited via LIKE.
+/// Source of a type specification — either explicit (`AS type`) or inherited (`LIKE field`).
+///
+/// Used in variable declarations, parameter declarations, and temp-table field definitions.
+/// For temp-table fields, the enclosing [`TempTableField`] carries the `validate` flag
+/// separately (VALIDATE is not valid on DEFINE VARIABLE or DEFINE PARAMETER LIKE).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FieldTypeSource {
-    /// Explicit type: `FIELD x AS INTEGER`
+pub enum TypeSource {
+    /// Explicit type: `... AS INTEGER` or `... AS CLASS Foo`
     Explicit(DataType),
-    /// Inherited type: `FIELD x LIKE Customer.CustNum [VALIDATE]`
-    Like { source: Identifier, validate: bool },
+    /// Inherited type: `... LIKE Customer.CustNum`
+    Like { source: Identifier },
 }
 
 /// A field definition in a DEFINE TEMP-TABLE statement.
@@ -682,7 +686,10 @@ pub struct TempTableField {
     /// Field name.
     pub name: Identifier,
     /// Type source — either explicit (AS type) or inherited (LIKE field).
-    pub type_source: FieldTypeSource,
+    pub type_source: TypeSource,
+    /// Whether to inherit validation rules from the source field (`LIKE field VALIDATE`).
+    /// Only meaningful when `type_source` is [`TypeSource::Like`]; always `false` otherwise.
+    pub validate: bool,
     /// Optional initial value(s). Scalar fields have one element; array fields may have multiple.
     pub initial_value: Option<Vec<Expression>>,
     /// Extent/array size. None for scalar, Some(0) for dynamic extent.
@@ -861,7 +868,7 @@ pub enum ParameterType {
     /// Standard variable parameter: DEFINE INPUT PARAMETER name AS type [NO-UNDO].
     Variable {
         name: Identifier,
-        data_type: DataType,
+        type_source: TypeSource,
         no_undo: bool,
     },
     /// Handle-based parameter: TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE
