@@ -291,7 +291,10 @@ impl Parser<'_> {
                     }
                     arguments.push(self.parse_expression()?);
                     // Consume optional passing modifiers
-                    while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+                    ) {
                         self.advance();
                     }
                 }
