@@ -152,6 +152,25 @@ impl<'a> Parser<'a> {
             self.advance();
         }
     }
+
+    /// Like skip_to_period but treats `.identifier` on the same line as field access,
+    /// only stopping at a period that terminates a statement (not followed by an identifier).
+    pub fn skip_to_statement_end(&mut self) {
+        while !self.at_end() {
+            if self.check(Kind::Period) {
+                let period_end = self.tokens[self.current].end;
+                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
+                    Self::can_be_identifier(t.kind)
+                        && !self.source[period_end..t.start].contains('\n')
+                });
+                if !is_field_access {
+                    self.advance(); // consume the terminating period
+                    return;
+                }
+            }
+            self.advance();
+        }
+    }
     pub fn peek(&self) -> &Token {
         &self.tokens[self.current]
     }
