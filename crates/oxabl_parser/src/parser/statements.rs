@@ -86,9 +86,14 @@ impl Parser<'_> {
         // Check the colon first: it fails for the vast majority of statements
         // (e.g. `ASSIGN x = ...` where position +1 is the variable name, not
         // a colon), avoiding the more expensive `can_be_identifier` call.
+        // Use peek_nth_non_comment(3) to skip over inline comments between ':' and the block
+        // keyword (e.g. `LABEL: /* comment */\n DO:` has a Comment at peek_at(2)).
         if self.check_at(1, Kind::Colon)
             && Self::can_be_identifier(self.peek().kind)
-            && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor)
+            && matches!(
+                self.peek_nth_non_comment(3).kind,
+                Kind::Do | Kind::Repeat | Kind::KwFor
+            )
         {
             let token = self.advance().clone(); // consume label name
             let name = self.source[token.start..token.end].to_string();
@@ -624,9 +629,10 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to period
+        // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to statement end.
+        // Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
         if self.check(Kind::Workfile) {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
