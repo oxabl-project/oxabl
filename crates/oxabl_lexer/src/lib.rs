@@ -95,6 +95,35 @@ impl<'a> Lexer<'a> {
                 '\n' if !self.in_directive => {
                     self.advance();
                 }
+                // Tilde followed by optional spaces/tabs then a newline is a line-continuation.
+                // Handle it here so that `start` in read_next_kind(start) correctly points to
+                // the first character of the NEXT token (not the tilde), which matters for
+                // keyword matching in read_identifier_or_keyword(start).
+                '~' => {
+                    let is_continuation = {
+                        let mut look = self.chars.clone();
+                        look.next(); // skip the tilde itself (peek() didn't advance)
+                        loop {
+                            match look.next() {
+                                Some(' ') | Some('\t') | Some('\r') => {}
+                                Some('\n') => break true,
+                                _ => break false,
+                            }
+                        }
+                    };
+                    if is_continuation {
+                        self.advance(); // consume ~
+                        while matches!(self.peek(), Some(' ') | Some('\t') | Some('\r')) {
+                            self.advance();
+                        }
+                        if matches!(self.peek(), Some('\n')) {
+                            self.advance(); // consume \n
+                        }
+                        // Continue the loop — there may be more leading whitespace on the next line
+                    } else {
+                        break; // ~ not followed by newline — stop, let read_next_kind handle it
+                    }
+                }
                 _ => break,
             }
         }
