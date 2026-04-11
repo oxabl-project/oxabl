@@ -1653,6 +1653,8 @@ end."#;
         assert_eq!(tokens[1].kind, Kind::IncludeArgReference);
         assert_eq!(tokens[1].value, TokenValue::Integer(1));
         assert_eq!(tokens[2].kind, Kind::Shared);
+    }
+
     // ── PreprocEnd / in_directive tests ──────────────────────────────
 
     #[test]

@@ -8109,7 +8109,6 @@ END CLASS."#;
     }
 }
 
-
 // ==================== Include File Reference Tests ====================
 
 #[test]
@@ -8138,9 +8137,7 @@ fn parse_include_reference_with_path() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::IncludeReference {
-            path_and_args, ..
-        } => {
+        Statement::IncludeReference { path_and_args, .. } => {
             assert_eq!(path_and_args, "globals/globals.i");
         }
         _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
@@ -8154,9 +8151,7 @@ fn parse_include_reference_with_args() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::IncludeReference {
-            path_and_args, ..
-        } => {
+        Statement::IncludeReference { path_and_args, .. } => {
             assert_eq!(path_and_args, "file.i NEW shared");
         }
         _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
@@ -8201,9 +8196,7 @@ fn parse_include_reference_as_expression() {
         Statement::Assignment { target, value } => {
             assert!(matches!(target, Expression::Identifier(_)));
             match value {
-                Expression::IncludeReference {
-                    path_and_args, ..
-                } => {
+                Expression::IncludeReference { path_and_args, .. } => {
                     assert_eq!(path_and_args, "file.i");
                 }
                 _ => panic!("Expected IncludeReference expression, got {:?}", value),
@@ -8288,9 +8281,7 @@ fn parse_include_with_named_args() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::IncludeReference {
-            path_and_args, ..
-        } => {
+        Statement::IncludeReference { path_and_args, .. } => {
             assert_eq!(
                 path_and_args,
                 r#"ms/report.i &event="start" &stream-name="s-printer""#
