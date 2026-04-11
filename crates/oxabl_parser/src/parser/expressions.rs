@@ -771,10 +771,11 @@ impl Parser<'_> {
                     }
                 }
             }
-            // field name — may be qualified (table.field) or indexed (field[i])
-            if Self::can_be_identifier(self.peek().kind)
-                && let Ok(field_expr) = self.parse_postfix()
-            {
+            // field name — may be an identifier, qualified field, indexed access, or
+            // parenthesized expression like (expr1 - expr2)
+            let is_field_start =
+                Self::can_be_identifier(self.peek().kind) || self.check(Kind::LeftParen);
+            if is_field_start && let Ok(field_expr) = self.parse_postfix() {
                 arguments.push(field_expr);
             }
             return Ok(Expression::FunctionCall { name, arguments });
