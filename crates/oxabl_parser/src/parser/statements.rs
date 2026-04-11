@@ -100,6 +100,14 @@ impl Parser<'_> {
             });
         }
 
+        // CATCH / FINALLY blocks — may appear at program level or inside any block body
+        if self.check(Kind::Catch) {
+            return self.parse_catch_block();
+        }
+        if self.check(Kind::Finally) {
+            return self.parse_finally_block();
+        }
+
         // DO blocks
         if self.check(Kind::Do) {
             return self.parse_do_statement();
@@ -347,21 +355,24 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // COPY-LOB: complex LOB manipulation statement — skip to next period.
+        // COPY-LOB: complex LOB manipulation statement — skip to next statement period.
+        // Uses skip_to_statement_end() (not skip_to_period()) to avoid stopping at
+        // '.' field-access separators inside expressions like clob_data.datawad.
         if self.check(Kind::CopyLob) {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
-        // PUT [STREAM s] UNFORMATTED expr. — stream output statement, skip to period.
+        // PUT [STREAM s] UNFORMATTED expr. — stream output statement, skip to statement end.
         if self.check(Kind::Put) {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
-        // FORM ... — legacy UI form definition, skip to period.
+        // FORM ... — legacy UI form definition, skip to statement end.
+        // Uses skip_to_statement_end() to skip over .field-access in form items.
         if self.check(Kind::Form) {
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
@@ -378,7 +389,7 @@ impl Parser<'_> {
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
-        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN — skip to period.
+        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN / REPOSITION — skip to period.
         if self.check(Kind::Pause)
             || self.check(Kind::Bell)
             || self.check(Kind::Import)
@@ -394,6 +405,13 @@ impl Parser<'_> {
             || self.check(Kind::Open)
         {
             self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // REPOSITION query-name TO ... — query cursor repositioning, skip to statement end.
+        // Uses skip_to_statement_end() to skip over ROWID(...) and NO-ERROR properly.
+        if self.check(Kind::Reposition) && Self::can_be_identifier(self.peek_at(1).kind) {
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
@@ -462,6 +480,14 @@ impl Parser<'_> {
         // Consume optional NO-ERROR trailing clause (e.g. handle:method() NO-ERROR.)
         if self.check(Kind::NoError) {
             self.advance();
+        }
+        // If a preprocessor-macro expression is followed by arguments (not a period),
+        // it's a macro invocation like "{&out} "string"." — skip to statement end.
+        if !self.check(Kind::Period) {
+            if matches!(expr, Expression::PreprocReference(_)) {
+                self.skip_to_statement_end();
+                return Ok(Statement::ExpressionStatement(expr));
+            }
         }
         self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
         Ok(Statement::ExpressionStatement(expr))
@@ -1924,6 +1950,15 @@ impl Parser<'_> {
     fn parse_return_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume RETURN
 
+        // RETURN ERROR expr. — ABL error-throw syntax; ERROR is an identifier modifier.
+        // Skip ERROR keyword and parse the rest as a return value expression, or skip to period.
+        if Self::can_be_identifier(self.peek().kind)
+            && self.source[self.peek().start..self.peek().end].eq_ignore_ascii_case("error")
+        {
+            self.skip_to_statement_end();
+            return Ok(Statement::Return(None));
+        }
+
         // Check if there's a return value (not just a period)
         let value = if !self.check(Kind::Period) {
             Some(self.parse_expression()?)
@@ -1931,6 +1966,10 @@ impl Parser<'_> {
             None
         };
 
+        // Consume optional NO-ERROR (e.g. RETURN value NO-ERROR.)
+        if self.check(Kind::NoError) {
+            self.advance();
+        }
         self.expect_kind(Kind::Period, "Expected a '.' after RETURN")?;
         Ok(Statement::Return(value))
     }

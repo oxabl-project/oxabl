@@ -668,7 +668,8 @@ impl Parser<'_> {
         if (self.check(Kind::TempTable)
             || self.check(Kind::Buffer)
             || self.check(Kind::Frame)
-            || self.check(Kind::Query))
+            || self.check(Kind::Query)
+            || self.check(Kind::Dataset))
             && (Self::can_be_identifier(self.peek_at(1).kind) || self.check_at(1, Kind::Preprop))
         {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
