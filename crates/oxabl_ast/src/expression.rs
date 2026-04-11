@@ -3,7 +3,7 @@
 //! Expressions are parsed with the following precedence (lowest to highest):
 //! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative > unary > postfix > primary.
 
-use crate::{Literal, PreprocIf, Span};
+use crate::{FindType, Literal, LockType, PreprocIf, Span};
 
 /// A named identifier with its source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,4 +85,18 @@ pub enum Expression {
     /// Mid-expression preprocessor conditional.
     /// The else_branch is semantically required (parser enforces this).
     PreprocIf(Box<PreprocIf<Expression>>),
+    /// Object instantiation: `NEW ClassName(args)` or `NEW package.Class(args)`
+    New {
+        /// The class name, possibly dotted (e.g., "oe.wsdeco")
+        class_name: String,
+        arguments: Vec<Expression>,
+    },
+    /// CAN-FIND record phrase: `CAN-FIND([FIRST|LAST] table [WHERE expr] [lock] [NO-ERROR])`
+    CanFind {
+        find_type: FindType,
+        buffer: Identifier,
+        where_clause: Option<Box<Expression>>,
+        lock_type: LockType,
+        no_error: bool,
+    },
 }

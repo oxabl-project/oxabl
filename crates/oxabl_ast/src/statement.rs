@@ -51,6 +51,8 @@ pub enum Statement {
         /// Step value for loops
         by: Option<Expression>,
         while_condition: Option<Expression>,
+        /// Whether the block runs inside a transaction (DO TRANSACTION:)
+        transaction: bool,
         body: Vec<Statement>,
     },
 
@@ -550,17 +552,21 @@ pub enum Statement {
         old_value_param: Option<TriggerAssignParam>,
     },
 
-    /// Leave statement - exit innermost loop
-    Leave,
+    /// Leave statement - exit innermost loop, optionally naming the target label
+    Leave(Option<String>),
 
-    /// Next statement - skip to next iteration
-    Next,
+    /// Next statement - skip to next iteration, optionally naming the target label
+    Next(Option<String>),
 
     /// Return statement with an optional return value expression.
     Return(Option<Expression>),
 
     /// Empty (just a period)
     Empty,
+
+    /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
+    /// The label can be referenced by LEAVE and NEXT statements.
+    Label { name: String, body: Box<Statement> },
 }
 
 /// Access modifier for OO-ABL members.
@@ -614,6 +620,7 @@ pub enum FindType {
     Last,
     Next,
     Prev,
+    Current,
     Unique, // No qualifier
 }
 
