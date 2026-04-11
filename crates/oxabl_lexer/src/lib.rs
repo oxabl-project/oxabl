@@ -284,16 +284,25 @@ impl<'a> Lexer<'a> {
                 '&' => {
                     return self.read_preprocessor_directive(start);
                 }
-                // Tilde is a line-continuation character inside &SCOPED-DEFINE / &GLOBAL-DEFINE.
-                // Consume the ~ and the following newline without ending the directive.
-                '~' if self.in_directive => {
+                // '@' is ABL's field-format reference operator in DISPLAY (same as keyword AT)
+                '@' => {
+                    return Kind::At;
+                }
+                // Tilde (~) is ABL's line-continuation character.
+                // Inside &SCOPED-DEFINE / &GLOBAL-DEFINE: skip ~ and \n without ending directive.
+                // Outside directives: also skip ~ followed by \n as a line continuation.
+                '~' => {
                     if matches!(self.peek(), Some('\r')) {
                         self.advance(); // consume \r
                     }
                     if matches!(self.peek(), Some('\n')) {
-                        self.advance(); // consume \n (do NOT emit PreprocEnd)
+                        self.advance(); // consume \n
+                        if self.in_directive {
+                            // Stay in directive; do not emit PreprocEnd
+                        }
+                        // else: \n was already consumed; loop continues to next char
                     }
-                    continue; // keep reading directive tokens
+                    continue; // keep reading
                 }
                 _ => {
                     return Kind::Invalid;
