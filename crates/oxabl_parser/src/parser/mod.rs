@@ -138,7 +138,11 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_comments(&mut self) {
-        while self.tokens.get(self.current).is_some_and(|t| t.kind == Kind::Comment) {
+        while self
+            .tokens
+            .get(self.current)
+            .is_some_and(|t| t.kind == Kind::Comment)
+        {
             self.current += 1;
         }
     }
