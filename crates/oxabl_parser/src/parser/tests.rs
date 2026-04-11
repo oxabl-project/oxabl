@@ -8108,3 +8108,185 @@ END CLASS."#;
         _ => panic!("Expected Class statement"),
     }
 }
+
+// ==================== Include File Reference Tests ====================
+
+#[test]
+fn parse_include_reference_statement() {
+    let source = "{file.i}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::IncludeReference {
+            path_and_args,
+            span,
+        } => {
+            assert_eq!(path_and_args, "file.i");
+            assert_eq!(span.start, 0);
+            assert_eq!(span.end, 8);
+        }
+        _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_include_reference_with_path() {
+    let source = "{globals/globals.i}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::IncludeReference { path_and_args, .. } => {
+            assert_eq!(path_and_args, "globals/globals.i");
+        }
+        _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_include_reference_with_args() {
+    let source = "{file.i NEW shared}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::IncludeReference { path_and_args, .. } => {
+            assert_eq!(path_and_args, "file.i NEW shared");
+        }
+        _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_include_reference_no_period() {
+    // Include references without trailing period should also parse
+    // (since they expand to arbitrary code that may include its own period)
+    let source = "{file.i}";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert!(matches!(stmt, Statement::IncludeReference { .. }));
+}
+
+#[test]
+fn parse_include_arg_reference_statement() {
+    let source = "{1}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::IncludeArgReference { index, span } => {
+            assert_eq!(index, 1);
+            assert_eq!(span.start, 0);
+            assert_eq!(span.end, 3);
+        }
+        _ => panic!("Expected IncludeArgReference statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_include_reference_as_expression() {
+    // Include in expression position: x = {file.i}.
+    let source = "x = {file.i}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { target, value } => {
+            assert!(matches!(target, Expression::Identifier(_)));
+            match value {
+                Expression::IncludeReference { path_and_args, .. } => {
+                    assert_eq!(path_and_args, "file.i");
+                }
+                _ => panic!("Expected IncludeReference expression, got {:?}", value),
+            }
+        }
+        _ => panic!("Expected Assignment statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_include_arg_reference_as_expression() {
+    // Include arg in expression position: x = {1}.
+    let source = "x = {1}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { target, value } => {
+            assert!(matches!(target, Expression::Identifier(_)));
+            match value {
+                Expression::IncludeArgReference { index, .. } => {
+                    assert_eq!(index, 1);
+                }
+                _ => panic!("Expected IncludeArgReference expression, got {:?}", value),
+            }
+        }
+        _ => panic!("Expected Assignment statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_include_inside_do_block() {
+    let source = "DO: {body.i} END.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::IncludeReference { .. }));
+        }
+        _ => panic!("Expected Do statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_include_inside_procedure() {
+    let source = "PROCEDURE my-proc: {proc-body.i} END PROCEDURE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Procedure { name, body } => {
+            assert_eq!(name.name, "my-proc");
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::IncludeReference { .. }));
+        }
+        _ => panic!("Expected Procedure statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_multiple_includes() {
+    let source = "{a.i} {b.i} {c.i}";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+
+    let stmt1 = parser.parse_statement().expect("Expected first statement");
+    assert!(matches!(stmt1, Statement::IncludeReference { .. }));
+
+    let stmt2 = parser.parse_statement().expect("Expected second statement");
+    assert!(matches!(stmt2, Statement::IncludeReference { .. }));
+
+    let stmt3 = parser.parse_statement().expect("Expected third statement");
+    assert!(matches!(stmt3, Statement::IncludeReference { .. }));
+}
+
+#[test]
+fn parse_include_with_named_args() {
+    let source = r#"{ms/report.i &event="start" &stream-name="s-printer"}."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::IncludeReference { path_and_args, .. } => {
+            assert_eq!(
+                path_and_args,
+                r#"ms/report.i &event="start" &stream-name="s-printer""#
+            );
+        }
+        _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
+    }
+}
