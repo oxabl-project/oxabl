@@ -141,6 +141,13 @@ impl Parser<'_> {
             return Ok(Statement::Next(label));
         }
 
+        // QUIT — exits the entire program; no label.
+        if self.check(Kind::Quit) {
+            self.advance();
+            self.expect_kind(Kind::Period, "Expected '.' after QUIT")?;
+            return Ok(Statement::Empty);
+        }
+
         // UNDO [label] [, LEAVE/RETRY/NEXT/RETURN [label]].
         if self.check(Kind::Undo) {
             self.advance(); // consume UNDO
@@ -3503,9 +3510,15 @@ impl Parser<'_> {
 
         // Consume .segment parts, including .* wildcard
         while self.check(Kind::Period) {
-            // Peek past period: identifier or * continues the name, anything else is terminator
+            // Peek past period: identifier or * continues the name, anything else is terminator.
+            // Exclude preprocessor tokens — they are never part of a dotted type name.
             let next_kind = self.peek_at(1).kind;
-            if Self::can_be_identifier(next_kind) {
+            let is_name_segment = Self::can_be_identifier(next_kind)
+                && !matches!(
+                    next_kind,
+                    Kind::IncludeReference | Kind::IncludeArgReference | Kind::Preprop
+                );
+            if is_name_segment {
                 self.advance(); // consume .
                 let seg = self.advance().clone();
                 type_name.push('.');
@@ -4078,6 +4091,10 @@ impl Parser<'_> {
             });
         };
 
+        // Skip optional trailing clauses: NO-ECHO, CONVERT TARGET "...", PAGE-SIZE n, etc.
+        while !self.check(Kind::Period) && !self.at_end() {
+            self.advance();
+        }
         self.expect_kind(Kind::Period, "Expected '.' after stream I/O statement")?;
 
         Ok(Statement::StreamIo {
