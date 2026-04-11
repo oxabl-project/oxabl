@@ -2351,6 +2351,10 @@ impl Parser<'_> {
     fn parse_assign_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume ASSIGN
         let assignments = self.parse_assign_pairs()?;
+        // Optional NO-ERROR after ASSIGN
+        if self.check(Kind::NoError) {
+            self.advance();
+        }
         self.expect_kind(Kind::Period, "Expected '.' after ASSIGN statement")?;
         Ok(Statement::Assign { assignments })
     }
