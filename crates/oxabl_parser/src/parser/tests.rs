@@ -1998,6 +1998,30 @@ fn parse_define_variable_like_with_initial() {
 }
 
 #[test]
+fn parse_define_variable_decimal_decimals_extent() {
+    let source = "Def var tax-round as decimal decimals 2 extent 5.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name,
+            type_source,
+            extent,
+            ..
+        } => {
+            assert_eq!(name.name, "tax-round");
+            assert!(matches!(
+                type_source,
+                TypeSource::Explicit(DataType::Decimal)
+            ));
+            assert_eq!(extent, Some(5));
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
 fn parse_var_like() {
     let source = "VAR LIKE Customer.CustName vCust.";
     let tokens = tokenize(source);
