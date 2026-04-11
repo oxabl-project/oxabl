@@ -370,12 +370,14 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-COPY / OS-RENAME — skip to period.
+        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / PAGE — skip to period.
         if self.check(Kind::Pause)
             || self.check(Kind::Bell)
             || self.check(Kind::Import)
             || self.check(Kind::OsDelete)
             || self.check(Kind::OsDir)
+            || self.check(Kind::OsCreateDir)
+            || self.check(Kind::Page)
         {
             self.skip_to_period();
             return Ok(Statement::Empty);
@@ -2524,6 +2526,12 @@ impl Parser<'_> {
                     // SKIP [n] or SPACE [n]
                     self.advance();
                     if self.check(Kind::IntegerLiteral) {
+                        self.advance();
+                    }
+                } else if self.check(Kind::Colon) {
+                    // COLON n — column position specifier
+                    self.advance();
+                    if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
                         self.advance();
                     }
                 } else {
