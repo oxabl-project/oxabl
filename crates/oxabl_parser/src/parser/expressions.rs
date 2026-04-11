@@ -730,25 +730,19 @@ impl Parser<'_> {
                     },
                     name: self.source[as_..ae].to_string(),
                 }));
-                // optional BY break-field
+                // optional BY break-field (may be qualified: table.field)
                 if self.check(Kind::By) {
                     self.advance();
                     if Self::can_be_identifier(self.peek().kind) {
-                        self.advance();
+                        self.parse_postfix().ok();
                     }
                 }
             }
-            // field name
+            // field name — may be qualified (table.field) or indexed (field[i])
             if Self::can_be_identifier(self.peek().kind) {
-                let field = self.advance();
-                let (fs, fe) = (field.start, field.end);
-                arguments.push(Expression::Identifier(Identifier {
-                    span: Span {
-                        start: fs as u32,
-                        end: fe as u32,
-                    },
-                    name: self.source[fs..fe].to_string(),
-                }));
+                if let Ok(field_expr) = self.parse_postfix() {
+                    arguments.push(field_expr);
+                }
             }
             return Ok(Expression::FunctionCall { name, arguments });
         }
