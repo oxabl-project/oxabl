@@ -1,0 +1,87 @@
+/* Benchmark fixture: DEFINE TEMP-TABLE and DEFINE BUFFER */
+
+define temp-table ttCustomer no-undo
+    field cust-id as integer
+    field cust-name as character
+    field balance as decimal
+    field active as logical
+    field created as date
+    index idx-id is primary unique cust-id
+    index idx-name cust-name.
+
+define temp-table ttOrder no-undo
+    field order-id as integer
+    field cust-id as integer
+    field order-date as date
+    field total as decimal
+    field status as character
+    field notes as character
+    index idx-order-id is primary unique order-id
+    index idx-cust-id cust-id
+    index idx-date order-date descending.
+
+define temp-table ttOrderLine no-undo
+    field order-id as integer
+    field line-num as integer
+    field item-name as character
+    field qty as integer
+    field unit-price as decimal
+    field line-total as decimal
+    index idx-pk is primary unique order-id line-num
+    index idx-item item-name.
+
+define temp-table ttEmployee no-undo
+    field emp-id as integer
+    field first-name as character
+    field last-name as character
+    field department as character
+    field salary as decimal
+    field hire-date as date
+    field manager-id as integer
+    field email as character
+    field phone as character
+    field active as logical initial true
+    index idx-emp-id is primary unique emp-id
+    index idx-name last-name first-name
+    index idx-dept department
+    index idx-mgr manager-id.
+
+define temp-table ttConfig no-undo
+    field config-key as character
+    field config-value as character
+    field config-type as character
+    field description as character
+    index idx-key is primary unique config-key.
+
+define temp-table ttLog no-undo
+    field log-id as integer
+    field log-time as datetime
+    field severity as character
+    field message as longchar
+    field source as character
+    index idx-id is primary unique log-id
+    index idx-time log-time descending.
+
+define temp-table ttLookup no-undo
+    field lookup-type as character
+    field lookup-code as character
+    field lookup-desc as character
+    field sort-order as integer
+    field active as logical initial true
+    index idx-pk is primary unique lookup-type lookup-code
+    index idx-sort lookup-type sort-order.
+
+define temp-table ttSummary no-undo
+    field category as character
+    field count-val as integer
+    field sum-val as decimal
+    field avg-val as decimal
+    field min-val as decimal
+    field max-val as decimal
+    index idx-cat is primary unique category.
+
+define buffer bCust for ttCustomer.
+define buffer bOrder for ttOrder.
+define buffer bLine for ttOrderLine.
+define buffer bEmp for ttEmployee.
+define buffer bConfig for ttConfig.

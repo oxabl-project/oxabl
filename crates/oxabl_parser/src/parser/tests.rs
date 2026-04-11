@@ -1,8 +1,10 @@
 use super::*;
 use oxabl_ast::{
-    BooleanLiteral, DataType, DecimalLiteral, Expression, FindType, Identifier, IntegerLiteral,
-    Literal, LockType, ParameterDirection, RunTarget, Span, Statement, StringLiteral,
-    UnknownLiteral, WhenBranch,
+    AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
+    DataType, DbTriggerEvent, DecimalLiteral, Expression, FieldTypeSource, FindType,
+    HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, OnAction, OnKind,
+    ParameterDirection, ParameterType, RunTarget, SortDirection, Span, Statement, StreamDirection,
+    StreamOperation, StringLiteral, SubscribeTarget, UnknownLiteral, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -2969,11 +2971,14 @@ fn parse_define_input_parameter() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -2991,11 +2996,14 @@ fn parse_define_output_parameter() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(name.name, "result");
@@ -3013,11 +3021,14 @@ fn parse_define_input_output_parameter() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::InputOutput);
             assert_eq!(name.name, "data");
@@ -3035,11 +3046,14 @@ fn parse_define_parameter_with_no_undo() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::DefineParamter {
+        Statement::DefineParameter {
             direction,
-            name,
-            data_type,
-            no_undo,
+            param_type:
+                ParameterType::Variable {
+                    name,
+                    data_type,
+                    no_undo,
+                },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(name.name, "name");
@@ -3068,11 +3082,12 @@ END PROCEDURE.
             assert_eq!(body.len(), 3);
             // First statement should be input parameter
             match &body[0] {
-                Statement::DefineParamter {
+                Statement::DefineParameter {
                     direction,
-                    name,
-                    data_type,
-                    ..
+                    param_type:
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
                     assert_eq!(name.name, "name");
@@ -3082,11 +3097,12 @@ END PROCEDURE.
             }
             // Second statement should be output parameter
             match &body[1] {
-                Statement::DefineParamter {
+                Statement::DefineParameter {
                     direction,
-                    name,
-                    data_type,
-                    ..
+                    param_type:
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Output);
                     assert_eq!(name.name, "result");
@@ -3099,36 +3115,293 @@ END PROCEDURE.
     }
 }
 
-// ==================== RUN Statement Tests ====================
+// ===================== DISPLAY statement tests =====================
 
 #[test]
-fn parse_run_simple_procedure() {
-    let source = "RUN my-proc.";
+fn parse_display_simple_field_access() {
+    let source = "DISPLAY Customer.Name Customer.Balance.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        Statement::Run {
-            target: RunTarget::Literal("my-proc".to_string()),
-            arguments: vec![],
+    match stmt {
+        Statement::Display {
+            items,
+            except,
+            frame,
+            ..
+        } => {
+            assert_eq!(items.len(), 2);
+            assert!(items[0].when_condition.is_none());
+            assert!(items[1].when_condition.is_none());
+            assert!(except.is_empty());
+            assert!(frame.is_none());
         }
-    );
+        _ => panic!("Expected Display statement"),
+    }
 }
 
 #[test]
-fn parse_run_dotted_procedure_name() {
-    let source = "RUN my-proc.p.";
+fn parse_display_with_frame() {
+    let source = r#"DISPLAY "Total:" total WITH FRAME f1."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        Statement::Run {
-            target: RunTarget::Literal("my-proc.p".to_string()),
-            arguments: vec![],
+    match stmt {
+        Statement::Display { items, frame, .. } => {
+            assert_eq!(items.len(), 2);
+            assert!(frame.is_some());
+            assert_eq!(frame.unwrap().name, "f1");
         }
-    );
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_frame_columns() {
+    let source = "DISPLAY x y z WITH FRAME results 2 COLUMNS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, frame, .. } => {
+            assert_eq!(items.len(), 3);
+            assert!(frame.is_some());
+            assert_eq!(frame.unwrap().name, "results");
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_except_with_frame() {
+    let source = "DISPLAY Customer EXCEPT CustNum WITH FRAME cust-frame.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display {
+            items,
+            except,
+            frame,
+            ..
+        } => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(except.len(), 1);
+            assert_eq!(except[0].name, "CustNum");
+            assert!(frame.is_some());
+            assert_eq!(frame.unwrap().name, "cust-frame");
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_expression() {
+    let source = "DISPLAY 1 + 2.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 1);
+            assert!(matches!(items[0].expression, Expression::Add(_, _)));
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_when() {
+    let source = "DISPLAY x WHEN showIt.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 1);
+            assert!(items[0].when_condition.is_some());
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_format() {
+    let source = r#"DISPLAY x FORMAT "x(20)" y FORMAT "9(5)"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 2);
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_column_label() {
+    let source = r#"DISPLAY x COLUMN-LABEL "Name" y COLUMN-LABEL "Balance"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 2);
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn parse_display_with_format_and_column_label() {
+    let source = r#"DISPLAY x FORMAT "x(20)" COLUMN-LABEL "Name"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Display { items, .. } => {
+            assert_eq!(items.len(), 1);
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+// ===================== MESSAGE statement tests =====================
+
+#[test]
+fn parse_message_simple() {
+    let source = r#"MESSAGE "Hello, World!"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, set_targets } => {
+            assert_eq!(items.len(), 1);
+            assert!(set_targets.is_empty());
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_view_as_alert_box() {
+    let source = r#"MESSAGE "Error:" errMsg VIEW-AS ALERT-BOX ERROR."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, set_targets } => {
+            assert_eq!(items.len(), 2); // "Error:" and errMsg
+            assert!(set_targets.is_empty());
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_with_update() {
+    let source = r#"MESSAGE "Confirm?" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE lChoice."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, set_targets } => {
+            assert_eq!(items.len(), 1); // "Confirm?"
+            assert_eq!(set_targets.len(), 1);
+            assert_eq!(set_targets[0].name, "lChoice");
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_with_skip() {
+    let source = "MESSAGE Customer.Name SKIP Customer.Balance.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, .. } => {
+            assert_eq!(items.len(), 2); // Customer.Name and Customer.Balance (SKIP is skipped)
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_with_skip_count() {
+    let source = r#"MESSAGE "Line 1" SKIP(2) "Line 4"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, .. } => {
+            assert_eq!(items.len(), 2); // "Line 1" and "Line 4" (SKIP(2) is skipped)
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_update_without_view_as() {
+    let source = r#"MESSAGE "Enter name:" UPDATE cName."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Message { items, set_targets } => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(set_targets.len(), 1);
+            assert_eq!(set_targets[0].name, "cName");
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+// ===================== RUN statement tests =====================
+
+#[test]
+fn parse_run_simple_procedure() {
+    let source = "RUN simple-proc.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            arguments,
+            in_handle,
+            no_error,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("simple-proc".to_string()));
+            assert!(arguments.is_empty());
+            assert!(in_handle.is_none());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_mixed_direction_args() {
+    let source = "RUN calculate-total (INPUT 100, INPUT 5, OUTPUT result).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target, arguments, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("calculate-total".to_string()));
+            assert_eq!(arguments.len(), 3);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+            assert_eq!(arguments[1].direction, ParameterDirection::Input);
+            assert_eq!(arguments[2].direction, ParameterDirection::Output);
+        }
+        _ => panic!("Expected Run statement"),
+    }
 }
 
 #[test]
@@ -3138,23 +3411,24 @@ fn parse_run_dynamic_value() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Run { target, arguments } => {
+        Statement::Run { target, .. } => {
             assert!(matches!(target, RunTarget::Dynamic(_)));
-            assert!(arguments.is_empty());
         }
         _ => panic!("Expected Run statement"),
     }
 }
 
 #[test]
-fn parse_run_with_input_argument() {
-    let source = "RUN my-proc (INPUT myVal).";
+fn parse_run_dotted_filename_with_args() {
+    let source = r#"RUN external-prog.p (INPUT "data")."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Run { target, arguments } => {
-            assert_eq!(target, RunTarget::Literal("my-proc".to_string()));
+        Statement::Run {
+            target, arguments, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("external-prog.p".to_string()));
             assert_eq!(arguments.len(), 1);
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
         }
@@ -3163,31 +3437,34 @@ fn parse_run_with_input_argument() {
 }
 
 #[test]
-fn parse_run_with_output_argument() {
-    let source = "RUN my-proc (OUTPUT result).";
+fn parse_run_hyphenated_name() {
+    let source = "RUN my-proc.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Run { target, arguments } => {
+        Statement::Run { target, .. } => {
             assert_eq!(target, RunTarget::Literal("my-proc".to_string()));
-            assert_eq!(arguments.len(), 1);
-            assert_eq!(arguments[0].direction, ParameterDirection::Output);
         }
         _ => panic!("Expected Run statement"),
     }
 }
 
 #[test]
-fn parse_run_with_multiple_arguments() {
-    let source = "RUN my-proc (INPUT x, OUTPUT y).";
+fn parse_run_with_expression_args() {
+    let source = "RUN some-proc (INPUT 1 + 2, OUTPUT x).";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Run { arguments, .. } => {
+        Statement::Run {
+            target, arguments, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("some-proc".to_string()));
             assert_eq!(arguments.len(), 2);
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
+            // First arg should be an Add expression
+            assert!(matches!(arguments[0].expression, Expression::Add(_, _)));
             assert_eq!(arguments[1].direction, ParameterDirection::Output);
         }
         _ => panic!("Expected Run statement"),
@@ -3195,8 +3472,91 @@ fn parse_run_with_multiple_arguments() {
 }
 
 #[test]
-fn parse_run_with_input_output_argument() {
-    let source = "RUN my-proc (INPUT-OUTPUT data).";
+fn parse_run_string_literal_target() {
+    let source = r#"RUN "my-proc.p"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run { target, .. } => {
+            assert_eq!(target, RunTarget::Literal("my-proc.p".to_string()));
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_in_handle() {
+    let source = "RUN myProc IN hServer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            in_handle,
+            no_error,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert!(in_handle.is_some());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_no_error() {
+    let source = "RUN myProc NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target, no_error, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert!(no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_with_args_and_no_error() {
+    let source = "RUN myProc (OUTPUT result) NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            arguments,
+            no_error,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Output);
+            assert!(no_error);
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_missing_period() {
+    let source = "RUN myProc";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_run_input_output_arg() {
+    let source = "RUN some-proc (INPUT-OUTPUT x).";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -3210,66 +3570,4545 @@ fn parse_run_with_input_output_argument() {
 }
 
 #[test]
-fn parse_run_with_default_input_direction() {
-    // When no direction keyword, defaults to INPUT
-    let source = "RUN my-proc (x).";
+fn parse_run_in_super() {
+    let source = "RUN myMethod IN SUPER.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt {
-        Statement::Run { arguments, .. } => {
-            assert_eq!(arguments.len(), 1);
-            assert_eq!(arguments[0].direction, ParameterDirection::Input);
-        }
-        _ => panic!("Expected Run statement"),
-    }
-}
-
-#[test]
-fn parse_run_with_expression_argument() {
-    let source = "RUN my-proc (INPUT x + 1).";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run { arguments, .. } => {
-            assert_eq!(arguments.len(), 1);
-            assert!(matches!(arguments[0].expression, Expression::Add(_, _)));
-        }
-        _ => panic!("Expected Run statement"),
-    }
-}
-
-#[test]
-fn parse_run_no_arguments() {
-    let source = "RUN cleanup.";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
         Statement::Run {
-            target: RunTarget::Literal("cleanup".to_string()),
-            arguments: vec![],
-        }
-    );
-}
-
-#[test]
-fn parse_run_dynamic_with_arguments() {
-    let source = "RUN VALUE(procName) (INPUT 42).";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run { target, arguments } => {
-            assert!(matches!(target, RunTarget::Dynamic(_)));
-            assert_eq!(arguments.len(), 1);
-            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+            target, in_handle, ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("myMethod".to_string()));
+            assert!(in_handle.is_some());
         }
         _ => panic!("Expected Run statement"),
     }
 }
+
+#[test]
+fn parse_run_persistent_no_handle() {
+    let source = "RUN proc.p PERSISTENT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            persistent,
+            persistent_handle,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("proc.p".to_string()));
+            assert!(persistent);
+            assert!(persistent_handle.is_none());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_persistent_set_handle() {
+    let source = "RUN proc.p PERSISTENT SET hServer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            persistent,
+            persistent_handle,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("proc.p".to_string()));
+            assert!(persistent);
+            assert!(persistent_handle.is_some());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_asynchronous_no_handle() {
+    let source = "RUN proc ASYNCHRONOUS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            target,
+            asynchronous,
+            async_handle,
+            event_procedure,
+            ..
+        } => {
+            assert_eq!(target, RunTarget::Literal("proc".to_string()));
+            assert!(asynchronous);
+            assert!(async_handle.is_none());
+            assert!(event_procedure.is_none());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_asynchronous_set_handle() {
+    let source = "RUN proc ASYNCHRONOUS SET hAsync.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            asynchronous,
+            async_handle,
+            event_procedure,
+            ..
+        } => {
+            assert!(asynchronous);
+            assert!(async_handle.is_some());
+            assert!(event_procedure.is_none());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_asynchronous_with_event_procedure() {
+    let source = r#"RUN proc ASYNCHRONOUS SET hAsync EVENT-PROCEDURE "my-ep.p"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Run {
+            asynchronous,
+            async_handle,
+            event_procedure,
+            ..
+        } => {
+            assert!(asynchronous);
+            assert!(async_handle.is_some());
+            assert!(event_procedure.is_some());
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+// ===================== TEMP-TABLE tests =====================
+
+#[test]
+fn parse_define_temp_table_simple() {
+    let source = r#"
+DEFINE TEMP-TABLE ttCustomer NO-UNDO
+    FIELD CustNum AS INTEGER
+    FIELD Name AS CHARACTER
+    FIELD Balance AS DECIMAL.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            name,
+            no_undo,
+            fields,
+            indexes,
+            ..
+        } => {
+            assert_eq!(name.name, "ttCustomer");
+            assert!(no_undo);
+            assert_eq!(fields.len(), 3);
+            assert_eq!(fields[0].name.name, "CustNum");
+            assert_eq!(
+                fields[0].type_source,
+                FieldTypeSource::Explicit(DataType::Integer)
+            );
+            assert_eq!(fields[1].name.name, "Name");
+            assert_eq!(
+                fields[1].type_source,
+                FieldTypeSource::Explicit(DataType::Character)
+            );
+            assert_eq!(fields[2].name.name, "Balance");
+            assert_eq!(
+                fields[2].type_source,
+                FieldTypeSource::Explicit(DataType::Decimal)
+            );
+            assert!(indexes.is_empty());
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_with_index() {
+    let source = r#"
+DEFINE TEMP-TABLE ttOrder NO-UNDO
+    FIELD OrderNum AS INTEGER
+    FIELD CustNum AS INTEGER
+    INDEX idx1 IS PRIMARY UNIQUE OrderNum
+    INDEX idx2 CustNum.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            fields, indexes, ..
+        } => {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(indexes.len(), 2);
+            assert_eq!(indexes[0].name.name, "idx1");
+            assert!(indexes[0].is_primary);
+            assert!(indexes[0].is_unique);
+            assert_eq!(indexes[0].fields.len(), 1);
+            assert_eq!(indexes[0].fields[0].name.name, "OrderNum");
+            assert_eq!(indexes[1].name.name, "idx2");
+            assert!(!indexes[1].is_primary);
+            assert!(!indexes[1].is_unique);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_no_undo_false() {
+    let source = r#"
+DEFINE TEMP-TABLE ttSimple
+    FIELD x AS INTEGER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { name, no_undo, .. } => {
+            assert_eq!(name.name, "ttSimple");
+            assert!(!no_undo);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+// ===================== BUFFER tests =====================
+
+#[test]
+fn parse_define_buffer() {
+    let source = "DEFINE BUFFER bCust FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { name, target, .. } => {
+            assert_eq!(name.name, "bCust");
+            match &target {
+                BufferTarget::Table(t) => assert_eq!(t.name, "Customer"),
+                _ => panic!("Expected Table target"),
+            }
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_for_temp_table() {
+    let source = "DEFINE BUFFER bTT FOR TEMP-TABLE ttCustomer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { name, target, .. } => {
+            assert_eq!(name.name, "bTT");
+            match &target {
+                BufferTarget::TempTable(t) => assert_eq!(t.name, "ttCustomer"),
+                _ => panic!("Expected TempTable target"),
+            }
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_preselect() {
+    let source = "DEFINE BUFFER bCust FOR Customer PRESELECT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { preselect, .. } => {
+            assert!(preselect);
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_label() {
+    let source = r#"DEFINE BUFFER bCust FOR Customer LABEL "Customer Buffer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { label, .. } => {
+            assert_eq!(label, Some("Customer Buffer".to_string()));
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_xml_attrs_skipped() {
+    let source =
+        r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { name, .. } => {
+            assert_eq!(name.name, "bCust");
+        }
+        _ => panic!("Expected DefineBuffer statement"),
+    }
+}
+
+// ===================== TEMP-TABLE LIKE and field enhancements =====================
+
+#[test]
+fn parse_define_temp_table_empty() {
+    let source = "DEFINE TEMP-TABLE ttEmpty NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            name,
+            no_undo,
+            fields,
+            indexes,
+            ..
+        } => {
+            assert_eq!(name.name, "ttEmpty");
+            assert!(no_undo);
+            assert!(fields.is_empty());
+            assert!(indexes.is_empty());
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like() {
+    let source = "DEFINE TEMP-TABLE tt LIKE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            like_table,
+            validate,
+            ..
+        } => {
+            assert!(like_table.is_some());
+            assert_eq!(like_table.unwrap().name, "Customer");
+            assert!(!validate);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like_validate() {
+    let source = "DEFINE TEMP-TABLE tt LIKE Customer VALIDATE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            like_table,
+            validate,
+            ..
+        } => {
+            assert!(like_table.is_some());
+            assert!(validate);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like_use_index() {
+    let source =
+        "DEFINE TEMP-TABLE tt LIKE Customer USE-INDEX CustNum USE-INDEX CountryPost AS PRIMARY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { use_indexes, .. } => {
+            assert_eq!(use_indexes.len(), 2);
+            assert_eq!(use_indexes[0].name.name, "CustNum");
+            assert!(!use_indexes[0].as_primary);
+            assert_eq!(use_indexes[1].name.name, "CountryPost");
+            assert!(use_indexes[1].as_primary);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_like_with_extra_field() {
+    let source = r#"
+DEFINE TEMP-TABLE tt LIKE Customer
+    FIELD extraField AS CHARACTER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            like_table, fields, ..
+        } => {
+            assert!(like_table.is_some());
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "extraField");
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_like() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD cust-num LIKE Customer.CustNum.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "cust-num");
+            match &fields[0].type_source {
+                FieldTypeSource::Like {
+                    source, validate, ..
+                } => {
+                    // The dot-separated name is parsed as a single identifier by the lexer
+                    // (ABL identifiers can contain dots in field references)
+                    assert!(!source.name.is_empty());
+                    assert!(!validate);
+                }
+                _ => panic!("Expected Like type source"),
+            }
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_like_validate() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x LIKE Customer.CustNum VALIDATE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => match &fields[0].type_source {
+            FieldTypeSource::Like { validate, .. } => {
+                assert!(validate);
+            }
+            _ => panic!("Expected Like type source"),
+        },
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_initial() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER INITIAL 0
+    FIELD y AS CHARACTER INITIAL "".
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 2);
+            assert!(fields[0].initial_value.is_some());
+            assert_eq!(fields[0].initial_value.as_ref().unwrap().len(), 1);
+            assert!(fields[1].initial_value.is_some());
+            assert_eq!(fields[1].initial_value.as_ref().unwrap().len(), 1);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_extent() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER EXTENT 5.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields[0].extent, Some(5));
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_format_skipped() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS CHARACTER FORMAT "x(20)".
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "x");
+            // FORMAT is skipped, not stored
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_define_temp_table_field_label_skipped() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS CHARACTER LABEL "Name" COLUMN-LABEL "Nm".
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            // Labels are skipped, not stored
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+// ===================== Index enhancement tests =====================
+
+#[test]
+fn parse_index_with_ascending_descending() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD a AS INTEGER
+    FIELD b AS INTEGER
+    INDEX idx1 a ASCENDING b DESCENDING.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert_eq!(indexes.len(), 1);
+            assert_eq!(indexes[0].fields.len(), 2);
+            assert_eq!(
+                indexes[0].fields[0].direction,
+                Some(SortDirection::Ascending)
+            );
+            assert_eq!(
+                indexes[0].fields[1].direction,
+                Some(SortDirection::Descending)
+            );
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_desc_propagation_stores_none() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD a AS CHARACTER
+    FIELD b AS CHARACTER
+    FIELD c AS CHARACTER
+    INDEX idx1 a DESC b c.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert_eq!(indexes[0].fields.len(), 3);
+            assert_eq!(
+                indexes[0].fields[0].direction,
+                Some(SortDirection::Descending)
+            );
+            assert_eq!(indexes[0].fields[1].direction, None);
+            assert_eq!(indexes[0].fields[2].direction, None);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_word_index() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD Name AS CHARACTER
+    INDEX idx1 IS WORD-INDEX Name.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_word_index);
+            assert_eq!(indexes[0].fields.len(), 1);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_as_unique_primary() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER
+    INDEX idx1 AS UNIQUE PRIMARY x.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_unique);
+            assert!(indexes[0].is_primary);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_flags_without_is_prefix() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER
+    INDEX idx1 PRIMARY UNIQUE x.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_primary);
+            assert!(indexes[0].is_unique);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_index_flags_reverse_order() {
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    FIELD x AS INTEGER
+    INDEX idx1 UNIQUE PRIMARY x.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable { indexes, .. } => {
+            assert!(indexes[0].is_unique);
+            assert!(indexes[0].is_primary);
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+// ===================== Error recovery tests =====================
+
+#[test]
+fn parse_temp_table_missing_period_detected() {
+    // A DEFINE keyword in the body should trigger a missing-period error
+    let source = "DEFINE TEMP-TABLE tt FIELD x AS INTEGER DEFINE VARIABLE y AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.message.contains("Expected '.'"));
+}
+
+#[test]
+fn parse_temp_table_skips_xml_attrs() {
+    // Unknown tokens like NAMESPACE-URI should be silently skipped
+    let source = r#"
+DEFINE TEMP-TABLE tt NO-UNDO
+    NAMESPACE-URI "urn:foo"
+    FIELD x AS INTEGER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("Should parse despite XML attrs");
+    match stmt {
+        Statement::DefineTempTable { fields, .. } => {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "x");
+        }
+        _ => panic!("Expected DefineTempTable statement"),
+    }
+}
+
+#[test]
+fn parse_temp_table_missing_name_error() {
+    let source = "DEFINE TEMP-TABLE .";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_temp_table_missing_field_name_error() {
+    let source = "DEFINE TEMP-TABLE tt FIELD .";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_temp_table_missing_data_type_error() {
+    let source = "DEFINE TEMP-TABLE tt FIELD x AS .";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_buffer_missing_name_error() {
+    let source = "DEFINE BUFFER FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_buffer_missing_for_error() {
+    let source = "DEFINE BUFFER bCust Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+// ===================== Error recovery tests =====================
+
+#[test]
+fn parse_program_valid_file() {
+    let source = r#"
+DEFINE VARIABLE x AS INTEGER.
+DEFINE VARIABLE y AS CHARACTER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 2);
+    assert!(program.errors.is_empty());
+}
+
+#[test]
+fn parse_program_recovers_after_error() {
+    // First statement is garbage, second is valid
+    let source = r#"
+BLARG BLURG BLORP.
+DEFINE VARIABLE x AS INTEGER.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(!program.is_ok());
+    // Should have recovered and parsed the valid statement
+    assert_eq!(program.statements.len(), 1);
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
+fn parse_program_multiple_errors() {
+    let source = r#"
+DEFINE VARIABLE x AS INTEGER.
+BLARG BLURG.
+DEFINE VARIABLE y AS CHARACTER.
+NOPE NOPE NOPE.
+DEFINE VARIABLE z AS LOGICAL.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    // Three valid statements parsed despite two errors
+    assert_eq!(program.statements.len(), 3);
+    assert_eq!(program.errors.len(), 2);
+}
+
+#[test]
+fn parse_program_recovers_at_statement_keyword() {
+    // Missing period after first statement, parser should sync at IF
+    let source = r#"
+DEFINE VARIABLE x AS INTEGER
+IF TRUE THEN
+    x = 1.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    // Should recover and parse the IF statement
+    assert!(!program.errors.is_empty());
+    assert!(!program.statements.is_empty());
+}
+
+#[test]
+fn parse_program_empty_input() {
+    let source = "";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert!(program.statements.is_empty());
+    assert!(program.errors.is_empty());
+}
+
+#[test]
+fn parse_program_all_errors() {
+    // Use constructs that actually fail to parse (incomplete DEFINE statements)
+    let source = "DEFINE. DEFINE. DEFINE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.statements.is_empty());
+    assert_eq!(program.errors.len(), 3);
+}
+
+// ===================== CATCH/FINALLY tests =====================
+
+#[test]
+fn parse_do_with_catch() {
+    let source = r#"
+DO:
+    x = 1.
+    CATCH e AS Progress.Lang.Error:
+        y = 2.
+    END CATCH.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 2); // x = 1. and CATCH block
+            match &body[1] {
+                Statement::Catch {
+                    error_var,
+                    error_type,
+                    body,
+                } => {
+                    assert_eq!(error_var.name, "e");
+                    assert_eq!(error_type, "Progress.Lang.Error");
+                    assert_eq!(body.len(), 1);
+                }
+                _ => panic!("Expected Catch statement"),
+            }
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_do_with_finally() {
+    let source = r#"
+DO:
+    x = 1.
+    FINALLY:
+        y = 2.
+    END FINALLY.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 2);
+            match &body[1] {
+                Statement::Finally { body } => {
+                    assert_eq!(body.len(), 1);
+                }
+                _ => panic!("Expected Finally statement"),
+            }
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_do_with_catch_and_finally() {
+    let source = r#"
+DO:
+    x = 1.
+    CATCH e AS Progress.Lang.AppError:
+        y = 2.
+    END CATCH.
+    FINALLY:
+        z = 3.
+    END FINALLY.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 3); // assignment, CATCH, FINALLY
+            assert!(matches!(body[1], Statement::Catch { .. }));
+            assert!(matches!(body[2], Statement::Finally { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_catch_end_without_keyword() {
+    let source = r#"
+DO:
+    x = 1.
+    CATCH e AS Progress.Lang.Error:
+        y = 2.
+    END.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // This should fail because END without CATCH closes the DO block prematurely
+    // Actually in ABL, END without qualifier is ambiguous here.
+    // Our parser expects END CATCH. Let's test that END. without CATCH works
+    // by treating the first END. as closing CATCH (the parser consumes END then
+    // checks for optional "catch" keyword).
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 2);
+            assert!(matches!(body[1], Statement::Catch { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+// ===================== ASSIGN statement tests =====================
+
+#[test]
+fn parse_assign_single() {
+    let source = "ASSIGN x = 1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+#[test]
+fn parse_assign_multiple() {
+    let source = r#"ASSIGN x = 1 y = 2 z = "hello"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 3);
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+#[test]
+fn parse_assign_field_access() {
+    let source = "ASSIGN Customer.Name = cName Customer.Balance = 100.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2);
+            assert!(matches!(
+                assignments[0].target,
+                Expression::FieldAccess { .. }
+            ));
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+#[test]
+fn parse_assign_with_expression() {
+    let source = "ASSIGN total = price * quantity.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+            assert!(matches!(assignments[0].value, Expression::Multiply(_, _)));
+        }
+        _ => panic!("Expected Assign statement"),
+    }
+}
+
+// ===================== FUNCTION definition tests =====================
+
+#[test]
+fn parse_function_simple() {
+    let source = r#"
+FUNCTION get-greeting RETURNS CHARACTER:
+    RETURN "Hello".
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function {
+            name,
+            return_type,
+            body,
+        } => {
+            assert_eq!(name.name, "get-greeting");
+            assert_eq!(return_type, DataType::Character);
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_with_params() {
+    let source = r#"
+FUNCTION calc-total RETURNS INTEGER (INPUT x AS INTEGER, INPUT y AS INTEGER):
+    RETURN x + y.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function {
+            name,
+            return_type,
+            body,
+        } => {
+            assert_eq!(name.name, "calc-total");
+            assert_eq!(return_type, DataType::Integer);
+            assert_eq!(body.len(), 1); // RETURN x + y.
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_end_without_keyword() {
+    let source = r#"
+FUNCTION get-value RETURNS LOGICAL:
+    RETURN TRUE.
+END.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function {
+            name, return_type, ..
+        } => {
+            assert_eq!(name.name, "get-value");
+            assert_eq!(return_type, DataType::Logical);
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_with_body() {
+    let source = r#"
+FUNCTION calc RETURNS INTEGER:
+    DEFINE VARIABLE result AS INTEGER.
+    result = 42.
+    RETURN result.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Function { body, .. } => {
+            assert_eq!(body.len(), 3); // DEFINE, assignment, RETURN
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+// ============================================================================
+// Keyword migration tests: verify unreserved keywords work as both
+// statement keywords and identifiers
+// ============================================================================
+
+#[test]
+fn parse_var_keyword_as_variable_name() {
+    // "var" used as a variable name in DEFINE VARIABLE
+    let source = "DEFINE VARIABLE var AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "var");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_function_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE function AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "function");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_catch_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE catch AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "catch");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_data_type_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE integer AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "integer");
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_date_keyword_as_variable_name() {
+    let source = "DEFINE VARIABLE date AS DATE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "date");
+            assert_eq!(data_type, DataType::Date);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_variable_keyword_assignment_disambiguation() {
+    // "variable = 5." should parse as assignment, not VAR statement
+    let source = "variable = 5.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { target, .. } => match target {
+            Expression::Identifier(id) => assert_eq!(id.name, "variable"),
+            _ => panic!("Expected identifier target"),
+        },
+        _ => panic!("Expected Assignment, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_function_keyword_assignment_disambiguation() {
+    // "function = 5." should parse as assignment, not FUNCTION definition
+    let source = "function = 5.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { target, .. } => match target {
+            Expression::Identifier(id) => assert_eq!(id.name, "function"),
+            _ => panic!("Expected identifier target"),
+        },
+        _ => panic!("Expected Assignment, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_var_with_abbreviated_data_types() {
+    // INT is abbreviation for INTEGER
+    let source = "VAR INT x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Integer);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+
+    // DEC is abbreviation for DECIMAL
+    let source = "VAR DEC x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Decimal);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+
+    // CHAR is abbreviation for CHARACTER
+    let source = "VAR CHAR x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Character);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+
+    // LOG is abbreviation for LOGICAL
+    let source = "VAR LOG x.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration { data_type, .. } => {
+            assert_eq!(data_type, DataType::Logical);
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_var_with_all_data_types() {
+    let cases = vec![
+        ("VAR INTEGER x.", DataType::Integer),
+        ("VAR INT64 x.", DataType::Int64),
+        ("VAR DECIMAL x.", DataType::Decimal),
+        ("VAR CHARACTER x.", DataType::Character),
+        ("VAR LOGICAL x.", DataType::Logical),
+        ("VAR DATE x.", DataType::Date),
+        ("VAR DATETIME x.", DataType::DateTime),
+        ("VAR DATETIME-TZ x.", DataType::DateTimeTz),
+        ("VAR HANDLE x.", DataType::Handle),
+        ("VAR ROWID x.", DataType::Rowid),
+        ("VAR RECID x.", DataType::Recid),
+        ("VAR RAW x.", DataType::Raw),
+        ("VAR MEMPTR x.", DataType::Memptr),
+        ("VAR LONGCHAR x.", DataType::Longchar),
+        ("VAR CLOB x.", DataType::Clob),
+        ("VAR BLOB x.", DataType::Blob),
+        ("VAR COM-HANDLE x.", DataType::Com),
+    ];
+
+    for (source, expected_type) in cases {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("Failed to parse '{}': {}", source, e.message));
+        match stmt {
+            Statement::VariableDeclaration { data_type, .. } => {
+                assert_eq!(data_type, expected_type, "Wrong data type for '{}'", source);
+            }
+            _ => panic!("Expected VariableDeclaration for '{}'", source),
+        }
+    }
+}
+
+// ===================== CLASS/OO-ABL tests =====================
+
+#[test]
+fn parse_simple_class() {
+    let source = "CLASS MyClass: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class {
+            name,
+            inherits,
+            implements,
+            is_abstract,
+            is_final,
+            body,
+        } => {
+            assert_eq!(name.name, "MyClass");
+            assert!(inherits.is_none());
+            assert!(implements.is_empty());
+            assert!(!is_abstract);
+            assert!(!is_final);
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_with_inherits() {
+    let source = "CLASS MyApp.CustomerService INHERITS BaseService: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { name, inherits, .. } => {
+            assert_eq!(name.name, "MyApp.CustomerService");
+            assert_eq!(inherits.unwrap().name, "BaseService");
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_with_implements() {
+    let source = "CLASS MyService IMPLEMENTS IService: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { implements, .. } => {
+            assert_eq!(implements.len(), 1);
+            assert_eq!(implements[0].name, "IService");
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_inherits_and_implements_multiple() {
+    let source =
+        "CLASS MyService INHERITS BaseService IMPLEMENTS IService, IDisposable: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class {
+            inherits,
+            implements,
+            ..
+        } => {
+            assert_eq!(inherits.unwrap().name, "BaseService");
+            assert_eq!(implements.len(), 2);
+            assert_eq!(implements[0].name, "IService");
+            assert_eq!(implements[1].name, "IDisposable");
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_abstract_class() {
+    let source = "CLASS ABSTRACT MyClass: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class {
+            is_abstract,
+            is_final,
+            ..
+        } => {
+            assert!(is_abstract);
+            assert!(!is_final);
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_final_class() {
+    let source = "CLASS FINAL MyClass: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { is_final, .. } => {
+            assert!(is_final);
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_method_public_void_no_params() {
+    let source = "METHOD PUBLIC VOID DoSomething(): END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            access,
+            is_static,
+            is_abstract,
+            is_override,
+            return_type,
+            name,
+            parameters,
+            body,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
+            assert!(!is_abstract);
+            assert!(!is_override);
+            assert!(return_type.is_none()); // VOID
+            assert_eq!(name.name, "DoSomething");
+            assert!(parameters.is_empty());
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_method_private_with_return_and_params() {
+    let source = "METHOD PRIVATE INTEGER Calculate(INPUT x AS INTEGER, INPUT y AS INTEGER): RETURN x + y. END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            access,
+            return_type,
+            name,
+            parameters,
+            body,
+            ..
+        } => {
+            assert_eq!(access, AccessModifier::Private);
+            assert_eq!(return_type, Some(DataType::Integer));
+            assert_eq!(name.name, "Calculate");
+            assert_eq!(parameters.len(), 2);
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_static_method() {
+    let source = "METHOD PUBLIC STATIC VOID Initialize(): END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            is_static, name, ..
+        } => {
+            assert!(is_static);
+            assert_eq!(name.name, "Initialize");
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_abstract_method() {
+    let source = "METHOD PUBLIC ABSTRACT VOID Run().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            is_abstract,
+            body,
+            name,
+            ..
+        } => {
+            assert!(is_abstract);
+            assert_eq!(name.name, "Run");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_override_method() {
+    let source = "METHOD PUBLIC OVERRIDE VOID ToString(): RETURN. END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method { is_override, .. } => {
+            assert!(is_override);
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_property_auto_get_set() {
+    let source = "DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO GET. SET.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Property {
+            access,
+            is_static,
+            name,
+            data_type,
+            no_undo,
+            get_body,
+            set_body,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
+            assert_eq!(name.name, "Name");
+            assert_eq!(data_type, DataType::Character);
+            assert!(no_undo);
+            assert_eq!(get_body, Some(Vec::new())); // auto-getter
+            assert_eq!(set_body, Some(Vec::new())); // auto-setter
+        }
+        _ => panic!("Expected Property statement"),
+    }
+}
+
+#[test]
+fn parse_property_computed_get_set() {
+    let source = r#"DEFINE PUBLIC PROPERTY FullName AS CHARACTER NO-UNDO
+        GET:
+            RETURN "hello".
+        END GET.
+        SET:
+            DEFINE VARIABLE x AS CHARACTER.
+        END SET."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Property {
+            get_body, set_body, ..
+        } => {
+            let get = get_body.unwrap();
+            assert_eq!(get.len(), 1); // RETURN "hello".
+            let set = set_body.unwrap();
+            assert_eq!(set.len(), 1); // DEFINE VARIABLE x AS CHARACTER.
+        }
+        _ => panic!("Expected Property statement"),
+    }
+}
+
+#[test]
+fn parse_property_read_only() {
+    let source = "DEFINE PUBLIC PROPERTY Count AS INTEGER NO-UNDO GET.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Property {
+            get_body, set_body, ..
+        } => {
+            assert_eq!(get_body, Some(Vec::new())); // has getter
+            assert!(set_body.is_none()); // no setter — read-only
+        }
+        _ => panic!("Expected Property statement"),
+    }
+}
+
+#[test]
+fn parse_constructor_with_params() {
+    let source = "CONSTRUCTOR PUBLIC MyClass(INPUT name AS CHARACTER): DEFINE VARIABLE x AS INTEGER. END CONSTRUCTOR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Constructor {
+            access,
+            parameters,
+            body,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert_eq!(parameters.len(), 1);
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected Constructor statement"),
+    }
+}
+
+#[test]
+fn parse_destructor() {
+    let source = "DESTRUCTOR PUBLIC MyClass(): END DESTRUCTOR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Destructor { body } => {
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Destructor statement"),
+    }
+}
+
+#[test]
+fn parse_interface_with_method_signatures() {
+    let source = "INTERFACE IService: METHOD PUBLIC ABSTRACT VOID Run(). END INTERFACE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Interface {
+            name,
+            inherits,
+            body,
+        } => {
+            assert_eq!(name.name, "IService");
+            assert!(inherits.is_empty());
+            assert_eq!(body.len(), 1);
+            match &body[0] {
+                Statement::Method { is_abstract, .. } => assert!(is_abstract),
+                _ => panic!("Expected Method in interface body"),
+            }
+        }
+        _ => panic!("Expected Interface statement"),
+    }
+}
+
+#[test]
+fn parse_interface_with_inherits() {
+    let source = "INTERFACE ISpecialService INHERITS IService: END INTERFACE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Interface { inherits, .. } => {
+            assert_eq!(inherits.len(), 1);
+            assert_eq!(inherits[0].name, "IService");
+        }
+        _ => panic!("Expected Interface statement"),
+    }
+}
+
+#[test]
+fn parse_using_qualified_name() {
+    let source = "USING Progress.Lang.Object.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Using { type_name } => {
+            assert_eq!(type_name, "Progress.Lang.Object");
+        }
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_using_wildcard() {
+    let source = "USING MyApp.Services.*.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Using { type_name } => {
+            assert_eq!(type_name, "MyApp.Services.*");
+        }
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_full_class_with_mixed_members() {
+    let source = r#"CLASS MyApp.CustomerService INHERITS BaseService:
+        DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO GET. SET.
+
+        CONSTRUCTOR PUBLIC CustomerService():
+        END CONSTRUCTOR.
+
+        METHOD PUBLIC VOID DoWork():
+            DEFINE VARIABLE x AS INTEGER.
+        END METHOD.
+
+        METHOD PUBLIC CHARACTER GetName():
+            RETURN "hello".
+        END METHOD.
+    END CLASS."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Class { name, body, .. } => {
+            assert_eq!(name.name, "MyApp.CustomerService");
+            // Property + Constructor + 2 Methods = 4 members
+            assert_eq!(body.len(), 4);
+            assert!(matches!(body[0], Statement::Property { .. }));
+            assert!(matches!(body[1], Statement::Constructor { .. }));
+            assert!(matches!(body[2], Statement::Method { .. }));
+            assert!(matches!(body[3], Statement::Method { .. }));
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_define_public_variable_in_class() {
+    // Access modifier before VARIABLE is accepted (modifier is ignored for now)
+    let source = "DEFINE PUBLIC VARIABLE x AS INTEGER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::VariableDeclaration { name, .. } => {
+            assert_eq!(name.name, "x");
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn parse_method_with_class_return_type() {
+    let source = "METHOD PUBLIC CLASS Progress.Lang.Object GetObj(): RETURN. END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method { return_type, .. } => {
+            assert_eq!(
+                return_type,
+                Some(DataType::Class("Progress.Lang.Object".to_string()))
+            );
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+// =============================================================================
+// Database manipulation statements
+// =============================================================================
+
+#[test]
+fn parse_create_basic() {
+    let source = "CREATE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
+            assert_eq!(name.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Create statement"),
+    }
+}
+
+#[test]
+fn parse_create_no_error() {
+    let source = "CREATE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
+            assert_eq!(name.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Create statement"),
+    }
+}
+
+#[test]
+fn parse_delete_basic() {
+    let source = "DELETE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Delete { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Delete statement"),
+    }
+}
+
+#[test]
+fn parse_delete_no_error() {
+    let source = "DELETE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Delete { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Delete statement"),
+    }
+}
+
+#[test]
+fn parse_release_basic() {
+    let source = "RELEASE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Release { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Release statement"),
+    }
+}
+
+#[test]
+fn parse_release_no_error() {
+    let source = "RELEASE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Release { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Release statement"),
+    }
+}
+
+#[test]
+fn parse_validate_basic() {
+    let source = "VALIDATE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Validate { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Validate statement"),
+    }
+}
+
+#[test]
+fn parse_validate_no_error() {
+    let source = "VALIDATE Customer NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Validate { buffer, no_error } => {
+            assert_eq!(buffer.name, "Customer");
+            assert!(no_error);
+        }
+        _ => panic!("Expected Validate statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_basic() {
+    let source = "BUFFER-COPY bSource TO bTarget.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            source,
+            target,
+            assignments,
+            no_error,
+        } => {
+            assert_eq!(source.name, "bSource");
+            assert_eq!(target.name, "bTarget");
+            assert!(assignments.is_empty());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_with_assign() {
+    let source = "BUFFER-COPY bSource TO bTarget ASSIGN field1 = 1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            source,
+            target,
+            assignments,
+            no_error,
+        } => {
+            assert_eq!(source.name, "bSource");
+            assert_eq!(target.name, "bTarget");
+            assert_eq!(assignments.len(), 1);
+            assert_eq!(assignments[0].0.name, "field1");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_with_multiple_assigns() {
+    let source = "BUFFER-COPY bSource TO bTarget ASSIGN field1 = 1 field2 = 2.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            assignments,
+            no_error,
+            ..
+        } => {
+            assert_eq!(assignments.len(), 2);
+            assert_eq!(assignments[0].0.name, "field1");
+            assert_eq!(assignments[1].0.name, "field2");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_with_assign_and_no_error() {
+    let source = "BUFFER-COPY bSource TO bTarget ASSIGN field1 = 1 NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            assignments,
+            no_error,
+            ..
+        } => {
+            assert_eq!(assignments.len(), 1);
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_copy_no_error() {
+    let source = "BUFFER-COPY bSource TO bTarget NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCopy {
+            assignments,
+            no_error,
+            ..
+        } => {
+            assert!(assignments.is_empty());
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCopy statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_basic() {
+    let source = "BUFFER-COMPARE bSource TO bTarget.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            source,
+            target,
+            result_var,
+            no_error,
+        } => {
+            assert_eq!(source.name, "bSource");
+            assert_eq!(target.name, "bTarget");
+            assert!(result_var.is_none());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_save_result_in() {
+    let source = "BUFFER-COMPARE bSource TO bTarget SAVE RESULT IN lResult.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            result_var,
+            no_error,
+            ..
+        } => {
+            assert_eq!(result_var.unwrap().name, "lResult");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_save_result_in_no_error() {
+    let source = "BUFFER-COMPARE bSource TO bTarget SAVE RESULT IN lResult NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            result_var,
+            no_error,
+            ..
+        } => {
+            assert!(result_var.is_some());
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_buffer_compare_no_error() {
+    let source = "BUFFER-COMPARE bSource TO bTarget NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::BufferCompare {
+            result_var,
+            no_error,
+            ..
+        } => {
+            assert!(result_var.is_none());
+            assert!(no_error);
+        }
+        _ => panic!("Expected BufferCompare statement"),
+    }
+}
+
+#[test]
+fn parse_create_case_insensitive() {
+    let source = "create customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            ..
+        } => {
+            assert_eq!(name.name, "customer");
+        }
+        _ => panic!("Expected Create statement"),
+    }
+}
+
+#[test]
+fn parse_db_ops_in_program() {
+    let source = r#"CREATE Customer.
+DELETE Customer NO-ERROR.
+RELEASE Customer.
+VALIDATE Customer NO-ERROR."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 4);
+    assert!(matches!(program.statements[0], Statement::Create { .. }));
+    assert!(matches!(program.statements[1], Statement::Delete { .. }));
+    assert!(matches!(program.statements[2], Statement::Release { .. }));
+    assert!(matches!(program.statements[3], Statement::Validate { .. }));
+}
+
+// ── Preprocessor statement tests ─────────────────────────────────
+
+#[test]
+fn preproc_if_then_endif() {
+    let source = "&IF TRUE &THEN\nDISPLAY \"hello\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::Literal(_)));
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert!(preproc.elseif_branches.is_empty());
+            assert!(preproc.else_branch.is_none());
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_then_else_endif() {
+    let source = "&IF TRUE &THEN\nDISPLAY \"a\".\n&ELSE\nDISPLAY \"b\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert!(preproc.else_branch.is_some());
+            assert_eq!(preproc.else_branch.unwrap().len(), 1);
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_elseif_endif() {
+    let source = "&IF 1 = 1 &THEN\nDISPLAY \"a\".\n&ELSEIF 2 = 2 &THEN\nDISPLAY \"b\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert_eq!(preproc.elseif_branches.len(), 1);
+            assert!(preproc.else_branch.is_none());
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_elseif_else_endif() {
+    let source = "&IF 1 = 1 &THEN\nDISPLAY \"a\".\n&ELSEIF 2 = 2 &THEN\nDISPLAY \"b\".\n&ELSE\nDISPLAY \"c\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 1);
+            assert_eq!(preproc.elseif_branches.len(), 1);
+            assert!(preproc.else_branch.is_some());
+            assert_eq!(preproc.else_branch.unwrap().len(), 1);
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_nested_if() {
+    let source = "&IF TRUE &THEN\n&IF FALSE &THEN\nDISPLAY \"inner\".\n&ENDIF\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(outer) => {
+            assert_eq!(outer.then_branch.len(), 1);
+            assert!(matches!(outer.then_branch[0], Statement::PreprocIf(_)));
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_scoped_define_with_value() {
+    let source = "&scoped-define FOO 42\nDISPLAY \"x\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 2);
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name,
+            value_span,
+            is_global,
+        } => {
+            assert_eq!(name.name, "FOO");
+            assert!(!is_global);
+            assert!(value_span.is_some());
+            let span = value_span.unwrap();
+            assert_eq!(&source[span.start as usize..span.end as usize], "42");
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_scoped_define_no_value() {
+    let source = "&scoped-define EMPTY\nDISPLAY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 2);
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name,
+            value_span,
+            is_global,
+        } => {
+            assert_eq!(name.name, "EMPTY");
+            assert!(!is_global);
+            assert!(value_span.is_none());
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_global_define() {
+    let source = "&global-define BAR yes\nDISPLAY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name,
+            value_span,
+            is_global,
+        } => {
+            assert_eq!(name.name, "BAR");
+            assert!(*is_global);
+            assert!(value_span.is_some());
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_define_complex_value() {
+    let source = "&scoped-define EXPR 1 + 2\nDISPLAY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok());
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name, value_span, ..
+        } => {
+            assert_eq!(name.name, "EXPR");
+            let span = value_span.unwrap();
+            assert_eq!(&source[span.start as usize..span.end as usize], "1 + 2");
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+#[test]
+fn preproc_undefine() {
+    let source = "&UNDEFINE FOO";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocUndefine { name } => {
+            assert_eq!(name.name, "FOO");
+        }
+        _ => panic!("Expected PreprocUndefine"),
+    }
+}
+
+#[test]
+fn preproc_message() {
+    let source = "&MESSAGE \"compile-time warning\"";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocMessage { expression } => {
+            assert!(matches!(
+                expression,
+                Expression::Literal(Literal::String(_))
+            ));
+        }
+        _ => panic!("Expected PreprocMessage"),
+    }
+}
+
+// ── Expression-level preprocessor tests ──────────────────────────
+
+#[test]
+fn preproc_reference_expression() {
+    let source = "{&myvar}";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocReference(name) => {
+            assert_eq!(name, "myvar");
+        }
+        _ => panic!("Expected PreprocReference, got {:?}", expr),
+    }
+}
+
+#[test]
+fn preproc_if_expression() {
+    let source = "&IF TRUE &THEN 1 &ELSE 2 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::Literal(_)));
+            assert!(matches!(preproc.then_branch, Expression::Literal(_)));
+            assert!(preproc.else_branch.is_some());
+            assert!(matches!(
+                preproc.else_branch.as_ref().unwrap(),
+                Expression::Literal(_)
+            ));
+        }
+        _ => panic!("Expected PreprocIf expression"),
+    }
+}
+
+#[test]
+fn preproc_if_expression_missing_else_is_error() {
+    let source = "&IF TRUE &THEN 1 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_expression();
+    assert!(result.is_err());
+}
+
+#[test]
+fn preproc_if_expression_with_function_call() {
+    // DEFINED(x) parses as a function call in the expression parser
+    let source = "&IF DEFINED(use-int) &THEN 1 &ELSE 2 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::FunctionCall { .. }));
+        }
+        _ => panic!("Expected PreprocIf expression"),
+    }
+}
+
+// ── DataType-level preprocessor tests ────────────────────────────
+
+#[test]
+fn preproc_if_data_type() {
+    let source = "DEFINE VARIABLE x AS &IF TRUE &THEN INTEGER &ELSE CHARACTER &ENDIF NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::VariableDeclaration {
+            name, data_type, ..
+        } => {
+            assert_eq!(name.name, "x");
+            match data_type {
+                DataType::PreprocIf(preproc) => {
+                    assert!(matches!(preproc.then_branch, DataType::Integer));
+                    assert!(matches!(
+                        preproc.else_branch.as_ref().unwrap(),
+                        DataType::Character
+                    ));
+                }
+                _ => panic!("Expected PreprocIf DataType"),
+            }
+        }
+        _ => panic!("Expected VariableDeclaration"),
+    }
+}
+
+#[test]
+fn preproc_if_data_type_missing_else_is_error() {
+    let source = "DEFINE VARIABLE x AS &IF TRUE &THEN INTEGER &ENDIF NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    assert!(result.is_err());
+}
+
+// ── PreprocIf<T> structural consistency tests ────────────────────
+
+#[test]
+fn preproc_if_statement_with_multiple_stmts_per_branch() {
+    let source = "&IF TRUE &THEN\nDISPLAY \"a\".\nDISPLAY \"b\".\n&ELSE\nDISPLAY \"c\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert_eq!(preproc.then_branch.len(), 2);
+            assert_eq!(preproc.else_branch.unwrap().len(), 1);
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_if_with_defined_condition() {
+    let source = "&IF DEFINED(use-widget) &THEN\nDISPLAY \"yes\".\n&ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition, Expression::FunctionCall { .. }));
+        }
+        _ => panic!("Expected PreprocIf statement"),
+    }
+}
+
+#[test]
+fn preproc_reference_in_assignment() {
+    // {&var} used as expression in a statement
+    let source = "x = {&default-value}.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Assignment { value, .. } => {
+            assert!(matches!(value, Expression::PreprocReference(_)));
+        }
+        _ => panic!("Expected Assignment"),
+    }
+}
+
+#[test]
+fn preproc_case_insensitive() {
+    let source = "&if true &then\ndisplay \"x\".\n&endif";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert!(matches!(stmt, Statement::PreprocIf(_)));
+}
+
+#[test]
+fn preproc_program_with_mixed_statements() {
+    let source =
+        "&SCOPED-DEFINE VER 1\n&IF TRUE &THEN\nDISPLAY \"hello\".\n&ENDIF\nDISPLAY \"done\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok(), "Errors: {:?}", program.errors);
+    assert_eq!(program.statements.len(), 3);
+    assert!(matches!(
+        program.statements[0],
+        Statement::PreprocDefine { .. }
+    ));
+    assert!(matches!(program.statements[1], Statement::PreprocIf(_)));
+    assert!(matches!(program.statements[2], Statement::Display { .. }));
+}
+
+#[test]
+fn preproc_if_expression_with_elseif() {
+    let source = "&IF 1 = 1 &THEN 10 &ELSEIF 2 = 2 &THEN 20 &ELSE 30 &ENDIF";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expr = parser.parse_expression().expect("Expected expression");
+    match expr {
+        Expression::PreprocIf(preproc) => {
+            assert_eq!(preproc.elseif_branches.len(), 1);
+            assert!(preproc.else_branch.is_some());
+        }
+        _ => panic!("Expected PreprocIf expression"),
+    }
+}
+
+#[test]
+fn preproc_define_at_eof() {
+    // Define at end of file with no trailing newline
+    let source = "&scoped-define NAME hello";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(program.is_ok(), "Errors: {:?}", program.errors);
+    assert_eq!(program.statements.len(), 1);
+    match &program.statements[0] {
+        Statement::PreprocDefine {
+            name, value_span, ..
+        } => {
+            assert_eq!(name.name, "NAME");
+            let span = value_span.unwrap();
+            assert_eq!(&source[span.start as usize..span.end as usize], "hello");
+        }
+        _ => panic!("Expected PreprocDefine"),
+    }
+}
+
+// ── Stream & Frame Tests ────────────────────────────────────────────
+
+#[test]
+fn define_stream_basic() {
+    let source = "DEFINE STREAM s1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineStream { name } => {
+            assert_eq!(name.name, "s1");
+        }
+        _ => panic!("Expected DefineStream"),
+    }
+}
+
+#[test]
+fn define_stream_case_insensitive() {
+    let source = "define stream MyStream.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineStream { name } => {
+            assert_eq!(name.name, "MyStream");
+        }
+        _ => panic!("Expected DefineStream"),
+    }
+}
+
+#[test]
+fn define_frame_basic() {
+    let source = "DEFINE FRAME f1.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineFrame { name, .. } => {
+            assert_eq!(name.name, "f1");
+        }
+        _ => panic!("Expected DefineFrame"),
+    }
+}
+
+#[test]
+fn define_frame_with_content() {
+    let source = "DEFINE FRAME cust-frame x y WITH 2 COLUMNS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::DefineFrame { name, raw_span } => {
+            assert_eq!(name.name, "cust-frame");
+            // raw_span should cover content between name and period
+            let raw_text = &source[raw_span.start as usize..raw_span.end as usize];
+            assert!(raw_text.contains("COLUMNS"));
+        }
+        _ => panic!("Expected DefineFrame"),
+    }
+}
+
+#[test]
+fn input_from_string_literal() {
+    let source = r#"INPUT FROM "data.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(stream_name.is_none());
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_from_identifier() {
+    let source = "INPUT FROM cFile.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_through() {
+    let source = r#"INPUT THROUGH "sort -r"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_thru_abbreviation() {
+    let source = r#"INPUT THRU "sort -r"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_close() {
+    let source = "INPUT CLOSE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(stream_name.is_none());
+            assert_eq!(operation, StreamOperation::Close);
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_stream_named_from() {
+    let source = r#"INPUT STREAM s1 FROM "data.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert_eq!(stream_name.unwrap().name, "s1");
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_to_basic() {
+    let source = r#"OUTPUT TO "report.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            match operation {
+                StreamOperation::To { append, .. } => assert!(!append),
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_to_with_append() {
+    let source = r#"OUTPUT TO "report.txt" APPEND."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            match operation {
+                StreamOperation::To { append, .. } => assert!(append),
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_through() {
+    let source = r#"OUTPUT THROUGH "lpr"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_close() {
+    let source = "OUTPUT CLOSE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            assert_eq!(operation, StreamOperation::Close);
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn output_stream_named_to() {
+    let source = r#"OUTPUT STREAM s-report TO "report.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            assert_eq!(stream_name.unwrap().name, "s-report");
+            match operation {
+                StreamOperation::To { append, .. } => assert!(!append),
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_output_through() {
+    let source = r#"INPUT-OUTPUT THROUGH "terminal"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::InputOutput);
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_output_close() {
+    let source = "INPUT-OUTPUT CLOSE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::InputOutput);
+            assert_eq!(operation, StreamOperation::Close);
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_output_stream_named() {
+    let source = r#"INPUT-OUTPUT STREAM sIO THROUGH "pipe"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            stream_name,
+            operation,
+        } => {
+            assert_eq!(direction, StreamDirection::InputOutput);
+            assert_eq!(stream_name.unwrap().name, "sIO");
+            assert!(matches!(operation, StreamOperation::Through(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn display_with_stream() {
+    let source = "DISPLAY STREAM s1 x y.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::Display {
+            stream_name, items, ..
+        } => {
+            assert_eq!(stream_name.unwrap().name, "s1");
+            assert_eq!(items.len(), 2);
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn display_without_stream() {
+    let source = "DISPLAY x y.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::Display { stream_name, .. } => {
+            assert!(stream_name.is_none());
+        }
+        _ => panic!("Expected Display statement"),
+    }
+}
+
+#[test]
+fn stream_io_case_insensitive() {
+    let source = r#"input from "data.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt {
+        Statement::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Input);
+            assert!(matches!(operation, StreamOperation::From(_)));
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+#[test]
+fn input_does_not_support_to() {
+    let source = r#"INPUT TO "file.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // INPUT TO should not be parsed as stream I/O (TO isn't in the lookahead)
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("INPUT should not support TO"),
+        _ => {}
+    }
+}
+
+#[test]
+fn output_does_not_support_from() {
+    let source = r#"OUTPUT FROM "file.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // OUTPUT FROM should not be parsed as stream I/O (FROM isn't in the lookahead)
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("OUTPUT should not support FROM"),
+        _ => {}
+    }
+}
+
+#[test]
+fn input_output_does_not_support_from() {
+    let source = r#"INPUT-OUTPUT FROM "file.txt"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // INPUT-OUTPUT FROM should not be parsed as stream I/O
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("INPUT-OUTPUT should not support FROM"),
+        _ => {}
+    }
+}
+
+#[test]
+fn input_as_expression_not_stream() {
+    // INPUT iParam should not parse as stream I/O — falls through to expression
+    let source = "INPUT iParam.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_statement();
+    match &result {
+        Ok(Statement::StreamIo { .. }) => panic!("INPUT(identifier) should not be StreamIo"),
+        _ => {}
+    }
+}
+
+// ── DEFINE DATASET tests ────────────────────────────────────────
+
+#[test]
+fn parse_define_dataset_basic() {
+    let source = "DEFINE DATASET ds FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            name,
+            buffers,
+            data_relations,
+            parent_id_relations,
+            ..
+        } => {
+            assert_eq!(name.name, "ds");
+            assert_eq!(buffers.len(), 1);
+            assert_eq!(buffers[0].name, "ttA");
+            assert!(data_relations.is_empty());
+            assert!(parent_id_relations.is_empty());
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_multiple_buffers() {
+    let source = "DEFINE DATASET ds FOR ttA, ttB, ttC.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { buffers, .. } => {
+            assert_eq!(buffers.len(), 3);
+            assert_eq!(buffers[0].name, "ttA");
+            assert_eq!(buffers[1].name, "ttB");
+            assert_eq!(buffers[2].name, "ttC");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_data_relation() {
+    let source = r#"DEFINE DATASET dsPerson FOR ttPerson, ttAddress
+        DATA-RELATION drPersonAddr FOR ttPerson, ttAddress
+        RELATION-FIELDS (personId, personId)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { data_relations, .. } => {
+            assert_eq!(data_relations.len(), 1);
+            let rel = &data_relations[0];
+            assert_eq!(rel.name.as_ref().unwrap().name, "drPersonAddr");
+            assert_eq!(rel.parent_buffer.name, "ttPerson");
+            assert_eq!(rel.child_buffer.name, "ttAddress");
+            assert_eq!(rel.relation_fields.len(), 1);
+            assert_eq!(rel.relation_fields[0].0.name, "personId");
+            assert_eq!(rel.relation_fields[0].1.name, "personId");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_multiple_relations() {
+    let source = r#"DEFINE DATASET ds FOR ttOrder, ttLine, ttItem
+        DATA-RELATION r1 FOR ttOrder, ttLine
+        RELATION-FIELDS (ordNum, ordNum)
+        DATA-RELATION r2 FOR ttLine, ttItem
+        RELATION-FIELDS (itemId, itemId)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { data_relations, .. } => {
+            assert_eq!(data_relations.len(), 2);
+            assert_eq!(data_relations[0].name.as_ref().unwrap().name, "r1");
+            assert_eq!(data_relations[1].name.as_ref().unwrap().name, "r2");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_relation_flags() {
+    let source = r#"DEFINE DATASET ds FOR ttA, ttB
+        DATA-RELATION FOR ttA, ttB
+        RELATION-FIELDS (id, id)
+        REPOSITION NESTED FOREIGN-KEY-HIDDEN NOT-ACTIVE RECURSIVE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { data_relations, .. } => {
+            let rel = &data_relations[0];
+            assert!(rel.name.is_none()); // unnamed relation
+            assert!(rel.reposition);
+            assert!(rel.nested);
+            assert!(rel.foreign_key_hidden);
+            assert!(rel.not_active);
+            assert!(rel.recursive);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_parent_id_relation() {
+    let source = r#"DEFINE DATASET ds FOR ttParent, ttChild
+        PARENT-ID-RELATION pidRel FOR ttParent, ttChild
+        PARENT-ID-FIELD idField
+        PARENT-FIELDS-BEFORE (field1, field2)
+        PARENT-FIELDS-AFTER (field3)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            parent_id_relations,
+            ..
+        } => {
+            assert_eq!(parent_id_relations.len(), 1);
+            let rel = &parent_id_relations[0];
+            assert_eq!(rel.name.as_ref().unwrap().name, "pidRel");
+            assert_eq!(rel.parent_buffer.name, "ttParent");
+            assert_eq!(rel.child_buffer.name, "ttChild");
+            assert_eq!(rel.id_field.name, "idField");
+            assert_eq!(rel.parent_fields_before.len(), 2);
+            assert_eq!(rel.parent_fields_before[0].name, "field1");
+            assert_eq!(rel.parent_fields_after.len(), 1);
+            assert_eq!(rel.parent_fields_after[0].name, "field3");
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_mixed_relations() {
+    let source = r#"DEFINE DATASET ds FOR ttA, ttB, ttC
+        DATA-RELATION FOR ttA, ttB
+        RELATION-FIELDS (id, id)
+        PARENT-ID-RELATION FOR ttA, ttC
+        PARENT-ID-FIELD recid-field."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            data_relations,
+            parent_id_relations,
+            ..
+        } => {
+            assert_eq!(data_relations.len(), 1);
+            assert_eq!(parent_id_relations.len(), 1);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_xml_serialize_options() {
+    let source = r#"DEFINE DATASET ds
+        NAMESPACE-URI "urn:example"
+        NAMESPACE-PREFIX "ex"
+        XML-NODE-NAME "myDs"
+        SERIALIZE-NAME "dataset1"
+        SERIALIZE-HIDDEN
+        FOR ttA."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { xml_options, .. } => {
+            assert_eq!(
+                xml_options.namespace_uri.as_ref().unwrap().name,
+                "urn:example"
+            );
+            assert_eq!(xml_options.namespace_prefix.as_ref().unwrap().name, "ex");
+            assert_eq!(xml_options.xml_node_name.as_ref().unwrap().name, "myDs");
+            assert_eq!(
+                xml_options.serialize_name.as_ref().unwrap().name,
+                "dataset1"
+            );
+            assert!(xml_options.serialize_hidden);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_reference_only() {
+    let source = "DEFINE DATASET ds REFERENCE-ONLY FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset { reference_only, .. } => {
+            assert!(reference_only);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+#[test]
+fn parse_define_dataset_modifiers() {
+    // Test NEW SHARED
+    let source = "DEFINE NEW SHARED DATASET ds1 FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            is_new_shared,
+            is_shared,
+            ..
+        } => {
+            assert!(is_new_shared);
+            assert!(!is_shared);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+
+    // Test PRIVATE STATIC SERIALIZABLE
+    let source = "DEFINE PRIVATE STATIC SERIALIZABLE DATASET ds2 FOR ttA.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataset {
+            access,
+            is_static,
+            serializable,
+            non_serializable,
+            ..
+        } => {
+            assert_eq!(access, Some(AccessModifier::Private));
+            assert!(is_static);
+            assert!(serializable);
+            assert!(!non_serializable);
+        }
+        _ => panic!("Expected DefineDataset"),
+    }
+}
+
+// ── DEFINE DATA-SOURCE tests ────────────────────────────────────
+
+#[test]
+fn parse_define_data_source_basic() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource {
+            name,
+            source_buffers,
+            query,
+            ..
+        } => {
+            assert_eq!(name.name, "dsSrc");
+            assert!(query.is_none());
+            assert_eq!(source_buffers.len(), 1);
+            assert_eq!(source_buffers[0].name.name, "Customer");
+            assert!(source_buffers[0].keys.is_none());
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_with_query() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR QUERY qCust Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource {
+            query,
+            source_buffers,
+            ..
+        } => {
+            assert_eq!(query.as_ref().unwrap().name, "qCust");
+            assert_eq!(source_buffers.len(), 1);
+            assert_eq!(source_buffers[0].name.name, "Customer");
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_multiple_buffers() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer, Order.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource { source_buffers, .. } => {
+            assert_eq!(source_buffers.len(), 2);
+            assert_eq!(source_buffers[0].name.name, "Customer");
+            assert_eq!(source_buffers[1].name.name, "Order");
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_with_keys() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer KEYS (CustNum, Region).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource { source_buffers, .. } => match &source_buffers[0].keys {
+            Some(DataSourceKeys::Fields(fields)) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "CustNum");
+                assert_eq!(fields[1].name, "Region");
+            }
+            _ => panic!("Expected Fields keys"),
+        },
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_with_rowid_key() {
+    let source = "DEFINE DATA-SOURCE dsSrc FOR Customer KEYS (ROWID).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource { source_buffers, .. } => {
+            assert!(matches!(
+                source_buffers[0].keys,
+                Some(DataSourceKeys::Rowid)
+            ));
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+#[test]
+fn parse_define_data_source_access_static() {
+    let source = "DEFINE PRIVATE STATIC DATA-SOURCE dsSrc FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineDataSource {
+            access, is_static, ..
+        } => {
+            assert_eq!(access, Some(AccessModifier::Private));
+            assert!(is_static);
+        }
+        _ => panic!("Expected DefineDataSource"),
+    }
+}
+
+// ── CREATE typed tests ──────────────────────────────────────────
+
+#[test]
+fn parse_create_dataset() {
+    let source = "CREATE DATASET hDs.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target:
+                CreateTarget::Handle {
+                    kind,
+                    handle,
+                    widget_pool,
+                },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::Dataset);
+            assert_eq!(handle.name, "hDs");
+            assert!(widget_pool.is_none());
+        }
+        _ => panic!("Expected Create Dataset"),
+    }
+
+    // With WIDGET-POOL
+    let source = r#"CREATE DATASET hDs IN WIDGET-POOL "myPool"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Handle {
+                kind, widget_pool, ..
+            },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::Dataset);
+            assert!(widget_pool.is_some());
+        }
+        _ => panic!("Expected Create Dataset with widget pool"),
+    }
+}
+
+#[test]
+fn parse_create_data_source() {
+    let source = "CREATE DATA-SOURCE hDs.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Handle { kind, handle, .. },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::DataSource);
+            assert_eq!(handle.name, "hDs");
+        }
+        _ => panic!("Expected Create DataSource"),
+    }
+}
+
+#[test]
+fn parse_create_temp_table() {
+    let source = "CREATE TEMP-TABLE hTt.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Handle { kind, handle, .. },
+            ..
+        } => {
+            assert_eq!(kind, CreateTargetKind::TempTable);
+            assert_eq!(handle.name, "hTt");
+        }
+        _ => panic!("Expected Create TempTable"),
+    }
+}
+
+#[test]
+fn parse_create_name() {
+    // Existing behavior preserved
+    let source = "CREATE Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        } => {
+            assert_eq!(name.name, "Customer");
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Create Name"),
+    }
+}
+
+// ── DEFINE PARAMETER typed tests ────────────────────────────────
+
+#[test]
+fn parse_define_parameter_dataset() {
+    let source = "DEFINE INPUT PARAMETER DATASET FOR dsName.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type:
+                ParameterType::Handle {
+                    kind,
+                    name,
+                    passing,
+                },
+        } => {
+            assert_eq!(direction, ParameterDirection::Input);
+            assert_eq!(kind, HandleParamKind::Dataset);
+            assert_eq!(name.name, "dsName");
+            assert!(!passing.append);
+            assert!(!passing.bind);
+        }
+        _ => panic!("Expected DefineParameter Handle Dataset"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_dataset_handle() {
+    let source = "DEFINE OUTPUT PARAMETER DATASET-HANDLE hDs.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            direction,
+            param_type: ParameterType::Handle { kind, name, .. },
+        } => {
+            assert_eq!(direction, ParameterDirection::Output);
+            assert_eq!(kind, HandleParamKind::DatasetHandle);
+            assert_eq!(name.name, "hDs");
+        }
+        _ => panic!("Expected DefineParameter Handle DatasetHandle"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_table_for() {
+    let source = "DEFINE INPUT PARAMETER TABLE FOR ttName.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Handle { kind, name, .. },
+            ..
+        } => {
+            assert_eq!(kind, HandleParamKind::Table);
+            assert_eq!(name.name, "ttName");
+        }
+        _ => panic!("Expected DefineParameter Handle Table"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_table_handle() {
+    let source = "DEFINE OUTPUT PARAMETER TABLE-HANDLE hTt.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Handle { kind, name, .. },
+            ..
+        } => {
+            assert_eq!(kind, HandleParamKind::TableHandle);
+            assert_eq!(name.name, "hTt");
+        }
+        _ => panic!("Expected DefineParameter Handle TableHandle"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_buffer() {
+    let source = "DEFINE INPUT PARAMETER BUFFER bCust FOR Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Buffer { name, target },
+            ..
+        } => {
+            assert_eq!(name.name, "bCust");
+            assert_eq!(target.name, "Customer");
+        }
+        _ => panic!("Expected DefineParameter Buffer"),
+    }
+}
+
+#[test]
+fn parse_define_parameter_bind_append() {
+    let source = "DEFINE INPUT PARAMETER DATASET FOR dsName BIND APPEND.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineParameter {
+            param_type: ParameterType::Handle { passing, .. },
+            ..
+        } => {
+            assert!(passing.bind);
+            assert!(passing.append);
+            assert!(!passing.by_value);
+        }
+        _ => panic!("Expected DefineParameter Handle with passing options"),
+    }
+}
+
+// ── XML/serialize retrofit tests ────────────────────────────────
+
+#[test]
+fn parse_define_temp_table_xml_options() {
+    let source = r#"DEFINE TEMP-TABLE tt NO-UNDO
+        NAMESPACE-URI "urn:test"
+        SERIALIZE-NAME "myTable"
+        FIELD x AS INTEGER."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineTempTable {
+            xml_options,
+            fields,
+            ..
+        } => {
+            assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:test");
+            assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "myTable");
+            assert_eq!(fields.len(), 1);
+        }
+        _ => panic!("Expected DefineTempTable"),
+    }
+}
+
+#[test]
+fn parse_define_buffer_xml_options() {
+    let source =
+        r#"DEFINE BUFFER bCust FOR Customer NAMESPACE-URI "urn:foo" SERIALIZE-NAME "cust"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineBuffer { xml_options, .. } => {
+            assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:foo");
+            assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "cust");
+        }
+        _ => panic!("Expected DefineBuffer"),
+    }
+}
+
+// ── PUBLISH tests ───────────────────────────────────────────────────
+
+#[test]
+fn parse_publish_string_literal() {
+    let source = r#"PUBLISH "NewCustomer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            event_name,
+            from_handle,
+            arguments,
+        } => {
+            assert!(matches!(
+                event_name,
+                Expression::Literal(Literal::String(_))
+            ));
+            assert!(from_handle.is_none());
+            assert!(arguments.is_empty());
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+#[test]
+fn parse_publish_with_from() {
+    let source = r#"PUBLISH "NewCustomer" FROM hProc."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            from_handle,
+            arguments,
+            ..
+        } => {
+            assert!(from_handle.is_some());
+            assert!(arguments.is_empty());
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+#[test]
+fn parse_publish_with_params() {
+    let source = r#"PUBLISH "NewCustomer" (INPUT cName)."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            arguments,
+            from_handle,
+            ..
+        } => {
+            assert!(from_handle.is_none());
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+#[test]
+fn parse_publish_expression_event() {
+    let source = "PUBLISH cEventName.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            event_name,
+            arguments,
+            ..
+        } => {
+            match &event_name {
+                Expression::Identifier(id) => assert_eq!(id.name, "cEventName"),
+                _ => panic!("Expected identifier event name"),
+            }
+            assert!(arguments.is_empty());
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+// ── SUBSCRIBE tests ─────────────────────────────────────────────────
+
+#[test]
+fn parse_subscribe_anywhere() {
+    let source = r#"SUBSCRIBE TO "NewCustomer" ANYWHERE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe {
+            subscriber,
+            target,
+            run_procedure,
+            no_error,
+            ..
+        } => {
+            assert!(subscriber.is_none());
+            assert_eq!(target, SubscribeTarget::Anywhere);
+            assert!(run_procedure.is_none());
+            assert!(!no_error);
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_in_handle() {
+    let source = r#"SUBSCRIBE TO "NewCustomer" IN hPub."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe { target, .. } => {
+            assert!(matches!(target, SubscribeTarget::InHandle(_)));
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_with_procedure() {
+    let source = r#"SUBSCRIBE PROCEDURE hSub TO "NewCustomer" IN hPub."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe {
+            subscriber, target, ..
+        } => {
+            assert!(subscriber.is_some());
+            assert!(matches!(target, SubscribeTarget::InHandle(_)));
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_with_run_procedure() {
+    let source = r#"SUBSCRIBE TO "NewCustomer" IN hPub RUN-PROCEDURE MyHandler."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe { run_procedure, .. } => {
+            assert_eq!(run_procedure.as_ref().unwrap().name, "MyHandler");
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+#[test]
+fn parse_subscribe_no_to() {
+    let source = r#"SUBSCRIBE "NewCustomer" ANYWHERE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Subscribe { target, .. } => {
+            assert_eq!(target, SubscribeTarget::Anywhere);
+        }
+        _ => panic!("Expected Subscribe statement"),
+    }
+}
+
+// ── UNSUBSCRIBE tests ───────────────────────────────────────────────
+
+#[test]
+fn parse_unsubscribe_event() {
+    let source = r#"UNSUBSCRIBE TO "NewCustomer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe {
+            subscriber,
+            event_name,
+            in_handle,
+        } => {
+            assert!(subscriber.is_none());
+            assert!(event_name.is_some());
+            assert!(in_handle.is_none());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+#[test]
+fn parse_unsubscribe_all() {
+    let source = "UNSUBSCRIBE TO ALL.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe {
+            event_name,
+            in_handle,
+            ..
+        } => {
+            assert!(event_name.is_none());
+            assert!(in_handle.is_none());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+#[test]
+fn parse_unsubscribe_with_procedure() {
+    let source = r#"UNSUBSCRIBE PROCEDURE hSub TO "NewCustomer"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe { subscriber, .. } => {
+            assert!(subscriber.is_some());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+#[test]
+fn parse_unsubscribe_with_in_handle() {
+    let source = r#"UNSUBSCRIBE TO "NewCustomer" IN hPub."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Unsubscribe { in_handle, .. } => {
+            assert!(in_handle.is_some());
+        }
+        _ => panic!("Expected Unsubscribe statement"),
+    }
+}
+
+// ── DEFINE EVENT tests ──────────────────────────────────────────────
+
+#[test]
+fn parse_define_event_minimal() {
+    let source = "DEFINE EVENT MyEvent SIGNATURE VOID ().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineEvent {
+            access,
+            is_static,
+            is_abstract,
+            name,
+            parameters,
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
+            assert!(!is_abstract);
+            assert_eq!(name.name, "MyEvent");
+            assert!(parameters.is_empty());
+        }
+        _ => panic!("Expected DefineEvent statement"),
+    }
+}
+
+#[test]
+fn parse_define_event_abstract() {
+    let source = "DEFINE PROTECTED ABSTRACT EVENT MyEvent SIGNATURE VOID ().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineEvent {
+            access,
+            is_abstract,
+            name,
+            ..
+        } => {
+            assert_eq!(access, AccessModifier::Protected);
+            assert!(is_abstract);
+            assert_eq!(name.name, "MyEvent");
+        }
+        _ => panic!("Expected DefineEvent statement"),
+    }
+}
+
+#[test]
+fn parse_define_event_multiple_params() {
+    let source = "DEFINE PUBLIC EVENT MyEvent SIGNATURE VOID (INPUT p1 AS INTEGER, INPUT p2 AS CHARACTER, OUTPUT p3 AS LOGICAL).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::DefineEvent {
+            parameters, name, ..
+        } => {
+            assert_eq!(name.name, "MyEvent");
+            assert_eq!(parameters.len(), 3);
+            // Verify first param
+            match &parameters[0] {
+                Statement::DefineParameter {
+                    direction,
+                    param_type,
+                } => {
+                    assert_eq!(*direction, ParameterDirection::Input);
+                    match param_type {
+                        ParameterType::Variable {
+                            name, data_type, ..
+                        } => {
+                            assert_eq!(name.name, "p1");
+                            assert_eq!(*data_type, DataType::Integer);
+                        }
+                        _ => panic!("Expected Variable param type"),
+                    }
+                }
+                _ => panic!("Expected DefineParameter"),
+            }
+            // Verify third param is OUTPUT
+            match &parameters[2] {
+                Statement::DefineParameter { direction, .. } => {
+                    assert_eq!(*direction, ParameterDirection::Output);
+                }
+                _ => panic!("Expected DefineParameter"),
+            }
+        }
+        _ => panic!("Expected DefineEvent statement"),
+    }
+}
+
+// ── Integration tests ───────────────────────────────────────────────
+
+#[test]
+fn parse_publish_in_do_block() {
+    let source = r#"DO:
+    PUBLISH "NewCustomer" (INPUT cName).
+END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::Publish { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_define_event_in_interface() {
+    let source = "INTERFACE IObservable:
+    DEFINE PUBLIC EVENT OnChange SIGNATURE VOID (INPUT pValue AS CHARACTER).
+END INTERFACE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Interface { body, name, .. } => {
+            assert_eq!(name.name, "IObservable");
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::DefineEvent { .. }));
+        }
+        _ => panic!("Expected Interface statement"),
+    }
+}
+
+// ── Negative / disambiguation test ──────────────────────────────────
+
+#[test]
+fn parse_publish_event_name_not_function_call() {
+    // Verify that `myEvent (INPUT x)` is parsed as event name `myEvent`
+    // with argument list `(INPUT x)`, NOT as function call `myEvent(INPUT x)`.
+    let source = "PUBLISH myEvent (INPUT x).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Publish {
+            event_name,
+            arguments,
+            ..
+        } => {
+            // Event name should be a plain identifier, not a function call
+            match &event_name {
+                Expression::Identifier(id) => assert_eq!(id.name, "myEvent"),
+                _ => panic!("Expected identifier event name, got {:?}", event_name),
+            }
+            // Arguments should be parsed as PUBLISH arguments
+            assert_eq!(arguments.len(), 1);
+            assert_eq!(arguments[0].direction, ParameterDirection::Input);
+        }
+        _ => panic!("Expected Publish statement"),
+    }
+}
+
+// ── ON trigger tests ────────────────────────────────────────────────
+
+#[test]
+fn parse_on_choose_of_button() {
+    let source = r#"ON CHOOSE OF btnOk DO: MESSAGE "clicked". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind:
+                OnKind::UiEvent {
+                    clauses,
+                    anywhere,
+                    action,
+                },
+        } => {
+            assert!(!anywhere);
+            assert_eq!(clauses.len(), 1);
+            assert_eq!(clauses[0].events.len(), 1);
+            assert_eq!(clauses[0].events[0].name, "CHOOSE");
+            assert_eq!(clauses[0].widgets.len(), 1);
+            assert_eq!(clauses[0].widgets[0].name.name, "btnOk");
+            assert!(clauses[0].widgets[0].qualifier.is_none());
+            assert!(matches!(action, OnAction::Block(_)));
+        }
+        _ => panic!("Expected On UiEvent statement, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn parse_on_multiple_events() {
+    let source = r#"ON CHOOSE, ENTRY OF btnOk DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].events.len(), 2);
+            assert_eq!(clauses[0].events[0].name, "CHOOSE");
+            assert_eq!(clauses[0].events[1].name, "ENTRY");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_multiple_widgets() {
+    let source = r#"ON CHOOSE OF btn1, btn2 DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].widgets.len(), 2);
+            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
+            assert_eq!(clauses[0].widgets[1].name.name, "btn2");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_widget_in_frame() {
+    let source = r#"ON CHOOSE OF btnOk IN FRAME main-frame DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].widgets.len(), 1);
+            assert_eq!(clauses[0].widgets[0].name.name, "btnOk");
+            match &clauses[0].widgets[0].qualifier {
+                Some(WidgetQualifier::InFrame(frame)) => assert_eq!(frame.name, "main-frame"),
+                other => panic!("Expected InFrame qualifier, got {:?}", other),
+            }
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_or_clause() {
+    let source = r#"ON CHOOSE OF btn1 OR ENTRY OF fill1 DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses.len(), 2);
+            assert_eq!(clauses[0].events[0].name, "CHOOSE");
+            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
+            assert_eq!(clauses[1].events[0].name, "ENTRY");
+            assert_eq!(clauses[1].widgets[0].name.name, "fill1");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_anywhere() {
+    let source = r#"ON CHOOSE ANYWHERE DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent {
+                clauses, anywhere, ..
+            },
+        } => {
+            assert!(anywhere);
+            assert!(clauses.is_empty());
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_anywhere_with_widgets() {
+    let source = r#"ON CHOOSE OF btn1 ANYWHERE DO: MESSAGE "hi". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent {
+                clauses, anywhere, ..
+            },
+        } => {
+            assert!(anywhere);
+            assert_eq!(clauses.len(), 1);
+            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_single_statement() {
+    let source = r#"ON CHOOSE OF btnOk MESSAGE "clicked"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => {
+            assert!(matches!(action, OnAction::Block(_)));
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_revert() {
+    let source = "ON CHOOSE OF btnOk REVERT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => {
+            assert!(matches!(action, OnAction::Revert));
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_persistent_run() {
+    let source = "ON CHOOSE OF btnOk PERSISTENT RUN myProc.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => match action {
+            OnAction::PersistentRun {
+                procedure,
+                arguments,
+            } => {
+                assert_eq!(procedure.name, "myProc");
+                assert!(arguments.is_empty());
+            }
+            other => panic!("Expected PersistentRun, got {:?}", other),
+        },
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_persistent_run_with_args() {
+    let source = "ON CHOOSE OF btnOk PERSISTENT RUN myProc (INPUT x).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => match action {
+            OnAction::PersistentRun { arguments, .. } => {
+                assert_eq!(arguments.len(), 1);
+            }
+            other => panic!("Expected PersistentRun, got {:?}", other),
+        },
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_leave_event_name() {
+    let source = r#"ON LEAVE OF fill1 DO: MESSAGE "left". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { clauses, .. },
+        } => {
+            assert_eq!(clauses[0].events[0].name, "LEAVE");
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_web_notify() {
+    let source = r#"ON "WEB-NOTIFY" ANYWHERE DO: MESSAGE "notify". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::UiEvent { anywhere, .. },
+        } => {
+            assert!(anywhere);
+        }
+        _ => panic!("Expected On UiEvent statement"),
+    }
+}
+
+// ── ON database event tests ─────────────────────────────────────────
+
+#[test]
+fn parse_on_create_of_table() {
+    let source = r#"ON CREATE OF Customer DO: MESSAGE "created". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind:
+                OnKind::DbEvent {
+                    event,
+                    target,
+                    is_override,
+                    ..
+                },
+        } => {
+            assert_eq!(event, DbTriggerEvent::Create);
+            assert_eq!(target.name, "Customer");
+            assert!(!is_override);
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_write_with_buffers() {
+    let source =
+        r#"ON WRITE OF Customer NEW BUFFER bNew OLD BUFFER bOld DO: MESSAGE "wrote". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent {
+                event, referencing, ..
+            },
+        } => {
+            assert_eq!(event, DbTriggerEvent::Write);
+            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
+            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_assign_of_field() {
+    let source = r#"ON ASSIGN OF Customer.Name DO: MESSAGE "assigned". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { event, target, .. },
+        } => {
+            assert_eq!(event, DbTriggerEvent::Assign);
+            assert_eq!(target.name, "Customer.Name");
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_assign_old_value() {
+    let source = r#"ON ASSIGN OF Customer.Name OLD VALUE oldName DO: MESSAGE "changed". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { referencing, .. },
+        } => {
+            assert_eq!(referencing.old_value.as_ref().unwrap().name, "oldName");
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_write_override() {
+    let source = r#"ON WRITE OF Customer OVERRIDE DO: MESSAGE "overridden". END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { is_override, .. },
+        } => {
+            assert!(is_override);
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+#[test]
+fn parse_on_db_revert() {
+    let source = "ON WRITE OF Customer REVERT.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind: OnKind::DbEvent { action, .. },
+        } => {
+            assert!(matches!(action, OnAction::Revert));
+        }
+        _ => panic!("Expected On DbEvent statement"),
+    }
+}
+
+// ── ON key remap tests ──────────────────────────────────────────────
+
+#[test]
+fn parse_on_key_remap() {
+    let source = "ON F1 HELP.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::On {
+            kind:
+                OnKind::KeyRemap {
+                    key_label,
+                    key_function,
+                },
+        } => {
+            assert_eq!(key_label.name, "F1");
+            assert_eq!(key_function.name, "HELP");
+        }
+        _ => panic!("Expected On KeyRemap statement"),
+    }
+}
+
+// ── TRIGGER PROCEDURE tests ─────────────────────────────────────────
+
+#[test]
+fn parse_trigger_procedure_create() {
+    let source = "TRIGGER PROCEDURE FOR CREATE OF Customer.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure { event, target, .. } => {
+            assert_eq!(event, DbTriggerEvent::Create);
+            assert_eq!(target.name, "Customer");
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_write() {
+    let source = "TRIGGER PROCEDURE FOR WRITE OF Customer NEW BUFFER bNew OLD BUFFER bOld.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            event, referencing, ..
+        } => {
+            assert_eq!(event, DbTriggerEvent::Write);
+            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
+            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_write_no_buffer_keyword() {
+    let source = "TRIGGER PROCEDURE FOR WRITE OF Customer NEW bNew OLD bOld.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure { referencing, .. } => {
+            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
+            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_assign_of() {
+    let source = "TRIGGER PROCEDURE FOR ASSIGN OF Customer.Name.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            event,
+            target,
+            new_value,
+            ..
+        } => {
+            assert_eq!(event, DbTriggerEvent::Assign);
+            assert_eq!(target.name, "Customer.Name");
+            assert!(new_value.is_none());
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_assign_new_value() {
+    let source = "TRIGGER PROCEDURE FOR ASSIGN NEW VALUE newVal AS CHARACTER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            event,
+            new_value,
+            old_value_param,
+            ..
+        } => {
+            assert_eq!(event, DbTriggerEvent::Assign);
+            let nv = new_value.unwrap();
+            assert_eq!(nv.name.name, "newVal");
+            assert_eq!(nv.data_type, DataType::Character);
+            assert!(old_value_param.is_none());
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+#[test]
+fn parse_trigger_procedure_assign_new_old_value() {
+    let source =
+        "TRIGGER PROCEDURE FOR ASSIGN NEW VALUE newVal AS CHARACTER OLD VALUE oldVal AS CHARACTER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::TriggerProcedure {
+            new_value,
+            old_value_param,
+            ..
+        } => {
+            let nv = new_value.unwrap();
+            assert_eq!(nv.name.name, "newVal");
+            assert_eq!(nv.data_type, DataType::Character);
+            let ov = old_value_param.unwrap();
+            assert_eq!(ov.name.name, "oldVal");
+            assert_eq!(ov.data_type, DataType::Character);
+        }
+        _ => panic!("Expected TriggerProcedure statement"),
+    }
+}
+
+// ── ON trigger integration tests ────────────────────────────────────
+
+#[test]
+fn parse_on_trigger_in_procedure() {
+    let source = r#"PROCEDURE myProc:
+    ON CHOOSE OF btnOk DO:
+        MESSAGE "clicked".
+    END.
+END PROCEDURE."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Procedure { name, body } => {
+            assert_eq!(name.name, "myProc");
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::On { .. }));
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_on_trigger_inside_do_block() {
+    let source = r#"DO:
+    ON CHOOSE OF btnOk DO:
+        MESSAGE "clicked".
+    END.
+END."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Do { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::On { .. }));
+        }
+        _ => panic!("Expected Do statement"),
+    }
+}
+
+#[test]
+fn parse_on_trigger_in_class_body() {
+    let source = r#"CLASS MyApp.MyClass:
+    ON CHOOSE OF btnOk DO:
+        MESSAGE "clicked".
+    END.
+END CLASS."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Class { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0], Statement::On { .. }));
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
 
 // ==================== Include File Reference Tests ====================
 

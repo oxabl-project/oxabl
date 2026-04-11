@@ -1,9 +1,16 @@
 [package]
 name = "oxabl_common"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
+license = "MIT"
+description = "Shared utilities for the Oxabl ABL tooling suite"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_common"
 
 [dependencies]
 
 [dev-dependencies]
-oxabl_lexer = { path = "../oxabl_lexer" }
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
+
+[[bench]]
+name = "source_map_bench"
+harness = false

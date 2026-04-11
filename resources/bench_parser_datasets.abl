@@ -1,0 +1,88 @@
+/* Benchmark fixture: Dataset and Data-Source definitions */
+
+/* Simple dataset with one relation */
+DEFINE TEMP-TABLE ttCustomer NO-UNDO
+    FIELD CustNum AS INTEGER
+    FIELD Name AS CHARACTER.
+
+DEFINE TEMP-TABLE ttOrder NO-UNDO
+    FIELD OrderNum AS INTEGER
+    FIELD CustNum AS INTEGER
+    FIELD OrderDate AS DATE.
+
+DEFINE TEMP-TABLE ttOrderLine NO-UNDO
+    FIELD OrderNum AS INTEGER
+    FIELD LineNum AS INTEGER
+    FIELD ItemId AS INTEGER
+    FIELD Qty AS INTEGER.
+
+DEFINE DATASET dsCustomerOrders FOR ttCustomer, ttOrder, ttOrderLine
+    DATA-RELATION drCustOrder FOR ttCustomer, ttOrder
+    RELATION-FIELDS (CustNum, CustNum)
+    DATA-RELATION drOrderLine FOR ttOrder, ttOrderLine
+    RELATION-FIELDS (OrderNum, OrderNum).
+
+/* Dataset with all flags */
+DEFINE DATASET dsWithFlags FOR ttCustomer, ttOrder
+    DATA-RELATION FOR ttCustomer, ttOrder
+    RELATION-FIELDS (CustNum, CustNum)
+    REPOSITION NESTED FOREIGN-KEY-HIDDEN NOT-ACTIVE RECURSIVE.
+
+/* Dataset with XML/serialize options */
+DEFINE DATASET dsXml
+    NAMESPACE-URI "urn:example:customer"
+    NAMESPACE-PREFIX "cust"
+    XML-NODE-NAME "CustomerData"
+    SERIALIZE-NAME "customerDataset"
+    SERIALIZE-HIDDEN
+    FOR ttCustomer, ttOrder
+    DATA-RELATION FOR ttCustomer, ttOrder
+    RELATION-FIELDS (CustNum, CustNum).
+
+/* Dataset with REFERENCE-ONLY */
+DEFINE DATASET dsRef REFERENCE-ONLY FOR ttCustomer.
+
+/* Dataset with PARENT-ID-RELATION */
+DEFINE TEMP-TABLE ttParent NO-UNDO
+    FIELD ParentId AS INTEGER
+    FIELD ParentName AS CHARACTER.
+
+DEFINE TEMP-TABLE ttChild NO-UNDO
+    FIELD ChildId AS INTEGER
+    FIELD ParentRecid AS INTEGER
+    FIELD ChildName AS CHARACTER.
+
+DEFINE DATASET dsParentChild FOR ttParent, ttChild
+    PARENT-ID-RELATION pidRel FOR ttParent, ttChild
+    PARENT-ID-FIELD ParentRecid
+    PARENT-FIELDS-BEFORE (ParentId, ParentName)
+    PARENT-FIELDS-AFTER (ParentName).
+
+/* Dataset with access modifiers */
+DEFINE PRIVATE STATIC SERIALIZABLE DATASET dsPrivate FOR ttCustomer.
+
+/* NEW SHARED dataset */
+DEFINE NEW SHARED DATASET dsShared FOR ttCustomer.
+
+/* Data-source definitions */
+DEFINE DATA-SOURCE dsCust FOR Customer.
+
+DEFINE DATA-SOURCE dsMulti FOR Customer, Order.
+
+DEFINE DATA-SOURCE dsWithQuery FOR QUERY qCust Customer.
+
+DEFINE DATA-SOURCE dsWithKeys FOR Customer KEYS (CustNum, Region).
+
+DEFINE DATA-SOURCE dsWithRowid FOR Customer KEYS (ROWID).
+
+DEFINE PRIVATE STATIC DATA-SOURCE dsStatic FOR Customer.
+
+/* CREATE typed variants */
+DEFINE VARIABLE hDs AS HANDLE NO-UNDO.
+DEFINE VARIABLE hSrc AS HANDLE NO-UNDO.
+DEFINE VARIABLE hTt AS HANDLE NO-UNDO.
+
+CREATE DATASET hDs.
+CREATE DATA-SOURCE hSrc.
+CREATE TEMP-TABLE hTt.
+CREATE Customer.

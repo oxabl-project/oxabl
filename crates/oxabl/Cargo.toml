@@ -1,10 +1,13 @@
 [package]
 name = "oxabl"
-version = "0.1.0"
+version = "0.3.2"
 edition = "2024"
+license = "MIT"
+description = "High-performance tooling suite for Progress ABL"
+repository = "https://github.com/oxabl-project/oxabl"
 
 [dependencies]
-oxabl_parser = { path = "../oxabl_parser" }
-oxabl_lexer = { path = "../oxabl_lexer" }
-oxabl_common = { path = "../oxabl_common" }
-oxabl_ast = { path = "../oxabl_ast" }
+oxabl_parser = { path = "../oxabl_parser", version = "0.4.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "0.3.1" }
+oxabl_common = { path = "../oxabl_common", version = "0.3.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "0.4.0" }
