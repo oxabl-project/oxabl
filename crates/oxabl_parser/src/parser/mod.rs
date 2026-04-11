@@ -376,6 +376,10 @@ impl<'a> Parser<'a> {
                     // Handle attribute/method names (used after ':' in postfix access)
                     | Kind::Available
                     | Kind::QueryOffEnd
+                    // Lock/query option keywords passed as method arguments (e.g. GET-FIRST(NO-LOCK,NO-WAIT))
+                    | Kind::NoWait
+                    | Kind::ShareLock
+                    | Kind::ExclusiveLock
             )
     }
 
