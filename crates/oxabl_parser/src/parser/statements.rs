@@ -420,6 +420,7 @@ impl Parser<'_> {
             || self.check(Kind::OsRename)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
+            || self.check(Kind::Enable)
             || self.check(Kind::Accumulate)
             || self.check(Kind::Down)
             || self.check(Kind::Open)
@@ -492,9 +493,25 @@ impl Parser<'_> {
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
 
+        // Consume optional "IN FRAME framename" qualifier between target and '='
+        // e.g. widget:attribute IN FRAME ftab1 = value NO-ERROR.
+        if self.check(Kind::KwIn) && self.peek_at(1).kind == Kind::Frame {
+            self.advance(); // consume IN
+            self.advance(); // consume FRAME
+            self.advance(); // consume framename
+        }
+
         if self.check(Kind::Equals) {
             self.advance(); // consume the "="
             let value = self.parse_expression()?;
+            // Consume optional IN FRAME/BROWSE qualifier on the value side
+            // e.g. handle = widget:attr IN FRAME fname.
+            if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+            {
+                self.advance(); // consume IN
+                self.advance(); // consume FRAME or BROWSE
+                self.advance(); // consume name
+            }
             // Consume optional NO-ERROR trailing clause (e.g. x = func() NO-ERROR.)
             if self.check(Kind::NoError) {
                 self.advance();
@@ -3105,6 +3122,13 @@ impl Parser<'_> {
         let mut assignments = Vec::new();
         while !self.check(Kind::Period) && !self.check(Kind::NoError) && !self.at_end() {
             let target = self.parse_additive()?;
+            // Optional IN FRAME/BROWSE before '=': widget:attr IN FRAME f = value
+            if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+            {
+                self.advance(); // consume IN
+                self.advance(); // consume FRAME or BROWSE
+                self.advance(); // consume name
+            }
             self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
             // Use full expression parser for value to allow IF/THEN/ELSE ternary and other exprs
             let value = self.parse_expression()?;
