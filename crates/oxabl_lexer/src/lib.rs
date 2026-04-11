@@ -359,14 +359,20 @@ impl<'a> Lexer<'a> {
         match kind {
             Kind::IntegerLiteral => {
                 let text = &self.source[start..end];
-                match text.parse::<i32>() {
+                // Handle ABL trailing-minus notation: "119999-" → -119999
+                let (digits, neg) = if let Some(stripped) = text.strip_suffix('-') {
+                    (stripped, true)
+                } else {
+                    (text, false)
+                };
+                match digits.parse::<i32>() {
                     Ok(int) => {
-                        value = TokenValue::Integer(int);
+                        value = TokenValue::Integer(if neg { -int } else { int });
                     }
-                    Err(_) => match text.parse::<i64>() {
+                    Err(_) => match digits.parse::<i64>() {
                         Ok(big_int) => {
                             kind = Kind::BigIntLiteral;
-                            value = TokenValue::BigInt(big_int);
+                            value = TokenValue::BigInt(if neg { -big_int } else { big_int });
                         }
                         Err(e) => {
                             println!("Error parsing integer: {:?}", e);
@@ -386,10 +392,16 @@ impl<'a> Lexer<'a> {
                 }
             }
             Kind::DecimalLiteral => {
-                let parsed_decimal = self.source[start..end].parse();
-                match parsed_decimal {
+                let text = &self.source[start..end];
+                // Handle ABL trailing-minus notation: "1.0-" → -1.0
+                let (digits, neg) = if let Some(stripped) = text.strip_suffix('-') {
+                    (stripped, true)
+                } else {
+                    (text, false)
+                };
+                match digits.parse::<Decimal>() {
                     Ok(decimal) => {
-                        value = TokenValue::Decimal(decimal);
+                        value = TokenValue::Decimal(if neg { -decimal } else { decimal });
                     }
                     Err(e) => {
                         println!("Error parsing decimal: {:?}", e);
@@ -593,11 +605,35 @@ impl<'a> Lexer<'a> {
                 while matches!(self.peek(), Some('0'..='9')) {
                     self.advance();
                 }
+                // Check for ABL trailing-minus notation on decimal (e.g. 1.0- means -1.0)
+                if self.is_trailing_minus() {
+                    self.advance(); // consume '-'
+                }
                 return Kind::DecimalLiteral;
             }
         }
 
+        // Check for ABL trailing-minus notation (e.g. 119999- means -119999)
+        if self.is_trailing_minus() {
+            self.advance(); // consume '-'
+        }
+
         Kind::IntegerLiteral
+    }
+
+    /// Returns true if the next char is `-` and the char after it is not a digit,
+    /// identifier-start character, or another `-`. This identifies trailing-minus
+    /// notation (ABL allows `119999-` to mean `-119999`).
+    fn is_trailing_minus(&self) -> bool {
+        if !matches!(self.peek(), Some('-')) {
+            return false;
+        }
+        let mut look = self.chars.clone();
+        look.next(); // skip '-'
+        !matches!(
+            look.next(),
+            Some('0'..='9' | 'a'..='z' | 'A'..='Z' | '_' | '-')
+        )
     }
 
     /// Reads a preprocessor reference like {&variable} or {&batch-mode}
