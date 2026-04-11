@@ -174,10 +174,13 @@ impl Parser<'_> {
             // consume optional action
             if self.check(Kind::Comma) {
                 self.advance();
-                if matches!(
-                    self.peek().kind,
-                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn
-                ) {
+                if self.check(Kind::KwReturn) {
+                    self.advance();
+                    // RETURN may have a value expression (e.g. UNDO, RETURN false.)
+                    if !self.check(Kind::Period) && !self.at_end() {
+                        self.parse_expression().ok();
+                    }
+                } else if matches!(self.peek().kind, Kind::Leave | Kind::Retry | Kind::Next) {
                     self.advance();
                     // consume optional label
                     if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Period) {
@@ -405,6 +408,7 @@ impl Parser<'_> {
             || self.check(Kind::OsCreateDir)
             || self.check(Kind::OsCommand)
             || self.check(Kind::OsCopy)
+            || self.check(Kind::OsRename)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
             || self.check(Kind::Accumulate)
