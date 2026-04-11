@@ -266,7 +266,10 @@ impl Parser<'_> {
                 }
                 arguments.push(self.parse_expression()?);
                 // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
-                while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
+                while matches!(
+                    self.peek().kind,
+                    Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+                ) {
                     self.advance();
                 }
 
@@ -380,6 +383,11 @@ impl Parser<'_> {
     }
 
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
+        // Inline ternary: IF expr THEN expr ELSE expr — valid in any expression position
+        if self.check(Kind::KwIf) {
+            return self.parse_ternary();
+        }
+
         // Preprocessor reference: {&variable}
         if self.check(Kind::Preprop) {
             let token = self.advance().clone();
@@ -647,7 +655,10 @@ impl Parser<'_> {
         // When TEMP-TABLE, BUFFER, or FRAME appear in expression context followed by an identifier,
         // consume both tokens as a compound identifier.
         // Also handles BUFFER {&preproc} for dynamic buffer references.
-        if (self.check(Kind::TempTable) || self.check(Kind::Buffer) || self.check(Kind::Frame))
+        if (self.check(Kind::TempTable)
+            || self.check(Kind::Buffer)
+            || self.check(Kind::Frame)
+            || self.check(Kind::Query))
             && (Self::can_be_identifier(self.peek_at(1).kind) || self.check_at(1, Kind::Preprop))
         {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER

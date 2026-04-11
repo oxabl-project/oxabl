@@ -98,6 +98,7 @@ fn main() {
             "buffer-compare",
             "buffer-copy",
             "by",
+            "by-reference",
             "by-value",
             "call",
             "can do",
