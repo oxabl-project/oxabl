@@ -5,7 +5,7 @@
 //! > unary > postfix (member access, method calls, array/field access) > primary.
 
 use oxabl_ast::{Expression, Identifier, Span};
-use oxabl_lexer::{Kind, TokenValue, is_callable_kind};
+use oxabl_lexer::{Kind, TokenValue};
 
 use super::{ParseError, ParseResult, Parser};
 use crate::literal::token_to_literal;
@@ -383,7 +383,9 @@ impl Parser<'_> {
             let token = self.advance().clone();
             let path_and_args = match &token.value {
                 TokenValue::String(s) => s.to_string(),
-                _ => self.source[token.start + 1..token.end - 1].trim().to_string(),
+                _ => self.source[token.start + 1..token.end - 1]
+                    .trim()
+                    .to_string(),
             };
             return Ok(Expression::IncludeReference {
                 path_and_args,

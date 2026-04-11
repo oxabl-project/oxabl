@@ -15,8 +15,8 @@ use oxabl_ast::{
     SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
     UseIndex, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
+use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
-use oxabl_lexer::{Kind, is_callable_kind};
 
 use super::{ParseError, ParseResult, Parser};
 
@@ -2274,7 +2274,9 @@ impl Parser<'_> {
         let token = self.advance().clone();
         let path_and_args = match &token.value {
             TokenValue::String(s) => s.to_string(),
-            _ => self.source[token.start + 1..token.end - 1].trim().to_string(),
+            _ => self.source[token.start + 1..token.end - 1]
+                .trim()
+                .to_string(),
         };
         let span = Span {
             start: token.start as u32,
@@ -2319,6 +2321,8 @@ impl Parser<'_> {
         }
 
         Ok(Statement::IncludeArgReference { index, span })
+    }
+
     // ===================== OO-ABL parsing =====================
 
     /// Parse a CLASS definition.
