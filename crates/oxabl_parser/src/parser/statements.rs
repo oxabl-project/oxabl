@@ -1966,8 +1966,32 @@ impl Parser<'_> {
             }
         }
 
-        // Expect colon
-        self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
+        // Optional PRESELECT EACH/FIRST/LAST table [WHERE cond] [lock]
+        while self.check(Kind::Preselect) {
+            self.advance(); // consume PRESELECT
+            // optional qualifier (EACH/FIRST/LAST)
+            if matches!(self.peek().kind, Kind::Each | Kind::First | Kind::Last) {
+                self.advance();
+            }
+            // table/buffer name
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance();
+            }
+            // optional WHERE clause
+            if self.check(Kind::KwWhere) {
+                self.advance();
+                self.parse_expression().ok();
+            }
+            // optional lock type
+            self.parse_lock_type();
+        }
+
+        // Expect colon (or period for legacy code)
+        if self.check(Kind::Period) {
+            self.advance();
+        } else {
+            self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
+        }
 
         let body = self.parse_block_body()?;
 
@@ -2021,8 +2045,30 @@ impl Parser<'_> {
             });
         }
 
-        // Parse buffer name
-        let buffer = self.parse_identifier()?;
+        // Parse buffer name — may be {&preproc}-suffix form where the hyphen and suffix
+        // are separate tokens but form a compound name (e.g. {&order}-remit).
+        let mut buffer = self.parse_identifier()?;
+        while self.check(Kind::Minus) {
+            let minus_start = self.tokens[self.current].start;
+            // Only treat as compound name if adjacent (no space before the minus)
+            if minus_start == buffer.span.end as usize {
+                let minus_tok = self.advance(); // consume '-'
+                let after_minus = minus_tok.end;
+                if Self::can_be_identifier(self.peek().kind) && self.peek().start == after_minus {
+                    let suffix = self.advance();
+                    let (ss, se) = (suffix.start, suffix.end);
+                    buffer.name.push('-');
+                    buffer.name.push_str(&self.source[ss..se]);
+                    buffer.span.end = se as u32;
+                } else {
+                    // Not a compound name — back up by un-advancing the minus
+                    self.current -= 1;
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
 
         // optional OF clause
         let of_relation = if self.check(Kind::Of) {
@@ -2111,35 +2157,29 @@ impl Parser<'_> {
             }
         }
 
-        // Skip optional BREAK BY and BY clauses (sort order / grouping).
-        // Patterns:
-        //   BREAK BY field [DESCENDING] [BY field2 [DESCENDING]] ...
-        //   BY field [DESCENDING] [BY field2 ...]
-        if self.check(Kind::KwBreak) {
-            self.advance(); // consume BREAK
-        }
-        // Consume one or more BY field [DESCENDING] clauses
-        while self.check(Kind::By) {
-            self.advance(); // consume BY
-            // consume the sort field expression (stops at ':' or '.')
-            if !self.check(Kind::Colon) && !self.check(Kind::Period) {
-                self.parse_expression().ok();
-            }
-            // Optional DESCENDING / ASCENDING
-            if self.check(Kind::Descending) || self.check(Kind::Ascending) {
+        // Handle optional BREAK, BY, TRANSACTION, and WHILE clauses in any order.
+        // ABL allows these interleaved, e.g. TRANSACTION BY field: or BY field TRANSACTION:
+        loop {
+            if self.check(Kind::KwBreak) {
+                self.advance(); // consume BREAK (followed by BY)
+            } else if self.check(Kind::By) {
+                self.advance(); // consume BY
+                // consume the sort field expression (stops at ':' or '.')
+                if !self.check(Kind::Colon) && !self.check(Kind::Period) {
+                    self.parse_expression().ok();
+                }
+                // Optional DESCENDING / ASCENDING
+                if self.check(Kind::Descending) || self.check(Kind::Ascending) {
+                    self.advance();
+                }
+            } else if self.check(Kind::KwWhile) {
+                self.advance(); // consume WHILE
+                self.parse_expression().ok(); // parse the condition
+            } else if self.check(Kind::Transaction) {
                 self.advance();
+            } else {
+                break;
             }
-        }
-
-        // Optional WHILE condition before block opener
-        if self.check(Kind::KwWhile) {
-            self.advance(); // consume WHILE
-            self.parse_expression().ok(); // parse the condition
-        }
-
-        // Optional TRANSACTION keyword before block opener
-        if self.check(Kind::Transaction) {
-            self.advance();
         }
 
         // Optional WITH FRAME name clause before block opener
@@ -2155,10 +2195,22 @@ impl Parser<'_> {
 
         // ABL accepts either ':' or '.' to start the FOR EACH body.
         // Some code uses 'FOR EACH table WHERE cond NO-LOCK.' with a period.
+        // Also handle cases where a preprocessor reference expands to include the WHERE clause —
+        // in unexpanded source, unrecognized tokens may appear before ':'; skip them.
         if self.check(Kind::Period) {
             self.advance(); // consume '.' as body-start
+        } else if self.check(Kind::Colon) {
+            self.advance(); // consume ':'
         } else {
-            self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
+            // Skip unrecognized tokens (e.g. condition from {&preproc} expansion) until ':' or '.'
+            while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
+                self.advance();
+            }
+            if self.check(Kind::Period) {
+                self.advance();
+            } else {
+                self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
+            }
         }
         let body = self.parse_block_body()?;
 
