@@ -339,7 +339,9 @@ impl Parser<'_> {
     fn can_have_field_access(expr: &Expression) -> bool {
         matches!(
             expr,
-            Expression::Identifier(_) | Expression::FieldAccess { .. }
+            Expression::Identifier(_)
+                | Expression::FieldAccess { .. }
+                | Expression::PreprocReference(_)
         )
     }
 
@@ -604,8 +606,10 @@ impl Parser<'_> {
         // TEMP-TABLE name[:attr] / BUFFER name[:attr] — table/buffer handle expressions.
         // When TEMP-TABLE or BUFFER appear in expression context followed by an identifier
         // (the table/buffer name), consume both tokens as a compound identifier.
+        // Also handles BUFFER {&preproc} for dynamic buffer references.
         if (self.check(Kind::TempTable) || self.check(Kind::Buffer))
-            && Self::can_be_identifier(self.peek_at(1).kind)
+            && (Self::can_be_identifier(self.peek_at(1).kind)
+                || self.check_at(1, Kind::Preprop))
         {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
             let start = kw_token.start;

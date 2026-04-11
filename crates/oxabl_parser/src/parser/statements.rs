@@ -427,6 +427,12 @@ impl Parser<'_> {
     fn parse_define_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DEFINE
 
+        // Skip optional preprocessor references that may appear as modifiers
+        // e.g., `DEF {&ns} VAR` where {&ns} expands to NEW SHARED or similar
+        while self.check(Kind::Preprop) {
+            self.advance();
+        }
+
         // parse INPUT/OUTPUT parameters
         if self.check(Kind::Input) || self.check(Kind::Output) || self.check(Kind::InputOutput) {
             return self.parse_define_parameter();
@@ -2126,7 +2132,15 @@ impl Parser<'_> {
         self.advance(); // consume PROCEDURE
 
         let name = self.parse_identifier()?;
-        self.expect_kind(Kind::Colon, "Expected ':' after procedure name")?;
+        // Accept both ':' and '.' as the body opener (legacy ABL uses '.')
+        if self.check(Kind::Colon) || self.check(Kind::Period) {
+            self.advance();
+        } else {
+            return Err(ParseError {
+                message: "Expected ':' after procedure name".to_string(),
+                span: self.current_span(),
+            });
+        }
 
         // parse body until END
         let mut body = Vec::new();
@@ -2390,12 +2404,22 @@ impl Parser<'_> {
         let mut except = Vec::new();
         let mut frame = None;
 
-        // Parse display items until WITH, EXCEPT, or period
+        // Parse display items until WITH, EXCEPT, FRAME, or period
         while !self.check(Kind::With)
             && !self.check(Kind::Except)
+            && !self.check(Kind::Frame)
             && !self.check(Kind::Period)
             && !self.at_end()
         {
+            // Standalone SKIP [n] or SPACE [n] directives between display items
+            if self.check(Kind::Skip) || self.check(Kind::Space) {
+                self.advance();
+                if self.check(Kind::IntegerLiteral) {
+                    self.advance();
+                }
+                continue;
+            }
+
             let expression = self.parse_expression()?;
 
             // Optional per-item WHEN condition
@@ -2406,11 +2430,27 @@ impl Parser<'_> {
                 None
             };
 
-            // Skip FORMAT "string" and COLUMN-LABEL "string" if present (no variable refs)
-            while self.check(Kind::Format) || self.check(Kind::ColumnLabel) {
-                self.advance();
-                if self.check(Kind::StringLiteral) {
+            // Skip per-item display options
+            loop {
+                if self.check(Kind::Format) || self.check(Kind::ColumnLabel) || self.check(Kind::Label) {
                     self.advance();
+                    self.skip_format_value();
+                } else if self.check(Kind::At) {
+                    // AT column-number
+                    self.advance();
+                    if !self.check(Kind::Period) && !self.check(Kind::With) {
+                        self.parse_expression().ok();
+                    }
+                } else if self.check(Kind::NoLabels) {
+                    self.advance();
+                } else if self.check(Kind::Skip) || self.check(Kind::Space) {
+                    // SKIP [n] or SPACE [n]
+                    self.advance();
+                    if self.check(Kind::IntegerLiteral) {
+                        self.advance();
+                    }
+                } else {
+                    break;
                 }
             }
 
@@ -2425,6 +2465,16 @@ impl Parser<'_> {
             self.advance();
             while !self.check(Kind::With) && !self.check(Kind::Period) && !self.at_end() {
                 except.push(self.parse_identifier()?);
+            }
+        }
+
+        // Parse optional FRAME clause (may appear without WITH)
+        if self.check(Kind::Frame) {
+            self.advance();
+            frame = Some(self.parse_identifier()?);
+            // Skip remaining frame options until period
+            while !self.check(Kind::Period) && !self.at_end() {
+                self.advance();
             }
         }
 
