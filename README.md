@@ -24,12 +24,12 @@ Requirements:
   - Used in our token dumps and benchmarks, appears to be accurate.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
-- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 91 tests
+- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 147 tests
   - Parses expressions with proper operator precedence
-  - Parses statements: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN
+  - Parses statements: DEFINE VARIABLE, VAR, assignments, DO blocks (with counting), IF/THEN/ELSE, REPEAT, LEAVE, NEXT, RETURN, CASE, FIND, FOR EACH, PROCEDURE
   - Parses postfix operations: method calls, member access, array access, field access
 
-Current Work: Procedure/function definitions, more statement types.
+Current Work: RUN statement (in progress), DISPLAY and MESSAGE statements next.
 
 ## Roadmap
 
@@ -52,21 +52,45 @@ Current Work: Procedure/function definitions, more statement types.
 
 As a high performance oriented library, Oxabl is focused on hitting low numbers and keeping them low across versions.
 
-Benchmarks are run under `bench` with `cargo bench -p <lib>` such as `oxabl_lexer`. Each library will have a benchmark so we can track the performance of individual components in the toolset.
+Benchmarks are run with `cargo bench -p <crate>`. Each crate has its own benchmark so we can track the performance of individual components in the toolset.
 
-### Lexer
+These are not sanitized benchmarks — they were run on real hardware with normal background processes, similar to how a developer would actually use the tools.
 
-- **Comparison:** I haven't used any other ABL lexers while working as an ABL developer, so I don't really know how to use what's out there. If you have access to an ABL lexer and can run a benchmark, please provide those numbers, it's much appreciated!
+### Intel i7-8550U Laptop
 
-**Benchmark:**
-| Test Name               | Time (min) | Time (avg) | Time (max) | Throughput Min | Throughput Avg | Throughput Max |
-| ----------------------- | ---------- | ---------- | ---------- | -------------- | -------------- | -------------- |
-| lexer/tokenize_keywords | 1.4692 ms  | 1.4762 ms  | 1.4838 ms  | 11.121 MiB/s   | 11.179 MiB/s   | 11.232 MiB/s   |
-| lexer/tokenize_full     | 1.4929 ms  | 1.5098 ms  | 1.5262 ms  | 10.812 MiB/s   | 10.929 MiB/s   | 11.054 MiB/s   |
+**Hardware:** Intel Core i7-8550U (8) @ 4.00 GHz, 15.37 GiB RAM, Linux 6.19.10-arch1-1
 
-~11MiB/s throughput is pretty good for a handrolled lexer MVP, so we're aiming for ~11MiB/s or higher from here on. The long term goal is to *increase* this number. A release should never *decrease*  without good reason. But we're only human.
+#### Source Map (`oxabl_common`)
 
-I haven't run this benchmark in an optimized environment- it's running in WSL2, on a Windows PC with lots of browers and tasks running, similar to how it would run if a developer were actually using it. I'm sure these numbers could be much higher on a better PC with less background noise.
+| Benchmark                | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
+| ------------------------ | ----------- | ----------- | ----------- | ----------------- |
+| source_map/construction  | 22.341 µs   | 22.636 µs   | 23.002 µs   | 728.99 MiB/s      |
+| source_map/lookup        | 98.447 ns   | 98.853 ns   | 99.361 ns   | 50.580 Melem/s    |
+
+#### Lexer (`oxabl_lexer`)
+
+| Benchmark            | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
+| -------------------- | ----------- | ----------- | ----------- | ----------------- |
+| lexer/keywords       | 248.71 µs   | 249.82 µs   | 250.95 µs   | 66.053 MiB/s      |
+| lexer/strings        | 24.602 µs   | 24.727 µs   | 24.862 µs   | 81.301 MiB/s      |
+| lexer/comments       | 13.988 µs   | 14.026 µs   | 14.069 µs   | 175.70 MiB/s      |
+| lexer/numeric        | 23.294 µs   | 23.396 µs   | 23.523 µs   | 71.701 MiB/s      |
+| lexer/preprocessor   | 31.775 µs   | 31.925 µs   | 32.079 µs   | 80.476 MiB/s      |
+
+#### Parser (`oxabl_parser`)
+
+| Benchmark              | Time (min)  | Time (avg)  | Time (max)  | Throughput (avg)  |
+| ---------------------- | ----------- | ----------- | ----------- | ----------------- |
+| parser/full_program    | 305.47 µs   | 306.08 µs   | 306.75 µs   | 53.913 MiB/s      |
+| parser/expressions     | 93.108 µs   | 93.943 µs   | 94.915 µs   | 24.506 MiB/s      |
+| parser/declarations    | 54.445 µs   | 54.707 µs   | 55.016 µs   | 46.928 MiB/s      |
+| parser/control_flow    | 82.733 µs   | 83.156 µs   | 83.626 µs   | 28.075 MiB/s      |
+| parser/oo_abl          | 76.691 µs   | 76.973 µs   | 77.287 µs   | 51.281 MiB/s      |
+| parser/temp_tables     | 50.913 µs   | 51.169 µs   | 51.424 µs   | 50.303 MiB/s      |
+| parser/procs_funcs     | 87.470 µs   | 88.238 µs   | 88.983 µs   | 39.352 MiB/s      |
+| parser/datasets        | 46.195 µs   | 46.292 µs   | 46.405 µs   | 54.531 MiB/s      |
+
+### Token Dumps
 
 **Full token dump**:
 `cargo run -p oxabl_lexer --example dump_tokens`
@@ -105,6 +129,36 @@ Here's what's on the roadmap for the lexer:
   - Build a table of `transitions[state][byte] -> next_state` and index directly, `current_state = table[current_state][byte]
   - **Priority:** None, might not be worth our effort.
 
+## Contributing
+
+### CI
+
+Every push and PR to `master` runs the following checks (all must pass):
+
+- `cargo check` — compilation
+- `cargo test` — full test suite
+- `cargo fmt --check` — formatting
+- `cargo clippy -D warnings` — lints
+
+### Commit Messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) format. This drives the automated release process:
+
+- `feat: add X` — new feature (bumps minor version)
+- `fix: correct Y` — bug fix (bumps patch version)
+- `feat!: breaking change` — breaking change (bumps major, or minor while pre-1.0)
+- `chore:`, `docs:`, `refactor:`, `test:` — won't trigger a release, but appear in the changelog
+
+### Releases
+
+Releases are fully automated via [Release Please](https://github.com/googleapis/release-please):
+
+1. Merge PRs with conventional commit messages into `master`
+2. Release Please accumulates commits and maintains an open release PR with a generated changelog and version bumps across all `Cargo.toml` files
+3. When the release PR is merged, a GitHub Release and git tag are created automatically
+
+No manual version bumping is needed.
+
 ## CodeGen
 
 We generate code for all the keywords and operators to use within the project. Use these commands to generate the code:
@@ -123,6 +177,4 @@ Valid commands are:
 - No command
   - generates all files
 
-You need to provide a file, as these functions simply return strings, they don't manipulate files directly.
-
-**They also do not clear files** so running the command against a file that already has contents will just concat the contents, potentially duplicating code. Be aware of your actions. *Use `>`* to overwrite the file contents.
+Commands write generated files directly to their target locations. Generated files include a "DO NOT EDIT" header. No manual file redirection is needed.

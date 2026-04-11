@@ -245,6 +245,448 @@ keyword_type = "Operator"
 # min_abbreviation = "SHARE"
 
 # =============================================================================
+# TEMP-TABLE / BUFFER KEYWORDS
+# Keywords needed for DEFINE TEMP-TABLE and DEFINE BUFFER parsing
+# =============================================================================
+
+[[add]]
+name = "TEMP-TABLE"
+reserved = true
+keyword_type = "Statement"
+
+[[add]]
+name = "BUFFER"
+reserved = true
+keyword_type = "Statement"
+
+[[add]]
+name = "INITIAL"
+reserved = true
+keyword_type = "Option"
+min_abbreviation = "INIT"
+
+[[add]]
+name = "EXTENT"
+reserved = true
+keyword_type = "Option"
+
+[[add]]
+name = "PRIMARY"
+reserved = true
+keyword_type = "Option"
+
+[[add]]
+name = "VALIDATE"
+reserved = true
+keyword_type = "Option"
+
+[[add]]
+name = "BEFORE-TABLE"
+keyword_type = "Option"
+
+[[add]]
+name = "WORD-INDEX"
+keyword_type = "Option"
+
+[[add]]
+name = "PRESELECT"
+keyword_type = "Option"
+
+# =============================================================================
+# DATA TYPE KEYWORDS
+# ABL data types need their own Kind variants for proper parser dispatch.
+# These are unreserved and currently use string comparison in parse_data_type().
+# RECID and ROWID are already in the reserved keywords file.
+# =============================================================================
+
+[[add]]
+name = "INTEGER"
+keyword_type = "Type"
+min_abbreviation = "INT"
+
+[[add]]
+name = "INT64"
+keyword_type = "Type"
+
+[[add]]
+name = "DECIMAL"
+keyword_type = "Type"
+min_abbreviation = "DEC"
+
+[[add]]
+name = "CHARACTER"
+keyword_type = "Type"
+min_abbreviation = "CHAR"
+
+[[add]]
+name = "LOGICAL"
+keyword_type = "Type"
+min_abbreviation = "LOG"
+
+[[add]]
+name = "DATE"
+keyword_type = "Type"
+
+[[add]]
+name = "DATETIME"
+keyword_type = "Type"
+
+[[add]]
+name = "DATETIME-TZ"
+keyword_type = "Type"
+
+[[add]]
+name = "HANDLE"
+keyword_type = "Type"
+
+[[add]]
+name = "RAW"
+keyword_type = "Type"
+
+[[add]]
+name = "MEMPTR"
+keyword_type = "Type"
+
+[[add]]
+name = "LONGCHAR"
+keyword_type = "Type"
+
+[[add]]
+name = "CLOB"
+keyword_type = "Type"
+
+[[add]]
+name = "BLOB"
+keyword_type = "Type"
+
+[[add]]
+name = "COM-HANDLE"
+keyword_type = "Type"
+
+# =============================================================================
+# STATEMENT KEYWORDS
+# Unreserved keywords needed for parser statement dispatch.
+# =============================================================================
+
+# VARIABLE is unreserved; VAR is its minimum abbreviation.
+[[add]]
+name = "VARIABLE"
+keyword_type = "Statement"
+min_abbreviation = "VAR"
+
+# FUNCTION is unreserved; no abbreviation.
+# Classified as Statement, not Function -- it is the statement that *defines*
+# functions, not a callable built-in. See callable.rs for the distinction.
+[[add]]
+name = "FUNCTION"
+keyword_type = "Statement"
+
+# CATCH is unreserved; no abbreviation
+[[add]]
+name = "CATCH"
+keyword_type = "Statement"
+
+# FINALLY is unreserved; no abbreviation
+[[add]]
+name = "FINALLY"
+keyword_type = "Statement"
+
+# =============================================================================
+# OO-ABL KEYWORDS
+# Object-oriented ABL constructs — all unreserved, no abbreviations
+# =============================================================================
+
+# Class/Interface definitions
+[[add]]
+name = "CLASS"
+keyword_type = "Statement"
+
+[[add]]
+name = "INTERFACE"
+keyword_type = "Statement"
+
+[[add]]
+name = "INHERITS"
+keyword_type = "Option"
+
+[[add]]
+name = "IMPLEMENTS"
+keyword_type = "Option"
+
+# Member definitions
+[[add]]
+name = "METHOD"
+keyword_type = "Statement"
+
+[[add]]
+name = "CONSTRUCTOR"
+keyword_type = "Statement"
+
+[[add]]
+name = "DESTRUCTOR"
+keyword_type = "Statement"
+
+[[add]]
+name = "PROPERTY"
+keyword_type = "Option"
+
+# Access modifiers
+[[add]]
+name = "PUBLIC"
+keyword_type = "Option"
+
+[[add]]
+name = "PRIVATE"
+keyword_type = "Option"
+
+[[add]]
+name = "PROTECTED"
+keyword_type = "Option"
+
+[[add]]
+name = "PACKAGE-PRIVATE"
+keyword_type = "Option"
+
+# Member qualifiers
+[[add]]
+name = "ABSTRACT"
+keyword_type = "Option"
+
+[[add]]
+name = "FINAL"
+keyword_type = "Option"
+
+[[add]]
+name = "OVERRIDE"
+keyword_type = "Option"
+
+[[add]]
+name = "STATIC"
+keyword_type = "Option"
+
+# Types
+[[add]]
+name = "VOID"
+keyword_type = "Type"
+
+# GET is unreserved; only compound forms (GET-BYTE etc.) exist as Kind variants.
+# Bare GET is needed for property accessors.
+[[add]]
+name = "GET"
+keyword_type = "Option"
+
+# =============================================================================
+# DATABASE MANIPULATION KEYWORDS
+# Keywords needed for parser database operation dispatch.
+# =============================================================================
+
+[[add]]
+name = "BUFFER-COPY"
+keyword_type = "Statement"
+
+[[add]]
+name = "BUFFER-COMPARE"
+keyword_type = "Statement"
+
+# =============================================================================
+# STREAM / FRAME KEYWORDS
+# Keywords needed for stream I/O and frame parsing.
+# =============================================================================
+
+[[add]]
+name = "THROUGH"
+keyword_type = "Option"
+
+# THRU is an alternate spelling of THROUGH, not a prefix abbreviation.
+# ABL treats them as separate keywords that are interchangeable.
+[[add]]
+name = "THRU"
+keyword_type = "Option"
+
+[[add]]
+name = "APPEND"
+keyword_type = "Option"
+
+[[add]]
+name = "CLOSE"
+keyword_type = "Statement"
+
+# =============================================================================
+# DATASET / DATA-SOURCE KEYWORDS
+# Keywords needed for DEFINE DATASET, DEFINE DATA-SOURCE, and CREATE typed
+# variants. XML/serialize keywords are shared with TEMP-TABLE and BUFFER.
+# =============================================================================
+
+# Shared XML/serialize keywords (TEMP-TABLE, BUFFER, DATASET)
+[[add]]
+name = "NAMESPACE-URI"
+keyword_type = "Option"
+
+[[add]]
+name = "NAMESPACE-PREFIX"
+keyword_type = "Option"
+
+[[add]]
+name = "XML-NODE-NAME"
+keyword_type = "Option"
+
+[[add]]
+name = "XML-NODE-TYPE"
+keyword_type = "Option"
+
+[[add]]
+name = "SERIALIZE-NAME"
+keyword_type = "Option"
+
+[[add]]
+name = "SERIALIZE-HIDDEN"
+keyword_type = "Option"
+
+# Dataset-specific keywords
+[[add]]
+name = "SERIALIZABLE"
+keyword_type = "Option"
+
+[[add]]
+name = "NON-SERIALIZABLE"
+keyword_type = "Option"
+
+[[add]]
+name = "REFERENCE-ONLY"
+keyword_type = "Option"
+
+[[add]]
+name = "RELATION-FIELDS"
+keyword_type = "Option"
+
+[[add]]
+name = "NESTED"
+keyword_type = "Option"
+
+[[add]]
+name = "FOREIGN-KEY-HIDDEN"
+keyword_type = "Option"
+
+[[add]]
+name = "NOT-ACTIVE"
+keyword_type = "Option"
+
+[[add]]
+name = "RECURSIVE"
+keyword_type = "Option"
+
+[[add]]
+name = "PARENT-ID-RELATION"
+keyword_type = "Statement"
+
+[[add]]
+name = "PARENT-ID-FIELD"
+keyword_type = "Option"
+
+[[add]]
+name = "PARENT-FIELDS-BEFORE"
+keyword_type = "Option"
+
+[[add]]
+name = "PARENT-FIELDS-AFTER"
+keyword_type = "Option"
+
+# CREATE ... IN WIDGET-POOL
+[[add]]
+name = "WIDGET-POOL"
+keyword_type = "Option"
+
+# DEFINE PARAMETER typed variants
+[[add]]
+name = "TABLE-HANDLE"
+keyword_type = "Option"
+
+[[add]]
+name = "BIND"
+keyword_type = "Option"
+
+[[add]]
+name = "BY-VALUE"
+keyword_type = "Option"
+
+# =============================================================================
+# HYPHENATED FORM OVERRIDES
+# The HTML keyword index uses space-separated forms (e.g., "data relation")
+# but ABL source code uses hyphenated forms (e.g., "data-relation").
+# The lexer tokenizes hyphenated identifiers as single tokens, so the
+# match_keyword function needs the hyphenated form.
+# =============================================================================
+
+# DATA-RELATION exists as "data relation" (space) from the HTML index.
+# Override to add the hyphenated form that the lexer actually sees.
+[[add]]
+name = "DATA-RELATION"
+keyword_type = "Option"
+
+# DATA-SOURCE exists as "data source" (space) from the HTML index.
+[[add]]
+name = "DATA-SOURCE"
+keyword_type = "Statement"
+
+# DATASET-HANDLE exists as "dataset handle" (space) from the HTML index.
+[[add]]
+name = "DATASET-HANDLE"
+keyword_type = "Type"
+
+# =============================================================================
+# EVENT SYSTEM KEYWORDS
+# Keywords needed for PUBLISH/SUBSCRIBE/UNSUBSCRIBE statements and DEFINE EVENT.
+# =============================================================================
+
+[[add]]
+name = "PUBLISH"
+keyword_type = "Statement"
+
+[[add]]
+name = "SUBSCRIBE"
+keyword_type = "Statement"
+
+[[add]]
+name = "UNSUBSCRIBE"
+keyword_type = "Statement"
+
+[[add]]
+name = "ANYWHERE"
+keyword_type = "Option"
+
+[[add]]
+name = "EVENT"
+keyword_type = "Option"
+
+[[add]]
+name = "SIGNATURE"
+keyword_type = "Option"
+
+[[add]]
+name = "RUN-PROCEDURE"
+keyword_type = "Option"
+
+# =============================================================================
+# ON TRIGGER KEYWORDS
+# Keywords needed for ON statement and TRIGGER PROCEDURE parsing.
+# =============================================================================
+
+# CHOOSE is a UI event name (unreserved)
+[[add]]
+name = "CHOOSE"
+keyword_type = "Option"
+
+# ENDKEY is a key function / event name (unreserved)
+[[add]]
+name = "ENDKEY"
+keyword_type = "Option"
+
+# BROWSE is needed for IN BROWSE widget qualifiers in ON triggers
+[[add]]
+name = "BROWSE"
+keyword_type = "Option"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================

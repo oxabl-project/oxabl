@@ -1,4 +1,8 @@
-//! Expression parsing for the Oxabl parser
+//! Expression parsing for the Oxabl parser.
+//!
+//! Precedence levels (lowest to highest):
+//! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative
+//! > unary > postfix (member access, method calls, array/field access) > primary.
 
 use oxabl_ast::{Expression, Identifier, Span};
 use oxabl_lexer::{Kind, TokenValue, is_callable_kind};
@@ -55,7 +59,6 @@ impl Parser<'_> {
     }
 
     pub(super) fn is_comparison_operator(&self) -> bool {
-        println!("self.peek().kind: {:?}", self.peek().kind);
         matches!(
             self.peek().kind,
             Kind::Equals
@@ -78,17 +81,13 @@ impl Parser<'_> {
 
     pub fn parse_comparison(&mut self) -> ParseResult<Expression> {
         let left = self.parse_additive()?;
-        println!("left: {:?}", left);
 
         if !self.is_comparison_operator() {
-            println!("not a comparison operator");
             return Ok(left);
         }
 
         let op_kind = self.advance().kind;
-        println!("op_kind: {:?}", op_kind);
         let right = self.parse_additive()?;
-        println!("right: {:?}", right);
 
         let expr = match op_kind {
             Kind::Equals | Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
@@ -184,7 +183,7 @@ impl Parser<'_> {
                 let next_is_member = self
                     .tokens
                     .get(self.current + 1)
-                    .is_some_and(|t| is_callable_kind(t.kind));
+                    .is_some_and(|t| Self::can_be_identifier(t.kind));
                 if !next_is_member {
                     break;
                 }
@@ -208,7 +207,7 @@ impl Parser<'_> {
         self.advance(); // consumes ':'
 
         // Expect identifier after ':'
-        if !is_callable_kind(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: format!(
                     "Expected identifier after ':', found {:?}",
@@ -326,8 +325,31 @@ impl Parser<'_> {
     }
 
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
-        println!("parsing primary");
-        println!("token: {:?}", self.tokens[self.current]);
+        // Preprocessor reference: {&variable}
+        if self.check(Kind::Preprop) {
+            let token = self.advance().clone();
+            // Strip {& and } to get the variable name
+            let raw = &self.source[token.start..token.end];
+            let name = raw
+                .strip_prefix("{&")
+                .and_then(|s| s.strip_suffix('}'))
+                .unwrap_or(raw)
+                .to_string();
+            return Ok(Expression::PreprocReference(name));
+        }
+
+        // Mid-expression preprocessor conditional: &IF cond &THEN expr &ELSE expr &ENDIF
+        if self.check(Kind::PreprocIf) {
+            self.advance(); // consume &IF
+            let preproc = self.parse_preproc_if(1, &Self::parse_expression)?;
+            if preproc.else_branch.is_none() {
+                return Err(ParseError {
+                    message: "Expression-level &IF requires &ELSE branch".to_string(),
+                    span: self.current_span(),
+                });
+            }
+            return Ok(Expression::PreprocIf(Box::new(preproc)));
+        }
 
         // Parenthesized expression
         if self.check(Kind::LeftParen) {
@@ -389,7 +411,7 @@ impl Parser<'_> {
         }
 
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
-        if is_callable_kind(self.peek().kind) {
+        if Self::can_be_identifier(self.peek().kind) {
             let token = self.advance();
             let start = token.start;
             let end = token.end;

@@ -31,12 +31,11 @@ impl SourceMap {
     /// Example
     ///
     /// ```rust
-    /// use oxabl_lexer::tokenize;
     /// use oxabl_common::SourceMap;
     /// let source = "def var myInt as int no-undo init 1.";
     /// let source_map = SourceMap::new(&source);
-    /// let tokens = tokenize(source);
-    /// let (line_number, column_number) = source_map.lookup(tokens[0].start);
+    /// let (line_number, column_number) = source_map.lookup(0);
+    /// assert_eq!((line_number, column_number), (1, 1));
     /// ```
     #[inline]
     pub fn lookup(&self, offset: usize) -> (usize, usize) {

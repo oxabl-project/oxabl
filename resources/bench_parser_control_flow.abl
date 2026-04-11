@@ -1,0 +1,114 @@
+/* Benchmark fixture: control flow - DO, IF/THEN/ELSE, REPEAT, FOR EACH, CASE, LEAVE, NEXT, RETURN */
+
+define variable lv-i as integer no-undo.
+define variable lv-j as integer no-undo.
+define variable lv-sum as integer no-undo.
+define variable lv-name as character no-undo.
+define variable lv-flag as logical no-undo.
+
+if lv-i > 0 then
+    assign lv-sum = lv-sum + lv-i.
+
+if lv-i > 0 then
+    assign lv-flag = true.
+else
+    assign lv-flag = false.
+
+if lv-i > 100 then
+    assign lv-name = "large".
+else if lv-i > 50 then
+    assign lv-name = "medium".
+else if lv-i > 10 then
+    assign lv-name = "small".
+else
+    assign lv-name = "tiny".
+
+do lv-i = 1 to 100:
+    assign lv-sum = lv-sum + lv-i.
+end.
+
+do lv-i = 1 to 100:
+    if lv-i modulo 2 = 0 then next.
+    assign lv-sum = lv-sum + lv-i.
+end.
+
+do lv-i = 1 to 100:
+    if lv-sum > 1000 then leave.
+    assign lv-sum = lv-sum + lv-i.
+end.
+
+do lv-i = 1 to 10:
+    do lv-j = 1 to 10:
+        assign lv-sum = lv-sum + (lv-i * lv-j).
+    end.
+end.
+
+repeat:
+    assign lv-i = lv-i + 1.
+    if lv-i > 100 then leave.
+    assign lv-sum = lv-sum + lv-i.
+end.
+
+repeat:
+    assign lv-i = lv-i + 1.
+    if lv-i modulo 3 = 0 then next.
+    if lv-i > 50 then leave.
+    assign lv-sum = lv-sum + lv-i.
+end.
+
+for each customer no-lock:
+    assign lv-i = lv-i + 1.
+end.
+
+for each customer where customer.name begins "A" no-lock:
+    assign lv-i = lv-i + 1.
+end.
+
+for each order where order.order-num > 100 no-lock:
+    if order.order-num > 500 then next.
+    assign lv-sum = lv-sum + order.order-num.
+end.
+
+for each order of customer no-lock:
+    assign lv-i = lv-i + 1.
+end.
+
+case lv-name:
+    when "small" then assign lv-i = 1.
+    when "medium" then assign lv-i = 2.
+    when "large" then assign lv-i = 3.
+    otherwise assign lv-i = 0.
+end case.
+
+case lv-i:
+    when 1 then do:
+        assign lv-name = "one".
+        assign lv-flag = true.
+    end.
+    when 2 then do:
+        assign lv-name = "two".
+        assign lv-flag = true.
+    end.
+    when 3 or when 4 or when 5 then do:
+        assign lv-name = "mid".
+        assign lv-flag = false.
+    end.
+    otherwise do:
+        assign lv-name = "other".
+        assign lv-flag = false.
+    end.
+end case.
+
+do lv-i = 1 to 10:
+    if lv-i = 5 then do:
+        assign lv-flag = true.
+        leave.
+    end.
+    if lv-i modulo 2 = 0 then do:
+        assign lv-sum = lv-sum + lv-i.
+        next.
+    end.
+    assign lv-sum = lv-sum + lv-i * 2.
+end.
+
+return.

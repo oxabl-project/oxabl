@@ -1,0 +1,116 @@
+/* Benchmark fixture: PROCEDURE and FUNCTION definitions */
+
+define variable lv-result as character no-undo.
+define variable lv-count as integer no-undo.
+
+procedure validate-input:
+    define input parameter ip-name as character no-undo.
+    define input parameter ip-value as integer no-undo.
+    define output parameter op-valid as logical no-undo.
+    define output parameter op-message as character no-undo.
+
+    if ip-name = "" or ip-name = ? then do:
+        assign
+            op-valid = false
+            op-message = "Name is required".
+        return.
+    end.
+
+    if ip-value < 0 or ip-value > 9999 then do:
+        assign
+            op-valid = false
+            op-message = "Value out of range".
+        return.
+    end.
+
+    assign
+        op-valid = true
+        op-message = "".
+end procedure.
+
+procedure process-data:
+    define input parameter ip-data as character no-undo.
+    define input-output parameter iop-count as integer no-undo.
+    define output parameter op-result as character no-undo.
+
+    define variable lv-i as integer no-undo.
+    define variable lv-item as character no-undo.
+    define variable lv-total as integer no-undo.
+
+    do lv-i = 1 to num-entries(ip-data):
+        assign lv-item = entry(lv-i, ip-data).
+        if lv-item <> "" then
+            assign lv-total = lv-total + 1.
+    end.
+
+    assign
+        iop-count = iop-count + lv-total
+        op-result = "Processed " + string(lv-total) + " items".
+end procedure.
+
+procedure calculate-totals:
+    define input parameter ip-base as decimal no-undo.
+    define input parameter ip-rate as decimal no-undo.
+    define input parameter ip-qty as integer no-undo.
+    define output parameter op-subtotal as decimal no-undo.
+    define output parameter op-tax as decimal no-undo.
+    define output parameter op-total as decimal no-undo.
+
+    assign
+        op-subtotal = ip-base * ip-qty
+        op-tax = op-subtotal * ip-rate
+        op-total = op-subtotal + op-tax.
+end procedure.
+
+procedure internal-helper:
+    define variable lv-temp as character no-undo.
+    assign lv-temp = "done".
+end procedure.
+
+function fn-add returns integer (input piA as integer, input piB as integer):
+    return piA + piB.
+end function.
+
+function fn-format-name returns character (input pcFirst as character, input pcLast as character):
+    return pcLast + ", " + pcFirst.
+end function.
+
+function fn-is-valid returns logical (input pcValue as character):
+    if pcValue = "" or pcValue = ? then
+        return false.
+    return true.
+end function.
+
+function fn-calculate returns decimal (input pdBase as decimal, input pdRate as decimal, input piQty as integer):
+    define variable lv-subtotal as decimal no-undo.
+    define variable lv-tax as decimal no-undo.
+
+    assign
+        lv-subtotal = pdBase * piQty
+        lv-tax = lv-subtotal * pdRate.
+
+    return lv-subtotal + lv-tax.
+end function.
+
+function fn-max-of-three returns integer (input piA as integer, input piB as integer, input piC as integer):
+    if piA >= piB and piA >= piC then return piA.
+    if piB >= piC then return piB.
+    return piC.
+end function.
+
+function fn-repeat-string returns character (input pcStr as character, input piTimes as integer):
+    define variable lv-result as character no-undo.
+    define variable lv-i as integer no-undo.
+
+    do lv-i = 1 to piTimes:
+        assign lv-result = lv-result + pcStr.
+    end.
+
+    return lv-result.
+end function.
+
+run validate-input("test", 42, output lv-result, output lv-count).
+run process-data("a,b,c,d", input-output lv-count, output lv-result).
+
+assign lv-count = fn-add(10, 20).
+assign lv-result = fn-format-name("John", "Doe").

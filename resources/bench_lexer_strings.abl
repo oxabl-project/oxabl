@@ -1,0 +1,54 @@
+/* Benchmark fixture: string-heavy code for lexer string literal tokenization */
+
+define variable lv-a as character no-undo initial "hello world".
+define variable lv-b as character no-undo initial "".
+define variable lv-c as character no-undo initial "the quick brown fox jumps over the lazy dog".
+define variable lv-d as character no-undo initial 'single quoted string'.
+define variable lv-e as character no-undo initial 'another single quoted value'.
+
+assign lv-a = "line one~nline two~nline three".
+assign lv-b = "tab~there~tand~there".
+assign lv-c = "escaped~"quote~"inside".
+assign lv-d = "tilde~~literal".
+assign lv-e = "mixed~n~t~"escapes~"~n".
+
+assign lv-a = "first" + " " + "second" + " " + "third".
+assign lv-b = "hello " + lv-a + " world " + lv-b + " end".
+assign lv-c = "prefix-" + string(42) + "-suffix".
+assign lv-d = "a" + "b" + "c" + "d" + "e" + "f" + "g".
+assign lv-e = "result: " + string(1 + 2) + " items".
+
+assign lv-a = "short".
+assign lv-b = "a slightly longer string value here".
+assign lv-c = "this is a much longer string that contains a lot more characters and words to process during tokenization of the benchmark fixture".
+assign lv-d = "UPPER CASE STRING VALUE".
+assign lv-e = "MiXeD cAsE sTrInG vAlUe".
+
+assign lv-a = 'single' + "double" + 'single' + "double".
+assign lv-b = "no escapes here at all just plain text".
+assign lv-c = "~n~n~n~n~n".
+assign lv-d = "~t~t~t~t~t".
+assign lv-e = "~~~~~~".
+
+assign lv-a = "abcdefghijklmnopqrstuvwxyz".
+assign lv-b = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".
+assign lv-c = "0123456789".
+assign lv-d = "!@#$%^&*()_+-=[]{}|;:',.<>?/".
+assign lv-e = "     spaces     everywhere     ".
+
+assign lv-a = "one".
+assign lv-a = "two".
+assign lv-a = "three".
+assign lv-a = "four".
+assign lv-a = "five".
+assign lv-a = "six".
+assign lv-a = "seven".
+assign lv-a = "eight".
+assign lv-a = "nine".
+assign lv-a = "ten".
+
+assign lv-a = "value with ~"embedded~" quotes".
+assign lv-b = "path~~/to~~/file".
+assign lv-c = "new~nlines~neverywhere~nin~nthis~nstring".
+assign lv-d = "tabs~there~tand~tthere~tand~tthere".
+assign lv-e = '~'escaped single quote~' inside single'.
