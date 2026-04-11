@@ -127,10 +127,11 @@ impl Parser<'_> {
                     }
                     _ => unreachable!(),
                 }
-            } else if self.check(Kind::StringLiteral) {
-                // Implicit string concatenation: adjacent string literals without explicit +.
-                // This occurs when ABL developers write e.g. 'foo(''' which the lexer splits
-                // into two adjacent tokens: 'foo(' and '' (empty string).
+            } else if self.check(Kind::StringLiteral) && Self::is_string_like(&expr) {
+                // Implicit string concatenation: adjacent tokens without explicit +.
+                // Only fires when the LHS is already string-like (literal, preprop ref, or
+                // a prior implicit concat). This prevents consuming display items or other
+                // adjacent tokens as accidental concatenation.
                 let right_exp = self.parse_multiplicative()?;
                 expr = Expression::Add(Box::new(expr), Box::new(right_exp));
             } else {
@@ -344,6 +345,18 @@ impl Parser<'_> {
         self.tokens.get(self.current + 1).is_some_and(|t| {
             Self::can_be_identifier(t.kind) && !self.source[period_end..t.start].contains('\n')
         })
+    }
+
+    /// Check if an expression is string-like for implicit concatenation purposes.
+    /// Implicit concat (adjacent tokens without +) only fires when the LHS is
+    /// already a string value, preventing accidental consumption of display items.
+    fn is_string_like(expr: &Expression) -> bool {
+        matches!(
+            expr,
+            Expression::Literal(oxabl_ast::Literal::String(_))
+                | Expression::PreprocReference(_)
+                | Expression::Add(..)
+        )
     }
 
     /// Check if an expression can be the base of field access (Table.Field)
