@@ -460,9 +460,11 @@ impl Parser<'_> {
             return self.parse_define_statement();
         }
 
-        // VAR statement: positive lookahead for data type keyword or LIKE
+        // VAR statement: positive lookahead for data type keyword, LIKE, or class name (Identifier)
         if self.check(Kind::Variable)
-            && (Self::is_data_type_kind(self.peek_at(1).kind) || self.check_at(1, Kind::Like))
+            && (Self::is_data_type_kind(self.peek_at(1).kind)
+                || self.check_at(1, Kind::Like)
+                || self.peek_at(1).kind == Kind::Identifier)
         {
             return self.parse_var_statement();
         }
