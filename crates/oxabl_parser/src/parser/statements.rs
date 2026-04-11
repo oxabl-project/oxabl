@@ -458,6 +458,11 @@ impl Parser<'_> {
             return self.parse_include_arg_reference_statement();
         }
 
+        // Note whether the statement started with a preprocessor reference {&var}.
+        // If so and the expression isn't followed by '.' or NO-ERROR, it's a macro
+        // invocation like "{&out} "string" ident." — skip to statement end.
+        let starts_with_preprop = self.check(Kind::Preprop);
+
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
 
@@ -481,13 +486,12 @@ impl Parser<'_> {
         if self.check(Kind::NoError) {
             self.advance();
         }
-        // If a preprocessor-macro expression is followed by arguments (not a period),
-        // it's a macro invocation like "{&out} "string"." — skip to statement end.
-        if !self.check(Kind::Period) {
-            if matches!(expr, Expression::PreprocReference(_)) {
-                self.skip_to_statement_end();
-                return Ok(Statement::ExpressionStatement(expr));
-            }
+        // If a preprocessor-macro statement has trailing arguments (not a period),
+        // treat it as a macro invocation and skip to statement end.
+        // e.g. {&out} "<h1>" smessage "</h1>".
+        if starts_with_preprop && !self.check(Kind::Period) {
+            self.skip_to_statement_end();
+            return Ok(Statement::ExpressionStatement(expr));
         }
         self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
         Ok(Statement::ExpressionStatement(expr))
@@ -2398,8 +2402,11 @@ impl Parser<'_> {
                         }
                         _ => ParameterDirection::Input, // Default to INPUT
                     };
-                    // Skip optional TABLE keyword (for temp-table pass-through args)
-                    if self.check(Kind::Table) {
+                    // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE keyword
+                    if matches!(
+                        self.peek().kind,
+                        Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                    ) {
                         self.advance();
                     }
 
@@ -2410,6 +2417,13 @@ impl Parser<'_> {
                         direction,
                         expression,
                     });
+                    // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+                    ) {
+                        self.advance();
+                    }
 
                     if self.check(Kind::Comma) {
                         self.advance(); // consume comma
@@ -2511,6 +2525,13 @@ impl Parser<'_> {
                         direction,
                         expression,
                     });
+                    // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+                    ) {
+                        self.advance();
+                    }
                     if self.check(Kind::Comma) {
                         self.advance();
                     } else if last_was_include && !self.check(Kind::RightParen) {
@@ -3088,9 +3109,25 @@ impl Parser<'_> {
         self.advance(); // consume the first identifier token
 
         // Consume additional path components separated by `/` (e.g., `oe/oe_calc_order_total.p`)
-        while self.check(Kind::Slash) && Self::is_word_kind(self.peek_at(1).kind) {
+        // Path components may start with digits (e.g., `zp/170oe150svd.p`), so also allow
+        // IntegerLiteral and DecimalLiteral as path segment starts.
+        while self.check(Kind::Slash)
+            && (Self::is_word_kind(self.peek_at(1).kind)
+                || matches!(
+                    self.peek_at(1).kind,
+                    Kind::IntegerLiteral | Kind::DecimalLiteral
+                ))
+        {
             self.advance(); // consume '/'
             self.advance(); // consume next path component
+            // A digit-leading component like "170oe150svd" is lexed as two tokens:
+            // IntegerLiteral("170") + Identifier("oe150svd"). Consume the rest.
+            while Self::is_word_kind(self.peek().kind)
+                && !self.check(Kind::Slash)
+                && !self.check(Kind::Period)
+            {
+                self.advance();
+            }
         }
 
         // Check for dotted extension (e.g., my-proc.p)
