@@ -139,10 +139,7 @@ pub enum Statement {
     },
 
     /// Include positional argument reference at statement level: {0}, {1}, {2}
-    IncludeArgReference {
-        index: i64,
-        span: Span,
-    },
+    IncludeArgReference { index: i64, span: Span },
 
     /// Leave statement - exist innermost loop
     /// DISPLAY statement — outputs field/variable values to the screen or a frame.
