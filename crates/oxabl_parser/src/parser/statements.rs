@@ -2479,52 +2479,59 @@ impl Parser<'_> {
             Vec::new()
         };
 
-        // parse optional IN handle
-        let in_handle = if self.check(Kind::KwIn) {
-            self.advance();
-            Some(self.parse_run_in_handle()?)
-        } else {
-            None
-        };
+        // Parse optional modifiers in a flexible loop — ABL allows these in varying orders:
+        // IN handle, ON [SERVER] name, PERSISTENT [SET handle], ASYNCHRONOUS [...], SET handle
+        let mut in_handle: Option<Expression> = None;
+        let mut persistent = false;
+        let mut persistent_handle: Option<Expression> = None;
+        let mut asynchronous = false;
+        let mut async_handle: Option<Expression> = None;
+        let mut event_procedure: Option<Expression> = None;
 
-        // parse optional PERSISTENT [SET handle]
-        // Use parse_identifier for the handle name so that a following `(args)` on the
-        // same line is NOT consumed as a function call — it belongs to the argument list
-        // parsed below (line arguments).
-        let (persistent, persistent_handle) = if self.check(Kind::Persistent) {
-            self.advance();
-            let h = if self.check(Kind::Set) {
+        loop {
+            if self.check(Kind::KwIn) {
                 self.advance();
-                Some(Expression::Identifier(self.parse_identifier()?))
+                in_handle = Some(self.parse_run_in_handle()?);
+            } else if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
+                // ON SERVER name — or ON handle (AppServer targeting)
+                self.advance(); // consume ON
+                let next_tok = self.peek();
+                let next_is_server =
+                    self.source[next_tok.start..next_tok.end].eq_ignore_ascii_case("server");
+                self.advance(); // consume SERVER or handle name
+                if next_is_server && Self::can_be_identifier(self.peek().kind) {
+                    self.advance(); // consume server name after SERVER keyword
+                }
+            } else if self.check(Kind::Persistent) {
+                self.advance();
+                persistent = true;
+                if self.check(Kind::Set) {
+                    self.advance();
+                    persistent_handle = Some(Expression::Identifier(self.parse_identifier()?));
+                }
+            } else if self.check(Kind::Asynchronous) {
+                self.advance();
+                asynchronous = true;
+                if self.check(Kind::Set) {
+                    self.advance();
+                    async_handle = Some(self.parse_expression()?);
+                }
+                if self.check(Kind::EventProcedure) {
+                    self.advance();
+                    event_procedure = Some(self.parse_expression()?);
+                }
+            } else if self.check(Kind::Set) {
+                // Standalone SET handle (e.g. RUN VALUE(...) SET hHandle ...)
+                self.advance();
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance();
+                }
             } else {
-                None
-            };
-            (true, h)
-        } else {
-            (false, None)
-        };
+                break;
+            }
+        }
 
-        // parse optional ASYNCHRONOUS [SET handle] [EVENT-PROCEDURE expr]
-        let (asynchronous, async_handle, event_procedure) = if self.check(Kind::Asynchronous) {
-            self.advance();
-            let h = if self.check(Kind::Set) {
-                self.advance();
-                Some(self.parse_expression()?)
-            } else {
-                None
-            };
-            let ep = if self.check(Kind::EventProcedure) {
-                self.advance();
-                Some(self.parse_expression()?)
-            } else {
-                None
-            };
-            (true, h, ep)
-        } else {
-            (false, None, None)
-        };
-
-        // parse optional argument list that appears after IN/PERSISTENT/ASYNC modifiers
+        // parse optional argument list that appears after modifiers
         // (ABL allows: RUN proc IN handle (args). as well as RUN proc (args) IN handle.)
         let arguments = if arguments.is_empty() && self.check(Kind::LeftParen) {
             self.advance();
@@ -2588,29 +2595,33 @@ impl Parser<'_> {
             arguments
         };
 
-        // Optional ON SERVER servername — AppServer targeting clause
-        // SERVER is an unreserved identifier, not a keyword
-        if self.check(Kind::On) {
-            // peek past ON: if next is identifier "server", consume both + the server name
-            let next_is_server = self.peek_at(1).kind == Kind::Identifier && {
-                let t = self.peek_at(1);
-                self.source[t.start..t.end].eq_ignore_ascii_case("server")
-            };
-            if next_is_server {
-                self.advance(); // consume ON
-                self.advance(); // consume SERVER identifier
-                // consume server handle name (identifier or method call)
+        // Handle any remaining modifiers after the arg list
+        loop {
+            if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
+                self.advance();
+                let next_tok = self.peek();
+                let next_is_server =
+                    self.source[next_tok.start..next_tok.end].eq_ignore_ascii_case("server");
+                self.advance();
+                if next_is_server && Self::can_be_identifier(self.peek().kind) {
+                    self.advance();
+                }
+            } else if self.check(Kind::Set) {
+                self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
                     self.advance();
                 }
-            }
-        }
-
-        // Optional standalone SET handle (e.g. RUN VALUE(...) SET hHandle ON server NO-ERROR.)
-        if self.check(Kind::Set) {
-            self.advance(); // consume SET
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance(); // consume handle name
+            } else if self.check(Kind::Persistent) {
+                self.advance();
+                persistent = true;
+                if self.check(Kind::Set) {
+                    self.advance();
+                    if Self::can_be_identifier(self.peek().kind) {
+                        self.advance();
+                    }
+                }
+            } else {
+                break;
             }
         }
 
@@ -2622,7 +2633,13 @@ impl Parser<'_> {
             false
         };
 
-        self.expect_kind(Kind::Period, "Expected '.' after RUN statement")?;
+        // Skip any trailing content before the period (e.g. hold-code.hold-logic or extra ')')
+        // and consume the terminating period.
+        if !self.check(Kind::Period) && !self.at_end() {
+            self.skip_to_statement_end();
+        } else {
+            self.expect_kind(Kind::Period, "Expected '.' after RUN statement")?;
+        }
 
         Ok(Statement::Run {
             target,
