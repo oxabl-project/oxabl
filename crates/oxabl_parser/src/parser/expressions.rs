@@ -113,18 +113,28 @@ impl Parser<'_> {
 
     pub fn parse_additive(&mut self) -> ParseResult<Expression> {
         let mut expr = self.parse_multiplicative()?;
-        while self.check(Kind::Add) || self.check(Kind::Minus) {
-            let operator = self.advance();
-            match operator.kind {
-                Kind::Add => {
-                    let right_exp = self.parse_multiplicative()?;
-                    expr = Expression::Add(Box::new(expr), Box::new(right_exp));
+        loop {
+            if self.check(Kind::Add) || self.check(Kind::Minus) {
+                let op_kind = self.peek().kind;
+                self.advance();
+                let right_exp = self.parse_multiplicative()?;
+                match op_kind {
+                    Kind::Add => {
+                        expr = Expression::Add(Box::new(expr), Box::new(right_exp));
+                    }
+                    Kind::Minus => {
+                        expr = Expression::Minus(Box::new(expr), Box::new(right_exp));
+                    }
+                    _ => unreachable!(),
                 }
-                Kind::Minus => {
-                    let right_exp = self.parse_multiplicative()?;
-                    expr = Expression::Minus(Box::new(expr), Box::new(right_exp));
-                }
-                _ => unreachable!(),
+            } else if self.check(Kind::StringLiteral) {
+                // Implicit string concatenation: adjacent string literals without explicit +.
+                // This occurs when ABL developers write e.g. 'foo(''' which the lexer splits
+                // into two adjacent tokens: 'foo(' and '' (empty string).
+                let right_exp = self.parse_multiplicative()?;
+                expr = Expression::Add(Box::new(expr), Box::new(right_exp));
+            } else {
+                break;
             }
         }
         Ok(expr)
@@ -699,13 +709,35 @@ impl Parser<'_> {
 
         // Empty argument list
         if !self.check(Kind::RightParen) {
+            // Skip optional direction qualifier (INPUT / OUTPUT / INPUT-OUTPUT)
+            if matches!(
+                self.peek().kind,
+                Kind::Input | Kind::Output | Kind::InputOutput
+            ) {
+                self.advance();
+            }
             // parse first argument
             arguments.push(self.parse_expression()?);
+            // Consume optional passing modifiers
+            while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
+                self.advance();
+            }
 
             // parse remaining
             while self.check(Kind::Comma) {
                 self.advance(); // consume ','
+                // Skip optional direction qualifier per argument
+                if matches!(
+                    self.peek().kind,
+                    Kind::Input | Kind::Output | Kind::InputOutput
+                ) {
+                    self.advance();
+                }
                 arguments.push(self.parse_expression()?);
+                // Consume optional passing modifiers
+                while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
+                    self.advance();
+                }
             }
         }
 

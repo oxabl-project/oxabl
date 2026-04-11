@@ -1957,6 +1957,11 @@ impl Parser<'_> {
             }
         }
 
+        // Optional TRANSACTION keyword before block opener
+        if self.check(Kind::Transaction) {
+            self.advance();
+        }
+
         // ABL accepts either ':' or '.' to start the FOR EACH body.
         // Some code uses 'FOR EACH table WHERE cond NO-LOCK.' with a period.
         if self.check(Kind::Period) {
@@ -2632,8 +2637,8 @@ impl Parser<'_> {
         // Parse function name
         let name = self.parse_identifier()?;
 
-        // RETURNS is optional in ABL function declarations
-        if self.check(Kind::Returns) {
+        // RETURNS / RETURN is optional in ABL function declarations
+        if self.check(Kind::Returns) || self.check(Kind::KwReturn) {
             self.advance();
         }
 
