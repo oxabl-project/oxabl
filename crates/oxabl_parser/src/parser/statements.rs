@@ -512,10 +512,35 @@ impl Parser<'_> {
         if self.check(Kind::NoError) {
             self.advance();
         }
+        // Helper: is the next token a preprocessor directive that starts a new statement?
+        let next_is_preproc_directive = matches!(
+            self.peek().kind,
+            Kind::PreprocIf
+                | Kind::PreprocElse
+                | Kind::PreprocElseif
+                | Kind::PreprocEndif
+                | Kind::PreprocScopedDefine
+                | Kind::PreprocGlobalDefine
+                | Kind::PreprocUndefine
+        );
         // If a preprocessor-macro statement has trailing arguments (not a period),
         // treat it as a macro invocation and skip to statement end.
         // e.g. {&out} "<h1>" smessage "</h1>".
+        // But if the next token is a preprocessor directive, a statement-boundary keyword
+        // (e.g. Return, End, Else), or a block label (LABEL: DO ...), the preprop macro
+        // was a standalone statement that expands to its own period — return without consuming.
         if starts_with_preprop && !self.check(Kind::Period) {
+            let next_is_statement_boundary = matches!(
+                self.peek().kind,
+                Kind::KwReturn | Kind::End | Kind::KwElse | Kind::Leave | Kind::Next
+            );
+            // A block label looks like: identifier ':' (DO | REPEAT | FOR)
+            let next_is_block_label = Self::can_be_identifier(self.peek().kind)
+                && self.check_at(1, Kind::Colon)
+                && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor);
+            if next_is_preproc_directive || next_is_statement_boundary || next_is_block_label {
+                return Ok(Statement::ExpressionStatement(expr));
+            }
             self.skip_to_statement_end();
             return Ok(Statement::ExpressionStatement(expr));
         }
@@ -4647,7 +4672,22 @@ impl Parser<'_> {
         let is_global = self.check(Kind::PreprocGlobalDefine);
         self.advance(); // consume &SCOPED-DEFINE or &GLOBAL-DEFINE
 
-        let name = self.parse_identifier()?;
+        // The macro variable name can be any token (including reserved keywords like TRANS,
+        // TRANSACTION, etc.) — preprocessor names are not restricted to identifiers.
+        if self.at_end() || self.check(Kind::PreprocEnd) {
+            return Err(ParseError {
+                message: "Expected name after &SCOPED-DEFINE / &GLOBAL-DEFINE".to_string(),
+                span: self.current_span(),
+            });
+        }
+        let name_tok = self.advance().clone();
+        let name = Identifier {
+            span: Span {
+                start: name_tok.start as u32,
+                end: name_tok.end as u32,
+            },
+            name: self.source[name_tok.start..name_tok.end].to_string(),
+        };
 
         // Collect value span: everything from current position until PreprocEnd or Eof.
         let value_span = if self.check(Kind::PreprocEnd) || self.at_end() {
