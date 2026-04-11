@@ -186,6 +186,15 @@ impl Parser<'_> {
                     if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Period) {
                         self.advance();
                     }
+                } else if Self::can_be_identifier(self.peek().kind)
+                    && self.source[self.peek().start..self.peek().end].eq_ignore_ascii_case("throw")
+                {
+                    // THROW is not a reserved keyword; handle it here
+                    self.advance(); // consume "throw"
+                    // parse the thrown expression (e.g. NEW Progress.Lang.AppError(...))
+                    if !self.check(Kind::Period) && !self.at_end() {
+                        self.parse_expression().ok();
+                    }
                 }
             }
             self.expect_kind(Kind::Period, "Expected '.' after UNDO statement")?;
@@ -397,7 +406,7 @@ impl Parser<'_> {
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
-        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN / REPOSITION — skip to statement end.
+        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN / APPLY / UPDATE / STATUS — skip to end.
         // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
         // like 'order.company' in WHERE clauses are not mistaken for statement terminators.
         if self.check(Kind::Pause)
@@ -414,6 +423,9 @@ impl Parser<'_> {
             || self.check(Kind::Accumulate)
             || self.check(Kind::Down)
             || self.check(Kind::Open)
+            || self.check(Kind::Apply)
+            || self.check(Kind::Update)
+            || self.check(Kind::Status)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
@@ -1270,15 +1282,31 @@ impl Parser<'_> {
     fn parse_define_buffer(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER
 
-        let name = self.parse_identifier()?;
+        let mut name = self.parse_identifier()?;
+        // Handle compound names like b-{&preproc} where identifier prefix ends with hyphen
+        // and a preprocessor reference follows adjacently (e.g. b-{&line-buffer}).
+        if self.check(Kind::Preprop) && self.peek().start == name.span.end as usize {
+            let pp = self.advance().clone();
+            name.span.end = pp.end as u32;
+            name.name.push_str(&self.source[pp.start..pp.end]);
+        }
         self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
 
-        // Check for FOR TEMP-TABLE vs FOR table
+        // Check for FOR TEMP-TABLE vs FOR [preproc] table
         let target = if self.check(Kind::TempTable) {
             self.advance();
-            BufferTarget::TempTable(self.parse_identifier()?)
+            self.parse_identifier().map(BufferTarget::TempTable)?
+        } else if self.check(Kind::Preprop) {
+            let pp = self.advance().clone();
+            BufferTarget::Table(Identifier {
+                span: Span {
+                    start: pp.start as u32,
+                    end: pp.end as u32,
+                },
+                name: self.source[pp.start..pp.end].to_string(),
+            })
         } else {
-            BufferTarget::Table(self.parse_identifier()?)
+            self.parse_identifier().map(BufferTarget::Table)?
         };
 
         // Parse XML/serialize options (NAMESPACE-URI, SERIALIZE-NAME, etc.)
