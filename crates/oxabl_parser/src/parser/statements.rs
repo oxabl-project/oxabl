@@ -370,8 +370,13 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // PAUSE [expr] [NO-MESSAGE] [MESSAGE text] [BEFORE-HIDE] [IN WINDOW w] — skip to period.
-        if self.check(Kind::Pause) || self.check(Kind::Bell) {
+        // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-COPY / OS-RENAME — skip to period.
+        if self.check(Kind::Pause)
+            || self.check(Kind::Bell)
+            || self.check(Kind::Import)
+            || self.check(Kind::OsDelete)
+            || self.check(Kind::OsDir)
+        {
             self.skip_to_period();
             return Ok(Statement::Empty);
         }
@@ -3513,6 +3518,14 @@ impl Parser<'_> {
             }
         } else {
             let name = self.parse_identifier()?;
+            // If a second identifier follows (e.g. CREATE SERVER hService or CREATE X-document hXML),
+            // the first token was a type prefix — discard it and use the second as the handle name.
+            if Self::can_be_identifier(self.peek().kind)
+                && !self.check(Kind::NoError)
+                && !self.check(Kind::Period)
+            {
+                let _ = self.parse_identifier()?;
+            }
             CreateTarget::Name(name)
         };
 
@@ -3545,15 +3558,15 @@ impl Parser<'_> {
     // DELETE buffer-name [NO-ERROR].
     fn parse_delete_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DELETE
-        // Skip optional OBJECT keyword (not reserved, lexed as Identifier)
-        // e.g., DELETE OBJECT myObj. vs DELETE myTable.
-        if self.check(Kind::Identifier) {
+        // Skip optional type prefixes: OBJECT, PROCEDURE, WIDGET, SERVER, etc.
+        // e.g., DELETE OBJECT myObj., DELETE PROCEDURE hproc., DELETE SERVER hService.
+        if Self::can_be_identifier(self.peek().kind)
+            && Self::can_be_identifier(self.peek_at(1).kind)
+        {
             let token = &self.tokens[self.current];
-            if self.source[token.start..token.end].eq_ignore_ascii_case("object") {
-                // Only skip if there's another identifier following (the actual target)
-                if Self::can_be_identifier(self.peek_at(1).kind) {
-                    self.advance();
-                }
+            let text = self.source[token.start..token.end].to_ascii_lowercase();
+            if matches!(text.as_str(), "object" | "procedure" | "widget" | "server") {
+                self.advance(); // skip the type prefix
             }
         }
         let buffer = self.parse_identifier()?;
