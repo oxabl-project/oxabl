@@ -388,7 +388,7 @@ impl Parser<'_> {
             return self.parse_ternary();
         }
 
-        // Preprocessor reference: {&variable}
+        // Preprocessor reference: {&variable} or compound {&prefix}suffix
         if self.check(Kind::Preprop) {
             let token = self.advance().clone();
             // Strip {& and } to get the variable name
@@ -398,6 +398,23 @@ impl Parser<'_> {
                 .and_then(|s| s.strip_suffix('}'))
                 .unwrap_or(raw)
                 .to_string();
+            // {&prefix}suffix — preprocessor prefix followed by identifier on same line
+            // e.g. {&web}order expands at runtime to a single identifier
+            if Self::can_be_identifier(self.peek().kind) {
+                let next_tok = &self.tokens[self.current];
+                if !self.source[token.end..next_tok.start].contains('\n') {
+                    let suffix_tok = self.advance().clone();
+                    let suffix = &self.source[suffix_tok.start..suffix_tok.end];
+                    let compound = format!("{{{}&}}{}", name, suffix);
+                    return Ok(Expression::Identifier(Identifier {
+                        span: Span {
+                            start: token.start as u32,
+                            end: suffix_tok.end as u32,
+                        },
+                        name: compound,
+                    }));
+                }
+            }
             return Ok(Expression::PreprocReference(name));
         }
 

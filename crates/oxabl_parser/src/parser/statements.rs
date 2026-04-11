@@ -1384,8 +1384,18 @@ impl Parser<'_> {
         let mut relation_fields = Vec::new();
         loop {
             let parent_field = self.parse_identifier()?;
+            // Optional table.field qualifier (e.g. ttMethod.id)
+            if self.check(Kind::Period) && self.is_field_access_ahead() {
+                self.advance(); // consume .
+                self.advance(); // consume field name
+            }
             self.expect_kind(Kind::Comma, "Expected ',' between field pair")?;
             let child_field = self.parse_identifier()?;
+            // Optional table.field qualifier
+            if self.check(Kind::Period) && self.is_field_access_ahead() {
+                self.advance(); // consume .
+                self.advance(); // consume field name
+            }
             relation_fields.push((parent_field, child_field));
             if !self.check(Kind::Comma) {
                 break;
@@ -2192,7 +2202,12 @@ impl Parser<'_> {
     fn parse_case_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CASE
         let expression = self.parse_expression()?;
-        self.expect_kind(Kind::Colon, "Expected a ':' after CASE expression")?;
+        // ABL requires ':' as block opener; some code uses '.' — accept either
+        if self.check(Kind::Period) {
+            self.advance();
+        } else {
+            self.expect_kind(Kind::Colon, "Expected a ':' after CASE expression")?;
+        }
 
         let mut when_branches = Vec::new();
 
