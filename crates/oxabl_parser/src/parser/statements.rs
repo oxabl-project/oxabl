@@ -508,6 +508,12 @@ impl Parser<'_> {
             || self.check(Kind::Set)
             // WAIT-FOR event OF widget. — ABL UI event loop.
             || self.check(Kind::WaitFor)
+            // COLOR statement — terminal color settings (e.g. COLOR DISPLAY NORMAL ... WITH FRAME name.)
+            || self.check(Kind::Color)
+            // READKEY [PAUSE n]. — reads next keypress from keyboard.
+            || self.check(Kind::Readkey)
+            // UP n [WITH FRAME name]. — scroll up n lines in a frame.
+            || self.check(Kind::Up)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
@@ -3630,6 +3636,12 @@ impl Parser<'_> {
             Kind::ExclusiveLock => {
                 self.advance();
                 LockType::ExclusiveLock
+            }
+            // Preprocessor variable used as lock type placeholder: {&lock-type}
+            // Consume it and return the default; actual lock type is resolved at preproc time.
+            Kind::Preprop => {
+                self.advance();
+                LockType::ShareLock
             }
             _ => LockType::ShareLock, // Default in ABL
         }
