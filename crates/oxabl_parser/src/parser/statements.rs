@@ -17,6 +17,7 @@ use oxabl_ast::{
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
+use smallvec::SmallVec;
 
 use super::{ParseError, ParseResult, Parser};
 
@@ -3112,7 +3113,7 @@ impl Parser<'_> {
         if self.check(Kind::Frame) {
             self.skip_to_period();
             return Ok(Statement::Assign {
-                assignments: vec![],
+                assignments: SmallVec::new(),
             });
         }
         let assignments = self.parse_assign_pairs()?;
@@ -3126,8 +3127,8 @@ impl Parser<'_> {
 
     /// Parse one or more `target = value` pairs for ASSIGN and BUFFER-COPY ASSIGN clauses.
     /// Stops at period, NO-ERROR, or end of input.
-    fn parse_assign_pairs(&mut self) -> ParseResult<Vec<AssignPair>> {
-        let mut assignments = Vec::new();
+    fn parse_assign_pairs(&mut self) -> ParseResult<SmallVec<[AssignPair; 4]>> {
+        let mut assignments = SmallVec::new();
         while !self.check(Kind::Period) && !self.check(Kind::NoError) && !self.at_end() {
             let target = self.parse_additive()?;
             // Optional IN FRAME/BROWSE before '=': widget:attr IN FRAME f = value
@@ -3138,8 +3139,13 @@ impl Parser<'_> {
                 self.advance(); // consume name
             }
             self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
-            // Use full expression parser for value to allow IF/THEN/ELSE ternary and other exprs
-            let value = self.parse_expression()?;
+            // Fast path: most ASSIGN values are not ternary. Skip the parse_expression →
+            // parse_ternary indirection for non-IF values; parse_or handles AND/OR/comparisons.
+            let value = if self.check(Kind::KwIf) {
+                self.parse_expression()?
+            } else {
+                self.parse_or()?
+            };
             // Optional IN FRAME framename clause (specifies frame context for widget assignment)
             if self.check(Kind::KwIn) && self.peek_at(1).kind == Kind::Frame {
                 self.advance(); // consume IN
@@ -4184,7 +4190,7 @@ impl Parser<'_> {
             self.advance(); // consume ASSIGN
             self.parse_assign_pairs()?
         } else {
-            Vec::new()
+            SmallVec::new()
         };
 
         let no_error = self.parse_no_error();
