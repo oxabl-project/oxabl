@@ -501,6 +501,10 @@ impl<'a> Parser<'a> {
                     | Kind::Help
                     // CURRENT-LANGUAGE is a system variable used in expression context
                     | Kind::CurrentLanguage
+                    // CURRENT-WINDOW is a system handle used as RHS in assignments (e.g. {&WINDOW-NAME} = CURRENT-WINDOW.)
+                    | Kind::CurrentWindow
+                    // KEYS is a buffer/table attribute used as method name (e.g. b-table:keys)
+                    | Kind::Keys
             )
     }
 
