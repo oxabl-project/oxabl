@@ -437,6 +437,7 @@ impl<'a> Parser<'a> {
                     | Kind::Save
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
                     | Kind::PageTop
+                    | Kind::Blank
             )
     }
 

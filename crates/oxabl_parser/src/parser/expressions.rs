@@ -4,7 +4,7 @@
 //! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative
 //! > unary > postfix (member access, method calls, array/field access) > primary.
 
-use oxabl_ast::{Expression, FindType, Identifier, Span};
+use oxabl_ast::{Expression, FindType, Identifier, Literal, Span, UnknownLiteral};
 use oxabl_lexer::{Kind, TokenValue};
 
 use super::{ParseError, ParseResult, Parser};
@@ -271,6 +271,14 @@ impl Parser<'_> {
                     self.advance();
                 }
                 arguments.push(self.parse_expression()?);
+                // Consume optional IN FRAME/BROWSE qualifier (field:handle IN FRAME f)
+                if self.check(Kind::KwIn)
+                    && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+                {
+                    self.advance(); // consume IN
+                    self.advance(); // consume FRAME or BROWSE
+                    self.advance(); // consume name
+                }
                 // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
                 while matches!(
                     self.peek().kind,
@@ -295,13 +303,32 @@ impl Parser<'_> {
                     ) {
                         self.advance();
                     }
-                    arguments.push(self.parse_expression()?);
-                    // Consume optional passing modifiers
-                    while matches!(
-                        self.peek().kind,
-                        Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
-                    ) {
-                        self.advance();
+                    // Empty argument (successive commas like obj:method(1,, "x")) — Unknown
+                    if self.check(Kind::Comma) || self.check(Kind::RightParen) {
+                        let pos = self.peek().start as u32;
+                        arguments.push(Expression::Literal(Literal::Unknown(UnknownLiteral {
+                            span: Span {
+                                start: pos,
+                                end: pos,
+                            },
+                        })));
+                    } else {
+                        arguments.push(self.parse_expression()?);
+                        // Consume optional IN FRAME/BROWSE qualifier
+                        if self.check(Kind::KwIn)
+                            && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+                        {
+                            self.advance(); // consume IN
+                            self.advance(); // consume FRAME or BROWSE
+                            self.advance(); // consume name
+                        }
+                        // Consume optional passing modifiers
+                        while matches!(
+                            self.peek().kind,
+                            Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+                        ) {
+                            self.advance();
+                        }
                     }
                 }
             }
@@ -870,6 +897,13 @@ impl Parser<'_> {
             }
             // parse first argument
             arguments.push(self.parse_expression()?);
+            // Consume optional IN FRAME/BROWSE qualifier (field:handle IN FRAME f)
+            if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+            {
+                self.advance(); // consume IN
+                self.advance(); // consume FRAME or BROWSE
+                self.advance(); // consume name
+            }
             // Consume optional passing modifiers
             while matches!(
                 self.peek().kind,
@@ -895,13 +929,32 @@ impl Parser<'_> {
                 ) {
                     self.advance();
                 }
-                arguments.push(self.parse_expression()?);
-                // Consume optional passing modifiers
-                while matches!(
-                    self.peek().kind,
-                    Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
-                ) {
-                    self.advance();
+                // Empty argument (successive commas like func(1,, "x")) — use Unknown literal
+                if self.check(Kind::Comma) || self.check(Kind::RightParen) {
+                    let pos = self.peek().start as u32;
+                    arguments.push(Expression::Literal(Literal::Unknown(UnknownLiteral {
+                        span: Span {
+                            start: pos,
+                            end: pos,
+                        },
+                    })));
+                } else {
+                    arguments.push(self.parse_expression()?);
+                    // Consume optional IN FRAME/BROWSE qualifier
+                    if self.check(Kind::KwIn)
+                        && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+                    {
+                        self.advance(); // consume IN
+                        self.advance(); // consume FRAME or BROWSE
+                        self.advance(); // consume name
+                    }
+                    // Consume optional passing modifiers
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+                    ) {
+                        self.advance();
+                    }
                 }
             }
         }
