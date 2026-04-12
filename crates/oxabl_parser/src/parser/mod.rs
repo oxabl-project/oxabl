@@ -572,6 +572,10 @@ impl<'a> Parser<'a> {
                 | Kind::Question
                 | Kind::Eof
                 | Kind::Invalid
+                // Comments are never "word-like" — parse_class_qualified_name() uses
+                // raw next_idx arithmetic (bypassing skip_comments) and must not
+                // treat a trailing comment as a continuation of the class name.
+                | Kind::Comment
         )
     }
 
