@@ -187,11 +187,12 @@ impl Parser<'_> {
         }
 
         loop {
-            if self.check(Kind::Colon) {
+            if self.check(Kind::Colon) || self.check(Kind::DoubleColon) {
                 // Only parse as member/method access if the next token is a valid member name
                 // AND is on the same line as the colon.
                 // This avoids consuming ':' in block delimiters like "CASE x:" or "DO:"
                 // and block-headers like "FOR EACH ... cond:".
+                // DoubleColon (::) is ABL's dynamic buffer field access operator.
                 let colon_end = self.tokens[self.current].end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
                     Self::can_be_identifier(t.kind)

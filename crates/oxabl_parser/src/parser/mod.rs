@@ -13,8 +13,8 @@ pub mod statements;
 mod tests;
 
 use oxabl_ast::{
-    AccessModifier, DataType, Identifier, ParameterDirection, ParameterType, Span, Statement,
-    TypeSource,
+    AccessModifier, DataType, HandleParamKind, HandlePassingOptions, Identifier,
+    ParameterDirection, ParameterType, Span, Statement, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -373,6 +373,9 @@ impl<'a> Parser<'a> {
                     | Kind::Preprop
                     | Kind::IncludeReference
                     | Kind::IncludeArgReference
+                    // Handle attribute/method names (used after ':' in postfix access)
+                    | Kind::Available
+                    | Kind::QueryOffEnd
             )
     }
 
@@ -528,6 +531,17 @@ impl<'a> Parser<'a> {
 
         if !self.check(Kind::RightParen) {
             loop {
+                // Include file references (e.g. {gl/global-input-func.i}) expand to
+                // a set of parameters at preprocessing time — skip them as a unit.
+                if self.check(Kind::IncludeReference) {
+                    self.advance();
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
                 let direction = match self.peek().kind {
                     Kind::Output => {
                         self.advance();
@@ -543,6 +557,25 @@ impl<'a> Parser<'a> {
                     }
                     _ => ParameterDirection::Input,
                 };
+
+                // TABLE <name> — temp-table pass-through parameter (no AS/LIKE)
+                if self.check(Kind::Table) {
+                    self.advance(); // consume TABLE
+                    let name = self.parse_identifier()?;
+                    params.push(Statement::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Handle {
+                            kind: HandleParamKind::Table,
+                            name,
+                            passing: HandlePassingOptions::default(),
+                        },
+                    });
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
 
                 let name = self.parse_identifier()?;
                 let type_source = self.parse_type_source()?;
