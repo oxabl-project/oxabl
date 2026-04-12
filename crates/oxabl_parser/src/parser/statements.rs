@@ -3045,6 +3045,14 @@ impl Parser<'_> {
     // Parse ASSIGN statement: ASSIGN target = value [target = value ...].
     fn parse_assign_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume ASSIGN
+        // ASSIGN FRAME framename [field...] -- frame-field assignment form (no = pairs)
+        // skip_to_period() already consumes the terminating period
+        if self.check(Kind::Frame) {
+            self.skip_to_period();
+            return Ok(Statement::Assign {
+                assignments: vec![],
+            });
+        }
         let assignments = self.parse_assign_pairs()?;
         // Optional NO-ERROR after ASSIGN
         if self.check(Kind::NoError) {

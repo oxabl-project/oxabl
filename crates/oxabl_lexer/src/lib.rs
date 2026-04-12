@@ -530,6 +530,10 @@ impl<'a> Lexer<'a> {
                     self.advance(); // consume tilde
                     self.advance(); // consume escaped char (whatever it is)
                 }
+                Some('\\') => {
+                    self.advance(); // consume backslash
+                    self.advance(); // consume escaped char (whatever it is)
+                }
                 Some(_) => {
                     self.advance(); // consume regular char
                 }
