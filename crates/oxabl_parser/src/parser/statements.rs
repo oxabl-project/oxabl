@@ -855,13 +855,20 @@ impl Parser<'_> {
             }
         }
 
-        // parse type source (AS type | LIKE field)
-        let type_source = self.parse_type_source()?;
-
         // parse optional no-undo, initial, and extent
         let mut no_undo = false;
         let mut initial_value = None;
         let mut extent = None;
+
+        // Some coding styles write NO-UNDO before AS/LIKE; consume it here so
+        // parse_type_source() sees the type-source keyword next.
+        if self.check(Kind::NoUndo) {
+            self.advance();
+            no_undo = true;
+        }
+
+        // parse type source (AS type | LIKE field)
+        let type_source = self.parse_type_source()?;
 
         loop {
             match self.peek().kind {
@@ -2239,7 +2246,8 @@ impl Parser<'_> {
             }
         }
 
-        // Optional PRESELECT EACH/FIRST/LAST table [WHERE cond] [lock]
+        // Optional PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]
+        // Lock type may appear before or after the WHERE clause.
         while self.check(Kind::Preselect) {
             self.advance(); // consume PRESELECT
             // optional qualifier (EACH/FIRST/LAST)
@@ -2250,13 +2258,32 @@ impl Parser<'_> {
             if Self::can_be_identifier(self.peek().kind) {
                 self.advance();
             }
+            // lock type may appear before WHERE
+            self.parse_lock_type();
             // optional WHERE clause
             if self.check(Kind::KwWhere) {
                 self.advance();
                 self.parse_expression().ok();
             }
-            // optional lock type
+            // lock type may also appear after WHERE
             self.parse_lock_type();
+            // optional USE-INDEX clause
+            while self.check(Kind::UseIndex) {
+                self.advance(); // consume USE-INDEX
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance(); // consume index name
+                }
+            }
+            // optional BREAK BY / BY field [BY field ...]
+            if self.check(Kind::KwBreak) {
+                self.advance(); // consume BREAK
+            }
+            while self.check(Kind::By) {
+                self.advance(); // consume BY
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.parse_postfix().ok(); // consume break field
+                }
+            }
         }
 
         // Expect colon (or period for legacy code)
@@ -2439,7 +2466,7 @@ impl Parser<'_> {
             if Self::can_be_identifier(self.peek().kind) {
                 self.advance();
             }
-            // optional OF clause
+            // optional OF clause (may appear before or after lock type)
             if self.check(Kind::Of) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
@@ -2448,6 +2475,13 @@ impl Parser<'_> {
             }
             // optional lock before WHERE
             self.parse_lock_type();
+            // optional OF clause after lock type (ABL allows: table NO-LOCK OF related)
+            if self.check(Kind::Of) {
+                self.advance();
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance();
+                }
+            }
             // optional WHERE clause
             if self.check(Kind::KwWhere) {
                 self.advance();
@@ -2466,11 +2500,12 @@ impl Parser<'_> {
             }
         }
 
-        // Handle optional BREAK, BY, TRANSACTION, and WHILE clauses in any order.
+        // Handle optional BREAK, GROUP, BY, TRANSACTION, and WHILE clauses in any order.
         // ABL allows these interleaved, e.g. TRANSACTION BY field: or BY field TRANSACTION:
+        // GROUP BY is a less common sort grouping clause that behaves like BREAK BY.
         loop {
-            if self.check(Kind::KwBreak) {
-                self.advance(); // consume BREAK (followed by BY)
+            if self.check(Kind::KwBreak) || self.check(Kind::Group) {
+                self.advance(); // consume BREAK or GROUP (both followed by BY)
             } else if self.check(Kind::By) {
                 self.advance(); // consume BY
                 // consume the sort field expression (stops at ':' or '.')
