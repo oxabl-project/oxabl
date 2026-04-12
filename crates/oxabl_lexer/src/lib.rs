@@ -1583,10 +1583,10 @@ end."#;
 
     #[test]
     fn lock_type_standalone_words_are_identifiers() {
-        // Standalone "share", "exclusive", "no" should be identifiers
-        let test_cases = vec!["share", "SHARE", "exclusive", "EXCLUSIVE", "no", "NO"];
-
-        for source in test_cases {
+        // "share" and "no" alone (without -lock suffix) are identifiers —
+        // they have no minimum abbreviation in the keyword table.
+        let identifier_cases = vec!["share", "SHARE", "no", "NO"];
+        for source in identifier_cases {
             let tokens = collect_tokens(source);
             assert_eq!(
                 tokens.len(),
@@ -1599,6 +1599,19 @@ end."#;
                 tokens[0].kind,
                 Kind::Identifier,
                 "Expected Identifier for '{}', got {:?}",
+                source,
+                tokens[0].kind
+            );
+        }
+
+        // "exclusive" / "EXCLUSIVE" alone is a valid abbreviation for EXCLUSIVE-LOCK (ABL standard)
+        for source in ["exclusive", "EXCLUSIVE"] {
+            let tokens = collect_tokens(source);
+            assert_eq!(tokens.len(), 2);
+            assert_eq!(
+                tokens[0].kind,
+                Kind::ExclusiveLock,
+                "Expected ExclusiveLock for '{}', got {:?}",
                 source,
                 tokens[0].kind
             );
