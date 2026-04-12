@@ -532,7 +532,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parses an Identifier
+    /// Parses an Identifier, handling compound preprop names like:
+    /// - `{&prefix}suffix`  (preprop directly followed by identifier)
+    /// - `prefix{&suffix}`  (identifier directly followed by preprop)
+    /// - `{&a}b{&c}`        (multi-part chains via direct adjacency)
+    /// Requires no whitespace between parts to avoid consuming operators.
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
         if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
@@ -541,37 +545,31 @@ impl<'a> Parser<'a> {
             });
         }
         let token = self.advance().clone();
+        let start = token.start;
+        let mut end = token.end;
 
-        // Handle {&prefix}suffix compound preprop names (e.g. {&pre}inc_whse-time).
-        // Requires direct adjacency (no whitespace) to avoid consuming operators.
-        if matches!(token.kind, Kind::Preprop | Kind::IncludeArgReference) {
-            if let Some(next) = self.tokens.get(self.current) {
-                if Self::can_be_identifier(next.kind) && next.start == token.end {
-                    let suffix_tok = self.advance().clone();
-                    let raw = &self.source[token.start..token.end];
-                    let name_part = raw
-                        .strip_prefix("{&")
-                        .and_then(|s| s.strip_suffix('}'))
-                        .unwrap_or(raw);
-                    let suffix = &self.source[suffix_tok.start..suffix_tok.end];
-                    let compound = format!("{{{}&}}{}", name_part, suffix);
-                    return Ok(Identifier {
-                        span: Span {
-                            start: token.start as u32,
-                            end: suffix_tok.end as u32,
-                        },
-                        name: compound,
-                    });
-                }
+        // Extend with directly-adjacent Preprop or identifier parts
+        loop {
+            let next = &self.tokens[self.current];
+            if next.start != end {
+                break;
+            }
+            if next.kind == Kind::Preprop
+                || next.kind == Kind::IncludeArgReference
+                || Self::can_be_identifier(next.kind)
+            {
+                end = self.advance().end;
+            } else {
+                break;
             }
         }
 
         Ok(Identifier {
             span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
+                start: start as u32,
+                end: end as u32,
             },
-            name: self.source[token.start..token.end].to_string(),
+            name: self.source[start..end].to_string(),
         })
     }
 
