@@ -4624,6 +4624,11 @@ impl Parser<'_> {
             // creation forms with ASSIGN clauses we don't fully model.  Skip to end.
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
+        } else if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
+            // CREATE VALUE(class-expr) handle NO-ERROR. — dynamic COM/OO object creation.
+            // Skip the VALUE(expr) part and consume the handle name.
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
         } else {
             let name = self.parse_identifier()?;
             // If a second identifier follows (e.g. CREATE SERVER hService or CREATE X-document hXML),
@@ -4689,13 +4694,20 @@ impl Parser<'_> {
             });
         }
         // Skip optional type prefixes: OBJECT, PROCEDURE, WIDGET, SERVER, etc.
-        // e.g., DELETE OBJECT myObj., DELETE PROCEDURE hproc., DELETE SERVER hService.
-        if Self::can_be_identifier(self.peek().kind)
-            && Self::can_be_identifier(self.peek_at(1).kind)
-        {
+        // DELETE OBJECT handle [NO-ERROR]. — delete a COM/OO object handle
+        // The handle may be a complex expression; skip to period.
+        // e.g., DELETE PROCEDURE hproc., DELETE SERVER hService.
+        if Self::can_be_identifier(self.peek().kind) {
             let token = &self.tokens[self.current];
             let text = self.source[token.start..token.end].to_ascii_lowercase();
-            if matches!(text.as_str(), "object" | "procedure" | "widget" | "server") {
+            if matches!(text.as_str(), "object") {
+                self.advance(); // consume OBJECT
+                self.skip_to_statement_end();
+                return Ok(Statement::Empty);
+            }
+            if matches!(text.as_str(), "procedure" | "widget" | "server")
+                && Self::can_be_identifier(self.peek_at(1).kind)
+            {
                 self.advance(); // skip the type prefix
             }
         }
@@ -4721,6 +4733,24 @@ impl Parser<'_> {
     // RELEASE buffer-name [NO-ERROR].
     fn parse_release_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume RELEASE
+
+        // RELEASE OBJECT handle [NO-ERROR]. — release a COM/OO object
+        // RELEASE EXTERNAL PROCEDURE "name". — release a loaded external procedure
+        if Self::can_be_identifier(self.peek().kind) {
+            let tok = &self.tokens[self.current];
+            let text = self.source[tok.start..tok.end].to_ascii_lowercase();
+            if text == "object" {
+                self.advance(); // consume OBJECT
+                self.skip_to_statement_end();
+                return Ok(Statement::Empty);
+            }
+        }
+        if self.check(Kind::External) {
+            self.advance(); // consume EXTERNAL
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
         let buffer = self.parse_identifier()?;
         let no_error = self.parse_no_error();
         self.expect_kind(Kind::Period, "Expected '.' after RELEASE statement")?;

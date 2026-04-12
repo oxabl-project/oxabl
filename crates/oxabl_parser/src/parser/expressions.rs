@@ -394,6 +394,12 @@ impl Parser<'_> {
 
         let index = self.parse_expression()?;
 
+        // Optional ABL extent range syntax: [start FOR count]
+        if self.check(Kind::KwFor) {
+            self.advance(); // consume FOR
+            self.parse_expression().ok(); // consume the count
+        }
+
         self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
 
         Ok(Expression::ArrayAccess {
