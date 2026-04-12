@@ -514,6 +514,8 @@ impl Parser<'_> {
             || self.check(Kind::Readkey)
             // UP n [WITH FRAME name]. — scroll up n lines in a frame.
             || self.check(Kind::Up)
+            // PROMPT-FOR field list [WITH FRAME name]. — ABL UI data entry prompt.
+            || self.check(Kind::PromptFor)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
@@ -579,12 +581,13 @@ impl Parser<'_> {
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
 
-        // Consume optional "IN FRAME framename" qualifier between target and '='
+        // Consume optional "IN FRAME/BROWSE framename" qualifier between target and '='
         // e.g. widget:attribute IN FRAME ftab1 = value NO-ERROR.
-        if self.check(Kind::KwIn) && self.peek_at(1).kind == Kind::Frame {
+        // e.g. field:screen-value IN BROWSE bname = value.
+        if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
             self.advance(); // consume IN
-            self.advance(); // consume FRAME
-            self.advance(); // consume framename
+            self.advance(); // consume FRAME or BROWSE
+            self.advance(); // consume framename/browsename
         }
 
         // Compound assignment operators: +=, -=, *=, /=
@@ -1099,6 +1102,13 @@ impl Parser<'_> {
                             self.advance(); // consume INIT/INITIAL
                             // Consume the initial value expression
                             self.parse_expression().ok();
+                        }
+                        Kind::Extent => {
+                            self.advance(); // consume EXTENT
+                            // Consume optional array size integer (e.g. EXTENT 10)
+                            if self.check(Kind::IntegerLiteral) {
+                                self.advance();
+                            }
                         }
                         _ => break,
                     }
@@ -2018,6 +2028,10 @@ impl Parser<'_> {
         if self.check(Kind::KwWhile) {
             self.advance();
             while_condition = Some(self.parse_expression()?);
+            // Optional TRANSACTION after WHILE condition: DO WHILE cond TRANSACTION: ...
+            if self.check(Kind::Transaction) {
+                self.advance();
+            }
         }
 
         // Skip DO/REPEAT block-header ON phrases: ON ERROR UNDO, RETRY / LEAVE / etc.
@@ -2107,6 +2121,12 @@ impl Parser<'_> {
         } else {
             self.parse_statement()?
         };
+
+        // Skip any stray bare periods between THEN-branch and ELSE (e.g. double-period `..`
+        // from field-access syntax like `hbuffer::table_name..`).
+        while self.check(Kind::Period) {
+            self.advance();
+        }
 
         // optional ELSE
         let else_branch = if self.check(Kind::KwElse) {
@@ -2275,11 +2295,11 @@ impl Parser<'_> {
             self.advance(); // consume the qualifier
         }
 
-        // Parse buffer name — may be a preprocessor reference {&find-orders}, a compound
-        // name like {&order}-remit (hyphen and suffix are separate tokens), or a
-        // database-qualified name like fdm4._field (db.table dotted form, same line).
-        let mut buffer = if self.check(Kind::Preprop) {
-            // {&preproc-var} used directly as table name — consume as identifier
+        // Parse buffer name — may be a preprocessor reference {&find-orders}, a positional
+        // include argument {1}, a compound name like {&order}-remit (hyphen and suffix are
+        // separate tokens), or a database-qualified name like fdm4._field (db.table dotted form).
+        let mut buffer = if self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
+            // {&preproc-var} or {1} used directly as table name — consume as identifier
             let tok = self.advance().clone();
             Identifier {
                 span: Span {
@@ -2715,6 +2735,17 @@ impl Parser<'_> {
         } else {
             self.parse_identifier()?
         };
+
+        // Dotted version-number procedure names: e.g. setup_18.4.2_spdata lexes as
+        // Identifier("setup_18") + DecimalLiteral(".4") + DecimalLiteral(".2") + Identifier("_spdata").
+        // Consume the extra tokens to advance past the full name.
+        while self.check(Kind::DecimalLiteral) {
+            self.advance(); // consume ".4", ".2", etc.
+            // An underscore/alpha-led segment directly following (e.g. "_spdata") is a separate Identifier.
+            if self.check(Kind::Identifier) {
+                self.advance();
+            }
+        }
 
         // Skip optional EXTERNAL "dll-name" [PERSISTENT] clause
         // e.g. PROCEDURE foo EXTERNAL "mylib.dll" PERSISTENT:
@@ -3314,6 +3345,12 @@ impl Parser<'_> {
                     self.advance();
                     continue;
                 }
+                // Skip AS DataType annotation (e.g. UPDATE v-fix AS LOGICAL)
+                if self.check(Kind::KwAs) {
+                    self.advance(); // consume AS
+                    let _ = self.parse_data_type(); // consume the data type
+                    continue;
+                }
                 if Self::can_be_identifier(self.peek().kind) {
                     set_targets.push(self.parse_identifier()?);
                 } else {
@@ -3343,7 +3380,11 @@ impl Parser<'_> {
         if self.check(Kind::NoError) {
             self.advance();
         }
-        self.expect_kind(Kind::Period, "Expected '.' after ASSIGN statement")?;
+        // parse_assign_pairs() may have consumed the period via skip_to_statement_end()
+        // when '=' was missing; only consume it here if it's still present.
+        if self.check(Kind::Period) {
+            self.advance();
+        }
         Ok(Statement::Assign { assignments })
     }
 
@@ -3360,7 +3401,14 @@ impl Parser<'_> {
                 self.advance(); // consume FRAME or BROWSE
                 self.advance(); // consume name
             }
-            self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
+            // If '=' is missing, the target expression consumed more than just the LHS
+            // (e.g. MENU widget-name:HANDLE where MENU is an identifier prefix).
+            // Skip to statement end and return accumulated pairs rather than erroring.
+            if !self.check(Kind::Equals) {
+                self.skip_to_statement_end();
+                return Ok(assignments);
+            }
+            self.advance(); // consume '='
             // Fast path: most ASSIGN values are not ternary. Skip the parse_expression →
             // parse_ternary indirection for non-IF values; parse_or handles AND/OR/comparisons.
             let value = if self.check(Kind::KwIf) {
@@ -3700,6 +3748,7 @@ impl Parser<'_> {
             let ext_bytes = ext.as_bytes();
             if match ext_bytes.len() {
                 1 => matches!(ext_bytes[0] | 0x20, b'p' | b'w' | b'r' | b'i'),
+                2 => ext.eq_ignore_ascii_case("pp"), // preprocessed procedure files (.pp)
                 3 => ext.eq_ignore_ascii_case("cls"),
                 _ => false,
             } {
@@ -4453,6 +4502,11 @@ impl Parser<'_> {
                 span: Span { start: 0, end: 0 },
                 name: String::new(),
             })
+        } else if !Self::can_be_identifier(self.peek().kind) {
+            // CREATE WINDOW / CREATE SERVER / CREATE X-DOCUMENT etc. — complex UI/handle
+            // creation forms with ASSIGN clauses we don't fully model.  Skip to end.
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
         } else {
             let name = self.parse_identifier()?;
             // If a second identifier follows (e.g. CREATE SERVER hService or CREATE X-document hXML),
@@ -4462,6 +4516,12 @@ impl Parser<'_> {
                 && !self.check(Kind::Period)
             {
                 let _ = self.parse_identifier()?;
+            }
+            // CREATE handle ASSIGN prop = val ... — UI widget creation with property list;
+            // skip the ASSIGN block entirely.
+            if self.check(Kind::Assign) {
+                self.skip_to_statement_end();
+                return Ok(Statement::Empty);
             }
             CreateTarget::Name(name)
         };
@@ -5499,7 +5559,17 @@ impl Parser<'_> {
                 self.advance(); // consume FRAME/BROWSE keyword
                 self.parse_identifier()?
             } else {
-                self.parse_identifier()?
+                let first = self.parse_identifier()?;
+                // Handle widget-type + name form: e.g. `MENU-ITEM m_Close` where MENU-ITEM is
+                // the widget type prefix and m_Close is the actual widget name.  Only applies
+                // when the following token is a plain Identifier (not a reserved keyword used as
+                // a trigger action or qualifier — those are Kind::Revert, Kind::Persistent, etc.).
+                if self.peek().kind == Kind::Identifier {
+                    // First token was the widget type prefix — consume it and use the next as name.
+                    self.parse_identifier()?
+                } else {
+                    first
+                }
             };
             let qualifier = if self.check(Kind::KwIn) {
                 self.advance();
