@@ -129,6 +129,7 @@ fn main() {
             "columns",
             "com-handle",
             "compiler",
+            "connect",
             "connected",
             "constructor",
             "contains",

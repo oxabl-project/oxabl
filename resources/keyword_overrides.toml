@@ -770,6 +770,16 @@ name = "WORKFILE"
 reserved = false
 keyword_type = "Option"
 
+# CONNECT is the ABL database connection statement — not in official keyword index
+[[add]]
+name = "CONNECT"
+keyword_type = "Statement"
+
+# DISCONNECT is the ABL database disconnect statement — not in official keyword index
+[[add]]
+name = "DISCONNECT"
+keyword_type = "Statement"
+
 # =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
