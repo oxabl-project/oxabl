@@ -541,6 +541,31 @@ impl<'a> Parser<'a> {
             });
         }
         let token = self.advance().clone();
+
+        // Handle {&prefix}suffix compound preprop names (e.g. {&pre}inc_whse-time).
+        // Requires direct adjacency (no whitespace) to avoid consuming operators.
+        if matches!(token.kind, Kind::Preprop | Kind::IncludeArgReference) {
+            if let Some(next) = self.tokens.get(self.current) {
+                if Self::can_be_identifier(next.kind) && next.start == token.end {
+                    let suffix_tok = self.advance().clone();
+                    let raw = &self.source[token.start..token.end];
+                    let name_part = raw
+                        .strip_prefix("{&")
+                        .and_then(|s| s.strip_suffix('}'))
+                        .unwrap_or(raw);
+                    let suffix = &self.source[suffix_tok.start..suffix_tok.end];
+                    let compound = format!("{{{}&}}{}", name_part, suffix);
+                    return Ok(Identifier {
+                        span: Span {
+                            start: token.start as u32,
+                            end: suffix_tok.end as u32,
+                        },
+                        name: compound,
+                    });
+                }
+            }
+        }
+
         Ok(Identifier {
             span: Span {
                 start: token.start as u32,

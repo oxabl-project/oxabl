@@ -670,25 +670,11 @@ impl Parser<'_> {
             });
         }
 
-        // Name
-        if !Self::can_be_identifier(self.peek().kind) {
-            return Err(ParseError {
-                message: "Expected variable name after DEFINE VARIABLE".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
-            });
-        }
-
-        let name_token = self.advance().clone();
-        let name = Identifier {
-            span: Span {
-                start: name_token.start as u32,
-                end: name_token.end as u32,
-            },
-            name: self.source[name_token.start..name_token.end].to_string(),
-        };
+        // Name (use parse_identifier so compound preprop names like {&pre}inc_whse-time work)
+        let name = self.parse_identifier().map_err(|_| ParseError {
+            message: "Expected variable name after DEFINE VARIABLE".to_string(),
+            span: self.current_span(),
+        })?;
 
         // parse type source (AS type | LIKE field)
         let type_source = self.parse_type_source()?;
