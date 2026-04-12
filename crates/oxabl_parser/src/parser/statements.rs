@@ -4145,6 +4145,19 @@ impl Parser<'_> {
             }
         }
         let buffer = self.parse_identifier()?;
+        // Skip optional VALIDATE(...) clause: DELETE table VALIDATE(true, "msg").
+        if self.check(Kind::Validate) {
+            self.advance(); // consume VALIDATE
+            if self.check(Kind::LeftParen) {
+                self.advance();
+                while !self.check(Kind::RightParen) && !self.check(Kind::Period) && !self.at_end() {
+                    self.advance();
+                }
+                if self.check(Kind::RightParen) {
+                    self.advance();
+                }
+            }
+        }
         let no_error = self.parse_no_error();
         self.expect_kind(Kind::Period, "Expected '.' after DELETE statement")?;
         Ok(Statement::Delete { buffer, no_error })
