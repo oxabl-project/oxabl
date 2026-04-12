@@ -246,7 +246,21 @@ impl Parser<'_> {
                 ) {
                     self.advance();
                 }
+                // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE for handle args
+                if matches!(
+                    self.peek().kind,
+                    Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                ) {
+                    self.advance();
+                }
                 arguments.push(self.parse_expression()?);
+                // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
+                while matches!(
+                    self.peek().kind,
+                    Kind::Bind | Kind::ByValue | Kind::Append
+                ) {
+                    self.advance();
+                }
 
                 while self.check(Kind::Comma) {
                     self.advance(); // Consume ','
@@ -257,7 +271,21 @@ impl Parser<'_> {
                     ) {
                         self.advance();
                     }
+                    // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE
+                    if matches!(
+                        self.peek().kind,
+                        Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                    ) {
+                        self.advance();
+                    }
                     arguments.push(self.parse_expression()?);
+                    // Consume optional passing modifiers
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Bind | Kind::ByValue | Kind::Append
+                    ) {
+                        self.advance();
+                    }
                 }
             }
 

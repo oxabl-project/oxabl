@@ -1612,9 +1612,16 @@ impl Parser<'_> {
             if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
                 self.advance(); // consume condition keyword/identifier
             }
-            // consume UNDO and optional label/action: UNDO [,action [label]]
+            // consume UNDO and optional label: UNDO [label]
             if self.check(Kind::Undo) {
                 self.advance();
+                // consume optional block label after UNDO (e.g. UNDO TRANS-BLOCK, ...)
+                if Self::can_be_identifier(self.peek().kind)
+                    && !self.check(Kind::Colon)
+                    && !self.check(Kind::Comma)
+                {
+                    self.advance();
+                }
             }
             // consume optional action after comma: , LEAVE / RETRY / NEXT / RETURN [label]
             if self.check(Kind::Comma) {
@@ -1689,6 +1696,32 @@ impl Parser<'_> {
     fn parse_repeat_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume REPEAT
 
+        // Optional block label before the colon (LABEL: REPEAT)
+        // Already handled at statement dispatch level; nothing extra needed here.
+
+        // Optional counting loop: REPEAT var = expr TO expr [BY expr]
+        if Self::can_be_identifier(self.peek().kind) {
+            let saved_pos = self.current;
+            let potential_var = self.advance().clone();
+            if self.check(Kind::Equals) {
+                self.advance(); // consume =
+                self.parse_expression().ok(); // from value
+                if self.check(Kind::To) {
+                    self.advance(); // consume TO
+                    self.parse_expression().ok(); // to value
+                    if self.check(Kind::By) {
+                        self.advance(); // consume BY
+                        self.parse_expression().ok(); // by value
+                    }
+                    let _ = potential_var; // used for loop variable name
+                } else {
+                    self.current = saved_pos; // not a counting loop; backtrack
+                }
+            } else {
+                self.current = saved_pos; // not a counting loop; backtrack
+            }
+        }
+
         // Optional WHILE
         let while_condition = if self.check(Kind::KwWhile) {
             self.advance();
@@ -1696,6 +1729,35 @@ impl Parser<'_> {
         } else {
             None
         };
+
+        // Consume ON phrase(s) same as DO (ON ERROR UNDO [label] [, action [label]])
+        while self.check(Kind::On) {
+            self.advance();
+            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
+                self.advance();
+            }
+            if self.check(Kind::Undo) {
+                self.advance();
+                if Self::can_be_identifier(self.peek().kind)
+                    && !self.check(Kind::Colon)
+                    && !self.check(Kind::Comma)
+                {
+                    self.advance();
+                }
+            }
+            if self.check(Kind::Comma) {
+                self.advance();
+                if matches!(
+                    self.peek().kind,
+                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn
+                ) {
+                    self.advance();
+                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
+                        self.advance();
+                    }
+                }
+            }
+        }
 
         // Expect colon
         self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
@@ -1768,6 +1830,63 @@ impl Parser<'_> {
         } else {
             lock_type_post
         };
+
+        // Optional USE-INDEX clause on first table
+        while self.check(Kind::UseIndex) {
+            self.advance();
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance();
+            }
+        }
+
+        // Optional NO-WAIT on first table
+        if self.check(Kind::NoWait) {
+            self.advance();
+        }
+
+        // ABL JOIN: FOR EACH t1 ..., FIRST/EACH/LAST t2 WHERE ... [, ...]
+        // Consume additional joined table phrases separated by commas.
+        while self.check(Kind::Comma) {
+            self.advance(); // consume ','
+            // Optional qualifier (EACH, FIRST, LAST, NEXT, PREV) for joined table
+            if self.check(Kind::Each)
+                || self.check(Kind::First)
+                || self.check(Kind::Last)
+                || self.check(Kind::Next)
+                || self.check(Kind::Prev)
+            {
+                self.advance();
+            }
+            // table/buffer name
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance();
+            }
+            // optional OF clause
+            if self.check(Kind::Of) {
+                self.advance();
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance();
+                }
+            }
+            // optional lock before WHERE
+            self.parse_lock_type();
+            // optional WHERE clause
+            if self.check(Kind::KwWhere) {
+                self.advance();
+                self.parse_expression().ok();
+            }
+            // trailing lock, USE-INDEX, NO-WAIT
+            self.parse_lock_type();
+            while self.check(Kind::UseIndex) {
+                self.advance();
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance();
+                }
+            }
+            if self.check(Kind::NoWait) {
+                self.advance();
+            }
+        }
 
         // Skip optional BREAK BY and BY clauses (sort order / grouping).
         // Patterns:
@@ -1868,6 +1987,14 @@ impl Parser<'_> {
             lock_type_after
         };
 
+        // parse optional USE-INDEX clause
+        while self.check(Kind::UseIndex) {
+            self.advance(); // consume USE-INDEX
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance(); // consume index name
+            }
+        }
+
         // parse optional no error
         let no_error = if self.check(Kind::NoError) {
             self.advance();
@@ -1875,6 +2002,11 @@ impl Parser<'_> {
         } else {
             false
         };
+
+        // parse optional NO-WAIT
+        if self.check(Kind::NoWait) {
+            self.advance();
+        }
 
         self.expect_kind(Kind::Period, "Expected '.' after FIND statement")?;
 
@@ -2052,11 +2184,14 @@ impl Parser<'_> {
         };
 
         // parse optional PERSISTENT [SET handle]
+        // Use parse_identifier for the handle name so that a following `(args)` on the
+        // same line is NOT consumed as a function call — it belongs to the argument list
+        // parsed below (line arguments).
         let (persistent, persistent_handle) = if self.check(Kind::Persistent) {
             self.advance();
             let h = if self.check(Kind::Set) {
                 self.advance();
-                Some(self.parse_expression()?)
+                Some(Expression::Identifier(self.parse_identifier()?))
             } else {
                 None
             };
@@ -2391,6 +2526,15 @@ impl Parser<'_> {
         // Parse return type
         let return_type = self.parse_data_type()?;
 
+        // Optional access modifier between return type and parameter list
+        // (e.g., `function name char private (input p as char):`)
+        if matches!(
+            self.peek().kind,
+            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate | Kind::KwStatic
+        ) {
+            self.advance();
+        }
+
         // Optional parameter list in parentheses
         if self.check(Kind::LeftParen) {
             self.advance();
@@ -2634,6 +2778,8 @@ impl Parser<'_> {
                 | Kind::ShareLock
                 | Kind::ExclusiveLock
                 | Kind::NoError
+                | Kind::NoWait
+                | Kind::UseIndex
                 | Kind::Period
         )
     }
