@@ -1774,7 +1774,7 @@ end."#;
             kinds,
             vec![
                 Kind::PreprocScopedDefine,
-                Kind::Identifier, // EMPTY
+                Kind::Empty, // EMPTY is now a keyword
                 Kind::PreprocEnd,
                 Kind::End,
                 Kind::Period,

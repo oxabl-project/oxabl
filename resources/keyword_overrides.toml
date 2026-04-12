@@ -687,6 +687,31 @@ name = "BROWSE"
 keyword_type = "Option"
 
 # =============================================================================
+# MISSING STATEMENT KEYWORDS
+# Keywords present in the HTML index but not in the JSON
+# =============================================================================
+
+[[add]]
+name = "EMPTY"
+reserved = false
+keyword_type = "Statement"
+
+[[add]]
+name = "ENUM"
+reserved = true
+keyword_type = "Statement"
+
+[[add]]
+name = "END ENUM"
+reserved = true
+keyword_type = "Statement"
+
+[[add]]
+name = "WORKFILE"
+reserved = false
+keyword_type = "Option"
+
+# =============================================================================
 # OVERRIDES
 # Correct misclassifications or add missing info
 # =============================================================================
