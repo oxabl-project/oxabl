@@ -3857,8 +3857,9 @@ impl Parser<'_> {
             }
         }
 
-        // Parse class name (dotted)
-        let name = self.parse_qualified_identifier()?;
+        // Parse class name (dotted). Use parse_class_qualified_name() so that reserved
+        // keywords used as namespace prefixes (e.g. `do.wsdo800obj`) are accepted.
+        let name = self.parse_class_qualified_name()?;
 
         // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
         loop {
@@ -3876,7 +3877,7 @@ impl Parser<'_> {
         // Parse optional INHERITS
         let inherits = if self.check(Kind::Inherits) {
             self.advance();
-            Some(self.parse_qualified_identifier()?)
+            Some(self.parse_class_qualified_name()?)
         } else {
             None
         };
@@ -3885,10 +3886,10 @@ impl Parser<'_> {
         let mut implements = Vec::new();
         if self.check(Kind::Implements) {
             self.advance();
-            implements.push(self.parse_qualified_identifier()?);
+            implements.push(self.parse_class_qualified_name()?);
             while self.check(Kind::Comma) {
                 self.advance();
-                implements.push(self.parse_qualified_identifier()?);
+                implements.push(self.parse_class_qualified_name()?);
             }
         }
 
@@ -3939,16 +3940,16 @@ impl Parser<'_> {
     fn parse_interface(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume INTERFACE
 
-        let name = self.parse_qualified_identifier()?;
+        let name = self.parse_class_qualified_name()?;
 
         // Parse optional INHERITS (can inherit multiple interfaces)
         let mut inherits = Vec::new();
         if self.check(Kind::Inherits) {
             self.advance();
-            inherits.push(self.parse_qualified_identifier()?);
+            inherits.push(self.parse_class_qualified_name()?);
             while self.check(Kind::Comma) {
                 self.advance();
-                inherits.push(self.parse_qualified_identifier()?);
+                inherits.push(self.parse_class_qualified_name()?);
             }
         }
 

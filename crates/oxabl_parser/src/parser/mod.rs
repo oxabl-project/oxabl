@@ -505,6 +505,8 @@ impl<'a> Parser<'a> {
                     | Kind::CurrentWindow
                     // KEYS is a buffer/table attribute used as method name (e.g. b-table:keys)
                     | Kind::Keys
+                    // FRAME-VALUE is an ABL built-in used in expression context (e.g. frame-value = "")
+                    | Kind::FrameValue
             )
     }
 
@@ -579,6 +581,52 @@ impl<'a> Parser<'a> {
             let next_idx = self.current + 1;
             if let Some(next_tok) = self.tokens.get(next_idx) {
                 if Self::can_be_identifier(next_tok.kind)
+                    && !self.source[period_end..next_tok.start].contains('\n')
+                {
+                    self.advance(); // consume '.'
+                    let next = self.advance().clone();
+                    name.push('.');
+                    name.push_str(&self.source[next.start..next.end]);
+                    end = next.end as u32;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(Identifier {
+            span: Span { start, end },
+            name,
+        })
+    }
+
+    /// Parses a dot-qualified class name where namespace components may be reserved keywords.
+    ///
+    /// ABL class files live in directories whose names often match reserved keywords
+    /// (e.g. the `do/` module produces class names like `do.wsdo800obj`).
+    /// Unlike `parse_qualified_identifier()`, this accepts any word-like token as the
+    /// first component (via `is_word_kind()`), not just `can_be_identifier()` tokens.
+    fn parse_class_qualified_name(&mut self) -> ParseResult<Identifier> {
+        let token = self.peek();
+        if !Self::is_word_kind(token.kind) {
+            return Err(ParseError {
+                message: "Expected class name".to_string(),
+                span: self.current_span(),
+            });
+        }
+        let start_tok = self.advance().clone();
+        let start = start_tok.start as u32;
+        let mut end = start_tok.end as u32;
+        let mut name = self.source[start_tok.start..start_tok.end].to_string();
+
+        // Consume .qualifier parts (same-line only)
+        while self.check(Kind::Period) {
+            let period_end = self.tokens[self.current].end;
+            let next_idx = self.current + 1;
+            if let Some(next_tok) = self.tokens.get(next_idx) {
+                if Self::is_word_kind(next_tok.kind)
                     && !self.source[period_end..next_tok.start].contains('\n')
                 {
                     self.advance(); // consume '.'
@@ -843,13 +891,13 @@ impl<'a> Parser<'a> {
             Kind::ComHandle => DataType::Com,
             Kind::Class => {
                 self.advance(); // consume CLASS
-                let class_name = self.parse_qualified_identifier()?;
+                let class_name = self.parse_class_qualified_name()?;
                 return Ok(DataType::Class(class_name.name));
             }
             // ABL allows `AS ClassName` (without CLASS keyword) for class types.
             // Dotted names like `forms.deco_proof_form` are class references.
             Kind::Identifier => {
-                let class_name = self.parse_qualified_identifier()?;
+                let class_name = self.parse_class_qualified_name()?;
                 return Ok(DataType::Class(class_name.name));
             }
             // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
@@ -857,7 +905,20 @@ impl<'a> Parser<'a> {
             // Progress.* is a namespace prefix for built-in ABL classes
             // (e.g. "Progress.Json.ObjectModel.JsonObject")
             Kind::Progress => {
-                let class_name = self.parse_qualified_identifier()?;
+                let class_name = self.parse_class_qualified_name()?;
+                return Ok(DataType::Class(class_name.name));
+            }
+            // Reserved keywords used as namespace prefixes in OO-ABL class names.
+            // ABL class files live in directories whose names may be reserved keywords
+            // (e.g. `do.wsdo800obj` where `do` is Kind::Do). These must be followed
+            // by a dot to be valid class references.
+            _ if Self::is_word_kind(token.kind)
+                && self
+                    .tokens
+                    .get(self.current + 1)
+                    .is_some_and(|t| t.kind == Kind::Period) =>
+            {
+                let class_name = self.parse_class_qualified_name()?;
                 return Ok(DataType::Class(class_name.name));
             }
             Kind::PreprocIf => {
