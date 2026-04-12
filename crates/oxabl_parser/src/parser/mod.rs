@@ -521,6 +521,8 @@ impl<'a> Parser<'a> {
                     | Kind::ActiveWindow
                     // FOCUS is a system handle for the currently focused widget (used in expression context)
                     | Kind::Focus
+                    // TERMINAL is a system handle/variable (e.g. OUTPUT TO TERMINAL, v = terminal)
+                    | Kind::Terminal
             )
     }
 
