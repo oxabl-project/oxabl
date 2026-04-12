@@ -222,6 +222,7 @@ fn main() {
             "event",
             "event procedure",
             "except",
+            "exclusive",
             "exclusive-lock",
             "exists",
             "export",

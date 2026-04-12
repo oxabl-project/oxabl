@@ -1388,7 +1388,8 @@ impl Parser<'_> {
                     self.advance();
                 }
 
-                // Parse flags in any order: PRIMARY, UNIQUE, WORD-INDEX
+                // Parse flags in any order: PRIMARY, UNIQUE, WORD-INDEX.
+                // IS and AS may appear between flags (e.g. "AS UNIQUE IS PRIMARY").
                 loop {
                     match self.peek().kind {
                         Kind::Primary => {
@@ -1402,6 +1403,10 @@ impl Parser<'_> {
                         Kind::WordIndex => {
                             self.advance();
                             is_word_index = true;
+                        }
+                        // IS/AS can precede each flag: "AS UNIQUE IS PRIMARY"
+                        Kind::Is | Kind::KwAs => {
+                            self.advance();
                         }
                         _ => break,
                     }
@@ -4644,11 +4649,11 @@ impl Parser<'_> {
         self.advance(); // consume BUFFER-COPY
         let source = self.parse_identifier()?;
 
-        // Optional EXCEPT clause (skip list of fields not to copy)
-        // Appears BEFORE the TO keyword: BUFFER-COPY src EXCEPT f1 f2 TO target
-        // Field names may be qualified: EXCEPT table.field or buf.field
-        if self.check(Kind::Except) {
-            self.advance(); // consume EXCEPT
+        // Optional USING or EXCEPT clause (field list to include/exclude)
+        // Appears BEFORE the TO keyword: BUFFER-COPY src [USING|EXCEPT] f1 f2 TO target
+        // Field names may be qualified: USING table.field or buf.field
+        if self.check(Kind::Using) || self.check(Kind::Except) {
+            self.advance(); // consume USING/EXCEPT
             while Self::can_be_identifier(self.peek().kind) {
                 self.advance(); // consume field name (or table/buffer qualifier)
                 // Consume optional .field qualifier on same line

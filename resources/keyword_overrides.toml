@@ -181,10 +181,12 @@ min_abbreviation = "share-lock"
 name = "no-lock"
 min_abbreviation = "no-lock"
 
-# exclusive-lock doesn't exist (only "exclusive lock" space form), so add it
+# exclusive-lock doesn't exist (only "exclusive lock" space form), so add it.
+# min_abbreviation = "EXCLUSIVE" allows `exclusive` alone as abbreviation (ABL-standard).
 [[add]]
 name = "exclusive-lock"
 keyword_type = "Statement"
+min_abbreviation = "EXCLUSIVE"
 
 # =============================================================================
 # PREPROCESSOR
