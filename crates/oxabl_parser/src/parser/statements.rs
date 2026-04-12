@@ -1995,6 +1995,11 @@ impl Parser<'_> {
             }
         }
 
+        // parse optional NO-WAIT (can appear before or after NO-ERROR)
+        if self.check(Kind::NoWait) {
+            self.advance();
+        }
+
         // parse optional no error
         let no_error = if self.check(Kind::NoError) {
             self.advance();
@@ -2003,7 +2008,7 @@ impl Parser<'_> {
             false
         };
 
-        // parse optional NO-WAIT
+        // parse optional NO-WAIT after NO-ERROR
         if self.check(Kind::NoWait) {
             self.advance();
         }
@@ -3313,6 +3318,24 @@ impl Parser<'_> {
         let target = if let Some(kind) = self.match_create_target_kind() {
             self.advance(); // consume the type keyword
             let handle = self.parse_identifier()?;
+            // CREATE BUFFER handle FOR TABLE(expr) or FOR TABLE tablename
+            if self.check(Kind::KwFor) {
+                self.advance(); // consume FOR
+                // TABLE keyword (static or dynamic)
+                if self.check(Kind::Table) {
+                    self.advance();
+                    // Dynamic: TABLE(expr) or TABLE tablename
+                    if self.check(Kind::LeftParen) {
+                        self.advance();
+                        self.parse_expression().ok();
+                        if self.check(Kind::RightParen) {
+                            self.advance();
+                        }
+                    } else if Self::can_be_identifier(self.peek().kind) {
+                        self.advance();
+                    }
+                }
+            }
             let widget_pool = self.parse_optional_widget_pool()?;
             CreateTarget::Handle {
                 kind,
@@ -3334,6 +3357,8 @@ impl Parser<'_> {
             Kind::Dataset => Some(CreateTargetKind::Dataset),
             Kind::DataSource => Some(CreateTargetKind::DataSource),
             Kind::TempTable => Some(CreateTargetKind::TempTable),
+            Kind::Buffer => Some(CreateTargetKind::Buffer),
+            Kind::Query => Some(CreateTargetKind::Query),
             _ => None,
         }
     }
@@ -3393,24 +3418,24 @@ impl Parser<'_> {
         self.expect_kind(Kind::To, "Expected TO after source buffer in BUFFER-COPY")?;
         let target = self.parse_identifier()?;
 
+        // Optional EXCEPT clause (skip list of fields not to copy)
+        if self.check(Kind::Except) {
+            self.advance(); // consume EXCEPT
+            while Self::can_be_identifier(self.peek().kind)
+                || self.check(Kind::Period)
+                    && Self::can_be_identifier(self.peek_at(1).kind)
+            {
+                if self.check(Kind::Period) {
+                    break; // period is the statement terminator
+                }
+                self.advance(); // consume field name
+            }
+        }
+
         // Optional ASSIGN clause
         let assignments = if self.check(Kind::Assign) {
             self.advance(); // consume ASSIGN
-            let pairs = self.parse_assign_pairs()?;
-            pairs
-                .into_iter()
-                .map(|p| {
-                    // Extract identifier from the target expression
-                    match p.target {
-                        Expression::Identifier(ident) => Ok((ident, p.value)),
-                        _ => Err(ParseError {
-                            message: "Expected identifier as ASSIGN target in BUFFER-COPY"
-                                .to_string(),
-                            span: Span { start: 0, end: 0 },
-                        }),
-                    }
-                })
-                .collect::<ParseResult<Vec<_>>>()?
+            self.parse_assign_pairs()?
         } else {
             Vec::new()
         };

@@ -397,7 +397,7 @@ pub enum Statement {
     BufferCopy {
         source: Identifier,
         target: Identifier,
-        assignments: Vec<(Identifier, Expression)>,
+        assignments: Vec<AssignPair>,
         no_error: bool,
     },
 
@@ -863,6 +863,9 @@ pub enum CreateTargetKind {
     Dataset,
     DataSource,
     TempTable,
+    Buffer,
+    Query,
+    Widget,
 }
 
 // =============================================================================
