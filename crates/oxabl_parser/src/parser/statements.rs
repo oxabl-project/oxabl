@@ -138,6 +138,28 @@ impl Parser<'_> {
             return Ok(Statement::Next(label));
         }
 
+        // UNDO [label] [, LEAVE/RETRY/NEXT/RETURN [label]].
+        if self.check(Kind::Undo) {
+            self.advance(); // consume UNDO
+            // consume optional block label
+            if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Comma) && !self.check(Kind::Period) {
+                self.advance();
+            }
+            // consume optional action
+            if self.check(Kind::Comma) {
+                self.advance();
+                if matches!(self.peek().kind, Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn) {
+                    self.advance();
+                    // consume optional label
+                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Period) {
+                        self.advance();
+                    }
+                }
+            }
+            self.expect_kind(Kind::Period, "Expected '.' after UNDO statement")?;
+            return Ok(Statement::Empty);
+        }
+
         // Return
         if self.check(Kind::KwReturn) {
             return self.parse_return_statement();
@@ -323,6 +345,18 @@ impl Parser<'_> {
 
         // FORM ... — legacy UI form definition, skip to period.
         if self.check(Kind::Form) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // VIEW [STREAM s] FRAME f — UI frame display statement, skip to period.
+        if self.check(Kind::View) {
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // HIDE [STREAM s] FRAME f [NO-PAUSE] — UI hide statement, skip to period.
+        if self.check(Kind::Hide) {
             self.skip_to_period();
             return Ok(Statement::Empty);
         }
@@ -1957,6 +1991,14 @@ impl Parser<'_> {
 
         // parse buffer/table name
         let buffer = self.parse_identifier()?;
+
+        // Optional OF clause: FIND customer OF order — shorthand for related-record find
+        if self.check(Kind::Of) {
+            self.advance(); // consume OF
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance(); // consume related-table name
+            }
+        }
 
         // parse optional key-value (FIND customer <key> syntax,
         // equivalent to find customer where customer.primary-index field eq 1)
