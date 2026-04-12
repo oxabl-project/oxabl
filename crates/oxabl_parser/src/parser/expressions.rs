@@ -410,36 +410,49 @@ impl Parser<'_> {
             return self.parse_ternary();
         }
 
-        // Preprocessor reference: {&variable} or compound {&prefix}suffix
+        // Preprocessor reference: {&variable} or compound {&prefix}suffix{&more}...
+        // e.g. {&pre}order{&ext} — multiple adjacent parts form a single identifier.
+        // Requires direct adjacency (no whitespace) between each part.
         if self.check(Kind::Preprop) {
-            let token = self.advance().clone();
-            // Strip {& and } to get the variable name
-            let raw = &self.source[token.start..token.end];
-            let name = raw
-                .strip_prefix("{&")
-                .and_then(|s| s.strip_suffix('}'))
-                .unwrap_or(raw)
-                .to_string();
-            // {&prefix}suffix — preprocessor prefix directly followed by identifier
-            // e.g. {&web}order expands at runtime to a single identifier.
-            // Requires direct adjacency (no whitespace) to avoid treating operators
-            // like `+` on the same line as identifier suffixes.
-            if Self::can_be_identifier(self.peek().kind) {
-                let next_tok = &self.tokens[self.current];
-                if next_tok.start == token.end {
-                    let suffix_tok = self.advance().clone();
-                    let suffix = &self.source[suffix_tok.start..suffix_tok.end];
-                    let compound = format!("{{{}&}}{}", name, suffix);
-                    return Ok(Expression::Identifier(Identifier {
-                        span: Span {
-                            start: token.start as u32,
-                            end: suffix_tok.end as u32,
-                        },
-                        name: compound,
-                    }));
+            let first = self.advance().clone();
+            let compound_start = first.start;
+            let mut compound_end = first.end;
+
+            // Extend with directly-adjacent parts (identifiers or more preprops)
+            loop {
+                let next = &self.tokens[self.current];
+                if next.start != compound_end {
+                    break;
+                }
+                if Self::can_be_identifier(next.kind) || next.kind == Kind::Preprop {
+                    compound_end = self.advance().end;
+                } else {
+                    break;
                 }
             }
-            return Ok(Expression::PreprocReference(name));
+
+            // Bare {&name} with no adjacent parts → PreprocReference
+            if compound_end == first.end {
+                let raw = &self.source[first.start..first.end];
+                let name = raw
+                    .strip_prefix("{&")
+                    .and_then(|s| s.strip_suffix('}'))
+                    .unwrap_or(raw)
+                    .to_string();
+                return Ok(Expression::PreprocReference(name));
+            }
+            // Compound → Identifier using raw source text
+            let identifier = Identifier {
+                span: Span {
+                    start: compound_start as u32,
+                    end: compound_end as u32,
+                },
+                name: self.source[compound_start..compound_end].to_string(),
+            };
+            if self.check(Kind::LeftParen) {
+                return self.parse_function_call(identifier);
+            }
+            return Ok(Expression::Identifier(identifier));
         }
 
         // Mid-expression preprocessor conditional: &IF cond &THEN expr &ELSE expr &ENDIF
@@ -793,7 +806,21 @@ impl Parser<'_> {
         if Self::can_be_identifier(self.peek().kind) {
             let token = self.advance();
             let start = token.start;
-            let end = token.end;
+            let mut end = token.end;
+
+            // identifier{&suffix} compound: e.g. b-{&line-buffer} (direct adjacency only)
+            loop {
+                let next = &self.tokens[self.current];
+                if next.start != end {
+                    break;
+                }
+                if next.kind == Kind::Preprop || Self::can_be_identifier(next.kind) {
+                    end = self.advance().end;
+                } else {
+                    break;
+                }
+            }
+
             let name = self.source[start..end].to_string();
             let identifier = Identifier {
                 span: Span {
