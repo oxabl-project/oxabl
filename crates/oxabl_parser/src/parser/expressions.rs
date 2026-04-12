@@ -603,10 +603,16 @@ impl Parser<'_> {
         if self.check(Kind::New) {
             self.advance(); // consume NEW
 
-            // Parse dotted class name (e.g., "oe.wsdeco" or "Progress.Lang.Error")
+            // Parse dotted class name (e.g., "oe.wsdeco", "api.text", "Progress.Lang.Error").
+            // Use is_word_kind() so keyword-named namespaces/types (e.g. api.text) are accepted.
             let start = self.peek().start;
             self.advance(); // consume first name component
-            while self.check(Kind::Period) && self.check_at(1, Kind::Identifier) {
+            while self.check(Kind::Period)
+                && self
+                    .tokens
+                    .get(self.current + 1)
+                    .is_some_and(|t| Self::is_word_kind(t.kind))
+            {
                 self.advance(); // consume '.'
                 self.advance(); // consume next component
             }
