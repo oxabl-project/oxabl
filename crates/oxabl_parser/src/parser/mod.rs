@@ -431,6 +431,10 @@ impl<'a> Parser<'a> {
                     | Kind::BufferCompare
                     | Kind::GetBufferHandle
                     | Kind::Disconnect
+                    // JSON/socket/IO method names used as object methods
+                    | Kind::Add
+                    | Kind::Write
+                    | Kind::Save
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
                     | Kind::PageTop
             )
