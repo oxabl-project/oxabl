@@ -3029,6 +3029,11 @@ impl Parser<'_> {
                     }
                     continue;
                 }
+                // Skip field modifiers: AUTO-RETURN, NO-ECHO, etc.
+                if self.check(Kind::AutoReturn) {
+                    self.advance();
+                    continue;
+                }
                 if Self::can_be_identifier(self.peek().kind) {
                     set_targets.push(self.parse_identifier()?);
                 } else {
