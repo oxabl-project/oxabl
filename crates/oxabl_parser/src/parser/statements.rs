@@ -4354,7 +4354,8 @@ impl Parser<'_> {
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance(); // consume END
-                if self.check(Kind::Constructor) {
+                // Accept END CONSTRUCTOR, END METHOD, or just END.
+                if self.check(Kind::Constructor) || self.check(Kind::Method) {
                     self.advance();
                 }
                 self.expect_kind(Kind::Period, "Expected '.' after END CONSTRUCTOR")?;
@@ -4403,7 +4404,8 @@ impl Parser<'_> {
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance(); // consume END
-                if self.check(Kind::Destructor) {
+                // Accept END DESTRUCTOR, END METHOD, or just END.
+                if self.check(Kind::Destructor) || self.check(Kind::Method) {
                     self.advance();
                 }
                 self.expect_kind(Kind::Period, "Expected '.' after END DESTRUCTOR")?;
@@ -4492,7 +4494,21 @@ impl Parser<'_> {
 
         let target = if let Some(kind) = self.match_create_target_kind() {
             self.advance(); // consume the type keyword
-            let handle = self.parse_identifier()?;
+            let mut handle = self.parse_identifier()?;
+            // Handle member-access references: CREATE DATASET THIS-OBJECT:myDataset
+            // — consume ':member' suffix and extend the handle name.
+            while self.check(Kind::Colon) && Self::can_be_identifier(self.peek_at(1).kind) {
+                let colon_end = self.tokens[self.current].end;
+                let next_start = self.tokens[self.current + 1].start;
+                if self.source[colon_end..next_start].contains('\n') {
+                    break;
+                }
+                self.advance(); // consume ':'
+                let seg = self.advance().clone();
+                handle.name.push(':');
+                handle.name.push_str(&self.source[seg.start..seg.end]);
+                handle.span.end = seg.end as u32;
+            }
             // CREATE BUFFER handle FOR TABLE(expr) or FOR TABLE tablename
             if self.check(Kind::KwFor) {
                 self.advance(); // consume FOR
