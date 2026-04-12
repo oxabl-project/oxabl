@@ -3071,6 +3071,12 @@ impl Parser<'_> {
             self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
             // Use full expression parser for value to allow IF/THEN/ELSE ternary and other exprs
             let value = self.parse_expression()?;
+            // Optional IN FRAME framename clause (specifies frame context for widget assignment)
+            if self.check(Kind::KwIn) && self.peek_at(1).kind == Kind::Frame {
+                self.advance(); // consume IN
+                self.advance(); // consume FRAME
+                self.advance(); // consume framename
+            }
             // Optional WHEN condition: field = expr WHEN condition
             if self.check(Kind::When) {
                 self.advance(); // consume WHEN
