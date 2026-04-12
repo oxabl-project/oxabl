@@ -496,6 +496,10 @@ impl Parser<'_> {
             || self.check(Kind::Get)
             || self.check(Kind::Clear)
             || self.check(Kind::Hide)
+            // FORMAT expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
+            || self.check(Kind::Format)
+            // CLOSE QUERY/DATASET/BROWSING name. — close a query, dataset, or browse widget.
+            || self.check(Kind::Close)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
@@ -1968,6 +1972,11 @@ impl Parser<'_> {
                 if self.check(Kind::By) {
                     self.advance();
                     by = Some(self.parse_expression()?);
+                }
+
+                // Optional TRANSACTION after counting loop: DO i = 1 TO 2 TRANSACTION:
+                if self.check(Kind::Transaction) {
+                    self.advance();
                 }
             } else {
                 // not a counting loop
