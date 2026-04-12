@@ -343,13 +343,14 @@ impl Parser<'_> {
             return false;
         }
 
-        // Only treat as field access if an identifier (or keyword used as identifier) follows
-        // the period on the same line. A period followed by an identifier on the next line is
-        // a statement terminator, not a field access separator.
+        // Only treat as field access if an identifier (or keyword used as identifier) immediately
+        // follows the period with no whitespace. A period followed by whitespace (space, newline)
+        // before an identifier is a statement terminator, not a field access separator.
+        // This prevents "p. var" (space after period) from being mis-parsed as "p.var".
         let period_end = self.tokens[self.current].end;
-        self.tokens.get(self.current + 1).is_some_and(|t| {
-            Self::can_be_identifier(t.kind) && !self.source[period_end..t.start].contains('\n')
-        })
+        self.tokens
+            .get(self.current + 1)
+            .is_some_and(|t| Self::can_be_identifier(t.kind) && t.start == period_end)
     }
 
     /// Check if an expression is string-like for implicit concatenation purposes.
