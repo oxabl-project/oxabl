@@ -513,6 +513,14 @@ impl<'a> Parser<'a> {
                     | Kind::Ambiguous
                     // SEEK is an ABL built-in function (returns current stream position)
                     | Kind::Seek
+                    // OVERLAY is an ABL built-in that can appear as lvalue in ASSIGN (e.g. OVERLAY(s,1,3) = "abc")
+                    | Kind::Overlay
+                    // TITLE is a widget attribute name (e.g. p-widgets:title)
+                    | Kind::Title
+                    // ACTIVE-WINDOW is a system handle used as widget name in ON triggers (e.g. ON HELP OF ACTIVE-WINDOW)
+                    | Kind::ActiveWindow
+                    // FOCUS is a system handle for the currently focused widget (used in expression context)
+                    | Kind::Focus
             )
     }
 
@@ -671,7 +679,10 @@ impl<'a> Parser<'a> {
         let start = token.start;
         let mut end = token.end;
 
-        // Extend with directly-adjacent Preprop or identifier parts
+        // Extend with directly-adjacent Preprop or identifier parts.
+        // Also handle adjacent Minus tokens so that compound names like
+        // `b-{&preproc}-suffix` (where the lexer splits on `{`) are
+        // consumed as a single identifier.
         loop {
             let next = &self.tokens[self.current];
             if next.start != end {
@@ -682,6 +693,24 @@ impl<'a> Parser<'a> {
                 || Self::can_be_identifier(next.kind)
             {
                 end = self.advance().end;
+            } else if next.kind == Kind::Minus {
+                // Adjacent hyphen: part of a compound name like b-{&preproc}-suffix.
+                // Only consume the '-' if a word-like token follows directly, so that
+                // arithmetic like `{&x} - value` (spaced) is unaffected.
+                // Use is_word_kind() for the suffix so keyword-named parts (e.g.
+                // `-control`, `-table`) are accepted as name components.
+                let minus_end = next.end;
+                let after_idx = self.current + 1;
+                let after_ok = self
+                    .tokens
+                    .get(after_idx)
+                    .is_some_and(|a| a.start == minus_end && Self::is_word_kind(a.kind));
+                if after_ok {
+                    self.advance(); // consume '-'
+                    end = self.advance().end; // consume word
+                } else {
+                    break;
+                }
             } else {
                 break;
             }

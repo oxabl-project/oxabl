@@ -2608,9 +2608,8 @@ impl Parser<'_> {
         // parse optional USE-INDEX clause
         while self.check(Kind::UseIndex) {
             self.advance(); // consume USE-INDEX
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance(); // consume index name
-            }
+            // Use parse_identifier() so compound names like {&preproc}-key-name are handled
+            self.parse_identifier().ok();
         }
 
         // lock type may also appear after USE-INDEX
@@ -3168,6 +3167,12 @@ impl Parser<'_> {
                 continue;
             }
 
+            // NO-ATTR-SPACE — display-level option that may appear anywhere in the item list
+            if self.check(Kind::NoAttrSpace) {
+                self.advance();
+                continue;
+            }
+
             // WHEN condition item — condition preceding the display item (pre-WHEN form)
             // Also handles WHEN cond WITH/FRAME/. where there is no following display item.
             if self.check(Kind::When) {
@@ -3227,7 +3232,7 @@ impl Parser<'_> {
                     {
                         self.advance();
                     }
-                } else if self.check(Kind::NoLabels) {
+                } else if self.check(Kind::NoLabels) || self.check(Kind::NoAttrSpace) {
                     self.advance();
                 } else if self.check(Kind::Skip) || self.check(Kind::Space) {
                     // SKIP [n] or SPACE [n]
