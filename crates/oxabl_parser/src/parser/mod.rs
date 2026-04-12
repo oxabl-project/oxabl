@@ -349,6 +349,7 @@ impl<'a> Parser<'a> {
                     | Kind::Locked
                     | Kind::NoLock
                     | Kind::Parameter
+                    | Kind::Table
                     // Statement keywords that may also appear as identifiers/names
                     | Kind::Empty
                     | Kind::Form
