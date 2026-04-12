@@ -3275,10 +3275,15 @@ impl Parser<'_> {
         if self.check(Kind::Frame) {
             self.advance();
             frame = Some(self.parse_identifier()?);
-            // Skip remaining frame options until period
-            while !self.check(Kind::Period) && !self.at_end() {
-                self.advance();
-            }
+            // Use skip_to_statement_end() to avoid stopping at field-access dots
+            // inside expressions (e.g. title "..." + table.field + "...").
+            self.skip_to_statement_end();
+            return Ok(Statement::Display {
+                stream_name,
+                items,
+                except,
+                frame,
+            });
         }
 
         // Parse optional WITH FRAME clause
@@ -3287,17 +3292,16 @@ impl Parser<'_> {
             if self.check(Kind::Frame) {
                 self.advance();
                 frame = Some(self.parse_identifier()?);
-
-                // Skip remaining frame options until period
-                while !self.check(Kind::Period) && !self.at_end() {
-                    self.advance();
-                }
-            } else {
-                // WITH without FRAME — skip to period
-                while !self.check(Kind::Period) && !self.at_end() {
-                    self.advance();
-                }
             }
+            // Skip all WITH options to statement end (handles field-access dots in
+            // expressions like `title "prefix" + table.field + "suffix"`).
+            self.skip_to_statement_end();
+            return Ok(Statement::Display {
+                stream_name,
+                items,
+                except,
+                frame,
+            });
         }
 
         self.expect_kind(Kind::Period, "Expected '.' after DISPLAY statement")?;
@@ -5022,7 +5026,8 @@ impl Parser<'_> {
     fn parse_define_stream(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume STREAM
         let name = self.parse_identifier()?;
-        self.expect_kind(Kind::Period, "Expected '.' after DEFINE STREAM")?;
+        // Skip any options or include files before the terminating period
+        self.skip_to_statement_end();
         Ok(Statement::DefineStream { name })
     }
 
