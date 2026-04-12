@@ -57,18 +57,30 @@ pub struct Parser<'a> {
     tokens: &'a [Token],
     source: &'a str,
     current: usize,
+    /// True iff the remaining token stream (after the initial skip) contains at
+    /// least one Comment token.  When false, `advance()` skips the
+    /// `skip_comments()` call entirely, eliminating the per-advance overhead in
+    /// files that only have leading comments (e.g. the expression benchmark).
+    has_comments: bool,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], source: &'a str) -> Self {
         debug_assert!(!tokens.is_empty(), "Token slice must contain at least EOF");
-        let mut parser = Parser {
+        let mut current = 0;
+        // Fast-path: skip any leading comments without going through advance().
+        while current < tokens.len() && tokens[current].kind == Kind::Comment {
+            current += 1;
+        }
+        // Check whether any comments remain after the leading block so we know
+        // whether advance() needs to call skip_comments() at all.
+        let has_comments = tokens[current..].iter().any(|t| t.kind == Kind::Comment);
+        Parser {
             tokens,
             source,
-            current: 0,
-        };
-        parser.skip_comments();
-        parser
+            current,
+            has_comments,
+        }
     }
 
     /// Parse the entire token stream into a [`Program`] with error recovery.
@@ -147,16 +159,18 @@ impl<'a> Parser<'a> {
     pub fn advance(&mut self) -> &Token {
         let token = &self.tokens[self.current];
         self.current += 1;
-        self.skip_comments();
+        if self.has_comments {
+            self.skip_comments();
+        }
         token
     }
 
     fn skip_comments(&mut self) {
-        while self
-            .tokens
-            .get(self.current)
-            .is_some_and(|t| t.kind == Kind::Comment)
-        {
+        // Direct bounds check + indexing is faster than `.get().is_some_and()`.
+        // The EOF sentinel at the end of the stream is never Comment, so we
+        // always stop before going out of bounds.
+        let len = self.tokens.len();
+        while self.current < len && self.tokens[self.current].kind == Kind::Comment {
             self.current += 1;
         }
     }

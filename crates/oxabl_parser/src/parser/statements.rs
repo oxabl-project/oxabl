@@ -83,8 +83,11 @@ impl Parser<'_> {
         // Block label: `LABEL: DO: ...` or `LABEL: REPEAT: ...`
         // An identifier (or identifier-like keyword) followed by a colon where
         // the token after the colon is a block-starting keyword.
-        if Self::can_be_identifier(self.peek().kind)
-            && self.check_at(1, Kind::Colon)
+        // Check the colon first: it fails for the vast majority of statements
+        // (e.g. `ASSIGN x = ...` where position +1 is the variable name, not
+        // a colon), avoiding the more expensive `can_be_identifier` call.
+        if self.check_at(1, Kind::Colon)
+            && Self::can_be_identifier(self.peek().kind)
             && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor)
         {
             let token = self.advance().clone(); // consume label name
