@@ -525,9 +525,9 @@ impl Parser<'_> {
     fn parse_define_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DEFINE
 
-        // Skip optional preprocessor references that may appear as modifiers
-        // e.g., `DEF {&ns} VAR` where {&ns} expands to NEW SHARED or similar
-        while self.check(Kind::Preprop) {
+        // Skip optional preprocessor/include-arg references that may appear as modifiers
+        // e.g., `DEF {&ns} VAR` or `DEF {1} SHARED TEMP-TABLE`
+        while self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
             self.advance();
         }
 
