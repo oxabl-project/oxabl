@@ -204,8 +204,8 @@ impl Parser<'_> {
             } else if self.check(Kind::LeftBracket) {
                 expr = self.parse_array_access(expr)?;
             } else if self.check(Kind::Period)
-                && self.is_field_access_ahead()
                 && Self::can_have_field_access(&expr)
+                && self.is_field_access_ahead()
             {
                 expr = self.parse_field_access(expr)?;
             } else {
