@@ -369,6 +369,10 @@ impl<'a> Parser<'a> {
                     | Kind::Form
                     | Kind::Put
                     | Kind::CopyLob
+                    // Preprocessor references used as identifiers (e.g. {&table-name}, {&buffer})
+                    | Kind::Preprop
+                    | Kind::IncludeReference
+                    | Kind::IncludeArgReference
             )
     }
 
