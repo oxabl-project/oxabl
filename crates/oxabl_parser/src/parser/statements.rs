@@ -2244,6 +2244,8 @@ impl Parser<'_> {
                     }
 
                     let expression = self.parse_expression()?;
+                    let last_was_include =
+                        matches!(expression, Expression::IncludeReference { .. });
                     args.push(RunArgument {
                         direction,
                         expression,
@@ -2251,13 +2253,14 @@ impl Parser<'_> {
 
                     if self.check(Kind::Comma) {
                         self.advance(); // consume comma
+                    } else if last_was_include && !self.check(Kind::RightParen) {
+                        // An include reference (e.g. {ms/global-out.i &COMMA}) expands to an
+                        // argument plus a trailing comma — allow any next token to follow.
                     } else if matches!(
                         self.peek().kind,
                         Kind::Input | Kind::Output | Kind::InputOutput | Kind::IncludeReference
                     ) {
-                        // An include reference (e.g. {ms/global-out.i &COMMA}) may expand
-                        // to an argument with a trailing comma — allow implicit comma here.
-                        // Similarly, a bare direction keyword may follow without a comma.
+                        // A bare direction keyword or include ref may follow without a comma.
                     } else {
                         break;
                     }
@@ -2342,14 +2345,25 @@ impl Parser<'_> {
                         self.advance();
                     }
                     let expression = self.parse_expression()?;
+                    let last_was_include =
+                        matches!(expression, Expression::IncludeReference { .. });
                     args.push(RunArgument {
                         direction,
                         expression,
                     });
-                    if !self.check(Kind::Comma) {
+                    if self.check(Kind::Comma) {
+                        self.advance();
+                    } else if last_was_include && !self.check(Kind::RightParen) {
+                        // Include ref (e.g. {ms/global-out.i &COMMA}) expands to include a
+                        // trailing comma — continue without consuming a literal comma.
+                    } else if matches!(
+                        self.peek().kind,
+                        Kind::Input | Kind::Output | Kind::InputOutput | Kind::IncludeReference
+                    ) {
+                        // Bare direction keyword or include ref follows without a comma.
+                    } else {
                         break;
                     }
-                    self.advance();
                 }
             }
             self.expect_kind(Kind::RightParen, "Expected ')' after RUN arguments")?;
