@@ -142,13 +142,19 @@ impl Parser<'_> {
         if self.check(Kind::Undo) {
             self.advance(); // consume UNDO
             // consume optional block label
-            if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Comma) && !self.check(Kind::Period) {
+            if Self::can_be_identifier(self.peek().kind)
+                && !self.check(Kind::Comma)
+                && !self.check(Kind::Period)
+            {
                 self.advance();
             }
             // consume optional action
             if self.check(Kind::Comma) {
                 self.advance();
-                if matches!(self.peek().kind, Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn) {
+                if matches!(
+                    self.peek().kind,
+                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn
+                ) {
                     self.advance();
                     // consume optional label
                     if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Period) {
@@ -1879,6 +1885,9 @@ impl Parser<'_> {
             }
         }
 
+        // Re-check lock type after USE-INDEX (ABL allows lock after use-index)
+        self.parse_lock_type();
+
         // Optional NO-WAIT on first table
         if self.check(Kind::NoWait) {
             self.advance();
@@ -2432,7 +2441,10 @@ impl Parser<'_> {
 
             // Skip per-item display options
             loop {
-                if self.check(Kind::Format) || self.check(Kind::ColumnLabel) || self.check(Kind::Label) {
+                if self.check(Kind::Format)
+                    || self.check(Kind::ColumnLabel)
+                    || self.check(Kind::Label)
+                {
                     self.advance();
                     self.skip_format_value();
                 } else if self.check(Kind::At) {
@@ -2600,6 +2612,11 @@ impl Parser<'_> {
             self.expect_kind(Kind::Equals, "Expected '=' in ASSIGN")?;
             // Use full expression parser for value to allow IF/THEN/ELSE ternary and other exprs
             let value = self.parse_expression()?;
+            // Optional WHEN condition: field = expr WHEN condition
+            if self.check(Kind::When) {
+                self.advance(); // consume WHEN
+                self.parse_expression().ok(); // consume condition
+            }
             assignments.push(AssignPair { target, value });
         }
         Ok(assignments)
@@ -3503,26 +3520,22 @@ impl Parser<'_> {
         Ok(Statement::Validate { buffer, no_error })
     }
 
-    // BUFFER-COPY source TO target [ASSIGN field = expr ...] [NO-ERROR].
+    // BUFFER-COPY source [EXCEPT field...] TO target [ASSIGN field = expr ...] [NO-ERROR].
     fn parse_buffer_copy(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER-COPY
         let source = self.parse_identifier()?;
-        self.expect_kind(Kind::To, "Expected TO after source buffer in BUFFER-COPY")?;
-        let target = self.parse_identifier()?;
 
         // Optional EXCEPT clause (skip list of fields not to copy)
+        // Appears BEFORE the TO keyword: BUFFER-COPY src EXCEPT f1 f2 TO target
         if self.check(Kind::Except) {
             self.advance(); // consume EXCEPT
-            while Self::can_be_identifier(self.peek().kind)
-                || self.check(Kind::Period)
-                    && Self::can_be_identifier(self.peek_at(1).kind)
-            {
-                if self.check(Kind::Period) {
-                    break; // period is the statement terminator
-                }
+            while Self::can_be_identifier(self.peek().kind) {
                 self.advance(); // consume field name
             }
         }
+
+        self.expect_kind(Kind::To, "Expected TO after source buffer in BUFFER-COPY")?;
+        let target = self.parse_identifier()?;
 
         // Optional ASSIGN clause
         let assignments = if self.check(Kind::Assign) {

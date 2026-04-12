@@ -255,10 +255,7 @@ impl Parser<'_> {
                 }
                 arguments.push(self.parse_expression()?);
                 // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
-                while matches!(
-                    self.peek().kind,
-                    Kind::Bind | Kind::ByValue | Kind::Append
-                ) {
+                while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
                     self.advance();
                 }
 
@@ -280,10 +277,7 @@ impl Parser<'_> {
                     }
                     arguments.push(self.parse_expression()?);
                     // Consume optional passing modifiers
-                    while matches!(
-                        self.peek().kind,
-                        Kind::Bind | Kind::ByValue | Kind::Append
-                    ) {
+                    while matches!(self.peek().kind, Kind::Bind | Kind::ByValue | Kind::Append) {
                         self.advance();
                     }
                 }
@@ -483,14 +477,20 @@ impl Parser<'_> {
             let mut arguments = Vec::new();
             if !self.check(Kind::RightParen) {
                 // Skip optional direction qualifier
-                if matches!(self.peek().kind, Kind::Input | Kind::Output | Kind::InputOutput) {
+                if matches!(
+                    self.peek().kind,
+                    Kind::Input | Kind::Output | Kind::InputOutput
+                ) {
                     self.advance();
                 }
                 arguments.push(self.parse_expression()?);
                 while self.check(Kind::Comma) {
                     self.advance();
                     // Skip optional direction qualifier
-                    if matches!(self.peek().kind, Kind::Input | Kind::Output | Kind::InputOutput) {
+                    if matches!(
+                        self.peek().kind,
+                        Kind::Input | Kind::Output | Kind::InputOutput
+                    ) {
                         self.advance();
                     }
                     arguments.push(self.parse_expression()?);
@@ -571,6 +571,35 @@ impl Parser<'_> {
             });
         }
 
+        // LOCKED [table] / LOCKED(table) — checks if a record is exclusively locked.
+        // ABL allows both parenthesized and bare forms.
+        if self.check(Kind::Locked) {
+            let token = self.advance().clone();
+            let name = Identifier {
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+                name: self.source[token.start..token.end].to_string(),
+            };
+            if self.check(Kind::LeftParen) {
+                return self.parse_function_call(name);
+            }
+            // Bare form: LOCKED table — parse the table name as the sole argument
+            let arg_token = self.advance().clone();
+            let arg_name = Identifier {
+                span: Span {
+                    start: arg_token.start as u32,
+                    end: arg_token.end as u32,
+                },
+                name: self.source[arg_token.start..arg_token.end].to_string(),
+            };
+            return Ok(Expression::FunctionCall {
+                name,
+                arguments: vec![Expression::Identifier(arg_name)],
+            });
+        }
+
         // AVAILABLE [table] / AVAILABLE(table) — built-in record-availability predicate.
         // ABL allows both parenthesized and bare forms, e.g.:
         //   IF AVAILABLE order THEN ...
@@ -603,13 +632,12 @@ impl Parser<'_> {
             });
         }
 
-        // TEMP-TABLE name[:attr] / BUFFER name[:attr] — table/buffer handle expressions.
-        // When TEMP-TABLE or BUFFER appear in expression context followed by an identifier
-        // (the table/buffer name), consume both tokens as a compound identifier.
+        // TEMP-TABLE name[:attr] / BUFFER name[:attr] / FRAME name[:attr] — handle expressions.
+        // When TEMP-TABLE, BUFFER, or FRAME appear in expression context followed by an identifier,
+        // consume both tokens as a compound identifier.
         // Also handles BUFFER {&preproc} for dynamic buffer references.
-        if (self.check(Kind::TempTable) || self.check(Kind::Buffer))
-            && (Self::can_be_identifier(self.peek_at(1).kind)
-                || self.check_at(1, Kind::Preprop))
+        if (self.check(Kind::TempTable) || self.check(Kind::Buffer) || self.check(Kind::Frame))
+            && (Self::can_be_identifier(self.peek_at(1).kind) || self.check_at(1, Kind::Preprop))
         {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
             let start = kw_token.start;
