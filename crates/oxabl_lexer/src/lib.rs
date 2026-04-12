@@ -586,14 +586,27 @@ impl<'a> Lexer<'a> {
 
     /// Reads an include file reference like {file.i} or {file.i arg1 arg2}
     /// Called after '{' has been consumed and we've peeked an alpha, '/', '.', or '"' char.
-    /// Consumes up to and including '}'.
+    /// Consumes up to and including the matching '}', tracking nested braces so that
+    /// argument expressions like `{file.i &arg={&var}}` are consumed as a single token.
     fn read_include_reference(&mut self, _start: usize) -> Kind {
+        let mut depth = 1usize;
         while let Some(c) = self.peek() {
-            if c == '}' {
-                self.advance(); // consume the closing '}'
-                return Kind::IncludeReference;
+            match c {
+                '{' => {
+                    self.advance();
+                    depth += 1;
+                }
+                '}' => {
+                    self.advance();
+                    depth -= 1;
+                    if depth == 0 {
+                        return Kind::IncludeReference;
+                    }
+                }
+                _ => {
+                    self.advance();
+                }
             }
-            self.advance();
         }
         // Unterminated include reference
         Kind::Invalid
