@@ -543,9 +543,22 @@ impl Parser<'_> {
             || self.check(Kind::Up)
             // PROMPT-FOR field list [WITH FRAME name]. — ABL UI data entry prompt.
             || self.check(Kind::PromptFor)
+            // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
+            || self.check(Kind::GetKeyValue)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
+        }
+
+        // LOAD "key" [BASE-KEY "root"]. / UNLOAD "key". / USE "key". — Windows registry access.
+        // These are not dedicated lexer kinds; detect by identifier name.
+        if self.check(Kind::Identifier) {
+            let tok = self.peek().clone();
+            let text = self.source[tok.start..tok.end].to_ascii_lowercase();
+            if matches!(text.as_str(), "load" | "unload" | "use") {
+                self.skip_to_period();
+                return Ok(Statement::Empty);
+            }
         }
 
         // REPOSITION query-name TO ... — query cursor repositioning, skip to statement end.
@@ -2073,10 +2086,7 @@ impl Parser<'_> {
                     self.advance(); // consume FRAME
                     // frame name may be a preprop or identifier
                     if Self::can_be_identifier(self.peek().kind)
-                        || matches!(
-                            self.peek().kind,
-                            Kind::Preprop | Kind::IncludeArgReference
-                        )
+                        || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
                     {
                         self.advance();
                     }
