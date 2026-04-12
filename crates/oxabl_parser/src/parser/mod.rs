@@ -409,6 +409,7 @@ impl<'a> Parser<'a> {
                     | Kind::Put
                     | Kind::CopyLob
                     | Kind::OsDir
+                    | Kind::Update
                     // Preprocessor references used as identifiers (e.g. {&table-name}, {&buffer})
                     | Kind::Preprop
                     | Kind::IncludeReference
@@ -726,6 +727,8 @@ impl<'a> Parser<'a> {
                 let class_name = self.parse_qualified_identifier()?;
                 return Ok(DataType::Class(class_name.name));
             }
+            // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
+            Kind::KwIn => DataType::Integer,
             Kind::PreprocIf => {
                 self.advance(); // consume &IF
                 let preproc = self.parse_preproc_if(1, &Self::parse_data_type)?;
