@@ -535,6 +535,9 @@ impl<'a> Parser<'a> {
                     | Kind::ScreenLines
                     // LOG-MANAGER is a system handle for logging (e.g. LOG-MANAGER:LOGGING-LEVEL)
                     | Kind::LogManager
+                    // XREF / XREF-XML are COMPILE statement options used as member names (e.g. compile.xref)
+                    | Kind::Xref
+                    | Kind::XrefXml
             )
     }
 
