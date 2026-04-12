@@ -934,8 +934,11 @@ impl Parser<'_> {
             return Ok(Expression::Identifier(identifier));
         }
 
-        // ACCUM aggregate-type field  (e.g. ACCUM TOTAL amt-sale)
-        // When not followed by '(', consume the aggregate-type identifier and the field name.
+        // ACCUM has two forms:
+        //   Form 1: ACCUM aggregate-type [BY break-field] field  (e.g. ACCUM TOTAL amt-sale)
+        //   Form 2: ACCUM field (aggregate-type [BY break-field]) (e.g. ACCUM qty (TOTAL BY item))
+        // When not followed by '(', parse the first operand via parse_postfix so that qualified
+        // fields like table.field are consumed whole.  A trailing '(' signals form 2.
         if self.check(Kind::Accum) {
             let token = self.advance();
             let (ts, te) = (token.start, token.end);
@@ -950,34 +953,50 @@ impl Parser<'_> {
                 return self.parse_function_call(name);
             }
             let mut arguments = Vec::new();
-            // aggregate-type (TOTAL, AVERAGE, COUNT, MINIMUM, MAXIMUM, etc.)
-            if Self::can_be_identifier(self.peek().kind) {
-                let agg = self.advance();
-                let (as_, ae) = (agg.start, agg.end);
-                arguments.push(Expression::Identifier(Identifier {
-                    span: Span {
-                        start: as_ as u32,
-                        end: ae as u32,
-                    },
-                    name: self.source[as_..ae].to_string(),
-                }));
-                // optional BY break-field [label] (may be qualified: table.field)
-                if self.check(Kind::By) {
-                    self.advance();
-                    if Self::can_be_identifier(self.peek().kind) {
-                        self.parse_postfix().ok();
+            // Parse the first operand (aggregate-type word OR qualified field reference).
+            // Use parse_postfix so that table.field forms are consumed whole.
+            if Self::can_be_identifier(self.peek().kind)
+                && let Ok(first_expr) = self.parse_postfix()
+            {
+                arguments.push(first_expr);
+            }
+            // Form 2: the first operand was the field; the parenthesised spec follows.
+            // Consume '(' ... ')' and return.
+            if self.check(Kind::LeftParen) {
+                self.advance(); // consume '('
+                let mut depth = 1usize;
+                while depth > 0 && !self.at_end() {
+                    if self.check(Kind::LeftParen) {
+                        depth += 1;
+                    } else if self.check(Kind::RightParen) {
+                        depth -= 1;
                     }
-                    // Optional label (integer or string) identifying the break level
-                    if matches!(self.peek().kind, Kind::IntegerLiteral | Kind::StringLiteral) {
+                    if depth > 0 {
                         self.advance();
                     }
+                }
+                if self.check(Kind::RightParen) {
+                    self.advance(); // consume ')'
+                }
+                return Ok(Expression::FunctionCall { name, arguments });
+            }
+            // Form 1: first operand was the aggregate-type.
+            // optional BY break-field [label] (may be qualified: table.field)
+            if self.check(Kind::By) {
+                self.advance();
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.parse_postfix().ok();
+                }
+                // Optional label (integer or string) identifying the break level
+                if matches!(self.peek().kind, Kind::IntegerLiteral | Kind::StringLiteral) {
+                    self.advance();
                 }
             }
             // field name — may be an identifier, qualified field, indexed access, or
             // parenthesized expression like (expr1 - expr2)
-            let is_field_start =
-                Self::can_be_identifier(self.peek().kind) || self.check(Kind::LeftParen);
-            if is_field_start && let Ok(field_expr) = self.parse_postfix() {
+            if (Self::can_be_identifier(self.peek().kind) || self.check(Kind::LeftParen))
+                && let Ok(field_expr) = self.parse_postfix()
+            {
                 arguments.push(field_expr);
             }
             return Ok(Expression::FunctionCall { name, arguments });
