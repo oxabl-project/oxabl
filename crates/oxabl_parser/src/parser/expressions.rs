@@ -23,6 +23,12 @@ impl Parser<'_> {
         self.advance(); // consume IF
         let condition = self.parse_or()?; // condition can use OR/AND/comparison
 
+        // Inside a &ELSEIF condition, IF...&THEN is not a ternary — &THEN terminates the
+        // &ELSEIF condition block. Return the condition and leave &THEN for the caller.
+        if self.check(Kind::PreprocThen) {
+            return Ok(condition);
+        }
+
         self.expect_kind(Kind::Then, "Expected 'THEN' after IF condition")?;
 
         let then_expr = self.parse_ternary()?; // recursive for nested ternary in then branch
