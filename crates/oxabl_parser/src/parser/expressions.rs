@@ -88,6 +88,14 @@ impl Parser<'_> {
     pub fn parse_comparison(&mut self) -> ParseResult<Expression> {
         let left = self.parse_additive()?;
 
+        // Consume optional "IN FRAME/BROWSE name" widget qualifier that scopes a widget attribute
+        // before the comparison operator (e.g. widget:attr IN FRAME fname EQ value).
+        if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
+            self.advance(); // consume IN
+            self.advance(); // consume FRAME or BROWSE
+            self.advance(); // consume name
+        }
+
         if !self.is_comparison_operator() {
             return Ok(left);
         }
@@ -194,7 +202,24 @@ impl Parser<'_> {
 
         // Literals can't have postfix operations (member access, method calls, etc.)
         // Return early to avoid incorrectly parsing following tokens like ':' in "do i = 1 to 10:"
+        // Exception: string literals may have `:U` or `:T` character-type qualifiers — consume them.
         if matches!(expr, Expression::Literal(_)) {
+            if self.check(Kind::Colon) {
+                let colon_end = self.tokens[self.current].end;
+                if let Some(next) = self.tokens.get(self.current + 1)
+                    && next.start == colon_end
+                    && matches!(next.kind, Kind::Identifier)
+                    && matches!(
+                        self.source[next.start..next.end]
+                            .to_ascii_lowercase()
+                            .as_str(),
+                        "u" | "t"
+                    )
+                {
+                    self.advance(); // consume ':'
+                    self.advance(); // consume 'U' or 'T'
+                }
+            }
             return Ok(expr);
         }
 
@@ -405,6 +430,7 @@ impl Parser<'_> {
             Expression::Identifier(_)
                 | Expression::FieldAccess { .. }
                 | Expression::PreprocReference(_)
+                | Expression::IncludeArgReference { .. }
         )
     }
 
