@@ -507,6 +507,10 @@ impl<'a> Parser<'a> {
                     | Kind::Keys
                     // FRAME-VALUE is an ABL built-in used in expression context (e.g. frame-value = "")
                     | Kind::FrameValue
+                    // DBNAME is an ABL built-in function (returns the connected database name)
+                    | Kind::Dbname
+                    // AMBIGUOUS is a buffer attribute (e.g. hdbSource:Ambiguous)
+                    | Kind::Ambiguous
             )
     }
 
@@ -802,6 +806,56 @@ impl<'a> Parser<'a> {
                         param_type: ParameterType::Buffer {
                             name: name.clone(),
                             target: name,
+                        },
+                    });
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
+                // DATASET <name> [APPEND] [BIND] [BY-VALUE] — dataset parameter (no AS/LIKE)
+                if self.check(Kind::Dataset) {
+                    self.advance(); // consume DATASET
+                    let name = self.parse_identifier()?;
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
+                    ) {
+                        self.advance();
+                    }
+                    params.push(Statement::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Handle {
+                            kind: HandleParamKind::Dataset,
+                            name,
+                            passing: HandlePassingOptions::default(),
+                        },
+                    });
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
+                // DATASET-HANDLE <name> [APPEND] [BIND] [BY-VALUE] — dataset handle parameter (no AS/LIKE)
+                if self.check(Kind::DatasetHandle) {
+                    self.advance(); // consume DATASET-HANDLE
+                    let name = self.parse_identifier()?;
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
+                    ) {
+                        self.advance();
+                    }
+                    params.push(Statement::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Handle {
+                            kind: HandleParamKind::DatasetHandle,
+                            name,
+                            passing: HandlePassingOptions::default(),
                         },
                     });
                     if !self.check(Kind::Comma) {
