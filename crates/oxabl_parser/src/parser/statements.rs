@@ -2067,6 +2067,21 @@ impl Parser<'_> {
                     by = Some(self.parse_expression()?);
                 }
 
+                // Optional IN FRAME <name> after counting loop: DO i = 1 TO n IN FRAME f:
+                if self.check(Kind::KwIn) && self.check_at(1, Kind::Frame) {
+                    self.advance(); // consume IN
+                    self.advance(); // consume FRAME
+                    // frame name may be a preprop or identifier
+                    if Self::can_be_identifier(self.peek().kind)
+                        || matches!(
+                            self.peek().kind,
+                            Kind::Preprop | Kind::IncludeArgReference
+                        )
+                    {
+                        self.advance();
+                    }
+                }
+
                 // Optional TRANSACTION after counting loop: DO i = 1 TO 2 TRANSACTION:
                 if self.check(Kind::Transaction) {
                     self.advance();
@@ -4580,15 +4595,19 @@ impl Parser<'_> {
             let mut handle = self.parse_identifier()?;
             // Handle member-access references: CREATE DATASET THIS-OBJECT:myDataset
             // — consume ':member' suffix and extend the handle name.
-            while self.check(Kind::Colon) && Self::can_be_identifier(self.peek_at(1).kind) {
-                let colon_end = self.tokens[self.current].end;
+            // Also consume '.field' suffix: CREATE BUFFER t-buf.bh FOR TABLE(...).
+            while (self.check(Kind::Colon) || self.check(Kind::Period))
+                && Self::can_be_identifier(self.peek_at(1).kind)
+            {
+                let sep_end = self.tokens[self.current].end;
                 let next_start = self.tokens[self.current + 1].start;
-                if self.source[colon_end..next_start].contains('\n') {
+                if self.source[sep_end..next_start].contains('\n') {
                     break;
                 }
-                self.advance(); // consume ':'
+                let sep = if self.check(Kind::Colon) { ':' } else { '.' };
+                self.advance(); // consume ':' or '.'
                 let seg = self.advance().clone();
-                handle.name.push(':');
+                handle.name.push(sep);
                 handle.name.push_str(&self.source[seg.start..seg.end]);
                 handle.span.end = seg.end as u32;
             }
