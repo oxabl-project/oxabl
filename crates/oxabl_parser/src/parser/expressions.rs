@@ -103,6 +103,14 @@ impl Parser<'_> {
         let op_kind = self.advance().kind;
         let right = self.parse_additive()?;
 
+        // Consume optional "IN FRAME/BROWSE name" widget qualifier after the right operand
+        // (e.g. field-a eq field-b:screen-value IN BROWSE bname).
+        if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
+            self.advance(); // consume IN
+            self.advance(); // consume FRAME or BROWSE
+            self.advance(); // consume name
+        }
+
         let expr = match op_kind {
             Kind::Equals | Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
             Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),

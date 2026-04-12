@@ -5089,6 +5089,12 @@ impl Parser<'_> {
                 });
             }
             self.advance(); // consume TO
+            // Unix/absolute paths start with '/' (e.g. /usr/tmp/log.txt) — not parseable
+            // as an expression. Consume greedily until period and return an empty IO statement.
+            if self.check(Kind::Slash) {
+                self.skip_to_statement_end();
+                return Ok(Statement::Empty);
+            }
             let target = self.parse_expression()?;
             let append = if self.check(Kind::Append) {
                 self.advance();
