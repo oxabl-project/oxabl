@@ -437,6 +437,8 @@ impl<'a> Parser<'a> {
                     // Handle attribute/method names (used after ':' in postfix access)
                     | Kind::Available
                     | Kind::QueryOffEnd
+                    // Iterator method names (e.g. iter:Next(), list:ListIterator())
+                    | Kind::Next
                     // Lock/query option keywords passed as method arguments (e.g. GET-FIRST(NO-LOCK,NO-WAIT))
                     | Kind::NoWait
                     | Kind::ShareLock
@@ -464,6 +466,10 @@ impl<'a> Parser<'a> {
                     // System handle keywords (property access via ':')
                     | Kind::SecurityPolicy
                     | Kind::Propath
+                    // Memory manipulation functions (usable in assignment LHS)
+                    | Kind::PutByte
+                    // Handle attribute names (e.g. builder:Library)
+                    | Kind::Library
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
                     | Kind::PageTop
                     | Kind::Blank
