@@ -729,6 +729,12 @@ impl<'a> Parser<'a> {
             }
             // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
             Kind::KwIn => DataType::Integer,
+            // Progress.* is a namespace prefix for built-in ABL classes
+            // (e.g. "Progress.Json.ObjectModel.JsonObject")
+            Kind::Progress => {
+                let class_name = self.parse_qualified_identifier()?;
+                return Ok(DataType::Class(class_name.name));
+            }
             Kind::PreprocIf => {
                 self.advance(); // consume &IF
                 let preproc = self.parse_preproc_if(1, &Self::parse_data_type)?;
