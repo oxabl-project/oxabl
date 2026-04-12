@@ -1,4 +1,5 @@
 use crate::{Expression, Identifier, Span};
+use smallvec::SmallVec;
 
 /// Preprocessor conditional block, generic over the content type.
 ///
@@ -251,8 +252,9 @@ pub enum Statement {
     ///
     /// `ASSIGN x = 1 y = 2 z = "hello".`
     Assign {
-        /// One or more target = value pairs.
-        assignments: Vec<AssignPair>,
+        /// One or more target = value pairs. Stored inline for the common case
+        /// (≤4 pairs) to avoid a heap allocation per ASSIGN statement.
+        assignments: SmallVec<[AssignPair; 4]>,
     },
 
     /// FUNCTION definition.
@@ -397,7 +399,7 @@ pub enum Statement {
     BufferCopy {
         source: Identifier,
         target: Identifier,
-        assignments: Vec<AssignPair>,
+        assignments: SmallVec<[AssignPair; 4]>,
         no_error: bool,
     },
 
