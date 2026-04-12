@@ -420,11 +420,13 @@ impl Parser<'_> {
                 .and_then(|s| s.strip_suffix('}'))
                 .unwrap_or(raw)
                 .to_string();
-            // {&prefix}suffix — preprocessor prefix followed by identifier on same line
-            // e.g. {&web}order expands at runtime to a single identifier
+            // {&prefix}suffix — preprocessor prefix directly followed by identifier
+            // e.g. {&web}order expands at runtime to a single identifier.
+            // Requires direct adjacency (no whitespace) to avoid treating operators
+            // like `+` on the same line as identifier suffixes.
             if Self::can_be_identifier(self.peek().kind) {
                 let next_tok = &self.tokens[self.current];
-                if !self.source[token.end..next_tok.start].contains('\n') {
+                if next_tok.start == token.end {
                     let suffix_tok = self.advance().clone();
                     let suffix = &self.source[suffix_tok.start..suffix_tok.end];
                     let compound = format!("{{{}&}}{}", name, suffix);
