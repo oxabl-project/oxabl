@@ -511,6 +511,8 @@ impl<'a> Parser<'a> {
                     | Kind::Dbname
                     // AMBIGUOUS is a buffer attribute (e.g. hdbSource:Ambiguous)
                     | Kind::Ambiguous
+                    // SEEK is an ABL built-in function (returns current stream position)
+                    | Kind::Seek
             )
     }
 
