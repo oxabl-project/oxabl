@@ -385,6 +385,7 @@ impl Parser<'_> {
             || self.check(Kind::StringLiteral)
             || self.check(Kind::KwTrue)
             || self.check(Kind::KwFalse)
+            || self.check(Kind::Yes)
             || self.check(Kind::Question)
         {
             let token = self.advance();
@@ -562,6 +563,27 @@ impl Parser<'_> {
                 name,
                 arguments: vec![Expression::Identifier(arg_name)],
             });
+        }
+
+        // TEMP-TABLE name[:attr] / BUFFER name[:attr] — table/buffer handle expressions.
+        // When TEMP-TABLE or BUFFER appear in expression context followed by an identifier
+        // (the table/buffer name), consume both tokens as a compound identifier.
+        if (self.check(Kind::TempTable) || self.check(Kind::Buffer))
+            && Self::can_be_identifier(self.peek_at(1).kind)
+        {
+            let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
+            let start = kw_token.start;
+            let name_token = self.advance(); // consume the table/buffer name
+            let end = name_token.end;
+            let compound_name = self.source[start..end].to_string();
+            let identifier = Identifier {
+                span: Span {
+                    start: start as u32,
+                    end: end as u32,
+                },
+                name: compound_name,
+            };
+            return Ok(Expression::Identifier(identifier));
         }
 
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)

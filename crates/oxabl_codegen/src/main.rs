@@ -626,6 +626,15 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
         }
     }
 
+    // Special non-keyword tokens used by the lexer for structural constructs
+    output
+        .push_str("    // Include file references (added by codegen, not from keyword sources)\n");
+    output.push_str(
+        "    /// Include file reference: {file.i}, {file.i args}, {file.i &name=value}\n",
+    );
+    output.push_str("    IncludeReference,\n");
+    output.push_str("    /// Include positional argument reference: {0}, {1}, {2}, etc.\n");
+    output.push_str("    IncludeArgReference,\n");
     output.push_str("}\n");
     output
 }

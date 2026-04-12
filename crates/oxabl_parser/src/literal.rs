@@ -52,6 +52,14 @@ pub fn token_to_literal(token: &Token) -> Option<Literal> {
                 value: *v,
             }))
         }
+        // YES is an alias for TRUE in ABL
+        (Kind::Yes, _) => Some(Literal::Boolean(BooleanLiteral {
+            span: Span {
+                start: token.start as u32,
+                end: token.end as u32,
+            },
+            value: true,
+        })),
         _ => None,
     }
 }
