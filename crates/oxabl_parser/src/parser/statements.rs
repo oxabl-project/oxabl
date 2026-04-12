@@ -911,6 +911,9 @@ impl Parser<'_> {
                         self.advance();
                     }
                 }
+                Kind::CaseSensitive => {
+                    self.advance();
+                }
                 Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
                     self.advance();
                     self.skip_format_value();
