@@ -426,6 +426,7 @@ impl Parser<'_> {
             || self.check(Kind::Apply)
             || self.check(Kind::Update)
             || self.check(Kind::Status)
+            || self.check(Kind::Get)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
@@ -2870,7 +2871,8 @@ impl Parser<'_> {
                     // VIEW-AS widget-type [SIZE[CHARS] n BY m] — consume widget descriptor
                     self.advance(); // consume VIEW-AS
                     // Consume widget type (text, editor, fill-in, etc.)
-                    if Self::can_be_identifier(self.peek().kind) {
+                    // TEXT is a keyword but valid as widget type here.
+                    if Self::can_be_identifier(self.peek().kind) || self.check(Kind::Text) {
                         self.advance();
                     }
                     // Consume optional SIZE [SIZE-CHARS / CHARS] n BY m
@@ -3961,6 +3963,16 @@ impl Parser<'_> {
                 handle,
                 widget_pool,
             }
+        } else if self.check(Kind::WidgetPool) {
+            // CREATE WIDGET-POOL "pool-name". — named pool creation
+            self.advance(); // consume WIDGET-POOL
+            if self.check(Kind::StringLiteral) {
+                self.advance(); // consume pool name string
+            }
+            CreateTarget::Name(Identifier {
+                span: Span { start: 0, end: 0 },
+                name: String::new(),
+            })
         } else {
             let name = self.parse_identifier()?;
             // If a second identifier follows (e.g. CREATE SERVER hService or CREATE X-document hXML),
