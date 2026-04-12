@@ -1897,14 +1897,16 @@ impl Parser<'_> {
             }
         }
 
-        // DO STOP-AFTER n: — consume STOP-AFTER and its integer argument
+        // DO STOP-AFTER expr: — consume STOP-AFTER and its duration argument
+        // STOP-AFTER is an identifier token (not a reserved keyword)
         if self.check(Kind::Identifier) {
             let tok = self.peek().clone();
             let text = &self.source[tok.start..tok.end];
             if text.eq_ignore_ascii_case("stop-after") {
                 self.advance(); // consume STOP-AFTER
-                if self.check(Kind::IntegerLiteral) {
-                    self.advance();
+                // Consume the duration expression (may be integer literal or identifier)
+                if !self.check(Kind::Colon) && !self.at_end() {
+                    self.parse_expression().ok();
                 }
             }
         }
@@ -3342,6 +3344,17 @@ impl Parser<'_> {
         if is_forward {
             self.advance(); // consume FORWARD
             self.expect_kind(Kind::Period, "Expected '.' after FUNCTION FORWARD")?;
+            return Ok(Statement::Function {
+                name,
+                return_type,
+                body: Vec::new(),
+            });
+        }
+
+        // IN super|this-procedure|handle — external function reference (forward declaration)
+        // e.g. "function name returns type (params) in super."
+        if self.check(Kind::KwIn) {
+            self.skip_to_statement_end();
             return Ok(Statement::Function {
                 name,
                 return_type,
