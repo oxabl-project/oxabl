@@ -485,7 +485,8 @@ impl Parser<'_> {
             let compound_start = first.start;
             let mut compound_end = first.end;
 
-            // Extend with directly-adjacent parts (identifiers or more preprops)
+            // Extend with directly-adjacent parts (identifiers, preprops, or
+            // hyphen-separated word suffixes like `{&preproc}-control`).
             loop {
                 let next = &self.tokens[self.current];
                 if next.start != compound_end {
@@ -493,6 +494,20 @@ impl Parser<'_> {
                 }
                 if Self::can_be_identifier(next.kind) || next.kind == Kind::Preprop {
                     compound_end = self.advance().end;
+                } else if next.kind == Kind::Minus {
+                    // Adjacent hyphen: consume only if a word-like token follows directly.
+                    let minus_end = next.end;
+                    let after_idx = self.current + 1;
+                    let after_ok = self
+                        .tokens
+                        .get(after_idx)
+                        .is_some_and(|a| a.start == minus_end && Self::is_word_kind(a.kind));
+                    if after_ok {
+                        self.advance(); // consume '-'
+                        compound_end = self.advance().end; // consume word
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
@@ -974,7 +989,8 @@ impl Parser<'_> {
             let start = token.start;
             let mut end = token.end;
 
-            // identifier{&suffix} compound: e.g. b-{&line-buffer} (direct adjacency only)
+            // identifier{&suffix} compound: e.g. b-{&line-buffer} (direct adjacency only).
+            // Also handles adjacent hyphen-word: e.g. b-{&preproc}-suffix.
             loop {
                 let next = &self.tokens[self.current];
                 if next.start != end {
@@ -982,6 +998,19 @@ impl Parser<'_> {
                 }
                 if next.kind == Kind::Preprop || Self::can_be_identifier(next.kind) {
                     end = self.advance().end;
+                } else if next.kind == Kind::Minus {
+                    let minus_end = next.end;
+                    let after_idx = self.current + 1;
+                    let after_ok = self
+                        .tokens
+                        .get(after_idx)
+                        .is_some_and(|a| a.start == minus_end && Self::is_word_kind(a.kind));
+                    if after_ok {
+                        self.advance(); // consume '-'
+                        end = self.advance().end; // consume word
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
