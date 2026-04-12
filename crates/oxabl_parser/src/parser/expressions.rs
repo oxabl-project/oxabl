@@ -1002,6 +1002,17 @@ impl Parser<'_> {
             return Ok(Expression::FunctionCall { name, arguments });
         }
 
+        // INPUT / OUTPUT as transparent parameter-direction qualifier in expression context.
+        // e.g. WHERE field EQ INPUT param-name — consume INPUT/OUTPUT/INPUT-OUTPUT and
+        // then parse the actual operand.
+        if matches!(
+            self.peek().kind,
+            Kind::Input | Kind::Output | Kind::InputOutput
+        ) {
+            self.advance(); // consume the direction qualifier
+            return self.parse_primary();
+        }
+
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
         if Self::can_be_identifier(self.peek().kind) {
             let token = self.advance();

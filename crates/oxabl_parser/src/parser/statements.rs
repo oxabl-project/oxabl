@@ -314,6 +314,20 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // PROCESS EVENTS. — flush the ABL event queue.
+        if self.check(Kind::Process) {
+            self.advance(); // consume PROCESS
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // SYSTEM-DIALOG PRINTER-SETUP [UPDATE var]. — OS print-setup dialog.
+        if self.check(Kind::SystemDialog) {
+            self.advance(); // consume SYSTEM-DIALOG
+            self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
         // BLOCK-LEVEL / ROUTINE-LEVEL ON ERROR UNDO, THROW. — error propagation directives.
         if self.check(Kind::BlockLevel) || self.check(Kind::RoutineLevel) {
             self.skip_to_statement_end();
@@ -384,7 +398,13 @@ impl Parser<'_> {
             let next = self.peek_at(1).kind;
             if matches!(
                 next,
-                Kind::To | Kind::Through | Kind::Thru | Kind::Close | Kind::Stream
+                Kind::To
+                    | Kind::Through
+                    | Kind::Thru
+                    | Kind::Close
+                    | Kind::Stream
+                    // Preprocessor reference used as stream name: OUTPUT {&stream} TO ...
+                    | Kind::Preprop
             ) {
                 return self.parse_stream_io(StreamDirection::Output);
             }
@@ -2800,12 +2820,21 @@ impl Parser<'_> {
             }
         }
 
-        // Skip optional EXTERNAL "dll-name" [PERSISTENT] clause
-        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" PERSISTENT:
+        // Skip optional EXTERNAL "dll-name" [calling-convention] [PERSISTENT] clause
+        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" cdecl:
+        // The DLL name may also be a preprocessor reference: EXTERNAL {&DLL_NAME}
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
-            if self.check(Kind::StringLiteral) {
-                self.advance(); // consume the DLL path string
+            // DLL name: string literal or preprocessor/include reference
+            if self.check(Kind::StringLiteral)
+                || self.check(Kind::Preprop)
+                || self.check(Kind::IncludeReference)
+            {
+                self.advance(); // consume the DLL path
+            }
+            // Optional calling convention identifier (cdecl, pascal, ordinal, etc.)
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance();
             }
             if self.check(Kind::Persistent) {
                 self.advance();
@@ -5102,10 +5131,21 @@ impl Parser<'_> {
     fn parse_stream_io(&mut self, direction: StreamDirection) -> ParseResult<Statement> {
         self.advance(); // consume INPUT / OUTPUT / INPUT-OUTPUT
 
-        // Optional STREAM stream-name
+        // Optional STREAM stream-name (or a preprocessor reference expanding to a stream name)
+        // e.g. OUTPUT STREAM s-log TO ...  or  OUTPUT {&stream} TO ...
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
             Some(self.parse_identifier()?)
+        } else if self.check(Kind::Preprop) || self.check(Kind::IncludeReference) {
+            // {&stream} used directly as stream name — consume and treat like a named stream
+            let tok = self.advance().clone();
+            Some(Identifier {
+                span: Span {
+                    start: tok.start as u32,
+                    end: tok.end as u32,
+                },
+                name: self.source[tok.start..tok.end].to_string(),
+            })
         } else {
             None
         };
@@ -5589,6 +5629,8 @@ impl Parser<'_> {
                     | Kind::GoOn
                     | Kind::ErrorStatus
                     | Kind::ValueChanged
+                    // RETURN is a statement keyword but also a keyboard event name in ON triggers
+                    | Kind::KwReturn
             )
     }
 
@@ -5624,6 +5666,7 @@ impl Parser<'_> {
                 | Kind::GoOn
                 | Kind::ErrorStatus
                 | Kind::ValueChanged
+                | Kind::KwReturn
         ) {
             // Reserved keywords that are also valid event names
             let name = self.source[token.start..token.end].to_string();
