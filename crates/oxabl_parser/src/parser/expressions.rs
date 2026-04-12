@@ -170,6 +170,11 @@ impl Parser<'_> {
             let expr = self.parse_unary()?;
             return Ok(Expression::Negate(Box::new(expr)));
         }
+        if self.check(Kind::Add) {
+            // Unary plus — identity operation (e.g. "- + value" means subtract unary+value)
+            self.advance();
+            return self.parse_unary();
+        }
         if self.check(Kind::Not) {
             self.advance();
             let expr = self.parse_unary()?;
