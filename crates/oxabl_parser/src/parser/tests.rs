@@ -5742,7 +5742,10 @@ fn parse_buffer_copy_with_assign() {
             assert_eq!(source.name, "bSource");
             assert_eq!(target.name, "bTarget");
             assert_eq!(assignments.len(), 1);
-            assert_eq!(assignments[0].0.name, "field1");
+            match &assignments[0].target {
+                Expression::Identifier(ident) => assert_eq!(ident.name, "field1"),
+                _ => panic!("Expected identifier target"),
+            }
             assert!(!no_error);
         }
         _ => panic!("Expected BufferCopy statement"),
@@ -5762,8 +5765,14 @@ fn parse_buffer_copy_with_multiple_assigns() {
             ..
         } => {
             assert_eq!(assignments.len(), 2);
-            assert_eq!(assignments[0].0.name, "field1");
-            assert_eq!(assignments[1].0.name, "field2");
+            match &assignments[0].target {
+                Expression::Identifier(ident) => assert_eq!(ident.name, "field1"),
+                _ => panic!("Expected identifier target"),
+            }
+            match &assignments[1].target {
+                Expression::Identifier(ident) => assert_eq!(ident.name, "field2"),
+                _ => panic!("Expected identifier target"),
+            }
             assert!(!no_error);
         }
         _ => panic!("Expected BufferCopy statement"),
