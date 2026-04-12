@@ -343,6 +343,8 @@ impl<'a> Parser<'a> {
                     | Kind::NumEntries
                     | Kind::Index
                     | Kind::Yes
+                    | Kind::Session
+                    | Kind::ErrorStatus
                     // Statement keywords that may also appear as identifiers/names
                     | Kind::Empty
                     | Kind::Form
@@ -554,6 +556,14 @@ impl<'a> Parser<'a> {
         if self.check(Kind::Like) {
             self.advance(); // consume LIKE
             let source = self.parse_qualified_identifier()?;
+            // Consume optional array subscript: LIKE table.field[n]
+            if self.check(Kind::LeftBracket) {
+                self.advance(); // consume '['
+                self.parse_expression().ok();
+                if self.check(Kind::RightBracket) {
+                    self.advance();
+                }
+            }
             Ok(TypeSource::Like { source })
         } else {
             self.expect_kind(Kind::KwAs, "Expected AS or LIKE")?;
