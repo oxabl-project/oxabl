@@ -2109,6 +2109,10 @@ impl Parser<'_> {
                 self.parse_do_statement()?
             } else if self.check(Kind::KwIf) {
                 self.parse_if_statement()?
+            } else if self.check(Kind::End) {
+                // Empty ELSE branch: END belongs to the enclosing DO/FOR/REPEAT block.
+                // Don't consume it — the outer block parser handles it.
+                Statement::Empty
             } else {
                 self.parse_statement()?
             };
@@ -3990,6 +3994,11 @@ impl Parser<'_> {
         }
 
         // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
+        // Track whether we opened with '.' — in interface declarations, '.' is the
+        // statement terminator (no body) rather than a body opener. We detect this
+        // below by checking if the first meaningful token is END followed by a
+        // non-METHOD keyword (e.g. END INTERFACE, END CLASS).
+        let opened_with_period = self.check(Kind::Period);
         if self.check(Kind::Colon) || self.check(Kind::Period) {
             self.advance();
         } else {
@@ -3999,20 +4008,30 @@ impl Parser<'_> {
             });
         }
 
+        // Interface method signatures end with '.' and have no body. Detect this by
+        // looking for END (not METHOD) immediately after the '.' opener. In that case,
+        // return an empty body so the enclosing INTERFACE parser handles END INTERFACE.
+        if opened_with_period && self.check(Kind::End) && !self.check_at(1, Kind::Method) {
+            return Ok(Statement::Method {
+                access,
+                is_static,
+                is_abstract,
+                is_override,
+                return_type,
+                name,
+                parameters,
+                body: Vec::new(),
+            });
+        }
+
         let mut body = Vec::new();
         while !self.at_end() {
             if self.check(Kind::End) {
-                // Peek ahead: END METHOD closes this method body.
-                // END INTERFACE/CLASS/PROCEDURE etc. belongs to the enclosing block —
-                // break without consuming so the outer parser handles it.
-                // This handles interface method signatures that end with '.' (no body).
-                if self.check_at(1, Kind::Method) {
-                    self.advance(); // consume END
+                self.advance(); // consume END
+                if self.check(Kind::Method) {
                     self.advance(); // consume METHOD
-                    self.expect_kind(Kind::Period, "Expected '.' after END METHOD")?;
-                } else {
-                    // Not END METHOD — leave END for the enclosing parser to consume.
                 }
+                self.expect_kind(Kind::Period, "Expected '.' after END METHOD")?;
                 break;
             }
             // Handle CATCH and FINALLY blocks that may appear at the end of a METHOD body
