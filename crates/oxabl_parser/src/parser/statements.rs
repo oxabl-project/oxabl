@@ -3793,7 +3793,9 @@ impl Parser<'_> {
             .parse_access_modifier()
             .unwrap_or(AccessModifier::Public);
 
-        // Parse optional STATIC, ABSTRACT, OVERRIDE flags (in any order)
+        // Parse optional STATIC, ABSTRACT, OVERRIDE flags and access modifiers (in any order).
+        // ABL allows: METHOD OVERRIDE PROTECTED INTEGER name(...) as well as
+        //             METHOD PUBLIC STATIC VOID name(...)
         let mut is_static = false;
         let mut is_abstract = false;
         let mut is_override = false;
@@ -3807,6 +3809,13 @@ impl Parser<'_> {
             } else if self.check(Kind::Override) {
                 self.advance();
                 is_override = true;
+            } else if matches!(
+                self.peek().kind,
+                Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+            ) {
+                // Re-parse access modifier that appears after qualifier flags
+                // (e.g. "METHOD OVERRIDE PROTECTED")
+                self.advance();
             } else {
                 break;
             }
@@ -3834,8 +3843,8 @@ impl Parser<'_> {
         // Parse parameter list
         let parameters = self.parse_parenthesized_params()?;
 
-        // Abstract methods have no body — just a period
-        if is_abstract {
+        // Abstract methods and forward declarations end with a period (no body)
+        if is_abstract || self.check(Kind::Period) {
             self.expect_kind(Kind::Period, "Expected '.' after abstract method signature")?;
             return Ok(Statement::Method {
                 access,
