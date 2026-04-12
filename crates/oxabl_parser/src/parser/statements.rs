@@ -3294,6 +3294,14 @@ impl Parser<'_> {
         // Parse return type
         let return_type = self.parse_data_type()?;
 
+        // Consume optional EXTENT [n] on the return type (e.g. "CHARACTER EXTENT 5")
+        if self.check(Kind::Extent) {
+            self.advance();
+            if self.check(Kind::IntegerLiteral) {
+                self.advance();
+            }
+        }
+
         // Optional access modifier between return type and parameter list
         // (e.g., `function name char private (input p as char):`)
         if matches!(
@@ -3809,7 +3817,15 @@ impl Parser<'_> {
             self.advance();
             None
         } else {
-            Some(self.parse_data_type()?)
+            let dt = self.parse_data_type()?;
+            // Consume optional EXTENT [n] on the return type (e.g. "CHARACTER EXTENT 5")
+            if self.check(Kind::Extent) {
+                self.advance();
+                if self.check(Kind::IntegerLiteral) {
+                    self.advance();
+                }
+            }
+            Some(dt)
         };
 
         // Parse method name
