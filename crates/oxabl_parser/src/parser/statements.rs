@@ -2120,6 +2120,25 @@ impl Parser<'_> {
             } else {
                 Some(self.parse_expression()?)
             }
+        } else if !self.check(Kind::Colon)
+            && !self.check(Kind::Period)
+            && !self.check(Kind::Comma)
+            && !self.check(Kind::NoLock)
+            && !self.check(Kind::ShareLock)
+            && !self.check(Kind::ExclusiveLock)
+            && !self.check(Kind::UseIndex)
+            && !self.check(Kind::KwBreak)
+            && !self.check(Kind::By)
+            && !self.check(Kind::KwWhile)
+            && !self.check(Kind::NoWait)
+            && !self.check(Kind::Transaction)
+            && !self.check(Kind::KwBreak)
+            && !self.at_end()
+            && Self::can_be_identifier(self.peek().kind)
+        {
+            // Implicit WHERE: table name came from a preprocessor macro that included WHERE.
+            // The expression parser stops naturally at lock types and clause keywords.
+            self.parse_expression().ok()
         } else {
             None
         };
