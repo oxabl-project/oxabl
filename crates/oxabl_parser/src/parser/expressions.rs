@@ -757,16 +757,18 @@ impl Parser<'_> {
             });
         }
 
-        // TEMP-TABLE name[:attr] / BUFFER name[:attr] / FRAME name[:attr] — handle expressions.
-        // When TEMP-TABLE, BUFFER, or FRAME appear in expression context followed by an identifier,
-        // consume both tokens as a compound identifier.
+        // TEMP-TABLE name[:attr] / BUFFER name[:attr] / FRAME name[:attr] / BROWSE name[:attr]
+        // — handle/object reference expressions.
+        // When these keywords appear in expression context followed by an identifier,
+        // consume both tokens as a compound identifier (e.g. BROWSE b-whse-p:first-column).
         // Also handles BUFFER {&preproc} for dynamic buffer references.
         if (self.check(Kind::TempTable)
             || self.check(Kind::Buffer)
             || self.check(Kind::Frame)
             || self.check(Kind::Query)
             || self.check(Kind::Dataset)
-            || self.check(Kind::Stream))
+            || self.check(Kind::Stream)
+            || self.check(Kind::Browse))
             && (Self::can_be_identifier(self.peek_at(1).kind) || self.check_at(1, Kind::Preprop))
         {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
