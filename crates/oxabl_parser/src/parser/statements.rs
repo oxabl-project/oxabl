@@ -690,10 +690,17 @@ impl Parser<'_> {
             return self.parse_define_parameter();
         }
 
-        // Parse optional NEW SHARED / SHARED
-        let is_new_shared = if self.check(Kind::New) && self.check_at(1, Kind::Shared) {
+        // Parse optional NEW [GLOBAL] SHARED / SHARED
+        let is_new_shared = if self.check(Kind::New)
+            && matches!(self.peek_at(1).kind, Kind::Shared | Kind::Global)
+        {
             self.advance(); // consume NEW
-            self.advance(); // consume SHARED
+            if self.check(Kind::Global) {
+                self.advance(); // consume GLOBAL (in NEW GLOBAL SHARED form)
+            }
+            if self.check(Kind::Shared) {
+                self.advance(); // consume SHARED
+            }
             true
         } else {
             false
@@ -1797,9 +1804,13 @@ impl Parser<'_> {
             None
         };
 
-        // Parse comma-separated source buffer phrases
+        // Parse comma-separated source buffer phrases (optional — may be absent when
+        // only a QUERY is specified: DEFINE DATA-SOURCE src FOR QUERY qry.)
         let mut source_buffers = Vec::new();
-        loop {
+        while !self.check(Kind::Period)
+            && !self.at_end()
+            && Self::can_be_identifier(self.peek().kind)
+        {
             let buf_name = self.parse_identifier()?;
 
             // Optional KEYS clause
@@ -2757,6 +2768,14 @@ impl Parser<'_> {
             if self.check(Kind::Persistent) {
                 self.advance();
             }
+        }
+
+        // Skip optional access modifier: PROCEDURE name PRIVATE: (or PUBLIC/PROTECTED)
+        if matches!(
+            self.peek().kind,
+            Kind::Private | Kind::Public | Kind::Protected
+        ) {
+            self.advance();
         }
 
         // Accept both ':' and '.' as the body opener (legacy ABL uses '.')
