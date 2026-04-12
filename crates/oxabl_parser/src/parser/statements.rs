@@ -593,8 +593,12 @@ impl Parser<'_> {
             self.advance();
         }
 
-        // parse INPUT/OUTPUT parameters
-        if self.check(Kind::Input) || self.check(Kind::Output) || self.check(Kind::InputOutput) {
+        // parse INPUT/OUTPUT/RETURN parameters
+        if self.check(Kind::Input)
+            || self.check(Kind::Output)
+            || self.check(Kind::InputOutput)
+            || self.check(Kind::KwReturn)
+        {
             return self.parse_define_parameter();
         }
 
@@ -867,7 +871,7 @@ impl Parser<'_> {
     }
 
     fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
-        // Parse direction (we already know it's INPUT, OUTPUT, or INPUT-OUTPUT)
+        // Parse direction (INPUT, OUTPUT, INPUT-OUTPUT, or RETURN)
         let direction = match self.peek().kind {
             Kind::Input => {
                 self.advance();
@@ -881,7 +885,11 @@ impl Parser<'_> {
                 self.advance();
                 ParameterDirection::InputOutput
             }
-            _ => unreachable!("parse_define_parameter called without INPUT/OUTPUT token"),
+            Kind::KwReturn => {
+                self.advance();
+                ParameterDirection::Return
+            }
+            _ => unreachable!("parse_define_parameter called without INPUT/OUTPUT/RETURN token"),
         };
 
         // Expect PARAMETER keyword
@@ -2174,11 +2182,15 @@ impl Parser<'_> {
         // Lock type may appear before or after WHERE (ABL is flexible)
         let lock_type_pre = self.parse_lock_type();
 
-        // optional WHERE clause — skip if WHERE is immediately followed by ':' (empty predicate)
+        // optional WHERE clause — skip if WHERE is immediately followed by ':' / '.' / sort clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
-            if self.check(Kind::Colon) || self.check(Kind::Period) {
-                None // empty WHERE clause, block-open token follows
+            if self.check(Kind::Colon)
+                || self.check(Kind::Period)
+                || self.check(Kind::KwBreak)
+                || self.check(Kind::By)
+            {
+                None // empty WHERE clause; sort/block-open token follows
             } else {
                 Some(self.parse_expression()?)
             }
@@ -2526,6 +2538,19 @@ impl Parser<'_> {
         self.advance(); // consume PROCEDURE
 
         let name = self.parse_identifier()?;
+
+        // Skip optional EXTERNAL "dll-name" [PERSISTENT] clause
+        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" PERSISTENT:
+        if self.check(Kind::External) {
+            self.advance(); // consume EXTERNAL
+            if self.check(Kind::StringLiteral) {
+                self.advance(); // consume the DLL path string
+            }
+            if self.check(Kind::Persistent) {
+                self.advance();
+            }
+        }
+
         // Accept both ':' and '.' as the body opener (legacy ABL uses '.')
         if self.check(Kind::Colon) || self.check(Kind::Period) {
             self.advance();

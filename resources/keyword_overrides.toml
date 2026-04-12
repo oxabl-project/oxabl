@@ -691,6 +691,15 @@ name = "BROWSE"
 keyword_type = "Option"
 
 # =============================================================================
+# PROCEDURE DEFINITION KEYWORDS
+# =============================================================================
+
+# EXTERNAL is needed for PROCEDURE name EXTERNAL "dll": syntax
+[[add]]
+name = "EXTERNAL"
+keyword_type = "Option"
+
+# =============================================================================
 # MISSING STATEMENT KEYWORDS
 # Keywords present in the HTML index but not in the JSON
 # =============================================================================
