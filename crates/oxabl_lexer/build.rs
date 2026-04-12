@@ -128,6 +128,8 @@ fn main() {
             "column label",
             "columns",
             "com-handle",
+            "comp",
+            "compile",
             "compiler",
             "connect",
             "connected",

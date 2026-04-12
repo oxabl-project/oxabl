@@ -314,6 +314,13 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // COMPILE VALUE(path) [OPTIONS ...] [SAVE] [NO-ERROR]. — compile an ABL program.
+        if self.check(Kind::Compile) {
+            self.advance(); // consume COMPILE
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
+        }
+
         // PROCESS EVENTS. — flush the ABL event queue.
         if self.check(Kind::Process) {
             self.advance(); // consume PROCESS

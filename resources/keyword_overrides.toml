@@ -800,3 +800,13 @@ keyword_type = "Statement"
 # Example:
 # [[remove]]
 # name = "OBSOLETE-KEYWORD"
+
+# =============================================================================
+# COMPILE STATEMENT
+# COMPILE is in the keyword index but not captured in the JSON; add manually.
+# =============================================================================
+
+[[add]]
+name = "COMPILE"
+keyword_type = "Statement"
+min_abbreviation = "COMP"
