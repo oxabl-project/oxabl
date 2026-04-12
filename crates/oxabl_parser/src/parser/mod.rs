@@ -347,6 +347,8 @@ impl<'a> Parser<'a> {
                     | Kind::ErrorStatus
                     | Kind::Value
                     | Kind::Locked
+                    | Kind::NoLock
+                    | Kind::Parameter
                     // Statement keywords that may also appear as identifiers/names
                     | Kind::Empty
                     | Kind::Form
