@@ -1948,15 +1948,32 @@ impl Parser<'_> {
             // peek ahead to see if this is 'var = start to end'
             let saved_pos = self.current;
             let potential_var = self.advance().clone();
+            let var_start = potential_var.start;
+            let mut var_end = potential_var.end;
+
+            // Consume any directly-adjacent preprop/identifier parts (e.g. i-j-{&sale-type})
+            loop {
+                let next = &self.tokens[self.current];
+                if next.start != var_end {
+                    break;
+                }
+                if matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
+                    || Self::can_be_identifier(next.kind)
+                {
+                    var_end = self.advance().end;
+                } else {
+                    break;
+                }
+            }
 
             if self.check(Kind::Equals) {
                 // It's a counting loop
                 let var_name = Identifier {
                     span: Span {
-                        start: potential_var.start as u32,
-                        end: potential_var.end as u32,
+                        start: var_start as u32,
+                        end: var_end as u32,
                     },
-                    name: self.source[potential_var.start..potential_var.end].to_string(),
+                    name: self.source[var_start..var_end].to_string(),
                 };
 
                 loop_var = Some(var_name);
@@ -2597,15 +2614,34 @@ impl Parser<'_> {
 
         while self.check(Kind::When) {
             self.advance();
-            // Use parse_and() instead of parse_expression() to avoid consuming OR
-            // This allows WHEN "a" OR WHEN "b" syntax to work correctly
+            // Parse the WHEN condition expression.
+            // Use parse_expression() to allow logical OR within the condition
+            // (e.g. WHEN expr1 OR expr2 THEN).
+            // When OR is followed immediately by WHEN (WHEN "a" OR WHEN "b"),
+            // treat it as a multi-value pattern instead.
             let mut values = vec![self.parse_and()?];
 
-            // handle WHEN "a" OR WHEN "b" syntax
-            while self.check(Kind::Or) {
-                self.advance();
-                self.expect_kind(Kind::When, "Expected WHEN after OR")?;
+            // handle WHEN "a" OR WHEN "b" syntax:
+            // only treat OR as a WHEN-separator when the next non-comment token after OR is WHEN
+            while self.check(Kind::Or) && self.peek_nth_non_comment(2).kind == Kind::When {
+                self.advance(); // consume OR
+                // skip any inline comments between OR and WHEN
+                while self.check(Kind::Comment) {
+                    self.advance();
+                }
+                self.advance(); // consume WHEN
                 values.push(self.parse_and()?);
+            }
+
+            // If OR remains (logical OR within the WHEN expression), consume the rest
+            // of the condition to avoid leaving it unconsumed before THEN
+            while self.check(Kind::Or) {
+                self.advance(); // consume OR
+                let rhs = self.parse_and()?;
+                // Combine into a logical OR expression using the AST Or variant
+                if let Some(last) = values.last_mut() {
+                    *last = Expression::Or(Box::new(last.clone()), Box::new(rhs));
+                }
             }
 
             self.expect_kind(Kind::Then, "Expected THEN after WHEN value")?;
