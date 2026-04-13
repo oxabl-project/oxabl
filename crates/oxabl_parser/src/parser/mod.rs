@@ -179,35 +179,39 @@ impl<'a> Parser<'a> {
     pub fn skip_to_statement_end_triggers_aware(&mut self) {
         while !self.at_end() {
             // Detect TRIGGERS: — enter trigger-block skip mode.
-            if self.peek().kind == Kind::Identifier {
-                let tok = self.peek();
-                if self.source[tok.start..tok.end].eq_ignore_ascii_case("triggers") {
-                    self.advance(); // consume "TRIGGERS"
-                    if self.check(Kind::Colon) {
-                        self.advance(); // consume ':'
-                    }
-                    // Skip the entire TRIGGERS body until END TRIGGERS.
-                    while !self.at_end() {
-                        if self.check(Kind::End) {
-                            let next_is_triggers =
-                                self.tokens.get(self.current + 1).is_some_and(|t| {
-                                    t.kind == Kind::Identifier
-                                        && self.source[t.start..t.end]
-                                            .eq_ignore_ascii_case("triggers")
-                                });
-                            if next_is_triggers {
-                                self.advance(); // consume END
-                                self.advance(); // consume TRIGGERS
-                                if self.check(Kind::Period) {
-                                    self.advance(); // consume '.'
-                                }
-                                return;
-                            }
-                        }
-                        self.advance();
-                    }
-                    return;
+            // TRIGGERS lexes as Kind::Triggers (dedicated keyword kind, NOT Kind::Identifier).
+            if self.check(Kind::Triggers) {
+                self.advance(); // consume TRIGGERS
+                if self.check(Kind::Colon) {
+                    self.advance(); // consume ':'
                 }
+                // Skip the entire TRIGGERS body until END TRIGGERS.
+                while !self.at_end() {
+                    if self.check(Kind::End) {
+                        // Check for END TRIGGERS. — use raw index arithmetic to look ahead
+                        // without consuming, skipping comment tokens in the way.
+                        let next_is_triggers = {
+                            let mut i = self.current + 1;
+                            loop {
+                                match self.tokens.get(i) {
+                                    Some(t) if t.kind == Kind::Comment => i += 1,
+                                    Some(t) => break t.kind == Kind::Triggers,
+                                    None => break false,
+                                }
+                            }
+                        };
+                        if next_is_triggers {
+                            self.advance(); // consume END
+                            self.advance(); // consume TRIGGERS
+                            if self.check(Kind::Period) {
+                                self.advance(); // consume '.'
+                            }
+                            return;
+                        }
+                    }
+                    self.advance();
+                }
+                return;
             }
             // Normal statement-end detection.
             if self.check(Kind::Period) {
