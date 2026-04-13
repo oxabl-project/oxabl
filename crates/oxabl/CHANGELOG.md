@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.3.2...oxabl-v0.4.0) (2026-04-13)
+
+
+### Features
+
+* **cli:** Add codebase validation CLI with `oxabl check` ([c31438c](https://github.com/oxabl-project/oxabl/commit/c31438c730c2aaaa87d6da1e41ad3a28a2c66a57))
+* **parser:** Support LIKE syntax in DEFINE VARIABLE, DEFINE PARAMETER, and VAR ([edf3b84](https://github.com/oxabl-project/oxabl/commit/edf3b8463dc6b32afb564352546b4312877fdcf8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 0.4.0 to 0.5.0
+    * oxabl_lexer bumped from 0.3.1 to 0.4.0
+    * oxabl_common bumped from 0.3.0 to 0.4.0
+    * oxabl_ast bumped from 0.4.0 to 0.5.0
+
 ## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.3.1...oxabl-v0.3.2) (2026-04-04)
 
 
