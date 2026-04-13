@@ -2265,8 +2265,9 @@ impl Parser<'_> {
             self.advance(); // consume the qualifier
         }
 
-        // Parse buffer name — may be a preprocessor reference {&find-orders} or a
-        // compound name like {&order}-remit (hyphen and suffix are separate tokens).
+        // Parse buffer name — may be a preprocessor reference {&find-orders}, a compound
+        // name like {&order}-remit (hyphen and suffix are separate tokens), or a
+        // database-qualified name like fdm4._field (db.table dotted form, same line).
         let mut buffer = if self.check(Kind::Preprop) {
             // {&preproc-var} used directly as table name — consume as identifier
             let tok = self.advance().clone();
@@ -2278,7 +2279,7 @@ impl Parser<'_> {
                 name: self.source[tok.start..tok.end].to_string(),
             }
         } else {
-            self.parse_identifier()?
+            self.parse_qualified_identifier()?
         };
         while self.check(Kind::Minus) {
             let minus_start = self.tokens[self.current].start;
@@ -2511,8 +2512,10 @@ impl Parser<'_> {
             _ => FindType::Unique,
         };
 
-        // parse buffer/table name — may be a compound like b-{&preproc} (identifier + adjacent Preprop)
-        let mut buffer = self.parse_identifier()?;
+        // parse buffer/table name — may be database-qualified (fdm4._file) or a compound
+        // like b-{&preproc} (identifier + adjacent Preprop).
+        // Use parse_qualified_identifier to handle db.table dotted forms on the same line.
+        let mut buffer = self.parse_qualified_identifier()?;
         if self.check(Kind::Preprop) && self.peek().start == buffer.span.end as usize {
             let pp = self.advance().clone();
             buffer.span.end = pp.end as u32;
@@ -3999,11 +4002,17 @@ impl Parser<'_> {
         let mut body = Vec::new();
         while !self.at_end() {
             if self.check(Kind::End) {
-                self.advance(); // consume END
-                if self.check(Kind::Method) {
-                    self.advance();
+                // Peek ahead: END METHOD closes this method body.
+                // END INTERFACE/CLASS/PROCEDURE etc. belongs to the enclosing block —
+                // break without consuming so the outer parser handles it.
+                // This handles interface method signatures that end with '.' (no body).
+                if self.check_at(1, Kind::Method) {
+                    self.advance(); // consume END
+                    self.advance(); // consume METHOD
+                    self.expect_kind(Kind::Period, "Expected '.' after END METHOD")?;
+                } else {
+                    // Not END METHOD — leave END for the enclosing parser to consume.
                 }
-                self.expect_kind(Kind::Period, "Expected '.' after END METHOD")?;
                 break;
             }
             // Handle CATCH and FINALLY blocks that may appear at the end of a METHOD body

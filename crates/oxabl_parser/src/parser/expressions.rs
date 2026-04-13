@@ -842,7 +842,8 @@ impl Parser<'_> {
                 return self.parse_function_call(name);
             }
             // Bare form: AVAILABLE table / AMBIGUOUS table
-            let arg = self.parse_primary()?;
+            // Use parse_postfix to handle database-qualified names like fdm4._file
+            let arg = self.parse_postfix()?;
             return Ok(Expression::FunctionCall {
                 name,
                 arguments: vec![arg],
