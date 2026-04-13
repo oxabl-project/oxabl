@@ -302,10 +302,14 @@ impl Parser<'_> {
                 ) {
                     self.advance();
                 }
-                // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE for handle args
+                // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE/DATA-SOURCE for handle args
                 if matches!(
                     self.peek().kind,
-                    Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                    Kind::Table
+                        | Kind::TableHandle
+                        | Kind::Dataset
+                        | Kind::DatasetHandle
+                        | Kind::DataSource
                 ) {
                     self.advance();
                 }
@@ -335,10 +339,14 @@ impl Parser<'_> {
                     ) {
                         self.advance();
                     }
-                    // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE
+                    // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE/DATA-SOURCE
                     if matches!(
                         self.peek().kind,
-                        Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                        Kind::Table
+                            | Kind::TableHandle
+                            | Kind::Dataset
+                            | Kind::DatasetHandle
+                            | Kind::DataSource
                     ) {
                         self.advance();
                     }
@@ -1092,10 +1100,14 @@ impl Parser<'_> {
             ) {
                 self.advance();
             }
-            // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE for handle args
+            // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE/DATA-SOURCE for handle args
             if matches!(
                 self.peek().kind,
-                Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                Kind::Table
+                    | Kind::TableHandle
+                    | Kind::Dataset
+                    | Kind::DatasetHandle
+                    | Kind::DataSource
             ) {
                 self.advance();
             }
@@ -1135,10 +1147,14 @@ impl Parser<'_> {
                 ) {
                     self.advance();
                 }
-                // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE
+                // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE/DATA-SOURCE
                 if matches!(
                     self.peek().kind,
-                    Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
+                    Kind::Table
+                        | Kind::TableHandle
+                        | Kind::Dataset
+                        | Kind::DatasetHandle
+                        | Kind::DataSource
                 ) {
                     self.advance();
                 }
