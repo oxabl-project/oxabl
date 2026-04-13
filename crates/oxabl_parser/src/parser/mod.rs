@@ -317,6 +317,10 @@ impl<'a> Parser<'a> {
                     | Kind::Assign
                     | Kind::Find
                     | Kind::Procedure
+                    // DB-operation keywords used as OO method names (e.g. model:create(), obj:delete())
+                    | Kind::Create
+                    | Kind::Delete
+                    | Kind::Release
                     // OO-ABL keywords (all unreserved except SET which is already handled)
                     | Kind::Class
                     | Kind::Interface
@@ -680,7 +684,7 @@ impl<'a> Parser<'a> {
                     _ => ParameterDirection::Input,
                 };
 
-                // TABLE [FOR] <name> — temp-table pass-through parameter (no AS/LIKE)
+                // TABLE [FOR] <name> [APPEND] [BIND] [BY-VALUE] [BY-REFERENCE]
                 if self.check(Kind::Table) {
                     self.advance(); // consume TABLE
                     // Optional FOR keyword: TABLE FOR ttablename passes by reference
@@ -688,6 +692,13 @@ impl<'a> Parser<'a> {
                         self.advance();
                     }
                     let name = self.parse_identifier()?;
+                    // Consume optional passing modifiers
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
+                    ) {
+                        self.advance();
+                    }
                     params.push(Statement::DefineParameter {
                         direction,
                         param_type: ParameterType::Handle {
