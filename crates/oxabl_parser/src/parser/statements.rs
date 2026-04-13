@@ -88,6 +88,16 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // CATCH / FINALLY blocks — must be checked before the block-label heuristic because
+        // FINALLY and CATCH are in can_be_identifier(), and `FINALLY: FOR EACH ...` would
+        // otherwise be mis-parsed as a labeled FOR EACH block.
+        if self.check(Kind::Catch) {
+            return self.parse_catch_block();
+        }
+        if self.check(Kind::Finally) {
+            return self.parse_finally_block();
+        }
+
         // Block label: `LABEL: DO: ...` or `LABEL: REPEAT: ...`
         // An identifier (or identifier-like keyword) followed by a colon where
         // the token after the colon is a block-starting keyword.
@@ -140,14 +150,6 @@ impl Parser<'_> {
                 name,
                 body: Box::new(body),
             });
-        }
-
-        // CATCH / FINALLY blocks — may appear at program level or inside any block body
-        if self.check(Kind::Catch) {
-            return self.parse_catch_block();
-        }
-        if self.check(Kind::Finally) {
-            return self.parse_finally_block();
         }
 
         // DO blocks
