@@ -8580,6 +8580,18 @@ fn parse_do_counting_loop_in_frame_compound_name() {
 }
 
 #[test]
+fn parse_create_widget_assign_triggers_block() {
+    // CREATE widget ASSIGN ... TRIGGERS: ... END TRIGGERS. inside a DO block.
+    // TRIGGERS lexes as Kind::Triggers, not Kind::Identifier — the block-end
+    // detection must use Kind::Triggers, not string comparison.
+    let source = "if x eq 0 then\ndo:\n   create sub-menu head-ptr\n      assign parent = fdm4-menu\n             label  = x-menu.\nend.\nelse\ndo:\n   create menu-item head-ptr\n   assign parent = fdm4-menu\n          label  = x-menu\n          sensitive = true\n   triggers:\n    on choose\n        persistent run value (\"ms/data_conv.w\") (y).\n    end triggers.\nend.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
+
+#[test]
 fn parse_repeat_counting_loop_compound_preprop_var() {
     // Loop variable is a compound preprop+identifier: {&tablename}i
     let source =

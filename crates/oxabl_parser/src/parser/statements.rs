@@ -334,13 +334,22 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // DOS / UNIX statements: launch the OS command interpreter.
+        // DOS / UNIX / VMS statements: launch the OS command interpreter.
         // Use skip_to_statement_end() so that field-access periods inside VALUE(db.field)
         // are not mistaken for the statement-terminating period.
+        // VMS is not a reserved keyword so it lexes as Kind::Identifier.
         if self.check(Kind::Dos) || self.check(Kind::Unix) {
             self.advance();
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
+        }
+        if self.check(Kind::Identifier) {
+            let tok = self.peek();
+            if self.source[tok.start..tok.end].eq_ignore_ascii_case("vms") {
+                self.advance();
+                self.skip_to_statement_end();
+                return Ok(Statement::Empty);
+            }
         }
 
         // COMPILE VALUE(path) [OPTIONS ...] [SAVE] [NO-ERROR]. — compile an ABL program.
@@ -3815,16 +3824,21 @@ impl Parser<'_> {
                 continue;
             }
             // END is the block terminator — but END TRIGGERS. is a nested trigger
-            // block terminator (from ON event TRIGGERS:...END TRIGGERS.) that can
-            // appear *inside* a DO/FOR/REPEAT body. Consume it and continue so that
-            // the outer block's own END. is handled correctly.
-            // "TRIGGERS" lexes as Kind::Identifier (not Kind::Trigger).
+            // block terminator (from CREATE widget ASSIGN ... TRIGGERS:...END TRIGGERS.)
+            // that can appear *inside* a DO/FOR/REPEAT body. Consume it and continue
+            // so that the outer block's own END. is handled correctly.
+            // TRIGGERS lexes as Kind::Triggers (dedicated keyword, not Kind::Identifier).
             if self.check(Kind::End) {
-                let next_is_triggers = if let Some(next) = self.tokens.get(self.current + 1) {
-                    next.kind == Kind::Identifier
-                        && self.source[next.start..next.end].eq_ignore_ascii_case("triggers")
-                } else {
-                    false
+                // Look ahead past any comment tokens to find the real next token.
+                let next_is_triggers = {
+                    let mut i = self.current + 1;
+                    loop {
+                        match self.tokens.get(i) {
+                            Some(t) if t.kind == Kind::Comment => i += 1,
+                            Some(t) => break t.kind == Kind::Triggers,
+                            None => break false,
+                        }
+                    }
                 };
                 if next_is_triggers {
                     self.advance(); // consume END
