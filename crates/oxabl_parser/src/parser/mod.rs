@@ -278,6 +278,9 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+        } else if self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
+            // FORMAT {&variable} — preprocessor reference used as format string
+            self.advance();
         }
     }
 
