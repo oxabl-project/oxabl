@@ -71,6 +71,8 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::On
             | Kind::Trigger
             | Kind::Export
+            | Kind::Dos
+            | Kind::Unix
     )
 }
 
@@ -271,6 +273,13 @@ impl Parser<'_> {
         if self.check(Kind::Export) {
             self.advance(); // consume EXPORT
             self.skip_to_period(); // consumes everything including the period
+            return Ok(Statement::Empty);
+        }
+
+        // DOS / UNIX statements: launch the OS command interpreter.
+        if self.check(Kind::Dos) || self.check(Kind::Unix) {
+            self.advance();
+            self.skip_to_period();
             return Ok(Statement::Empty);
         }
 

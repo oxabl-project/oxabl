@@ -263,6 +263,9 @@ impl<'a> Parser<'a> {
                 self.advance(); // colon
                 self.advance(); // suffix identifier
             }
+        } else if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
+            // FORMAT 9999 or FORMAT 99.99 — numeric format mask
+            self.advance();
         }
     }
 
