@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v0.4.0...oxabl_ast-v0.5.0) (2026-04-13)
+
+
+### Features
+
+* **ast:** add dataset/data-source AST types and lexer keywords ([96d0416](https://github.com/oxabl-project/oxabl/commit/96d041669d0b2c4b20d14fe40503b11079e4b345))
+* **parser:** add database manipulation statements ([8428b93](https://github.com/oxabl-project/oxabl/commit/8428b93b8848864fc52ec6f95310184130f7c3a8))
+* **parser:** add database manipulation statements ([404e85c](https://github.com/oxabl-project/oxabl/commit/404e85c91a57f5f7244cb1680f05d4f5ed0bb1e7))
+* **parser:** add dataset and data-source parsing support ([ae26e42](https://github.com/oxabl-project/oxabl/commit/ae26e428db7022c864bde37b877e1f7021ca1b0c))
+* **parser:** add dataset benchmark fixture and apply formatting ([e2510d5](https://github.com/oxabl-project/oxabl/commit/e2510d582b67d7906fde12ba94a91ba341c424c4))
+* **parser:** Add include file reference parsing ([28cba6b](https://github.com/oxabl-project/oxabl/commit/28cba6b250247e2936c3a19e711465145189e7fe))
+* **parser:** add ON trigger and TRIGGER PROCEDURE statement parsing ([0ec08d3](https://github.com/oxabl-project/oxabl/commit/0ec08d30a6f927ff11e54a0cfc2c53c68e8d0af6))
+* **parser:** add ON trigger and TRIGGER PROCEDURE statement parsing ([6dfffdc](https://github.com/oxabl-project/oxabl/commit/6dfffdcac671142290109f13294499ba14e8fac7))
+* **parser:** add OO-ABL support ([5c3b2fb](https://github.com/oxabl-project/oxabl/commit/5c3b2fb9269db4dfeaca7d9d041dd8f9424f8bdf))
+* **parser:** add OO-ABL support (CLASS, METHOD, PROPERTY, INTERFACE) ([f2ec7a5](https://github.com/oxabl-project/oxabl/commit/f2ec7a5587330fd7c7a0909c752c0478e78fae02))
+* **parser:** add preprocessor statement parsing ([a2f82fd](https://github.com/oxabl-project/oxabl/commit/a2f82fd7032dda5fc7c27c3dccead1cf652eec17))
+* **parser:** add preprocessor statement parsing ([eea5606](https://github.com/oxabl-project/oxabl/commit/eea560646d49c24614f9bce123432523781defe1))
+* **parser:** add PUBLISH/SUBSCRIBE/UNSUBSCRIBE and DEFINE EVENT parsing ([4eb3af4](https://github.com/oxabl-project/oxabl/commit/4eb3af451f99bf02512e5799b9c25bfd1d0336e7))
+* **parser:** add PUBLISH/SUBSCRIBE/UNSUBSCRIBE and DEFINE EVENT parsing ([233af8c](https://github.com/oxabl-project/oxabl/commit/233af8ca8df241e00606241a38b8aaed5e86871c))
+* **parser:** add stream and frame parsing ([e959ffd](https://github.com/oxabl-project/oxabl/commit/e959ffd74e5a2459800eb076a4e19547d3b3ae70))
+* **parser:** add stream and frame parsing ([8182d4e](https://github.com/oxabl-project/oxabl/commit/8182d4e1b952d7de365348469b9d69ba2a9e599c))
+* **parser:** handle real-world ABL patterns from oe100fi.p ([15b4405](https://github.com/oxabl-project/oxabl/commit/15b4405e906e6d4dd1c9853590885a212db12a47))
+* **parser:** Support LIKE syntax in DEFINE VARIABLE, DEFINE PARAMETER, and VAR ([edf3b84](https://github.com/oxabl-project/oxabl/commit/edf3b8463dc6b32afb564352546b4312877fdcf8))
+* **parser:** Support LIKE syntax in DEFINE VARIABLE, DEFINE PARAMETER, and VAR ([dbb1fdf](https://github.com/oxabl-project/oxabl/commit/dbb1fdf325c9dc77ecd89437d74ac2cf03986021))
+
+
+### Bug Fixes
+
+* **ast, lexer:** resolved some code breakage from the last merge ([f7b44d3](https://github.com/oxabl-project/oxabl/commit/f7b44d37474515ff00c0865d3a6a462af7966ff8))
+* **parser:** EXTERNAL procedure, RETURN param, BREAK BY, identifier keywords ([fa2c220](https://github.com/oxabl-project/oxabl/commit/fa2c220d44a17c0cf293d1dcabf0923431d1298e))
+* **parser:** handle VALUE(), class types, CREATE BUFFER/QUERY, BUFFER-COPY ASSIGN ([2a9a869](https://github.com/oxabl-project/oxabl/commit/2a9a8693471ebbac6c7dde248c5a4308608a725b))
+
+
+### Performance Improvements
+
+* **lexer,parser:** pre-allocate token Vec, SmallVec for AssignPair, ternary fast-path ([230fff9](https://github.com/oxabl-project/oxabl/commit/230fff913a04cdd4c5114769575a1e334a09e1ae))
+* **lexer,parser:** pre-allocate token Vec, SmallVec for AssignPair, ternary fast-path ([e1f1e37](https://github.com/oxabl-project/oxabl/commit/e1f1e375077644e4ad12bb64156244628f0637d7))
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v0.3.0...oxabl_ast-v0.4.0) (2026-04-04)
 
 
