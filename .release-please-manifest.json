@@ -1,8 +1,8 @@
 {
-  "crates/oxabl": "0.3.2",
-  "crates/oxabl_lexer": "0.3.1",
-  "crates/oxabl_parser": "0.4.0",
-  "crates/oxabl_ast": "0.4.0",
-  "crates/oxabl_common": "0.3.0",
-  "crates/oxabl_codegen": "0.3.0"
+  "crates/oxabl": "0.4.0",
+  "crates/oxabl_lexer": "0.4.0",
+  "crates/oxabl_parser": "0.5.0",
+  "crates/oxabl_ast": "0.5.0",
+  "crates/oxabl_common": "0.4.0",
+  "crates/oxabl_codegen": "0.4.0"
 }

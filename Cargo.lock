@@ -777,7 +777,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "oxabl"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "clap",
  "indicatif",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_ast"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rust_decimal",
  "smallvec",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_codegen"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "scraper",
  "serde",
@@ -810,14 +810,14 @@ dependencies = [
 
 [[package]]
 name = "oxabl_common"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "codspeed-criterion-compat",
 ]
 
 [[package]]
 name = "oxabl_lexer"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_common",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_parser"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
