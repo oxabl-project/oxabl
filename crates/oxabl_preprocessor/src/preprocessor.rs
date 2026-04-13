@@ -47,7 +47,7 @@ impl<'fs> Preprocessor<'fs> {
             file_id_counter: file.raw() + 1,
         };
 
-        let tree = ctx.process_source(file, source, 0);
+        let tree = ctx.process_source(file, source, 0, &[]);
 
         // Merge global vars into the final var table
         ctx.vars.merge_globals(&ctx.global_vars);
@@ -99,7 +99,13 @@ impl<'fs> ProcessContext<'fs> {
     /// This is the core line-scanning loop. It identifies preprocessor
     /// directives and include references by scanning for `&` and `{` markers
     /// at the text level, avoiding any dependency on the lexer.
-    fn process_source(&mut self, file: FileId, source: &str, depth: usize) -> Vec<SpanNode> {
+    fn process_source(
+        &mut self,
+        file: FileId,
+        source: &str,
+        depth: usize,
+        positional_args: &[String],
+    ) -> Vec<SpanNode> {
         let bytes = source.as_bytes();
         let len = bytes.len();
         let mut nodes: Vec<SpanNode> = Vec::new();
@@ -396,9 +402,64 @@ impl<'fs> ProcessContext<'fs> {
                             }
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
-                            // These are left as-is in the output (they're resolved
-                            // at include-call-site, not by the preprocessor).
-                            // Just advance past them normally.
+                            // Resolve against the current include's positional args.
+                            let mut j = i + 1;
+                            while j < len && bytes[j].is_ascii_digit() {
+                                j += 1;
+                            }
+                            if j < len && bytes[j] == b'}' {
+                                let ref_end = j + 1;
+                                let index: usize = source[i + 1..j].parse().unwrap_or(usize::MAX);
+
+                                if let Some(arg_val) = positional_args.get(index) {
+                                    // Emit chunk before the reference
+                                    if i as u32 > chunk_start {
+                                        nodes.push(SpanNode::Chunk {
+                                            file,
+                                            start: chunk_start,
+                                            end: i as u32,
+                                        });
+                                    }
+
+                                    if !arg_val.is_empty() {
+                                        let expanded_id = self.next_file_id();
+                                        let val: Arc<str> = Arc::from(arg_val.as_str());
+                                        let val_len = val.len() as u32;
+                                        self.sources.push((expanded_id, val));
+
+                                        nodes.push(SpanNode::Include {
+                                            site: FileSpan {
+                                                file,
+                                                span: Span {
+                                                    start: i as u32,
+                                                    end: ref_end as u32,
+                                                },
+                                            },
+                                            children: vec![SpanNode::Chunk {
+                                                file: expanded_id,
+                                                start: 0,
+                                                end: val_len,
+                                            }],
+                                        });
+                                    }
+
+                                    i = ref_end;
+                                    chunk_start = i as u32;
+                                    continue;
+                                }
+                                // No arg at this index — remove the reference
+                                if i as u32 > chunk_start {
+                                    nodes.push(SpanNode::Chunk {
+                                        file,
+                                        start: chunk_start,
+                                        end: i as u32,
+                                    });
+                                }
+                                i = ref_end;
+                                chunk_start = i as u32;
+                                continue;
+                            }
+                            // Not a valid {N} reference, advance normally
                             i += 1;
                             continue;
                         }
@@ -562,9 +623,12 @@ impl<'fs> ProcessContext<'fs> {
         &mut self,
         include_name: &str,
         site: FileSpan,
-        _inner: &str,
+        inner: &str,
         depth: usize,
     ) -> Vec<SpanNode> {
+        // Parse include arguments
+        let args = parse_include_args(inner, include_name);
+
         // Resolve the include file path
         let resolved = self.fs.resolve_include(self.include_paths, include_name);
         let path = match resolved {
@@ -607,8 +671,19 @@ impl<'fs> ProcessContext<'fs> {
         self.sources.push((include_file_id, content.clone()));
         self.dependencies.push(include_file_id);
 
-        // Process recursively
-        let children = self.process_source(include_file_id, &content, depth + 1);
+        // Scope isolation: save current vars, inject named args
+        let saved_vars = self.vars.clone();
+        for (name, value) in &args.named {
+            self.vars.define(name, value);
+        }
+
+        // Process recursively with positional args scoped to this include
+        let children = self.process_source(include_file_id, &content, depth + 1, &args.positional);
+
+        // Restore vars (named args don't leak to parent)
+        // But preserve any &GLOBAL-DEFINE changes
+        self.vars = saved_vars;
+        self.vars.merge_globals(&self.global_vars);
 
         self.include_stack.remove(&path);
 
@@ -822,6 +897,141 @@ fn parse_include_name(inner: &str) -> String {
     }
     // Unquoted — first token (space or & delimited)
     trimmed.split([' ', '&']).next().unwrap_or("").to_string()
+}
+
+/// Parsed include file arguments.
+struct IncludeArgs {
+    /// Positional arguments. Index 0 = include file name, 1+ = user args.
+    positional: Vec<String>,
+    /// Named arguments (`&name=value` pairs).
+    named: Vec<(String, String)>,
+}
+
+/// Parse arguments from the content inside `{...}` of an include reference.
+///
+/// ABL include syntax:
+/// - `{file.i}` — no args
+/// - `{file.i "arg1" arg2}` — positional args
+/// - `{file.i &name=value &other="quoted"}` — named args
+/// - `{file.i "SHARED" &extra=yes}` — mixed
+///
+/// Positional arg `{0}` = the include name. `{1}`, `{2}`, ... = user args.
+/// Named args are `&name=value` pairs where value quotes are stripped.
+fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
+    let mut positional = vec![include_name.to_string()];
+    let mut named = Vec::new();
+
+    let trimmed = inner.trim();
+
+    // Skip past the include name to get to the arguments.
+    // The include name is the first token — find where it ends.
+    let args_start = find_args_start(trimmed);
+    if args_start >= trimmed.len() {
+        return IncludeArgs { positional, named };
+    }
+
+    let args_str = &trimmed[args_start..];
+    let mut i = 0;
+    let bytes = args_str.as_bytes();
+
+    while i < bytes.len() {
+        // Skip whitespace
+        while i < bytes.len() && bytes[i] == b' ' {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+
+        if bytes[i] == b'&' {
+            // Named argument: &name=value
+            i += 1; // skip &
+            let name_start = i;
+            while i < bytes.len() && bytes[i] != b'=' && bytes[i] != b' ' {
+                i += 1;
+            }
+            let name = args_str[name_start..i].to_string();
+            if i < bytes.len() && bytes[i] == b'=' {
+                i += 1; // skip =
+                let value = read_arg_value(args_str, &mut i);
+                named.push((name, value));
+            } else {
+                // &name with no =value — treat as empty value
+                named.push((name, String::new()));
+            }
+        } else {
+            // Positional argument
+            let value = read_arg_value(args_str, &mut i);
+            positional.push(value);
+        }
+    }
+
+    IncludeArgs { positional, named }
+}
+
+/// Read a single argument value, handling quotes. Advances `i` past the value.
+fn read_arg_value(s: &str, i: &mut usize) -> String {
+    let bytes = s.as_bytes();
+
+    // Skip leading whitespace
+    while *i < bytes.len() && bytes[*i] == b' ' {
+        *i += 1;
+    }
+
+    if *i >= bytes.len() {
+        return String::new();
+    }
+
+    if bytes[*i] == b'"' || bytes[*i] == b'\'' {
+        // Quoted value — read to matching quote
+        let quote = bytes[*i];
+        *i += 1;
+        let start = *i;
+        while *i < bytes.len() && bytes[*i] != quote {
+            *i += 1;
+        }
+        let value = s[start..*i].to_string();
+        if *i < bytes.len() {
+            *i += 1; // skip closing quote
+        }
+        value
+    } else {
+        // Unquoted — read to next space or &
+        let start = *i;
+        while *i < bytes.len() && bytes[*i] != b' ' && bytes[*i] != b'&' {
+            *i += 1;
+        }
+        s[start..*i].to_string()
+    }
+}
+
+/// Find the byte offset where arguments start (after the include name).
+fn find_args_start(inner: &str) -> usize {
+    let bytes = inner.as_bytes();
+    let mut i = 0;
+
+    if i < bytes.len() && bytes[i] == b'"' {
+        // Quoted include name — skip to closing quote
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'"' {
+            i += 1;
+        }
+        if i < bytes.len() {
+            i += 1; // skip closing quote
+        }
+    } else {
+        // Unquoted — skip to first space or &
+        while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'&' {
+            i += 1;
+        }
+    }
+
+    // Skip whitespace between name and first arg
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
+
+    i
 }
 
 #[cfg(test)]
@@ -1239,5 +1449,176 @@ mod tests {
         let source = "&SCOPED-DEFINE X hello\n{&X}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(&*result.to_text(), "hello");
+    }
+
+    // ── Include argument tests ──────────────────────────────────────
+
+    #[test]
+    fn positional_arg_basic() {
+        let fs = make_fs(&[("/inc/def.i", "DEFINE {1} VARIABLE x AS INTEGER.")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = r#"{def.i "SHARED"}"#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "DEFINE SHARED VARIABLE x AS INTEGER.");
+    }
+
+    #[test]
+    fn positional_arg_zero_is_include_name() {
+        let fs = make_fs(&[("/inc/self.i", "name={0}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{self.i}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "name=self.i");
+    }
+
+    #[test]
+    fn positional_arg_multiple() {
+        let fs = make_fs(&[("/inc/multi.i", "A={1} B={2} C={3}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = r#"{multi.i "one" two "three"}"#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "A=one B=two C=three");
+    }
+
+    #[test]
+    fn named_arg_basic() {
+        let fs = make_fs(&[("/inc/tmpl.i", "TABLE={&table}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{tmpl.i &table=customer}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "TABLE=customer");
+    }
+
+    #[test]
+    fn named_arg_quoted_value() {
+        let fs = make_fs(&[("/inc/tmpl.i", "DS={&dataset}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = r#"{tmpl.i &dataset="InventoryLevels"}"#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "DS=InventoryLevels");
+    }
+
+    #[test]
+    fn named_arg_in_if_condition() {
+        let fs = make_fs(&[(
+            "/inc/cond.i",
+            "&IF \"{&mode}\" = \"debug\" &THEN\nDEBUG\n&ELSE\nRELEASE\n&ENDIF\n",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = r#"{cond.i &mode="debug"}"#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "DEBUG\n");
+    }
+
+    #[test]
+    fn mixed_positional_and_named_args() {
+        let fs = make_fs(&[("/inc/mix.i", "P={1} N={&x}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = r#"{mix.i "pos1" &x=named1}"#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "P=pos1 N=named1");
+    }
+
+    #[test]
+    fn named_arg_scope_isolation() {
+        // Named args should NOT leak to the parent after include returns
+        let fs = make_fs(&[("/inc/scoped.i", "inside={&arg}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{scoped.i &arg=secret}outside={&arg}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        // {&arg} after the include should expand to nothing
+        assert_eq!(&*result.to_text(), "inside=secretoutside=");
+    }
+
+    #[test]
+    fn positional_arg_scope_isolation() {
+        // Positional args from outer include should not bleed into inner
+        let fs = make_fs(&[
+            ("/inc/outer.i", "O={1} {inner.i}"),
+            ("/inc/inner.i", "I={1}"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = r#"{outer.i "OUTER_ARG"}"#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        // inner.i has no args passed, so {1} should expand to nothing
+        assert_eq!(&*result.to_text(), "O=OUTER_ARG I=");
+    }
+
+    #[test]
+    fn global_define_survives_scope_restore() {
+        // &GLOBAL-DEFINE inside an include should still propagate
+        let fs = make_fs(&[("/inc/setglobal.i", "&GLOBAL-DEFINE VER 42\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{setglobal.i &unused=x}VER={&VER}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "VER=42");
+    }
+
+    #[test]
+    fn no_args_still_works() {
+        // Include with no args should work as before
+        let fs = make_fs(&[("/inc/plain.i", "plain content")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{plain.i}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "plain content");
+    }
+
+    #[test]
+    fn parse_include_args_positional() {
+        let args = parse_include_args("file.i \"one\" two", "file.i");
+        assert_eq!(args.positional, vec!["file.i", "one", "two"]);
+        assert!(args.named.is_empty());
+    }
+
+    #[test]
+    fn parse_include_args_named() {
+        let args = parse_include_args(r#"file.i &table=customer &field="cust-num""#, "file.i");
+        assert!(args.positional.len() == 1); // just the include name
+        assert_eq!(args.named.len(), 2);
+        assert_eq!(args.named[0], ("table".to_string(), "customer".to_string()));
+        assert_eq!(args.named[1], ("field".to_string(), "cust-num".to_string()));
+    }
+
+    #[test]
+    fn parse_include_args_mixed() {
+        let args = parse_include_args(r#"file.i "SHARED" &extra=yes"#, "file.i");
+        assert_eq!(args.positional, vec!["file.i", "SHARED"]);
+        assert_eq!(args.named, vec![("extra".to_string(), "yes".to_string())]);
+    }
+
+    #[test]
+    fn parse_include_args_quoted_name() {
+        let args = parse_include_args(r#""path/to/file.i" "arg1""#, "path/to/file.i");
+        assert_eq!(args.positional, vec!["path/to/file.i", "arg1"]);
+    }
+
+    #[test]
+    fn parse_include_args_no_args() {
+        let args = parse_include_args("file.i", "file.i");
+        assert_eq!(args.positional, vec!["file.i"]);
+        assert!(args.named.is_empty());
     }
 }
