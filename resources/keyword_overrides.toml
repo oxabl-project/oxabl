@@ -691,6 +691,20 @@ name = "BROWSE"
 keyword_type = "Option"
 
 # =============================================================================
+# BLOCK-LEVEL / ROUTINE-LEVEL KEYWORDS
+# =============================================================================
+
+# BLOCK-LEVEL is used in "BLOCK-LEVEL ON ERROR UNDO, THROW." statements
+[[add]]
+name = "BLOCK-LEVEL"
+keyword_type = "Statement"
+
+# ROUTINE-LEVEL is used in "ROUTINE-LEVEL ON ERROR UNDO, THROW." statements
+[[add]]
+name = "ROUTINE-LEVEL"
+keyword_type = "Statement"
+
+# =============================================================================
 # PROCEDURE DEFINITION KEYWORDS
 # =============================================================================
 
@@ -703,6 +717,15 @@ keyword_type = "Option"
 [[add]]
 name = "SIZE"
 keyword_type = "Option"
+
+# =============================================================================
+# THROW keyword
+# =============================================================================
+
+# THROW is used in ON ERROR UNDO, THROW and as a statement THROW expr.
+[[add]]
+name = "THROW"
+keyword_type = "Statement"
 
 # =============================================================================
 # MISSING STATEMENT KEYWORDS

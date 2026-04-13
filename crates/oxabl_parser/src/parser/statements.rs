@@ -73,6 +73,9 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Export
             | Kind::Dos
             | Kind::Unix
+            | Kind::BlockLevel
+            | Kind::RoutineLevel
+            | Kind::Throw
     )
 }
 
@@ -219,11 +222,8 @@ impl Parser<'_> {
                     if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Period) {
                         self.advance();
                     }
-                } else if Self::can_be_identifier(self.peek().kind)
-                    && self.source[self.peek().start..self.peek().end].eq_ignore_ascii_case("throw")
-                {
-                    // THROW is not a reserved keyword; handle it here
-                    self.advance(); // consume "throw"
+                } else if self.check(Kind::Throw) {
+                    self.advance(); // consume THROW
                     // parse the thrown expression (e.g. NEW Progress.Lang.AppError(...))
                     if !self.check(Kind::Period) && !self.at_end() {
                         self.parse_expression().ok();
@@ -311,6 +311,22 @@ impl Parser<'_> {
         if self.check(Kind::Dos) || self.check(Kind::Unix) {
             self.advance();
             self.skip_to_period();
+            return Ok(Statement::Empty);
+        }
+
+        // BLOCK-LEVEL / ROUTINE-LEVEL ON ERROR UNDO, THROW. — error propagation directives.
+        if self.check(Kind::BlockLevel) || self.check(Kind::RoutineLevel) {
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
+        }
+
+        // THROW expr. — raise an exception.
+        if self.check(Kind::Throw) {
+            self.advance(); // consume THROW
+            if !self.check(Kind::Period) && !self.at_end() {
+                self.parse_expression().ok();
+            }
+            self.expect_kind(Kind::Period, "Expected '.' after THROW")?;
             return Ok(Statement::Empty);
         }
 
@@ -1958,13 +1974,13 @@ impl Parser<'_> {
             // consume optional action after comma: , LEAVE / RETRY / NEXT / RETURN [label]
             if self.check(Kind::Comma) {
                 self.advance(); // consume ','
-                // consume action keyword (LEAVE, RETRY, NEXT, RETURN)
+                // consume action keyword (LEAVE, RETRY, NEXT, RETURN, THROW)
                 if matches!(
                     self.peek().kind,
-                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn
+                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn | Kind::Throw
                 ) {
                     self.advance();
-                    // consume optional label
+                    // consume optional label or throw expression
                     if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
                         self.advance();
                     }
@@ -2101,7 +2117,7 @@ impl Parser<'_> {
                 self.advance();
                 if matches!(
                     self.peek().kind,
-                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn
+                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn | Kind::Throw
                 ) {
                     self.advance();
                     if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
