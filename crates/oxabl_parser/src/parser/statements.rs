@@ -3916,7 +3916,14 @@ impl Parser<'_> {
             false
         };
 
-        // Parse GET accessor
+        // Parse GET accessor (with optional leading access modifier, e.g. "protected get.")
+        if matches!(
+            self.peek().kind,
+            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+        ) && self.check_at(1, Kind::Get)
+        {
+            self.advance(); // consume access modifier
+        }
         let get_body = if self.check(Kind::Get) {
             self.advance(); // consume GET
             // Optional parameter list: GET() or GET(INPUT p AS TYPE)
@@ -3963,7 +3970,14 @@ impl Parser<'_> {
             None
         };
 
-        // Parse SET accessor
+        // Parse SET accessor (with optional leading access modifier, e.g. "private set.")
+        if matches!(
+            self.peek().kind,
+            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+        ) && self.check_at(1, Kind::Set)
+        {
+            self.advance(); // consume access modifier
+        }
         let set_body = if self.check(Kind::Set) {
             self.advance(); // consume SET
             // Optional parameter list: SET (INPUT p AS TYPE)
