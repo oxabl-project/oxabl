@@ -559,13 +559,24 @@ impl<'a> Lexer<'a> {
                 Some(c) if c == quote_type => {
                     self.advance(); //consume closing quote
                     // ABL supports translation suffixes like :U (untranslatable), :T (translatable)
-                    // Consume the colon and the single-letter suffix if present
+                    // and integer-width specifiers like :10 (column width).
+                    // Consume the colon and the suffix if present.
                     if matches!(self.peek(), Some(':')) {
                         let mut chars_clone = self.chars.clone();
                         chars_clone.next(); // skip ':'
-                        if matches!(chars_clone.next(), Some(c) if c.is_ascii_alphabetic()) {
-                            self.advance(); // consume ':'
-                            self.advance(); // consume suffix letter
+                        match chars_clone.next() {
+                            Some(c) if c.is_ascii_alphabetic() => {
+                                self.advance(); // consume ':'
+                                self.advance(); // consume suffix letter (U/T)
+                            }
+                            Some(c) if c.is_ascii_digit() => {
+                                self.advance(); // consume ':'
+                                // consume all digits of the integer width
+                                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                                    self.advance();
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     return Kind::StringLiteral;
@@ -718,6 +729,15 @@ impl<'a> Lexer<'a> {
         // For define directives, enter directive mode so newlines emit PreprocEnd
         if matches!(kind, Kind::PreprocScopedDefine | Kind::PreprocGlobalDefine) {
             self.in_directive = true;
+        }
+
+        // Unknown &-directives (e.g. AppBuilder's &ANALYZE-SUSPEND/&ANALYZE-RESUME) are
+        // not part of standard ABL syntax. Treat them as line comments: skip to EOL.
+        if kind == Kind::Invalid {
+            while !matches!(self.peek(), Some('\n') | None) {
+                self.advance();
+            }
+            return Kind::Comment;
         }
 
         kind
