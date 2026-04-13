@@ -1116,9 +1116,18 @@ impl Parser<'_> {
                 self.advance();
             }
 
-            // parse remaining
-            while self.check(Kind::Comma) {
-                self.advance(); // consume ','
+            // parse remaining — separated by ',' or, when a Preprop reference like {&args}
+            // expands to comma-separated arguments at compile time, by a bare direction
+            // qualifier (INPUT/OUTPUT/INPUT-OUTPUT) with no preceding comma.
+            while self.check(Kind::Comma)
+                || matches!(
+                    self.peek().kind,
+                    Kind::Input | Kind::Output | Kind::InputOutput
+                )
+            {
+                if self.check(Kind::Comma) {
+                    self.advance(); // consume ',' only when present
+                }
                 // Skip optional direction qualifier per argument
                 if matches!(
                     self.peek().kind,
