@@ -841,6 +841,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_preprocessor"
+version = "0.3.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_common",
+ "oxabl_workspace",
+]
+
+[[package]]
 name = "oxabl_workspace"
 version = "0.3.0"
 dependencies = [

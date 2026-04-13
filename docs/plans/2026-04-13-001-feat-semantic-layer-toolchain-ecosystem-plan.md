@@ -283,12 +283,12 @@ impl Preprocessor<'_> {
 - Unsatisfied branches are excluded from the span tree (their `SpanNode`s are dropped)
 
 **Acceptance Criteria:**
-- [ ] `{include.i}` expanded recursively; cyclic includes detected and errored
-- [ ] `&SCOPED-DEFINE` / `&GLOBAL-DEFINE` / `&UNDEFINE` tracked correctly
-- [ ] `&IF` / `&ELSEIF` / `&ELSE` / `&ENDIF` prune the span tree at preprocess time
-- [ ] `resolve(offset)` returns the correct `(FileId, real_offset)` for all positions in the tree,
+- [x] `{include.i}` expanded recursively; cyclic includes detected and errored
+- [x] `&SCOPED-DEFINE` / `&GLOBAL-DEFINE` / `&UNDEFINE` tracked correctly
+- [x] `&IF` / `&ELSEIF` / `&ELSE` / `&ENDIF` prune the span tree at preprocess time
+- [x] `resolve(offset)` returns the correct `(FileId, real_offset)` for all positions in the tree,
   including nested includes
-- [ ] `dependencies` accurately lists all transitively included `FileId`s
+- [x] `dependencies` accurately lists all transitively included `FileId`s
 - [ ] The ~100 currently-failing corpus files parse successfully after preprocessing
 - [ ] No corpus regression on previously-passing files
 
