@@ -785,6 +785,7 @@ dependencies = [
  "oxabl_common",
  "oxabl_lexer",
  "oxabl_parser",
+ "oxabl_preprocessor",
  "oxabl_workspace",
  "serde",
  "serde_json",
