@@ -915,6 +915,17 @@ impl<'a> Parser<'a> {
                     _ => ParameterDirection::Input,
                 };
 
+                // Include reference after direction keyword (e.g. INPUT {gl/global-input-func.i})
+                // expands to one or more parameters at preprocessing time — skip as a unit.
+                if self.check(Kind::IncludeReference) {
+                    self.advance();
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
                 // TABLE [FOR] <name> [APPEND] [BIND] [BY-VALUE] [BY-REFERENCE]
                 if self.check(Kind::Table) {
                     self.advance(); // consume TABLE
