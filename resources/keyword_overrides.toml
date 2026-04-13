@@ -728,6 +728,24 @@ name = "THROW"
 keyword_type = "Statement"
 
 # =============================================================================
+# DYNAMIC-NEW
+# ABL dynamic object instantiation: DYNAMIC-NEW className(args)
+# =============================================================================
+
+[[add]]
+name = "DYNAMIC-NEW"
+keyword_type = "Statement"
+
+# =============================================================================
+# LIBRARY keyword
+# Used as handle attribute name (e.g. builder:Library)
+# =============================================================================
+
+[[add]]
+name = "LIBRARY"
+keyword_type = "Option"
+
+# =============================================================================
 # MISSING STATEMENT KEYWORDS
 # Keywords present in the HTML index but not in the JSON
 # =============================================================================

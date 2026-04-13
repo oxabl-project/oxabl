@@ -569,6 +569,23 @@ impl Parser<'_> {
             self.advance(); // consume framename
         }
 
+        // Compound assignment operators: +=, -=, *=, /=
+        if matches!(
+            self.peek().kind,
+            Kind::PlusEquals | Kind::MinusEquals | Kind::StarEquals | Kind::SlashEquals
+        ) {
+            self.advance(); // consume the compound operator
+            let value = self.parse_expression()?;
+            if self.check(Kind::NoError) {
+                self.advance();
+            }
+            self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
+            return Ok(Statement::Assignment {
+                target: left,
+                value,
+            });
+        }
+
         if self.check(Kind::Equals) {
             self.advance(); // consume the "="
             let value = self.parse_expression()?;
@@ -3343,7 +3360,15 @@ impl Parser<'_> {
         };
         if is_forward {
             self.advance(); // consume FORWARD
-            self.expect_kind(Kind::Period, "Expected '.' after FUNCTION FORWARD")?;
+            // FORWARD declarations may end with '.' or ':' (legacy ABL uses ':')
+            if self.check(Kind::Period) || self.check(Kind::Colon) {
+                self.advance();
+            } else {
+                return Err(ParseError {
+                    message: "Expected '.' after FUNCTION FORWARD".to_string(),
+                    span: self.current_span(),
+                });
+            }
             return Ok(Statement::Function {
                 name,
                 return_type,
@@ -3856,8 +3881,8 @@ impl Parser<'_> {
         // Parse parameter list
         let parameters = self.parse_parenthesized_params()?;
 
-        // Abstract methods and forward declarations end with a period (no body)
-        if is_abstract || self.check(Kind::Period) {
+        // Abstract methods have no body — just a period
+        if is_abstract {
             self.expect_kind(Kind::Period, "Expected '.' after abstract method signature")?;
             return Ok(Statement::Method {
                 access,
@@ -3871,8 +3896,15 @@ impl Parser<'_> {
             });
         }
 
-        // Non-abstract: expect colon, parse body until END METHOD
-        self.expect_kind(Kind::Colon, "Expected ':' after METHOD header")?;
+        // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
+        if self.check(Kind::Colon) || self.check(Kind::Period) {
+            self.advance();
+        } else {
+            return Err(ParseError {
+                message: "Expected ':' after METHOD header".to_string(),
+                span: self.current_span(),
+            });
+        }
 
         let mut body = Vec::new();
         while !self.at_end() {
@@ -3930,6 +3962,14 @@ impl Parser<'_> {
         let name = self.parse_identifier()?;
         self.expect_kind(Kind::KwAs, "Expected AS after property name")?;
         let data_type = self.parse_data_type()?;
+
+        // Consume optional EXTENT [n] on the property type (e.g. "AS LONGCHAR EXTENT 2")
+        if self.check(Kind::Extent) {
+            self.advance();
+            if self.check(Kind::IntegerLiteral) {
+                self.advance();
+            }
+        }
 
         // Consume NO-UNDO and INITIAL [n] in any order (properties can have both)
         let mut no_undo = false;
