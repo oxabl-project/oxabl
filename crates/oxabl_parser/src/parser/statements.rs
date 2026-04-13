@@ -3909,12 +3909,32 @@ impl Parser<'_> {
         self.expect_kind(Kind::KwAs, "Expected AS after property name")?;
         let data_type = self.parse_data_type()?;
 
-        let no_undo = if self.check(Kind::NoUndo) {
-            self.advance();
-            true
-        } else {
-            false
-        };
+        // Consume NO-UNDO and INITIAL [n] in any order (properties can have both)
+        let mut no_undo = false;
+        loop {
+            if self.check(Kind::NoUndo) {
+                self.advance();
+                no_undo = true;
+            } else if self.check(Kind::Initial) {
+                self.advance();
+                // INITIAL can be followed by a value expression or nothing
+                if !matches!(
+                    self.peek().kind,
+                    Kind::NoUndo
+                        | Kind::Get
+                        | Kind::Set
+                        | Kind::Period
+                        | Kind::Public
+                        | Kind::Private
+                        | Kind::Protected
+                        | Kind::PackagePrivate
+                ) {
+                    self.parse_expression().ok();
+                }
+            } else {
+                break;
+            }
+        }
 
         // Parse GET accessor (with optional leading access modifier, e.g. "protected get.")
         if matches!(

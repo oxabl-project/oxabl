@@ -453,6 +453,7 @@ impl<'a> Parser<'a> {
                     | Kind::Save
                     | Kind::Open
                     | Kind::Close
+                    | Kind::Set
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
                     | Kind::PageTop
                     | Kind::Blank
