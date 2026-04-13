@@ -7,6 +7,7 @@
     "crates/oxabl_parser": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_ast": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_common": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
-    "crates/oxabl_codegen": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
+    "crates/oxabl_codegen": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_workspace": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
   }
 }

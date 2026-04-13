@@ -785,6 +785,7 @@ dependencies = [
  "oxabl_common",
  "oxabl_lexer",
  "oxabl_parser",
+ "oxabl_workspace",
  "serde",
  "serde_json",
  "walkdir",
@@ -837,6 +838,17 @@ dependencies = [
  "oxabl_lexer",
  "rust_decimal",
  "smallvec",
+]
+
+[[package]]
+name = "oxabl_workspace"
+version = "0.3.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_common",
+ "serde",
+ "toml",
+ "walkdir",
 ]
 
 [[package]]
