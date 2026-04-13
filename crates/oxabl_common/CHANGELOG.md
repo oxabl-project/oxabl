@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v0.3.0...oxabl_common-v0.4.0) (2026-04-13)
+
+
+### Features
+
+* **bench:** expand benchmark suite to cover parser, lexer scenarios, and source map ([18c6681](https://github.com/oxabl-project/oxabl/commit/18c6681ab28e2097fdff15c647841d95ff49fb51))
+* **bench:** expand benchmark suite to parser, lexer scenarios, and source map ([36abc32](https://github.com/oxabl-project/oxabl/commit/36abc32aebd88514f1fcd203b9da0c9a4eb3d88a))
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v0.2.0...oxabl_common-v0.3.0) (2026-04-03)
 
 
