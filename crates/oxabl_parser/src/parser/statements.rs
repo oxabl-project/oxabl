@@ -1339,6 +1339,19 @@ impl Parser<'_> {
                 self.advance(); // consume FIELD
                 let field_name = self.parse_identifier()?;
 
+                // Optional EXTENT before AS/LIKE (ABL allows: field name EXTENT n LIKE ...)
+                let mut pre_extent: Option<u32> = None;
+                if self.check(Kind::Extent) {
+                    self.advance();
+                    if self.check(Kind::IntegerLiteral) {
+                        let ext_token = self.advance().clone();
+                        pre_extent = self.source[ext_token.start..ext_token.end]
+                            .parse::<u32>()
+                            .ok()
+                            .or(Some(0));
+                    }
+                }
+
                 // Parse type source: AS type or LIKE field [VALIDATE]
                 let (type_source, validate) = if self.check(Kind::Like) {
                     self.advance();
@@ -1357,7 +1370,7 @@ impl Parser<'_> {
 
                 // Parse optional field options
                 let mut initial_value = None;
-                let mut extent = None;
+                let mut extent = pre_extent; // may already be set from EXTENT before AS/LIKE
 
                 loop {
                     match self.peek().kind {

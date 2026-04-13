@@ -538,6 +538,9 @@ impl<'a> Parser<'a> {
                     // XREF / XREF-XML are COMPILE statement options used as member names (e.g. compile.xref)
                     | Kind::Xref
                     | Kind::XrefXml
+                    // COMPILE appears as an ordinary identifier in variable names (e.g. "comp" is a
+                    // valid variable name even though "comp" is the min abbreviation of COMPILE)
+                    | Kind::Compile
                     // ENUM is a reserved keyword but appears as a field name in DEFINE TEMP-TABLE (field enum as int)
                     | Kind::KwEnum
                     // DATABASE appears in qualified class names like Progress.Database.TempTableInfo
