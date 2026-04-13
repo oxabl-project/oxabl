@@ -8540,3 +8540,21 @@ fn parse_include_with_named_args() {
         _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
     }
 }
+
+#[test]
+fn parse_run_dataset_fill() {
+    let source = "Run Dataset.Fill in hproc(input-output hhandle).\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
+
+#[test]
+fn parse_define_variable_extent_preprop() {
+    let source = "def var x as handle extent {&DEPTH_MAX}.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
