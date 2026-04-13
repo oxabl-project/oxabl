@@ -484,6 +484,7 @@ impl Parser<'_> {
             || self.check(Kind::OsCommand)
             || self.check(Kind::OsCopy)
             || self.check(Kind::OsRename)
+            || self.check(Kind::OsAppend)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
             || self.check(Kind::Enable)
@@ -500,6 +501,13 @@ impl Parser<'_> {
             || self.check(Kind::Format)
             // CLOSE QUERY/DATASET/BROWSING name. — close a query, dataset, or browse widget.
             || self.check(Kind::Close)
+            // CONNECT/DISCONNECT — database connection management statements.
+            || self.check(Kind::Connect)
+            || self.check(Kind::Disconnect)
+            // SET variable. — reads from an open input stream into a variable/field.
+            || self.check(Kind::Set)
+            // WAIT-FOR event OF widget. — ABL UI event loop.
+            || self.check(Kind::WaitFor)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
@@ -792,10 +800,9 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
-        // UI widget definitions — DEFINE RECTANGLE and similar identifiers (BUTTON, IMAGE,
-        // MENU, SUB-MENU) that the lexer doesn't give a dedicated Kind.  When we see an
-        // unrecognised identifier here, skip the whole DEFINE statement to statement end.
-        if self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
+        // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
+        // etc. that are not separately handled. Skip the whole DEFINE statement.
+        if self.check(Kind::Browse) || self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
@@ -2247,7 +2254,8 @@ impl Parser<'_> {
 
     fn parse_for_each(&mut self) -> ParseResult<Statement> {
         self.advance(); // Consume FOR
-        // FOR EACH / FOR FIRST / FOR LAST / FOR NEXT / FOR PREV are all valid
+        // FOR EACH / FOR FIRST / FOR LAST / FOR NEXT / FOR PREV are all valid.
+        // Qualifier may also be omitted: FOR table WHERE ... is valid ABL.
         if self.check(Kind::Each)
             || self.check(Kind::First)
             || self.check(Kind::Last)
@@ -2255,11 +2263,6 @@ impl Parser<'_> {
             || self.check(Kind::Prev)
         {
             self.advance(); // consume the qualifier
-        } else {
-            return Err(ParseError {
-                message: "Expected EACH after FOR".to_string(),
-                span: self.current_span(),
-            });
         }
 
         // Parse buffer name — may be a preprocessor reference {&find-orders} or a
@@ -3540,6 +3543,11 @@ impl Parser<'_> {
         let error_var = self.parse_identifier()?;
         self.expect_kind(Kind::KwAs, "Expected AS after CATCH variable")?;
 
+        // Skip optional CLASS keyword: CATCH e AS CLASS SysError:
+        if self.check(Kind::Class) {
+            self.advance();
+        }
+
         // Parse error class type (e.g., Progress.Lang.Error)
         // This may be a dotted name
         let start = self.peek().start;
@@ -3813,6 +3821,15 @@ impl Parser<'_> {
             while self.check(Kind::Comma) {
                 self.advance();
                 implements.push(self.parse_qualified_identifier()?);
+            }
+        }
+
+        // Skip optional USE-WIDGET-POOL clause (AppBuilder / legacy ABL)
+        if self.check(Kind::Identifier) {
+            let tok = self.peek().clone();
+            let text = &self.source[tok.start..tok.end];
+            if text.eq_ignore_ascii_case("use-widget-pool") {
+                self.advance();
             }
         }
 
@@ -4968,10 +4985,9 @@ impl Parser<'_> {
         };
 
         // Skip optional trailing clauses: NO-ECHO, CONVERT TARGET "...", PAGE-SIZE n, etc.
-        while !self.check(Kind::Period) && !self.at_end() {
-            self.advance();
-        }
-        self.expect_kind(Kind::Period, "Expected '.' after stream I/O statement")?;
+        // Use skip_to_statement_end to avoid stopping at field-access dots
+        // inside VALUE() arguments (e.g. VALUE(warehouse.remote-host-name)).
+        self.skip_to_statement_end();
 
         Ok(Statement::StreamIo {
             direction,
@@ -5432,7 +5448,14 @@ impl Parser<'_> {
     fn parse_widget_ref_list(&mut self) -> ParseResult<Vec<WidgetRef>> {
         let mut refs = Vec::new();
         loop {
-            let name = self.parse_identifier()?;
+            // Handle bare "FRAME name" or "BROWSE name" form: the widget IS the frame/browse.
+            // e.g. `of frame fmain anywhere` — consume FRAME and parse the name that follows.
+            let name = if self.check(Kind::Frame) || self.check(Kind::Browse) {
+                self.advance(); // consume FRAME/BROWSE keyword
+                self.parse_identifier()?
+            } else {
+                self.parse_identifier()?
+            };
             let qualifier = if self.check(Kind::KwIn) {
                 self.advance();
                 if self.check(Kind::Frame) {
