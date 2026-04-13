@@ -722,10 +722,13 @@ impl Parser<'_> {
         // (e.g. Return, End, Else), or a block label (LABEL: DO ...), the preprop macro
         // was a standalone statement that expands to its own period — return without consuming.
         if starts_with_preprop && !self.check(Kind::Period) {
+            // A standalone preprop macro like {&leave-logic} expands to a complete statement
+            // at compile time (including its own period).  When the next token can start a new
+            // statement, treat the preprop as already-terminated and return without skipping.
             let next_is_statement_boundary = matches!(
                 self.peek().kind,
                 Kind::KwReturn | Kind::End | Kind::KwElse | Kind::Leave | Kind::Next
-            );
+            ) || can_start_statement(self.peek().kind);
             // A block label looks like: identifier ':' (DO | REPEAT | FOR)
             let next_is_block_label = Self::can_be_identifier(self.peek().kind)
                 && self.check_at(1, Kind::Colon)
