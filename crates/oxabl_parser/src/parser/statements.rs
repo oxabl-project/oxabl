@@ -308,9 +308,11 @@ impl Parser<'_> {
         }
 
         // DOS / UNIX statements: launch the OS command interpreter.
+        // Use skip_to_statement_end() so that field-access periods inside VALUE(db.field)
+        // are not mistaken for the statement-terminating period.
         if self.check(Kind::Dos) || self.check(Kind::Unix) {
             self.advance();
-            self.skip_to_period();
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
@@ -4724,7 +4726,9 @@ impl Parser<'_> {
             }
             // CREATE handle ASSIGN prop = val ... — UI widget creation with property list;
             // skip the ASSIGN block entirely.
-            if self.check(Kind::Assign) {
+            // CREATE ALIAS name FOR DATABASE value(expr). — database alias creation;
+            // skip the FOR DATABASE ... clause entirely.
+            if self.check(Kind::Assign) || self.check(Kind::KwFor) {
                 self.skip_to_statement_end();
                 return Ok(Statement::Empty);
             }
