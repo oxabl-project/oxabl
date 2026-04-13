@@ -4632,6 +4632,11 @@ impl Parser<'_> {
             .parse_access_modifier()
             .unwrap_or(AccessModifier::Public);
 
+        // Skip optional STATIC keyword (e.g. CONSTRUCTOR STATIC classname():)
+        if self.check(Kind::KwStatic) {
+            self.advance();
+        }
+
         // Skip the class name (constructor name must match class — semantic concern)
         if Self::can_be_identifier(self.peek().kind) {
             self.advance();

@@ -500,6 +500,7 @@ impl<'a> Parser<'a> {
                     | Kind::FirstOf
                     | Kind::LastOf
                     // System handles and built-in functions used in expression position
+                    | Kind::FrameName // system variable returning the current frame's name
                     | Kind::ThisProcedure
                     | Kind::KwSelf
                     | Kind::ThisObject
