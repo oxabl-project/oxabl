@@ -454,6 +454,12 @@ impl<'a> Parser<'a> {
                     | Kind::Open
                     | Kind::Close
                     | Kind::Set
+                    // ABL dynamic invocation built-ins (usable in expression position)
+                    | Kind::DynamicEnum
+                    | Kind::DynamicInvoke
+                    // System handle keywords (property access via ':')
+                    | Kind::SecurityPolicy
+                    | Kind::Propath
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
                     | Kind::PageTop
                     | Kind::Blank
@@ -688,6 +694,28 @@ impl<'a> Parser<'a> {
                             kind: HandleParamKind::Table,
                             name,
                             passing: HandlePassingOptions::default(),
+                        },
+                    });
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
+                // BUFFER <buf-name> FOR <table-name> — buffer parameter (no AS/LIKE)
+                if self.check(Kind::Buffer) {
+                    self.advance(); // consume BUFFER
+                    let name = self.parse_identifier()?; // buffer name
+                    if self.check(Kind::KwFor) {
+                        self.advance(); // consume FOR
+                        self.parse_identifier().ok(); // table name
+                    }
+                    params.push(Statement::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Buffer {
+                            name: name.clone(),
+                            target: name,
                         },
                     });
                     if !self.check(Kind::Comma) {
