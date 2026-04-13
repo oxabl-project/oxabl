@@ -768,6 +768,11 @@ impl Parser<'_> {
                 }
             }
 
+            // Optional NO-WAIT — don't block if record is locked by another user
+            if self.check(Kind::NoWait) {
+                self.advance();
+            }
+
             // Optional NO-ERROR
             let no_error = if self.check(Kind::NoError) {
                 self.advance();
