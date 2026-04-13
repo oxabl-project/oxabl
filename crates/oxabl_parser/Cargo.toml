@@ -10,6 +10,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_parser"
 oxabl_ast = { path = "../oxabl_ast", version = "0.4.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.3.1" }
 rust_decimal = "1.40.0"
+smallvec = { version = "1", features = ["union"] }
 
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }

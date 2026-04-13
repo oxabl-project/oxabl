@@ -22,7 +22,10 @@ pub use kind::Kind;
 /// This is the main public entry point for the lexer.
 pub fn tokenize(source: &str) -> Vec<Token> {
     let mut lexer = Lexer::new(source);
-    let mut tokens = Vec::new();
+    // Pre-allocate based on source length to avoid repeated realloc/mmap calls.
+    // ABL source averages ~1 token per 5–8 bytes; dividing by 5 is conservative
+    // (slight over-allocation is cheaper than multiple heap growths).
+    let mut tokens = Vec::with_capacity(source.len() / 5);
     loop {
         let token = lexer.read_next_token();
         let is_eof = token.kind == Kind::Eof;
