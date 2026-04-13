@@ -166,6 +166,7 @@ pub enum Kind {
     Empty,
     KwEnum,
     EndEnum,
+    Connect,
 
     // Functions
     Accum,
@@ -957,6 +958,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "centere" => Some(Kind::Centered),
             "charact" => Some(Kind::Character),
             "columns" => Some(Kind::Columns),
+            "connect" => Some(Kind::Connect),
             "control" => Some(Kind::Control),
             "current" => Some(Kind::Current),
             "dataset" => Some(Kind::Dataset),

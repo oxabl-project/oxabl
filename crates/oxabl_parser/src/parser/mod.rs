@@ -488,8 +488,15 @@ impl<'a> Parser<'a> {
                     | Kind::Text
                     | Kind::Rectangle
                     | Kind::Size
-                    // UI/display keywords used as procedure/method names
+                    // UI/display keywords used as procedure/method names or frame attribute names
                     | Kind::Header
+                    // Frame and Browse can appear as attribute names after ':' (e.g. frame1:frame)
+                    // and are also used as qualifier keywords in expression position
+                    | Kind::Frame
+                    // LAST-EVENT is a system handle used as an object (e.g. last-event:label)
+                    | Kind::LastEvent
+                    // CONNECT is a statement keyword but also used as an OO method name (e.g. hwsdl:CONNECT(...))
+                    | Kind::Connect
             )
     }
 
