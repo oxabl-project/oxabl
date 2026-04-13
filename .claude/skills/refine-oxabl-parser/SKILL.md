@@ -1,16 +1,18 @@
 ---
 name: refine-oxabl-parser
-description: Iteratively improve the oxabl ABL parser by identifying parse failures, locating the fix site, applying it, validating, and committing. Use when you want to run a fix loop against the pcna-erp/oe test corpus.
+description: Iteratively improve the oxabl ABL parser by identifying parse failures, locating the fix site, applying it, validating, and committing. Use when you want to run a fix loop against subdirectories of the pcna-erp test corpus.
 argument-hint: "[optional: max iterations, default unlimited]"
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep, Agent
 ---
 
 # Refine Oxabl Parser
 
-Runs an iterative fix loop against the ABL corpus at `~/Code/pcna-erp/oe`.
+Runs an iterative fix loop against the ABL corpus in `~/Code/pcna-erp`.
+
+**Directory strategy:** List the subdirectories of `~/Code/pcna-erp` at the start. Begin with the first subdirectory. If the corpus check produces no errors for that directory, move on to the next subdirectory and continue. Work through them in order until errors are found, then run the full fix loop against that directory.
 
 Each iteration:
-1. Run the check command, collect the error breakdown
+1. Run the check command for the current directory, collect the error breakdown
 2. Pick the highest-value error pattern to fix (Haiku sub-agent)
 3. Find the exact parser location to change (Explore sub-agent)
 4. Apply the fix in this context
@@ -19,11 +21,15 @@ Each iteration:
 
 Repeat until no further progress can be made or you are told to stop.
 
+> **Preprocessor note:** If an error is caused by the parser being unable to accurately evaluate a preprocessor conditional (`&IF`/`&ELSEIF`/`&ELSE`/`&ENDIF`) — i.e. the failure is fundamentally about not knowing which branch of a preprocessor block will be active at compile time — **skip it and move on to the next error pattern.** Preprocessor evaluation is on the roadmap but is not being solved here.
+
 ## Corpus Check Command
 
 ```bash
-cargo run --bin oxabl check ~/Code/pcna-erp/oe
+cargo run --bin oxabl check ~/Code/pcna-erp/<directory>
 ```
+
+Replace `<directory>` with the current subdirectory being analysed.
 
 The output reports: total files, pass/fail counts, success %, and a ranked list of top error messages with counts.
 
