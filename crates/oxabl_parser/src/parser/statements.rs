@@ -4232,7 +4232,10 @@ impl Parser<'_> {
                 if self.check(Kind::Class) {
                     self.advance();
                 }
-                self.expect_kind(Kind::Period, "Expected '.' after END CLASS")?;
+                // Consume the trailing period if present; some files omit it (e.g. "END CLASS /* comment */")
+                if self.check(Kind::Period) {
+                    self.advance();
+                }
                 break;
             }
             body.push(self.parse_statement()?);
