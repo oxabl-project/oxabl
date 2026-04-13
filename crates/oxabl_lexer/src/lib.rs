@@ -569,6 +569,10 @@ impl<'a> Lexer<'a> {
                             Some(c) if c.is_ascii_alphabetic() => {
                                 self.advance(); // consume ':'
                                 self.advance(); // consume suffix letter (U/T)
+                                // Consume any trailing digits (e.g. the "1" in ":U1")
+                                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                                    self.advance();
+                                }
                             }
                             Some(c) if c.is_ascii_digit() => {
                                 self.advance(); // consume ':'

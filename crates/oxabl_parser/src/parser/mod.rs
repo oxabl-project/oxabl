@@ -478,6 +478,8 @@ impl<'a> Parser<'a> {
                     | Kind::ByValue
                     | Kind::Query
                     | Kind::Reposition
+                    | Kind::RepositionToRow
+                    | Kind::RepositionBackward
                     // Event system keywords (unreserved)
                     | Kind::Publish
                     | Kind::Subscribe
