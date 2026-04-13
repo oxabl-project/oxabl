@@ -557,6 +557,7 @@ impl Parser<'_> {
             || self.check(Kind::Disable)
             || self.check(Kind::Enable)
             || self.check(Kind::Accumulate)
+            || self.check(Kind::Accum) // abbreviation of ACCUMULATE
             || self.check(Kind::Down)
             || self.check(Kind::Open)
             || self.check(Kind::Apply)
