@@ -469,8 +469,9 @@ impl<'a> Parser<'a> {
                     // System handle keywords (property access via ':')
                     | Kind::SecurityPolicy
                     | Kind::Propath
-                    // Memory manipulation functions (usable in assignment LHS)
+                    // Memory manipulation functions (usable in assignment LHS / expression position)
                     | Kind::PutByte
+                    | Kind::GetByte
                     // Handle attribute names (e.g. builder:Library)
                     | Kind::Library
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
@@ -487,6 +488,8 @@ impl<'a> Parser<'a> {
                     | Kind::Text
                     | Kind::Rectangle
                     | Kind::Size
+                    // UI/display keywords used as procedure/method names
+                    | Kind::Header
             )
     }
 

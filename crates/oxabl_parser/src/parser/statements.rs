@@ -2648,7 +2648,21 @@ impl Parser<'_> {
     fn parse_procedure(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume PROCEDURE
 
-        let name = self.parse_identifier()?;
+        // Procedure names can be quoted strings: PROCEDURE "checkout":
+        let name = if self.check(Kind::StringLiteral) {
+            let tok = self.advance().clone();
+            Identifier {
+                span: Span {
+                    start: tok.start as u32,
+                    end: tok.end as u32,
+                },
+                name: self.source[tok.start..tok.end]
+                    .trim_matches('"')
+                    .to_string(),
+            }
+        } else {
+            self.parse_identifier()?
+        };
 
         // Skip optional EXTERNAL "dll-name" [PERSISTENT] clause
         // e.g. PROCEDURE foo EXTERNAL "mylib.dll" PERSISTENT:

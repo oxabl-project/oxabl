@@ -735,6 +735,12 @@ impl Parser<'_> {
             // Table/buffer name
             let buffer = self.parse_identifier()?;
 
+            // Optional OF table — related-record syntax: CAN-FIND(child OF parent)
+            if self.check(Kind::Of) {
+                self.advance(); // consume OF
+                self.parse_identifier().ok(); // consume parent table name
+            }
+
             // Lock type may appear before or after WHERE (ABL is flexible).
             let lock_type_before = self.parse_lock_type();
 
@@ -894,11 +900,15 @@ impl Parser<'_> {
                     },
                     name: self.source[as_..ae].to_string(),
                 }));
-                // optional BY break-field (may be qualified: table.field)
+                // optional BY break-field [label] (may be qualified: table.field)
                 if self.check(Kind::By) {
                     self.advance();
                     if Self::can_be_identifier(self.peek().kind) {
                         self.parse_postfix().ok();
+                    }
+                    // Optional label (integer or string) identifying the break level
+                    if matches!(self.peek().kind, Kind::IntegerLiteral | Kind::StringLiteral) {
+                        self.advance();
                     }
                 }
             }
