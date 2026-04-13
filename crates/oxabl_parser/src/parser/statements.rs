@@ -9,11 +9,12 @@
 use oxabl_ast::{
     AccessModifier, AssignPair, BufferTarget, CreateTarget, CreateTargetKind, DataRelation,
     DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, FindType,
-    HandleParamKind, HandlePassingOptions, Identifier, IndexField, LockType, OnAction,
+    HandleParamKind, HandlePassingOptions, Identifier, IndexField, Literal, LockType, OnAction,
     OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation, PreprocIf,
     RunArgument, RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation,
     SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
-    TypeSource, UseIndex, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
+    TypeSource, UnknownLiteral, UseIndex, WhenBranch, WidgetQualifier, WidgetRef,
+    XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -5442,7 +5443,25 @@ impl Parser<'_> {
             StreamOperation::To { target, append }
         } else if self.check(Kind::Through) || self.check(Kind::Thru) {
             self.advance(); // consume THROUGH/THRU
-            let target = self.parse_expression()?;
+            // The THROUGH target may be a raw OS command (e.g. "date +%Z") that
+            // contains tokens invalid in ABL expressions (%, etc.). Try to parse
+            // as an expression; if it fails, skip to the statement end and use an
+            // Unknown placeholder so the rest of the file can still be parsed.
+            let target = match self.parse_expression() {
+                Ok(expr) => expr,
+                Err(_) => {
+                    self.skip_to_statement_end();
+                    return Ok(Statement::StreamIo {
+                        direction,
+                        stream_name,
+                        operation: StreamOperation::Through(Expression::Literal(Literal::Unknown(
+                            UnknownLiteral {
+                                span: self.current_span(),
+                            },
+                        ))),
+                    });
+                }
+            };
             StreamOperation::Through(target)
         } else if self.check(Kind::Close) {
             self.advance(); // consume CLOSE
