@@ -405,6 +405,7 @@ impl<'a> Parser<'a> {
                     // System handles and built-in functions used in expression position
                     | Kind::ThisProcedure
                     | Kind::KwSelf
+                    | Kind::ThisObject
                     | Kind::FileInfo
                     | Kind::CanDo
                     | Kind::Entry
@@ -460,6 +461,10 @@ impl<'a> Parser<'a> {
                     | Kind::FrameFile
                     | Kind::FrameField
                     | Kind::FrameIndex
+                    // Widget/data keywords commonly used as class/type name components
+                    | Kind::Text
+                    | Kind::Rectangle
+                    | Kind::Size
             )
     }
 
