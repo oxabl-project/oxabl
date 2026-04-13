@@ -109,6 +109,35 @@ impl Parser<'_> {
             });
         }
 
+        // Numeric-prefixed block label: `1TO99-MILLIONS: DO:` — ABL allows labels that
+        // start with a digit.  The lexer splits this into IntegerLiteral + Identifier + Colon.
+        // Detect and discard the label so the inner block statement parses normally.
+        if self.check(Kind::IntegerLiteral)
+            && Self::can_be_identifier(self.peek_at(1).kind)
+            && self.check_at(2, Kind::Colon)
+            && matches!(
+                self.peek_nth_non_comment(4).kind,
+                Kind::Do | Kind::Repeat | Kind::KwFor
+            )
+        {
+            let start = self.tokens[self.current].start;
+            self.advance(); // consume integer part
+            let end = self.tokens[self.current - 1].end;
+            let name_start = start;
+            let ident_tok = self.advance().clone(); // consume identifier part
+            let name = format!(
+                "{}{}",
+                &self.source[name_start..end],
+                &self.source[ident_tok.start..ident_tok.end]
+            );
+            self.advance(); // consume ':'
+            let body = self.parse_statement()?;
+            return Ok(Statement::Label {
+                name,
+                body: Box::new(body),
+            });
+        }
+
         // CATCH / FINALLY blocks — may appear at program level or inside any block body
         if self.check(Kind::Catch) {
             return self.parse_catch_block();
@@ -272,7 +301,9 @@ impl Parser<'_> {
         // EXPORT statement: EXPORT [STREAM stream-name] [DELIMITER char] [SKIP [n]] expr... .
         if self.check(Kind::Export) {
             self.advance(); // consume EXPORT
-            self.skip_to_period(); // consumes everything including the period
+            // Use skip_to_statement_end so field-access dots (e.g. vendor.vend-number) are not
+            // mistaken for the statement-terminating period.
+            self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
 
@@ -424,7 +455,8 @@ impl Parser<'_> {
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
-        // PAGE / DISABLE / ACCUMULATE / DOWN / OPEN / APPLY / UPDATE / STATUS — skip to end.
+        // PAGE / DISABLE / ENABLE / ACCUMULATE / DOWN / OPEN / APPLY / UPDATE / STATUS /
+        // CLEAR / HIDE — skip to end.
         // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
         // like 'order.company' in WHERE clauses are not mistaken for statement terminators.
         if self.check(Kind::Pause)
@@ -446,6 +478,8 @@ impl Parser<'_> {
             || self.check(Kind::Update)
             || self.check(Kind::Status)
             || self.check(Kind::Get)
+            || self.check(Kind::Clear)
+            || self.check(Kind::Hide)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
@@ -721,6 +755,14 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // UI widget definitions — DEFINE RECTANGLE and similar identifiers (BUTTON, IMAGE,
+        // MENU, SUB-MENU) that the lexer doesn't give a dedicated Kind.  When we see an
+        // unrecognised identifier here, skip the whole DEFINE statement to statement end.
+        if self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
+        }
+
         // DEFINE VARIABLE / DEFINE VAR
         if self.check(Kind::Variable) {
             self.advance(); // consume VARIABLE or VAR
@@ -801,6 +843,20 @@ impl Parser<'_> {
                 Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
                     self.advance();
                     self.skip_format_value();
+                }
+                // UI display options (VIEW-AS, SIZE) — when we hit VIEW-AS or SIZE, the
+                // remaining variable options are entirely UI-related.  Skip to the statement
+                // end using the field-access-aware helper so that dots inside numeric
+                // size specs (e.g. 24.4 or .62) are not mistaken for the terminator.
+                Kind::ViewAs | Kind::Size => {
+                    self.skip_to_statement_end();
+                    return Ok(Statement::VariableDeclaration {
+                        name,
+                        type_source,
+                        initial_value,
+                        no_undo,
+                        extent,
+                    });
                 }
                 _ => break,
             }
@@ -4580,18 +4636,18 @@ impl Parser<'_> {
         // Record start of unparsed content
         let raw_start = self.peek().start as u32;
 
-        // Skip tokens until period (simplified — we don't parse frame phrases)
-        while !self.check(Kind::Period) && !self.at_end() {
-            self.advance();
-        }
-
-        let raw_end = self.peek().start as u32;
+        // Skip frame phrase content.  Use skip_to_statement_end() so that field-access dots
+        // inside VALIDATE expressions (e.g. t-pc-center.company) are not mistaken for
+        // the terminating period.
+        let pre_skip = self.current;
+        self.skip_to_statement_end();
+        let raw_end = self.tokens[self.current - 1].start as u32;
+        let _ = pre_skip; // consumed by skip_to_statement_end
         let raw_span = Span {
             start: raw_start,
             end: raw_end,
         };
 
-        self.expect_kind(Kind::Period, "Expected '.' after DEFINE FRAME")?;
         Ok(Statement::DefineFrame { name, raw_span })
     }
 

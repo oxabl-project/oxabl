@@ -331,6 +331,7 @@ pub enum Kind {
     Endkey,
     Browse,
     External,
+    Size,
 
     // Phrases
     Editing,
@@ -731,6 +732,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "save" => Some(Kind::Save),
             "seek" => Some(Kind::Seek),
             "self" => Some(Kind::KwSelf),
+            "size" => Some(Kind::Size),
             "skip" => Some(Kind::Skip),
             "some" => Some(Kind::Some),
             "term" => Some(Kind::Term),

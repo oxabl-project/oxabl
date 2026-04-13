@@ -554,6 +554,7 @@ fn main() {
             "show-stats",
             "signature",
             "single-run",
+            "size",
             "skip",
             "skip-deleted-record",
             "some",
