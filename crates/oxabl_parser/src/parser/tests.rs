@@ -8568,3 +8568,24 @@ fn parse_define_variable_extent_preprop() {
     let result = parser.parse_program();
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
 }
+
+#[test]
+fn parse_do_counting_loop_in_frame_compound_name() {
+    // Frame name is a compound preprop+identifier: {&tablename}f-builder
+    let source = "do x = 1 to 10 in frame {&tablename}f-builder:\n   assign y = 1.\nend.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
+
+#[test]
+fn parse_repeat_counting_loop_compound_preprop_var() {
+    // Loop variable is a compound preprop+identifier: {&tablename}i
+    let source =
+        "repeat {&tablename}i = 1 to {&tablename}btemp:num-fields:\n   assign x = 1.\nend.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
