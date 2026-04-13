@@ -407,6 +407,7 @@ impl<'a> Parser<'a> {
                     | Kind::Assign
                     | Kind::Find
                     | Kind::Procedure
+                    | Kind::Returns // unreserved; used as field/variable name (e.g. field returns as log)
                     // DB-operation keywords used as OO method names (e.g. model:create(), obj:delete())
                     | Kind::Create
                     | Kind::Delete
