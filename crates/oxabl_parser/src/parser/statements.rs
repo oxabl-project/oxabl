@@ -647,7 +647,11 @@ impl Parser<'_> {
         }
 
         // Include positional argument references: {0}, {1}, {2}
-        if self.check(Kind::IncludeArgReference) {
+        // But if followed by ':' (member access) or '=' (assignment), fall through to
+        // expression/assignment parsing so that e.g. `{5}:font = 8.` is handled correctly.
+        if self.check(Kind::IncludeArgReference)
+            && !matches!(self.peek_at(1).kind, Kind::Colon | Kind::Equals)
+        {
             return self.parse_include_arg_reference_statement();
         }
 
@@ -4961,6 +4965,14 @@ impl Parser<'_> {
     fn parse_buffer_copy(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER-COPY
         let source = self.parse_identifier()?;
+
+        // Source may be a db.table or buf.field reference: consume the dotted suffix.
+        if self.check(Kind::Period) && self.is_field_access_ahead() {
+            self.advance(); // consume '.'
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance(); // consume table/field name
+            }
+        }
 
         // Optional USING or EXCEPT clause (field list to include/exclude)
         // Appears BEFORE the TO keyword: BUFFER-COPY src [USING|EXCEPT] f1 f2 TO target

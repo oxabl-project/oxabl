@@ -634,6 +634,10 @@ impl<'a> Parser<'a> {
                     | Kind::Database
                     // FILL is a Dataset method name (e.g. Dataset.Fill, Run Dataset.Fill)
                     | Kind::Fill
+                    // Widget attribute names that are also ABL keywords (e.g. widget:font, widget:skip)
+                    | Kind::Font
+                    | Kind::Skip
+                    | Kind::Field
             )
     }
 
