@@ -4568,11 +4568,11 @@ impl Parser<'_> {
         self.advance(); // consume BUFFER-COMPARE
         let source = self.parse_identifier()?;
 
-        // Optional EXCEPT field-list clause (field1 field2 ...) before TO
-        if self.check(Kind::Except) {
-            self.advance(); // consume EXCEPT
+        // Optional USING or EXCEPT field-list clause (field1 field2 ...) before TO
+        if self.check(Kind::Using) || self.check(Kind::Except) {
+            self.advance(); // consume USING/EXCEPT
             while Self::can_be_identifier(self.peek().kind) {
-                self.advance(); // consume each excluded field
+                self.advance(); // consume each field name
             }
         }
 
@@ -4581,6 +4581,11 @@ impl Parser<'_> {
             "Expected TO after source buffer in BUFFER-COMPARE",
         )?;
         let target = self.parse_identifier()?;
+
+        // Optional BINARY option (compare byte-by-byte rather than field-by-field)
+        if self.is_identifier_text_at(0, "BINARY") {
+            self.advance();
+        }
 
         // Optional SAVE RESULT IN clause
         // SAVE is Kind::Save, RESULT is an identifier, IN is Kind::In
