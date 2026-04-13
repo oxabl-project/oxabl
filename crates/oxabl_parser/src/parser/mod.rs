@@ -497,6 +497,10 @@ impl<'a> Parser<'a> {
                     | Kind::LastEvent
                     // CONNECT is a statement keyword but also used as an OO method name (e.g. hwsdl:CONNECT(...))
                     | Kind::Connect
+                    // Handle attribute names used as member names after ':' (e.g. htable:BUFFER-FIELD(j):HELP)
+                    | Kind::Help
+                    // CURRENT-LANGUAGE is a system variable used in expression context
+                    | Kind::CurrentLanguage
             )
     }
 
