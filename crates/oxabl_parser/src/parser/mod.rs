@@ -971,10 +971,13 @@ impl<'a> Parser<'a> {
         } else {
             self.expect_kind(Kind::KwAs, "Expected AS or LIKE")?;
             let data_type = self.parse_data_type()?;
-            // Consume optional EXTENT [n] clause (e.g. AS CHAR EXTENT 2)
+            // Consume optional EXTENT [n] clause (e.g. AS CHAR EXTENT 2 or AS HANDLE EXTENT {&N})
             if self.check(Kind::Extent) {
                 self.advance();
-                if self.check(Kind::IntegerLiteral) {
+                if self.check(Kind::IntegerLiteral)
+                    || self.check(Kind::Preprop)
+                    || self.check(Kind::IncludeArgReference)
+                {
                     self.advance();
                 }
             }

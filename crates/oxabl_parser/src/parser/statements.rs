@@ -941,7 +941,7 @@ impl Parser<'_> {
                 }
                 Kind::Extent => {
                     self.advance();
-                    // Extent can be followed by number or nothing (dynamic)
+                    // Extent can be followed by number, preprocessor reference, or nothing (dynamic)
                     if self.check(Kind::IntegerLiteral) {
                         let ext_token = self.advance().clone();
                         if let Ok(n) = self.source[ext_token.start..ext_token.end].parse::<u32>() {
@@ -949,6 +949,10 @@ impl Parser<'_> {
                         } else {
                             extent = Some(0); // dynamic
                         }
+                    } else if self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
+                        // e.g. EXTENT {&DEPTH_MAX} — treat as dynamic extent
+                        self.advance();
+                        extent = Some(0);
                     }
                 }
                 Kind::Decimals => {
@@ -1703,76 +1707,69 @@ impl Parser<'_> {
         self.expect_kind(Kind::Comma, "Expected ',' between parent and child buffers")?;
         let child_buffer = self.parse_identifier()?;
 
-        // RELATION-FIELDS / RELATION-FIELD (pf1, cf1 [, pfN, cfN]...)
-        // Accept both plural and singular forms (RELATION-FIELD is not a registered keyword).
-        let tok = self.peek();
-        let is_relation_field = self.check(Kind::RelationFields)
-            || (self.check(Kind::Identifier)
-                && self.source[tok.start..tok.end].eq_ignore_ascii_case("relation-field"));
-        if is_relation_field {
-            self.advance();
-        } else {
-            return Err(ParseError {
-                message: "Expected RELATION-FIELDS in DATA-RELATION".to_string(),
-                span: self.current_span(),
-            });
-        }
-        self.expect_kind(Kind::LeftParen, "Expected '(' after RELATION-FIELDS")?;
-
-        let mut relation_fields = Vec::new();
-        loop {
-            let parent_field = self.parse_identifier()?;
-            // Optional table.field qualifier (e.g. ttMethod.id)
-            if self.check(Kind::Period) && self.is_field_access_ahead() {
-                self.advance(); // consume .
-                self.advance(); // consume field name
-            }
-            self.expect_kind(Kind::Comma, "Expected ',' between field pair")?;
-            let child_field = self.parse_identifier()?;
-            // Optional table.field qualifier
-            if self.check(Kind::Period) && self.is_field_access_ahead() {
-                self.advance(); // consume .
-                self.advance(); // consume field name
-            }
-            relation_fields.push((parent_field, child_field));
-            if !self.check(Kind::Comma) {
-                break;
-            }
-            self.advance(); // consume comma before next pair
-        }
-        self.expect_kind(Kind::RightParen, "Expected ')' after RELATION-FIELDS")?;
-
-        // Parse optional flags
+        // Flags (REPOSITION, NESTED, etc.) and RELATION-FIELDS may appear in any order.
+        // Parse them all in a unified loop.
         let mut reposition = false;
         let mut nested = false;
         let mut foreign_key_hidden = false;
         let mut not_active = false;
         let mut recursive = false;
+        let mut relation_fields: Vec<(Identifier, Identifier)> = Vec::new();
 
         loop {
-            match self.peek().kind {
-                Kind::Reposition => {
-                    self.advance();
-                    reposition = true;
-                }
-                Kind::Nested => {
-                    self.advance();
-                    nested = true;
-                    // FOREIGN-KEY-HIDDEN can only follow NESTED
-                    if self.check(Kind::ForeignKeyHidden) {
-                        self.advance();
-                        foreign_key_hidden = true;
+            let tok = self.peek();
+            let is_relation_field = self.check(Kind::RelationFields)
+                || (self.check(Kind::Identifier)
+                    && self.source[tok.start..tok.end].eq_ignore_ascii_case("relation-field"));
+            if is_relation_field {
+                self.advance();
+                self.expect_kind(Kind::LeftParen, "Expected '(' after RELATION-FIELDS")?;
+                loop {
+                    let parent_field = self.parse_identifier()?;
+                    // Optional table.field qualifier (e.g. ttMethod.id)
+                    if self.check(Kind::Period) && self.is_field_access_ahead() {
+                        self.advance(); // consume .
+                        self.advance(); // consume field name
                     }
+                    self.expect_kind(Kind::Comma, "Expected ',' between field pair")?;
+                    let child_field = self.parse_identifier()?;
+                    // Optional table.field qualifier
+                    if self.check(Kind::Period) && self.is_field_access_ahead() {
+                        self.advance(); // consume .
+                        self.advance(); // consume field name
+                    }
+                    relation_fields.push((parent_field, child_field));
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance(); // consume comma before next pair
                 }
-                Kind::NotActive => {
-                    self.advance();
-                    not_active = true;
+                self.expect_kind(Kind::RightParen, "Expected ')' after RELATION-FIELDS")?;
+            } else {
+                match self.peek().kind {
+                    Kind::Reposition => {
+                        self.advance();
+                        reposition = true;
+                    }
+                    Kind::Nested => {
+                        self.advance();
+                        nested = true;
+                        // FOREIGN-KEY-HIDDEN can only follow NESTED
+                        if self.check(Kind::ForeignKeyHidden) {
+                            self.advance();
+                            foreign_key_hidden = true;
+                        }
+                    }
+                    Kind::NotActive => {
+                        self.advance();
+                        not_active = true;
+                    }
+                    Kind::Recursive => {
+                        self.advance();
+                        recursive = true;
+                    }
+                    _ => break,
                 }
-                Kind::Recursive => {
-                    self.advance();
-                    recursive = true;
-                }
-                _ => break,
             }
         }
 
@@ -2839,7 +2836,7 @@ impl Parser<'_> {
         self.advance(); // consume PROCEDURE
 
         // Procedure names can be quoted strings: PROCEDURE "checkout":
-        let name = if self.check(Kind::StringLiteral) {
+        let mut name = if self.check(Kind::StringLiteral) {
             let tok = self.advance().clone();
             Identifier {
                 span: Span {
@@ -2862,6 +2859,25 @@ impl Parser<'_> {
             // An underscore/alpha-led segment directly following (e.g. "_spdata") is a separate Identifier.
             if self.check(Kind::Identifier) {
                 self.advance();
+            }
+        }
+
+        // Dotted method-name suffix: e.g. "Procedure Dataset.Fill:" where Dataset is a keyword.
+        // Only consume if the period and identifier are on the same line.
+        if self.check(Kind::Period) {
+            let period_end = self.tokens[self.current].end;
+            let next_idx = self.current + 1;
+            if let Some(next_tok) = self.tokens.get(next_idx) {
+                if Self::is_word_kind(next_tok.kind)
+                    && next_tok.kind != Kind::Comment
+                    && !self.source[period_end..next_tok.start].contains('\n')
+                {
+                    self.advance(); // consume '.'
+                    let seg = self.advance().clone();
+                    let suffix = self.source[seg.start..seg.end].to_string();
+                    name.name = format!("{}.{}", name.name, suffix);
+                    name.span.end = seg.end as u32;
+                }
             }
         }
 
@@ -3885,20 +3901,25 @@ impl Parser<'_> {
             }
         }
 
-        // Check for dotted extension (e.g., my-proc.p)
-        // Only consume the dot + extension if it's a known ABL file extension
-        if self.check(Kind::Period) && self.check_at(1, Kind::Identifier) {
+        // Check for dotted extension (e.g., my-proc.p) or dotted method name (e.g., Dataset.Fill).
+        // The next token after the period may be an Identifier or a reserved keyword used as a
+        // method name (e.g., Fill is Kind::Fill, not Kind::Identifier).
+        if self.check(Kind::Period) && Self::is_word_kind(self.peek_at(1).kind) {
             let next = self.peek_at(1);
             let ext = &self.source[next.start..next.end];
             let ext_bytes = ext.as_bytes();
-            if match ext_bytes.len() {
+            let is_file_ext = match ext_bytes.len() {
                 1 => matches!(ext_bytes[0] | 0x20, b'p' | b'w' | b'r' | b'i'),
                 2 => ext.eq_ignore_ascii_case("pp"), // preprocessed procedure files (.pp)
                 3 => ext.eq_ignore_ascii_case("cls"),
                 _ => false,
-            } {
+            };
+            // Also accept dotted method names (e.g. Dataset.Fill) on the same line.
+            let period_end = self.tokens[self.current].end;
+            let same_line = !self.source[period_end..next.start].contains('\n');
+            if is_file_ext || same_line {
                 self.advance(); // consume the period
-                self.advance(); // consume the extension
+                self.advance(); // consume the extension or method name
             }
         }
 
@@ -4633,6 +4654,14 @@ impl Parser<'_> {
                 handle.name.push(sep);
                 handle.name.push_str(&self.source[seg.start..seg.end]);
                 handle.span.end = seg.end as u32;
+            }
+            // Consume optional array subscript on the handle: CREATE TEMP-TABLE x[depth].
+            if self.check(Kind::LeftBracket) {
+                self.advance(); // consume '['
+                self.parse_expression().ok();
+                if self.check(Kind::RightBracket) {
+                    self.advance(); // consume ']'
+                }
             }
             // CREATE BUFFER handle FOR TABLE(expr) or FOR TABLE tablename
             if self.check(Kind::KwFor) {
