@@ -171,6 +171,89 @@ impl<'a> Parser<'a> {
             self.advance();
         }
     }
+
+    /// Like skip_to_statement_end, but also skips over TRIGGERS: ... END TRIGGERS. blocks
+    /// that appear as part of a CREATE widget ASSIGN ... construct.  Without this, the
+    /// first statement-terminating period *inside* the trigger sub-block would be mistaken
+    /// for the end of the CREATE statement, leaving block nesting misaligned.
+    pub fn skip_to_statement_end_triggers_aware(&mut self) {
+        while !self.at_end() {
+            // Detect TRIGGERS: — enter trigger-block skip mode.
+            if self.peek().kind == Kind::Identifier {
+                let tok = self.peek();
+                if self.source[tok.start..tok.end].eq_ignore_ascii_case("triggers") {
+                    self.advance(); // consume "TRIGGERS"
+                    if self.check(Kind::Colon) {
+                        self.advance(); // consume ':'
+                    }
+                    // Skip the entire TRIGGERS body until END TRIGGERS.
+                    while !self.at_end() {
+                        if self.check(Kind::End) {
+                            let next_is_triggers =
+                                self.tokens.get(self.current + 1).is_some_and(|t| {
+                                    t.kind == Kind::Identifier
+                                        && self.source[t.start..t.end]
+                                            .eq_ignore_ascii_case("triggers")
+                                });
+                            if next_is_triggers {
+                                self.advance(); // consume END
+                                self.advance(); // consume TRIGGERS
+                                if self.check(Kind::Period) {
+                                    self.advance(); // consume '.'
+                                }
+                                return;
+                            }
+                        }
+                        self.advance();
+                    }
+                    return;
+                }
+            }
+            // Normal statement-end detection.
+            if self.check(Kind::Period) {
+                let period_end = self.tokens[self.current].end;
+                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
+                    Self::can_be_identifier(t.kind)
+                        && !self.source[period_end..t.start].contains('\n')
+                });
+                if !is_field_access {
+                    self.advance(); // consume the terminating period
+                    return;
+                }
+            }
+            self.advance();
+        }
+    }
+    /// Consume a widget/frame/browse name token.
+    ///
+    /// A name may be a compound preprop+identifier token pair written adjacent
+    /// in source (e.g. `{&tablename}f-builder`).  The original token stream has
+    /// these as separate tokens (Preprop then Identifier) with adjacent byte
+    /// ranges.  This helper consumes the first part unconditionally, then
+    /// continues consuming adjacent parts of the same kind.
+    pub(crate) fn consume_widget_name(&mut self) {
+        if self.at_end() {
+            return;
+        }
+        let mut name_end = self.advance().end;
+        loop {
+            if self.at_end() {
+                break;
+            }
+            let next = &self.tokens[self.current];
+            if next.start != name_end {
+                break;
+            }
+            if Self::can_be_identifier(next.kind)
+                || matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
+            {
+                name_end = self.advance().end;
+            } else {
+                break;
+            }
+        }
+    }
+
     pub fn peek(&self) -> &Token {
         &self.tokens[self.current]
     }
