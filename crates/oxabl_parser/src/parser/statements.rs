@@ -3649,6 +3649,19 @@ impl Parser<'_> {
         // Parse class name (dotted)
         let name = self.parse_qualified_identifier()?;
 
+        // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
+        loop {
+            if self.check(Kind::Abstract) {
+                self.advance();
+                is_abstract = true;
+            } else if self.check(Kind::Final) {
+                self.advance();
+                is_final = true;
+            } else {
+                break;
+            }
+        }
+
         // Parse optional INHERITS
         let inherits = if self.check(Kind::Inherits) {
             self.advance();
@@ -4094,7 +4107,15 @@ impl Parser<'_> {
             // Peek past period: identifier or * continues the name, anything else is terminator.
             // Exclude preprocessor tokens — they are never part of a dotted type name.
             let next_kind = self.peek_at(1).kind;
-            let is_name_segment = Self::can_be_identifier(next_kind)
+            // A period is a name separator only if the next token is on the same line
+            // (no newline in the source between the period end and the next token start).
+            // This distinguishes "Progress.Lang.Class." (Class on same line = name segment)
+            // from "HarmonizationCode.\nclass" (class on next line = statement terminator).
+            let period_end = self.tokens[self.current].end;
+            let next_token_start = self.peek_at(1).start;
+            let same_line = !self.source[period_end..next_token_start].contains('\n');
+            let is_name_segment = same_line
+                && Self::can_be_identifier(next_kind)
                 && !matches!(
                     next_kind,
                     Kind::IncludeReference | Kind::IncludeArgReference | Kind::Preprop
@@ -4111,6 +4132,15 @@ impl Parser<'_> {
                 break; // wildcard is always last
             } else {
                 break; // period is statement terminator
+            }
+        }
+
+        // Consume optional "FROM PROPATH" / "FROM ASSEMBLY" source clause
+        if self.check(Kind::From) {
+            self.advance(); // consume FROM
+            // Consume the source keyword (PROPATH, ASSEMBLY, or an identifier)
+            if Self::can_be_identifier(self.peek().kind) || self.check(Kind::Propath) {
+                self.advance();
             }
         }
 
