@@ -5867,11 +5867,18 @@ impl Parser<'_> {
     fn parse_dotted_name(&mut self) -> ParseResult<Identifier> {
         let first = self.parse_identifier()?;
         // Check if a period follows and the next token is an identifier-like token
-        // (not a statement-starting keyword or end of input).
+        // on the SAME LINE (not a statement-starting keyword, end of input, or a
+        // token on the next line which would be a statement terminator).
         // This distinguishes `Customer.Name` from `Customer.` (statement terminator).
         if self.check(Kind::Period) {
-            let next_kind = self.peek_at(1).kind;
-            if next_kind == Kind::Identifier || Self::can_be_identifier(next_kind) {
+            let period_end = self.tokens[self.current].end;
+            let next_tok = self.peek_at(1);
+            let next_kind = next_tok.kind;
+            let same_line = !self.source[period_end..next_tok.start].contains('\n');
+            if same_line
+                && next_kind != Kind::Comment
+                && (next_kind == Kind::Identifier || Self::can_be_identifier(next_kind))
+            {
                 self.advance(); // consume period
                 let second = self.parse_identifier()?;
                 let name = format!("{}.{}", first.name, second.name);
@@ -5962,7 +5969,14 @@ impl Parser<'_> {
         let target = self.parse_dotted_name()?;
 
         let mut referencing = TriggerReferencing::default();
-        if event == DbTriggerEvent::Write {
+        // Write and replication-write triggers support NEW/OLD BUFFER clauses.
+        if matches!(
+            event,
+            DbTriggerEvent::Write
+                | DbTriggerEvent::ReplicationWrite
+                | DbTriggerEvent::ReplicationCreate
+                | DbTriggerEvent::ReplicationDelete
+        ) {
             if self.check(Kind::New) {
                 self.advance();
                 if self.check(Kind::Buffer) {
