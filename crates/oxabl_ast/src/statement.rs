@@ -646,6 +646,8 @@ pub enum ParameterDirection {
     Output,
     /// Parameter is both passed in and returned.
     InputOutput,
+    /// Return value parameter (DEFINE RETURN PARAMETER).
+    Return,
 }
 
 /// Target of a RUN statement -- either a static procedure name or a dynamic expression.

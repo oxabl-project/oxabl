@@ -330,6 +330,7 @@ pub enum Kind {
     Choose,
     Endkey,
     Browse,
+    External,
 
     // Phrases
     Editing,
@@ -1080,6 +1081,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "disconne" => Some(Kind::Disconnect),
             "distinct" => Some(Kind::Distinct),
             "end enum" => Some(Kind::EndEnum),
+            "external" => Some(Kind::External),
             "first of" => Some(Kind::FirstOf),
             "first-of" => Some(Kind::FirstOf),
             "frame db" => Some(Kind::FrameDb),

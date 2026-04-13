@@ -223,6 +223,7 @@ fn main() {
             "exists",
             "export",
             "extent",
+            "external",
             "false",
             "fetch",
             "field",
