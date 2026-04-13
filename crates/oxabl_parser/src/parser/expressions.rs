@@ -591,20 +591,11 @@ impl Parser<'_> {
                 }));
             }
 
-            // Parse argument list (supports INPUT/OUTPUT direction qualifiers)
+            // Parse argument list (supports INPUT/OUTPUT direction qualifiers and TABLE/BUFFER args)
             self.expect_kind(Kind::LeftParen, "Expected '(' after class name in NEW")?;
             let mut arguments = Vec::new();
             if !self.check(Kind::RightParen) {
-                // Skip optional direction qualifier
-                if matches!(
-                    self.peek().kind,
-                    Kind::Input | Kind::Output | Kind::InputOutput
-                ) {
-                    self.advance();
-                }
-                arguments.push(self.parse_expression()?);
-                while self.check(Kind::Comma) {
-                    self.advance();
+                loop {
                     // Skip optional direction qualifier
                     if matches!(
                         self.peek().kind,
@@ -612,7 +603,38 @@ impl Parser<'_> {
                     ) {
                         self.advance();
                     }
-                    arguments.push(self.parse_expression()?);
+                    // Handle TABLE/BUFFER/DATASET handle-type arguments (no expression value)
+                    if matches!(
+                        self.peek().kind,
+                        Kind::Table
+                            | Kind::Buffer
+                            | Kind::Dataset
+                            | Kind::TableHandle
+                            | Kind::DatasetHandle
+                    ) {
+                        self.advance(); // consume TABLE/BUFFER/DATASET etc.
+                        // Optional FOR keyword
+                        if self.check(Kind::KwFor) {
+                            self.advance();
+                        }
+                        // Consume the name
+                        if Self::can_be_identifier(self.peek().kind) {
+                            self.advance();
+                        }
+                        // Consume optional BIND/APPEND/BY-VALUE
+                        while matches!(
+                            self.peek().kind,
+                            Kind::Bind | Kind::Append | Kind::ByValue | Kind::ByReference
+                        ) {
+                            self.advance();
+                        }
+                    } else {
+                        arguments.push(self.parse_expression()?);
+                    }
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance(); // consume comma
                 }
             }
             self.expect_kind(Kind::RightParen, "Expected ')' after NEW arguments")?;
@@ -621,6 +643,39 @@ impl Parser<'_> {
                 class_name,
                 arguments,
             });
+        }
+
+        // DYNAMIC-NEW expr([args]) — dynamic object instantiation where the class name
+        // is a runtime expression (variable or string), not a static identifier.
+        if self.check(Kind::DynamicNew) {
+            self.advance(); // consume DYNAMIC-NEW
+            // Parse the class name expression (typically an identifier or string)
+            let _class_expr = self.parse_primary()?;
+            // Parse optional argument list
+            if self.check(Kind::LeftParen) {
+                self.advance();
+                if !self.check(Kind::RightParen) {
+                    loop {
+                        if matches!(
+                            self.peek().kind,
+                            Kind::Input | Kind::Output | Kind::InputOutput
+                        ) {
+                            self.advance();
+                        }
+                        self.parse_expression().ok();
+                        if !self.check(Kind::Comma) {
+                            break;
+                        }
+                        self.advance();
+                    }
+                }
+                self.expect_kind(Kind::RightParen, "Expected ')' after DYNAMIC-NEW arguments")?;
+            }
+            // Return as an empty expression (we don't have a DynamicNew AST node yet)
+            return Ok(Expression::Identifier(Identifier {
+                span: self.current_span(),
+                name: "dynamic-new".to_string(),
+            }));
         }
 
         // DYNAMIC-FUNCTION("func-name" [IN handle] [, arg1, arg2, ...])

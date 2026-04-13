@@ -201,6 +201,7 @@ fn main() {
             "dynamic enum",
             "dynamic function",
             "dynamic invoke",
+            "dynamic-new",
             "each",
             "editing",
             "else",
