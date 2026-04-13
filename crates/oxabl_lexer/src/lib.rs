@@ -524,8 +524,8 @@ impl<'a> Lexer<'a> {
 
     /// Reads the word that will resolve to either a keyword or identifer
     fn read_identifier_or_keyword(&mut self, start: usize) -> Kind {
-        // Keep consuming alphanumeric chars, underscores, hyphens, and '#'.
-        // ABL allows '#' in identifiers (e.g. pPrintPO#, vCount#).
+        // Keep consuming alphanumeric chars, underscores, hyphens, '#', and '$'.
+        // ABL allows '#' and '$' in identifiers (e.g. pPrintPO#, v-tot-mtd$).
         // This shouldn't match "var1 - var2" because there is no
         // whitespace here, and "var1-var2" is not valid ABL, but in
         // our case, we would think it's an identifier. It would fail
@@ -533,7 +533,7 @@ impl<'a> Lexer<'a> {
         // It should still match "my-var1" though.
         while matches!(
             self.peek(),
-            Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#')
+            Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
         ) {
             self.advance();
         }
