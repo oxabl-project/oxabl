@@ -545,6 +545,8 @@ impl<'a> Parser<'a> {
                     | Kind::KwEnum
                     // DATABASE appears in qualified class names like Progress.Database.TempTableInfo
                     | Kind::Database
+                    // FILL is a Dataset method name (e.g. Dataset.Fill, Run Dataset.Fill)
+                    | Kind::Fill
             )
     }
 

@@ -8542,6 +8542,16 @@ fn parse_include_with_named_args() {
 }
 
 #[test]
+fn parse_case_when_or_when() {
+    // ABL allows WHEN val1 OR WHEN val2 OR WHEN val3 THEN as a multi-value WHEN branch
+    let source = "CASE sAction:\n    WHEN \"init\" OR WHEN ? OR WHEN \"\" THEN DO: RUN BuildInterface. END.\n    WHEN \"other\" THEN DO: END.\nEND CASE.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
+
+#[test]
 fn parse_run_dataset_fill() {
     let source = "Run Dataset.Fill in hproc(input-output hhandle).\n";
     let tokens = tokenize(source);
