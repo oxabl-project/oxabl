@@ -214,6 +214,7 @@ impl Parser<'_> {
                     | Kind::Interface
                     | Kind::Constructor
                     | Kind::Destructor
+                    | Kind::Trigger
             ) {
                 self.advance(); // consume qualifier
             }
@@ -2070,8 +2071,10 @@ impl Parser<'_> {
             }
         }
 
-        // check for loop
-        if Self::can_be_identifier(self.peek().kind) {
+        // check for loop — var may start with a preprop: DO {&tablename}i = 1 TO n
+        if Self::can_be_identifier(self.peek().kind)
+            || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
+        {
             // peek ahead to see if this is 'var = start to end'
             let saved_pos = self.current;
             let potential_var = self.advance().clone();
@@ -2122,11 +2125,25 @@ impl Parser<'_> {
                 if self.check(Kind::KwIn) && self.check_at(1, Kind::Frame) {
                     self.advance(); // consume IN
                     self.advance(); // consume FRAME
-                    // frame name may be a preprop or identifier
+                    // frame name may be a compound preprop+identifier: {&tablename}f-builder
                     if Self::can_be_identifier(self.peek().kind)
                         || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
                     {
-                        self.advance();
+                        let mut name_end = self.advance().end;
+                        // Consume directly-adjacent parts of compound names.
+                        loop {
+                            let next = &self.tokens[self.current];
+                            if next.start != name_end {
+                                break;
+                            }
+                            if Self::can_be_identifier(next.kind)
+                                || matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
+                            {
+                                name_end = self.advance().end;
+                            } else {
+                                break;
+                            }
+                        }
                     }
                 }
 
@@ -2277,9 +2294,26 @@ impl Parser<'_> {
         // Already handled at statement dispatch level; nothing extra needed here.
 
         // Optional counting loop: REPEAT var = expr TO expr [BY expr]
-        if Self::can_be_identifier(self.peek().kind) {
+        // var may be a compound preprop+identifier token pair (e.g. {&tablename}i)
+        if Self::can_be_identifier(self.peek().kind)
+            || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
+        {
             let saved_pos = self.current;
-            let potential_var = self.advance().clone();
+            let mut var_end = self.advance().end;
+            // Consume any directly-adjacent compound name parts.
+            loop {
+                let next = &self.tokens[self.current];
+                if next.start != var_end {
+                    break;
+                }
+                if matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
+                    || Self::can_be_identifier(next.kind)
+                {
+                    var_end = self.advance().end;
+                } else {
+                    break;
+                }
+            }
             if self.check(Kind::Equals) {
                 self.advance(); // consume =
                 self.parse_expression().ok(); // from value
@@ -2290,7 +2324,6 @@ impl Parser<'_> {
                         self.advance(); // consume BY
                         self.parse_expression().ok(); // by value
                     }
-                    let _ = potential_var; // used for loop variable name
                 } else {
                     self.current = saved_pos; // not a counting loop; backtrack
                 }
@@ -3764,7 +3797,10 @@ impl Parser<'_> {
     fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
 
-        while !self.check(Kind::End) && !self.at_end() {
+        loop {
+            if self.at_end() {
+                break;
+            }
             // Check for CATCH block
             if self.check(Kind::Catch) {
                 statements.push(self.parse_catch_block()?);
@@ -3774,6 +3810,28 @@ impl Parser<'_> {
             if self.check(Kind::Finally) {
                 statements.push(self.parse_finally_block()?);
                 continue;
+            }
+            // END is the block terminator — but END TRIGGERS. is a nested trigger
+            // block terminator (from ON event TRIGGERS:...END TRIGGERS.) that can
+            // appear *inside* a DO/FOR/REPEAT body. Consume it and continue so that
+            // the outer block's own END. is handled correctly.
+            // "TRIGGERS" lexes as Kind::Identifier (not Kind::Trigger).
+            if self.check(Kind::End) {
+                let next_is_triggers = if let Some(next) = self.tokens.get(self.current + 1) {
+                    next.kind == Kind::Identifier
+                        && self.source[next.start..next.end].eq_ignore_ascii_case("triggers")
+                } else {
+                    false
+                };
+                if next_is_triggers {
+                    self.advance(); // consume END
+                    self.advance(); // consume TRIGGERS
+                    if self.check(Kind::Period) {
+                        self.advance(); // consume '.'
+                    }
+                    continue;
+                }
+                break; // This END closes the current block.
             }
             statements.push(self.parse_statement()?);
         }
@@ -4751,11 +4809,14 @@ impl Parser<'_> {
                 let _ = self.parse_identifier()?;
             }
             // CREATE handle ASSIGN prop = val ... — UI widget creation with property list;
-            // skip the ASSIGN block entirely.
+            // skip the ASSIGN block entirely. Use the TRIGGERS-aware variant so that
+            // CREATE widget ASSIGN ... TRIGGERS: ... END TRIGGERS. is skipped atomically
+            // (otherwise the first period inside the trigger sub-block stops the scan
+            // prematurely, leaving block nesting misaligned).
             // CREATE ALIAS name FOR DATABASE value(expr). — database alias creation;
             // skip the FOR DATABASE ... clause entirely.
             if self.check(Kind::Assign) || self.check(Kind::KwFor) {
-                self.skip_to_statement_end();
+                self.skip_to_statement_end_triggers_aware();
                 return Ok(Statement::Empty);
             }
             CreateTarget::Name(name)

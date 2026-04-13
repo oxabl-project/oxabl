@@ -93,7 +93,7 @@ impl Parser<'_> {
         if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
             self.advance(); // consume IN
             self.advance(); // consume FRAME or BROWSE
-            self.advance(); // consume name
+            self.consume_widget_name();
         }
 
         if !self.is_comparison_operator() {
@@ -108,7 +108,7 @@ impl Parser<'_> {
         if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
             self.advance(); // consume IN
             self.advance(); // consume FRAME or BROWSE
-            self.advance(); // consume name
+            self.consume_widget_name();
         }
 
         let expr = match op_kind {
@@ -316,7 +316,7 @@ impl Parser<'_> {
                 {
                     self.advance(); // consume IN
                     self.advance(); // consume FRAME or BROWSE
-                    self.advance(); // consume name
+                    self.consume_widget_name();
                 }
                 // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
                 while matches!(
@@ -359,7 +359,7 @@ impl Parser<'_> {
                         {
                             self.advance(); // consume IN
                             self.advance(); // consume FRAME or BROWSE
-                            self.advance(); // consume name
+                            self.consume_widget_name();
                         }
                         // Consume optional passing modifiers
                         while matches!(
@@ -1159,7 +1159,7 @@ impl Parser<'_> {
                     {
                         self.advance(); // consume IN
                         self.advance(); // consume FRAME or BROWSE
-                        self.advance(); // consume name
+                        self.consume_widget_name();
                     }
                     // Consume optional passing modifiers
                     while matches!(
