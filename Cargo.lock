@@ -795,6 +795,7 @@ name = "oxabl_ast"
 version = "0.4.0"
 dependencies = [
  "rust_decimal",
+ "smallvec",
 ]
 
 [[package]]
@@ -833,6 +834,7 @@ dependencies = [
  "oxabl_ast",
  "oxabl_lexer",
  "rust_decimal",
+ "smallvec",
 ]
 
 [[package]]

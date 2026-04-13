@@ -537,6 +537,7 @@ impl<'a> Parser<'a> {
     /// - `{&prefix}suffix`  (preprop directly followed by identifier)
     /// - `prefix{&suffix}`  (identifier directly followed by preprop)
     /// - `{&a}b{&c}`        (multi-part chains via direct adjacency)
+    ///
     /// Requires no whitespace between parts to avoid consuming operators.
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
         if !Self::can_be_identifier(self.peek().kind) {
