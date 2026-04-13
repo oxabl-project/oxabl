@@ -672,20 +672,46 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
         i += 1;
     }
 
-    // Value runs to EOL
+    // Value runs to EOL, but tilde (~) at EOL means continuation.
+    // ABL uses ~ as the line continuation character in &DEFINE values.
     let value_start = i;
-    while i < rest.len() && rest.as_bytes()[i] != b'\n' && rest.as_bytes()[i] != b'\r' {
-        i += 1;
-    }
-    let value = rest[value_start..i].trim_end().to_string();
+    let mut value = String::new();
+    loop {
+        // Read to end of line
+        let line_start = i;
+        while i < rest.len() && rest.as_bytes()[i] != b'\n' && rest.as_bytes()[i] != b'\r' {
+            i += 1;
+        }
+        let line = &rest[line_start..i];
+        let trimmed = line.trim_end();
 
-    // Skip the newline
-    if i < rest.len() && rest.as_bytes()[i] == b'\r' {
-        i += 1;
+        if let Some(continued) = trimmed.strip_suffix('~') {
+            // Continuation: append line without trailing ~ and continue
+            value.push_str(continued);
+            // Skip the newline
+            if i < rest.len() && rest.as_bytes()[i] == b'\r' {
+                i += 1;
+            }
+            if i < rest.len() && rest.as_bytes()[i] == b'\n' {
+                i += 1;
+            }
+        } else {
+            // Final line — append and break
+            value.push_str(trimmed);
+            // Skip the newline
+            if i < rest.len() && rest.as_bytes()[i] == b'\r' {
+                i += 1;
+            }
+            if i < rest.len() && rest.as_bytes()[i] == b'\n' {
+                i += 1;
+            }
+            break;
+        }
     }
-    if i < rest.len() && rest.as_bytes()[i] == b'\n' {
-        i += 1;
-    }
+    // Trim leading whitespace that was part of the continuation indent,
+    // but only from the value_start — the first line's leading space was
+    // already skipped above.
+    let _ = value_start;
 
     (name, value, start + i)
 }
@@ -1190,5 +1216,28 @@ mod tests {
         let source = "{d1.i}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(&*result.to_text(), "deep");
+    }
+
+    #[test]
+    fn tilde_continuation_in_define() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE QUERY ~\n        customer where ~\n        customer.name eq 'test'\nFIND {&QUERY}.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(
+            &*result.to_text(),
+            "FIND         customer where         customer.name eq 'test'."
+        );
+    }
+
+    #[test]
+    fn tilde_continuation_single_line() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        // No continuation — normal define
+        let source = "&SCOPED-DEFINE X hello\n{&X}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "hello");
     }
 }
