@@ -70,6 +70,7 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Unsubscribe
             | Kind::On
             | Kind::Trigger
+            | Kind::Export
     )
 }
 
@@ -264,6 +265,13 @@ impl Parser<'_> {
         // MESSAGE statement
         if self.check(Kind::Message) {
             return self.parse_message_statement();
+        }
+
+        // EXPORT statement: EXPORT [STREAM stream-name] [DELIMITER char] [SKIP [n]] expr... .
+        if self.check(Kind::Export) {
+            self.advance(); // consume EXPORT
+            self.skip_to_period(); // consumes everything including the period
+            return Ok(Statement::Empty);
         }
 
         // ASSIGN statement
