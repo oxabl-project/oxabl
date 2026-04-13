@@ -264,8 +264,20 @@ impl<'a> Parser<'a> {
                 self.advance(); // suffix identifier
             }
         } else if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
-            // FORMAT 9999 or FORMAT 99.99 — numeric format mask
+            // FORMAT 9999, FORMAT 99.99, or FORMAT 99/99/9999 — numeric format masks
             self.advance();
+            // Consume any trailing /integer or /decimal pairs (date format: 99/99/9999)
+            while self.check(Kind::Slash) {
+                if matches!(
+                    self.peek_at(1).kind,
+                    Kind::IntegerLiteral | Kind::DecimalLiteral
+                ) {
+                    self.advance(); // consume '/'
+                    self.advance(); // consume the number
+                } else {
+                    break;
+                }
+            }
         }
     }
 
@@ -441,6 +453,13 @@ impl<'a> Parser<'a> {
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
                     | Kind::PageTop
                     | Kind::Blank
+                    // Unreserved keywords commonly used as variable/field names
+                    | Kind::Transaction
+                    | Kind::External
+                    // Frame handle attributes used as identifier names (e.g. frame-file, frame-field)
+                    | Kind::FrameFile
+                    | Kind::FrameField
+                    | Kind::FrameIndex
             )
     }
 

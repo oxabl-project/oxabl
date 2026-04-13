@@ -579,6 +579,18 @@ impl Parser<'_> {
             let end = self.tokens[self.current - 1].end;
             let class_name = self.source[start..end].to_string();
 
+            // If no '(' follows, this is the logical NEW record-name test (boolean expression),
+            // not an OO object constructor.  Return a simple identifier so parsing continues.
+            if !self.check(Kind::LeftParen) {
+                return Ok(Expression::Identifier(Identifier {
+                    span: Span {
+                        start: start as u32,
+                        end: end as u32,
+                    },
+                    name: class_name,
+                }));
+            }
+
             // Parse argument list (supports INPUT/OUTPUT direction qualifiers)
             self.expect_kind(Kind::LeftParen, "Expected '(' after class name in NEW")?;
             let mut arguments = Vec::new();
