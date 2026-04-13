@@ -563,8 +563,9 @@ impl Parser<'_> {
             || self.check(Kind::Get)
             || self.check(Kind::Clear)
             || self.check(Kind::Hide)
-            // FORMAT expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
+            // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             || self.check(Kind::Format)
+            || self.check(Kind::Form)
             // CLOSE QUERY/DATASET/BROWSING name. — close a query, dataset, or browse widget.
             || self.check(Kind::Close)
             // CONNECT/DISCONNECT — database connection management statements.
@@ -1011,7 +1012,7 @@ impl Parser<'_> {
                 Kind::CaseSensitive => {
                     self.advance();
                 }
-                Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
+                Kind::Format | Kind::Form | Kind::Label | Kind::ColumnLabel | Kind::Help => {
                     self.advance();
                     self.skip_format_value();
                 }
@@ -1178,7 +1179,7 @@ impl Parser<'_> {
                 let target = self.parse_identifier()?;
                 ParameterType::Buffer { name, target }
             }
-            // Standard: name [INIT value] AS type [NO-UNDO] or name [INIT value] LIKE field [NO-UNDO]
+            // Standard: name [INIT value] [NO-UNDO] AS type [NO-UNDO] or LIKE field [NO-UNDO]
             _ => {
                 let name = self.parse_identifier()?;
                 // Consume optional INIT value before AS/LIKE (some code specifies INIT first)
@@ -1186,8 +1187,12 @@ impl Parser<'_> {
                     self.advance();
                     self.parse_expression().ok();
                 }
+                // NO-UNDO may appear before AS/LIKE (e.g. DEF INPUT PARAM p NO-UNDO LIKE t.f)
+                let mut no_undo = self.check(Kind::NoUndo);
+                if no_undo {
+                    self.advance();
+                }
                 let type_source = self.parse_type_source()?;
-                let mut no_undo = false;
                 loop {
                     match self.peek().kind {
                         Kind::NoUndo => {
@@ -1201,7 +1206,11 @@ impl Parser<'_> {
                                 self.advance();
                             }
                         }
-                        Kind::Format | Kind::Label | Kind::ColumnLabel | Kind::Help => {
+                        Kind::Format
+                        | Kind::Form
+                        | Kind::Label
+                        | Kind::ColumnLabel
+                        | Kind::Help => {
                             self.advance();
                             self.skip_format_value();
                         }
@@ -1471,7 +1480,7 @@ impl Parser<'_> {
                             }
                         }
                         // Skip known field options we don't store in the AST
-                        Kind::Format | Kind::Label | Kind::ColumnLabel => {
+                        Kind::Format | Kind::Form | Kind::Label | Kind::ColumnLabel => {
                             self.advance(); // consume keyword
                             // Skip the value (usually a string literal)
                             if self.check(Kind::StringLiteral) {
@@ -3430,6 +3439,7 @@ impl Parser<'_> {
             let mut when_condition = None;
             loop {
                 if self.check(Kind::Format)
+                    || self.check(Kind::Form)
                     || self.check(Kind::ColumnLabel)
                     || self.check(Kind::Label)
                 {
@@ -3599,7 +3609,7 @@ impl Parser<'_> {
             // Parse variable names until period or another clause
             while !self.check(Kind::Period) && !self.at_end() {
                 // Skip FORMAT "string" if present after a variable
-                if self.check(Kind::Format) {
+                if self.check(Kind::Format) || self.check(Kind::Form) {
                     self.advance();
                     if self.check(Kind::StringLiteral) {
                         self.advance();
@@ -5064,15 +5074,15 @@ impl Parser<'_> {
             self.advance();
         }
 
-        // Optional SAVE RESULT IN clause
-        // SAVE is Kind::Save, RESULT is an identifier, IN is Kind::In
-        let result_var = if self.check(Kind::Save)
-            && self.is_identifier_text_at(1, "RESULT")
-            && self.check_at(2, Kind::KwIn)
-        {
+        // Optional SAVE [RESULT IN] clause
+        // ABL supports both: SAVE lvar  and  SAVE RESULT IN lvar
+        let result_var = if self.check(Kind::Save) {
             self.advance(); // consume SAVE
-            self.advance(); // consume RESULT
-            self.advance(); // consume IN
+            // Optional RESULT IN prefix
+            if self.is_identifier_text_at(0, "RESULT") && self.check_at(1, Kind::KwIn) {
+                self.advance(); // consume RESULT
+                self.advance(); // consume IN
+            }
             Some(self.parse_identifier()?)
         } else {
             None
