@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.3.0...oxabl_codegen-v0.4.0) (2026-04-13)
+
+
+### Features
+
+* **parser:** add preprocessor statement parsing ([a2f82fd](https://github.com/oxabl-project/oxabl/commit/a2f82fd7032dda5fc7c27c3dccead1cf652eec17))
+* **parser:** add preprocessor statement parsing ([eea5606](https://github.com/oxabl-project/oxabl/commit/eea560646d49c24614f9bce123432523781defe1))
+* **parser:** add stream and frame parsing ([e959ffd](https://github.com/oxabl-project/oxabl/commit/e959ffd74e5a2459800eb076a4e19547d3b3ae70))
+
+
+### Bug Fixes
+
+* **parser:** handle many real-world ABL patterns from pcna-erp ([386fbce](https://github.com/oxabl-project/oxabl/commit/386fbce593b5972586760d3f3f5872d76bf69d9a))
+
+
+### Performance Improvements
+
+* **lexer:** eliminate heap allocations in keyword matching ([2fa1b87](https://github.com/oxabl-project/oxabl/commit/2fa1b87f9c7bb37ea3fa699a9e4073a34d8c5226))
+* **lexer:** eliminate heap allocations in keyword matching ([c7553f7](https://github.com/oxabl-project/oxabl/commit/c7553f7d46f0867c43794e7afdd65eb31795953b))
+* **lexer:** use length-dispatched match in match_keyword() ([3a24353](https://github.com/oxabl-project/oxabl/commit/3a243534295d9b3737f056fb107816449ba06c45))
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.2.0...oxabl_codegen-v0.3.0) (2026-04-03)
 
 
