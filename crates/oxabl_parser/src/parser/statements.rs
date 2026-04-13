@@ -2863,13 +2863,14 @@ impl Parser<'_> {
         }
 
         // Dotted method-name suffix: e.g. "Procedure Dataset.Fill:" where Dataset is a keyword.
-        // Only consume if the period and identifier are on the same line.
+        // Only consume if the next token is a plain identifier or can_be_identifier, and it's on
+        // the same line. Block keywords like END/WHEN/THEN must not be consumed here.
         if self.check(Kind::Period) {
             let period_end = self.tokens[self.current].end;
             let next_idx = self.current + 1;
             if let Some(next_tok) = self.tokens.get(next_idx) {
-                if Self::is_word_kind(next_tok.kind)
-                    && next_tok.kind != Kind::Comment
+                let nk = next_tok.kind;
+                if (nk == Kind::Identifier || Self::can_be_identifier(nk))
                     && !self.source[period_end..next_tok.start].contains('\n')
                 {
                     self.advance(); // consume '.'
@@ -3902,9 +3903,13 @@ impl Parser<'_> {
         }
 
         // Check for dotted extension (e.g., my-proc.p) or dotted method name (e.g., Dataset.Fill).
-        // The next token after the period may be an Identifier or a reserved keyword used as a
-        // method name (e.g., Fill is Kind::Fill, not Kind::Identifier).
-        if self.check(Kind::Period) && Self::is_word_kind(self.peek_at(1).kind) {
+        // Only consume if the next token is a plain identifier or a keyword safe to use as an
+        // identifier (via can_be_identifier). Block-terminating keywords like END, WHEN, THEN
+        // must NOT be consumed here, even if on the same line.
+        // Use check_at (safe) before peek_at (panics on OOB).
+        if self.check(Kind::Period)
+            && (self.check_at(1, Kind::Identifier) || Self::can_be_identifier(self.peek_at(1).kind))
+        {
             let next = self.peek_at(1);
             let ext = &self.source[next.start..next.end];
             let ext_bytes = ext.as_bytes();
