@@ -197,6 +197,32 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // Bare END [qualifier]. — an orphaned block terminator appearing at the top-level
+        // parse loop. This most commonly occurs when a preprocessor-defined method/procedure
+        // body (e.g. `{&methodType} name {&returnType} (...):`) is incorrectly skipped as a
+        // preprop expression statement, leaving the closing END visible at the top level.
+        // Silently consume END [PROCEDURE|FUNCTION|METHOD|CLASS|INTERFACE|CONSTRUCTOR|DESTRUCTOR]
+        // followed by an optional period.
+        if self.check(Kind::End) {
+            self.advance(); // consume END
+            if matches!(
+                self.peek().kind,
+                Kind::Procedure
+                    | Kind::Function
+                    | Kind::Method
+                    | Kind::Class
+                    | Kind::Interface
+                    | Kind::Constructor
+                    | Kind::Destructor
+            ) {
+                self.advance(); // consume qualifier
+            }
+            if self.check(Kind::Period) {
+                self.advance(); // consume '.'
+            }
+            return Ok(Statement::Empty);
+        }
+
         // UNDO [label] [, LEAVE/RETRY/NEXT/RETURN [label]].
         if self.check(Kind::Undo) {
             self.advance(); // consume UNDO
