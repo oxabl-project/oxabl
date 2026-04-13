@@ -699,6 +699,11 @@ keyword_type = "Option"
 name = "EXTERNAL"
 keyword_type = "Option"
 
+# SIZE is needed for DEFINE VARIABLE ... VIEW-AS FILL-IN SIZE n BY m
+[[add]]
+name = "SIZE"
+keyword_type = "Option"
+
 # =============================================================================
 # MISSING STATEMENT KEYWORDS
 # Keywords present in the HTML index but not in the JSON
