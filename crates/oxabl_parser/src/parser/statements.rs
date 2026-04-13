@@ -2389,35 +2389,58 @@ impl Parser<'_> {
             }
         }
 
+        // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:)
+        if self.check(Kind::Transaction) {
+            self.advance();
+        }
+
         // Optional PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]
-        // Lock type may appear before or after the WHERE clause.
+        // Multiple tables may be comma-joined: PRESELECT EACH t1 NO-LOCK, EACH t2 NO-LOCK
         while self.check(Kind::Preselect) {
             self.advance(); // consume PRESELECT
-            // optional qualifier (EACH/FIRST/LAST)
-            if matches!(self.peek().kind, Kind::Each | Kind::First | Kind::Last) {
-                self.advance();
-            }
-            // table/buffer name
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance();
-            }
-            // lock type may appear before WHERE
-            self.parse_lock_type();
-            // optional WHERE clause
-            if self.check(Kind::KwWhere) {
-                self.advance();
-                self.parse_expression().ok();
-            }
-            // lock type may also appear after WHERE
-            self.parse_lock_type();
-            // optional USE-INDEX clause
-            while self.check(Kind::UseIndex) {
-                self.advance(); // consume USE-INDEX
-                if Self::can_be_identifier(self.peek().kind) {
-                    self.advance(); // consume index name
+            // Inner loop: handle comma-joined table entries
+            loop {
+                // optional qualifier (EACH/FIRST/LAST)
+                if matches!(self.peek().kind, Kind::Each | Kind::First | Kind::Last) {
+                    self.advance();
                 }
+                // table/buffer name
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance();
+                }
+                // optional OF parent-table (buffer join: EACH child OF parent)
+                if self.check(Kind::Of) {
+                    self.advance();
+                    if Self::can_be_identifier(self.peek().kind) {
+                        self.advance();
+                    }
+                }
+                // lock type may appear before WHERE
+                self.parse_lock_type();
+                // optional WHERE clause
+                if self.check(Kind::KwWhere) {
+                    self.advance();
+                    self.parse_expression().ok();
+                }
+                // lock type may also appear after WHERE
+                self.parse_lock_type();
+                // optional USE-INDEX clause
+                while self.check(Kind::UseIndex) {
+                    self.advance(); // consume USE-INDEX
+                    if Self::can_be_identifier(self.peek().kind) {
+                        self.advance(); // consume index name
+                    }
+                }
+                // Comma-joined next table entry (EACH/FIRST/LAST follows the comma)?
+                if self.check(Kind::Comma)
+                    && matches!(self.peek_at(1).kind, Kind::Each | Kind::First | Kind::Last)
+                {
+                    self.advance(); // consume comma
+                    continue; // process next table
+                }
+                break;
             }
-            // optional BREAK BY / BY field [BY field ...]
+            // optional BREAK BY / BY field [BY field ...] — applies to the whole PRESELECT
             if self.check(Kind::KwBreak) {
                 self.advance(); // consume BREAK
             }
