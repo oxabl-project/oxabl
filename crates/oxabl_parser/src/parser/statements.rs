@@ -1217,6 +1217,9 @@ impl Parser<'_> {
                                 self.advance();
                             }
                         }
+                        Kind::CaseSensitive | Kind::FindCaseSensitive => {
+                            self.advance(); // consume CASE-SENSITIVE
+                        }
                         _ => break,
                     }
                 }
