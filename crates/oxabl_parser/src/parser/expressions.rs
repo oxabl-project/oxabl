@@ -754,6 +754,14 @@ impl Parser<'_> {
                 lock_type_after
             };
 
+            // Optional USE-INDEX hint (e.g. CAN-FIND(t WHERE cond USE-INDEX idx))
+            if self.check(Kind::UseIndex) {
+                self.advance(); // consume USE-INDEX
+                if Self::can_be_identifier(self.peek().kind) {
+                    self.advance(); // consume index name
+                }
+            }
+
             // Optional NO-ERROR
             let no_error = if self.check(Kind::NoError) {
                 self.advance();

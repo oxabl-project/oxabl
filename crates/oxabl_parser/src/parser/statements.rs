@@ -817,6 +817,17 @@ impl Parser<'_> {
             span: self.current_span(),
         })?;
 
+        // Consume optional INIT/INITIAL value appearing before AS/LIKE (some legacy code style)
+        if self.check(Kind::Initial) {
+            self.advance();
+            if !matches!(
+                self.peek().kind,
+                Kind::KwAs | Kind::Like | Kind::NoUndo | Kind::Period
+            ) {
+                self.parse_expression().ok();
+            }
+        }
+
         // parse type source (AS type | LIKE field)
         let type_source = self.parse_type_source()?;
 
@@ -2674,7 +2685,10 @@ impl Parser<'_> {
             self.advance();
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after END PROCEDURE")?;
+        // Period is required but may be missing in legacy code — make it optional
+        if self.check(Kind::Period) {
+            self.advance();
+        }
 
         Ok(Statement::Procedure { name, body })
     }
