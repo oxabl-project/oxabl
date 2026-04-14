@@ -53,12 +53,14 @@ enum CondToken {
     Or,
     True,
     False,
-    Eq,  // =
-    Neq, // <>
-    Lt,  // <
-    Gt,  // >
-    Le,  // <=
-    Ge,  // >=
+    Eq,      // = or EQ
+    Neq,     // <> or NE
+    Lt,      // < or LT
+    Gt,      // > or GT
+    Le,      // <= or LE
+    Ge,      // >= or GE
+    Matches, // MATCHES (glob-style pattern matching)
+    Begins,  // BEGINS (string prefix matching)
     LParen,
     RParen,
     StringLit(String),
@@ -158,6 +160,14 @@ fn tokenize(input: &str) -> Vec<CondToken> {
                     "OR" => tokens.push(CondToken::Or),
                     "TRUE" | "YES" => tokens.push(CondToken::True),
                     "FALSE" | "NO" => tokens.push(CondToken::False),
+                    "EQ" => tokens.push(CondToken::Eq),
+                    "NE" => tokens.push(CondToken::Neq),
+                    "LT" => tokens.push(CondToken::Lt),
+                    "GT" => tokens.push(CondToken::Gt),
+                    "LE" => tokens.push(CondToken::Le),
+                    "GE" => tokens.push(CondToken::Ge),
+                    "MATCHES" => tokens.push(CondToken::Matches),
+                    "BEGINS" => tokens.push(CondToken::Begins),
                     _ => tokens.push(CondToken::Ident(word.to_string())),
                 }
             }
@@ -235,8 +245,14 @@ impl<'a> CondParser<'a> {
         let lhs = self.parse_primary_value();
 
         match self.peek() {
-            Some(CondToken::Eq) | Some(CondToken::Neq) | Some(CondToken::Lt)
-            | Some(CondToken::Gt) | Some(CondToken::Le) | Some(CondToken::Ge) => {
+            Some(CondToken::Eq)
+            | Some(CondToken::Neq)
+            | Some(CondToken::Lt)
+            | Some(CondToken::Gt)
+            | Some(CondToken::Le)
+            | Some(CondToken::Ge)
+            | Some(CondToken::Matches)
+            | Some(CondToken::Begins) => {
                 let op = self.advance().unwrap().clone();
                 let rhs = self.parse_primary_value();
                 compare_values(&lhs, &op, &rhs)
@@ -359,8 +375,45 @@ fn compare_values(lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> bool {
         CondToken::Gt => l > r,
         CondToken::Le => l <= r,
         CondToken::Ge => l >= r,
+        CondToken::Matches => glob_matches(&l, &r),
+        CondToken::Begins => l.starts_with(&r),
         _ => false,
     }
+}
+
+/// ABL MATCHES operator: `*` matches any sequence, `.` matches any single char.
+/// Both strings should already be lowercased for case-insensitive comparison.
+fn glob_matches(text: &str, pattern: &str) -> bool {
+    let t = text.as_bytes();
+    let p = pattern.as_bytes();
+    let (tlen, plen) = (t.len(), p.len());
+    let mut ti = 0;
+    let mut pi = 0;
+    let mut star_pi = usize::MAX;
+    let mut star_ti = 0;
+
+    while ti < tlen {
+        if pi < plen && (p[pi] == b'.' || p[pi] == t[ti]) {
+            ti += 1;
+            pi += 1;
+        } else if pi < plen && p[pi] == b'*' {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < plen && p[pi] == b'*' {
+        pi += 1;
+    }
+
+    pi == plen
 }
 
 fn as_number(v: &CondValue) -> Option<i64> {
@@ -567,5 +620,46 @@ mod tests {
         assert_eq!(tokens.len(), 8);
         assert_eq!(tokens[0], CondToken::Defined);
         assert_eq!(tokens[1], CondToken::LParen);
+    }
+
+    #[test]
+    fn matches_operator() {
+        let vars = vars_with(&[("mode", "Def input param")]);
+        assert!(evaluate(
+            r#""{&mode}" matches "*Def* *inp* *param*""#,
+            &vars
+        ));
+        assert!(!evaluate(
+            r#""{&mode}" matches "*xyz*""#,
+            &vars
+        ));
+    }
+
+    #[test]
+    fn matches_wildcard_patterns() {
+        let empty = PreprocVarTable::new();
+        assert!(evaluate(r#""hello" matches "h*""#, &empty));
+        assert!(evaluate(r#""hello" matches "*llo""#, &empty));
+        assert!(evaluate(r#""hello" matches "*ell*""#, &empty));
+        assert!(evaluate(r#""hello" matches "h.llo""#, &empty));
+        assert!(!evaluate(r#""hello" matches "h.lo""#, &empty));
+    }
+
+    #[test]
+    fn begins_operator() {
+        let empty = PreprocVarTable::new();
+        assert!(evaluate(r#""hello world" begins "hello""#, &empty));
+        assert!(!evaluate(r#""hello world" begins "world""#, &empty));
+    }
+
+    #[test]
+    fn keyword_comparison_operators() {
+        let vars = vars_with(&[("ver", "10")]);
+        assert!(evaluate("{&ver} GT 5", &vars));
+        assert!(evaluate("{&ver} GE 10", &vars));
+        assert!(!evaluate("{&ver} LT 5", &vars));
+        assert!(evaluate("{&ver} LE 10", &vars));
+        assert!(evaluate("{&ver} EQ 10", &vars));
+        assert!(evaluate("{&ver} NE 5", &vars));
     }
 }
