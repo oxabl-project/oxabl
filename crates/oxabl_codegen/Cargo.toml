@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_codegen"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "Code generation tool for Oxabl lexer keywords and atoms"
