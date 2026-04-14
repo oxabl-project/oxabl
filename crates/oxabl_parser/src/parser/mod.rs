@@ -196,6 +196,36 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Like skip_to_statement_end, but also handles EDITING: ... END. sub-blocks
+    /// that appear inside UPDATE/SET/PROMPT-FOR statements.  When EDITING: is
+    /// encountered, the body is parsed as a full block (statements until END.)
+    /// so that periods inside the editing block are not mistaken for the
+    /// statement terminator.
+    pub fn skip_to_statement_end_editing_aware(&mut self) {
+        while !self.at_end() {
+            // Detect EDITING: — parse the editing block body.
+            if self.check(Kind::Editing) && self.check_at(1, Kind::Colon) {
+                self.advance(); // consume EDITING
+                self.advance(); // consume ':'
+                let _ = self.parse_block_body();
+                return;
+            }
+            // Normal statement-end detection.
+            if self.check(Kind::Period) {
+                let period_end = self.tokens[self.current].end;
+                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
+                    Self::can_be_identifier(t.kind)
+                        && !self.source[period_end..t.start].contains('\n')
+                });
+                if !is_field_access {
+                    self.advance(); // consume the terminating period
+                    return;
+                }
+            }
+            self.advance();
+        }
+    }
+
     /// Like skip_to_statement_end, but also skips over TRIGGERS: ... END TRIGGERS. blocks
     /// that appear as part of a CREATE widget ASSIGN ... construct.  Without this, the
     /// first statement-terminating period *inside* the trigger sub-block would be mistaken

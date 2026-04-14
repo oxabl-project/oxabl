@@ -538,8 +538,16 @@ impl Parser<'_> {
             return Ok(Statement::Empty);
         }
 
+        // UPDATE / SET / PROMPT-FOR — may contain an EDITING: ... END. sub-block.
+        // Skip tokens until a statement-ending period, but if we encounter EDITING:
+        // along the way, parse the editing block body before consuming the outer END.
+        if self.check(Kind::Update) || self.check(Kind::Set) || self.check(Kind::PromptFor) {
+            self.skip_to_statement_end_editing_aware();
+            return Ok(Statement::Empty);
+        }
+
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
-        // PAGE / DISABLE / ENABLE / ACCUMULATE / DOWN / OPEN / APPLY / UPDATE / STATUS /
+        // PAGE / DISABLE / ENABLE / ACCUMULATE / DOWN / OPEN / APPLY / STATUS /
         // CLEAR / HIDE — skip to end.
         // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
         // like 'order.company' in WHERE clauses are not mistaken for statement terminators.
@@ -561,7 +569,6 @@ impl Parser<'_> {
             || self.check(Kind::Down)
             || self.check(Kind::Open)
             || self.check(Kind::Apply)
-            || self.check(Kind::Update)
             || self.check(Kind::Status)
             || self.check(Kind::Get)
             || self.check(Kind::Clear)
@@ -574,8 +581,6 @@ impl Parser<'_> {
             // CONNECT/DISCONNECT — database connection management statements.
             || self.check(Kind::Connect)
             || self.check(Kind::Disconnect)
-            // SET variable. — reads from an open input stream into a variable/field.
-            || self.check(Kind::Set)
             // WAIT-FOR event OF widget. — ABL UI event loop.
             || self.check(Kind::WaitFor)
             // COLOR statement — terminal color settings (e.g. COLOR DISPLAY NORMAL ... WITH FRAME name.)
@@ -584,8 +589,6 @@ impl Parser<'_> {
             || self.check(Kind::Readkey)
             // UP n [WITH FRAME name]. — scroll up n lines in a frame.
             || self.check(Kind::Up)
-            // PROMPT-FOR field list [WITH FRAME name]. — ABL UI data entry prompt.
-            || self.check(Kind::PromptFor)
             // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
             || self.check(Kind::GetKeyValue)
         {
@@ -2236,14 +2239,13 @@ impl Parser<'_> {
             }
         }
 
-        // Optional WITH FRAME name clause before block opener
+        // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
+        // The WITH clause can contain many frame options; consume everything until the
+        // ':' or '.' that opens the block body.
         if self.check(Kind::With) {
             self.advance(); // consume WITH
-            if self.check(Kind::Frame) {
-                self.advance(); // consume FRAME
-                if Self::can_be_identifier(self.peek().kind) {
-                    self.advance(); // consume frame name
-                }
+            while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
+                self.advance();
             }
         }
 
@@ -2704,14 +2706,13 @@ impl Parser<'_> {
             }
         }
 
-        // Optional WITH FRAME name clause before block opener
+        // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
+        // The WITH clause can contain many frame options; consume everything until the
+        // ':' or '.' that opens the block body.
         if self.check(Kind::With) {
             self.advance(); // consume WITH
-            if self.check(Kind::Frame) {
-                self.advance(); // consume FRAME
-                if Self::can_be_identifier(self.peek().kind) {
-                    self.advance(); // consume frame name
-                }
+            while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
+                self.advance();
             }
         }
 
@@ -3850,7 +3851,7 @@ impl Parser<'_> {
 
     // Parse the block body for code blocks like DO, consume till END.
     // Also handles CATCH and FINALLY blocks that appear before END.
-    fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
+    pub(crate) fn parse_block_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = Vec::new();
 
         loop {
