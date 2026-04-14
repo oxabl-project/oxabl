@@ -15,6 +15,7 @@ oxabl_parser = { path = "../oxabl_parser", version = "0.5.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.0" }
 oxabl_common = { path = "../oxabl_common", version = "0.4.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "0.3.0" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 indicatif = "0.17"
