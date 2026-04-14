@@ -280,7 +280,8 @@ impl<'a> Lexer<'a> {
                         return self.read_include_arg_reference(start);
                     }
                     // Include file references {file.i}, {path/file.i args}
-                    Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"') => {
+                    // Also handles {{&var}...} where include path starts with a preproc variable
+                    Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"' | '{') => {
                         return self.read_include_reference(start);
                     }
                     // Leading whitespace inside braces - look ahead to determine type
@@ -295,7 +296,7 @@ impl<'a> Lexer<'a> {
                         };
                         match first_non_ws {
                             Some('0'..='9') => return self.read_include_arg_reference(start),
-                            Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"') => {
+                            Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"' | '{') => {
                                 return self.read_include_reference(start);
                             }
                             _ => return Kind::LeftBrace,
