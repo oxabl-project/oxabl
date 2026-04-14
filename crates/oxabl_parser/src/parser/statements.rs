@@ -4014,8 +4014,8 @@ impl Parser<'_> {
     fn parse_procedure_name(&mut self) -> ParseResult<String> {
         // Procedure names are file paths and can start with any word-like token,
         // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`).
-        // Accept any non-operator, non-punctuation, non-literal token as a valid first component.
-        if !Self::is_word_kind(self.peek().kind) {
+        // Absolute UNIX paths starting with `/` are also valid (e.g., `RUN /u/live/sofwork.p`).
+        if !Self::is_word_kind(self.peek().kind) && !self.check(Kind::Slash) {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
                 span: Span {
@@ -4026,7 +4026,15 @@ impl Parser<'_> {
         }
 
         let start = self.peek().start;
-        self.advance(); // consume the first identifier token
+        // For absolute paths, consume the leading `/` then the first path segment
+        if self.check(Kind::Slash) {
+            self.advance(); // consume leading '/'
+            if Self::is_word_kind(self.peek().kind) {
+                self.advance(); // consume first path segment
+            }
+        } else {
+            self.advance(); // consume the first identifier token
+        }
 
         // Consume additional path components separated by `/` (e.g., `oe/oe_calc_order_total.p`)
         // Path components may start with digits (e.g., `zp/170oe150svd.p`), so also allow
@@ -4937,10 +4945,15 @@ impl Parser<'_> {
                 no_error,
             });
         }
-        // Skip optional type prefixes: OBJECT, PROCEDURE, WIDGET, SERVER, etc.
+        // Skip optional type prefixes: OBJECT, PROCEDURE, WIDGET, SERVER, ALIAS, etc.
         // DELETE OBJECT handle [NO-ERROR]. — delete a COM/OO object handle
         // The handle may be a complex expression; skip to period.
-        // e.g., DELETE PROCEDURE hproc., DELETE SERVER hService.
+        // e.g., DELETE PROCEDURE hproc., DELETE SERVER hService., DELETE ALIAS dictdb.
+        if self.check(Kind::Alias) {
+            // DELETE ALIAS name. — delete a database alias; skip to period.
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
+        }
         if Self::can_be_identifier(self.peek().kind) {
             let token = &self.tokens[self.current];
             let text = self.source[token.start..token.end].to_ascii_lowercase();
