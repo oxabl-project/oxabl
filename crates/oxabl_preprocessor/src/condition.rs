@@ -629,10 +629,7 @@ mod tests {
             r#""{&mode}" matches "*Def* *inp* *param*""#,
             &vars
         ));
-        assert!(!evaluate(
-            r#""{&mode}" matches "*xyz*""#,
-            &vars
-        ));
+        assert!(!evaluate(r#""{&mode}" matches "*xyz*""#, &vars));
     }
 
     #[test]
