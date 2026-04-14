@@ -21,17 +21,29 @@ Each iteration:
 
 Repeat until no further progress can be made or you are told to stop.
 
-> **Preprocessor note:** If an error is caused by the parser being unable to accurately evaluate a preprocessor conditional (`&IF`/`&ELSEIF`/`&ELSE`/`&ENDIF`) — i.e. the failure is fundamentally about not knowing which branch of a preprocessor block will be active at compile time — **skip it and move on to the next error pattern.** Preprocessor evaluation is on the roadmap but is not being solved here.
+> **Preprocessor note:** The `oxabl_preprocessor` crate is implemented and can be enabled via `--preprocess`. When running with preprocessing, errors tagged `[in include]` indicate failures inside expanded include file content — these are real parser gaps exposed by expansion. Errors tagged `[preprocess]` indicate preprocessor-level failures (missing includes, etc.) — skip those.
 
 ## Corpus Check Command
 
+**Without preprocessing** (default — tests parser against raw source):
 ```bash
 cargo run --bin oxabl check ~/Code/pcna-erp/<directory>
 ```
 
+**With preprocessing** (tests parser against preprocessor-expanded source):
+```bash
+cargo run --bin oxabl check ~/Code/pcna-erp/<directory> --preprocess -I ~/Code/pcna-erp
+```
+
+The `-I` flag sets the include search path (PROPATH equivalent). Use `~/Code/pcna-erp` as the root since include references in the corpus are relative to it (e.g. `{gl/global-input.i}`).
+
 Replace `<directory>` with the current subdirectory being analysed.
 
 The output reports: total files, pass/fail counts, success %, and a ranked list of top error messages with counts.
+
+**When to use each mode:**
+- Use **without preprocessing** when fixing core parser gaps (raw ABL syntax the parser doesn't handle)
+- Use **with preprocessing** when the raw-mode pass rate is high (>98%) and you want to find parser gaps revealed by include expansion — these are real-world code paths that only appear after includes are resolved
 
 ## Parser Source Layout
 
