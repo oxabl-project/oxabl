@@ -935,8 +935,8 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
     let bytes = args_str.as_bytes();
 
     while i < bytes.len() {
-        // Skip whitespace
-        while i < bytes.len() && bytes[i] == b' ' {
+        // Skip whitespace (spaces, tabs, newlines — include args can span multiple lines)
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         if i >= bytes.len() {
@@ -944,13 +944,17 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
         }
 
         if bytes[i] == b'&' {
-            // Named argument: &name=value
+            // Named argument: &name = value (with optional whitespace around =)
             i += 1; // skip &
             let name_start = i;
-            while i < bytes.len() && bytes[i] != b'=' && bytes[i] != b' ' {
+            while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
             let name = args_str[name_start..i].to_string();
+            // Skip whitespace between name and =
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
             if i < bytes.len() && bytes[i] == b'=' {
                 i += 1; // skip =
                 let value = read_arg_value(args_str, &mut i);
@@ -973,8 +977,8 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
 fn read_arg_value(s: &str, i: &mut usize) -> String {
     let bytes = s.as_bytes();
 
-    // Skip leading whitespace
-    while *i < bytes.len() && bytes[*i] == b' ' {
+    // Skip leading whitespace (spaces, tabs, newlines)
+    while *i < bytes.len() && bytes[*i].is_ascii_whitespace() {
         *i += 1;
     }
 
@@ -996,9 +1000,9 @@ fn read_arg_value(s: &str, i: &mut usize) -> String {
         }
         value
     } else {
-        // Unquoted — read to next space or &
+        // Unquoted — read to next whitespace or &
         let start = *i;
-        while *i < bytes.len() && bytes[*i] != b' ' && bytes[*i] != b'&' {
+        while *i < bytes.len() && !bytes[*i].is_ascii_whitespace() && bytes[*i] != b'&' {
             *i += 1;
         }
         s[start..*i].to_string()
@@ -1020,14 +1024,14 @@ fn find_args_start(inner: &str) -> usize {
             i += 1; // skip closing quote
         }
     } else {
-        // Unquoted — skip to first space or &
-        while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'&' {
+        // Unquoted — skip to first whitespace or &
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'&' {
             i += 1;
         }
     }
 
     // Skip whitespace between name and first arg
-    while i < bytes.len() && bytes[i] == b' ' {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }
 
@@ -1613,6 +1617,31 @@ mod tests {
     fn parse_include_args_quoted_name() {
         let args = parse_include_args(r#""path/to/file.i" "arg1""#, "path/to/file.i");
         assert_eq!(args.positional, vec!["path/to/file.i", "arg1"]);
+    }
+
+    #[test]
+    fn parse_include_args_multiline() {
+        let inner = "ms/report.i &event       = \"start\"\n             &stream-name = \"s-printer\"\n             &rpt-printer = \"p-printer\"\n             &max-columns = 80";
+        let args = parse_include_args(inner, "ms/report.i");
+        assert_eq!(args.positional, vec!["ms/report.i"]);
+        assert_eq!(args.named.len(), 4);
+        assert_eq!(args.named[0], ("event".to_string(), "start".to_string()));
+        assert_eq!(
+            args.named[1],
+            ("stream-name".to_string(), "s-printer".to_string())
+        );
+        assert_eq!(
+            args.named[2],
+            ("rpt-printer".to_string(), "p-printer".to_string())
+        );
+        assert_eq!(args.named[3], ("max-columns".to_string(), "80".to_string()));
+    }
+
+    #[test]
+    fn parse_include_args_spaces_around_equals() {
+        let args = parse_include_args("file.i &name = \"value\"", "file.i");
+        assert_eq!(args.named.len(), 1);
+        assert_eq!(args.named[0], ("name".to_string(), "value".to_string()));
     }
 
     #[test]
