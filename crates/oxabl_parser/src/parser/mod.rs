@@ -25,6 +25,30 @@ pub struct ParseError {
     pub span: Span,
 }
 
+impl ParseError {
+    /// Convert this error into a [`Diagnostic`](oxabl_common::Diagnostic) for
+    /// a given file. The caller supplies the [`FileId`](oxabl_common::FileId)
+    /// because `ParseError` is file-agnostic.
+    pub fn into_diagnostic(self, file: oxabl_common::FileId) -> oxabl_common::Diagnostic {
+        oxabl_common::Diagnostic::error(
+            "PARSE001",
+            self.message,
+            oxabl_common::FileSpan {
+                file,
+                span: self.span,
+            },
+        )
+    }
+}
+
+/// Fallback conversion using [`FileId::UNKNOWN`](oxabl_common::FileId::UNKNOWN).
+/// Prefer [`ParseError::into_diagnostic`] when the file id is known.
+impl From<ParseError> for oxabl_common::Diagnostic {
+    fn from(err: ParseError) -> Self {
+        err.into_diagnostic(oxabl_common::FileId::UNKNOWN)
+    }
+}
+
 /// Alias for parser results.
 pub type ParseResult<T> = Result<T, ParseError>;
 
