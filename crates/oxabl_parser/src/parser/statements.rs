@@ -77,6 +77,8 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::BlockLevel
             | Kind::RoutineLevel
             | Kind::Throw
+            | Kind::Select
+            | Kind::Insert
     )
 }
 
@@ -600,6 +602,12 @@ impl Parser<'_> {
             // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
             || self.check(Kind::GetKeyValue)
         {
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
+        }
+
+        // Embedded SQL: SELECT ... FROM ... / INSERT INTO ... — embedded SQL in ABL.
+        if self.check(Kind::Select) || self.check(Kind::Insert) {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
         }
