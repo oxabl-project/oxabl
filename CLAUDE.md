@@ -174,4 +174,4 @@ cargo bench -p oxabl_common --bench source_map_bench
 - `oxabl_lexer`: MVP complete with 49 tests
 - `oxabl_common/source_map`: Implemented with 10 tests
 - `oxabl_ast`: Implemented with expressions, statements, and data types
-- `oxabl_parser`: Actively developed with 406 tests; parses expressions, control flow, variable declarations, include file references, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), preprocessor directives, stream I/O, frame definitions, ON triggers (UI events, database events, key remapping), and TRIGGER PROCEDURE
+- `oxabl_parser`: Actively developed with 434 tests; parses expressions, control flow, variable declarations, include file references, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), preprocessor directives, stream I/O, frame definitions, ON triggers (UI events, database events, key remapping), TRIGGER PROCEDURE, embedded SQL (SELECT/INSERT), implicit output/display juxtaposition, widget `:attribute` access, and bare `.field` access
