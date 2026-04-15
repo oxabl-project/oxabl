@@ -696,6 +696,9 @@ impl<'a> Parser<'a> {
                     | Kind::Font
                     | Kind::Skip
                     | Kind::Field
+                    // SQL keywords that can appear as identifier names (e.g. variable select)
+                    | Kind::Select
+                    | Kind::Insert
             )
     }
 
