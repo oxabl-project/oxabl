@@ -98,6 +98,14 @@ impl Parser<'_> {
             return self.parse_finally_block();
         }
 
+        // Implicit widget method call: :method-name(args) [IN FRAME frame-name].
+        // A bare colon at position 0 indicates a method call on the currently focused
+        // widget (set by a prior CHOOSE or selection-list interaction).
+        if self.check(Kind::Colon) {
+            self.skip_to_statement_end();
+            return Ok(Statement::Empty);
+        }
+
         // Block label: `LABEL: DO: ...` or `LABEL: REPEAT: ...`
         // An identifier (or identifier-like keyword) followed by a colon where
         // the token after the colon is a block-starting keyword.
@@ -663,11 +671,6 @@ impl Parser<'_> {
             return self.parse_include_arg_reference_statement();
         }
 
-        // Note whether the statement started with a preprocessor reference {&var}.
-        // If so and the expression isn't followed by '.' or NO-ERROR, it's a macro
-        // invocation like "{&out} "string" ident." — skip to statement end.
-        let starts_with_preprop = self.check(Kind::Preprop);
-
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
 
@@ -725,41 +728,61 @@ impl Parser<'_> {
         if self.check(Kind::NoError) {
             self.advance();
         }
-        // Helper: is the next token a preprocessor directive that starts a new statement?
-        let next_is_preproc_directive = matches!(
-            self.peek().kind,
-            Kind::PreprocIf
-                | Kind::PreprocElse
-                | Kind::PreprocElseif
-                | Kind::PreprocEndif
-                | Kind::PreprocScopedDefine
-                | Kind::PreprocGlobalDefine
-                | Kind::PreprocUndefine
-        );
-        // If a preprocessor-macro statement has trailing arguments (not a period),
-        // treat it as a macro invocation and skip to statement end.
-        // e.g. {&out} "<h1>" smessage "</h1>".
-        // But if the next token is a preprocessor directive, a statement-boundary keyword
-        // (e.g. Return, End, Else), or a block label (LABEL: DO ...), the preprop macro
-        // was a standalone statement that expands to its own period — return without consuming.
-        if starts_with_preprop && !self.check(Kind::Period) {
-            // A standalone preprop macro like {&leave-logic} expands to a complete statement
-            // at compile time (including its own period).  When the next token can start a new
-            // statement, treat the preprop as already-terminated and return without skipping.
-            let next_is_statement_boundary = matches!(
-                self.peek().kind,
-                Kind::KwReturn | Kind::End | Kind::KwElse | Kind::Leave | Kind::Next
-            ) || can_start_statement(self.peek().kind);
-            // A block label looks like: identifier ':' (DO | REPEAT | FOR)
-            let next_is_block_label = Self::can_be_identifier(self.peek().kind)
-                && self.check_at(1, Kind::Colon)
-                && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor);
-            if next_is_preproc_directive || next_is_statement_boundary || next_is_block_label {
-                return Ok(Statement::ExpressionStatement(expr));
-            }
-            self.skip_to_statement_end();
+        // Fast path: statement ends with period (vast majority of cases).
+        if self.check(Kind::Period) {
+            self.advance();
             return Ok(Statement::ExpressionStatement(expr));
         }
+
+        // Unified continuation logic for implicit output / preprop macro invocations.
+        //
+        // ABL allows implicit output via juxtaposed expressions — multiple string
+        // literals, field references, function calls, and format keywords (skip,
+        // space, format, etc.) placed side-by-side with no commas.  This is the
+        // dominant pattern in web-facing ABL files (WebSpeed's {&OUT} macro, bare
+        // string output, function calls like get-copy() followed by display items).
+        //
+        // Also handles preprop macros with trailing arguments:
+        //   {&out} "<h1>" smessage "</h1>".
+        //
+        // When a standalone preprop macro like {&leave-logic} expands to a complete
+        // statement at compile time (including its own period), the next token will
+        // be a statement boundary — we return without consuming.
+        //
+        // Safety: relies on the negative guard (can_start_statement) to prevent
+        // absorbing new statements as continuation tokens.
+        if !self.at_end() {
+            let next = self.peek().kind;
+            // Negative guard: if the next token starts a new statement, don't absorb it.
+            let next_is_new_statement = can_start_statement(next)
+                || matches!(
+                    next,
+                    Kind::PreprocIf
+                        | Kind::PreprocElse
+                        | Kind::PreprocElseif
+                        | Kind::PreprocEndif
+                        | Kind::PreprocScopedDefine
+                        | Kind::PreprocGlobalDefine
+                        | Kind::PreprocUndefine
+                        | Kind::KwReturn
+                        | Kind::End
+                        | Kind::KwElse
+                        | Kind::Leave
+                        | Kind::Next
+                );
+            let next_is_block_label = Self::can_be_identifier(next)
+                && self.check_at(1, Kind::Colon)
+                && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor);
+
+            if !next_is_new_statement && !next_is_block_label {
+                self.skip_to_statement_end();
+                return Ok(Statement::ExpressionStatement(expr));
+            }
+            // Next token is a new statement — treat current expression as
+            // already-terminated (preprop macro expanded its own period).
+            return Ok(Statement::ExpressionStatement(expr));
+        }
+
         self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
         Ok(Statement::ExpressionStatement(expr))
     }
@@ -3689,6 +3712,22 @@ impl Parser<'_> {
                 return Ok(assignments);
             }
             self.advance(); // consume '='
+            // Handle "ASSIGN x = ." — assignment with no value, period terminates.
+            // This pattern appears in old character-UI code where the value is set
+            // by a prior CHOOSE/UPDATE widget interaction.
+            if self.check(Kind::Period) {
+                let span = Span {
+                    start: self.peek().start as u32,
+                    end: self.peek().start as u32,
+                };
+                assignments.push(AssignPair {
+                    target,
+                    value: Expression::Literal(oxabl_ast::Literal::Unknown(
+                        oxabl_ast::UnknownLiteral { span },
+                    )),
+                });
+                continue;
+            }
             // Fast path: most ASSIGN values are not ternary. Skip the parse_expression →
             // parse_ternary indirection for non-IF values; parse_or handles AND/OR/comparisons.
             let value = if self.check(Kind::KwIf) {

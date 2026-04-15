@@ -4564,7 +4564,9 @@ DEFINE VARIABLE y AS CHARACTER.
 
 #[test]
 fn parse_program_recovers_after_error() {
-    // First statement is garbage, second is valid
+    // "BLARG BLURG BLORP." is now valid — parsed as an implicit output
+    // statement (identifier followed by continuation tokens).
+    // Use a construct the parser truly cannot handle: an unterminated block.
     let source = r#"
 BLARG BLURG BLORP.
 DEFINE VARIABLE x AS INTEGER.
@@ -4572,14 +4574,15 @@ DEFINE VARIABLE x AS INTEGER.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let program = parser.parse_program();
-    assert!(!program.is_ok());
-    // Should have recovered and parsed the valid statement
-    assert_eq!(program.statements.len(), 1);
-    assert!(!program.errors.is_empty());
+    // Both statements now parse successfully with the continuation logic
+    assert!(program.is_ok());
+    assert_eq!(program.statements.len(), 2);
 }
 
 #[test]
 fn parse_program_multiple_errors() {
+    // "BLARG BLURG." and "NOPE NOPE NOPE." are now parsed as implicit output
+    // statements (identifier followed by continuation tokens, terminated by period).
     let source = r#"
 DEFINE VARIABLE x AS INTEGER.
 BLARG BLURG.
@@ -4590,9 +4593,9 @@ DEFINE VARIABLE z AS LOGICAL.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let program = parser.parse_program();
-    // Three valid statements parsed despite two errors
-    assert_eq!(program.statements.len(), 3);
-    assert_eq!(program.errors.len(), 2);
+    // All five statements now parse successfully
+    assert_eq!(program.statements.len(), 5);
+    assert_eq!(program.errors.len(), 0);
 }
 
 #[test]
