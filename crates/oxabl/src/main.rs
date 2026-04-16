@@ -311,6 +311,23 @@ fn parse_file_with_preprocess(
         }
     };
 
+    // Surface non-fatal preprocessor diagnostics (e.g., include file not found)
+    // so problems in include resolution aren't hidden behind downstream parser
+    // errors caused by missing content.
+    if !preprocessed.diagnostics.is_empty() {
+        let source_map = SourceMap::new(&source);
+        for d in &preprocessed.diagnostics {
+            let (line, col) = source_map.lookup(d.span.span.start as usize);
+            eprintln!(
+                "{}:{}:{} [preprocess] {}",
+                path.display(),
+                line,
+                col,
+                d.message
+            );
+        }
+    }
+
     // Get the expanded source text
     let expanded = preprocessed.to_text();
 
@@ -556,7 +573,18 @@ fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_p
         let preprocessor = Preprocessor::new(fs, include_paths);
         let file_id = FileId::new(1);
         match preprocessor.process(file_id, &source) {
-            Ok(pf) => pf.to_text().to_string(),
+            Ok(pf) => {
+                if !pf.diagnostics.is_empty() {
+                    let source_map = SourceMap::new(&source);
+                    println!("--- Preprocessor diagnostics ---");
+                    for d in &pf.diagnostics {
+                        let (line, col) = source_map.lookup(d.span.span.start as usize);
+                        println!("  {}:{} [preprocess] {}", line, col, d.message);
+                    }
+                    println!();
+                }
+                pf.to_text().to_string()
+            }
             Err(diags) => {
                 eprintln!(
                     "Preprocess error: {} — {}",
