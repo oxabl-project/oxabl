@@ -4377,6 +4377,13 @@ impl Parser<'_> {
                 // Re-parse access modifier that appears after qualifier flags
                 // (e.g. "METHOD OVERRIDE PROTECTED")
                 self.advance();
+            } else if self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
+                // Preprocessor reference standing in for an access modifier —
+                // e.g. `METHOD {&method-access-type} JsonObject foo(...):`
+                // where `{&method-access-type}` resolves to PUBLIC or PRIVATE.
+                // We don't know the value at parse time; `access` stays at its
+                // default (Public).
+                self.advance();
             } else {
                 break;
             }
@@ -4407,6 +4414,28 @@ impl Parser<'_> {
         // Abstract methods have no body — just a period
         if is_abstract {
             self.expect_period("Expected '.' after abstract method signature")?;
+            return Ok(Statement::Method {
+                access,
+                is_static,
+                is_abstract,
+                is_override,
+                return_type,
+                name,
+                parameters,
+                body: Vec::new(),
+            });
+        }
+
+        // FORWARD declaration: METHOD … FORWARD. — declares the method with
+        // no body (class-header forward declaration). FORWARD is an identifier
+        // token, not a reserved keyword.
+        let is_forward = self.check(Kind::Identifier) && {
+            let tok = self.peek();
+            self.source[tok.start..tok.end].eq_ignore_ascii_case("forward")
+        };
+        if is_forward {
+            self.advance(); // consume FORWARD
+            self.expect_period("Expected '.' after METHOD FORWARD")?;
             return Ok(Statement::Method {
                 access,
                 is_static,
