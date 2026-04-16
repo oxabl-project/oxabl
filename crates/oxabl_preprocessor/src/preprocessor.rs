@@ -115,9 +115,48 @@ impl<'fs> ProcessContext<'fs> {
         // State for &IF nesting
         let mut if_stack: Vec<IfState> = Vec::new();
 
+        // ABL supports nested block comments. Directives and `{...}` references
+        // inside a comment are literal text — the Progress preprocessor does not
+        // expand them. Track depth so we can skip comment bodies when scanning
+        // for `&` and `{` markers.
+        let mut comment_depth: u32 = 0;
+
         while i < len {
             // Check if we're inside a disabled &IF branch
             let emitting = if_stack.iter().all(|s| s.emitting);
+
+            // Inside a block comment: only track `/*` / `*/` to keep depth.
+            if comment_depth > 0 {
+                if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    comment_depth -= 1;
+                    i += 2;
+                    continue;
+                }
+                if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                    comment_depth += 1;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Opening a new block comment: skip `/*` and bump depth.
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                comment_depth = 1;
+                i += 2;
+                continue;
+            }
+
+            // Line comment: `// ...` runs to the next newline. Skip the whole
+            // line so any `{...}` or `&...` inside is treated as text.
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                i += 2;
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
 
             match bytes[i] {
                 b'&' => {
@@ -1305,6 +1344,59 @@ mod tests {
         let source = "&GLOB X hello\n{&X}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(&*result.to_text(), "hello");
+    }
+
+    #[test]
+    fn include_reference_inside_block_comment_not_expanded() {
+        // `{foo.i}` inside a `/* ... */` block is comment text — the
+        // preprocessor must not attempt to expand it. Before this guard the
+        // preprocessor would recurse into `foo.i`, leaving its expanded body
+        // inline inside the comment context and throwing downstream lexing
+        // off (nested-comment depth, include arg tracking, etc.).
+        let fs = make_fs(&[("/inc/foo.i", "EXPANDED")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "before /* {foo.i} */ after";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "before /* {foo.i} */ after");
+        assert!(
+            result.dependencies.is_empty(),
+            "include inside comment should not be tracked as a dependency"
+        );
+    }
+
+    #[test]
+    fn include_reference_inside_nested_block_comment_not_expanded() {
+        let fs = make_fs(&[("/inc/foo.i", "EXPANDED")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "/* outer /* inner {foo.i} */ still outer */ real";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert!(result.to_text().contains("real"));
+        assert!(!result.to_text().contains("EXPANDED"));
+    }
+
+    #[test]
+    fn include_reference_inside_line_comment_not_expanded() {
+        let fs = make_fs(&[("/inc/foo.i", "EXPANDED")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "before\n// comment {foo.i} end\nafter";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert!(!result.to_text().contains("EXPANDED"));
+        assert!(result.to_text().contains("after"));
+    }
+
+    #[test]
+    fn directive_inside_block_comment_not_processed() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        // `&SCOPED-DEFINE` inside a comment should NOT define the variable.
+        let source = "/* &SCOPED-DEFINE FOO bar */\nresult: {&FOO}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        // FOO is undefined, so `{&FOO}` is preserved as-is (per the existing
+        // "preserve undefined references" behavior).
+        assert!(result.to_text().contains("{&FOO}"));
     }
 
     #[test]
