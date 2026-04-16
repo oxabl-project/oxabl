@@ -2344,6 +2344,29 @@ impl Parser<'_> {
             self.advance();
         }
 
+        // Legacy ABL sometimes embeds an *undefined* preprocessor placeholder
+        // (e.g. `{&misc-keys}`) between `End.` and `Else`, used as an
+        // extensibility hook for additional `Else If` branches. When the
+        // variable is undefined the preprocessor preserves it as a `Preprop`
+        // token, which would otherwise be parsed as a standalone statement
+        // and leave the trailing `Else` orphaned. If the next meaningful
+        // token after one or more `Preprop` references is `Else`, consume
+        // those placeholders so the ELSE binds correctly.
+        if self.check(Kind::Preprop) {
+            let saved = self.current;
+            while self.check(Kind::Preprop) {
+                self.advance();
+                while self.check(Kind::Period) {
+                    self.advance();
+                }
+            }
+            if !self.check(Kind::KwElse) {
+                // Not an IF placeholder — restore position and let the outer
+                // parser handle the Preprop as its own statement.
+                self.current = saved;
+            }
+        }
+
         // optional ELSE
         let else_branch = if self.check(Kind::KwElse) {
             self.advance();

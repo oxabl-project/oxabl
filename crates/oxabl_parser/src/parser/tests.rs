@@ -2260,6 +2260,82 @@ fn parse_if_then_do_block() {
 }
 
 #[test]
+fn parse_if_then_do_end_else_do_end() {
+    // Legacy ABL idiom: the `.` ends the inner DO's END statement, but the
+    // surrounding IF scope stays open and binds the following ELSE.
+    let source = "IF x > 0 THEN DO: y = 1. END. ELSE DO: y = 0. END.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            assert!(matches!(*then_branch, Statement::Do { .. }));
+            let else_stmt = else_branch.expect("Should have else");
+            assert!(matches!(*else_stmt, Statement::Do { .. }));
+        }
+        _ => panic!("Expected If statement"),
+    }
+}
+
+#[test]
+fn parse_if_then_do_else_with_preproc_placeholder() {
+    // Corpus pattern (ad100.p, secco.p, static/*.p): an undefined preprocessor
+    // variable placeholder appears between `End.` and `Else`. The placeholder
+    // would normally expand to additional `Else If` branches; when undefined
+    // it preserves as `{&name}`. The parser must look past it to bind ELSE.
+    let source = "\
+        IF a THEN DO: x = 1. END.\n\
+        {&extra-else-branches}\n\
+        ELSE DO: x = 2. END.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::If { else_branch, .. } => {
+            assert!(
+                else_branch.is_some(),
+                "ELSE must bind across undefined preprocessor placeholder"
+            );
+        }
+        _ => panic!("Expected If statement"),
+    }
+}
+
+#[test]
+fn parse_if_then_do_end_else_do_end_nested_in_procedure() {
+    // Same pattern but inside a PROCEDURE body, which is the shape seen in
+    // the failing corpus files (e.g. wam_tmpl/manage_store.p).
+    let source = "\
+        PROCEDURE p:\n\
+            IF x > 0 THEN DO:\n\
+                y = 1.\n\
+            END.\n\
+            ELSE DO:\n\
+                y = 0.\n\
+            END.\n\
+        END PROCEDURE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt {
+        Statement::Procedure { body, .. } => {
+            assert_eq!(body.len(), 1, "procedure body: {:?}", body);
+            match &body[0] {
+                Statement::If { else_branch, .. } => {
+                    assert!(else_branch.is_some(), "else arm must bind to IF");
+                }
+                other => panic!("Expected If, got {:?}", other),
+            }
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
 fn parse_if_else_if_chain() {
     let source = "IF x > 10 THEN y = 3. ELSE IF x > 5 THEN y = 2. ELSE y = 1.";
     let tokens = tokenize(source);
