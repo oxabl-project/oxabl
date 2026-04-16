@@ -591,6 +591,19 @@ impl<'a> Lexer<'a> {
                     self.advance(); // consume tilde
                     self.advance(); // consume escaped char (whatever it is)
                 }
+                // Backslash escape — accept `\"` and `\'` as an escaped quote
+                // so HTML-embedded strings like `"<td style=\"x\">"` tokenize
+                // as one string literal. ABL's official escape character is
+                // `~` but real-world corpora rely on backslash for HTML/JS
+                // snippets, and this narrow form doesn't affect strings that
+                // contain literal backslashes followed by other characters
+                // (Windows paths etc.).
+                Some('\\') => {
+                    self.advance(); // consume backslash
+                    if matches!(self.peek(), Some('"') | Some('\'')) {
+                        self.advance(); // consume escaped quote
+                    }
+                }
                 Some(_) => {
                     self.advance(); // consume regular char
                 }
@@ -992,6 +1005,33 @@ mod tests {
             TokenValue::String(OxablAtom::from("hello~nworld".to_string())),
             source,
         );
+    }
+
+    #[test]
+    fn string_with_backslash_escaped_quotes() {
+        // Real-world ABL corpora embed HTML/JS snippets using `\"` as an
+        // escaped quote, e.g. `"<td style=\"x\">"`. The tilde (`~`) is ABL's
+        // official escape, but the backslash form is tolerated so these
+        // strings tokenize as a single literal.
+        let source = r#""<td style=\"x\">""#;
+        let tokens = collect_tokens(source);
+        // Expect: single StringLiteral + Eof
+        assert_eq!(tokens.len(), 2, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::StringLiteral);
+        assert_eq!(tokens[0].start, 0);
+        assert_eq!(tokens[0].end, source.len());
+    }
+
+    #[test]
+    fn string_with_backslash_not_before_quote_is_literal() {
+        // Backslash not followed by a quote is treated as a literal char
+        // so Windows-path-ish strings still tokenize as a single literal
+        // and end at the first unescaped quote.
+        let source = r#""c:\path\to\file""#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::StringLiteral);
+        assert_eq!(tokens[0].end, source.len());
     }
 
     #[test]
