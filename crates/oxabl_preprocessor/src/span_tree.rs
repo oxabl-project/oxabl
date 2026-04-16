@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use oxabl_ast::Span;
-use oxabl_common::{FileId, FileSpan};
+use oxabl_common::{Diagnostic, FileId, FileSpan};
 
 use crate::PreprocVarTable;
 
@@ -47,6 +47,13 @@ pub struct PreprocessedFile {
     pub vars: PreprocVarTable,
     /// All include files transitively referenced (for change tracking).
     pub dependencies: Vec<FileId>,
+    /// Non-fatal diagnostics accumulated during preprocessing.
+    ///
+    /// Fatal diagnostics bail out with `Err` from [`crate::Preprocessor::process`].
+    /// Anything here is an issue the preprocessor recovered from (e.g. an
+    /// include file that could not be resolved) — callers should surface these
+    /// to the user so the root cause is visible, even when parsing succeeds.
+    pub diagnostics: Vec<Diagnostic>,
     /// Cache of source texts keyed by FileId, needed for `to_text()` and
     /// `resolve()`. Populated during preprocessing.
     sources: Vec<(FileId, Arc<str>)>,
@@ -58,11 +65,13 @@ impl PreprocessedFile {
         vars: PreprocVarTable,
         dependencies: Vec<FileId>,
         sources: Vec<(FileId, Arc<str>)>,
+        diagnostics: Vec<Diagnostic>,
     ) -> Self {
         PreprocessedFile {
             tree,
             vars,
             dependencies,
+            diagnostics,
             sources,
         }
     }
@@ -172,6 +181,7 @@ mod tests {
             PreprocVarTable::new(),
             vec![],
             make_sources(&[(file, source)]),
+            vec![],
         );
         assert_eq!(&*pf.to_text(), source);
     }
@@ -213,6 +223,7 @@ mod tests {
             PreprocVarTable::new(),
             vec![child_id],
             make_sources(&[(parent_id, parent_src), (child_id, child_src)]),
+            vec![],
         );
 
         assert_eq!(&*pf.to_text(), "BEFORE INCLUDED AFTER");
@@ -231,6 +242,7 @@ mod tests {
             PreprocVarTable::new(),
             vec![],
             make_sources(&[(file, source)]),
+            vec![],
         );
 
         let resolved = pf.resolve(6);
@@ -273,6 +285,7 @@ mod tests {
             PreprocVarTable::new(),
             vec![child_id],
             make_sources(&[(parent_id, "AB--------EF"), (child_id, "CD")]),
+            vec![],
         );
 
         // Offset 0 → parent byte 0 ("A")
@@ -307,6 +320,7 @@ mod tests {
             PreprocVarTable::new(),
             vec![],
             make_sources(&[(FileId::new(1), "HELLO")]),
+            vec![],
         );
 
         let r = pf.resolve(100);
