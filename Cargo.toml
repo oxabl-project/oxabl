@@ -7,5 +7,6 @@ members = [
     "crates/oxabl_codegen",
     "crates/oxabl_ast",
     "crates/oxabl_workspace",
+    "crates/oxabl_preprocessor",
 ]
 resolver = "2"

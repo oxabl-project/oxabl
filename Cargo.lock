@@ -785,6 +785,7 @@ dependencies = [
  "oxabl_common",
  "oxabl_lexer",
  "oxabl_parser",
+ "oxabl_preprocessor",
  "oxabl_workspace",
  "serde",
  "serde_json",
@@ -838,6 +839,15 @@ dependencies = [
  "oxabl_lexer",
  "rust_decimal",
  "smallvec",
+]
+
+[[package]]
+name = "oxabl_preprocessor"
+version = "0.3.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_common",
+ "oxabl_workspace",
 ]
 
 [[package]]
