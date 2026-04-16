@@ -311,12 +311,16 @@ fn parse_file_with_preprocess(
         }
     };
 
-    // Surface non-fatal preprocessor diagnostics (e.g., include file not found)
+    // Surface error-level preprocessor diagnostics (e.g. include file not found)
     // so problems in include resolution aren't hidden behind downstream parser
-    // errors caused by missing content.
+    // errors caused by missing content. Warnings and informational diagnostics
+    // would spam batch output and are only shown via `--debug`.
     if !preprocessed.diagnostics.is_empty() {
         let source_map = SourceMap::new(&source);
         for d in &preprocessed.diagnostics {
+            if !matches!(d.severity, oxabl_common::Severity::Error) {
+                continue;
+            }
             let (line, col) = source_map.lookup(d.span.span.start as usize);
             eprintln!(
                 "{}:{}:{} [preprocess] {}",
