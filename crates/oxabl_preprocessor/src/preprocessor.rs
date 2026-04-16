@@ -61,14 +61,13 @@ impl<'fs> Preprocessor<'fs> {
             return Err(ctx.diagnostics);
         }
 
-        let mut result = PreprocessedFile::new(tree, ctx.vars, ctx.dependencies, ctx.sources);
-        // Attach non-fatal diagnostics even on success — caller can inspect them.
-        // For now, we discard them since PreprocessedFile doesn't have a diagnostics field.
-        // Future: add a diagnostics field to PreprocessedFile.
-        let _ = ctx.diagnostics;
-        let _ = &mut result;
-
-        Ok(result)
+        Ok(PreprocessedFile::new(
+            tree,
+            ctx.vars,
+            ctx.dependencies,
+            ctx.sources,
+            ctx.diagnostics,
+        ))
     }
 }
 
@@ -116,9 +115,48 @@ impl<'fs> ProcessContext<'fs> {
         // State for &IF nesting
         let mut if_stack: Vec<IfState> = Vec::new();
 
+        // ABL supports nested block comments. Directives and `{...}` references
+        // inside a comment are literal text — the Progress preprocessor does not
+        // expand them. Track depth so we can skip comment bodies when scanning
+        // for `&` and `{` markers.
+        let mut comment_depth: u32 = 0;
+
         while i < len {
             // Check if we're inside a disabled &IF branch
             let emitting = if_stack.iter().all(|s| s.emitting);
+
+            // Inside a block comment: only track `/*` / `*/` to keep depth.
+            if comment_depth > 0 {
+                if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    comment_depth -= 1;
+                    i += 2;
+                    continue;
+                }
+                if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                    comment_depth += 1;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Opening a new block comment: skip `/*` and bump depth.
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                comment_depth = 1;
+                i += 2;
+                continue;
+            }
+
+            // Line comment: `// ...` runs to the next newline. Skip the whole
+            // line so any `{...}` or `&...` inside is treated as text.
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                i += 2;
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
 
             match bytes[i] {
                 b'&' => {
@@ -256,27 +294,19 @@ impl<'fs> ProcessContext<'fs> {
                                 chunk_start = i as u32;
                                 continue;
                             }
-                            DirectiveKind::Message { ref text } => {
-                                // &MESSAGE is informational — skip it from output
+                            DirectiveKind::Message => {
+                                // &MESSAGE is an intentional developer note that
+                                // Progress prints at compile time. It's not a
+                                // compiler issue — don't surface it as a
+                                // diagnostic (which would spam batch `check`
+                                // output). The directive is simply elided from
+                                // the preprocessed source.
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
                                         start: chunk_start,
                                         end: i as u32,
                                     });
-                                }
-                                if emitting {
-                                    self.diagnostics.push(Diagnostic::warning(
-                                        "PREPROC001",
-                                        format!("&MESSAGE: {text}"),
-                                        FileSpan {
-                                            file,
-                                            span: Span {
-                                                start: i as u32,
-                                                end: directive.end as u32,
-                                            },
-                                        },
-                                    ));
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -331,30 +361,38 @@ impl<'fs> ProcessContext<'fs> {
                                     chunk_start = i as u32;
                                     continue;
                                 }
-                                // Undefined variable — remove the reference from output
-                                if i as u32 > chunk_start {
-                                    nodes.push(SpanNode::Chunk {
-                                        file,
-                                        start: chunk_start,
-                                        end: i as u32,
-                                    });
-                                }
+                                // Undefined variable — preserve as-is so the
+                                // downstream lexer sees it as Kind::Preprop.
                                 i = ref_end;
-                                chunk_start = i as u32;
                                 continue;
                             }
                         } else if bytes[i + 1].is_ascii_alphabetic()
                             || bytes[i + 1] == b'/'
                             || bytes[i + 1] == b'.'
                             || bytes[i + 1] == b'"'
+                            || bytes[i + 1] == b'{'
                         {
                             // Include file reference {file.i}
+                            //
+                            // `{{&name}...}` — dynamic include whose file name is
+                            // built from a preprocessor variable (e.g.
+                            // `{{&frame}.f &file = "x"}` where `&frame` expands
+                            // to the actual include name). Substitute all
+                            // `{&var}` references inside the span so the
+                            // resulting text parses as a normal include ref.
                             if let Some(close) = find_matching_brace(source, i) {
                                 let ref_end = close + 1;
-                                let inner = source[i + 1..close].trim();
+                                let raw_inner = source[i + 1..close].trim();
+
+                                // Pre-expand any `{&var}` references inside the
+                                // inner content to support dynamic include names.
+                                let expanded_inner = self.expand_preproc_vars(raw_inner);
+                                let inner_ref: &str =
+                                    expanded_inner.as_deref().unwrap_or(raw_inner);
 
                                 // Parse the include name (first token before space or &)
-                                let include_name = parse_include_name(inner);
+                                let include_name = parse_include_name(inner_ref);
+                                let inner = inner_ref;
 
                                 if i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
@@ -447,16 +485,9 @@ impl<'fs> ProcessContext<'fs> {
                                     chunk_start = i as u32;
                                     continue;
                                 }
-                                // No arg at this index — remove the reference
-                                if i as u32 > chunk_start {
-                                    nodes.push(SpanNode::Chunk {
-                                        file,
-                                        start: chunk_start,
-                                        end: i as u32,
-                                    });
-                                }
+                                // No arg at this index — preserve as-is so the
+                                // downstream lexer sees it as Kind::IncludeArgReference.
                                 i = ref_end;
-                                chunk_start = i as u32;
                                 continue;
                             }
                             // Not a valid {N} reference, advance normally
@@ -608,9 +639,8 @@ impl<'fs> ProcessContext<'fs> {
             "MESSAGE" => {
                 let rest_after = &source[i + j..];
                 let end_offset = rest_after.find('\n').unwrap_or(rest_after.len());
-                let text = rest_after[..end_offset].trim().to_string();
                 Some(Directive {
-                    kind: DirectiveKind::Message { text },
+                    kind: DirectiveKind::Message,
                     end: i + j + end_offset,
                 })
             }
@@ -619,6 +649,42 @@ impl<'fs> ProcessContext<'fs> {
     }
 
     /// Expand an include file reference.
+    /// Expand `{&var}` references inside `text` using the current variable
+    /// table. Returns `Some(expanded)` when any reference was substituted, or
+    /// `None` when the text contained no `{&…}` references (so callers can
+    /// avoid allocating).
+    ///
+    /// Used to resolve dynamic include references like `{{&frame}.f …}` where
+    /// the include file name is built from a preprocessor variable.
+    fn expand_preproc_vars(&self, text: &str) -> Option<String> {
+        if !text.contains("{&") {
+            return None;
+        }
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        let mut changed = false;
+        while i < bytes.len() {
+            if i + 1 < bytes.len()
+                && bytes[i] == b'{'
+                && bytes[i + 1] == b'&'
+                && let Some(close_rel) = text[i..].find('}')
+            {
+                let end = i + close_rel;
+                let name = &text[i + 2..end];
+                if let Some(val) = self.vars.get(name) {
+                    out.push_str(val);
+                    i = end + 1;
+                    changed = true;
+                    continue;
+                }
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        if changed { Some(out) } else { None }
+    }
+
     fn expand_include(
         &mut self,
         include_name: &str,
@@ -634,7 +700,13 @@ impl<'fs> ProcessContext<'fs> {
         let path = match resolved {
             Some(p) => p,
             None => {
-                self.diagnostics.push(Diagnostic::error(
+                // Recoverable: the include is elided and processing continues.
+                // Severity is Warning (not Error) because system-level includes
+                // (e.g. Progress runtime `src/web2/wrap-cgi.i`) often can't be
+                // located on developer machines and would otherwise spam every
+                // web file in the corpus. Visible via `--debug`; suppressed in
+                // batch `check` output.
+                self.diagnostics.push(Diagnostic::warning(
                     "PREPROC004",
                     format!("include file not found: '{include_name}'"),
                     site,
@@ -716,7 +788,7 @@ enum DirectiveKind {
     ElseIf { condition: String },
     Else,
     EndIf,
-    Message { text: String },
+    Message,
 }
 
 /// Parse the body of `&SCOPED-DEFINE name value` or `&GLOBAL-DEFINE name value`.
@@ -895,8 +967,15 @@ fn parse_include_name(inner: &str) -> String {
             return stripped[..end_quote].to_string();
         }
     }
-    // Unquoted — first token (space or & delimited)
-    trimmed.split([' ', '&']).next().unwrap_or("").to_string()
+    // Unquoted — terminate on any ASCII whitespace (space, tab, newline, CR) or `&`.
+    // Uses the same delimiter rule as `find_args_start` so the two helpers agree
+    // on where the name ends.
+    let end = trimmed
+        .as_bytes()
+        .iter()
+        .position(|b| b.is_ascii_whitespace() || *b == b'&')
+        .unwrap_or(trimmed.len());
+    trimmed[..end].to_string()
 }
 
 /// Parsed include file arguments.
@@ -935,8 +1014,8 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
     let bytes = args_str.as_bytes();
 
     while i < bytes.len() {
-        // Skip whitespace
-        while i < bytes.len() && bytes[i] == b' ' {
+        // Skip whitespace (spaces, tabs, newlines — include args can span multiple lines)
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         if i >= bytes.len() {
@@ -944,13 +1023,17 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
         }
 
         if bytes[i] == b'&' {
-            // Named argument: &name=value
+            // Named argument: &name = value (with optional whitespace around =)
             i += 1; // skip &
             let name_start = i;
-            while i < bytes.len() && bytes[i] != b'=' && bytes[i] != b' ' {
+            while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
             let name = args_str[name_start..i].to_string();
+            // Skip whitespace between name and =
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
             if i < bytes.len() && bytes[i] == b'=' {
                 i += 1; // skip =
                 let value = read_arg_value(args_str, &mut i);
@@ -973,8 +1056,8 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
 fn read_arg_value(s: &str, i: &mut usize) -> String {
     let bytes = s.as_bytes();
 
-    // Skip leading whitespace
-    while *i < bytes.len() && bytes[*i] == b' ' {
+    // Skip leading whitespace (spaces, tabs, newlines)
+    while *i < bytes.len() && bytes[*i].is_ascii_whitespace() {
         *i += 1;
     }
 
@@ -996,9 +1079,9 @@ fn read_arg_value(s: &str, i: &mut usize) -> String {
         }
         value
     } else {
-        // Unquoted — read to next space or &
+        // Unquoted — read to next whitespace or &
         let start = *i;
-        while *i < bytes.len() && bytes[*i] != b' ' && bytes[*i] != b'&' {
+        while *i < bytes.len() && !bytes[*i].is_ascii_whitespace() && bytes[*i] != b'&' {
             *i += 1;
         }
         s[start..*i].to_string()
@@ -1020,14 +1103,14 @@ fn find_args_start(inner: &str) -> usize {
             i += 1; // skip closing quote
         }
     } else {
-        // Unquoted — skip to first space or &
-        while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'&' {
+        // Unquoted — skip to first whitespace or &
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'&' {
             i += 1;
         }
     }
 
     // Skip whitespace between name and first arg
-    while i < bytes.len() && bytes[i] == b' ' {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }
 
@@ -1089,7 +1172,7 @@ mod tests {
         let source = "&SCOPED-DEFINE X 1\n&UNDEFINE X\n{&X}rest";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "rest");
+        assert_eq!(&*result.to_text(), "{&X}rest");
     }
 
     #[test]
@@ -1264,6 +1347,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_include_name_newline_terminator() {
+        assert_eq!(parse_include_name("file.i\n&arg=v"), "file.i");
+        assert_eq!(parse_include_name("path/file.i\n&arg=v"), "path/file.i");
+    }
+
+    #[test]
+    fn parse_include_name_tab_terminator() {
+        assert_eq!(parse_include_name("file.i\t&arg=v"), "file.i");
+        assert_eq!(parse_include_name("file.i\targ1"), "file.i");
+    }
+
+    #[test]
+    fn parse_include_name_crlf_terminator() {
+        assert_eq!(parse_include_name("file.i\r\n&arg=v"), "file.i");
+    }
+
+    #[test]
     fn find_matching_brace_nested() {
         let s = "{outer {inner} rest}";
         assert_eq!(find_matching_brace(s, 0), Some(19));
@@ -1292,6 +1392,107 @@ mod tests {
         let source = "&GLOB X hello\n{&X}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(&*result.to_text(), "hello");
+    }
+
+    #[test]
+    fn dynamic_include_name_from_preproc_var() {
+        // `{{&frame}.f …}` — dynamic include whose file name is built from a
+        // `&SCOPED-DEFINE` variable. Preprocessor must pre-expand `{&frame}`
+        // before resolving the include.
+        let fs = make_fs(&[("/inc/menu_prc.f", "expanded body")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE frame menu_prc\n{{&frame}.f}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert!(
+            result.to_text().contains("expanded body"),
+            "expected include resolved via &frame, got: {}",
+            result.to_text()
+        );
+    }
+
+    #[test]
+    fn include_reference_inside_block_comment_not_expanded() {
+        // `{foo.i}` inside a `/* ... */` block is comment text — the
+        // preprocessor must not attempt to expand it. Before this guard the
+        // preprocessor would recurse into `foo.i`, leaving its expanded body
+        // inline inside the comment context and throwing downstream lexing
+        // off (nested-comment depth, include arg tracking, etc.).
+        let fs = make_fs(&[("/inc/foo.i", "EXPANDED")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "before /* {foo.i} */ after";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "before /* {foo.i} */ after");
+        assert!(
+            result.dependencies.is_empty(),
+            "include inside comment should not be tracked as a dependency"
+        );
+    }
+
+    #[test]
+    fn include_reference_inside_nested_block_comment_not_expanded() {
+        let fs = make_fs(&[("/inc/foo.i", "EXPANDED")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "/* outer /* inner {foo.i} */ still outer */ real";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert!(result.to_text().contains("real"));
+        assert!(!result.to_text().contains("EXPANDED"));
+    }
+
+    #[test]
+    fn include_reference_inside_line_comment_not_expanded() {
+        let fs = make_fs(&[("/inc/foo.i", "EXPANDED")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "before\n// comment {foo.i} end\nafter";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert!(!result.to_text().contains("EXPANDED"));
+        assert!(result.to_text().contains("after"));
+    }
+
+    #[test]
+    fn directive_inside_block_comment_not_processed() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        // `&SCOPED-DEFINE` inside a comment should NOT define the variable.
+        let source = "/* &SCOPED-DEFINE FOO bar */\nresult: {&FOO}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        // FOO is undefined, so `{&FOO}` is preserved as-is (per the existing
+        // "preserve undefined references" behavior).
+        assert!(result.to_text().contains("{&FOO}"));
+    }
+
+    #[test]
+    fn expand_include_with_name_on_own_line() {
+        // Real-world shape from pcna-erp: the include name appears on one line
+        // and named args follow on subsequent lines. The whole reference spans
+        // multiple lines inside `{...}`. Previously, parse_include_name captured
+        // the trailing newline as part of the name and resolution silently failed.
+        let fs = make_fs(&[(
+            "/inc/currexch.i",
+            "If {&currency} gt \" \" then {&exchange} = 1.\nElse {&exchange} = -1.",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "\
+If x ne y THEN
+    {currexch.i
+    &currency = \"sv-currency\"
+    &exchange = \"c-exchange\" }
+ELSE
+    ASSIGN c-exchange = 1.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("If sv-currency gt"),
+            "expected expanded include body with substituted &currency, got:\n{text}"
+        );
+        assert!(
+            text.contains("c-exchange = 1"),
+            "expected &exchange substituted to c-exchange, got:\n{text}"
+        );
     }
 
     #[test]
@@ -1397,8 +1598,9 @@ mod tests {
         let source = "/* &SCOPED-DEFINE X 1 */\nval={&X}.";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // The define inside the comment should not take effect
-        assert_eq!(&*result.to_text(), "/* &SCOPED-DEFINE X 1 */\nval=.");
+        // The define inside the comment should not take effect;
+        // the undefined {&X} is preserved as-is.
+        assert_eq!(&*result.to_text(), "/* &SCOPED-DEFINE X 1 */\nval={&X}.");
     }
 
     #[test]
@@ -1408,7 +1610,7 @@ mod tests {
         let source = "// &SCOPED-DEFINE X 1\nval={&X}.";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "// &SCOPED-DEFINE X 1\nval=.");
+        assert_eq!(&*result.to_text(), "// &SCOPED-DEFINE X 1\nval={&X}.");
     }
 
     #[test]
@@ -1542,8 +1744,8 @@ mod tests {
         let source = "{scoped.i &arg=secret}outside={&arg}";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // {&arg} after the include should expand to nothing
-        assert_eq!(&*result.to_text(), "inside=secretoutside=");
+        // {&arg} after the include is undefined — preserved as-is
+        assert_eq!(&*result.to_text(), "inside=secretoutside={&arg}");
     }
 
     #[test]
@@ -1558,8 +1760,8 @@ mod tests {
         let source = r#"{outer.i "OUTER_ARG"}"#;
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // inner.i has no args passed, so {1} should expand to nothing
-        assert_eq!(&*result.to_text(), "O=OUTER_ARG I=");
+        // inner.i has no args passed, so {1} is preserved as-is
+        assert_eq!(&*result.to_text(), "O=OUTER_ARG I={1}");
     }
 
     #[test]
@@ -1613,6 +1815,31 @@ mod tests {
     fn parse_include_args_quoted_name() {
         let args = parse_include_args(r#""path/to/file.i" "arg1""#, "path/to/file.i");
         assert_eq!(args.positional, vec!["path/to/file.i", "arg1"]);
+    }
+
+    #[test]
+    fn parse_include_args_multiline() {
+        let inner = "ms/report.i &event       = \"start\"\n             &stream-name = \"s-printer\"\n             &rpt-printer = \"p-printer\"\n             &max-columns = 80";
+        let args = parse_include_args(inner, "ms/report.i");
+        assert_eq!(args.positional, vec!["ms/report.i"]);
+        assert_eq!(args.named.len(), 4);
+        assert_eq!(args.named[0], ("event".to_string(), "start".to_string()));
+        assert_eq!(
+            args.named[1],
+            ("stream-name".to_string(), "s-printer".to_string())
+        );
+        assert_eq!(
+            args.named[2],
+            ("rpt-printer".to_string(), "p-printer".to_string())
+        );
+        assert_eq!(args.named[3], ("max-columns".to_string(), "80".to_string()));
+    }
+
+    #[test]
+    fn parse_include_args_spaces_around_equals() {
+        let args = parse_include_args("file.i &name = \"value\"", "file.i");
+        assert_eq!(args.named.len(), 1);
+        assert_eq!(args.named[0], ("name".to_string(), "value".to_string()));
     }
 
     #[test]
