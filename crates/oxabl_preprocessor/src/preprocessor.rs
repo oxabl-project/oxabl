@@ -331,16 +331,9 @@ impl<'fs> ProcessContext<'fs> {
                                     chunk_start = i as u32;
                                     continue;
                                 }
-                                // Undefined variable — remove the reference from output
-                                if i as u32 > chunk_start {
-                                    nodes.push(SpanNode::Chunk {
-                                        file,
-                                        start: chunk_start,
-                                        end: i as u32,
-                                    });
-                                }
+                                // Undefined variable — preserve as-is so the
+                                // downstream lexer sees it as Kind::Preprop.
                                 i = ref_end;
-                                chunk_start = i as u32;
                                 continue;
                             }
                         } else if bytes[i + 1].is_ascii_alphabetic()
@@ -447,16 +440,9 @@ impl<'fs> ProcessContext<'fs> {
                                     chunk_start = i as u32;
                                     continue;
                                 }
-                                // No arg at this index — remove the reference
-                                if i as u32 > chunk_start {
-                                    nodes.push(SpanNode::Chunk {
-                                        file,
-                                        start: chunk_start,
-                                        end: i as u32,
-                                    });
-                                }
+                                // No arg at this index — preserve as-is so the
+                                // downstream lexer sees it as Kind::IncludeArgReference.
                                 i = ref_end;
-                                chunk_start = i as u32;
                                 continue;
                             }
                             // Not a valid {N} reference, advance normally
@@ -1093,7 +1079,7 @@ mod tests {
         let source = "&SCOPED-DEFINE X 1\n&UNDEFINE X\n{&X}rest";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "rest");
+        assert_eq!(&*result.to_text(), "{&X}rest");
     }
 
     #[test]
@@ -1401,8 +1387,9 @@ mod tests {
         let source = "/* &SCOPED-DEFINE X 1 */\nval={&X}.";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // The define inside the comment should not take effect
-        assert_eq!(&*result.to_text(), "/* &SCOPED-DEFINE X 1 */\nval=.");
+        // The define inside the comment should not take effect;
+        // the undefined {&X} is preserved as-is.
+        assert_eq!(&*result.to_text(), "/* &SCOPED-DEFINE X 1 */\nval={&X}.");
     }
 
     #[test]
@@ -1412,7 +1399,7 @@ mod tests {
         let source = "// &SCOPED-DEFINE X 1\nval={&X}.";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "// &SCOPED-DEFINE X 1\nval=.");
+        assert_eq!(&*result.to_text(), "// &SCOPED-DEFINE X 1\nval={&X}.");
     }
 
     #[test]
@@ -1546,8 +1533,8 @@ mod tests {
         let source = "{scoped.i &arg=secret}outside={&arg}";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // {&arg} after the include should expand to nothing
-        assert_eq!(&*result.to_text(), "inside=secretoutside=");
+        // {&arg} after the include is undefined — preserved as-is
+        assert_eq!(&*result.to_text(), "inside=secretoutside={&arg}");
     }
 
     #[test]
@@ -1562,8 +1549,8 @@ mod tests {
         let source = r#"{outer.i "OUTER_ARG"}"#;
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // inner.i has no args passed, so {1} should expand to nothing
-        assert_eq!(&*result.to_text(), "O=OUTER_ARG I=");
+        // inner.i has no args passed, so {1} is preserved as-is
+        assert_eq!(&*result.to_text(), "O=OUTER_ARG I={1}");
     }
 
     #[test]

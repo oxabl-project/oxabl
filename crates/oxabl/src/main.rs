@@ -14,7 +14,7 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 /// ABL file extensions to scan for (lowercase)
-const ABL_EXTENSIONS: &[&str] = &["p", "w", "i", "cls", "v"];
+const ABL_EXTENSIONS: &[&str] = &["p", "w", "cls", "v"];
 
 #[derive(ClapParser)]
 #[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
@@ -572,6 +572,16 @@ fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_p
     } else {
         source.clone()
     };
+
+    // In debug mode with preprocessing, dump the expanded source
+    if preprocess {
+        println!("--- Preprocessed source ---");
+        for (i, line) in parse_source.lines().enumerate() {
+            println!("{:>5} | {}", i + 1, line);
+        }
+        println!("--- End preprocessed source ---");
+        println!();
+    }
 
     let tokens =
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&parse_source))) {
