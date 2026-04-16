@@ -700,7 +700,13 @@ impl<'fs> ProcessContext<'fs> {
         let path = match resolved {
             Some(p) => p,
             None => {
-                self.diagnostics.push(Diagnostic::error(
+                // Recoverable: the include is elided and processing continues.
+                // Severity is Warning (not Error) because system-level includes
+                // (e.g. Progress runtime `src/web2/wrap-cgi.i`) often can't be
+                // located on developer machines and would otherwise spam every
+                // web file in the corpus. Visible via `--debug`; suppressed in
+                // batch `check` output.
+                self.diagnostics.push(Diagnostic::warning(
                     "PREPROC004",
                     format!("include file not found: '{include_name}'"),
                     site,
