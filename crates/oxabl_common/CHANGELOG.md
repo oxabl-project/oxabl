@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v0.4.0...oxabl_common-v0.5.0) (2026-04-16)
+
+
+### Features
+
+* **common:** add FileId, FileSet, FileSpan, and Diagnostic types ([4df4d45](https://github.com/oxabl-project/oxabl/commit/4df4d45443a18b890eced304cb2e65b11151fe63))
+
+
+### Bug Fixes
+
+* **cargo:** bump versions ([1ac918e](https://github.com/oxabl-project/oxabl/commit/1ac918eec08c73ddc04ada8e1e16a6956cd3c102))
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v0.3.0...oxabl_common-v0.4.0) (2026-04-13)
 
 

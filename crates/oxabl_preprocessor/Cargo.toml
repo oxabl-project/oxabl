@@ -1,12 +1,12 @@
 [package]
 name = "oxabl_preprocessor"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 description = "Preprocessor for ABL source code: include expansion, &IF evaluation, and preprocessor variable tracking"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_preprocessor"
 
 [dependencies]
-oxabl_common = { path = "../oxabl_common", version = "0.4.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "0.3.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
