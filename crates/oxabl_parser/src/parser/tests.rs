@@ -6737,9 +6737,8 @@ fn input_does_not_support_to() {
     let mut parser = Parser::new(&tokens, source);
     // INPUT TO should not be parsed as stream I/O (TO isn't in the lookahead)
     let result = parser.parse_statement();
-    match &result {
-        Ok(Statement::StreamIo { .. }) => panic!("INPUT should not support TO"),
-        _ => {}
+    if let Ok(Statement::StreamIo { .. }) = &result {
+        panic!("INPUT should not support TO");
     }
 }
 
@@ -6750,9 +6749,8 @@ fn output_does_not_support_from() {
     let mut parser = Parser::new(&tokens, source);
     // OUTPUT FROM should not be parsed as stream I/O (FROM isn't in the lookahead)
     let result = parser.parse_statement();
-    match &result {
-        Ok(Statement::StreamIo { .. }) => panic!("OUTPUT should not support FROM"),
-        _ => {}
+    if let Ok(Statement::StreamIo { .. }) = &result {
+        panic!("OUTPUT should not support FROM");
     }
 }
 
@@ -6763,9 +6761,8 @@ fn input_output_does_not_support_from() {
     let mut parser = Parser::new(&tokens, source);
     // INPUT-OUTPUT FROM should not be parsed as stream I/O
     let result = parser.parse_statement();
-    match &result {
-        Ok(Statement::StreamIo { .. }) => panic!("INPUT-OUTPUT should not support FROM"),
-        _ => {}
+    if let Ok(Statement::StreamIo { .. }) = &result {
+        panic!("INPUT-OUTPUT should not support FROM");
     }
 }
 
@@ -6776,9 +6773,8 @@ fn input_as_expression_not_stream() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_statement();
-    match &result {
-        Ok(Statement::StreamIo { .. }) => panic!("INPUT(identifier) should not be StreamIo"),
-        _ => {}
+    if let Ok(Statement::StreamIo { .. }) = &result {
+        panic!("INPUT(identifier) should not be StreamIo");
     }
 }
 
@@ -8675,9 +8671,5 @@ End."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_program();
-    assert!(
-        result.errors.is_empty(),
-        "Errors: {:?}",
-        result.errors
-    );
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
 }
