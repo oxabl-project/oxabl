@@ -5296,6 +5296,48 @@ fn parse_method_with_preproc_access_modifier() {
 }
 
 #[test]
+fn parse_generic_class_data_type() {
+    // `List<String>`, `IIterator<String>` — OO-ABL generic class references.
+    // Generic type arguments aren't modeled in the AST; they're accepted
+    // syntactically so property/variable declarations parse.
+    let source = "DEF PUBLIC PROPERTY mode_list AS List<String> NO-UNDO GET. PRIVATE SET.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.parse_statement().expect("expected property");
+}
+
+#[test]
+fn parse_new_with_generic_class() {
+    // `NEW List<String>()` — object instantiation with generic class.
+    let source = "x = NEW List<String>().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.parse_statement().expect("expected assignment");
+}
+
+#[test]
+fn parse_method_call_on_keyword_member_names() {
+    // OO-ABL libraries use `Current`, `Contains`, `Begins`, `Matches` as
+    // method/property names even though they're ABL keywords.
+    let source =
+        "x = iter:Current. y = list:Contains(z). b = s:Begins(\"a\"). c = s:Matches(\"*\").";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    for _ in 0..4 {
+        parser.parse_statement().expect("expected assignment");
+    }
+}
+
+#[test]
+fn parse_chained_colon_postfix() {
+    // `a:b:c()` — chained postfix member/method access.
+    let source = "valid = mode_iter:Current:ToString().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.parse_statement().expect("expected assignment");
+}
+
+#[test]
 fn parse_method_forward_declaration() {
     // Class headers frequently list method forward declarations — the signature
     // with `forward.` and no body. `FORWARD` is an identifier, not a reserved
