@@ -240,7 +240,7 @@ impl Parser<'_> {
                 // DoubleColon (::) is ABL's dynamic buffer field access operator.
                 let colon_end = self.tokens[self.current].end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
+                    Self::can_be_member_name(t.kind)
                         && !self.source[colon_end..t.start].contains('\n')
                 });
                 if !next_is_member {
@@ -266,7 +266,7 @@ impl Parser<'_> {
         self.advance(); // consumes ':'
 
         // Expect identifier after ':'
-        if !Self::can_be_identifier(self.peek().kind) {
+        if !Self::can_be_member_name(self.peek().kind) {
             return Err(ParseError {
                 message: format!(
                     "Expected identifier after ':', found {:?}",
@@ -689,6 +689,9 @@ impl Parser<'_> {
             }
             let end = self.tokens[self.current - 1].end;
             let class_name = self.source[start..end].to_string();
+
+            // Consume optional generic type args — `NEW List<String>(...)`.
+            self.consume_generic_type_args();
 
             // If no '(' follows, this is the logical NEW record-name test (boolean expression),
             // not an OO object constructor.  Return a simple identifier so parsing continues.

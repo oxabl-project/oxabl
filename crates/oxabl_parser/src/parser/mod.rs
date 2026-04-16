@@ -718,6 +718,23 @@ impl<'a> Parser<'a> {
             )
     }
 
+    /// Returns true if the given Kind is valid as the member/method name
+    /// following a postfix `:` (e.g. `obj:foo()`, `list:Current`,
+    /// `list:Contains(x)`).
+    ///
+    /// This extends `can_be_identifier` with reserved keywords that ABL class
+    /// libraries legitimately use as method/property names. The list is
+    /// deliberately targeted (not every keyword) — block-delimiter contexts
+    /// like `CASE x: WHEN ...` must still break out of the postfix loop, so
+    /// we cannot accept `WHEN`, `END`, `OTHERWISE`, etc. here.
+    fn can_be_member_name(kind: Kind) -> bool {
+        Self::can_be_identifier(kind)
+            || matches!(
+                kind,
+                Kind::Begins | Kind::Contains | Kind::Matches | Kind::Current
+            )
+    }
+
     /// Returns true if the given Kind is "word-like" — an identifier, keyword, or
     /// similar token that can appear as a component in a procedure file path.
     /// This is deliberately broader than `can_be_identifier`: it includes reserved
@@ -1166,6 +1183,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// If the current token is `<`, consume tokens through the matching `>`,
+    /// balancing nested `<...>` pairs. Used after class-name parsing in data
+    /// type position so generic class types like `List<String>` or
+    /// `Map<String, List<Integer>>` parse. Generic type arguments aren't yet
+    /// modeled in the AST — this is a syntactic skip.
+    fn consume_generic_type_args(&mut self) {
+        if !self.check(Kind::LessThan) {
+            return;
+        }
+        self.advance(); // consume `<`
+        let mut depth: i32 = 1;
+        while !self.at_end() && depth > 0 {
+            match self.peek().kind {
+                Kind::LessThan => depth += 1,
+                Kind::GreaterThan => depth -= 1,
+                _ => {}
+            }
+            self.advance();
+        }
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
         let data_type = match token.kind {
@@ -1189,12 +1227,14 @@ impl<'a> Parser<'a> {
             Kind::Class => {
                 self.advance(); // consume CLASS
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             // ABL allows `AS ClassName` (without CLASS keyword) for class types.
             // Dotted names like `forms.deco_proof_form` are class references.
             Kind::Identifier => {
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
@@ -1203,6 +1243,7 @@ impl<'a> Parser<'a> {
             // (e.g. "Progress.Json.ObjectModel.JsonObject")
             Kind::Progress => {
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             // Reserved keywords used as namespace prefixes in OO-ABL class names.
@@ -1216,6 +1257,7 @@ impl<'a> Parser<'a> {
                     .is_some_and(|t| t.kind == Kind::Period) =>
             {
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             Kind::PreprocIf => {
