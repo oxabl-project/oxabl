@@ -8,7 +8,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_parser"
 
 [dependencies]
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
-oxabl_common = { path = "../oxabl_common", version = "0.3.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.4.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.0" }
 rust_decimal = "1.40.0"
 smallvec = { version = "1", features = ["union"] }
