@@ -378,14 +378,29 @@ impl<'fs> ProcessContext<'fs> {
                             || bytes[i + 1] == b'/'
                             || bytes[i + 1] == b'.'
                             || bytes[i + 1] == b'"'
+                            || bytes[i + 1] == b'{'
                         {
                             // Include file reference {file.i}
+                            //
+                            // `{{&name}...}` — dynamic include whose file name is
+                            // built from a preprocessor variable (e.g.
+                            // `{{&frame}.f &file = "x"}` where `&frame` expands
+                            // to the actual include name). Substitute all
+                            // `{&var}` references inside the span so the
+                            // resulting text parses as a normal include ref.
                             if let Some(close) = find_matching_brace(source, i) {
                                 let ref_end = close + 1;
-                                let inner = source[i + 1..close].trim();
+                                let raw_inner = source[i + 1..close].trim();
+
+                                // Pre-expand any `{&var}` references inside the
+                                // inner content to support dynamic include names.
+                                let expanded_inner = self.expand_preproc_vars(raw_inner);
+                                let inner_ref: &str =
+                                    expanded_inner.as_deref().unwrap_or(raw_inner);
 
                                 // Parse the include name (first token before space or &)
-                                let include_name = parse_include_name(inner);
+                                let include_name = parse_include_name(inner_ref);
+                                let inner = inner_ref;
 
                                 if i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
@@ -643,6 +658,42 @@ impl<'fs> ProcessContext<'fs> {
     }
 
     /// Expand an include file reference.
+    /// Expand `{&var}` references inside `text` using the current variable
+    /// table. Returns `Some(expanded)` when any reference was substituted, or
+    /// `None` when the text contained no `{&…}` references (so callers can
+    /// avoid allocating).
+    ///
+    /// Used to resolve dynamic include references like `{{&frame}.f …}` where
+    /// the include file name is built from a preprocessor variable.
+    fn expand_preproc_vars(&self, text: &str) -> Option<String> {
+        if !text.contains("{&") {
+            return None;
+        }
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        let mut changed = false;
+        while i < bytes.len() {
+            if i + 1 < bytes.len()
+                && bytes[i] == b'{'
+                && bytes[i + 1] == b'&'
+                && let Some(close_rel) = text[i..].find('}')
+            {
+                let end = i + close_rel;
+                let name = &text[i + 2..end];
+                if let Some(val) = self.vars.get(name) {
+                    out.push_str(val);
+                    i = end + 1;
+                    changed = true;
+                    continue;
+                }
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        if changed { Some(out) } else { None }
+    }
+
     fn expand_include(
         &mut self,
         include_name: &str,
@@ -1344,6 +1395,23 @@ mod tests {
         let source = "&GLOB X hello\n{&X}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(&*result.to_text(), "hello");
+    }
+
+    #[test]
+    fn dynamic_include_name_from_preproc_var() {
+        // `{{&frame}.f …}` — dynamic include whose file name is built from a
+        // `&SCOPED-DEFINE` variable. Preprocessor must pre-expand `{&frame}`
+        // before resolving the include.
+        let fs = make_fs(&[("/inc/menu_prc.f", "expanded body")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE frame menu_prc\n{{&frame}.f}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert!(
+            result.to_text().contains("expanded body"),
+            "expected include resolved via &frame, got: {}",
+            result.to_text()
+        );
     }
 
     #[test]
