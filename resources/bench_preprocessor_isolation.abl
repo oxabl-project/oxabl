@@ -1,0 +1,66 @@
+/* Benchmark fixture: preprocessor in isolation.
+   Includes are resolved against an InMemoryFileSystem in the bench harness;
+   no disk I/O. Mid-sized mix of features the preprocessor handles. */
+
+&scoped-define APP-NAME "Benchmark"
+&scoped-define APP-VERSION "1.0.0"
+&scoped-define MAX-ROWS 5000
+&scoped-define DEBUG yes
+&scoped-define LOG-LEVEL 4
+
+&global-define COMPANY "ACME"
+&global-define REGION  "NA"
+
+{shared/header.i}
+
+define variable lv-app  as character no-undo initial {&APP-NAME}.
+define variable lv-ver  as character no-undo initial {&APP-VERSION}.
+define variable lv-max  as integer   no-undo initial {&MAX-ROWS}.
+define variable lv-co   as character no-undo initial {&COMPANY}.
+define variable lv-reg  as character no-undo initial {&REGION}.
+
+&if defined(DEBUG) &then
+  define variable lv-debug as logical no-undo initial true.
+  &if {&LOG-LEVEL} > 2 &then
+    define variable lv-verbose as logical no-undo initial true.
+  &endif
+&else
+  define variable lv-debug as logical no-undo initial false.
+&endif
+
+{shared/types.i}
+
+&if {&MAX-ROWS} > 1000 &then
+  define variable lv-large-set as logical no-undo initial true.
+&else
+  define variable lv-large-set as logical no-undo initial false.
+&endif
+
+&scoped-define COL-1 "name"
+&scoped-define COL-2 "address"
+&scoped-define COL-3 "city"
+&scoped-define COL-4 "state"
+&scoped-define COL-5 "zip"
+&scoped-define DELIM ","
+
+assign lv-row = "{&COL-1}{&DELIM}{&COL-2}{&DELIM}{&COL-3}{&DELIM}{&COL-4}{&DELIM}{&COL-5}".
+
+{shared/footer.i}
+
+&undefine APP-NAME
+&scoped-define APP-NAME "Benchmark-Renamed"
+assign lv-app = {&APP-NAME}.
+
+&if defined(REGION) &then
+  &if defined(COMPANY) &then
+    define variable lv-context as character no-undo initial {&COMPANY} + "-" + {&REGION}.
+  &endif
+&endif
+
+&scoped-define ROUND-1 100
+&scoped-define ROUND-2 200
+&scoped-define ROUND-3 300
+&scoped-define ROUND-4 400
+&scoped-define ROUND-5 500
+
+assign lv-total = {&ROUND-1} + {&ROUND-2} + {&ROUND-3} + {&ROUND-4} + {&ROUND-5}.
