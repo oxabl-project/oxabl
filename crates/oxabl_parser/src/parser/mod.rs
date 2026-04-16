@@ -393,6 +393,22 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Consume a period statement terminator, or silently accept EoF.
+    /// ABL allows the final statement in a file to omit the trailing `.`.
+    fn expect_period(&mut self, msg: &str) -> ParseResult<()> {
+        if self.check(Kind::Period) {
+            self.advance();
+            return Ok(());
+        }
+        if self.at_end() {
+            return Ok(());
+        }
+        Err(ParseError {
+            message: msg.to_string(),
+            span: self.current_span(),
+        })
+    }
+
     /// Consumes a string literal that may carry an ABL translation suffix (`:U`, `:T`, etc.).
     /// After parsing `FORMAT "x(125)":U`, the `"x(125)"` is a `StringLiteral` followed by
     /// `Colon` + `Identifier`. Call this after consuming the FORMAT/LABEL keyword.
