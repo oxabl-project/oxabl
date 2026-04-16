@@ -61,14 +61,13 @@ impl<'fs> Preprocessor<'fs> {
             return Err(ctx.diagnostics);
         }
 
-        let mut result = PreprocessedFile::new(tree, ctx.vars, ctx.dependencies, ctx.sources);
-        // Attach non-fatal diagnostics even on success — caller can inspect them.
-        // For now, we discard them since PreprocessedFile doesn't have a diagnostics field.
-        // Future: add a diagnostics field to PreprocessedFile.
-        let _ = ctx.diagnostics;
-        let _ = &mut result;
-
-        Ok(result)
+        Ok(PreprocessedFile::new(
+            tree,
+            ctx.vars,
+            ctx.dependencies,
+            ctx.sources,
+            ctx.diagnostics,
+        ))
     }
 }
 
@@ -881,8 +880,15 @@ fn parse_include_name(inner: &str) -> String {
             return stripped[..end_quote].to_string();
         }
     }
-    // Unquoted — first token (space or & delimited)
-    trimmed.split([' ', '&']).next().unwrap_or("").to_string()
+    // Unquoted — terminate on any ASCII whitespace (space, tab, newline, CR) or `&`.
+    // Uses the same delimiter rule as `find_args_start` so the two helpers agree
+    // on where the name ends.
+    let end = trimmed
+        .as_bytes()
+        .iter()
+        .position(|b| b.is_ascii_whitespace() || *b == b'&')
+        .unwrap_or(trimmed.len());
+    trimmed[..end].to_string()
 }
 
 /// Parsed include file arguments.
@@ -1254,6 +1260,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_include_name_newline_terminator() {
+        assert_eq!(parse_include_name("file.i\n&arg=v"), "file.i");
+        assert_eq!(parse_include_name("path/file.i\n&arg=v"), "path/file.i");
+    }
+
+    #[test]
+    fn parse_include_name_tab_terminator() {
+        assert_eq!(parse_include_name("file.i\t&arg=v"), "file.i");
+        assert_eq!(parse_include_name("file.i\targ1"), "file.i");
+    }
+
+    #[test]
+    fn parse_include_name_crlf_terminator() {
+        assert_eq!(parse_include_name("file.i\r\n&arg=v"), "file.i");
+    }
+
+    #[test]
     fn find_matching_brace_nested() {
         let s = "{outer {inner} rest}";
         assert_eq!(find_matching_brace(s, 0), Some(19));
@@ -1282,6 +1305,37 @@ mod tests {
         let source = "&GLOB X hello\n{&X}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(&*result.to_text(), "hello");
+    }
+
+    #[test]
+    fn expand_include_with_name_on_own_line() {
+        // Real-world shape from pcna-erp: the include name appears on one line
+        // and named args follow on subsequent lines. The whole reference spans
+        // multiple lines inside `{...}`. Previously, parse_include_name captured
+        // the trailing newline as part of the name and resolution silently failed.
+        let fs = make_fs(&[(
+            "/inc/currexch.i",
+            "If {&currency} gt \" \" then {&exchange} = 1.\nElse {&exchange} = -1.",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "\
+If x ne y THEN
+    {currexch.i
+    &currency = \"sv-currency\"
+    &exchange = \"c-exchange\" }
+ELSE
+    ASSIGN c-exchange = 1.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("If sv-currency gt"),
+            "expected expanded include body with substituted &currency, got:\n{text}"
+        );
+        assert!(
+            text.contains("c-exchange = 1"),
+            "expected &exchange substituted to c-exchange, got:\n{text}"
+        );
     }
 
     #[test]
