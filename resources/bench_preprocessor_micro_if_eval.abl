@@ -1,0 +1,108 @@
+/* Benchmark fixture: concentrated &IF / &ELSEIF / &ELSE / &ENDIF evaluation */
+
+&scoped-define MODE 3
+&scoped-define DEBUG yes
+&scoped-define OPTIMIZE no
+&scoped-define LEVEL 5
+&scoped-define COUNT 250
+
+&if {&MODE} = 1 &then
+  define variable v1 as integer no-undo.
+&elseif {&MODE} = 2 &then
+  define variable v1 as character no-undo.
+&elseif {&MODE} = 3 &then
+  define variable v1 as decimal no-undo.
+&else
+  define variable v1 as logical no-undo.
+&endif
+
+&if defined(DEBUG) &then
+  &if defined(OPTIMIZE) &then
+    &if {&LEVEL} > 4 &then
+      &if {&COUNT} > 100 &then
+        define variable v2 as integer no-undo.
+      &else
+        define variable v2 as character no-undo.
+      &endif
+    &else
+      define variable v2 as decimal no-undo.
+    &endif
+  &else
+    define variable v2 as logical no-undo.
+  &endif
+&endif
+
+&if {&MODE} = 1 &then
+  define variable a1 as integer no-undo.
+&elseif {&MODE} = 2 &then
+  define variable a1 as integer no-undo.
+&elseif {&MODE} = 3 &then
+  define variable a1 as integer no-undo.
+&endif
+
+&if {&MODE} = 1 &then
+  define variable a2 as integer no-undo.
+&elseif {&MODE} = 2 &then
+  define variable a2 as integer no-undo.
+&elseif {&MODE} = 3 &then
+  define variable a2 as integer no-undo.
+&endif
+
+&if {&MODE} = 1 &then
+  define variable a3 as integer no-undo.
+&elseif {&MODE} = 2 &then
+  define variable a3 as integer no-undo.
+&elseif {&MODE} = 3 &then
+  define variable a3 as integer no-undo.
+&endif
+
+&if {&LEVEL} > 0 &then
+  &if {&LEVEL} > 1 &then
+    &if {&LEVEL} > 2 &then
+      &if {&LEVEL} > 3 &then
+        &if {&LEVEL} > 4 &then
+          define variable deep as integer no-undo.
+        &endif
+      &endif
+    &endif
+  &endif
+&endif
+
+&if true &then
+  define variable t1 as integer no-undo.
+&endif
+&if true &then
+  define variable t2 as integer no-undo.
+&endif
+&if true &then
+  define variable t3 as integer no-undo.
+&endif
+&if true &then
+  define variable t4 as integer no-undo.
+&endif
+&if true &then
+  define variable t5 as integer no-undo.
+&endif
+
+&if false &then
+  define variable f1 as integer no-undo.
+&else
+  define variable f1 as character no-undo.
+&endif
+&if false &then
+  define variable f2 as integer no-undo.
+&else
+  define variable f2 as character no-undo.
+&endif
+&if false &then
+  define variable f3 as integer no-undo.
+&else
+  define variable f3 as character no-undo.
+&endif
+
+&if defined(MODE) and defined(DEBUG) &then
+  define variable both as logical no-undo.
+&endif
+&if defined(MODE) or defined(MISSING) &then
+  define variable either as logical no-undo.
+&endif
