@@ -5266,6 +5266,84 @@ fn parse_method_public_void_no_params() {
 }
 
 #[test]
+fn parse_method_with_preproc_access_modifier() {
+    // ABL code in the pcna-erp corpus (ms/fedexRest.cls) uses a preprocessor
+    // variable where an access modifier would normally appear:
+    //     method {&method-access-type} JsonObject foo (input x as char):
+    // `{&method-access-type}` resolves to PUBLIC or PRIVATE at preprocessing
+    // time. The parser cannot know which, so it treats the reference as a
+    // placeholder and defaults the access to Public.
+    let source =
+        "METHOD {&method-access-type} INTEGER Foo(INPUT x AS CHARACTER): RETURN 0. END METHOD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            access,
+            return_type,
+            name,
+            parameters,
+            ..
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert_eq!(return_type, Some(DataType::Integer));
+            assert_eq!(name.name, "Foo");
+            assert_eq!(parameters.len(), 1);
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_method_forward_declaration() {
+    // Class headers frequently list method forward declarations — the signature
+    // with `forward.` and no body. `FORWARD` is an identifier, not a reserved
+    // keyword, matching how FUNCTION FORWARD declarations are parsed.
+    let source = "METHOD PRIVATE LOGICAL DoThing(INPUT x AS CHARACTER) FORWARD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            access,
+            return_type,
+            name,
+            parameters,
+            body,
+            ..
+        } => {
+            assert_eq!(access, AccessModifier::Private);
+            assert_eq!(return_type, Some(DataType::Logical));
+            assert_eq!(name.name, "DoThing");
+            assert_eq!(parameters.len(), 1);
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
+fn parse_method_forward_with_preproc_access() {
+    // Combined case from ms/fedexRest.cls: preprocessor access modifier plus
+    // forward declaration.
+    let source = "METHOD {&method-access-type} LOGICAL GetErrors(OUTPUT hError AS HANDLE) FORWARD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt {
+        Statement::Method {
+            access, name, body, ..
+        } => {
+            assert_eq!(access, AccessModifier::Public);
+            assert_eq!(name.name, "GetErrors");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Method statement"),
+    }
+}
+
+#[test]
 fn parse_method_private_with_return_and_params() {
     let source = "METHOD PRIVATE INTEGER Calculate(INPUT x AS INTEGER, INPUT y AS INTEGER): RETURN x + y. END METHOD.";
     let tokens = tokenize(source);
