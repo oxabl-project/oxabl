@@ -294,27 +294,19 @@ impl<'fs> ProcessContext<'fs> {
                                 chunk_start = i as u32;
                                 continue;
                             }
-                            DirectiveKind::Message { ref text } => {
-                                // &MESSAGE is informational — skip it from output
+                            DirectiveKind::Message => {
+                                // &MESSAGE is an intentional developer note that
+                                // Progress prints at compile time. It's not a
+                                // compiler issue — don't surface it as a
+                                // diagnostic (which would spam batch `check`
+                                // output). The directive is simply elided from
+                                // the preprocessed source.
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
                                         start: chunk_start,
                                         end: i as u32,
                                     });
-                                }
-                                if emitting {
-                                    self.diagnostics.push(Diagnostic::warning(
-                                        "PREPROC001",
-                                        format!("&MESSAGE: {text}"),
-                                        FileSpan {
-                                            file,
-                                            span: Span {
-                                                start: i as u32,
-                                                end: directive.end as u32,
-                                            },
-                                        },
-                                    ));
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -647,9 +639,8 @@ impl<'fs> ProcessContext<'fs> {
             "MESSAGE" => {
                 let rest_after = &source[i + j..];
                 let end_offset = rest_after.find('\n').unwrap_or(rest_after.len());
-                let text = rest_after[..end_offset].trim().to_string();
                 Some(Directive {
-                    kind: DirectiveKind::Message { text },
+                    kind: DirectiveKind::Message,
                     end: i + j + end_offset,
                 })
             }
@@ -791,7 +782,7 @@ enum DirectiveKind {
     ElseIf { condition: String },
     Else,
     EndIf,
-    Message { text: String },
+    Message,
 }
 
 /// Parse the body of `&SCOPED-DEFINE name value` or `&GLOBAL-DEFINE name value`.
