@@ -2282,6 +2282,17 @@ fn parse_if_then_do_end_else_do_end() {
 }
 
 #[test]
+fn parse_next_prompt_statement() {
+    let source = "NEXT-PROMPT menu-proc.breakpoint WITH FRAME static/menu_prc.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("NEXT-PROMPT should parse as a skipped legacy UI statement");
+    assert!(matches!(stmt, Statement::Empty));
+}
+
+#[test]
 fn parse_if_then_do_else_with_preproc_placeholder() {
     // Corpus pattern (ad100.p, secco.p, static/*.p): an undefined preprocessor
     // variable placeholder appears between `End.` and `Else`. The placeholder
