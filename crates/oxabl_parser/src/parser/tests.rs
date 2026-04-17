@@ -3784,12 +3784,13 @@ fn parse_run_with_args_and_no_error() {
 }
 
 #[test]
-fn parse_run_missing_period() {
+fn parse_run_at_eof_no_period() {
+    // ABL accepts a missing trailing period when EoF is reached — valid in the last statement.
     let source = "RUN myProc";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_statement();
-    assert!(result.is_err());
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 }
 
 #[test]
@@ -8603,4 +8604,80 @@ fn parse_repeat_counting_loop_compound_preprop_var() {
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_program();
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
+
+#[test]
+fn parse_end_statement_without_trailing_period_at_eof() {
+    // ABL allows the last statement in a file to omit the trailing period.
+    // A comment after the last statement (before EoF) is also valid.
+    for source in &[
+        "end",
+        "end /* end for each std-doc */",
+        "assign x = 1",
+        "assign x = 1 /* comment */",
+        "do:\n   assign x = 1.\nend",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let result = parser.parse_program();
+        assert!(
+            result.errors.is_empty(),
+            "source {:?} produced errors: {:?}",
+            source,
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn dataset_preprop_compound_name_member_access() {
+    // DATASET/BUFFER keyword followed by a name that includes an adjacent preprop
+    // reference must consume the whole compound name so that postfix `:member`
+    // access can be parsed. E.g. `dataset ds{&mainTable}:handle` or
+    // `hdsTarget:copy-dataset(hds{&mainTable},true,false,true)`.
+    for source in &[
+        "hdsTarget = dataset ds{&mainTable}:handle.",
+        "hdsTarget:copy-dataset(hds{&mainTable},true,false,true).",
+        "hdsTarget:copy-dataset(dataset ds{&mainTable}:handle,true).",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let result = parser.parse_program();
+        assert!(
+            result.errors.is_empty(),
+            "source {:?} produced errors: {:?}",
+            source,
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn for_each_preprop_compound_buffer_name() {
+    // FOR EACH with a {&preproc}table-name compound buffer name must consume
+    // the full compound name so the WHERE clause and ELSE branch parse correctly.
+    let source = r#"If "x" ne "y" then
+Do:
+   For each {&web}order-line where
+       {&web}order-line.company eq company
+   no-lock
+   break by {&web}order-line.warehouse:
+      if first-of( {&web}order-line.warehouse ) Then
+      Do:
+         assign dTax = 1.
+      End.
+   End.
+End.
+Else
+Do:
+   assign x = 2.
+End."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    assert!(
+        result.errors.is_empty(),
+        "Errors: {:?}",
+        result.errors
+    );
 }
