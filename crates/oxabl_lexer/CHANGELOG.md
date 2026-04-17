@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v0.4.0...oxabl_lexer-v0.4.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* **lexer,parser:** smart backslash-escape-quote and NEXT-PROMPT statement ([0f22c76](https://github.com/oxabl-project/oxabl/commit/0f22c769d1c35a8142ecb1a93531f1292daf09a0))
+* **lexer:** accept backslash-escaped quotes inside string literals ([40579e7](https://github.com/oxabl-project/oxabl/commit/40579e7c43f77f83e0252b1d71a14d30f2b2fe0a))
+* **lexer:** handle include references with preprocessor variable paths ([7c4856d](https://github.com/oxabl-project/oxabl/commit/7c4856d37b8da5ae69da713971b1570746b36757))
+* **lexer:** remove backslash-escape-quote tolerance in strings ([09a6ef9](https://github.com/oxabl-project/oxabl/commit/09a6ef930ae110f103755d504bb6f4fed3aa1735))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 0.4.0 to 0.5.0
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v0.3.1...oxabl_lexer-v0.4.0) (2026-04-13)
 
 
