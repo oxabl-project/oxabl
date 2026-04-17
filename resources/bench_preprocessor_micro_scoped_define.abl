@@ -1,0 +1,95 @@
+/* Benchmark fixture: concentrated &scoped-define / &global-define / &undefine */
+
+&scoped-define A 1
+&scoped-define B 2
+&scoped-define C 3
+&scoped-define D 4
+&scoped-define E 5
+&scoped-define F 6
+&scoped-define G 7
+&scoped-define H 8
+&scoped-define I 9
+&scoped-define J 10
+&scoped-define K 11
+&scoped-define L 12
+&scoped-define M 13
+&scoped-define N 14
+&scoped-define O 15
+&scoped-define P 16
+&scoped-define Q 17
+&scoped-define R 18
+&scoped-define S 19
+&scoped-define T 20
+
+&global-define GA "alpha"
+&global-define GB "bravo"
+&global-define GC "charlie"
+&global-define GD "delta"
+&global-define GE "echo"
+&global-define GF "foxtrot"
+&global-define GG "golf"
+&global-define GH "hotel"
+&global-define GI "india"
+&global-define GJ "juliet"
+
+&scoped-define LONG-NAME-ONE   value-one
+&scoped-define LONG-NAME-TWO   value-two
+&scoped-define LONG-NAME-THREE value-three
+&scoped-define LONG-NAME-FOUR  value-four
+&scoped-define LONG-NAME-FIVE  value-five
+&scoped-define LONG-NAME-SIX   value-six
+&scoped-define LONG-NAME-SEVEN value-seven
+&scoped-define LONG-NAME-EIGHT value-eight
+&scoped-define LONG-NAME-NINE  value-nine
+&scoped-define LONG-NAME-TEN   value-ten
+
+&undefine A
+&undefine B
+&undefine C
+&undefine D
+&undefine E
+
+&scoped-define A 100
+&scoped-define B 200
+&scoped-define C 300
+&scoped-define D 400
+&scoped-define E 500
+
+&undefine LONG-NAME-ONE
+&undefine LONG-NAME-TWO
+&undefine LONG-NAME-THREE
+
+&scoped-define LONG-NAME-ONE   replaced-one
+&scoped-define LONG-NAME-TWO   replaced-two
+&scoped-define LONG-NAME-THREE replaced-three
+
+&scoped-define X1 1
+&scoped-define X2 2
+&scoped-define X3 3
+&scoped-define X4 4
+&scoped-define X5 5
+&scoped-define X6 6
+&scoped-define X7 7
+&scoped-define X8 8
+&scoped-define X9 9
+&scoped-define X10 10
+&scoped-define X11 11
+&scoped-define X12 12
+&scoped-define X13 13
+&scoped-define X14 14
+&scoped-define X15 15
+&scoped-define X16 16
+&scoped-define X17 17
+&scoped-define X18 18
+&scoped-define X19 19
+&scoped-define X20 20
+&scoped-define X21 21
+&scoped-define X22 22
+&scoped-define X23 23
+&scoped-define X24 24
+&scoped-define X25 25
+&scoped-define X26 26
+&scoped-define X27 27
+&scoped-define X28 28
+&scoped-define X29 29
+&scoped-define X30 30

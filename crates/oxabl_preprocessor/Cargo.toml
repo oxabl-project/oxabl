@@ -10,3 +10,10 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_preprocessor"
 oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+
+[dev-dependencies]
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
+
+[[bench]]
+name = "preprocessor_bench"
+harness = false
