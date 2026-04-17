@@ -5,9 +5,11 @@ use std::time::Instant;
 
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
-use oxabl_common::SourceMap;
+use oxabl_common::{FileId, SourceMap};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
+use oxabl_preprocessor::Preprocessor;
+use oxabl_workspace::RealFileSystem;
 use serde::Serialize;
 use walkdir::WalkDir;
 
@@ -25,6 +27,14 @@ enum Cli {
         /// Output results as JSON
         #[arg(long)]
         json: bool,
+
+        /// Enable preprocessing (include expansion, &IF evaluation)
+        #[arg(long)]
+        preprocess: bool,
+
+        /// Include search paths (can be specified multiple times)
+        #[arg(long = "include-path", short = 'I')]
+        include_paths: Vec<PathBuf>,
     },
 }
 
@@ -77,11 +87,21 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli {
-        Cli::Check { path, json } => run_check(&path, json),
+        Cli::Check {
+            path,
+            json,
+            preprocess,
+            include_paths,
+        } => run_check(&path, json, preprocess, &include_paths),
     }
 }
 
-fn run_check(path: &Path, json_output: bool) -> ExitCode {
+fn run_check(
+    path: &Path,
+    json_output: bool,
+    preprocess: bool,
+    include_paths: &[PathBuf],
+) -> ExitCode {
     // Discover files
     let files = match discover_files(path) {
         Ok(files) => files,
@@ -98,6 +118,12 @@ fn run_check(path: &Path, json_output: bool) -> ExitCode {
 
     if !json_output {
         eprintln!("Found {} ABL files", files.len());
+        if preprocess {
+            eprintln!(
+                "Preprocessing enabled with {} include path(s)",
+                include_paths.len()
+            );
+        }
     }
 
     // Set up progress bar
@@ -113,12 +139,19 @@ fn run_check(path: &Path, json_output: bool) -> ExitCode {
         );
     }
 
+    // Set up filesystem for preprocessing
+    let real_fs = RealFileSystem;
+
     // Parse all files
     let start = Instant::now();
     let mut results = Vec::with_capacity(files.len());
 
     for file in &files {
-        results.push(parse_file(file));
+        if preprocess {
+            results.push(parse_file_with_preprocess(file, &real_fs, include_paths));
+        } else {
+            results.push(parse_file(file));
+        }
         progress.inc(1);
     }
 
@@ -216,6 +249,96 @@ fn parse_file(path: &Path) -> FileResult {
                 line,
                 col,
                 message: e.message,
+            }
+        }
+    }
+}
+
+fn parse_file_with_preprocess(
+    path: &Path,
+    fs: &RealFileSystem,
+    include_paths: &[PathBuf],
+) -> FileResult {
+    // Read the file
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            return FileResult::IoError {
+                path: path.to_path_buf(),
+                error: e.to_string(),
+            };
+        }
+    };
+
+    // Preprocess
+    let preprocessor = Preprocessor::new(fs, include_paths);
+    let file_id = FileId::new(1);
+    let preprocessed = match preprocessor.process(file_id, &source) {
+        Ok(pf) => pf,
+        Err(diags) => {
+            // Use the first error diagnostic as the failure message
+            let msg = diags
+                .first()
+                .map(|d| d.message.clone())
+                .unwrap_or_else(|| "preprocessing failed".to_string());
+            let source_map = SourceMap::new(&source);
+            let span_start = diags
+                .first()
+                .map(|d| d.span.span.start as usize)
+                .unwrap_or(0);
+            let (line, col) = source_map.lookup(span_start);
+            return FileResult::ParseError {
+                path: path.to_path_buf(),
+                line,
+                col,
+                message: format!("[preprocess] {msg}"),
+            };
+        }
+    };
+
+    // Get the expanded source text
+    let expanded = preprocessed.to_text();
+
+    // Tokenize with panic catching
+    let tokens =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&expanded))) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                return FileResult::LexerPanic {
+                    path: path.to_path_buf(),
+                };
+            }
+        };
+
+    // Parse the preprocessed token stream
+    let mut parser = Parser::new(&tokens, &expanded);
+    match parser.parse_statements() {
+        Ok(_) => FileResult::Success,
+        Err(e) => {
+            // Resolve the virtual offset back to the real source location
+            let real_span = preprocessed.resolve(e.span.start);
+            let real_file = real_span.file;
+
+            // If the error is in the original file, use the original source for line/col
+            if real_file == file_id {
+                let source_map = SourceMap::new(&source);
+                let (line, col) = source_map.lookup(real_span.span.start as usize);
+                FileResult::ParseError {
+                    path: path.to_path_buf(),
+                    line,
+                    col,
+                    message: e.message,
+                }
+            } else {
+                // Error is inside an included file — use expanded source for position
+                let source_map = SourceMap::new(&expanded);
+                let (line, col) = source_map.lookup(e.span.start as usize);
+                FileResult::ParseError {
+                    path: path.to_path_buf(),
+                    line,
+                    col,
+                    message: format!("[in include] {}", e.message),
+                }
             }
         }
     }
