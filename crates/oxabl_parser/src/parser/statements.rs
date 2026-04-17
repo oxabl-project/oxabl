@@ -873,6 +873,14 @@ impl Parser<'_> {
             false
         };
 
+        // Skip preprocessor/include-arg references that expand to modifiers at
+        // compile time (e.g. `DEF SHARED {2} {3} TEMP-TABLE`).  The first skip
+        // loop above handles refs before SHARED; this one handles refs between
+        // SHARED/access/STATIC and the keyword (VARIABLE, TEMP-TABLE, etc.).
+        while self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
+            self.advance();
+        }
+
         if self.check(Kind::Property) {
             return self.parse_define_property(access.unwrap_or(AccessModifier::Public), is_static);
         }
