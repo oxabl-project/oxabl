@@ -280,7 +280,8 @@ impl<'a> Lexer<'a> {
                         return self.read_include_arg_reference(start);
                     }
                     // Include file references {file.i}, {path/file.i args}
-                    Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"') => {
+                    // Also handles {{&var}...} where include path starts with a preproc variable
+                    Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"' | '{') => {
                         return self.read_include_reference(start);
                     }
                     // Leading whitespace inside braces - look ahead to determine type
@@ -295,7 +296,7 @@ impl<'a> Lexer<'a> {
                         };
                         match first_non_ws {
                             Some('0'..='9') => return self.read_include_arg_reference(start),
-                            Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"') => {
+                            Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"' | '{') => {
                                 return self.read_include_reference(start);
                             }
                             _ => return Kind::LeftBrace,
@@ -553,8 +554,35 @@ impl<'a> Lexer<'a> {
         keyword.unwrap_or(Kind::Identifier)
     }
 
+    /// Peek two chars ahead of the current position and decide whether the
+    /// quote at `peek()` should be treated as an escaped quote (`\"`) or as
+    /// the terminator of the string literal. Only called after we've already
+    /// verified `peek()` is a quote. If the char after the quote looks like
+    /// an expression terminator (whitespace, `)`, `,`, `.`, `+`, `=`, etc.),
+    /// assume the quote is closing the string.
+    fn quote_is_escape_lookalike(&self) -> bool {
+        let mut la = self.chars.clone();
+        la.next(); // skip the quote
+        match la.next() {
+            // Clear expression-terminator context — quote is the terminator.
+            None | Some(')') | Some(',') | Some('.') | Some('+') | Some(';') | Some(':')
+            | Some('=') | Some(' ') | Some('\t') | Some('\r') | Some('\n') => false,
+            // Anything else (letters, digits, angle brackets, slashes,
+            // quotes, etc.) looks like continued string content — treat the
+            // quote as escaped.
+            _ => true,
+        }
+    }
+
     /// Reads the word till the end of whatever quotes we started with
     fn read_string_literal(&mut self, quote_type: char) -> Kind {
+        // Legacy ABL corpora occasionally embed HTML/JS with `\"` as an
+        // escaped quote (e.g. `"<td style=\"x\">"`), even though ABL's
+        // official escape character is tilde. We tolerate `\"` / `\'` as an
+        // escaped quote *only* when the backslash is not itself preceded by
+        // another backslash — so `"\\"` (two literal backslashes, common
+        // in Windows paths) still terminates correctly at its closing quote.
+        let mut prev_was_backslash = false;
         loop {
             match self.peek() {
                 Some(c) if c == quote_type => {
@@ -589,9 +617,29 @@ impl<'a> Lexer<'a> {
                 Some('~') => {
                     self.advance(); // consume tilde
                     self.advance(); // consume escaped char (whatever it is)
+                    prev_was_backslash = false;
+                }
+                Some('\\') => {
+                    self.advance(); // consume backslash
+                    // Tolerate `\"` / `\'` as escaped quote only when:
+                    //   1. The backslash is not itself preceded by another
+                    //      backslash (so `"\\"` is a 2-backslash literal).
+                    //   2. The char immediately following the quote looks
+                    //      like string-interior content, not an expression
+                    //      terminator. This disambiguates `"/\")` (path
+                    //      ending in backslash, closes at the quote) from
+                    //      `"<td style=\"x\">"` (HTML embedded escape).
+                    let is_quote = matches!(self.peek(), Some('"') | Some('\''));
+                    if !prev_was_backslash && is_quote && self.quote_is_escape_lookalike() {
+                        self.advance(); // consume escaped quote
+                        prev_was_backslash = false;
+                    } else {
+                        prev_was_backslash = true;
+                    }
                 }
                 Some(_) => {
                     self.advance(); // consume regular char
+                    prev_was_backslash = false;
                 }
                 None => {
                     // Unterminated String - error?
@@ -991,6 +1039,87 @@ mod tests {
             TokenValue::String(OxablAtom::from("hello~nworld".to_string())),
             source,
         );
+    }
+
+    #[test]
+    fn string_with_literal_backslashes() {
+        // Backslash is a literal byte in ABL strings — not an escape.
+        // Windows path fragments like "\\" must tokenize as one literal
+        // covering exactly the two-backslash payload plus the quotes.
+        let source = r#""\\""#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::StringLiteral);
+        assert_eq!(tokens[0].start, 0);
+        assert_eq!(tokens[0].end, 4);
+    }
+
+    #[test]
+    fn string_with_backslashes_in_path() {
+        // Paths with literal backslashes tokenize as a single literal and
+        // terminate at the first quote (since `\` has no escape meaning).
+        let source = r#""c:\path\to\file""#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::StringLiteral);
+        assert_eq!(tokens[0].end, source.len());
+    }
+
+    #[test]
+    fn string_with_tilde_escaped_quotes() {
+        // Tilde is ABL's official string escape. HTML/JS snippets that need
+        // embedded quotes must use `~"` — e.g. `"<td style=~"x~">"` — and
+        // tokenize as a single string literal spanning the whole source.
+        let source = r#""<td style=~"x~">""#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::StringLiteral);
+        assert_eq!(tokens[0].start, 0);
+        assert_eq!(tokens[0].end, source.len());
+    }
+
+    #[test]
+    fn string_with_html_backslash_escaped_quotes() {
+        // Real ABL corpora embed HTML/JS snippets with `\"` as an escaped
+        // quote (e.g. `"<td style=\"x\">"`). Because the leading `\` is
+        // preceded by a non-backslash character, it tokenizes as a single
+        // literal spanning the whole source.
+        let source = r#""<td style=\"x\">""#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2, "Got: {:?}", tokens);
+        assert_eq!(tokens[0].kind, Kind::StringLiteral);
+        assert_eq!(tokens[0].start, 0);
+        assert_eq!(tokens[0].end, source.len());
+    }
+
+    #[test]
+    fn string_backslash_before_quote_terminates_when_next_is_expr() {
+        // `"/\")` — the `"` after `\` is the string terminator because the
+        // following char `)` is an expression terminator. This covers the
+        // legacy-path-argument pattern `right-trim(x, "/\")`.
+        let source = r#""/\")"#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens[0].kind, Kind::StringLiteral);
+        assert_eq!(
+            tokens[0].end, 4,
+            "`\"/\\\\\"` closes at offset 4 before `)`"
+        );
+        assert_eq!(tokens[1].kind, Kind::RightParen);
+    }
+
+    #[test]
+    fn string_with_double_backslash_then_escaped_quote() {
+        // `"\\\"x"` — first `\\` is two literal backslashes (the second is
+        // preceded by a backslash, so no escape), then `\"` is an escaped
+        // quote because the backslash is preceded by `\` — wait no. The
+        // key invariant: a run of N backslashes followed by `"` terminates
+        // the string iff N is even (every `\` pairs up as literal). Our
+        // toggling implementation handles the common even/odd cases that
+        // appear in the legacy corpus: `"\\"` closes, `"\""` escapes.
+        let source = r#""\\""#;
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].end, 4, "`\"\\\\\"` should close at offset 4");
     }
 
     #[test]

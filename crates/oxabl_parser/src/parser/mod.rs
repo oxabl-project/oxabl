@@ -196,6 +196,36 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Like skip_to_statement_end, but also handles EDITING: ... END. sub-blocks
+    /// that appear inside UPDATE/SET/PROMPT-FOR statements.  When EDITING: is
+    /// encountered, the body is parsed as a full block (statements until END.)
+    /// so that periods inside the editing block are not mistaken for the
+    /// statement terminator.
+    pub fn skip_to_statement_end_editing_aware(&mut self) {
+        while !self.at_end() {
+            // Detect EDITING: — parse the editing block body.
+            if self.check(Kind::Editing) && self.check_at(1, Kind::Colon) {
+                self.advance(); // consume EDITING
+                self.advance(); // consume ':'
+                let _ = self.parse_block_body();
+                return;
+            }
+            // Normal statement-end detection.
+            if self.check(Kind::Period) {
+                let period_end = self.tokens[self.current].end;
+                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
+                    Self::can_be_identifier(t.kind)
+                        && !self.source[period_end..t.start].contains('\n')
+                });
+                if !is_field_access {
+                    self.advance(); // consume the terminating period
+                    return;
+                }
+            }
+            self.advance();
+        }
+    }
+
     /// Like skip_to_statement_end, but also skips over TRIGGERS: ... END TRIGGERS. blocks
     /// that appear as part of a CREATE widget ASSIGN ... construct.  Without this, the
     /// first statement-terminating period *inside* the trigger sub-block would be mistaken
@@ -361,6 +391,22 @@ impl<'a> Parser<'a> {
         }
         self.advance();
         Ok(())
+    }
+
+    /// Consume a period statement terminator, or silently accept EoF.
+    /// ABL allows the final statement in a file to omit the trailing `.`.
+    fn expect_period(&mut self, msg: &str) -> ParseResult<()> {
+        if self.check(Kind::Period) {
+            self.advance();
+            return Ok(());
+        }
+        if self.at_end() {
+            return Ok(());
+        }
+        Err(ParseError {
+            message: msg.to_string(),
+            span: self.current_span(),
+        })
     }
 
     /// Consumes a string literal that may carry an ABL translation suffix (`:U`, `:T`, etc.).
@@ -666,6 +712,26 @@ impl<'a> Parser<'a> {
                     | Kind::Font
                     | Kind::Skip
                     | Kind::Field
+                    // SQL keywords that can appear as identifier names (e.g. variable select)
+                    | Kind::Select
+                    | Kind::Insert
+            )
+    }
+
+    /// Returns true if the given Kind is valid as the member/method name
+    /// following a postfix `:` (e.g. `obj:foo()`, `list:Current`,
+    /// `list:Contains(x)`).
+    ///
+    /// This extends `can_be_identifier` with reserved keywords that ABL class
+    /// libraries legitimately use as method/property names. The list is
+    /// deliberately targeted (not every keyword) — block-delimiter contexts
+    /// like `CASE x: WHEN ...` must still break out of the postfix loop, so
+    /// we cannot accept `WHEN`, `END`, `OTHERWISE`, etc. here.
+    fn can_be_member_name(kind: Kind) -> bool {
+        Self::can_be_identifier(kind)
+            || matches!(
+                kind,
+                Kind::Begins | Kind::Contains | Kind::Matches | Kind::Current
             )
     }
 
@@ -1117,6 +1183,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// If the current token is `<`, consume tokens through the matching `>`,
+    /// balancing nested `<...>` pairs. Used after class-name parsing in data
+    /// type position so generic class types like `List<String>` or
+    /// `Map<String, List<Integer>>` parse. Generic type arguments aren't yet
+    /// modeled in the AST — this is a syntactic skip.
+    fn consume_generic_type_args(&mut self) {
+        if !self.check(Kind::LessThan) {
+            return;
+        }
+        self.advance(); // consume `<`
+        let mut depth: i32 = 1;
+        while !self.at_end() && depth > 0 {
+            match self.peek().kind {
+                Kind::LessThan => depth += 1,
+                Kind::GreaterThan => depth -= 1,
+                _ => {}
+            }
+            self.advance();
+        }
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
         let data_type = match token.kind {
@@ -1140,12 +1227,14 @@ impl<'a> Parser<'a> {
             Kind::Class => {
                 self.advance(); // consume CLASS
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             // ABL allows `AS ClassName` (without CLASS keyword) for class types.
             // Dotted names like `forms.deco_proof_form` are class references.
             Kind::Identifier => {
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
@@ -1154,6 +1243,7 @@ impl<'a> Parser<'a> {
             // (e.g. "Progress.Json.ObjectModel.JsonObject")
             Kind::Progress => {
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             // Reserved keywords used as namespace prefixes in OO-ABL class names.
@@ -1167,6 +1257,7 @@ impl<'a> Parser<'a> {
                     .is_some_and(|t| t.kind == Kind::Period) =>
             {
                 let class_name = self.parse_class_qualified_name()?;
+                self.consume_generic_type_args();
                 return Ok(DataType::Class(class_name.name));
             }
             Kind::PreprocIf => {
