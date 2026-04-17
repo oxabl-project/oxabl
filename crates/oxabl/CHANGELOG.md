@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.4.0...oxabl-v0.5.0) (2026-04-16)
+
+
+### Features
+
+* **cli:** wire preprocessor into `oxabl check --preprocess` ([4ba5def](https://github.com/oxabl-project/oxabl/commit/4ba5defc9a1fad54022a05a9af6d493d898038a1))
+* **workspace:** add oxabl_workspace crate with config, file system, and file discovery ([02b4e67](https://github.com/oxabl-project/oxabl/commit/02b4e672ab34afecc7e0277bfdd90dbc18a529ed))
+
+
+### Bug Fixes
+
+* **check:** silence &MESSAGE noise and only surface error-level preprocessor diagnostics ([5e2b811](https://github.com/oxabl-project/oxabl/commit/5e2b811c009f62eb96718b226a5ed1c0ec2a203c))
+* **parser:** handle implicit output, widget attrs, bare field access, and assign gaps ([ed66678](https://github.com/oxabl-project/oxabl/commit/ed66678bab364f9deb77e7c96f725404fa3e789a))
+* **preprocessor:** handle whitespace after include name, surface diagnostics ([f1510fe](https://github.com/oxabl-project/oxabl/commit/f1510fe346bb7ba10a575e62f6e3e12b75732f6d))
+* **preprocessor:** skip .i files in check command and preserve undefined refs ([84ff0a2](https://github.com/oxabl-project/oxabl/commit/84ff0a2850d9344758be60ba61cb8f9f96161183))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 0.5.0 to 0.6.0
+    * oxabl_lexer bumped from 0.4.0 to 0.4.1
+    * oxabl_common bumped from 0.4.0 to 0.5.0
+    * oxabl_workspace bumped from 0.3.0 to 0.4.0
+    * oxabl_preprocessor bumped from 0.3.0 to 0.3.1
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v0.3.2...oxabl-v0.4.0) (2026-04-13)
 
 
