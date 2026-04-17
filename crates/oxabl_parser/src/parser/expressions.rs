@@ -240,7 +240,7 @@ impl Parser<'_> {
                 // DoubleColon (::) is ABL's dynamic buffer field access operator.
                 let colon_end = self.tokens[self.current].end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
+                    Self::can_be_member_name(t.kind)
                         && !self.source[colon_end..t.start].contains('\n')
                 });
                 if !next_is_member {
@@ -266,7 +266,7 @@ impl Parser<'_> {
         self.advance(); // consumes ':'
 
         // Expect identifier after ':'
-        if !Self::can_be_identifier(self.peek().kind) {
+        if !Self::can_be_member_name(self.peek().kind) {
             return Err(ParseError {
                 message: format!(
                     "Expected identifier after ':', found {:?}",
@@ -491,6 +491,48 @@ impl Parser<'_> {
             return self.parse_ternary();
         }
 
+        // Implicit widget attribute/method: :attribute or :method(args)
+        // In ABL, `:name` without a preceding expression accesses an attribute or
+        // method on the currently focused widget (set by CHOOSE/UPDATE/SET).
+        // Parse as an identifier and let postfix parsing handle method calls.
+        if self.check(Kind::Colon) {
+            let colon_token = self.advance().clone(); // consume ':'
+            if Self::can_be_identifier(self.peek().kind) {
+                let attr_token = self.advance().clone();
+                let ident = Identifier {
+                    span: Span {
+                        start: colon_token.start as u32,
+                        end: attr_token.end as u32,
+                    },
+                    name: format!(":{}", &self.source[attr_token.start..attr_token.end]),
+                };
+                return Ok(Expression::Identifier(ident));
+            }
+            // Bare colon with no identifier — return as unknown
+            return Ok(Expression::Literal(Literal::Unknown(UnknownLiteral {
+                span: Span {
+                    start: colon_token.start as u32,
+                    end: colon_token.end as u32,
+                },
+            })));
+        }
+
+        // Bare field access: .fieldname — field of the default/implicit buffer.
+        // In ABL, `.fieldname` without a preceding buffer name accesses a field on the
+        // default buffer in scope (e.g., inside a FOR EACH block).
+        if self.check(Kind::Period) && Self::can_be_identifier(self.peek_at(1).kind) {
+            let period_token = self.advance().clone(); // consume '.'
+            let field_token = self.advance().clone();
+            let ident = Identifier {
+                span: Span {
+                    start: period_token.start as u32,
+                    end: field_token.end as u32,
+                },
+                name: format!(".{}", &self.source[field_token.start..field_token.end]),
+            };
+            return Ok(Expression::Identifier(ident));
+        }
+
         // Preprocessor reference: {&variable} or compound {&prefix}suffix{&more}...
         // e.g. {&pre}order{&ext} — multiple adjacent parts form a single identifier.
         // Requires direct adjacency (no whitespace) between each part.
@@ -647,6 +689,9 @@ impl Parser<'_> {
             }
             let end = self.tokens[self.current - 1].end;
             let class_name = self.source[start..end].to_string();
+
+            // Consume optional generic type args — `NEW List<String>(...)`.
+            self.consume_generic_type_args();
 
             // If no '(' follows, this is the logical NEW record-name test (boolean expression),
             // not an OO object constructor.  Return a simple identifier so parsing continues.
@@ -912,6 +957,15 @@ impl Parser<'_> {
             }
             // Bare form: AVAILABLE table / AMBIGUOUS table
             // Use parse_postfix to handle database-qualified names like fdm4._file
+            // Guard: if the next token cannot be a buffer/table name, treat as bare
+            // AVAILABLE with no argument (bad practice but valid ABL — evaluates the
+            // default buffer in scope).
+            if !Self::can_be_identifier(self.peek().kind) && !self.check(Kind::LeftParen) {
+                return Ok(Expression::FunctionCall {
+                    name,
+                    arguments: vec![],
+                });
+            }
             let arg = self.parse_postfix()?;
             return Ok(Expression::FunctionCall {
                 name,
@@ -936,7 +990,40 @@ impl Parser<'_> {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
             let start = kw_token.start;
             let name_token = self.advance(); // consume the table/buffer name
-            let end = name_token.end;
+            let mut end = name_token.end;
+
+            // Extend with directly-adjacent Preprop or identifier parts so that
+            // compound names like `dataset ds{&mainTable}` or `buffer b-{&tbl}`
+            // are consumed whole. Without this, the adjacent preprop is left as
+            // the next token and the postfix `:member` access is never parsed.
+            loop {
+                let next = &self.tokens[self.current];
+                if next.start != end {
+                    break;
+                }
+                if next.kind == Kind::Preprop
+                    || next.kind == Kind::IncludeArgReference
+                    || Self::can_be_identifier(next.kind)
+                {
+                    end = self.advance().end;
+                } else if next.kind == Kind::Minus {
+                    let minus_end = next.end;
+                    let after_idx = self.current + 1;
+                    let after_ok = self
+                        .tokens
+                        .get(after_idx)
+                        .is_some_and(|a| a.start == minus_end && Self::is_word_kind(a.kind));
+                    if after_ok {
+                        self.advance(); // consume '-'
+                        end = self.advance().end; // consume word
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
             let compound_name = self.source[start..end].to_string();
             let identifier = Identifier {
                 span: Span {

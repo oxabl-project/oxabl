@@ -14,7 +14,7 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 /// ABL file extensions to scan for (lowercase)
-const ABL_EXTENSIONS: &[&str] = &["p", "w", "i", "cls", "v"];
+const ABL_EXTENSIONS: &[&str] = &["p", "w", "cls", "v"];
 
 #[derive(ClapParser)]
 #[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
@@ -35,6 +35,10 @@ enum Cli {
         /// Include search paths (can be specified multiple times)
         #[arg(long = "include-path", short = 'I')]
         include_paths: Vec<PathBuf>,
+
+        /// Show AST context on parse failure (single-file mode only)
+        #[arg(long)]
+        debug: bool,
     },
 }
 
@@ -92,7 +96,8 @@ fn main() -> ExitCode {
             json,
             preprocess,
             include_paths,
-        } => run_check(&path, json, preprocess, &include_paths),
+            debug,
+        } => run_check(&path, json, preprocess, &include_paths, debug),
     }
 }
 
@@ -101,6 +106,7 @@ fn run_check(
     json_output: bool,
     preprocess: bool,
     include_paths: &[PathBuf],
+    debug: bool,
 ) -> ExitCode {
     // Discover files
     let files = match discover_files(path) {
@@ -124,6 +130,15 @@ fn run_check(
                 include_paths.len()
             );
         }
+    }
+
+    // Debug mode: use parse_program() with error recovery and show AST context
+    if debug {
+        let real_fs = RealFileSystem;
+        for file in &files {
+            run_debug_parse(file, preprocess, &real_fs, include_paths);
+        }
+        return ExitCode::SUCCESS;
     }
 
     // Set up progress bar
@@ -295,6 +310,27 @@ fn parse_file_with_preprocess(
             };
         }
     };
+
+    // Surface error-level preprocessor diagnostics (e.g. include file not found)
+    // so problems in include resolution aren't hidden behind downstream parser
+    // errors caused by missing content. Warnings and informational diagnostics
+    // would spam batch output and are only shown via `--debug`.
+    if !preprocessed.diagnostics.is_empty() {
+        let source_map = SourceMap::new(&source);
+        for d in &preprocessed.diagnostics {
+            if !matches!(d.severity, oxabl_common::Severity::Error) {
+                continue;
+            }
+            let (line, col) = source_map.lookup(d.span.span.start as usize);
+            eprintln!(
+                "{}:{}:{} [preprocess] {}",
+                path.display(),
+                line,
+                col,
+                d.message
+            );
+        }
+    }
 
     // Get the expanded source text
     let expanded = preprocessed.to_text();
@@ -526,4 +562,117 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) {
         "{}",
         serde_json::to_string_pretty(&report).expect("JSON serialization failed")
     );
+}
+
+fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_paths: &[PathBuf]) {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("I/O error: {} — {}", path.display(), e);
+            return;
+        }
+    };
+
+    let parse_source: String = if preprocess {
+        let preprocessor = Preprocessor::new(fs, include_paths);
+        let file_id = FileId::new(1);
+        match preprocessor.process(file_id, &source) {
+            Ok(pf) => {
+                if !pf.diagnostics.is_empty() {
+                    let source_map = SourceMap::new(&source);
+                    println!("--- Preprocessor diagnostics ---");
+                    for d in &pf.diagnostics {
+                        let (line, col) = source_map.lookup(d.span.span.start as usize);
+                        println!("  {}:{} [preprocess] {}", line, col, d.message);
+                    }
+                    println!();
+                }
+                pf.to_text().to_string()
+            }
+            Err(diags) => {
+                eprintln!(
+                    "Preprocess error: {} — {}",
+                    path.display(),
+                    diags
+                        .first()
+                        .map(|d| d.message.as_str())
+                        .unwrap_or("unknown")
+                );
+                return;
+            }
+        }
+    } else {
+        source.clone()
+    };
+
+    // In debug mode with preprocessing, dump the expanded source
+    if preprocess {
+        println!("--- Preprocessed source ---");
+        for (i, line) in parse_source.lines().enumerate() {
+            println!("{:>5} | {}", i + 1, line);
+        }
+        println!("--- End preprocessed source ---");
+        println!();
+    }
+
+    let tokens =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&parse_source))) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                eprintln!("Lexer panic: {}", path.display());
+                return;
+            }
+        };
+
+    let mut parser = Parser::new(&tokens, &parse_source);
+    let program = parser.parse_program();
+
+    if program.is_ok() {
+        println!("OK: {}", path.display());
+        return;
+    }
+
+    let source_map = SourceMap::new(&parse_source);
+
+    println!("=== {} ===", path.display());
+    println!();
+
+    // Show the last N AST statements parsed before the first error
+    let show_count = 10;
+    let total_stmts = program.statements.len();
+    println!(
+        "--- Parsed {} statement(s) before error (showing last {}) ---",
+        total_stmts,
+        show_count.min(total_stmts)
+    );
+    let start_idx = total_stmts.saturating_sub(show_count);
+    if start_idx > 0 {
+        println!("  ... ({} earlier statements omitted)", start_idx);
+    }
+    for (i, stmt) in program.statements.iter().enumerate().skip(start_idx) {
+        let debug_str = format!("{:?}", stmt);
+        if debug_str.len() > 200 {
+            println!("  [{}] {}...", i, &debug_str[..200]);
+        } else {
+            println!("  [{}] {}", i, debug_str);
+        }
+    }
+
+    println!();
+    println!("--- {} error(s) ---", program.errors.len());
+    for (i, err) in program.errors.iter().enumerate() {
+        let (line, col) = source_map.lookup(err.span.start as usize);
+        println!("  Error {}: {}:{} — {}", i + 1, line, col, err.message);
+
+        // Show source context around the error (±5 lines)
+        let lines: Vec<&str> = parse_source.lines().collect();
+        let start_line = line.saturating_sub(6); // 0-indexed, line is 1-indexed
+        let end_line = (line + 4).min(lines.len());
+        println!();
+        for (l, src_line) in lines.iter().enumerate().take(end_line).skip(start_line) {
+            let marker = if l + 1 == line { ">>>" } else { "   " };
+            println!("  {} {:>5} | {}", marker, l + 1, src_line);
+        }
+        println!();
+    }
 }
