@@ -611,6 +611,8 @@ impl Parser<'_> {
             || self.check(Kind::Up)
             // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
             || self.check(Kind::GetKeyValue)
+            // NEXT-PROMPT field [WITH FRAME name]. — legacy UI cursor hint.
+            || self.check(Kind::NextPrompt)
         {
             self.skip_to_statement_end();
             return Ok(Statement::Empty);
