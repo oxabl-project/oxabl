@@ -6,5 +6,6 @@ members = [
     "crates/oxabl_common",
     "crates/oxabl_codegen",
     "crates/oxabl_ast",
+    "crates/oxabl_workspace",
 ]
 resolver = "2"
