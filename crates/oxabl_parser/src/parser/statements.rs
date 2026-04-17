@@ -186,7 +186,7 @@ impl Parser<'_> {
             } else {
                 None
             };
-            self.expect_kind(Kind::Period, "Expected '.' to come after LEAVE")?;
+            self.expect_period("Expected '.' to come after LEAVE")?;
             return Ok(Statement::Leave(label));
         }
 
@@ -199,14 +199,14 @@ impl Parser<'_> {
             } else {
                 None
             };
-            self.expect_kind(Kind::Period, "Expected '.' to come after NEXT")?;
+            self.expect_period("Expected '.' to come after NEXT")?;
             return Ok(Statement::Next(label));
         }
 
         // QUIT — exits the entire program; no label.
         if self.check(Kind::Quit) {
             self.advance();
-            self.expect_kind(Kind::Period, "Expected '.' after QUIT")?;
+            self.expect_period("Expected '.' after QUIT")?;
             return Ok(Statement::Empty);
         }
 
@@ -270,7 +270,7 @@ impl Parser<'_> {
                     }
                 }
             }
-            self.expect_kind(Kind::Period, "Expected '.' after UNDO statement")?;
+            self.expect_period("Expected '.' after UNDO statement")?;
             return Ok(Statement::Empty);
         }
 
@@ -398,7 +398,7 @@ impl Parser<'_> {
             if !self.check(Kind::Period) && !self.at_end() {
                 self.parse_expression().ok();
             }
-            self.expect_kind(Kind::Period, "Expected '.' after THROW")?;
+            self.expect_period("Expected '.' after THROW")?;
             return Ok(Statement::Empty);
         }
 
@@ -511,7 +511,7 @@ impl Parser<'_> {
             if self.check(Kind::NoError) {
                 self.advance();
             }
-            self.expect_kind(Kind::Period, "Expected '.' after EMPTY TEMP-TABLE")?;
+            self.expect_period("Expected '.' after EMPTY TEMP-TABLE")?;
             return Ok(Statement::Empty);
         }
 
@@ -637,7 +637,7 @@ impl Parser<'_> {
             while !self.at_end() {
                 if self.check(Kind::EndEnum) {
                     self.advance();
-                    self.expect_kind(Kind::Period, "Expected '.' after END ENUM")?;
+                    self.expect_period("Expected '.' after END ENUM")?;
                     break;
                 }
                 self.advance();
@@ -701,7 +701,7 @@ impl Parser<'_> {
             if self.check(Kind::NoError) {
                 self.advance();
             }
-            self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
+            self.expect_period("Expected '.' to end statement")?;
             return Ok(Statement::Assignment {
                 target: left,
                 value,
@@ -723,7 +723,7 @@ impl Parser<'_> {
             if self.check(Kind::NoError) {
                 self.advance();
             }
-            self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
+            self.expect_period("Expected '.' to end statement")?;
             return Ok(Statement::Assignment {
                 target: left,
                 value,
@@ -791,7 +791,7 @@ impl Parser<'_> {
             return Ok(Statement::ExpressionStatement(expr));
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
+        self.expect_period("Expected '.' to end statement")?;
         Ok(Statement::ExpressionStatement(expr))
     }
 
@@ -1071,7 +1071,7 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
+        self.expect_period("Expected '.' to end statement")?;
 
         Ok(Statement::VariableDeclaration {
             name,
@@ -1124,7 +1124,7 @@ impl Parser<'_> {
             None
         };
 
-        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
+        self.expect_period("Expected '.' to end statement")?;
 
         Ok(Statement::VariableDeclaration {
             name,
@@ -1277,7 +1277,7 @@ impl Parser<'_> {
             }
         };
 
-        self.expect_kind(Kind::Period, "Expected '.' after parameter definition")?;
+        self.expect_period("Expected '.' after parameter definition")?;
 
         Ok(Statement::DefineParameter {
             direction,
@@ -1622,7 +1622,7 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after DEFINE TEMP-TABLE")?;
+        self.expect_period("Expected '.' after DEFINE TEMP-TABLE")?;
 
         Ok(Statement::DefineTempTable {
             name,
@@ -1699,7 +1699,7 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after DEFINE BUFFER")?;
+        self.expect_period("Expected '.' after DEFINE BUFFER")?;
 
         Ok(Statement::DefineBuffer {
             name,
@@ -1767,7 +1767,7 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after DEFINE DATASET")?;
+        self.expect_period("Expected '.' after DEFINE DATASET")?;
 
         Ok(Statement::DefineDataset {
             name,
@@ -2006,7 +2006,7 @@ impl Parser<'_> {
             self.advance(); // consume comma
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after DEFINE DATA-SOURCE")?;
+        self.expect_period("Expected '.' after DEFINE DATA-SOURCE")?;
 
         Ok(Statement::DefineDataSource {
             name,
@@ -2535,7 +2535,7 @@ impl Parser<'_> {
         if self.check(Kind::NoError) {
             self.advance();
         }
-        self.expect_kind(Kind::Period, "Expected a '.' after RETURN")?;
+        self.expect_period("Expected a '.' after RETURN")?;
         Ok(Statement::Return(value))
     }
 
@@ -2553,42 +2553,11 @@ impl Parser<'_> {
         }
 
         // Parse buffer name — may be a preprocessor reference {&find-orders}, a positional
-        // include argument {1}, a compound name like {&order}-remit (hyphen and suffix are
-        // separate tokens), or a database-qualified name like fdm4._field (db.table dotted form).
-        let mut buffer = if self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
-            // {&preproc-var} or {1} used directly as table name — consume as identifier
-            let tok = self.advance().clone();
-            Identifier {
-                span: Span {
-                    start: tok.start as u32,
-                    end: tok.end as u32,
-                },
-                name: self.source[tok.start..tok.end].to_string(),
-            }
-        } else {
-            self.parse_qualified_identifier()?
-        };
-        while self.check(Kind::Minus) {
-            let minus_start = self.tokens[self.current].start;
-            // Only treat as compound name if adjacent (no space before the minus)
-            if minus_start == buffer.span.end as usize {
-                let minus_tok = self.advance(); // consume '-'
-                let after_minus = minus_tok.end;
-                if Self::can_be_identifier(self.peek().kind) && self.peek().start == after_minus {
-                    let suffix = self.advance();
-                    let (ss, se) = (suffix.start, suffix.end);
-                    buffer.name.push('-');
-                    buffer.name.push_str(&self.source[ss..se]);
-                    buffer.span.end = se as u32;
-                } else {
-                    // Not a compound name — back up by un-advancing the minus
-                    self.current -= 1;
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
+        // include argument {1}, a compound name like {&web}order-line (preprop + adjacent
+        // identifier), or a database-qualified name like fdm4._field (db.table dotted form).
+        // parse_qualified_identifier → parse_identifier handles all of these: bare identifiers,
+        // preprop refs, adjacent preprop+identifier compounds, and hyphenated names.
+        let buffer = self.parse_qualified_identifier()?;
 
         // optional OF clause
         let of_relation = if self.check(Kind::Of) {
@@ -2886,7 +2855,7 @@ impl Parser<'_> {
             self.advance();
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after FIND statement")?;
+        self.expect_period("Expected '.' after FIND statement")?;
 
         Ok(Statement::Find {
             find_type,
@@ -2971,7 +2940,7 @@ impl Parser<'_> {
         if self.check(Kind::Case) {
             self.advance();
         }
-        self.expect_kind(Kind::Period, "Expected '.' after END CASE")?;
+        self.expect_period("Expected '.' after END CASE")?;
 
         Ok(Statement::Case {
             expression,
@@ -3355,7 +3324,7 @@ impl Parser<'_> {
         if !self.check(Kind::Period) && !self.at_end() {
             self.skip_to_statement_end();
         } else {
-            self.expect_kind(Kind::Period, "Expected '.' after RUN statement")?;
+            self.expect_period("Expected '.' after RUN statement")?;
         }
 
         Ok(Statement::Run {
@@ -3582,7 +3551,7 @@ impl Parser<'_> {
             });
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after DISPLAY statement")?;
+        self.expect_period("Expected '.' after DISPLAY statement")?;
 
         Ok(Statement::Display {
             stream_name,
@@ -3670,7 +3639,7 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after MESSAGE statement")?;
+        self.expect_period("Expected '.' after MESSAGE statement")?;
 
         Ok(Statement::Message { items, set_targets })
     }
@@ -3856,7 +3825,7 @@ impl Parser<'_> {
             while !self.check(Kind::Period) && !self.at_end() {
                 self.advance();
             }
-            self.expect_kind(Kind::Period, "Expected '.' after MAP TO")?;
+            self.expect_period("Expected '.' after MAP TO")?;
             return Ok(Statement::Function {
                 name,
                 return_type,
@@ -3887,7 +3856,7 @@ impl Parser<'_> {
             self.advance();
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after END FUNCTION")?;
+        self.expect_period("Expected '.' after END FUNCTION")?;
 
         Ok(Statement::Function {
             name,
@@ -3947,7 +3916,7 @@ impl Parser<'_> {
 
         // Consume the END
         self.expect_kind(Kind::End, "Expected END to close block")?;
-        self.expect_kind(Kind::Period, "Expected '.' to end statement")?;
+        self.expect_period("Expected '.' to end statement")?;
 
         Ok(statements)
     }
@@ -3995,7 +3964,7 @@ impl Parser<'_> {
         if self.check(Kind::Catch) {
             self.advance();
         }
-        self.expect_kind(Kind::Period, "Expected '.' after END CATCH")?;
+        self.expect_period("Expected '.' after END CATCH")?;
 
         Ok(Statement::Catch {
             error_var,
@@ -4021,7 +3990,7 @@ impl Parser<'_> {
         if self.check(Kind::Finally) {
             self.advance();
         }
-        self.expect_kind(Kind::Period, "Expected '.' after END FINALLY")?;
+        self.expect_period("Expected '.' after END FINALLY")?;
 
         Ok(Statement::Finally { body })
     }
@@ -4340,7 +4309,7 @@ impl Parser<'_> {
                 if self.check(Kind::Interface) {
                     self.advance();
                 }
-                self.expect_kind(Kind::Period, "Expected '.' after END INTERFACE")?;
+                self.expect_period("Expected '.' after END INTERFACE")?;
                 break;
             }
             body.push(self.parse_statement()?);
@@ -4419,7 +4388,7 @@ impl Parser<'_> {
 
         // Abstract methods have no body — just a period
         if is_abstract {
-            self.expect_kind(Kind::Period, "Expected '.' after abstract method signature")?;
+            self.expect_period("Expected '.' after abstract method signature")?;
             return Ok(Statement::Method {
                 access,
                 is_static,
@@ -4470,7 +4439,7 @@ impl Parser<'_> {
                 if self.check(Kind::Method) {
                     self.advance(); // consume METHOD
                 }
-                self.expect_kind(Kind::Period, "Expected '.' after END METHOD")?;
+                self.expect_period("Expected '.' after END METHOD")?;
                 break;
             }
             // Handle CATCH and FINALLY blocks that may appear at the end of a METHOD body
@@ -4593,7 +4562,7 @@ impl Parser<'_> {
                         if self.check(Kind::Get) {
                             self.advance();
                         }
-                        self.expect_kind(Kind::Period, "Expected '.' after END GET")?;
+                        self.expect_period("Expected '.' after END GET")?;
                         break;
                     }
                     body.push(self.parse_statement()?);
@@ -4647,7 +4616,7 @@ impl Parser<'_> {
                         if self.check(Kind::Set) {
                             self.advance();
                         }
-                        self.expect_kind(Kind::Period, "Expected '.' after END SET")?;
+                        self.expect_period("Expected '.' after END SET")?;
                         break;
                     }
                     body.push(self.parse_statement()?);
@@ -4716,7 +4685,7 @@ impl Parser<'_> {
                 if self.check(Kind::Constructor) || self.check(Kind::Method) {
                     self.advance();
                 }
-                self.expect_kind(Kind::Period, "Expected '.' after END CONSTRUCTOR")?;
+                self.expect_period("Expected '.' after END CONSTRUCTOR")?;
                 break;
             }
             body.push(self.parse_statement()?);
@@ -4766,7 +4735,7 @@ impl Parser<'_> {
                 if self.check(Kind::Destructor) || self.check(Kind::Method) {
                     self.advance();
                 }
-                self.expect_kind(Kind::Period, "Expected '.' after END DESTRUCTOR")?;
+                self.expect_period("Expected '.' after END DESTRUCTOR")?;
                 break;
             }
             body.push(self.parse_statement()?);
@@ -4836,7 +4805,7 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after USING statement")?;
+        self.expect_period("Expected '.' after USING statement")?;
 
         Ok(Statement::Using { type_name })
     }
@@ -4948,7 +4917,7 @@ impl Parser<'_> {
         };
 
         let no_error = self.parse_no_error();
-        self.expect_kind(Kind::Period, "Expected '.' after CREATE statement")?;
+        self.expect_period("Expected '.' after CREATE statement")?;
         Ok(Statement::Create { target, no_error })
     }
 
@@ -4983,7 +4952,7 @@ impl Parser<'_> {
                 self.advance(); // consume pool name
             }
             let no_error = self.parse_no_error();
-            self.expect_kind(Kind::Period, "Expected '.' after DELETE statement")?;
+            self.expect_period("Expected '.' after DELETE statement")?;
             return Ok(Statement::Delete {
                 buffer: Identifier {
                     span: Span { start: 0, end: 0 },
@@ -5030,7 +4999,7 @@ impl Parser<'_> {
             }
         }
         let no_error = self.parse_no_error();
-        self.expect_kind(Kind::Period, "Expected '.' after DELETE statement")?;
+        self.expect_period("Expected '.' after DELETE statement")?;
         Ok(Statement::Delete { buffer, no_error })
     }
 
@@ -5057,7 +5026,7 @@ impl Parser<'_> {
 
         let buffer = self.parse_identifier()?;
         let no_error = self.parse_no_error();
-        self.expect_kind(Kind::Period, "Expected '.' after RELEASE statement")?;
+        self.expect_period("Expected '.' after RELEASE statement")?;
         Ok(Statement::Release { buffer, no_error })
     }
 
@@ -5066,7 +5035,7 @@ impl Parser<'_> {
         self.advance(); // consume VALIDATE
         let buffer = self.parse_identifier()?;
         let no_error = self.parse_no_error();
-        self.expect_kind(Kind::Period, "Expected '.' after VALIDATE statement")?;
+        self.expect_period("Expected '.' after VALIDATE statement")?;
         Ok(Statement::Validate { buffer, no_error })
     }
 
@@ -5112,7 +5081,7 @@ impl Parser<'_> {
         };
 
         let no_error = self.parse_no_error();
-        self.expect_kind(Kind::Period, "Expected '.' after BUFFER-COPY statement")?;
+        self.expect_period("Expected '.' after BUFFER-COPY statement")?;
 
         Ok(Statement::BufferCopy {
             source,
@@ -5161,7 +5130,7 @@ impl Parser<'_> {
         };
 
         let no_error = self.parse_no_error();
-        self.expect_kind(Kind::Period, "Expected '.' after BUFFER-COMPARE statement")?;
+        self.expect_period("Expected '.' after BUFFER-COMPARE statement")?;
 
         Ok(Statement::BufferCompare {
             source,
@@ -5279,7 +5248,7 @@ impl Parser<'_> {
 
         let arguments = self.parse_run_arguments()?;
 
-        self.expect_kind(Kind::Period, "Expected '.' after PUBLISH statement")?;
+        self.expect_period("Expected '.' after PUBLISH statement")?;
 
         Ok(Statement::Publish {
             event_name,
@@ -5331,7 +5300,7 @@ impl Parser<'_> {
         };
 
         let no_error = self.parse_no_error();
-        self.expect_kind(Kind::Period, "Expected '.' after SUBSCRIBE statement")?;
+        self.expect_period("Expected '.' after SUBSCRIBE statement")?;
 
         Ok(Statement::Subscribe {
             subscriber,
@@ -5375,7 +5344,7 @@ impl Parser<'_> {
             None
         };
 
-        self.expect_kind(Kind::Period, "Expected '.' after UNSUBSCRIBE statement")?;
+        self.expect_period("Expected '.' after UNSUBSCRIBE statement")?;
 
         Ok(Statement::Unsubscribe {
             subscriber,
@@ -5401,7 +5370,7 @@ impl Parser<'_> {
         // Parse parameter list using existing helper
         let parameters = self.parse_parenthesized_params()?;
 
-        self.expect_kind(Kind::Period, "Expected '.' after DEFINE EVENT statement")?;
+        self.expect_period("Expected '.' after DEFINE EVENT statement")?;
 
         Ok(Statement::DefineEvent {
             access,
@@ -5886,7 +5855,7 @@ impl Parser<'_> {
     fn parse_on_key_remap(&mut self) -> ParseResult<Statement> {
         let key_label = self.parse_any_keyword_as_identifier()?;
         let key_function = self.parse_any_keyword_as_identifier()?;
-        self.expect_kind(Kind::Period, "Expected '.' after key remapping")?;
+        self.expect_period("Expected '.' after key remapping")?;
         Ok(Statement::On {
             kind: OnKind::KeyRemap {
                 key_label,
@@ -5900,7 +5869,7 @@ impl Parser<'_> {
         // REVERT
         if self.check(Kind::Revert) {
             self.advance();
-            self.expect_kind(Kind::Period, "Expected '.' after REVERT")?;
+            self.expect_period("Expected '.' after REVERT")?;
             return Ok(OnAction::Revert);
         }
 
@@ -5914,7 +5883,7 @@ impl Parser<'_> {
             } else {
                 Vec::new()
             };
-            self.expect_kind(Kind::Period, "Expected '.' after PERSISTENT RUN")?;
+            self.expect_period("Expected '.' after PERSISTENT RUN")?;
             return Ok(OnAction::PersistentRun {
                 procedure,
                 arguments,
@@ -6206,7 +6175,7 @@ impl Parser<'_> {
                 // OF table.field form
                 self.advance();
                 let target = self.parse_dotted_name()?;
-                self.expect_kind(Kind::Period, "Expected '.' after TRIGGER PROCEDURE")?;
+                self.expect_period("Expected '.' after TRIGGER PROCEDURE")?;
                 return Ok(Statement::TriggerProcedure {
                     event,
                     target,
@@ -6230,7 +6199,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                self.expect_kind(Kind::Period, "Expected '.' after TRIGGER PROCEDURE")?;
+                self.expect_period("Expected '.' after TRIGGER PROCEDURE")?;
                 // Use a placeholder target for the NEW VALUE form
                 let target = Identifier {
                     name: String::new(),
@@ -6274,7 +6243,7 @@ impl Parser<'_> {
             }
         }
 
-        self.expect_kind(Kind::Period, "Expected '.' after TRIGGER PROCEDURE")?;
+        self.expect_period("Expected '.' after TRIGGER PROCEDURE")?;
         Ok(Statement::TriggerProcedure {
             event,
             target,

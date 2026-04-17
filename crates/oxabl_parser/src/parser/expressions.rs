@@ -987,7 +987,40 @@ impl Parser<'_> {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
             let start = kw_token.start;
             let name_token = self.advance(); // consume the table/buffer name
-            let end = name_token.end;
+            let mut end = name_token.end;
+
+            // Extend with directly-adjacent Preprop or identifier parts so that
+            // compound names like `dataset ds{&mainTable}` or `buffer b-{&tbl}`
+            // are consumed whole. Without this, the adjacent preprop is left as
+            // the next token and the postfix `:member` access is never parsed.
+            loop {
+                let next = &self.tokens[self.current];
+                if next.start != end {
+                    break;
+                }
+                if next.kind == Kind::Preprop
+                    || next.kind == Kind::IncludeArgReference
+                    || Self::can_be_identifier(next.kind)
+                {
+                    end = self.advance().end;
+                } else if next.kind == Kind::Minus {
+                    let minus_end = next.end;
+                    let after_idx = self.current + 1;
+                    let after_ok = self
+                        .tokens
+                        .get(after_idx)
+                        .is_some_and(|a| a.start == minus_end && Self::is_word_kind(a.kind));
+                    if after_ok {
+                        self.advance(); // consume '-'
+                        end = self.advance().end; // consume word
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
             let compound_name = self.source[start..end].to_string();
             let identifier = Identifier {
                 span: Span {
