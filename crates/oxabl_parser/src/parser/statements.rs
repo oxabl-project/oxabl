@@ -440,6 +440,16 @@ impl Parser<'_> {
         if self.check(Kind::PreprocMessage) {
             return self.parse_preproc_message();
         }
+        // Stray preprocessor block-boundary tokens left after preprocessing
+        // (e.g. &ENDIF at the end of a file wrapped in &IF DEFINED(...) &THEN).
+        // Consume silently — they have no semantic meaning to the parser.
+        if matches!(
+            self.peek().kind,
+            Kind::PreprocEndif | Kind::PreprocElse | Kind::PreprocElseif
+        ) {
+            self.advance();
+            return Ok(Statement::Empty);
+        }
 
         // Stream I/O statements: INPUT/OUTPUT/INPUT-OUTPUT
         // Disambiguate from parameter direction or function call via lookahead
