@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v0.5.0...oxabl_parser-v0.6.0) (2026-04-16)
+
+
+### Features
+
+* **common:** add FileId, FileSet, FileSpan, and Diagnostic types ([4df4d45](https://github.com/oxabl-project/oxabl/commit/4df4d45443a18b890eced304cb2e65b11151fe63))
+
+
+### Bug Fixes
+
+* **cargo:** bump versions ([1ac918e](https://github.com/oxabl-project/oxabl/commit/1ac918eec08c73ddc04ada8e1e16a6956cd3c102))
+* **lexer,parser:** smart backslash-escape-quote and NEXT-PROMPT statement ([0f22c76](https://github.com/oxabl-project/oxabl/commit/0f22c769d1c35a8142ecb1a93531f1292daf09a0))
+* **parser:** accept preprocessor ref as METHOD access modifier and FORWARD declarations ([3ea22f8](https://github.com/oxabl-project/oxabl/commit/3ea22f8e2fd9ac5b4bdb96e2c22d2aec0c6d0850))
+* **parser:** bind ELSE across undefined preprocessor placeholder ([88487e7](https://github.com/oxabl-project/oxabl/commit/88487e7314947c9f49e7b8cecf461b24d0fc511b))
+* **parser:** consume stray &endif/&else/&elseif at statement level ([4f2f3ac](https://github.com/oxabl-project/oxabl/commit/4f2f3ace9f92be170be8617d5470ebf946928b40))
+* **parser:** expose expect_period helper and skip preprocs in DEFINE shared ([2856970](https://github.com/oxabl-project/oxabl/commit/28569704722f0cb0c969754172591dc098c52d75))
+* **parser:** generic class types and keyword member names ([115ff6c](https://github.com/oxabl-project/oxabl/commit/115ff6c05ff000bba5b86d71eead1cc141bdbba9))
+* **parser:** handle absolute paths in RUN and DELETE ALIAS statements ([f79db5d](https://github.com/oxabl-project/oxabl/commit/f79db5d06611da2ee52472b18721f5bafc450c03))
+* **parser:** handle compound preprop names in DATASET expressions and FOR EACH buffers ([d65776d](https://github.com/oxabl-project/oxabl/commit/d65776dc27cee5812b70144d30b9419c68cbee00))
+* **parser:** handle EDITING: sub-blocks in UPDATE/SET/PROMPT-FOR statements ([4285ca1](https://github.com/oxabl-project/oxabl/commit/4285ca1de4840ff92b5df2097a3afdaa369e3ecb))
+* **parser:** handle embedded SQL, widget colon-exprs, bare field access, and ASSIGN gaps ([f300b58](https://github.com/oxabl-project/oxabl/commit/f300b584bf712011cca327529fa767c1d886152a))
+* **parser:** handle implicit output, widget attrs, bare field access, and assign gaps ([ed66678](https://github.com/oxabl-project/oxabl/commit/ed66678bab364f9deb77e7c96f725404fa3e789a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 0.4.0 to 0.5.0
+    * oxabl_lexer bumped from 0.4.0 to 0.4.1
+
 ## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v0.4.0...oxabl_parser-v0.5.0) (2026-04-13)
 
 
