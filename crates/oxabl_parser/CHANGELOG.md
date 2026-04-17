@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v0.6.0...oxabl_parser-v0.7.0) (2026-04-17)
+
+
+### Features
+
+* **bench:** add preprocessor benchmark suite ([ade7d09](https://github.com/oxabl-project/oxabl/commit/ade7d0936a938e8332c43f72d26a48f5670eab1d))
+
 ## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v0.5.0...oxabl_parser-v0.6.0) (2026-04-16)
 
 
