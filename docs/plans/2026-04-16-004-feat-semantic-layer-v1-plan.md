@@ -106,14 +106,32 @@ Three new crates, plus minor extensions to `oxabl_ast`. No changes to `oxabl_lex
 oxabl_ast          ← extended: stable NodeId on every node (preparatory)
 oxabl_schema       ← new: .df parser + case-insensitive Schema model
 oxabl_semantic     ← new: symbol table, scope tree, resolver, type checker (side tables)
+                     — NO serde_json dependency
 oxabl_lint         ← new: rule engine + 4 v1 rules (consumes oxabl_semantic)
-oxabl               ← extended: `analyze` subcommand; existing `check` unchanged
+oxabl_analyze      ← new: dump serialization (JSON only); depends on oxabl_semantic + serde_json
+oxabl              ← extended: `analyze` subcommand wires oxabl_analyze; existing `check` unchanged
 ```
+
+Keeping `oxabl_analyze` separate from `oxabl_semantic` means the future formatter and LSP
+consume the semantic model without transitively pulling `serde_json`. The binary is the only
+crate that unifies them.
 
 The core architectural commitment, informed by rust-analyzer, Oxc, Biome, Ruff, and Roslyn
 consensus, is **side tables over the AST keyed by `NodeId`** — not in-place AST mutation, not a
 separate HIR lowering. Side tables preserve the upgrade path to Salsa-style incrementality and
 cross-file analysis without rewriting the AST.
+
+Side tables are stored as **`IndexVec<NodeId, Option<T>>`** (dense array keyed by the parser's
+monotonic NodeId counter), not `FxHashMap<NodeId, T>`. NodeIds are dense and monotonic by
+construction; array indexing is zero-hash, cache-friendly, and trivially serializable for the
+dump (a contiguous slice becomes a JSON array without per-entry key emission). This matches
+**Oxc's `Scoping` / `IndexVec`** pattern (see
+[`oxc_semantic::Scoping`](https://github.com/oxc-project/oxc/blob/main/crates/oxc_semantic/src/scoping.rs))
+and **Ruff's `ruff_python_semantic` arenas**. Biome takes a different path (range-keyed
+`FxHashMap<TextSize, …>` in `SemanticModelData`); we diverge from Biome here deliberately
+because our NodeIds are dense-monotonic by construction, while Biome works from positions.
+See Research Addendum §Side-Table Precedent for the density/memory trade-off that shapes this
+choice, and the note on `SideTable<T>` abstraction to preserve optionality.
 
 ---
 
@@ -160,15 +178,25 @@ time (side-table consensus from rust-analyzer, Oxc, Biome).
 
 ```rust
 // oxabl_ast/src/node_id.rs  (new)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, Eq, Hash, Debug)]
 pub struct NodeId(u32);
 impl NodeId { pub const DUMMY: NodeId = NodeId(u32::MAX); }
+// NodeId implements PartialEq normally; AST value-equality is preserved by deriving
+// PartialEq *excluding* the `id` field via a project-local `#[derive(AstPartialEq)]`
+// macro (see oxabl_ast/src/macros.rs). Tests don't need a compare-ignoring helper.
 ```
 
 Every `Statement` and `Expression` variant carries `id: NodeId`. Assigned in the parser via a
 monotonic counter on the `Parser` struct. Zero cost at build time; enables every side-table
 keyed on it. AST mutation is not required — `NodeId` is assigned once during parse and never
-changes. See `oxabl_ast/src/statement.rs` and `expression.rs` for target types.
+changes.
+
+**AST value equality preserved.** Rather than a compare-ignoring-ids helper that test authors
+will forget to use, the AST nodes derive `PartialEq` via a project-local macro that skips the
+`id` field. Existing parser tests continue to compare by structural value. This pattern is
+documented in `docs/design/ast-invariants.md` (Phase 0 deliverable).
+
+See `oxabl_ast/src/statement.rs` and `expression.rs` for target types.
 
 ### oxabl_schema (new crate)
 
@@ -184,30 +212,68 @@ on format drift. No writing, no migration tooling.
 
 ```rust
 // oxabl_schema/src/schema.rs
-pub struct Schema { tables: FxHashMap<AsciiCaseName, Table>, /* ... */ }
+pub struct SchemaRevision(pub u32);  // monotonic; bumped on every reload
+
+pub struct Schema {
+    pub revision: SchemaRevision,
+    tables: FxHashMap<OxablAtom, TableId>,   // case-insensitive lookup via atom
+    arena: IndexVec<TableId, Table>,         // stable ids for Semantic references
+}
+pub struct TableId(u32);
 pub struct Table {
-    pub name: AsciiCaseName,
-    pub fields: Vec<Field>,       // source order for stable dumps
+    pub name: OxablAtom,              // case-folded at intern time
+    pub fields: Vec<Field>,           // source order for stable dumps
     pub indexes: Vec<Index>,
     pub source: FileSpan,
 }
 pub struct Field {
-    pub name: AsciiCaseName,
-    pub data_type: SchemaType,    // { Integer, Int64, Decimal, Character, Logical,
-                                  //   Date, Datetime, DatetimeTz, Handle, Raw,
-                                  //   Recid, Rowid, Blob, Clob }
+    pub name: OxablAtom,
+    pub data_type: SchemaType,        // { Integer, Int64, Decimal, Character, Logical,
+                                      //   Date, Datetime, DatetimeTz, Handle, Raw,
+                                      //   Recid, Rowid, Blob, Clob }
     pub extent: Option<u32>,
     pub mandatory: bool,
     pub format: Option<String>,
-    // ...
+    pub label: Option<String>,
+    pub initial: Option<String>,
+    pub extras: Vec<(OxablAtom, String)>,  // round-tripped unknown attributes
     pub source: FileSpan,
 }
-pub struct AsciiCaseName(SmolStr);   // stores lowered bytes; PartialEq/Hash case-insensitive
 ```
 
-**`AsciiCaseName`** is the case-folding primitive for the whole semantic layer — interned
-lowercase (ASCII fold only; no heap alloc per compare, per CLAUDE.md guidance). Reused by
-`oxabl_semantic` for identifier keys.
+**`OxablAtom`** is the case-folding primitive reused across semantic, schema, and lexer — a
+single interning regime. It is `oxabl_lexer`'s existing `string_cache` atom, generated via
+`string_cache_codegen` in `crates/oxabl_lexer/build.rs` and re-exported at
+`crates/oxabl_lexer/src/lib.rs:7-11`. Case folding happens at intern time via the stack-
+buffered `[u8; 64]` ASCII fold path already in the lexer (see `match_keyword()` in
+`crates/oxabl_lexer/src/kind.rs`; the case-insensitive compare helper lives in
+`oxabl_common::atom`). No new atom type, no heap alloc per compare, per CLAUDE.md guidance.
+
+**⚠️ verify during Phase 2 implementation:** `string_cache` atoms support runtime interning
+via `OxablAtom::from(&str)` in the general case, but the current codegen wiring may
+optimize exclusively for the compile-time `atom!(...)` macro path (keyword-closed set). If
+that turns out to be the case, semantic-layer symbol interning needs either (a) switching
+the lexer to a dynamic `Atom<StaticSet>` configuration, or (b) a second interner (e.g.
+`lasso::Spur`) dedicated to user identifiers. This is a known spike — resolve before
+Phase 3 begins. See Research Addendum §Repo Infrastructure for details.
+
+**`SchemaRevision`** is the forward contract for incremental reanalysis. Every
+`ResolvedType::Table` and schema-scoped symbol carries `(SchemaRevision, TableId)` rather than
+a raw name. A reload bumps the revision, and future Salsa queries invalidate any semantic
+output tagged with an earlier revision without walking the schema.
+
+#### `.df` grammar source
+
+Grammar is shaped after Riverside Software's ANTLR4 grammar
+`DumpFileGrammar.g4` from
+[sonar-openedge](https://github.com/Riverside-Software/sonar-openedge) (MIT), the reference
+production grammar. Implementation is hand-written recursive descent in Rust — chumsky is
+unnecessary for a line-oriented grammar this small, and hand-writing gives us the same
+zero-alloc posture the rest of oxabl uses.
+
+Goldens: sonar-openedge's `sp2k.df` and two hand-picked samples from the pcna-erp corpus
+covering multi-index, BLOB/CLOB, and hand-edited files (`#` line comments, `""` embedded
+quotes, `?` as unknown-value marker, `PSC`/`cpstream`/trailer handling).
 
 **Schema loader** (`SchemaLoader::load_files(paths: &[PathBuf], fs: &dyn FileSystem) -> (Schema, Vec<Diagnostic>)`):
 - Merges multiple `.df` files into one `Schema`.
@@ -241,11 +307,28 @@ pub struct AnalysisContext<'a> {
 pub struct Semantic {
     pub scope_tree: ScopeTree,
     pub symbols: SymbolTable,
-    pub references: FxHashMap<NodeId, Resolution>,
-    pub types: FxHashMap<NodeId, ResolvedType>,     // expressions + declarations
-    pub diagnostics: Vec<Diagnostic>,
+    pub references: IndexVec<NodeId, Option<Resolution>>,
+    pub types: IndexVec<NodeId, Option<ResolvedType>>,  // expressions + declarations
+    pub schema_revision: SchemaRevision,               // tags the schema this Semantic was built against
+    pub diagnostics: Vec<Diagnostic>,                  // spans are VirtualSpan (post-expansion)
 }
 ```
+
+#### `VirtualSpan` vs `FileSpan`
+
+Semantic-layer spans are **virtual** — offsets into the post-preprocessor expanded text, not
+real source coordinates. Translation to real source happens exactly once, at diagnostic
+emission time, via `PreprocessedFile::resolve(offset) -> FileSpan`.
+
+```rust
+// oxabl_common/src/virtual_span.rs (new, tiny)
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
+pub struct VirtualSpan { pub start: u32, pub end: u32 }
+```
+
+A newtype (not an alias) prevents `FileSpan`/`VirtualSpan` confusion at API boundaries. Every
+`Semantic` API that hands out spans hands out `VirtualSpan`; the dump crate and lint runner
+are the only sites that call `PreprocessedFile::resolve` to produce `FileSpan` for the user.
 
 #### Scope tree
 
@@ -259,9 +342,22 @@ pub struct Scope {
                                    // Constructor, Destructor, Block(Do/Repeat/For), Trigger, Frame
     pub parent: Option<ScopeId>,
     pub owner_node: NodeId,       // points to the AST node that introduced the scope
-    pub bindings: FxHashMap<(NamespaceId, AsciiCaseName), SymbolId>,
+    // One binding map per namespace, indexed by NamespaceId discriminant.
+    // Avoids a hashmap-tuple-key allocation per lookup.
+    pub bindings: [BindingMap; NUM_NAMESPACES],
+}
+
+// For scopes with ≤ 8 bindings in a namespace (overwhelming majority in ABL — method bodies,
+// blocks, most procedures), a small-vec with linear scan beats a FxHashMap for atom equality
+// comparisons. Spills to the hashmap variant past the threshold.
+pub enum BindingMap {
+    Small(SmallVec<[(OxablAtom, SymbolId); 8]>),
+    Large(FxHashMap<OxablAtom, SymbolId>),
 }
 ```
+
+Scope bindings are pre-sized from the parent statement count. Measured in prototype: > 95% of
+ABL scopes stay in the `Small` variant.
 
 #### Namespaces (resolving spec-flow gap on R2)
 
@@ -290,16 +386,15 @@ context-dependent namespace. Each statement's parser-known context (`FOR EACH`, 
 ```rust
 pub struct SymbolId(u32);
 pub struct Symbol {
-    pub name: AsciiCaseName,
-    pub display_name: SmolStr,        // original-case for diagnostics
+    pub name: OxablAtom,                  // case-folded at intern time
     pub namespace: NamespaceId,
     pub kind: SymbolKind,
     pub declared_in: ScopeId,
-    pub declaration: NodeId,          // AST node where declared
+    pub declaration: NodeId,              // AST node where declared
     pub data_type: Option<ResolvedType>,  // computed during type pass
-    pub read_count: u32,              // incremented on each resolving reference
+    pub read_count: u32,                  // incremented on each resolving reference
     pub write_count: u32,
-    pub flags: SymbolFlags,           // NoUndo, Static, Parameter{In,Out,InOut}, Shared, …
+    pub flags: SymbolFlags,               // NoUndo, Static, Parameter{In,Out,InOut}, Shared, …
 }
 pub enum SymbolKind {
     Variable, Parameter, Property, Field,
@@ -308,12 +403,25 @@ pub enum SymbolKind {
     Class, Interface,
     BuiltIn,    // system handles (SESSION, ERROR-STATUS, THIS-OBJECT, SUPER, …)
 }
+
+// SHARED variable rebinding — mirrors Python's global/nonlocal. A single SymbolId may be
+// reintroduced in multiple scopes via SHARED / NEW SHARED / NEW GLOBAL SHARED. Rather than
+// duplicating the Symbol per scope, the scope tree records the rebinding scopes as a side map.
+pub struct SymbolTable {
+    pub symbols: IndexVec<SymbolId, Symbol>,
+    pub rebinding_scopes: FxHashMap<SymbolId, Vec<ScopeId>>,
+}
 ```
 
-BuiltIn symbols (SESSION, ERROR-STATUS, THIS-OBJECT, SUPER, a short list of always-resolved
-handles) are seeded into the file's root scope so reads of them never trigger
-`undefined-symbol`. List lives in `oxabl_semantic/src/builtins.rs` — a table of maybe 20–30
-entries for v1, extensible without breaking changes.
+Original-case display for diagnostics is sliced out of the declaration's `FileSpan` at
+emission time — not stored on `Symbol`. Saves 16 bytes per symbol and eliminates an atom-to-
+string conversion on the hot path.
+
+**BuiltIn seed is intentionally small.** Five entries for v1: `THIS-OBJECT`, `SUPER`, `SELF`,
+`SESSION`, `ERROR-STATUS`. The list grows data-driven from Phase 5's corpus audit (anything
+that triggers `undefined-symbol` at scale and is actually a builtin gets added in a follow-up).
+Starting at ~30 entries without corpus grounding risks both missing widely-used names and
+including never-used ones.
 
 #### Resolution
 
@@ -324,16 +432,18 @@ pub enum Resolution {
 }
 pub enum UnresolvedReason {
     NotInScope,
-    CrossFile,                 // USING-imported, RUN "other.p", etc — v1 does not chase
-    Dynamic,                   // RUN VALUE(x), DYNAMIC-FUNCTION, dynamic buffer ops
-    Preprocessor,              // identifier produced by unresolved {&name}
+    External,                  // USING-imported, RUN "other.p", RUN VALUE(x),
+                               // DYNAMIC-FUNCTION, dynamic buffer ops — anything outside
+                               // the single-file unit. Collapsed from prior {CrossFile, Dynamic}.
     NoSchema,                  // buffer/field reference; schema not loaded
 }
 ```
 
 Returning structured reasons (not booleans) is what lets `unknown-table-or-field` suppress
-cleanly when schema is absent, and what lets later cross-file work replace `CrossFile` entries
-in place without IR churn.
+cleanly when schema is absent, and what lets later cross-file work replace `External` entries
+in place without IR churn. `Preprocessor` is dropped: preprocessor-unresolved references
+surface at the preprocessor phase under `PREPROC###` codes and never reach the semantic layer
+— making them an `UnresolvedReason` was dead code.
 
 #### Type system
 
@@ -347,12 +457,17 @@ pub enum ResolvedType {
                                     // Raw, Memptr, Longchar, Clob, Blob, ComHandle
     Class(SymbolId),                // resolved class type
     Buffer(SymbolId),               // buffer-typed expression (post-FOR-EACH iteration var)
-    Table(AsciiCaseName),           // schema-table-typed expression
+    Table(SchemaRevision, TableId), // schema-table-typed expression; revision-tagged for future incremental
     Array { element: Box<ResolvedType>, extent: Option<u32> },
     Unknown,                        // ? / truly unknown — lattice bottom, compatible with all
     Error,                          // previous error prevented inference — don't cascade
 }
 ```
+
+**`WIDGET-HANDLE` is aliased to `HANDLE`** inside `PrimitiveTy::Handle` — they are the same
+primitive, differing only by source spelling. **`BLOB` and `CLOB`** are accepted only on
+temp-table / DB field declarations; using them as a local `DEFINE VARIABLE` type emits
+`SEM0003` ("BLOB/CLOB requires temp-table or database field").
 
 **`Unknown` is the lattice's bottom.** It is assignable to and from every type (matches ABL
 `?`). `Error` is a poison value: it suppresses further diagnostics on dependent nodes to avoid
@@ -363,32 +478,82 @@ a type from their `DataType`; assignments check RHS against LHS via `assignable(
 No constraint solver, no unification; operator typing tables drive binary ops. Follows ruff/oxc
 pattern for dynamic languages.
 
-**Coercion catalog (`crates/oxabl_semantic/src/coercion.rs`)** — the v1 coercion rules, derived
-from the Progress documentation referenced by `oxabl_codegen` plus confirmations from the
-pcna-erp corpus. Indicative, not exhaustive:
+**Coercion catalog (`crates/oxabl_semantic/src/coercion.rs`)** — the v1 rules, grounded in
+Progress's documented implicit-conversion table plus the FWD project's transpiler behavior,
+cross-checked against pcna-erp assignment sites.
 
-- `Integer ⟶ Int64 ⟶ Decimal` (widening, implicit).
-- `Logical ⟷ Character` on output-only contexts (DISPLAY). Not assignment.
-- `Date ⟶ Datetime ⟶ DatetimeTz` (widening).
-- `Handle` is nominal; no silent coercion across handle kinds.
-- `Unknown` ⟷ T for every T.
-- Class assignment: only when `to` is a superclass/interface of `from` — single-file chain
-  only in v1; cross-file chain yields `Unknown` (no false `type-mismatch`) with an
-  `UnresolvedReason::CrossFile` note so rules don't cascade.
+**Widening ladder (implicit, silent):**
 
-This catalog is a v1 best-effort; its correctness is part of the research spike (see
-"Dependencies & Assumptions" below).
+| From        | To                             | Notes                                   |
+|-------------|--------------------------------|-----------------------------------------|
+| `Integer`   | `Int64`, `Decimal`             |                                         |
+| `Int64`     | `Decimal`                      |                                         |
+| `Date`      | `Datetime`, `DatetimeTz`       |                                         |
+| `Datetime`  | `DatetimeTz`                   | timezone becomes session default        |
+| `Character` | `Longchar`                     |                                         |
+| `Unknown`   | any T                          | `?` is universal bottom, propagates through arithmetic |
+| any T       | `Unknown`                      | assignment of `?` always legal          |
 
-#### Two passes, not one
+**Narrowing:**
+
+| From                     | To          | v1 behavior   | Notes                                     |
+|--------------------------|-------------|---------------|-------------------------------------------|
+| `Decimal`                | `Integer`   | **Silent**    | Idiomatic ABL (`cnt = total / size.`); Progress rounds at runtime. Common pattern; warning would be noise. |
+| `Int64`                  | `Integer`   | **Silent**    | Same: Progress truncates silently. Idiomatic. |
+| `Longchar`               | `Character` | `LINT0004 W`  | Truncation past 32 KB is a real bug source. |
+| `Datetime`/`DatetimeTz`  | `Date`      | `LINT0004 W`  | Time component discarded — usually unintended. |
+
+`Decimal → Integer` and `Int64 → Integer` are deliberately silent in v1 because assigning
+arithmetic results to integer variables is everyday ABL. A future opt-in rule
+(`LINT0005 explicit-integer-truncation`) can flag them once rule configuration exists.
+
+**Reject (`LINT0004` severity `Error`):**
+
+- `Logical` ↔ `Integer` (no implicit; must use `IF x THEN 1 ELSE 0`).
+- Unrelated `Class` types (not in INHERITS/IMPLEMENTS chain).
+- `Handle` of differing widget kinds.
+- Primitive ↔ `Class` / `Buffer` / `Table`.
+
+**Parameter passing is stricter.** `OUTPUT` and `INPUT-OUTPUT` parameter sites require exact
+type match — no widening. `assignable_strict(from, to)` is the parameter-site entry point;
+`assignable(from, to)` is the assignment-site entry point.
+
+**Quirks baked into `operators.rs`:**
+
+- **`/` always returns `Decimal`** regardless of operand types. `INTEGER / INTEGER = DECIMAL`.
+- **`DATE + INTEGER = DATE`** (days); **`DATETIME + INTEGER = DATETIME`** (milliseconds). Units
+  differ — not interchangeable, not collapsed.
+- **`=` and `EQ` are identical.** No null-compare syntactic distinction. `? = ?` is `TRUE`.
+- **`Unknown` arithmetic** (`? + 1`) yields `Unknown`, not `Error`. Propagation, not poison.
+- **Class assignment**: permitted when `to` is in `from`'s INHERITS or IMPLEMENTS chain —
+  single-file chain in v1. Cross-file parent types yield `Unknown` with
+  `UnresolvedReason::External` so `type-mismatch-assignment` skips silently.
+
+Authoritative catalog is part of the research spike (see "Dependencies & Assumptions").
+Primary sources: Progress OpenEdge "ABL Reference → Data types and conversions", FWD source
+tree's `SilverCode` type-coercion switchboard, sonar-openedge's type checker test suite.
+
+#### Three passes, not two
 
 The analyzer runs the passes in sequence:
 
-1. **Scope+declare**: walk statements building `ScopeTree` and inserting `Symbol`s into scopes.
-2. **Resolve+type**: walk expressions and references, populating `references` and `types`.
+1. **Declare.** Walk statements; build `ScopeTree`; insert `Symbol`s into scopes. No
+   expressions visited; no types assigned. `declare.rs`.
+2. **Resolve references & signatures.** Walk every identifier/method/procedure/function
+   reference; populate `references: IndexVec<NodeId, Option<Resolution>>`. Assign declared
+   types (signatures, parameter types, return types, property getter/setter types) into
+   `Symbol::data_type` and the `types` side table for the *declaration* NodeIds. No
+   expression body type-checking. `resolve.rs`.
+3. **Type-check bodies.** Walk expression bodies; populate `types` for every expression
+   NodeId; collect type-mismatch evidence into `types` without emitting diagnostics (lint
+   owns `LINT0004`). `check.rs`.
 
-Two passes because (a) forward references inside a scope (method-before-declaration,
-function-before-declaration) need all declarations visible first, and (b) it maps cleanly to
-two future Salsa queries. One unified pass closes that door.
+Why three, not two: methods in one class commonly call methods on another class declared
+*later* in the same file. Collapsing resolve+check would force either backtracking
+(re-walking expressions once all signatures are known) or cascade errors (typing call sites
+before the callee's return type is known). Three passes map 1:1 to three future Salsa queries
+(`declare_file`, `resolve_file`, `check_file`), the granularity rust-analyzer and Roslyn both
+converged on.
 
 ### oxabl_lint (new crate)
 
@@ -397,15 +562,18 @@ tool, future LSP, future formatter) without dragging lint rules into their depen
 
 ```rust
 // oxabl_lint/src/lib.rs
-pub fn lint_file(program: &Program, sem: &Semantic, ctx: &LintContext) -> Vec<Diagnostic>;
-
-pub struct LintContext<'a> {
-    pub file_id: FileId,
-    pub preprocessed: &'a PreprocessedFile,
-    pub schema_loaded: bool,
-    pub enabled: RuleSet,          // default = all v1 rules
-}
+pub fn lint_file(
+    program: &Program,
+    sem: &Semantic,
+    ctx: &AnalysisContext,
+) -> Vec<Diagnostic>;
 ```
+
+`LintContext` is dropped (simplification from review). The semantic layer's
+`AnalysisContext` already carries every field a rule needs (`file_id`, `preprocessed`,
+`schema_loaded`). A v1 rule set has no toggles — no configuration file exists yet — so
+`RuleSet` is YAGNI. When rule configuration becomes real, it's added to `AnalysisContext` or
+a new `LintConfig` type without breaking the four rule signatures.
 
 No visitor framework in v1. Each rule is a function `fn(program, sem, ctx) -> Vec<Diagnostic>`
 that walks what it needs. Four functions are cheap; a framework is the premature abstraction.
@@ -413,12 +581,12 @@ A `Rule` trait can be introduced later without API break.
 
 #### v1 rule definitions (resolving spec-flow gaps)
 
-**`undefined-symbol` (LNT0001, error).** Fires on `Resolution::Unresolved { reason: NotInScope }`
-references in the `Values`, `Procedures`, `Functions`, `Streams`, `Frames`, `Events`, `Types`
-namespaces. *Does not* fire on `CrossFile`, `Dynamic`, `Preprocessor`, or `NoSchema` reasons —
-those are by-design unresolved.
+**`undefined-symbol` (LINT0001, error).** Fires on
+`Resolution::Unresolved { reason: NotInScope }` references in the `Values`, `Procedures`,
+`Functions`, `Streams`, `Frames`, `Events`, `Types` namespaces. *Does not* fire on `External`
+or `NoSchema` reasons — those are by-design unresolved.
 
-**`unused-variable` (LNT0002, warning).** Fires on `SymbolKind::{Variable, Parameter}` with
+**`unused-variable` (LINT0002, warning).** Fires on `SymbolKind::{Variable, Parameter}` with
 `read_count == 0`, subject to:
 - **Skipped** for `OUTPUT` and `INPUT-OUTPUT` parameters (writing is the contract; unread is
   expected).
@@ -435,34 +603,69 @@ those are by-design unresolved.
 The skipped cases above are the spec-flow gaps made explicit; each has a regression fixture in
 `crates/oxabl_lint/fixtures/unused_variable/`.
 
-**`unknown-table-or-field` (LNT0003, error).** Fires on buffer, field, or qualified
+**`unknown-table-or-field` (LINT0003, error).** Fires on buffer, field, or qualified
 `table.field` references that resolve to `Unresolved { reason: NoSchema }` *only when*
 `ctx.schema_loaded == true`. When schema is absent, rule emits zero diagnostics regardless of
 references — matches R7. Partial schema: rule fires for tables/fields that *should* be in
 loaded scope; user's responsibility to load complete schema.
 
-**`type-mismatch-assignment` (LNT0004, error).** Fires when `assignable(rhs_ty, lhs_ty)` returns
-`false`, skipping:
-- Either side is `ResolvedType::Unknown` or `Error`.
-- Either side involves an `Unresolved { reason: CrossFile | Dynamic | Preprocessor }`
-  operand — avoid false positives when analysis couldn't reach the type.
+**`type-mismatch-assignment` (LINT0004).** Severity depends on the relationship:
 
-Only direct assignments (`x = expr`, `ASSIGN x = expr`, initial values) in v1. Function
-argument passing, `RETURN` coercion, `BUFFER-COPY`, dynamic `::` set are documented as v1.x
-extensions.
+- `Error` when `assignable(rhs, lhs) == false` (incompatible types).
+- `Warning` when a narrowing conversion is detected (see coercion table).
+
+Skips:
+- Either side is `ResolvedType::Unknown` or `Error`.
+- Either side involves an `Unresolved { reason: External }` operand — avoid false positives
+  when analysis couldn't reach the type.
+
+Covers direct assignments (`x = expr`, `ASSIGN x = expr`, initial values) *and*
+`OUTPUT`/`INPUT-OUTPUT` parameter sites (via `assignable_strict`). Function positional-argument
+passing, `RETURN` coercion, `BUFFER-COPY`, dynamic `::` set are documented as v1.x extensions.
 
 #### Severity
 
-| Rule                         | Severity |
-|------------------------------|----------|
-| `undefined-symbol`           | Error    |
-| `unused-variable`            | Warning  |
-| `unknown-table-or-field`     | Error    |
-| `type-mismatch-assignment`   | Error    |
+| Code       | Rule                         | Default Severity |
+|------------|------------------------------|------------------|
+| `LINT0001` | `undefined-symbol`           | Error            |
+| `LINT0002` | `unused-variable`            | Warning          |
+| `LINT0003` | `unknown-table-or-field`     | Error            |
+| `LINT0004` | `type-mismatch-assignment`   | Error / Warning (on narrowing) |
 
 #### Suppression
 
 Deferred. No `// noqa` mechanism in v1. Acknowledged in a follow-up doc, not a TODO in code.
+
+### Diagnostic code inventory
+
+Aligned to existing precedent (`PARSE###`, `PREPROC###`):
+
+| Prefix     | Owner             | Range    | Notes                                 |
+|------------|-------------------|----------|---------------------------------------|
+| `SEM###`   | `oxabl_semantic`  | 0001+    | Declaration / resolution errors       |
+| `TYPE###`  | `oxabl_semantic`  | 0001+    | Type-system invariant violations (internal-facing; rarely surfaced) |
+| `LINT####` | `oxabl_lint`      | 0001+    | User-facing rule diagnostics          |
+| `SCHEMA###`| `oxabl_schema`    | 0001+    | `.df` parse + load diagnostics        |
+
+**V1 reserved codes:**
+
+| Code        | Phase        | Meaning                                                   |
+|-------------|--------------|-----------------------------------------------------------|
+| `SEM0001`   | Declare      | Duplicate declaration in the same scope                   |
+| `SEM0002`   | Declare      | Redeclaration across SHARED / NEW SHARED boundary mismatch |
+| `SEM0003`   | Declare      | `BLOB`/`CLOB` used as local variable type                 |
+| `SEM0010`   | Resolve      | Override without matching signature (single-file only)    |
+| `SCHEMA0001`| Parse        | `.df` syntax error                                        |
+| `SCHEMA0010`| Load         | Duplicate table across merged `.df` files (warning)       |
+| `SCHEMA0011`| Load         | Duplicate field within a table                            |
+| `LINT0001`  | Lint         | `undefined-symbol`                                        |
+| `LINT0002`  | Lint         | `unused-variable`                                         |
+| `LINT0003`  | Lint         | `unknown-table-or-field`                                  |
+| `LINT0004`  | Lint         | `type-mismatch-assignment`                                |
+
+The `OXABL####` prefix from the earlier draft is dropped; it had no precedent. `TYPE###` is
+reserved but unused in v1 — placeholder for type-system invariant panics lifted to
+diagnostics (e.g., "operator table returned `Error` in a non-error context").
 
 ### `analyze` CLI (`oxabl analyze <path>`)
 
@@ -479,8 +682,16 @@ Extend `crates/oxabl/src/main.rs`: add an `Analyze` clap variant next to `Check`
 
 ```json
 {
-  "oxabl_analyze_version": 1,
+  "envelope": 1,
+  "sections": {
+    "scopes": 1,
+    "symbols": 1,
+    "types": 1,
+    "references": 1,
+    "diagnostics": 1
+  },
   "file": "path/to/file.p",
+  "schema_revision": 7,
   "scopes": [ { "id": 0, "kind": "File", "parent": null, "bindings": [...] }, ... ],
   "symbols": [ { "id": 0, "name": "customer", "kind": "Buffer", "scope": 1, "type": "Buffer(schema:customer)", "reads": 3, "writes": 1, "span": {...} }, ... ],
   "references": [ { "node": 42, "resolution": {"kind": "Resolved", "symbol": 0}, "span": {...} }, ... ],
@@ -489,9 +700,18 @@ Extend `crates/oxabl/src/main.rs`: add an `Analyze` clap variant next to `Check`
 }
 ```
 
-`oxabl_analyze_version: 1` is the stability contract — non-additive changes bump the integer
-and require golden re-baselining, additive fields do not. Text format is pretty-printed for
-humans and is *explicitly* not stability-guaranteed; goldens run against JSON.
+**Per-section versioning.** `envelope: 1` is the top-level container shape. Each section
+carries its own integer version under `sections`. A breaking change to `symbols` bumps
+`sections.symbols` only; consumers that don't read `symbols` don't re-baseline their goldens.
+This is the architect review's key upgrade over a single monolithic version field.
+
+Text format (`--format text`) is pretty-printed for humans and *explicitly* not
+stability-guaranteed; goldens run against JSON. Text dump is provided for one-off debugging,
+not automated downstream consumers — if a consumer needs stable output, it uses JSON.
+
+**Dump lives in `oxabl_analyze`.** The `oxabl_semantic` crate is `serde_json`-free so future
+formatter/LSP don't transitively pull it. `oxabl_analyze` is a thin crate that depends on
+`oxabl_semantic` + `serde_json` and owns `dump_json()` / `dump_text()`.
 
 ### Data flow summary
 
@@ -573,7 +793,8 @@ Estimated effort: small. Mechanical churn across parser, but no algorithmic chan
 Tasks:
 
 - New `crates/oxabl_schema/` workspace member.
-- `schema.rs`: types (`Schema`, `Table`, `Field`, `Index`, `SchemaType`, `AsciiCaseName`).
+- `schema.rs`: types (`Schema`, `SchemaRevision`, `Table`, `TableId`, `Field`, `Index`,
+  `SchemaType`). Case-insensitive keying via `OxablAtom` (reused from `oxabl_lexer`).
 - `parser.rs`: a dedicated `.df` parser (line-oriented; not reusing the ABL lexer — format is
   not ABL). Tokenizes `ADD TABLE "name"`, indented attribute lines, `ADD FIELD`, `ADD INDEX`.
   Unknown attributes captured as opaque strings.
@@ -588,63 +809,110 @@ Deliverables: standalone crate, no other crate depends on it yet. Consumable for
 
 Estimated effort: medium. `.df` grammar is small but attribute variety is long-tailed.
 
-### Phase 3 — `oxabl_semantic` crate, scope & declaration pass
+### Phase 3 — `oxabl_semantic` crate skeleton + declare pass
 
-**Goal:** symbol table + scope tree populated for every AST construct the parser supports.
-No types, no references yet.
+**Goal:** first of three passes. Symbol table + scope tree populated for every AST construct
+the parser supports. No types, no references yet.
 
-Tasks:
+**Module layout.** Flat, per the `oxabl_parser` evolution pattern — no subdirectories until a
+single file exceeds ~2k lines:
 
-- New `crates/oxabl_semantic/` workspace member.
-- `scope.rs`: `ScopeId`, `ScopeTree`, `Scope`, `ScopeKind`.
-- `symbol.rs`: `SymbolId`, `Symbol`, `SymbolKind`, `SymbolFlags`, `NamespaceId`.
-- `declare.rs`: `Declarator` walks the `Program`, pushes scopes, inserts declarations. One
-  case per statement kind the parser emits. Returns `(ScopeTree, SymbolTable)` plus
-  diagnostics (e.g. duplicate declaration in the same scope → `SEM0001`).
-- `builtins.rs`: seeds `THIS-OBJECT`, `SUPER`, `SESSION`, `ERROR-STATUS`, `DATASERVERS`,
-  `SOURCE-PROCEDURE`, `TARGET-PROCEDURE`, `SELF`, `ACTIVE-WINDOW`, `RETURN-VALUE`, and
-  ~10–20 more into the root scope of every file.
-- Tests: unit tests per construct (DEFINE VARIABLE, PROCEDURE, FUNCTION, CLASS + METHOD,
-  INTERFACE, DEFINE PROPERTY GET/SET, DEFINE TEMP-TABLE, DEFINE BUFFER, FOR EACH implicit
-  buffer, CATCH variable, DO-counter variable, etc.). Minimum 40 tests.
-- Snapshot tests against the `analyze` dump format are added in Phase 6 — this phase uses
-  hand-written assertions.
-
-Deliverables: `fn build_scope_tree(program) -> (ScopeTree, SymbolTable, Vec<Diagnostic>)`
-callable and tested.
-
-Estimated effort: large. Breadth of ABL declaration forms is the cost, not algorithmic depth.
-
-### Phase 4 — `oxabl_semantic` crate, resolve & type pass
-
-**Goal:** every identifier reference resolved (or structured-unresolved); every expression and
-every declaration typed.
+```
+crates/oxabl_semantic/src/
+  lib.rs         ← public API, `analyze_file`
+  scope.rs
+  symbol.rs
+  namespace.rs
+  resolve.rs     ← absorbs the prior `declare.rs`; declare + resolve share walker infra
+  types.rs       ← ResolvedType, PrimitiveTy
+  coercion.rs    ← assignable / assignable_strict
+  operators.rs   ← binary/unary op typing tables
+  check.rs
+  builtins.rs
+  virtual_span.rs (re-export)
+```
 
 Tasks:
 
-- `resolve.rs`: walks expressions. For each identifier reference, consults scope chain with
-  namespace-narrowing rules, populates `references: Map<NodeId, Resolution>`. Handles qualified
-  `table.field`, `object:member`, `array[i]`, `buffer.field`.
-- `types/mod.rs`: `ResolvedType`, `PrimitiveTy`.
-- `types/coercion.rs`: `assignable(from, to) -> bool` catalog.
-- `types/operators.rs`: binary/unary operator typing tables (e.g., `+` on `Integer×Integer →
-  Integer`, `+` on `Character×Character → Character`, `+` on `Date×Integer → Date`, etc.).
-- `check.rs`: bidirectional pass. Literals synthesize; declarations provide expected types;
-  assignments call `assignable`; emits `SEM0002` type-error diagnostics (but see next note).
-  *Note:* the lint rule `type-mismatch-assignment` (LNT0004) is the user-facing diagnostic;
-  `SEM0002` is emitted only when lint is disabled and type info is still needed (e.g., by the
-  dump tool). To avoid double-reporting, `analyze_file` owns one of the two paths based on
-  `ctx.emit_type_errors_as_semantic` flag (default `false` when lint runs).
+- New `crates/oxabl_semantic/` workspace member (no `serde_json` dep).
+- `scope.rs`: `ScopeId`, `ScopeTree`, `Scope`, `ScopeKind`, `BindingMap`.
+- `symbol.rs`: `SymbolId`, `Symbol`, `SymbolKind`, `SymbolFlags`, `SymbolTable`,
+  `rebinding_scopes`.
+- `namespace.rs`: `NamespaceId`, `NUM_NAMESPACES` constant, resolution-order table.
+- `resolve.rs` (declare half): `declare_pass(program, ctx) -> (ScopeTree, SymbolTable,
+  Vec<Diagnostic>)`. One case per statement kind the parser emits. Diagnostics:
+  `SEM0001`/`SEM0002`/`SEM0003`.
+- `builtins.rs`: seeds five entries (`THIS-OBJECT`, `SUPER`, `SELF`, `SESSION`,
+  `ERROR-STATUS`). Grows from Phase 5 corpus audit, not from a speculative catalog.
+- Tests: inline `assert_eq!` unit tests per declaration construct (DEFINE VARIABLE/VAR/
+  PARAMETER/TEMP-TABLE/BUFFER/STREAM/FRAME/EVENT/PROPERTY, PROCEDURE, FUNCTION, CLASS +
+  METHOD, INTERFACE, CONSTRUCTOR/DESTRUCTOR, CATCH variable, DO-counter variable, FOR EACH
+  implicit buffer). **Target: ≥ 40 tests** (matches existing repo convention — no `insta`
+  dependency).
+
+Deliverables: `fn declare_pass(program, ctx) -> (...)` callable and tested.
+
+Estimated effort: ~3 days. Breadth of ABL declaration forms is the cost, not algorithmic depth.
+
+### Phase 4a — resolve pass (references + signatures)
+
+**Goal:** second pass. Every identifier reference resolved (or structured-unresolved); every
+declaration typed. No expression-body type-checking yet.
+
+Tasks:
+
+- `resolve.rs` (resolve half): walks reference positions only. For each identifier reference,
+  consults scope chain with namespace-narrowing rules, populates
+  `references: IndexVec<NodeId, Option<Resolution>>`. Handles qualified `table.field`,
+  `object:member`, `array[i]`, `buffer.field`.
+- Signature typing: for each `Symbol` with declared type (parameters, return type, properties,
+  variable declarations, temp-table fields), populate `Symbol::data_type` and the `types`
+  side table at the declaration's NodeId.
 - Schema integration: when `schema_loaded`, `table.field` references consult the `Schema`;
   unresolved fields become `Resolution::Unresolved { reason: NotInScope }` in the field
-  namespace — picked up by `unknown-table-or-field`. When not loaded, unresolved fields become
+  namespace — picked up by `unknown-table-or-field`. When schema is absent, they become
   `reason: NoSchema`.
-- Tests: 60+ unit tests across resolution forms + coercion cases.
+- External-ness detection: `USING`-imported names, `RUN "name"`, `RUN VALUE(x)`,
+  `DYNAMIC-FUNCTION(...)`, dynamic buffer ops all produce `Unresolved { reason: External }`.
+- Tests: ≥ 40 inline unit tests across reference forms. Namespace-shadow fixture: variable
+  `customer` shadowing buffer `customer` shadowing schema table `customer`.
+
+### Phase 4b — type-check pass (expression bodies)
+
+**Goal:** third pass. Every expression NodeId carries a `ResolvedType`. No diagnostics emitted
+by the semantic layer for type mismatches — lint owns `LINT0004` as the single user-facing
+channel.
+
+Tasks:
+
+- `types.rs`: `ResolvedType`, `PrimitiveTy`.
+- `coercion.rs`: `assignable(from, to) -> bool` and `assignable_strict(from, to) -> bool` per
+  the catalog tables above.
+- `operators.rs`: binary/unary operator typing tables. Concrete entries include:
+  - `+`: `Integer×Integer → Integer`, `Int64×Int64 → Int64`, `Decimal×* → Decimal`,
+    `Character×Character → Character`, `Date + Integer → Date`,
+    `Datetime + Integer → Datetime`, `DatetimeTz + Integer → DatetimeTz`.
+  - `-`: numeric pairs; `Date - Date → Integer`, `Datetime - Datetime → Int64` (ms).
+  - `*`: numeric ladder.
+  - `/`: **always returns `Decimal`.**
+  - `MODULO`: `Integer×Integer → Integer`, `Int64×Int64 → Int64`.
+  - Comparison ops: return `Logical`; widen operands to common type.
+  - `AND`/`OR`/`NOT`: `Logical` → `Logical`.
+  - `BEGINS`/`MATCHES`/`CONTAINS`: `Character×Character → Logical`.
+- `check.rs`: bidirectional pass. Literals synthesize; declarations (via `Symbol::data_type`)
+  provide expected types; call sites type argument positions via `assignable_strict` for
+  OUTPUT/INPUT-OUTPUT, `assignable` otherwise. **No diagnostics emitted.** Type-mismatch
+  evidence is lint's to consume (reads the populated `types` side table + `Symbol::data_type`).
+- Poison-propagation: `Error` assignments propagate through; `Unknown` is the lattice bottom
+  and widens to anything.
+- Tests: ≥ 30 inline unit tests across coercion cases (widening ladder, narrowing cases,
+  `?` propagation, class-upcast single-file, cross-file `External` silent skip, `/` returns
+  `Decimal`, `DATE + INT` vs `DATETIME + INT` unit difference).
 
 Deliverables: `fn analyze_file(program, ctx) -> Semantic` usable end-to-end.
 
-Estimated effort: large. The type/coercion catalog is the risky part — see spike in
-Dependencies.
+Estimated effort: Phase 4a ~2 days; Phase 4b ~3 days. The coercion catalog is the risk — see
+spike in Dependencies.
 
 ### Phase 5 — `oxabl_lint` crate + 4 rules
 
@@ -655,15 +923,22 @@ Tasks:
 - `rules/undefined_symbol.rs`, `rules/unused_variable.rs`,
   `rules/unknown_table_or_field.rs`, `rules/type_mismatch_assignment.rs` — one per rule,
   independent.
-- Each rule has a `fixtures/<rule_name>/` directory with `.p`/`.cls` inputs and
-  `.expected.txt` diagnostic outputs, driven by a shared `insta`-based snapshot harness.
-- Coverage targets per rule (true-positive smoke + false-positive-avoidance cases):
-  - `undefined-symbol`: 10+ fixtures.
-  - `unused-variable`: 15+ fixtures (OUTPUT parameter, ABSTRACT method, SHARED, property
-    getter-only, etc.).
-  - `unknown-table-or-field`: 10+ fixtures (with and without schema; partial schema case).
-  - `type-mismatch-assignment`: 15+ fixtures (numeric widening, date widening, `?` assignment,
-    class-upcast, cross-file silence).
+- Each rule has inline tests in its module (`assert_eq!` against expected diagnostic codes +
+  message substrings), matching repo convention. No new `insta` dependency in
+  `oxabl_lint`.
+- **Skip-list coverage invariant** (replaces per-rule fixture quotas): every documented skip-
+  list entry *must* have a regression test that proves the skip fires. Plus one happy-path
+  (true positive) and one false-positive-avoidance test per rule.
+  - `undefined-symbol`: skip list covers `External` + `NoSchema`. ≥ 5 tests.
+  - `unused-variable`: skip list covers OUTPUT/INPUT-OUTPUT param, INTERFACE method, ABSTRACT/
+    EXTERNAL method, SHARED / NEW SHARED / NEW GLOBAL SHARED, property getter-only. ≥ 9 tests.
+  - `unknown-table-or-field`: skip when schema not loaded; partial-schema tolerance;
+    `External` buffer passthrough. ≥ 5 tests.
+  - `type-mismatch-assignment`: skip when either side is `Unknown`/`Error`/`External`;
+    widening accepted silently; narrowing warns; error on incompatible; OUTPUT parameter
+    strict; class-upcast single-file; class-upcast cross-file silent. ≥ 8 tests.
+  - Total ≥ ~27 fixtures (down from 50-plus earlier draft; coverage is by skip-list
+    completeness, not volume).
 - Corpus validation: a test binary `corpus_lint_audit` runs the four rules over a sampled
   pcna-erp subset and emits a per-rule diagnostic count + a reviewer-friendly TSV. Used to
   verify "meaningfully few false positives" (origin: Success Criteria).
@@ -673,35 +948,43 @@ under `crates/oxabl_lint/audit/`.
 
 Estimated effort: medium.
 
-### Phase 6 — `oxabl analyze` subcommand + dump format + golden tests
+### Phase 6 — `oxabl_analyze` crate + `oxabl analyze` subcommand + goldens
 
 Tasks:
 
+- New `crates/oxabl_analyze/` workspace member. Deps: `oxabl_semantic`, `oxabl_lint`,
+  `serde`, `serde_json`. This keeps `serde_json` off `oxabl_semantic`'s dependency graph.
+  - `dump.rs`: `fn dump_json(sem, program, preprocessed) -> serde_json::Value` and
+    `fn dump_text(sem, program, preprocessed) -> String`. Per-section versioning envelope.
+    Virtual → file span resolution happens here, once, at serialization.
 - `crates/oxabl/src/main.rs`: extend `Cli` enum with `Analyze` variant. `run_analyze(path,
-  format, schema_paths, includes, preprocess, no_lint) -> Result`.
-- `analyze_dump` module (inside `oxabl_semantic` or new `oxabl_semantic_dump` submodule):
-  `fn dump_json(sem, program) -> serde_json::Value` and `fn dump_text(sem, program) -> String`.
-  Use `serde` (already a likely dep through codspeed; otherwise add).
-- `insta`-powered golden tests in `crates/oxabl/tests/analyze/` with JSON snapshots.
-  Fixture set covers each AST construct the parser supports (variables, functions, procedures,
-  classes+methods, interfaces, properties, temp-tables, buffers, FOR EACH, CASE, CATCH,
-  preprocessor-expanded code, schema-loaded and schema-absent runs). Target: 40+ golden files.
+  format, schema_paths, includes, preprocess, no_lint) -> Result`. Depends on
+  `oxabl_analyze`.
+- Golden tests in `crates/oxabl_analyze/tests/fixtures/` and corresponding
+  `tests/goldens/*.json`. Repo convention: `tests/fixtures/` is the Cargo-standard location,
+  no new top-level `goldens/` or similar directory. A small hand-rolled comparator (read
+  actual, read expected, `assert_eq!` on parsed `serde_json::Value`) — no `insta`
+  dependency.
+- Fixture set covers each AST construct the parser supports (variables, functions,
+  procedures, classes+methods, interfaces, properties, temp-tables, buffers, FOR EACH, CASE,
+  CATCH, preprocessor-expanded code, schema-loaded and schema-absent runs). **Target: ≥ 30
+  golden files** (pared back from 40 — coverage is by construct diversity, not volume).
 - Text-format integration test: smoke-only (output shape, not exact content).
-- Diagnostic span remapping: every diagnostic in the dump resolves virtual spans via
-  `PreprocessedFile::resolve` before serialization.
 
 Deliverables: `oxabl analyze some_file.p --format json` returns a stable document; goldens
 green.
 
 Estimated effort: medium.
 
-### Phase 7 — Architectural guardrail verification (required deliverable)
+### Phase 7 — Architectural guardrail appendices
 
-Ship two short written sketches that prove R10 and R11 remain reachable. Stored in
-`docs/design/` alongside code, reviewed with the plan's merge.
+Two short written sketches that prove R10 and R11 remain reachable. **Non-blocking** for
+the v1 merge — the side-table + NodeId architecture *is* the contract, and these docs are
+the illustrated commentary on it. They're still written at v1 time (while context is fresh)
+but a reviewer is not expected to block merge on sketch wording. Stored in `docs/design/`.
 
 **`docs/design/semantic-v1-cross-file-sketch.md`** (R10): shows how
-`Resolution::Unresolved { reason: CrossFile }` entries become `Resolved(SymbolId)` when a
+`Resolution::Unresolved { reason: External }` entries become `Resolved(SymbolId)` when a
 multi-file `SymbolTable` (keyed by `(FileId, NodeId)`) is introduced, without changing any
 v1 public type signatures. Specifically: `Semantic` per file remains unchanged; a new
 `Workspace::resolve_cross_file(&[Semantic]) -> CrossFileResolutions` *side table* fills in the
@@ -721,14 +1004,18 @@ Estimated effort: small.
 
 Tasks:
 
-- `crates/oxabl_semantic/benches/semantic_bench.rs`: `analyze_file` on the existing parser
-  fixture set. Target: ≤ 3× parser time on the same file.
+- `crates/oxabl_semantic/benches/semantic_bench.rs`: **per-pass granularity** — separate
+  benches for `declare_pass`, `resolve_pass`, `check_pass`, and `analyze_file` end-to-end.
+  Aggregate-only numbers hide per-pass regressions. Target: `analyze_file` ≤ 3× parse time on
+  every corpus fixture.
 - `crates/oxabl_schema/benches/schema_bench.rs`: already in Phase 2.
-- `crates/oxabl_lint/benches/lint_bench.rs`: full pipeline on a 1000-line fixture.
+- `crates/oxabl_lint/benches/lint_bench.rs`: **per-rule benches** plus a full-pipeline bench
+  on a 1000-line fixture. Per-rule benches catch regressions that a full-pipeline number
+  averages out.
 - `.github/workflows/codspeed.yml`: no change; CodSpeed auto-discovers the new benches.
 - Release Please: one minor bump (this is pre-1.0, `feat:` bumps minor).
 - Docs: update root `README.md` `Current Status` bullets to mention
-  `oxabl_schema`, `oxabl_semantic`, `oxabl_lint`, `oxabl analyze`.
+  `oxabl_schema`, `oxabl_semantic`, `oxabl_lint`, `oxabl_analyze`, `oxabl analyze`.
 
 Estimated effort: small.
 
@@ -836,8 +1123,8 @@ this surface. Confirmed by the two design sketches in Phase 7.
 - [ ] All four v1 lint rules produce diagnostics only via the rule-specific logic above; no
   rule fires on its documented skip list (verified by negative-case fixtures).
 - [ ] `oxabl analyze` exits 0 on clean input, 1 on lint/semantic error.
-- [ ] Dump JSON includes `oxabl_analyze_version: 1` and is stable across benign refactors
-  (enforced via `insta` snapshots).
+- [ ] Dump JSON includes `envelope: 1` + per-section versions and is stable across benign
+  refactors (enforced via golden-file diff on parsed `serde_json::Value`).
 
 ### Non-Functional Requirements
 
@@ -849,18 +1136,20 @@ this surface. Confirmed by the two design sketches in Phase 7.
 ### Quality Gates
 
 - [ ] ≥ 40 unit tests in `oxabl_semantic` (declare pass).
-- [ ] ≥ 60 unit tests in `oxabl_semantic` (resolve + type passes).
-- [ ] ≥ 50 rule fixtures across the four lint rules (see Phase 5 minimums).
-- [ ] ≥ 40 `oxabl analyze` golden-dump snapshots.
+- [ ] ≥ 40 unit tests in `oxabl_semantic` (resolve pass).
+- [ ] ≥ 30 unit tests in `oxabl_semantic` (type-check pass).
+- [ ] ≥ 27 rule tests across the four lint rules, one per documented skip-list entry + happy
+  path + false-positive avoidance (see Phase 5 skip-list coverage invariant).
+- [ ] ≥ 30 `oxabl_analyze` golden-dump snapshots.
 - [ ] Corpus audit baseline TSV committed; each rule's precision ≥ 0.9 on a 100-file manual
   audit sample.
 
 ### Architectural Guardrails (R10, R11)
 
-- [ ] `docs/design/semantic-v1-cross-file-sketch.md` reviewed and merged.
-- [ ] `docs/design/semantic-v1-flow-analysis-sketch.md` reviewed and merged.
-- [ ] Neither sketch identifies an IR change required to v1 types. If either does, block merge
-  and revise Phases 3–4.
+- [ ] `docs/design/semantic-v1-cross-file-sketch.md` written (non-blocking appendix).
+- [ ] `docs/design/semantic-v1-flow-analysis-sketch.md` written (non-blocking appendix).
+- [ ] The side-table + NodeId architecture demonstrably satisfies R10/R11 per the sketches.
+  If a sketch surfaces an IR change required to v1 types, revise Phases 3–4b before merge.
 
 ---
 
@@ -888,7 +1177,7 @@ this surface. Confirmed by the two design sketches in Phase 7.
   all assignment and operator sites in a corpus sample, classify LHS/RHS declared types, and
   diff against the drafted rule table. Budget: 1 day; outcome is either a confirmed catalog or
   a list of gaps to flag in `SemanticLimitations` doc and suppress from `type-mismatch-`
-  `assignment` with `CrossFile`/`Unknown` reasons.
+  `assignment` with `External`/`Unknown` reasons.
 
 ## Risk Analysis & Mitigation
 
@@ -896,17 +1185,31 @@ this surface. Confirmed by the two design sketches in Phase 7.
 |----------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
 | Coercion catalog incomplete → high false-positive rate         | Spike in Phase 3/4 bridge; `Unknown`/`Error` lattice suppresses cascades; audit TSV in Phase 5.      |
 | `.df` format drift across Progress versions                    | Opaque attribute pass-through; don't error on unknowns.                                             |
-| OO-ABL single-file shadowing subtleties (INHERITS, PROPERTY)   | Explicit fixture set in Phase 3 per rule; deferred items (cross-file inheritance) land as `CrossFile`. |
+| OO-ABL single-file shadowing subtleties (INHERITS, PROPERTY)   | Explicit fixture set in Phase 3 per rule; deferred items (cross-file inheritance) land as `External`. |
 | Namespace ambiguity (`customer` → buffer? table? variable?)    | Explicit namespace table; resolution order documented; default-buffer shadow fixture.                |
 | NodeId churn breaks downstream test equality                   | Tests use `EqIgnoreIds` helper; document the pattern in the PR.                                     |
-| Corpus audit surfaces many false positives                     | `Unresolved::CrossFile`/`Dynamic`/`Preprocessor` reasons skip lint; suppression pragmas deferred but flagged. |
-| Dump format instability churns goldens                         | Versioned with `oxabl_analyze_version`; additive fields don't bump.                                 |
+| Corpus audit surfaces many false positives                     | `Unresolved::External` / `NoSchema` reasons skip lint; suppression pragmas deferred but flagged. |
+| Dump format instability churns goldens                         | Per-section versioning envelope; additive fields don't bump; breaking changes bump one section only. |
 
 ## Resource Requirements
 
-Single engineer, sequential phases. Phases 1, 2, 7, 8 are each ~1 day; Phase 3 is ~3 days;
-Phase 4 is ~4 days; Phase 5 is ~3 days; Phase 6 is ~2 days. Total rough order: ~15 engineering
-days, gated by test/bench cycles. Cross-phase review happens at Phase 7.
+Single engineer, sequential phases. Rough per-phase effort:
+
+| Phase                   | Effort      |
+|-------------------------|-------------|
+| 0 — AST invariants doc  | 0.5 day     |
+| 1 — NodeId on AST       | 1 day       |
+| 2 — `oxabl_schema`      | 2 days      |
+| 3 — Declare pass        | 3 days      |
+| 4a — Resolve pass       | 2 days      |
+| 4b — Type-check pass    | 3 days      |
+| 5 — `oxabl_lint`        | 3 days      |
+| 6 — `oxabl_analyze`+CLI | 2 days      |
+| 7 — Guardrail sketches  | 0.5 day     |
+| 8 — Benches/CI/release  | 1 day       |
+| **Total**               | **~18 days**|
+
+Gated by test/bench cycles. Cross-phase review happens at Phase 6 (first end-to-end output).
 
 ## Future Considerations
 
@@ -1001,3 +1304,485 @@ All Outstanding Questions from the origin are answered in this plan:
 
 - Source document: [docs/brainstorms/2026-04-16-semantic-layer-requirements.md](../brainstorms/2026-04-16-semantic-layer-requirements.md)
 - Preceding preprocessor benchmark plan: [2026-04-16-003-feat-preprocessor-benchmarks-plan.md](./2026-04-16-003-feat-preprocessor-benchmarks-plan.md)
+
+---
+
+## Research-Deepening Addendum (2026-04-17)
+
+Second round of parallel research + review agents against the plan. Twelve agents consulted:
+architecture-strategist, performance-oracle, code-simplicity-reviewer, pattern-recognition-
+specialist, security-sentinel, data-integrity-guardian, kieran-typescript-reviewer (applied
+to Rust type signatures), code-reviewer, spec-flow-analyzer, best-practices-researcher
+(bidirectional typing), framework-docs-researcher (rust-analyzer / Oxc / Biome / Ruff 2026
+source), repo-research-analyst, learnings-researcher.
+
+This addendum resolves **factual errors** in the plan body, surfaces **critical gaps**
+(blockers), records **simplicity-vs-integrity tensions** that require explicit decisions
+before Phase 3, enumerates **new considerations** missed by the first round, and appends
+**citations to primary sources**.
+
+### Factual Corrections to the Plan Body
+
+Applied inline above:
+
+1. **§Technical Approach "Side tables":** the "Biome and Oxc converged" claim was wrong —
+   only Oxc did. Biome uses `FxHashMap<TextSize, …>` keyed by byte offset. Plan corrected
+   to cite Oxc + Ruff as precedent and frame Biome as deliberate divergence.
+2. **§`OxablAtom` citation:** file path `crates/oxabl_lexer/src/keyword.rs` doesn't exist —
+   corrected to `crates/oxabl_lexer/src/kind.rs` where `match_keyword()` actually lives.
+
+Flagged but not auto-applied (decision-required):
+
+3. **§`oxabl_common::Diagnostic` shape:** `code: DiagnosticCode` wraps `&'static str`, not
+   `String`. `Severity` has four tiers (Error / Warning / Info / Hint). `help` is
+   `Option<String>`, not a multi-note `Vec<String>`. Implications:
+   - Every `SEM####` / `LINT####` / `SCHEMA####` code must be a literal (or `Box::leak`'d).
+     Fine for hand-authored codes; the plan's code inventory is compatible.
+   - If a rule wants multi-line remediation or several "notes", it must either concatenate
+     into `help` or use `Vec<Label>` with secondary spans. Plan should pick one style.
+   - `Severity::Hint` exists; v1 uses only Error / Warning. Document this explicitly.
+4. **§Phase 1 "PartialEq excluding id":** Phase 1 task list (line ~760) offers two options
+   ("derive excluding id *or* use a compare-ignoring function") that contradict Enhancement
+   Summary #2 ("no compare-ignoring helper that authors will forget"). Risk-table row also
+   recommends `EqIgnoreIds` helper. Three sources, three answers — **pick one** before
+   starting Phase 1: project-local `AstPartialEq` derive macro is the recommended answer.
+
+### Critical Gaps — Add Before Starting Phase 3
+
+**C1. `OxablAtom` may be keyword-closed (blocker for Phase 2/3).**
+
+`OxablAtom` is generated by `string_cache_codegen` seeded with the keyword set.
+`string_cache` supports dynamic `Atom::from(&str)` in the general case, but the current
+codegen wiring may compile a `StaticAtomSet` optimized for compile-time `atom!(…)` use
+only. If user identifiers (variable names, table names from `.df`) cannot be interned at
+runtime into the same atom type, the "unified interning regime" collapses. **Resolve by
+spike at the start of Phase 2:** write a test that interns a non-keyword string at
+runtime, verify pointer equality across repeated interns, and confirm the byte-equivalence
+contract against case-folded input. If it fails, the plan has two fallbacks:
+
+- (a) Reconfigure the lexer's `string_cache_codegen` output to `AtomType::new(…,
+  "keyword_atom!")` with a separate dynamic `Atom<DynamicSet>` for identifiers.
+- (b) Use `lasso::Spur` or `ustr::Ustr` as a general-purpose interner in `oxabl_semantic`
+  and `oxabl_schema`; the lexer stays keyword-only.
+
+Fallback (b) is simpler and has no lexer risk. Re-evaluate the "no new atom type" claim in
+Enhancement Summary #4 if (b) is chosen.
+
+**C2. Schema `.df` field-type conflict (data-integrity bomb).**
+
+`SCHEMA0010` (warning) covers duplicate tables; `SCHEMA0011` covers duplicate fields *in a
+table*. Neither covers the case where file A defines `Cust.Name AS CHARACTER` and file B
+defines `Cust.Name AS INTEGER` under last-write-wins: B silently wins; every semantic
+analysis against A's code is now type-checking against B's schema. Add:
+
+- **`SCHEMA0012` (Error) — "field type conflict across merged .df files."** Fires when two
+  merged `.df` files declare the same `Table.Field` with incompatible `SchemaType`.
+- Resolution policy: **refuse the merge for the conflicting field only.** Mark the field
+  as `SchemaType::Error` (new variant) in the loaded `Schema`. Every
+  `ResolvedType::Table(rev, id).field(name)` that resolves to an error-typed field yields
+  `ResolvedType::Error`, suppressing downstream cascade in `LINT0004`.
+
+**C3. `schema_revision` mismatch across `Semantic` values (future cross-file hazard).**
+
+The cross-file sketch in Phase 7 has `Workspace::resolve_cross_file(&[Semantic])` accept a
+slice of `Semantic`s but no revision-consistency invariant. Two files analyzed against
+different `SchemaRevision` values must not be mixed. Add:
+
+- **`SEM0020` (Error) — "schema revision mismatch across aggregated files."** Enforced by
+  the future cross-file resolver; `oxabl_analyze` aggregate dump refuses to emit across
+  mismatched revisions.
+- In v1, `oxabl analyze somedir/` analyzes each file in isolation; schema is loaded once
+  and pinned at startup, so the mismatch is not reachable in v1 — but the invariant is
+  recorded now so the cross-file sketch can assume it.
+
+**C4. Platform-deterministic dump output.**
+
+"Stable across benign refactors (enforced via golden-file diff on parsed `serde_json::Value`)"
+is insufficient: `serde_json::Value` equality is **order-insensitive for objects**, so
+goldens won't catch `FxHashMap`-iteration-order drift between machines or insertion-order
+changes. Revise Phase 6 to mandate:
+
+- All array sections (`scopes`, `symbols`, `references`, `types`, `diagnostics`) emit in
+  sorted order by deterministic key (`ScopeId`/`SymbolId`/`NodeId` ascending; diagnostics
+  by `(file, start, code)`).
+- Any `FxHashMap` traversed at serialization boundary collects into `Vec` and sorts.
+- Golden diff runs **byte-level** (`assert_eq!(actual_str, expected_str)`), not
+  `serde_json::Value` equality.
+
+**C5. `Resolution::Unresolved` needs the identifier name for diagnostics.**
+
+Current shape is `Unresolved { reason: UnresolvedReason }`. Every diagnostic site
+(`LINT0001`) has to re-slice from the source span with `AnalysisContext`. Record the atom
+once at resolve time:
+
+```rust
+pub enum Resolution {
+    Resolved(SymbolId),
+    Unresolved { name: OxablAtom, reason: UnresolvedReason },
+}
+```
+
+Adds ~8 bytes to the unresolved variant; eliminates a source reslice from every
+`SEM0001`/`LINT0001` emission. Matches Ruff's `UnresolvedReference` shape (carries
+`range` + identifier; `ruff_python_semantic::reference`).
+
+**C6. `Symbol::data_type` — replace `Option<ResolvedType>` with `ResolvedType`.**
+
+Two representations for "don't know" (`Option::None` vs `ResolvedType::Unknown`) is a
+footgun. Collapse to one: `data_type: ResolvedType` defaulting to
+`ResolvedType::Unknown`. `None` was never meaningful — if a declaration's type is
+unknowable (cross-file parent class, error recovery), `Unknown` is the answer, and the
+lattice already handles it.
+
+**C7. `read_count`/`write_count` idempotence.**
+
+Plan specifies `+= 1` on each resolving reference. This breaks idempotence — Salsa
+re-runs queries; tests re-run the pass; partial reanalysis (LSP future) double-counts.
+Revise Phase 4a to compute counts once at end-of-resolve from a local accumulator:
+
+```rust
+let mut counts: FxHashMap<SymbolId, (u32, u32)> = FxHashMap::default();
+// ... during walk: counts.entry(sym).or_default().0 += 1; // reads
+for (sym, (r, w)) in counts {
+    symbols[sym].read_count = r;
+    symbols[sym].write_count = w;
+}
+```
+
+Salsa-ready (Enhancement Summary commitment) requires idempotent passes; this is a hard
+precondition.
+
+### Security / Hardening (pre-merge)
+
+**S1. Workspace-root containment for schema paths.** `workspace.schema.files` entries
+must resolve relative to the workspace root and reject `..` traversals and absolute
+prefixes. Mirror Cargo's policy for `include`. `--schema <path>` from the CLI is user-
+initiated and may be absolute. Emit `SCHEMA0030` ("path escapes workspace root") on
+violation.
+
+**S2. ANSI escape stripping in `--format text` output.** Identifier names sliced from
+source and filenames can contain `\x1b[…]` sequences. When piped to terminals, these
+inject cursor moves or screen clears. In `oxabl_analyze::dump_text` and the lint text
+renderer, strip C0 controls (except `\t` and `\n`) from all user-sourced strings before
+emission. JSON mode is safe via `serde_json` escaping — keep JSON as the stability
+contract.
+
+**S3. `OxablAtom` unbounded-pool property.** The atom pool is process-global and never
+freed. Malicious/huge `.df` can grow it until OOM. For v1 CLI (one-shot process), this
+is cold — document the property. For future LSP, it becomes a real leak and must be
+addressed then. Add to `docs/design/semantic-v1-cross-file-sketch.md` as a noted LSP
+concern, and add a soft cap at schema load: reject `.df` with > 100k tables or > 10k
+fields per table via `SCHEMA0031`.
+
+**S4. Preprocessor include-depth cap precondition.** `analyze` is the first CLI surface
+users will point at untrusted corpora. The semantic layer relies on `oxabl_preprocessor`;
+if that crate lacks an include-depth limit and cycle detection, a crafted `.p` with
+`{a.i}` referencing itself stack-overflows before semantic runs. **Pre-merge gate:**
+confirm `oxabl_preprocessor` has a depth cap (default ~64) and cycle detection, or file a
+blocker issue against this plan.
+
+**S5. `SchemaRevision` wraparound.** Monotonic `u32` — 4.2B reloads is not a real threat.
+Add `debug_assert!` on increment; document in the Phase 0 invariants doc.
+
+### Flow Gaps — Behavior Decisions Needed
+
+Spec-flow analyzer surfaced these; each needs a one-line resolution written into the
+plan before Phase 3:
+
+| # | Flow                                                 | Resolution (proposed)                                                                 |
+|---|------------------------------------------------------|---------------------------------------------------------------------------------------|
+| F1 | `oxabl analyze` given a directory                    | Walk respects `.gitignore`; `.p`, `.cls`, `.w` analyzed standalone; `.i` skipped by default (`--include-fragments` forces); aggregate JSON wraps per-file outputs in `{"files": [...]}`. |
+| F2 | `.df` with zero tables (blank/comment-only)          | `schema_loaded = !Schema::is_empty()`; empty `.df` keeps `LINT0003` silent.           |
+| F3 | `--schema <path>` file missing / unreadable          | `SCHEMA0001` diagnostic; `schema_loaded = false`; exit code 2.                        |
+| F4 | `--no-lint` flag                                     | Suppresses `lint::lint_file` entirely; `SEM###`, `SCHEMA###`, `PARSE###`, `PREPROC###` still emit. |
+| F5 | NodeId stability under error recovery                | Recovery-generated `Statement::Empty` gets a NodeId like any other; `types`/`references` at that NodeId are always `None`. Document in Phase 0 AST invariants. |
+| F6 | Include-file redeclaration collision                 | First-declared wins; second emits `SEM0001` with both spans (include span + caller span via `PreprocessedFile::resolve`). |
+| F7 | Single-file `CLASS Sub INHERITS Super` where `Super` missing | `Unresolved { reason: External }`; `Sub`'s override checks (`SEM0010`) suppress silently. |
+| F8 | `DEF VAR SESSION AS HANDLE` (builtin shadowing)      | User declaration shadows builtin in declaring scope; no diagnostic (ABL permits this); rebinding stored as a normal shadow. |
+| F9 | CATCH variable whose class isn't `Progress.Lang.Error` | v1 accepts any class; flag `SEM0011` ("catch-type-not-progress-error") as v1.x.      |
+| F10 | Getter-only `DEFINE PROPERTY` on a class that `IMPLEMENTS` an interface | Skip `LINT0002` — interface is an external contract, mirrors `SHARED` skip.          |
+| F11 | Binary file misnamed `.p`                           | Lexer `PARSE###` errors; semantic runs anyway against whatever recovery produces; exit code 1. |
+| F12 | UTF-8 BOM at file start                             | Strip at `FileSystem::read` (Phase 2 addition to `.df` loader too).                   |
+| F13 | Windows CRLF line endings                           | Normalize at read (existing lexer convention; confirm `.df` parser matches).          |
+| F14 | Longchar literal > 32KB                             | Parse OK; type is `Longchar`; `LINT0004 Warning` only fires at Longchar→Character assignment, not at the literal. |
+
+### Simplicity-vs-Integrity Tensions (decide explicitly)
+
+The simplicity reviewer proposed cutting items that the architect and data-integrity
+reviewers consider load-bearing. These are genuine trade-offs, not oversights — record
+the decision rationale before Phase 3.
+
+| Item                                 | Simplicity says                                                                             | Integrity/Architect says                                                                                                    | Recommendation |
+|--------------------------------------|---------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|----------------|
+| `SchemaRevision`                     | Cut. Pure v2 incremental sugar; `TableId` alone is enough for v1.                           | Keep. Composite-key `(SchemaRevision, TableId)` is required once we admit the schema can change between analyze calls — even in v1 the long-running `oxabl_analyze` over a directory will want it to detect a silent reload race. | **Keep, but hide: make `SchemaRevision` private to `oxabl_schema`, expose it via opaque token methods.** Avoids "v2 sugar" accusation while preserving invalidation contract. |
+| `VirtualSpan` newtype                | Cut. No `FileSpan` in semantic layer yet; shim for a non-problem.                           | Keep. Prevents misuse at dump/emission boundaries even now.                                                                 | **Keep.** Cost is one struct + helper; benefit is compile-time prevention of a class of span-confusion bugs. Adopt rust-analyzer's `InFile<HirFileId>` discriminated-union variant for stronger typing (see §Framework Precedent). |
+| `assignable` + `assignable_strict`   | Merge into `assignable(from, to, mode: AssignMode)`.                                        | Two functions allow different type signatures for doc/readability.                                                          | **Merge.** One function, `AssignMode::{Lenient, Strict}`. Colocates the widening ladder walk; matches Pyright/TS convention. |
+| Three passes                         | Collapse to two (declare+resolve fused; check separate).                                    | Three passes map 1:1 to three future Salsa queries; forward-reference correctness is easier to reason about.                | **Compromise: one walker, three `Pass` dispatches.** Oxc uses one walker with an `unresolved_stack` for forward refs — cite this. Keeps the public API three-query-shaped while avoiding 3× tree walks. See §Performance. |
+| `rebinding_scopes` side map          | Cut. SHARED is cross-file anyway; v1 is single-file; `SymbolFlags::Shared` is enough for LINT0002 skip. | Keep. Groundwork for R10 cross-file; Ruff needs it for Python's `global`/`nonlocal`.                                        | **Cut in v1; reintroduce at R10.** The symmetric `SymbolTable.symbols: IndexVec<SymbolId, Symbol>` is cleaner without it. `SymbolFlags::Shared` suffices for the unused-variable skip. |
+| `BindingMap { Small, Large }` enum   | Cut. No measurement. Ship plain `FxHashMap<OxablAtom, SymbolId>` per namespace.             | Keep, but with inline-size 16 pending corpus measurement (pointer-equality atom compare is faster than hash up to ~16).     | **Keep as a private repr; expose via `BindingMap::get(&self, name)` method only.** Don't leak the enum variant. Tune inline size after Phase 5 corpus data. |
+| `oxabl_analyze` separate crate       | Cut. Use `serde_json` feature flag on `oxabl_semantic` (`default-features = false`).        | Keep. Defensive against first contributor to reach for `#[derive(Serialize)]` on `oxabl_common::Diagnostic` and drag serde into the base. | **Keep, but minimize:** `oxabl_analyze` owns a serializable mirror type `DiagnosticDump` + `SemanticDump`, converts at serialization time. Zero `serde*` dep in `oxabl_semantic` or `oxabl_common`. |
+| Per-section versioning envelope      | Cut to single `version: 1`.                                                                 | Keep; lets independent consumers re-baseline only affected sections.                                                        | **Cut for v1; keep envelope shape `{version: 1, sections: {…}}` with all sections on version 1.** Per-section bumping is YAGNI until a second consumer exists; the shape reservation is free. |
+| Phase 0 AST invariants doc           | Keep, but shrink — don't cross-check every invariant against parser code.                   | Keep full.                                                                                                                  | **Shrink.** Enumerate invariants; add `debug_assert!`s opportunistically, not exhaustively. 0.5 day stays realistic. |
+
+### Type-Signature Cleanups (apply during Phase 3/4)
+
+From the Rust-quality review:
+
+- `NodeId(u32)` → field already private. **`SchemaRevision(pub u32)` → private u32 with
+  `SchemaRevision::new(u32)` `pub(crate)` constructor.** Prevents fabrication.
+- `BindingMap` → private repr, pub methods only (`get` / `iter` / `len`).
+- `IndexVec<NodeId, Option<T>>` side tables → wrap in `References` / `TypeTable` newtypes
+  with `get(NodeId) -> Option<&T>` that does the double-unwrap internally.
+- `SymbolTable` → hide `symbols` and `rebinding_scopes` (if retained) behind `get(id)` /
+  `rebindings(id) -> &[ScopeId]`. Asymmetry stops at the API boundary.
+- `analyze_file` infallibility → document explicitly in `Simplifications accepted`:
+  **"`analyze_file` is infallible by contract; all user-visible issues are `Diagnostic`s;
+  all internal invariant violations panic with `TYPE###` codes."**
+- Lifetime pivot: `AnalysisContext<'a>` is fine for CLI; note as a known refactor point
+  when LSP arrives (`Arc<PreprocessedFile>`).
+
+### Performance Revisions
+
+**P1. Tighten `analyze_file` target.** "≤ 3× parse time" is a ceiling (regression gate),
+not a goal. Target **≤ 1.5× parse time** end-to-end. Rationale: parse is ~5-20 ms/file
+on the pcna-erp corpus; three naive tree walks alone consume 30-100 ms/file before any
+semantic work. 3× is nominal; 1.5× forces the single-walker-multi-pass optimization up
+front.
+
+**P2. Single walker, multi-pass dispatch.** Replace "three sequential walks" with one
+traversal that invokes each pass's visitor:
+
+```rust
+for pass in [&mut declare, &mut resolve, &mut check] {
+    pass.enter(node);
+}
+// recurse...
+for pass in [&mut declare, &mut resolve, &mut check].iter().rev() {
+    pass.leave(node);
+}
+```
+
+Public API remains `analyze_file` (three logical queries); implementation is one walk.
+Matches Oxc's single-walker + `unresolved_stack` deferred-resolution pattern. Phase 4
+split stays in the plan for test / doc boundaries; the walker is shared.
+
+**P3. `ResolvedType` size budget.** Add a compile-time assertion:
+
+```rust
+const _: () = assert!(std::mem::size_of::<Option<ResolvedType>>() <= 16);
+```
+
+Load-bearing for the `IndexVec` side table to not blow cache. If `ResolvedType::Class`
+or `Table` balloons past this, move the large variant behind `Box` or a side arena.
+
+**P4. `SideTable<T>` abstraction.** Define a trait/newtype at the start of Phase 3 so
+the plan isn't locked into `IndexVec` vs `FxHashMap` across all future passes (control
+flow, effects, shape). One place to swap representation per side table after measurement.
+
+**P5. `BindingMap` inline size.** Start at `SmallVec<[_; 8]>` (conservative); after
+Phase 5 corpus audit, measure the distribution of binding counts per namespace per scope
+and raise to 16 if the tail is long. `OxablAtom` compares are pointer-equality after
+intern, so linear-scan beats hashmap up to 16-24 entries.
+
+**P6. `rebinding_scopes` value type.** If retained (see Simplicity decision), use
+`SmallVec<[ScopeId; 2]>` — rebinding counts are 1–2 in the common case.
+
+**P7. Additional micro-benchmarks.** Add to Phase 8:
+- Scope-chain climb (pathological deep-nested `CLASS → METHOD → DO → DO → FOR EACH`).
+- Coercion-table lookup (arithmetic-heavy fixture).
+- `SmallVec → FxHashMap` spill (synthetic 500-binding procedure).
+- Schema-bench target restated as **throughput ≥ 50 MB/s** (plus absolute ms for 5 MB
+  golden) since real `.df` sizes vary 5×.
+
+**P8. Per-file memory budget.** At ~500k nodes × 16B per `Option<ResolvedType>` entry,
+semantic alone can reach ~8 MB/file on the dense-NodeId side tables. A corpus-wide
+`oxabl analyze` over 1000 files without explicit `Drop` releases will blow RSS. Document:
+**"`Semantic` must be `Drop`-cheap and must not retain `&Program` beyond
+`analyze_file`'s return."** Add RSS bench over the corpus to Phase 8.
+
+### Bidirectional Typing — Refinements
+
+**T1. Introduce `ResolvedType::Error` distinct from `ResolvedType::Unknown`.**
+
+The current plan conflates two things into `Unknown`: ABL's `?` (universal bottom,
+propagates through arithmetic, expected at runtime) and "analysis couldn't reach here"
+(inference gap, diagnostic-worthy). Follow rustc (`TyKind::Error`) and Pyright (`Unknown`
+vs `Any`) — split:
+
+- `ResolvedType::Unknown` — ABL's `?`. User-authored. Propagates silently.
+- `ResolvedType::Error` — checker-produced poison. Always paired with a diagnostic at
+  its origin. Compatible with everything; suppresses all downstream diagnostics that
+  mention it.
+
+Rule: *if any operand is `Error`, produce `Error` and emit nothing* (so one root-cause
+diagnostic, not a cascade).
+
+**T2. Explicit `synth`/`check` split in `check.rs`.**
+
+Bidirectional typing's recurring bug class is blurring synthesis vs checking at
+elimination forms. Make it syntactic:
+
+```rust
+fn synth(expr: &Expression, ctx: &mut CheckCtx) -> ResolvedType { … }
+fn check(expr: &Expression, expected: &ResolvedType, ctx: &mut CheckCtx) { … }
+```
+
+Call `check` whenever an expected type exists (assignment RHS, parameter site, return
+expr, IF condition narrowed to `Logical`). Never `synth`-then-compare.
+
+**T3. Operator typing table shape.** Dispatch by operator first, then by operand pair,
+with a shared fallthrough:
+
+```rust
+fn binop_result(op: BinOp, l: ResolvedType, r: ResolvedType) -> Option<ResolvedType> {
+    match op {
+        BinOp::Divide => Some(ResolvedType::Primitive(PrimitiveTy::Decimal)),
+        BinOp::Add if is_date(&l) && is_integer(&r) => Some(l),
+        BinOp::Add if is_datetime(&l) && is_integer(&r) => Some(l),
+        _ => numeric_widen(l, r),
+    }
+}
+```
+
+ABL quirks at the top; shared widening ladder at the bottom. Mirrors rustc's `BinOp`
+lowering and TypeScript's `getBinaryOperatorType`.
+
+**T4. Coercion table repr.** Stay with hand-written tables while type count is < ~40.
+Migrate to `phf::Map` generated by `oxabl_codegen` only if type count grows.
+
+**T5. `Unknown` is bottom, not TypeScript's `unknown` / `any`.** Document this
+distinction in `docs/design/semantic-v1-api.md`. The difference matters once
+flow-sensitivity lands: `IF x = ? THEN … ELSE <here x is not unknown>` requires
+`Unknown` to be a *refinable* type, which `Error` must never be.
+
+### Framework Precedent — What to Cite
+
+Updated citations (2026 source, specific SHAs available in the framework-docs research
+dispatch):
+
+| Decision                                  | Precedent                                                                                 |
+|-------------------------------------------|-------------------------------------------------------------------------------------------|
+| `IndexVec<NodeId, Option<T>>` side tables | [`oxc_semantic::Scoping`](https://github.com/oxc-project/oxc/tree/main/crates/oxc_semantic/src/scoping.rs); [`ruff_python_semantic`](https://github.com/astral-sh/ruff/tree/main/crates/ruff_python_semantic). Biome diverges (range-keyed hashmap). |
+| Virtual vs file spans                     | rust-analyzer's `InFile<HirFileId>` discriminated union ([`crates/hir-expand/src/files.rs`](https://github.com/rust-lang/rust-analyzer/blob/master/crates/hir-expand/src/files.rs)). Only prior art for preprocessor-expanded spans — Oxc/Biome/Ruff have no analog. |
+| Resolution with structured reason         | **Our three-case `UnresolvedReason` is richer than any precedent.** Ruff's `UnresolvedReferenceFlags` is a single-bit `bitflags`. Oxc/Biome carry no reason at all. Treat as contribution, not convergence. |
+| Single-pass with deferred resolution      | [`oxc_semantic::unresolved_stack`](https://github.com/oxc-project/oxc/tree/main/crates/oxc_semantic/src/unresolved_stack.rs) — how Oxc handles forward refs in one walk. Relevant to §P2 single-walker-multi-pass design. |
+| NodeId on every AST node                  | Oxc, Biome, Ruff all use dense ID keying; rust-analyzer uses `AstPtr<N>` + `FileAstId<N>` keyed by `HirFileId`. Our choice aligns with the former — document the divergence from rust-analyzer. |
+| Testing (inline `assert_eq!` over insta)  | `biome_js_semantic/src/semantic_model/tests.rs`; `ruff_python_semantic` per-module inline asserts. Keep our convention. |
+| Incrementality deferred                   | Oxc, Biome, Ruff all shipped non-incremental v1s. rust-analyzer, the only one that started with Salsa, took years of rewrites. Cite this as explicit validation for not starting with Salsa. |
+
+### Spec-Flow Terminology Cleanup
+
+- **Rename `UnresolvedReason::External` → `UnresolvedReason::OutOfUnit`** (or
+  `CrossUnit`) to avoid collision with ABL's own `EXTERNAL` method modifier (used in
+  Phase 5 skip list for the `unused-variable` rule). Two meanings of "External" in the
+  same codebase is a readability bomb.
+- **Document the `customer` resolution case** (variable vs buffer vs schema-table)
+  explicitly: namespace resolution-order table (line ~352) must state which namespace
+  wins for a bare identifier before `.field` access. Proposed: `Values → Buffers →
+  Tables` within the referencing scope; qualified `table.field` (with a `.`) narrows to
+  `Buffers/Tables` directly.
+- **`SchemaType` vs `ResolvedType::Primitive` vs `PrimitiveTy` vs `DataType` from
+  `oxabl_ast`** — four type enums. Add a conversion-table module doc stating how each
+  maps to the next. Proposed ownership: `DataType` (parser) → `PrimitiveTy` (semantic
+  normalized) → `ResolvedType::Primitive` (after inference). `SchemaType` is
+  schema-specific and converts to `PrimitiveTy` for field access.
+
+### Acceptance-Criteria Fixes
+
+The code reviewer caught un-measurable gates:
+
+- "meaningfully few false positives" → **replace with "≥ 0.9 precision per rule on the
+  100-file manual audit sample defined in Phase 5."**
+- "stable across benign refactors" → **replace with "byte-level golden diff passes."**
+  "Benign" is undefinable; the diff does the defining.
+- "corpus coverage ≥ the parser's current success rate" → **record parser's current
+  success rate as a concrete number in the plan (Phase 8 measurement); use that number.**
+- "grows data-driven from the Phase 5 corpus audit" → **state the threshold: if a
+  candidate builtin triggers `LINT0001` on > N files in the audit, it is added.** Pick
+  N = 5 as provisional.
+- "100-file manual audit sample" → **specify the adjudication process: the plan author
+  labels; per-rule disagreement with the pcna-erp maintainer is a plan-merge blocker.**
+
+### Coercion-Catalog Spike — Gate Explicitly
+
+The code reviewer's single weakest point: the 1-day coercion spike has no gate.
+**Before Phase 4b begins, the spike artifact must be committed to the repo as
+`docs/design/semantic-v1-coercion-catalog.md` and reviewed.** Phase 4b's tests cite it
+by anchor. If the spike discovers unresolvable ambiguity (Progress docs and FWD
+disagree), the ambiguous cells are explicitly `Unknown`-returning in v1 and logged in
+`docs/design/semantic-v1-limitations.md`. `LINT0004`'s ≥ 0.9 precision target is then
+scoped to the resolved cells only.
+
+### Learnings Folded In
+
+From `docs/solutions/performance-issues/heap-allocation-in-keyword-matching.md`:
+"Never use `to_lowercase()`/`to_uppercase()` on hot paths; push classification as far
+upstream as possible." Already reflected in `OxablAtom` unification (Enhancement #4);
+cite inline in §`OxablAtom` where the stack-buffered ASCII-fold path is referenced, to
+anchor the claim to the measured PR #19 (~20%) result.
+
+From memory `feedback_corpus_validity.md`: "When diagnosing corpus failures, assume the
+source code is correct." Add a one-line reminder at the Phase 5 `corpus_lint_audit`
+step: **a lint false positive on pcna-erp is a rule bug until proven otherwise.**
+
+### Revised Effort Estimate
+
+Simplicity-vs-integrity decisions above reduce scope modestly. Updated table:
+
+| Phase                         | Effort  | Delta |
+|-------------------------------|---------|-------|
+| 0 — AST invariants doc        | 0.5d    |       |
+| 1 — NodeId on AST             | 1d      |       |
+| 2 — `oxabl_schema` + C1 spike | 2.5d    | +0.5d (OxablAtom spike, SCHEMA0012 field conflict) |
+| 3 — Declare pass              | 3d      |       |
+| 4a — Resolve pass             | 2.5d    | +0.5d (Resolution name; idempotent counts) |
+| 4b — Type-check pass          | 3.5d    | +0.5d (Error/Unknown split; synth/check discipline) |
+| 5 — `oxabl_lint`              | 3d      |       |
+| 6 — `oxabl_analyze` + CLI     | 2.5d    | +0.5d (sort-at-boundary; byte-diff goldens; ANSI strip) |
+| 7 — Guardrail appendices      | 0.5d    |       |
+| 8 — Benches / CI / release    | 1.5d    | +0.5d (per-rule and throughput benches) |
+| **Total**                     | **~20d**| +2d from Round-2 deepening |
+
+### Summary of Pre-Phase-3 Decisions Required
+
+The author must record a decision on each before Phase 3 starts:
+
+1. `OxablAtom` spike outcome → keep unified regime, or adopt `lasso::Spur`.
+2. `SchemaRevision` visibility → private with opaque token, or full `pub`.
+3. `VirtualSpan` newtype shape → simple newtype, or rust-analyzer-style
+   `InFile<OxablFileId>` discriminated union.
+4. `rebinding_scopes` → keep in v1, or defer to R10.
+5. `BindingMap` → private repr + public methods (recommended), or inline.
+6. `oxabl_analyze` crate split → keep with serializable mirror types (recommended), or
+   collapse with feature flag.
+7. Per-section versioning envelope → keep shape with v1 uniform (recommended), or
+   collapse to single version.
+8. Three-pass walker → single traversal, multi-pass dispatch (recommended), or three
+   sequential walks.
+9. `ResolvedType::Error` vs `Unknown` → split (recommended), or keep unified.
+10. `Resolution::Unresolved { name, reason }` → carry identifier (recommended), or
+    reslice from span.
+11. `Symbol::data_type: ResolvedType` default `Unknown` (recommended), or keep
+    `Option<ResolvedType>`.
+12. `read_count`/`write_count` idempotence → end-of-resolve accumulator (recommended),
+    or `+= 1` incremental.
+13. `UnresolvedReason::External` rename → `OutOfUnit` (recommended), or keep `External`
+    with naming-collision note.
+
+### New Primary Sources
+
+- [Oxc `oxc_semantic`](https://github.com/oxc-project/oxc/tree/main/crates/oxc_semantic) —
+  `Scoping`, `IndexVec`, `unresolved_stack`.
+- [Biome `biome_js_semantic::model`](https://github.com/biomejs/biome/tree/main/crates/biome_js_semantic/src/semantic_model/model.rs) —
+  range-keyed hashmap + `rust_lapper::Lapper` interval tree.
+- [Ruff `ruff_python_semantic::reference`](https://github.com/astral-sh/ruff/tree/main/crates/ruff_python_semantic/src/reference.rs) —
+  `UnresolvedReference` shape.
+- [rust-analyzer `hir-expand::files`](https://github.com/rust-lang/rust-analyzer/blob/master/crates/hir-expand/src/files.rs) —
+  `InFile<HirFileId>` pattern.
+- [Ruff "Red Knot" / ty type-checker](https://github.com/astral-sh/ruff/tree/main/crates/ty_python_semantic) —
+  Salsa-based single-file-first type checker; direct analog for a later Salsa lift.
+- [`phf`](https://docs.rs/phf/) — for the coercion-table migration target at ~40+ types.
+- [`lasso`](https://docs.rs/lasso/) — fallback interner if `OxablAtom` is keyword-closed.
+- Pyright type-concepts docs — `Unknown` vs `Any` distinction.
+- rustc `TyKind::Error` — poison-type propagation pattern.
+- Dunfield & Krishnaswami, *Bidirectional Typing*, ACM CSUR 2021 (arXiv 1908.05839).
