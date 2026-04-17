@@ -1,0 +1,46 @@
+/* Benchmark fixture: concentrated {&var} substitution against pre-defined vars */
+
+&scoped-define A alpha
+&scoped-define B bravo
+&scoped-define C charlie
+&scoped-define D delta
+&scoped-define E echo
+&scoped-define F foxtrot
+&scoped-define G golf
+&scoped-define H hotel
+&scoped-define I india
+&scoped-define J juliet
+&scoped-define DELIM ","
+&scoped-define PREFIX "row::"
+&scoped-define SUFFIX "::end"
+
+assign lv = "{&PREFIX}{&A}{&DELIM}{&B}{&DELIM}{&C}{&DELIM}{&D}{&DELIM}{&E}{&SUFFIX}".
+assign lv = "{&PREFIX}{&F}{&DELIM}{&G}{&DELIM}{&H}{&DELIM}{&I}{&DELIM}{&J}{&SUFFIX}".
+assign lv = "{&PREFIX}{&A}{&DELIM}{&C}{&DELIM}{&E}{&DELIM}{&G}{&DELIM}{&I}{&SUFFIX}".
+assign lv = "{&PREFIX}{&B}{&DELIM}{&D}{&DELIM}{&F}{&DELIM}{&H}{&DELIM}{&J}{&SUFFIX}".
+assign lv = "{&A}/{&B}/{&C}/{&D}/{&E}/{&F}/{&G}/{&H}/{&I}/{&J}".
+assign lv = "{&J}/{&I}/{&H}/{&G}/{&F}/{&E}/{&D}/{&C}/{&B}/{&A}".
+assign lv = "{&A}{&A}{&B}{&B}{&C}{&C}{&D}{&D}{&E}{&E}".
+assign lv = "{&F}{&F}{&G}{&G}{&H}{&H}{&I}{&I}{&J}{&J}".
+assign lv = "{&PREFIX}{&PREFIX}{&PREFIX}{&PREFIX}{&PREFIX}{&PREFIX}".
+assign lv = "{&SUFFIX}{&SUFFIX}{&SUFFIX}{&SUFFIX}{&SUFFIX}{&SUFFIX}".
+
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+assign lv = "{&A}-{&B}-{&C}-{&D}-{&E}-{&F}-{&G}-{&H}-{&I}-{&J}".
+
+assign lv = "{&PREFIX}[{&A}|{&B}|{&C}]{&SUFFIX}".
+assign lv = "{&PREFIX}[{&D}|{&E}|{&F}]{&SUFFIX}".
+assign lv = "{&PREFIX}[{&G}|{&H}|{&I}]{&SUFFIX}".
+assign lv = "{&PREFIX}[{&J}|{&A}|{&B}]{&SUFFIX}".
+assign lv = "{&PREFIX}[{&C}|{&D}|{&E}]{&SUFFIX}".
+assign lv = "{&PREFIX}[{&F}|{&G}|{&H}]{&SUFFIX}".
+assign lv = "{&PREFIX}[{&I}|{&J}|{&A}]{&SUFFIX}".
+assign lv = "{&PREFIX}[{&B}|{&C}|{&D}]{&SUFFIX}".
