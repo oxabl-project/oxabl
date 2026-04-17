@@ -316,7 +316,7 @@ fn render_human_report(results: &[FileResult], elapsed_secs: f64) {
     // Top error patterns
     if !error_counts.is_empty() {
         let mut patterns: Vec<_> = error_counts.into_iter().collect();
-        patterns.sort_by(|a, b| b.1.cmp(&a.1));
+        patterns.sort_by_key(|p| std::cmp::Reverse(p.1));
 
         println!();
         println!("Top error patterns:");
@@ -381,7 +381,7 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) {
     };
 
     let mut patterns: Vec<_> = error_counts.into_iter().collect();
-    patterns.sort_by(|a, b| b.1.cmp(&a.1));
+    patterns.sort_by_key(|p| std::cmp::Reverse(p.1));
 
     let report = JsonReport {
         total,
