@@ -22,22 +22,22 @@ Requirements:
   - Used in our token dumps and benchmarks, appears to be accurate.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
-- `oxabl_parser`: Actively developed in `crates/oxabl_parser` with 428 tests
+- `oxabl_parser`: MVP has been completed, parses 100% of our corpus code base. 
   - Parses expressions with proper operator precedence
-  - Parses declarations: DEFINE VARIABLE, VAR, PARAMETER, TEMP-TABLE, BUFFER, PROPERTY, STREAM, FRAME, EVENT
-  - Parses statements: DO blocks (with counting loops), IF/THEN/ELSE, REPEAT, FOR EACH, FIND, CASE, PROCEDURE, FUNCTION, RUN, DISPLAY (with STREAM clause), MESSAGE, ASSIGN, CREATE, DELETE, RELEASE, VALIDATE, BUFFER-COPY, BUFFER-COMPARE, INPUT/OUTPUT/INPUT-OUTPUT stream I/O, CATCH/FINALLY/THROW, PUBLISH/SUBSCRIBE/UNSUBSCRIBE, ON triggers (UI events, database events, key remapping), TRIGGER PROCEDURE, LEAVE, NEXT, RETURN
-  - Parses OO-ABL: CLASS (ABSTRACT/FINAL, INHERITS, IMPLEMENTS), INTERFACE, METHOD (access modifiers, STATIC/ABSTRACT/OVERRIDE), DEFINE PROPERTY (auto and computed GET/SET), CONSTRUCTOR, DESTRUCTOR, USING
-  - Parses preprocessor: &IF/&ELSEIF/&ELSE/&ENDIF at statement/expression/data-type levels, &SCOPED-DEFINE/&GLOBAL-DEFINE, &UNDEFINE, &MESSAGE, `{&variable}` references
-  - Parses include file references (`{file.i}`, `{file.i &name=value}`) and positional argument references (`{0}`, `{1}`) at statement and expression positions
-  - Parses postfix operations: method calls, member access, array access, field access
+  - Parses declarations
+  - Parses statements
+  - Parses OO-ABL
+  - Parses preprocessor
+  - Parses include file references and positional argument references
+  - Parses postfix operations
   - Error recovery via synchronization on period boundaries
 - `oxabl check`: A CLI validation tool in `crates/oxabl` for testing parser coverage against real ABL codebases.
-  - Walks a directory (or checks a single file) for ABL files (`.p`, `.w`, `.i`, `.cls`, `.v`) and runs each through the lexer and parser.
+  - Walks a directory (or checks a single file) for ABL files (`.p`, `.w`, `.cls`) and runs each through the preprocessor, lexer and parser.
   - Reports pass/fail counts, error locations, and top error patterns. Supports `--json` output.
   - Placeholder only — the parsed AST is discarded; no downstream work is performed.
-  - Usage: `cargo run -p oxabl -- check <path>`
+  - Usage: `cargo run -p oxabl -- check <path> --preprocessor --include-path <path>`
 
-Current Work: DO/FOR/REPEAT block-header ON phrases (ON ERROR UNDO, ON ENDKEY UNDO) not yet implemented.
+Current Work: Semantic analysis.
 
 ## Roadmap
 
@@ -113,29 +113,7 @@ These are not sanitized benchmarks — they were run on real hardware with norma
 
 I don't know anything about these techniques! But I'm excited to learn.
 
-I consider the Lexer "production-grade" with the current benchmarks, it's more than within the realm of being usable for developer tooling, if you ran it on-save in your editor, it would only be ms to tokenize the entire file, which is more-or-less instant in an editor. Still, I love optimizing things, so we're certainly going to aim for better. Why not tokenize the entire codebase on save?? (Jokes)
-
-Here's what's on the roadmap for the lexer:
-
-- **Perfect Hash Table**
-  - create a "perfect hash table", which could drop our 1600+ keyword comparison (which eats up 93% of our lexing time) to a 1-2 hash lookups + bounds check.
-  - **Priority:** High, impacts the process we spend the most amount of time in.
-- **Skip case conversion**
-  - ABL treats upper and lowercase as valid for keywords, so we are converting everything to lowercase, which requires an allocation.
-  - We could inline a case-insensitive comparison.
-  - **Priority:** High, impacts the process we spend the 2nd most amount of time in.
-- **Arena Allocation**
-  - Allocate many small objects into a single buffer and free everything at once instead of individual deallocations.
-  - Tokens are short lived, so this eliminates an allocation and deallocation for every single token, and improves caching.
-  - Instead of pushing a new token, allocate all tokens into an Arena, then drop the whole thing after parsing.
-  - **Priority:** Medium, not as complex as some optimizations while still offering decent returns.
-- **SIMD scanning**
-  - Process more bytes at once using CPU vector instructions instead of looping byte-by-byte.
-  - **Priority:** Low, could be another significant speed-up, but after implementation, lexer will be harder to maintain, so leave it for now.
-- **Branchless state machines**
-  - Replace if/match with lookup tables
-  - Build a table of `transitions[state][byte] -> next_state` and index directly, `current_state = table[current_state][byte]
-  - **Priority:** None, might not be worth our effort.
+I consider the parser's current status as production grade. It's more than fast enough to parse the average ABL file in under a few ms. That's plenty fast enough for parsing when a file is saved, and on many files we get that number under 1ms, meaning it's fast enough to be run on keystrokes. Eventually we will be using the Salsa framework so only things we need to parse in the project get parsed, not the whole project, but files that have been updated and their dependencies. At that point, when we're parsing multiple files at a time to provide real-time feedback, it would be ideal to improve the parser's speed a bit.
 
 ## Contributing
 
