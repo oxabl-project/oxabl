@@ -1,19 +1,51 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use oxabl_common::FileId;
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
+use oxabl_preprocessor::Preprocessor;
+use oxabl_workspace::{FileSystem, RealFileSystem};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Load a fixture file from the workspace resources/ directory.
-fn load_fixture(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+/// Resolve the workspace `resources/` directory.
+fn resources_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
         .join("resources")
-        .join(name);
-    fs::read_to_string(path).unwrap()
+}
+
+/// Load a fixture file from the workspace resources/ directory.
+fn load_fixture(name: &str) -> String {
+    fs::read_to_string(resources_dir().join(name)).unwrap()
+}
+
+/// Bench the full pipeline (preprocess → tokenize → parse) on a fixture
+/// whose `{include.i}` references are resolved from the workspace
+/// `resources/` directory via [`RealFileSystem`]. Mirrors the corpus run
+/// where include resolution is the dominant cost.
+fn bench_pipeline_with_includes(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    fixture: &str,
+) {
+    let source = load_fixture(fixture);
+    let fs = RealFileSystem;
+    let include_paths = vec![resources_dir()];
+
+    group.throughput(Throughput::Bytes(source.len() as u64));
+    group.bench_function(name, |b| {
+        b.iter(|| {
+            let pp = Preprocessor::new(&fs as &dyn FileSystem, &include_paths);
+            let preprocessed = pp.process(FileId::new(1), black_box(&source)).unwrap();
+            let expanded = preprocessed.to_text();
+            let tokens = tokenize(&expanded);
+            let mut parser = Parser::new(&tokens, &expanded);
+            parser.parse_program()
+        })
+    });
 }
 
 /// Benchmark a single fixture: tokenize + parse end-to-end.
@@ -44,6 +76,12 @@ fn parser_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "temp_tables", "bench_parser_temp_tables.abl");
     bench_fixture(&mut group, "procs_funcs", "bench_parser_procs_funcs.abl");
     bench_fixture(&mut group, "datasets", "bench_parser_datasets.abl");
+
+    bench_pipeline_with_includes(
+        &mut group,
+        "pipeline_with_includes",
+        "bench_preprocessor_pipeline.abl",
+    );
 
     group.finish();
 }
