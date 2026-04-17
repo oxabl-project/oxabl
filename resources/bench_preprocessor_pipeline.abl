@@ -1,0 +1,50 @@
+/* Benchmark fixture: full pipeline (tokenize -> preprocess -> parse) with
+   real include-file resolution from the workspace resources/ directory.
+   Models the include-heavy shape of files in our real ABL corpus. */
+
+&scoped-define MODULE-NAME order-entry
+&scoped-define MODULE-VERSION "2.4.0"
+&scoped-define MAX-ITEMS 500
+&scoped-define USE-DEBUG yes
+
+{bench_preprocessor_pipeline_a.i}
+
+define variable lv-module as character no-undo initial "{&MODULE-NAME}".
+define variable lv-ver    as character no-undo initial {&MODULE-VERSION}.
+
+&if defined(USE-DEBUG) &then
+  define variable lv-debug as logical no-undo initial true.
+&else
+  define variable lv-debug as logical no-undo initial false.
+&endif
+
+{bench_preprocessor_pipeline_b.i}
+
+procedure process-batch:
+    define input parameter ip-batch-id as integer no-undo.
+    define input parameter ip-count    as integer no-undo.
+    define output parameter op-status  as character no-undo.
+
+    define variable lv-i      as integer no-undo.
+    define variable lv-total  as decimal no-undo.
+
+    do lv-i = 1 to ip-count:
+        assign lv-total = lv-total + lv-i.
+    end.
+
+    if lv-total > {&MAX-ITEMS} then
+        assign op-status = "overflow".
+    else
+        assign op-status = "ok".
+end procedure.
+
+{bench_preprocessor_pipeline_a.i}
+
+function compute-checksum returns integer
+    (input ip-value as integer):
+    define variable lv-cs as integer no-undo.
+    assign lv-cs = ip-value * {&MAX-ITEMS} + 7.
+    return lv-cs.
+end function.
+
+assign lv-module = "{&MODULE-NAME}-final".
