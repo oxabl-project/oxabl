@@ -1,0 +1,16 @@
+[package]
+name = "oxabl_semantic"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Semantic analysis for Progress ABL: symbol table, scope tree, resolution, and types"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_semantic"
+
+[dependencies]
+oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
+bitflags = "2"
+rustc-hash = "2"
+smallvec = { version = "1", features = ["union"] }

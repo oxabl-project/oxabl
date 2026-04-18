@@ -866,6 +866,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_semantic"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "oxabl_ast",
+ "oxabl_common",
+ "oxabl_lexer",
+ "oxabl_schema",
+ "rustc-hash",
+ "smallvec",
+]
+
+[[package]]
 name = "oxabl_workspace"
 version = "0.4.0"
 dependencies = [
