@@ -4,7 +4,7 @@
 //! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative
 //! > unary > postfix (member access, method calls, array/field access) > primary.
 
-use oxabl_ast::{Expression, FindType, Identifier, Literal, Span, UnknownLiteral};
+use oxabl_ast::{Expression, ExpressionKind, FindType, Identifier, Literal, Span, UnknownLiteral};
 use oxabl_lexer::{Kind, TokenValue};
 
 use super::{ParseError, ParseResult, Parser};
@@ -37,11 +37,11 @@ impl Parser<'_> {
 
         let else_expr = self.parse_ternary()?; // recursive for nested ternary in else branch
 
-        Ok(Expression::IfThenElse(
+        Ok(self.expr(ExpressionKind::IfThenElse(
             Box::new(condition),
             Box::new(then_expr),
             Box::new(else_expr),
-        ))
+        )))
     }
 
     pub fn parse_or(&mut self) -> ParseResult<Expression> {
@@ -49,7 +49,7 @@ impl Parser<'_> {
         while self.check(Kind::Or) {
             self.advance();
             let right = self.parse_and()?;
-            expr = Expression::Or(Box::new(expr), Box::new(right));
+            expr = self.expr(ExpressionKind::Or(Box::new(expr), Box::new(right)));
         }
         Ok(expr)
     }
@@ -59,7 +59,7 @@ impl Parser<'_> {
         while self.check(Kind::And) {
             self.advance();
             let right = self.parse_comparison()?;
-            expr = Expression::And(Box::new(expr), Box::new(right));
+            expr = self.expr(ExpressionKind::And(Box::new(expr), Box::new(right)));
         }
         Ok(expr)
     }
@@ -111,24 +111,25 @@ impl Parser<'_> {
             self.consume_widget_name();
         }
 
-        let expr = match op_kind {
-            Kind::Equals | Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
-            Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),
-            Kind::LessThan | Kind::Lt => Expression::LessThan(Box::new(left), Box::new(right)),
+        let kind = match op_kind {
+            Kind::Equals | Kind::Eq => ExpressionKind::Equal(Box::new(left), Box::new(right)),
+            Kind::NotEqual | Kind::Ne => ExpressionKind::NotEqual(Box::new(left), Box::new(right)),
+            Kind::LessThan | Kind::Lt => ExpressionKind::LessThan(Box::new(left), Box::new(right)),
             Kind::LessThanOrEqual | Kind::Le => {
-                Expression::LessThanOrEqual(Box::new(left), Box::new(right))
+                ExpressionKind::LessThanOrEqual(Box::new(left), Box::new(right))
             }
             Kind::GreaterThan | Kind::Gt => {
-                Expression::GreaterThan(Box::new(left), Box::new(right))
+                ExpressionKind::GreaterThan(Box::new(left), Box::new(right))
             }
             Kind::GreaterThanOrEqual | Kind::Ge => {
-                Expression::GreaterThanOrEqual(Box::new(left), Box::new(right))
+                ExpressionKind::GreaterThanOrEqual(Box::new(left), Box::new(right))
             }
-            Kind::Begins => Expression::Begins(Box::new(left), Box::new(right)),
-            Kind::Matches => Expression::Matches(Box::new(left), Box::new(right)),
-            Kind::Contains => Expression::Contains(Box::new(left), Box::new(right)),
+            Kind::Begins => ExpressionKind::Begins(Box::new(left), Box::new(right)),
+            Kind::Matches => ExpressionKind::Matches(Box::new(left), Box::new(right)),
+            Kind::Contains => ExpressionKind::Contains(Box::new(left), Box::new(right)),
             _ => unreachable!(),
         };
+        let expr = self.expr(kind);
 
         Ok(expr)
     }
@@ -142,10 +143,11 @@ impl Parser<'_> {
                 let right_exp = self.parse_multiplicative()?;
                 match op_kind {
                     Kind::Add => {
-                        expr = Expression::Add(Box::new(expr), Box::new(right_exp));
+                        expr = self.expr(ExpressionKind::Add(Box::new(expr), Box::new(right_exp)));
                     }
                     Kind::Minus => {
-                        expr = Expression::Minus(Box::new(expr), Box::new(right_exp));
+                        expr =
+                            self.expr(ExpressionKind::Minus(Box::new(expr), Box::new(right_exp)));
                     }
                     _ => unreachable!(),
                 }
@@ -155,7 +157,7 @@ impl Parser<'_> {
                 // a prior implicit concat). This prevents consuming display items or other
                 // adjacent tokens as accidental concatenation.
                 let right_exp = self.parse_multiplicative()?;
-                expr = Expression::Add(Box::new(expr), Box::new(right_exp));
+                expr = self.expr(ExpressionKind::Add(Box::new(expr), Box::new(right_exp)));
             } else {
                 break;
             }
@@ -170,15 +172,18 @@ impl Parser<'_> {
             match operator.kind {
                 Kind::Star => {
                     let right_exp = self.parse_unary()?;
-                    expr = Expression::Multiply(Box::new(expr), Box::new(right_exp));
+                    expr = self.expr(ExpressionKind::Multiply(
+                        Box::new(expr),
+                        Box::new(right_exp),
+                    ));
                 }
                 Kind::Slash => {
                     let right_exp = self.parse_unary()?;
-                    expr = Expression::Divide(Box::new(expr), Box::new(right_exp));
+                    expr = self.expr(ExpressionKind::Divide(Box::new(expr), Box::new(right_exp)));
                 }
                 Kind::Modulo => {
                     let right_exp = self.parse_unary()?;
-                    expr = Expression::Modulo(Box::new(expr), Box::new(right_exp));
+                    expr = self.expr(ExpressionKind::Modulo(Box::new(expr), Box::new(right_exp)));
                 }
                 _ => unreachable!(),
             }
@@ -190,7 +195,7 @@ impl Parser<'_> {
         if self.check(Kind::Minus) {
             self.advance();
             let expr = self.parse_unary()?;
-            return Ok(Expression::Negate(Box::new(expr)));
+            return Ok(self.expr(ExpressionKind::Negate(Box::new(expr))));
         }
         if self.check(Kind::Add) {
             // Unary plus — identity operation (e.g. "- + value" means subtract unary+value)
@@ -200,7 +205,7 @@ impl Parser<'_> {
         if self.check(Kind::Not) {
             self.advance();
             let expr = self.parse_unary()?;
-            return Ok(Expression::Not(Box::new(expr)));
+            return Ok(self.expr(ExpressionKind::Not(Box::new(expr))));
         }
         self.parse_postfix()
     }
@@ -211,7 +216,7 @@ impl Parser<'_> {
         // Literals can't have postfix operations (member access, method calls, etc.)
         // Return early to avoid incorrectly parsing following tokens like ':' in "do i = 1 to 10:"
         // Exception: string literals may have `:U` or `:T` character-type qualifiers — consume them.
-        if matches!(expr, Expression::Literal(_)) {
+        if matches!(expr.kind, ExpressionKind::Literal(_)) {
             if self.check(Kind::Colon) {
                 let colon_end = self.tokens[self.current].end;
                 if let Some(next) = self.tokens.get(self.current + 1)
@@ -353,12 +358,14 @@ impl Parser<'_> {
                     // Empty argument (successive commas like obj:method(1,, "x")) — Unknown
                     if self.check(Kind::Comma) || self.check(Kind::RightParen) {
                         let pos = self.peek().start as u32;
-                        arguments.push(Expression::Literal(Literal::Unknown(UnknownLiteral {
-                            span: Span {
-                                start: pos,
-                                end: pos,
+                        arguments.push(self.expr(ExpressionKind::Literal(Literal::Unknown(
+                            UnknownLiteral {
+                                span: Span {
+                                    start: pos,
+                                    end: pos,
+                                },
                             },
-                        })));
+                        ))));
                     } else {
                         arguments.push(self.parse_expression()?);
                         // Consume optional IN FRAME/BROWSE qualifier
@@ -384,17 +391,17 @@ impl Parser<'_> {
             // closing ), throw error
             self.expect_kind(Kind::RightParen, "Expected ')' after method arguments")?;
 
-            return Ok(Expression::MethodCall {
+            return Ok(self.expr(ExpressionKind::MethodCall {
                 object: Box::new(object),
                 method: member,
                 arguments,
-            });
+            }));
         }
 
-        Ok(Expression::MemberAccess {
+        Ok(self.expr(ExpressionKind::MemberAccess {
             object: Box::new(object),
             member,
-        })
+        }))
     }
 
     pub fn parse_array_access(&mut self, array: Expression) -> ParseResult<Expression> {
@@ -410,10 +417,10 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
 
-        Ok(Expression::ArrayAccess {
+        Ok(self.expr(ExpressionKind::ArrayAccess {
             array: Box::new(array),
             index: Box::new(index),
-        })
+        }))
     }
 
     /// Check if we're looking at field access, rather that a statement terminator
@@ -438,21 +445,21 @@ impl Parser<'_> {
     /// already a string value, preventing accidental consumption of display items.
     fn is_string_like(expr: &Expression) -> bool {
         matches!(
-            expr,
-            Expression::Literal(oxabl_ast::Literal::String(_))
-                | Expression::PreprocReference(_)
-                | Expression::Add(..)
+            &expr.kind,
+            ExpressionKind::Literal(oxabl_ast::Literal::String(_))
+                | ExpressionKind::PreprocReference(_)
+                | ExpressionKind::Add(..)
         )
     }
 
     /// Check if an expression can be the base of field access (Table.Field)
     fn can_have_field_access(expr: &Expression) -> bool {
         matches!(
-            expr,
-            Expression::Identifier(_)
-                | Expression::FieldAccess { .. }
-                | Expression::PreprocReference(_)
-                | Expression::IncludeArgReference { .. }
+            &expr.kind,
+            ExpressionKind::Identifier(_)
+                | ExpressionKind::FieldAccess { .. }
+                | ExpressionKind::PreprocReference(_)
+                | ExpressionKind::IncludeArgReference { .. }
         )
     }
 
@@ -479,10 +486,10 @@ impl Parser<'_> {
             name: self.source[token.start..token.end].to_string(),
         };
 
-        Ok(Expression::FieldAccess {
+        Ok(self.expr(ExpressionKind::FieldAccess {
             qualifier: Box::new(qualifier),
             field,
-        })
+        }))
     }
 
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
@@ -506,15 +513,17 @@ impl Parser<'_> {
                     },
                     name: format!(":{}", &self.source[attr_token.start..attr_token.end]),
                 };
-                return Ok(Expression::Identifier(ident));
+                return Ok(self.expr(ExpressionKind::Identifier(ident)));
             }
             // Bare colon with no identifier — return as unknown
-            return Ok(Expression::Literal(Literal::Unknown(UnknownLiteral {
-                span: Span {
-                    start: colon_token.start as u32,
-                    end: colon_token.end as u32,
-                },
-            })));
+            return Ok(
+                self.expr(ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
+                    span: Span {
+                        start: colon_token.start as u32,
+                        end: colon_token.end as u32,
+                    },
+                }))),
+            );
         }
 
         // Bare field access: .fieldname — field of the default/implicit buffer.
@@ -530,7 +539,7 @@ impl Parser<'_> {
                 },
                 name: format!(".{}", &self.source[field_token.start..field_token.end]),
             };
-            return Ok(Expression::Identifier(ident));
+            return Ok(self.expr(ExpressionKind::Identifier(ident)));
         }
 
         // Preprocessor reference: {&variable} or compound {&prefix}suffix{&more}...
@@ -577,7 +586,7 @@ impl Parser<'_> {
                     .and_then(|s| s.strip_suffix('}'))
                     .unwrap_or(raw)
                     .to_string();
-                return Ok(Expression::PreprocReference(name));
+                return Ok(self.expr(ExpressionKind::PreprocReference(name)));
             }
             // Compound → Identifier using raw source text
             let identifier = Identifier {
@@ -590,7 +599,7 @@ impl Parser<'_> {
             if self.check(Kind::LeftParen) {
                 return self.parse_function_call(identifier);
             }
-            return Ok(Expression::Identifier(identifier));
+            return Ok(self.expr(ExpressionKind::Identifier(identifier)));
         }
 
         // Mid-expression preprocessor conditional: &IF cond &THEN expr &ELSE expr &ENDIF
@@ -603,7 +612,7 @@ impl Parser<'_> {
                     span: self.current_span(),
                 });
             }
-            return Ok(Expression::PreprocIf(Box::new(preproc)));
+            return Ok(self.expr(ExpressionKind::PreprocIf(Box::new(preproc))));
         }
 
         // Parenthesized expression
@@ -632,7 +641,7 @@ impl Parser<'_> {
                     end: token.end as u32,
                 },
             })?;
-            return Ok(Expression::Literal(literal));
+            return Ok(self.expr(ExpressionKind::Literal(literal)));
         }
 
         // Include file reference in expression position: {file.i}
@@ -644,13 +653,13 @@ impl Parser<'_> {
                     .trim()
                     .to_string(),
             };
-            return Ok(Expression::IncludeReference {
+            return Ok(self.expr(ExpressionKind::IncludeReference {
                 path_and_args,
                 span: Span {
                     start: token.start as u32,
                     end: token.end as u32,
                 },
-            });
+            }));
         }
 
         // Include positional argument reference in expression position: {1}
@@ -660,13 +669,13 @@ impl Parser<'_> {
                 TokenValue::Integer(i) => *i as i64,
                 _ => 0,
             };
-            return Ok(Expression::IncludeArgReference {
+            return Ok(self.expr(ExpressionKind::IncludeArgReference {
                 index,
                 span: Span {
                     start: token.start as u32,
                     end: token.end as u32,
                 },
-            });
+            }));
         }
 
         // NEW ClassName(args) — object instantiation.
@@ -696,13 +705,13 @@ impl Parser<'_> {
             // If no '(' follows, this is the logical NEW record-name test (boolean expression),
             // not an OO object constructor.  Return a simple identifier so parsing continues.
             if !self.check(Kind::LeftParen) {
-                return Ok(Expression::Identifier(Identifier {
+                return Ok(self.expr(ExpressionKind::Identifier(Identifier {
                     span: Span {
                         start: start as u32,
                         end: end as u32,
                     },
                     name: class_name,
-                }));
+                })));
             }
 
             // Parse argument list (supports INPUT/OUTPUT direction qualifiers and TABLE/BUFFER args)
@@ -753,10 +762,10 @@ impl Parser<'_> {
             }
             self.expect_kind(Kind::RightParen, "Expected ')' after NEW arguments")?;
 
-            return Ok(Expression::New {
+            return Ok(self.expr(ExpressionKind::New {
                 class_name,
                 arguments,
-            });
+            }));
         }
 
         // DYNAMIC-NEW expr([args]) — dynamic object instantiation where the class name
@@ -786,10 +795,10 @@ impl Parser<'_> {
                 self.expect_kind(Kind::RightParen, "Expected ')' after DYNAMIC-NEW arguments")?;
             }
             // Return as an empty expression (we don't have a DynamicNew AST node yet)
-            return Ok(Expression::Identifier(Identifier {
+            return Ok(self.expr(ExpressionKind::Identifier(Identifier {
                 span: self.current_span(),
                 name: "dynamic-new".to_string(),
-            }));
+            })));
         }
 
         // DYNAMIC-FUNCTION("func-name" [IN handle] [, arg1, arg2, ...])
@@ -820,7 +829,7 @@ impl Parser<'_> {
                 }
             }
             self.expect_kind(Kind::RightParen, "Expected ')' after DYNAMIC-FUNCTION")?;
-            return Ok(Expression::FunctionCall { name, arguments });
+            return Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }));
         }
 
         // CAN-FIND([FIRST|LAST] table [WHERE expr] [lock] [NO-ERROR])
@@ -900,13 +909,13 @@ impl Parser<'_> {
                 "Expected ')' after CAN-FIND record phrase",
             )?;
 
-            return Ok(Expression::CanFind {
+            return Ok(self.expr(ExpressionKind::CanFind {
                 find_type,
                 buffer,
                 where_clause,
                 lock_type,
                 no_error,
-            });
+            }));
         }
 
         // LOCKED [table] / LOCKED(table) — checks if a record is exclusively locked.
@@ -932,10 +941,11 @@ impl Parser<'_> {
                 },
                 name: self.source[arg_token.start..arg_token.end].to_string(),
             };
-            return Ok(Expression::FunctionCall {
+            let arg_expr = self.expr(ExpressionKind::Identifier(arg_name));
+            return Ok(self.expr(ExpressionKind::FunctionCall {
                 name,
-                arguments: vec![Expression::Identifier(arg_name)],
-            });
+                arguments: vec![arg_expr],
+            }));
         }
 
         // AVAILABLE [table] / AVAILABLE(table) — built-in record-availability predicate.
@@ -961,16 +971,16 @@ impl Parser<'_> {
             // AVAILABLE with no argument (bad practice but valid ABL — evaluates the
             // default buffer in scope).
             if !Self::can_be_identifier(self.peek().kind) && !self.check(Kind::LeftParen) {
-                return Ok(Expression::FunctionCall {
+                return Ok(self.expr(ExpressionKind::FunctionCall {
                     name,
                     arguments: vec![],
-                });
+                }));
             }
             let arg = self.parse_postfix()?;
-            return Ok(Expression::FunctionCall {
+            return Ok(self.expr(ExpressionKind::FunctionCall {
                 name,
                 arguments: vec![arg],
-            });
+            }));
         }
 
         // TEMP-TABLE name[:attr] / BUFFER name[:attr] / FRAME name[:attr] / BROWSE name[:attr]
@@ -1032,7 +1042,7 @@ impl Parser<'_> {
                 },
                 name: compound_name,
             };
-            return Ok(Expression::Identifier(identifier));
+            return Ok(self.expr(ExpressionKind::Identifier(identifier)));
         }
 
         // ACCUM has two forms:
@@ -1079,7 +1089,7 @@ impl Parser<'_> {
                 if self.check(Kind::RightParen) {
                     self.advance(); // consume ')'
                 }
-                return Ok(Expression::FunctionCall { name, arguments });
+                return Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }));
             }
             // Form 1: first operand was the aggregate-type.
             // optional BY break-field [label] (may be qualified: table.field)
@@ -1100,7 +1110,7 @@ impl Parser<'_> {
             {
                 arguments.push(field_expr);
             }
-            return Ok(Expression::FunctionCall { name, arguments });
+            return Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }));
         }
 
         // INPUT / OUTPUT as transparent parameter-direction qualifier in expression context.
@@ -1161,7 +1171,7 @@ impl Parser<'_> {
                 return self.parse_function_call(identifier);
             }
 
-            return Ok(Expression::Identifier(identifier));
+            return Ok(self.expr(ExpressionKind::Identifier(identifier)));
         }
 
         Err(ParseError {
@@ -1248,12 +1258,14 @@ impl Parser<'_> {
                 // Empty argument (successive commas like func(1,, "x")) — use Unknown literal
                 if self.check(Kind::Comma) || self.check(Kind::RightParen) {
                     let pos = self.peek().start as u32;
-                    arguments.push(Expression::Literal(Literal::Unknown(UnknownLiteral {
-                        span: Span {
-                            start: pos,
-                            end: pos,
+                    arguments.push(self.expr(ExpressionKind::Literal(Literal::Unknown(
+                        UnknownLiteral {
+                            span: Span {
+                                start: pos,
+                                end: pos,
+                            },
                         },
-                    })));
+                    ))));
                 } else {
                     arguments.push(self.parse_expression()?);
                     // Consume optional IN FRAME/BROWSE qualifier
@@ -1277,6 +1289,6 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::RightParen, "Expected ')' after function arguments")?;
 
-        Ok(Expression::FunctionCall { name, arguments })
+        Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }))
     }
 }
