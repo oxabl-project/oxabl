@@ -3,7 +3,7 @@ use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
     DataType, DbTriggerEvent, DecimalLiteral, Expression, FindType, HandleParamKind, Identifier,
     IntegerLiteral, Literal, LockType, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation, StringLiteral,
+    RunTarget, SortDirection, Span, StatementKind, StreamDirection, StreamOperation, StringLiteral,
     SubscribeTarget, TypeSource, UnknownLiteral, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
@@ -1645,7 +1645,7 @@ fn parse_simple_assignment() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Assignment {
+        StatementKind::Assignment {
             target: Expression::Identifier(Identifier {
                 span: Span { start: 0, end: 1 },
                 name: "x".to_string()
@@ -1666,7 +1666,7 @@ fn parse_assignment_with_expression() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Assignment {
+        StatementKind::Assignment {
             target: Expression::Identifier(Identifier {
                 span: Span { start: 0, end: 5 },
                 name: "total".to_string()
@@ -1693,7 +1693,7 @@ fn parse_array_assignment() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Assignment {
+        StatementKind::Assignment {
             target: Expression::ArrayAccess {
                 array: Box::new(Expression::Identifier(Identifier {
                     span: Span { start: 0, end: 3 },
@@ -1720,7 +1720,7 @@ fn parse_field_assignment() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Assignment {
+        StatementKind::Assignment {
             target: Expression::FieldAccess {
                 qualifier: Box::new(Expression::Identifier(Identifier {
                     span: Span { start: 0, end: 8 },
@@ -1747,7 +1747,7 @@ fn parse_expression_statement() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::ExpressionStatement(Expression::FunctionCall {
+        StatementKind::ExpressionStatement(Expression::FunctionCall {
             name: Identifier {
                 span: Span { start: 0, end: 15 },
                 name: "calculateTotals".to_string()
@@ -1765,7 +1765,7 @@ fn parse_method_call_statement() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::ExpressionStatement(Expression::MethodCall {
+        StatementKind::ExpressionStatement(Expression::MethodCall {
             object: Box::new(Expression::Identifier(Identifier {
                 span: Span { start: 0, end: 6 },
                 name: "buffer".to_string()
@@ -1785,7 +1785,7 @@ fn parse_empty_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(stmt, Statement::Empty);
+    assert_eq!(stmt, StatementKind::Empty);
 }
 
 #[test]
@@ -1805,7 +1805,7 @@ fn parse_define_variable_simple() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::VariableDeclaration {
+        StatementKind::VariableDeclaration {
             name: Identifier {
                 span: Span { start: 16, end: 21 },
                 name: "myVar".to_string()
@@ -1826,7 +1826,7 @@ fn parse_define_variable_with_initial() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::VariableDeclaration {
+        StatementKind::VariableDeclaration {
             name: Identifier {
                 span: Span { start: 16, end: 23 },
                 name: "counter".to_string()
@@ -1848,8 +1848,8 @@ fn parse_define_variable_character() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             type_source,
             no_undo,
             initial_value,
@@ -1871,7 +1871,7 @@ fn parse_var_statement_simple() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::VariableDeclaration {
+        StatementKind::VariableDeclaration {
             name: Identifier {
                 span: Span { start: 12, end: 19 },
                 name: "myCount".to_string()
@@ -1890,8 +1890,8 @@ fn parse_var_statement_with_initial() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name,
             type_source,
             initial_value,
@@ -1913,8 +1913,8 @@ fn parse_var_logical() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             type_source,
             initial_value,
             ..
@@ -1937,8 +1937,8 @@ fn parse_define_variable_like() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name,
             type_source,
             no_undo,
@@ -1966,8 +1966,8 @@ fn parse_define_variable_like_simple_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration { type_source, .. } => match type_source {
+    match stmt.kind {
+        StatementKind::VariableDeclaration { type_source, .. } => match type_source {
             TypeSource::Like { source } => assert_eq!(source.name, "iVar"),
             _ => panic!("Expected Like"),
         },
@@ -1982,8 +1982,8 @@ fn parse_define_variable_like_with_initial() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             type_source,
             initial_value,
             no_undo,
@@ -2003,8 +2003,8 @@ fn parse_define_variable_decimal_decimals_extent() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name,
             type_source,
             extent,
@@ -2027,8 +2027,8 @@ fn parse_var_like() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             type_source,
             name,
             no_undo,
@@ -2048,8 +2048,8 @@ fn parse_define_input_parameter_like() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type:
                 ParameterType::Variable {
@@ -2073,8 +2073,8 @@ fn parse_define_output_parameter_like() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type: ParameterType::Variable { type_source, .. },
         } => {
@@ -2091,8 +2091,8 @@ fn parse_define_input_output_parameter_like() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type: ParameterType::Variable { type_source, .. },
         } => {
@@ -2114,8 +2114,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
             assert!(
                 matches!(&fields[0].type_source, TypeSource::Like { .. }),
@@ -2133,8 +2133,8 @@ fn parse_simple_do_block() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, loop_var, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, loop_var, .. } => {
             assert!(loop_var.is_none());
             assert_eq!(body.len(), 1);
         }
@@ -2148,8 +2148,8 @@ fn parse_do_counting_loop() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do {
+    match stmt.kind {
+        StatementKind::Do {
             loop_var,
             from,
             to,
@@ -2172,8 +2172,8 @@ fn parse_do_with_by() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { by, .. } => {
+    match stmt.kind {
+        StatementKind::Do { by, .. } => {
             assert!(by.is_some());
         }
         _ => panic!("Expected Do statement"),
@@ -2186,8 +2186,8 @@ fn parse_do_while() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do {
+    match stmt.kind {
+        StatementKind::Do {
             while_condition, ..
         } => {
             assert!(while_condition.is_some());
@@ -2202,10 +2202,10 @@ fn parse_nested_do_blocks() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::Do { .. }));
+            assert!(matches!(body[0].kind, StatementKind::Do { .. }));
         }
         _ => panic!("Expected Do statement"),
     }
@@ -2217,14 +2217,14 @@ fn parse_if_then_simple() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::If {
+    match stmt.kind {
+        StatementKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
             assert!(matches!(condition, Expression::GreaterThan(_, _)));
-            assert!(matches!(*then_branch, Statement::Assignment { .. }));
+            assert!(matches!(then_branch.kind, StatementKind::Assignment { .. }));
             assert!(else_branch.is_none());
         }
         _ => panic!("Expected If statement"),
@@ -2237,8 +2237,8 @@ fn parse_if_then_else() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::If { else_branch, .. } => {
+    match stmt.kind {
+        StatementKind::If { else_branch, .. } => {
             assert!(else_branch.is_some());
         }
         _ => panic!("Expected If statement"),
@@ -2251,9 +2251,9 @@ fn parse_if_then_do_block() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::If { then_branch, .. } => {
-            assert!(matches!(*then_branch, Statement::Do { .. }));
+    match stmt.kind {
+        StatementKind::If { then_branch, .. } => {
+            assert!(matches!(then_branch.kind, StatementKind::Do { .. }));
         }
         _ => panic!("Expected If statement"),
     }
@@ -2267,15 +2267,15 @@ fn parse_if_then_do_end_else_do_end() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::If {
+    match stmt.kind {
+        StatementKind::If {
             then_branch,
             else_branch,
             ..
         } => {
-            assert!(matches!(*then_branch, Statement::Do { .. }));
+            assert!(matches!(then_branch.kind, StatementKind::Do { .. }));
             let else_stmt = else_branch.expect("Should have else");
-            assert!(matches!(*else_stmt, Statement::Do { .. }));
+            assert!(matches!(else_stmt.kind, StatementKind::Do { .. }));
         }
         _ => panic!("Expected If statement"),
     }
@@ -2289,7 +2289,7 @@ fn parse_next_prompt_statement() {
     let stmt = parser
         .parse_statement()
         .expect("NEXT-PROMPT should parse as a skipped legacy UI statement");
-    assert!(matches!(stmt, Statement::Empty));
+    assert!(matches!(stmt.kind, StatementKind::Empty));
 }
 
 #[test]
@@ -2305,8 +2305,8 @@ fn parse_if_then_do_else_with_preproc_placeholder() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::If { else_branch, .. } => {
+    match stmt.kind {
+        StatementKind::If { else_branch, .. } => {
             assert!(
                 else_branch.is_some(),
                 "ELSE must bind across undefined preprocessor placeholder"
@@ -2332,11 +2332,11 @@ fn parse_if_then_do_end_else_do_end_nested_in_procedure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Procedure { body, .. } => {
+    match stmt.kind {
+        StatementKind::Procedure { body, .. } => {
             assert_eq!(body.len(), 1, "procedure body: {:?}", body);
-            match &body[0] {
-                Statement::If { else_branch, .. } => {
+            match &body[0].kind {
+                StatementKind::If { else_branch, .. } => {
                     assert!(else_branch.is_some(), "else arm must bind to IF");
                 }
                 other => panic!("Expected If, got {:?}", other),
@@ -2352,10 +2352,10 @@ fn parse_if_else_if_chain() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::If { else_branch, .. } => {
+    match stmt.kind {
+        StatementKind::If { else_branch, .. } => {
             let else_stmt = else_branch.expect("Should have else");
-            assert!(matches!(*else_stmt, Statement::If { .. }));
+            assert!(matches!(else_stmt.kind, StatementKind::If { .. }));
         }
         _ => panic!("Expected If statement"),
     }
@@ -2367,9 +2367,9 @@ fn parse_nested_if() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::If { then_branch, .. } => {
-            assert!(matches!(*then_branch, Statement::If { .. }));
+    match stmt.kind {
+        StatementKind::If { then_branch, .. } => {
+            assert!(matches!(then_branch.kind, StatementKind::If { .. }));
         }
         _ => panic!("Expected If statement"),
     }
@@ -2381,8 +2381,8 @@ fn parse_simple_repeat() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Repeat {
+    match stmt.kind {
+        StatementKind::Repeat {
             body,
             while_condition,
         } => {
@@ -2399,8 +2399,8 @@ fn parse_repeat_while() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Repeat {
+    match stmt.kind {
+        StatementKind::Repeat {
             while_condition, ..
         } => {
             assert!(while_condition.is_some());
@@ -2415,7 +2415,7 @@ fn parse_leave_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(stmt, Statement::Leave(None));
+    assert_eq!(stmt, StatementKind::Leave(None));
 }
 
 #[test]
@@ -2424,7 +2424,7 @@ fn parse_next_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(stmt, Statement::Next(None));
+    assert_eq!(stmt, StatementKind::Next(None));
 }
 
 #[test]
@@ -2433,7 +2433,7 @@ fn parse_return_no_value() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(stmt, Statement::Return(None));
+    assert_eq!(stmt, StatementKind::Return(None));
 }
 
 #[test]
@@ -2442,8 +2442,8 @@ fn parse_return_with_value() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Return(Some(expr)) => {
+    match stmt.kind {
+        StatementKind::Return(Some(expr)) => {
             assert!(matches!(expr, Expression::Add(_, _)));
         }
         _ => panic!("Expected Return with value"),
@@ -2456,8 +2456,8 @@ fn parse_loop_with_leave_and_next() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 3);
         }
         _ => panic!("Expected Do statement"),
@@ -2472,8 +2472,8 @@ fn parse_simple_for_each() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach {
+    match stmt.kind {
+        StatementKind::ForEach {
             buffer,
             of_relation,
             where_clause,
@@ -2496,8 +2496,8 @@ fn parse_for_each_with_where() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach {
+    match stmt.kind {
+        StatementKind::ForEach {
             buffer,
             where_clause,
             lock_type,
@@ -2521,8 +2521,8 @@ fn parse_for_each_with_of() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach {
+    match stmt.kind {
+        StatementKind::ForEach {
             buffer,
             of_relation,
             lock_type,
@@ -2543,8 +2543,8 @@ fn parse_for_each_share_lock() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach { lock_type, .. } => {
+    match stmt.kind {
+        StatementKind::ForEach { lock_type, .. } => {
             assert_eq!(lock_type, LockType::ShareLock);
         }
         _ => panic!("Expected ForEach statement"),
@@ -2557,8 +2557,8 @@ fn parse_for_each_exclusive_lock() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach {
+    match stmt.kind {
+        StatementKind::ForEach {
             lock_type, body, ..
         } => {
             assert_eq!(lock_type, LockType::ExclusiveLock);
@@ -2575,8 +2575,8 @@ fn parse_for_each_default_lock() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach { lock_type, .. } => {
+    match stmt.kind {
+        StatementKind::ForEach { lock_type, .. } => {
             assert_eq!(lock_type, LockType::ShareLock);
         }
         _ => panic!("Expected ForEach statement"),
@@ -2589,8 +2589,8 @@ fn parse_for_each_with_of_and_where() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach {
+    match stmt.kind {
+        StatementKind::ForEach {
             buffer,
             of_relation,
             where_clause,
@@ -2614,8 +2614,8 @@ fn parse_for_each_with_complex_where() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach { where_clause, .. } => {
+    match stmt.kind {
+        StatementKind::ForEach { where_clause, .. } => {
             assert!(where_clause.is_some());
             assert!(matches!(where_clause.unwrap(), Expression::And(_, _)));
         }
@@ -2630,8 +2630,8 @@ fn parse_for_each_with_multiple_statements() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach { body, .. } => {
+    match stmt.kind {
+        StatementKind::ForEach { body, .. } => {
             assert_eq!(body.len(), 2);
         }
         _ => panic!("Expected ForEach statement"),
@@ -2644,10 +2644,10 @@ fn parse_nested_for_each() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach { body, .. } => {
+    match stmt.kind {
+        StatementKind::ForEach { body, .. } => {
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::ForEach { .. }));
+            assert!(matches!(body[0].kind, StatementKind::ForEach { .. }));
         }
         _ => panic!("Expected ForEach statement"),
     }
@@ -2659,10 +2659,10 @@ fn parse_for_each_with_leave() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach { body, .. } => {
+    match stmt.kind {
+        StatementKind::ForEach { body, .. } => {
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::If { .. }));
+            assert!(matches!(body[0].kind, StatementKind::If { .. }));
         }
         _ => panic!("Expected ForEach statement"),
     }
@@ -2675,11 +2675,11 @@ fn parse_for_each_with_field_access_in_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::ForEach { body, .. } => {
+    match stmt.kind {
+        StatementKind::ForEach { body, .. } => {
             assert_eq!(body.len(), 1);
-            match &body[0] {
-                Statement::Assignment { value, .. } => {
+            match &body[0].kind {
+                StatementKind::Assignment { value, .. } => {
                     assert!(matches!(value, Expression::Add(_, _)));
                 }
                 _ => panic!("Expected Assignment statement"),
@@ -2698,7 +2698,7 @@ fn parse_simple_for_each_no_lock_space() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::ForEach {
+        StatementKind::ForEach {
             buffer: Identifier {
                 span: Span { start: 9, end: 17 },
                 name: "Customer".to_string()
@@ -2720,7 +2720,7 @@ fn parse_simple_for_each_share_lock_space() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::ForEach {
+        StatementKind::ForEach {
             buffer: Identifier {
                 span: Span { start: 9, end: 17 },
                 name: "Customer".to_string()
@@ -2742,7 +2742,7 @@ fn parse_simple_for_each_exclusive_lock_space() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::ForEach {
+        StatementKind::ForEach {
             buffer: Identifier {
                 span: Span { start: 9, end: 17 },
                 name: "Customer".to_string()
@@ -2763,7 +2763,7 @@ fn parse_find_first_with_where() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Find {
+        StatementKind::Find {
             find_type: FindType::First,
             buffer: Identifier {
                 span: Span { start: 11, end: 19 },
@@ -2800,7 +2800,7 @@ fn parse_find_by_integer_key() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Find {
+        StatementKind::Find {
             find_type: FindType::Unique,
             buffer: Identifier {
                 span: Span { start: 5, end: 13 },
@@ -2825,7 +2825,7 @@ fn parse_find_by_string_key() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Find {
+        StatementKind::Find {
             find_type: FindType::Unique,
             buffer: Identifier {
                 span: Span { start: 5, end: 13 },
@@ -2850,7 +2850,7 @@ fn parse_find_by_variable_key() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Find {
+        StatementKind::Find {
             find_type: FindType::Unique,
             buffer: Identifier {
                 span: Span { start: 5, end: 13 },
@@ -2875,7 +2875,7 @@ fn parse_find_with_no_error() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Find {
+        StatementKind::Find {
             find_type: FindType::First,
             buffer: Identifier {
                 span: Span { start: 11, end: 19 },
@@ -2904,8 +2904,8 @@ fn parse_find_last() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Find {
+    match stmt.kind {
+        StatementKind::Find {
             find_type, buffer, ..
         } => {
             assert_eq!(find_type, FindType::Last);
@@ -2921,8 +2921,8 @@ fn parse_find_next() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Find {
+    match stmt.kind {
+        StatementKind::Find {
             find_type, buffer, ..
         } => {
             assert_eq!(find_type, FindType::Next);
@@ -2938,8 +2938,8 @@ fn parse_find_prev() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Find {
+    match stmt.kind {
+        StatementKind::Find {
             find_type, buffer, ..
         } => {
             assert_eq!(find_type, FindType::Prev);
@@ -2955,8 +2955,8 @@ fn parse_find_exclusive_lock() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Find { lock_type, .. } => {
+    match stmt.kind {
+        StatementKind::Find { lock_type, .. } => {
             assert_eq!(lock_type, LockType::ExclusiveLock);
         }
         _ => panic!("Expected Find statement"),
@@ -2969,8 +2969,8 @@ fn parse_find_share_lock() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Find { lock_type, .. } => {
+    match stmt.kind {
+        StatementKind::Find { lock_type, .. } => {
             assert_eq!(lock_type, LockType::ShareLock);
         }
         _ => panic!("Expected Find statement"),
@@ -2984,8 +2984,8 @@ fn parse_find_default_lock() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Find { lock_type, .. } => {
+    match stmt.kind {
+        StatementKind::Find { lock_type, .. } => {
             assert_eq!(lock_type, LockType::ShareLock);
         }
         _ => panic!("Expected Find statement"),
@@ -2999,8 +2999,8 @@ fn parse_find_where_rowid() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Find { where_clause, .. } => {
+    match stmt.kind {
+        StatementKind::Find { where_clause, .. } => {
             assert!(where_clause.is_some(), "Expected where clause");
         }
         _ => panic!("Expected Find statement"),
@@ -3015,8 +3015,8 @@ fn parse_simple_case_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case {
+    match stmt.kind {
+        StatementKind::Case {
             expression,
             when_branches,
             otherwise,
@@ -3038,8 +3038,8 @@ fn parse_case_with_multiple_when_branches() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case {
+    match stmt.kind {
+        StatementKind::Case {
             when_branches,
             otherwise,
             ..
@@ -3057,8 +3057,8 @@ fn parse_case_with_otherwise() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case {
+    match stmt.kind {
+        StatementKind::Case {
             when_branches,
             otherwise,
             ..
@@ -3078,8 +3078,8 @@ fn parse_case_with_or_when() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { when_branches, .. } => {
+    match stmt.kind {
+        StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             // The single WHEN branch has two values
             assert_eq!(when_branches[0].values.len(), 2);
@@ -3094,8 +3094,8 @@ fn parse_case_with_string_values() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { when_branches, .. } => {
+    match stmt.kind {
+        StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
                 &when_branches[0].values[0],
@@ -3112,8 +3112,8 @@ fn parse_case_with_multiple_statements_in_when() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { when_branches, .. } => {
+    match stmt.kind {
+        StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].body.len(), 3);
         }
@@ -3127,8 +3127,8 @@ fn parse_case_with_multiple_statements_in_otherwise() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { otherwise, .. } => {
+    match stmt.kind {
+        StatementKind::Case { otherwise, .. } => {
             assert!(otherwise.is_some());
             assert_eq!(otherwise.unwrap().len(), 2);
         }
@@ -3142,8 +3142,8 @@ fn parse_case_with_expression_condition() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { expression, .. } => {
+    match stmt.kind {
+        StatementKind::Case { expression, .. } => {
             assert!(matches!(expression, Expression::Add(_, _)));
         }
         _ => panic!("Expected Case statement"),
@@ -3158,7 +3158,7 @@ fn parse_case_full_structure() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        Statement::Case {
+        StatementKind::Case {
             expression: Expression::Identifier(Identifier {
                 span: Span { start: 5, end: 10 },
                 name: "myVal".to_string()
@@ -3169,44 +3169,53 @@ fn parse_case_full_structure() {
                         span: Span { start: 17, end: 18 },
                         value: 1
                     }))],
-                    body: vec![Statement::Assignment {
-                        target: Expression::Identifier(Identifier {
-                            span: Span { start: 24, end: 25 },
-                            name: "x".to_string()
-                        }),
-                        value: Expression::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 28, end: 29 },
-                            value: 1
-                        }))
-                    }]
+                    body: vec![
+                        StatementKind::Assignment {
+                            target: Expression::Identifier(Identifier {
+                                span: Span { start: 24, end: 25 },
+                                name: "x".to_string()
+                            }),
+                            value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 28, end: 29 },
+                                value: 1
+                            }))
+                        }
+                        .into()
+                    ]
                 },
                 WhenBranch {
                     values: vec![Expression::Literal(Literal::Integer(IntegerLiteral {
                         span: Span { start: 36, end: 37 },
                         value: 2
                     }))],
-                    body: vec![Statement::Assignment {
-                        target: Expression::Identifier(Identifier {
-                            span: Span { start: 43, end: 44 },
-                            name: "x".to_string()
-                        }),
-                        value: Expression::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 47, end: 48 },
-                            value: 2
-                        }))
-                    }]
+                    body: vec![
+                        StatementKind::Assignment {
+                            target: Expression::Identifier(Identifier {
+                                span: Span { start: 43, end: 44 },
+                                name: "x".to_string()
+                            }),
+                            value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 47, end: 48 },
+                                value: 2
+                            }))
+                        }
+                        .into()
+                    ]
                 }
             ],
-            otherwise: Some(vec![Statement::Assignment {
-                target: Expression::Identifier(Identifier {
-                    span: Span { start: 60, end: 61 },
-                    name: "x".to_string()
-                }),
-                value: Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 64, end: 65 },
-                    value: 0
-                }))
-            }])
+            otherwise: Some(vec![
+                StatementKind::Assignment {
+                    target: Expression::Identifier(Identifier {
+                        span: Span { start: 60, end: 61 },
+                        name: "x".to_string()
+                    }),
+                    value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 64, end: 65 },
+                        value: 0
+                    }))
+                }
+                .into()
+            ])
         }
     );
 }
@@ -3217,10 +3226,13 @@ fn parse_case_with_nested_if() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { when_branches, .. } => {
+    match stmt.kind {
+        StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
-            assert!(matches!(when_branches[0].body[0], Statement::If { .. }));
+            assert!(matches!(
+                when_branches[0].body[0].kind,
+                StatementKind::If { .. }
+            ));
         }
         _ => panic!("Expected Case statement"),
     }
@@ -3232,8 +3244,8 @@ fn parse_case_boolean_values() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { when_branches, .. } => {
+    match stmt.kind {
+        StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
                 &when_branches[0].values[0],
@@ -3255,8 +3267,8 @@ fn parse_case_with_triple_or_when() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Case { when_branches, .. } => {
+    match stmt.kind {
+        StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].values.len(), 3);
         }
@@ -3270,8 +3282,8 @@ fn parse_define_input_parameter() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type:
                 ParameterType::Variable {
@@ -3295,8 +3307,8 @@ fn parse_define_output_parameter() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type:
                 ParameterType::Variable {
@@ -3320,8 +3332,8 @@ fn parse_define_output_parameter_with_format() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type:
                 ParameterType::Variable {
@@ -3345,8 +3357,8 @@ fn parse_define_input_output_parameter() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type:
                 ParameterType::Variable {
@@ -3370,8 +3382,8 @@ fn parse_define_parameter_with_no_undo() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type:
                 ParameterType::Variable {
@@ -3401,13 +3413,13 @@ END PROCEDURE.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Procedure { name, body } => {
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
             assert_eq!(name.name, "my-proc");
             assert_eq!(body.len(), 3);
             // First statement should be input parameter
-            match &body[0] {
-                Statement::DefineParameter {
+            match &body[0].kind {
+                StatementKind::DefineParameter {
                     direction,
                     param_type:
                         ParameterType::Variable {
@@ -3421,8 +3433,8 @@ END PROCEDURE.
                 _ => panic!("Expected DefineParameter"),
             }
             // Second statement should be output parameter
-            match &body[1] {
-                Statement::DefineParameter {
+            match &body[1].kind {
+                StatementKind::DefineParameter {
                     direction,
                     param_type:
                         ParameterType::Variable {
@@ -3448,8 +3460,8 @@ fn parse_display_simple_field_access() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display {
+    match stmt.kind {
+        StatementKind::Display {
             items,
             except,
             frame,
@@ -3471,8 +3483,8 @@ fn parse_display_with_frame() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display { items, frame, .. } => {
+    match stmt.kind {
+        StatementKind::Display { items, frame, .. } => {
             assert_eq!(items.len(), 2);
             assert!(frame.is_some());
             assert_eq!(frame.unwrap().name, "f1");
@@ -3487,8 +3499,8 @@ fn parse_display_with_frame_columns() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display { items, frame, .. } => {
+    match stmt.kind {
+        StatementKind::Display { items, frame, .. } => {
             assert_eq!(items.len(), 3);
             assert!(frame.is_some());
             assert_eq!(frame.unwrap().name, "results");
@@ -3503,8 +3515,8 @@ fn parse_display_except_with_frame() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display {
+    match stmt.kind {
+        StatementKind::Display {
             items,
             except,
             frame,
@@ -3526,8 +3538,8 @@ fn parse_display_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display { items, .. } => {
+    match stmt.kind {
+        StatementKind::Display { items, .. } => {
             assert_eq!(items.len(), 1);
             assert!(matches!(items[0].expression, Expression::Add(_, _)));
         }
@@ -3541,8 +3553,8 @@ fn parse_display_with_when() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display { items, .. } => {
+    match stmt.kind {
+        StatementKind::Display { items, .. } => {
             assert_eq!(items.len(), 1);
             assert!(items[0].when_condition.is_some());
         }
@@ -3556,8 +3568,8 @@ fn parse_display_with_format() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display { items, .. } => {
+    match stmt.kind {
+        StatementKind::Display { items, .. } => {
             assert_eq!(items.len(), 2);
         }
         _ => panic!("Expected Display statement"),
@@ -3570,8 +3582,8 @@ fn parse_display_with_column_label() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display { items, .. } => {
+    match stmt.kind {
+        StatementKind::Display { items, .. } => {
             assert_eq!(items.len(), 2);
         }
         _ => panic!("Expected Display statement"),
@@ -3584,8 +3596,8 @@ fn parse_display_with_format_and_column_label() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Display { items, .. } => {
+    match stmt.kind {
+        StatementKind::Display { items, .. } => {
             assert_eq!(items.len(), 1);
         }
         _ => panic!("Expected Display statement"),
@@ -3600,8 +3612,8 @@ fn parse_message_simple() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Message { items, set_targets } => {
+    match stmt.kind {
+        StatementKind::Message { items, set_targets } => {
             assert_eq!(items.len(), 1);
             assert!(set_targets.is_empty());
         }
@@ -3615,8 +3627,8 @@ fn parse_message_view_as_alert_box() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Message { items, set_targets } => {
+    match stmt.kind {
+        StatementKind::Message { items, set_targets } => {
             assert_eq!(items.len(), 2); // "Error:" and errMsg
             assert!(set_targets.is_empty());
         }
@@ -3630,8 +3642,8 @@ fn parse_message_with_update() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Message { items, set_targets } => {
+    match stmt.kind {
+        StatementKind::Message { items, set_targets } => {
             assert_eq!(items.len(), 1); // "Confirm?"
             assert_eq!(set_targets.len(), 1);
             assert_eq!(set_targets[0].name, "lChoice");
@@ -3646,8 +3658,8 @@ fn parse_message_with_skip() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Message { items, .. } => {
+    match stmt.kind {
+        StatementKind::Message { items, .. } => {
             assert_eq!(items.len(), 2); // Customer.Name and Customer.Balance (SKIP is skipped)
         }
         _ => panic!("Expected Message statement"),
@@ -3660,8 +3672,8 @@ fn parse_message_with_skip_count() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Message { items, .. } => {
+    match stmt.kind {
+        StatementKind::Message { items, .. } => {
             assert_eq!(items.len(), 2); // "Line 1" and "Line 4" (SKIP(2) is skipped)
         }
         _ => panic!("Expected Message statement"),
@@ -3674,8 +3686,8 @@ fn parse_message_update_without_view_as() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Message { items, set_targets } => {
+    match stmt.kind {
+        StatementKind::Message { items, set_targets } => {
             assert_eq!(items.len(), 1);
             assert_eq!(set_targets.len(), 1);
             assert_eq!(set_targets[0].name, "cName");
@@ -3692,8 +3704,8 @@ fn parse_run_simple_procedure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target,
             arguments,
             in_handle,
@@ -3715,8 +3727,8 @@ fn parse_run_with_mixed_direction_args() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target, arguments, ..
         } => {
             assert_eq!(target, RunTarget::Literal("calculate-total".to_string()));
@@ -3735,8 +3747,8 @@ fn parse_run_dynamic_value() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run { target, .. } => {
+    match stmt.kind {
+        StatementKind::Run { target, .. } => {
             assert!(matches!(target, RunTarget::Dynamic(_)));
         }
         _ => panic!("Expected Run statement"),
@@ -3749,8 +3761,8 @@ fn parse_run_dotted_filename_with_args() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target, arguments, ..
         } => {
             assert_eq!(target, RunTarget::Literal("external-prog.p".to_string()));
@@ -3767,8 +3779,8 @@ fn parse_run_hyphenated_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run { target, .. } => {
+    match stmt.kind {
+        StatementKind::Run { target, .. } => {
             assert_eq!(target, RunTarget::Literal("my-proc".to_string()));
         }
         _ => panic!("Expected Run statement"),
@@ -3781,8 +3793,8 @@ fn parse_run_with_expression_args() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target, arguments, ..
         } => {
             assert_eq!(target, RunTarget::Literal("some-proc".to_string()));
@@ -3802,8 +3814,8 @@ fn parse_run_string_literal_target() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run { target, .. } => {
+    match stmt.kind {
+        StatementKind::Run { target, .. } => {
             assert_eq!(target, RunTarget::Literal("my-proc.p".to_string()));
         }
         _ => panic!("Expected Run statement"),
@@ -3816,8 +3828,8 @@ fn parse_run_in_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target,
             in_handle,
             no_error,
@@ -3837,8 +3849,8 @@ fn parse_run_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target, no_error, ..
         } => {
             assert_eq!(target, RunTarget::Literal("myProc".to_string()));
@@ -3854,8 +3866,8 @@ fn parse_run_with_args_and_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target,
             arguments,
             no_error,
@@ -3886,8 +3898,8 @@ fn parse_run_input_output_arg() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run { arguments, .. } => {
+    match stmt.kind {
+        StatementKind::Run { arguments, .. } => {
             assert_eq!(arguments.len(), 1);
             assert_eq!(arguments[0].direction, ParameterDirection::InputOutput);
         }
@@ -3901,8 +3913,8 @@ fn parse_run_in_super() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target, in_handle, ..
         } => {
             assert_eq!(target, RunTarget::Literal("myMethod".to_string()));
@@ -3918,8 +3930,8 @@ fn parse_run_persistent_no_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target,
             persistent,
             persistent_handle,
@@ -3939,8 +3951,8 @@ fn parse_run_persistent_set_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target,
             persistent,
             persistent_handle,
@@ -3960,8 +3972,8 @@ fn parse_run_asynchronous_no_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             target,
             asynchronous,
             async_handle,
@@ -3983,8 +3995,8 @@ fn parse_run_asynchronous_set_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             asynchronous,
             async_handle,
             event_procedure,
@@ -4004,8 +4016,8 @@ fn parse_run_asynchronous_with_event_procedure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Run {
+    match stmt.kind {
+        StatementKind::Run {
             asynchronous,
             async_handle,
             event_procedure,
@@ -4032,8 +4044,8 @@ DEFINE TEMP-TABLE ttCustomer NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable {
+    match stmt.kind {
+        StatementKind::DefineTempTable {
             name,
             no_undo,
             fields,
@@ -4076,8 +4088,8 @@ DEFINE TEMP-TABLE ttOrder NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable {
+    match stmt.kind {
+        StatementKind::DefineTempTable {
             fields, indexes, ..
         } => {
             assert_eq!(fields.len(), 2);
@@ -4104,8 +4116,8 @@ DEFINE TEMP-TABLE ttSimple
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { name, no_undo, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { name, no_undo, .. } => {
             assert_eq!(name.name, "ttSimple");
             assert!(!no_undo);
         }
@@ -4121,8 +4133,8 @@ fn parse_define_buffer() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineBuffer { name, target, .. } => {
+    match stmt.kind {
+        StatementKind::DefineBuffer { name, target, .. } => {
             assert_eq!(name.name, "bCust");
             match &target {
                 BufferTarget::Table(t) => assert_eq!(t.name, "Customer"),
@@ -4139,8 +4151,8 @@ fn parse_define_buffer_for_temp_table() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineBuffer { name, target, .. } => {
+    match stmt.kind {
+        StatementKind::DefineBuffer { name, target, .. } => {
             assert_eq!(name.name, "bTT");
             match &target {
                 BufferTarget::TempTable(t) => assert_eq!(t.name, "ttCustomer"),
@@ -4157,8 +4169,8 @@ fn parse_define_buffer_preselect() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineBuffer { preselect, .. } => {
+    match stmt.kind {
+        StatementKind::DefineBuffer { preselect, .. } => {
             assert!(preselect);
         }
         _ => panic!("Expected DefineBuffer statement"),
@@ -4171,8 +4183,8 @@ fn parse_define_buffer_label() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineBuffer { label, .. } => {
+    match stmt.kind {
+        StatementKind::DefineBuffer { label, .. } => {
             assert_eq!(label, Some("Customer Buffer".to_string()));
         }
         _ => panic!("Expected DefineBuffer statement"),
@@ -4186,8 +4198,8 @@ fn parse_define_buffer_xml_attrs_skipped() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineBuffer { name, .. } => {
+    match stmt.kind {
+        StatementKind::DefineBuffer { name, .. } => {
             assert_eq!(name.name, "bCust");
         }
         _ => panic!("Expected DefineBuffer statement"),
@@ -4202,8 +4214,8 @@ fn parse_define_temp_table_empty() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable {
+    match stmt.kind {
+        StatementKind::DefineTempTable {
             name,
             no_undo,
             fields,
@@ -4225,8 +4237,8 @@ fn parse_define_temp_table_like() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable {
+    match stmt.kind {
+        StatementKind::DefineTempTable {
             like_table,
             validate,
             ..
@@ -4245,8 +4257,8 @@ fn parse_define_temp_table_like_validate() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable {
+    match stmt.kind {
+        StatementKind::DefineTempTable {
             like_table,
             validate,
             ..
@@ -4265,8 +4277,8 @@ fn parse_define_temp_table_like_use_index() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { use_indexes, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { use_indexes, .. } => {
             assert_eq!(use_indexes.len(), 2);
             assert_eq!(use_indexes[0].name.name, "CustNum");
             assert!(!use_indexes[0].as_primary);
@@ -4286,8 +4298,8 @@ DEFINE TEMP-TABLE tt LIKE Customer
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable {
+    match stmt.kind {
+        StatementKind::DefineTempTable {
             like_table, fields, ..
         } => {
             assert!(like_table.is_some());
@@ -4307,8 +4319,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name.name, "cust-num");
             match &fields[0].type_source {
@@ -4334,8 +4346,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => match &fields[0].type_source {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => match &fields[0].type_source {
             TypeSource::Like { .. } => {
                 assert!(fields[0].validate);
             }
@@ -4355,8 +4367,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 2);
             assert!(fields[0].initial_value.is_some());
             assert_eq!(fields[0].initial_value.as_ref().unwrap().len(), 1);
@@ -4376,8 +4388,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields[0].extent, Some(5));
         }
         _ => panic!("Expected DefineTempTable statement"),
@@ -4393,8 +4405,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name.name, "x");
             // FORMAT is skipped, not stored
@@ -4412,8 +4424,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
             // Labels are skipped, not stored
         }
@@ -4434,8 +4446,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { indexes, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { indexes, .. } => {
             assert_eq!(indexes.len(), 1);
             assert_eq!(indexes[0].fields.len(), 2);
             assert_eq!(
@@ -4463,8 +4475,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { indexes, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { indexes, .. } => {
             assert_eq!(indexes[0].fields.len(), 3);
             assert_eq!(
                 indexes[0].fields[0].direction,
@@ -4487,8 +4499,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { indexes, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { indexes, .. } => {
             assert!(indexes[0].is_word_index);
             assert_eq!(indexes[0].fields.len(), 1);
         }
@@ -4506,8 +4518,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { indexes, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { indexes, .. } => {
             assert!(indexes[0].is_unique);
             assert!(indexes[0].is_primary);
         }
@@ -4525,8 +4537,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { indexes, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { indexes, .. } => {
             assert!(indexes[0].is_primary);
             assert!(indexes[0].is_unique);
         }
@@ -4544,8 +4556,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable { indexes, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { indexes, .. } => {
             assert!(indexes[0].is_unique);
             assert!(indexes[0].is_primary);
         }
@@ -4580,8 +4592,8 @@ DEFINE TEMP-TABLE tt NO-UNDO
     let stmt = parser
         .parse_statement()
         .expect("Should parse despite XML attrs");
-    match stmt {
-        Statement::DefineTempTable { fields, .. } => {
+    match stmt.kind {
+        StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name.name, "x");
         }
@@ -4739,11 +4751,11 @@ END.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 2); // x = 1. and CATCH block
-            match &body[1] {
-                Statement::Catch {
+            match &body[1].kind {
+                StatementKind::Catch {
                     error_var,
                     error_type,
                     body,
@@ -4772,11 +4784,11 @@ END.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 2);
-            match &body[1] {
-                Statement::Finally { body } => {
+            match &body[1].kind {
+                StatementKind::Finally { body } => {
                     assert_eq!(body.len(), 1);
                 }
                 _ => panic!("Expected Finally statement"),
@@ -4802,11 +4814,11 @@ END.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 3); // assignment, CATCH, FINALLY
-            assert!(matches!(body[1], Statement::Catch { .. }));
-            assert!(matches!(body[2], Statement::Finally { .. }));
+            assert!(matches!(body[1].kind, StatementKind::Catch { .. }));
+            assert!(matches!(body[2].kind, StatementKind::Finally { .. }));
         }
         _ => panic!("Expected Do statement"),
     }
@@ -4830,10 +4842,10 @@ END.
     // by treating the first END. as closing CATCH (the parser consumes END then
     // checks for optional "catch" keyword).
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 2);
-            assert!(matches!(body[1], Statement::Catch { .. }));
+            assert!(matches!(body[1].kind, StatementKind::Catch { .. }));
         }
         _ => panic!("Expected Do statement"),
     }
@@ -4847,8 +4859,8 @@ fn parse_assign_single() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assign { assignments } => {
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 1);
         }
         _ => panic!("Expected Assign statement"),
@@ -4861,8 +4873,8 @@ fn parse_assign_multiple() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assign { assignments } => {
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 3);
         }
         _ => panic!("Expected Assign statement"),
@@ -4875,8 +4887,8 @@ fn parse_assign_field_access() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assign { assignments } => {
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 2);
             assert!(matches!(
                 assignments[0].target,
@@ -4893,8 +4905,8 @@ fn parse_assign_with_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assign { assignments } => {
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 1);
             assert!(matches!(assignments[0].value, Expression::Multiply(_, _)));
         }
@@ -4914,8 +4926,8 @@ END FUNCTION.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Function {
+    match stmt.kind {
+        StatementKind::Function {
             name,
             return_type,
             body,
@@ -4938,8 +4950,8 @@ END FUNCTION.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Function {
+    match stmt.kind {
+        StatementKind::Function {
             name,
             return_type,
             body,
@@ -4962,8 +4974,8 @@ END.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Function {
+    match stmt.kind {
+        StatementKind::Function {
             name, return_type, ..
         } => {
             assert_eq!(name.name, "get-value");
@@ -4985,8 +4997,8 @@ END FUNCTION.
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Function { body, .. } => {
+    match stmt.kind {
+        StatementKind::Function { body, .. } => {
             assert_eq!(body.len(), 3); // DEFINE, assignment, RETURN
         }
         _ => panic!("Expected Function statement"),
@@ -5005,8 +5017,8 @@ fn parse_var_keyword_as_variable_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
             assert_eq!(name.name, "var");
@@ -5022,8 +5034,8 @@ fn parse_function_keyword_as_variable_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
             assert_eq!(name.name, "function");
@@ -5039,8 +5051,8 @@ fn parse_catch_keyword_as_variable_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
             assert_eq!(name.name, "catch");
@@ -5056,8 +5068,8 @@ fn parse_data_type_keyword_as_variable_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
             assert_eq!(name.name, "integer");
@@ -5073,8 +5085,8 @@ fn parse_date_keyword_as_variable_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
             assert_eq!(name.name, "date");
@@ -5091,8 +5103,8 @@ fn parse_variable_keyword_assignment_disambiguation() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assignment { target, .. } => match target {
+    match stmt.kind {
+        StatementKind::Assignment { target, .. } => match target {
             Expression::Identifier(id) => assert_eq!(id.name, "variable"),
             _ => panic!("Expected identifier target"),
         },
@@ -5107,8 +5119,8 @@ fn parse_function_keyword_assignment_disambiguation() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assignment { target, .. } => match target {
+    match stmt.kind {
+        StatementKind::Assignment { target, .. } => match target {
             Expression::Identifier(id) => assert_eq!(id.name, "function"),
             _ => panic!("Expected identifier target"),
         },
@@ -5123,8 +5135,8 @@ fn parse_var_with_abbreviated_data_types() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration { type_source, .. } => {
+    match stmt.kind {
+        StatementKind::VariableDeclaration { type_source, .. } => {
             assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -5135,8 +5147,8 @@ fn parse_var_with_abbreviated_data_types() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration { type_source, .. } => {
+    match stmt.kind {
+        StatementKind::VariableDeclaration { type_source, .. } => {
             assert_eq!(type_source, TypeSource::Explicit(DataType::Decimal));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -5147,8 +5159,8 @@ fn parse_var_with_abbreviated_data_types() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration { type_source, .. } => {
+    match stmt.kind {
+        StatementKind::VariableDeclaration { type_source, .. } => {
             assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -5159,8 +5171,8 @@ fn parse_var_with_abbreviated_data_types() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration { type_source, .. } => {
+    match stmt.kind {
+        StatementKind::VariableDeclaration { type_source, .. } => {
             assert_eq!(type_source, TypeSource::Explicit(DataType::Logical));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -5195,8 +5207,8 @@ fn parse_var_with_all_data_types() {
         let stmt = parser
             .parse_statement()
             .unwrap_or_else(|e| panic!("Failed to parse '{}': {}", source, e.message));
-        match stmt {
-            Statement::VariableDeclaration { type_source, .. } => {
+        match stmt.kind {
+            StatementKind::VariableDeclaration { type_source, .. } => {
                 assert_eq!(
                     type_source,
                     TypeSource::Explicit(expected_type),
@@ -5217,8 +5229,8 @@ fn parse_simple_class() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Class {
+    match stmt.kind {
+        StatementKind::Class {
             name,
             inherits,
             implements,
@@ -5243,8 +5255,8 @@ fn parse_class_with_inherits() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Class { name, inherits, .. } => {
+    match stmt.kind {
+        StatementKind::Class { name, inherits, .. } => {
             assert_eq!(name.name, "MyApp.CustomerService");
             assert_eq!(inherits.unwrap().name, "BaseService");
         }
@@ -5258,8 +5270,8 @@ fn parse_class_with_implements() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Class { implements, .. } => {
+    match stmt.kind {
+        StatementKind::Class { implements, .. } => {
             assert_eq!(implements.len(), 1);
             assert_eq!(implements[0].name, "IService");
         }
@@ -5274,8 +5286,8 @@ fn parse_class_inherits_and_implements_multiple() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Class {
+    match stmt.kind {
+        StatementKind::Class {
             inherits,
             implements,
             ..
@@ -5295,8 +5307,8 @@ fn parse_abstract_class() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Class {
+    match stmt.kind {
+        StatementKind::Class {
             is_abstract,
             is_final,
             ..
@@ -5314,8 +5326,8 @@ fn parse_final_class() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Class { is_final, .. } => {
+    match stmt.kind {
+        StatementKind::Class { is_final, .. } => {
             assert!(is_final);
         }
         _ => panic!("Expected Class statement"),
@@ -5328,8 +5340,8 @@ fn parse_method_public_void_no_params() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method {
+    match stmt.kind {
+        StatementKind::Method {
             access,
             is_static,
             is_abstract,
@@ -5365,8 +5377,8 @@ fn parse_method_with_preproc_access_modifier() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method {
+    match stmt.kind {
+        StatementKind::Method {
             access,
             return_type,
             name,
@@ -5433,8 +5445,8 @@ fn parse_method_forward_declaration() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method {
+    match stmt.kind {
+        StatementKind::Method {
             access,
             return_type,
             name,
@@ -5460,8 +5472,8 @@ fn parse_method_forward_with_preproc_access() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method {
+    match stmt.kind {
+        StatementKind::Method {
             access, name, body, ..
         } => {
             assert_eq!(access, AccessModifier::Public);
@@ -5478,8 +5490,8 @@ fn parse_method_private_with_return_and_params() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method {
+    match stmt.kind {
+        StatementKind::Method {
             access,
             return_type,
             name,
@@ -5503,8 +5515,8 @@ fn parse_static_method() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method {
+    match stmt.kind {
+        StatementKind::Method {
             is_static, name, ..
         } => {
             assert!(is_static);
@@ -5520,8 +5532,8 @@ fn parse_abstract_method() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method {
+    match stmt.kind {
+        StatementKind::Method {
             is_abstract,
             body,
             name,
@@ -5541,8 +5553,8 @@ fn parse_override_method() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method { is_override, .. } => {
+    match stmt.kind {
+        StatementKind::Method { is_override, .. } => {
             assert!(is_override);
         }
         _ => panic!("Expected Method statement"),
@@ -5555,8 +5567,8 @@ fn parse_property_auto_get_set() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Property {
+    match stmt.kind {
+        StatementKind::Property {
             access,
             is_static,
             name,
@@ -5589,8 +5601,8 @@ fn parse_property_computed_get_set() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Property {
+    match stmt.kind {
+        StatementKind::Property {
             get_body, set_body, ..
         } => {
             let get = get_body.unwrap();
@@ -5608,8 +5620,8 @@ fn parse_property_read_only() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Property {
+    match stmt.kind {
+        StatementKind::Property {
             get_body, set_body, ..
         } => {
             assert_eq!(get_body, Some(Vec::new())); // has getter
@@ -5625,8 +5637,8 @@ fn parse_constructor_with_params() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Constructor {
+    match stmt.kind {
+        StatementKind::Constructor {
             access,
             parameters,
             body,
@@ -5645,8 +5657,8 @@ fn parse_destructor() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Destructor { body } => {
+    match stmt.kind {
+        StatementKind::Destructor { body } => {
             assert!(body.is_empty());
         }
         _ => panic!("Expected Destructor statement"),
@@ -5659,8 +5671,8 @@ fn parse_interface_with_method_signatures() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Interface {
+    match stmt.kind {
+        StatementKind::Interface {
             name,
             inherits,
             body,
@@ -5668,8 +5680,8 @@ fn parse_interface_with_method_signatures() {
             assert_eq!(name.name, "IService");
             assert!(inherits.is_empty());
             assert_eq!(body.len(), 1);
-            match &body[0] {
-                Statement::Method { is_abstract, .. } => assert!(is_abstract),
+            match &body[0].kind {
+                StatementKind::Method { is_abstract, .. } => assert!(is_abstract),
                 _ => panic!("Expected Method in interface body"),
             }
         }
@@ -5683,8 +5695,8 @@ fn parse_interface_with_inherits() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Interface { inherits, .. } => {
+    match stmt.kind {
+        StatementKind::Interface { inherits, .. } => {
             assert_eq!(inherits.len(), 1);
             assert_eq!(inherits[0].name, "IService");
         }
@@ -5698,8 +5710,8 @@ fn parse_using_qualified_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Using { type_name } => {
+    match stmt.kind {
+        StatementKind::Using { type_name } => {
             assert_eq!(type_name, "Progress.Lang.Object");
         }
         _ => panic!("Expected Using statement"),
@@ -5712,8 +5724,8 @@ fn parse_using_wildcard() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Using { type_name } => {
+    match stmt.kind {
+        StatementKind::Using { type_name } => {
             assert_eq!(type_name, "MyApp.Services.*");
         }
         _ => panic!("Expected Using statement"),
@@ -5739,15 +5751,15 @@ fn parse_full_class_with_mixed_members() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Class { name, body, .. } => {
+    match stmt.kind {
+        StatementKind::Class { name, body, .. } => {
             assert_eq!(name.name, "MyApp.CustomerService");
             // Property + Constructor + 2 Methods = 4 members
             assert_eq!(body.len(), 4);
-            assert!(matches!(body[0], Statement::Property { .. }));
-            assert!(matches!(body[1], Statement::Constructor { .. }));
-            assert!(matches!(body[2], Statement::Method { .. }));
-            assert!(matches!(body[3], Statement::Method { .. }));
+            assert!(matches!(body[0].kind, StatementKind::Property { .. }));
+            assert!(matches!(body[1].kind, StatementKind::Constructor { .. }));
+            assert!(matches!(body[2].kind, StatementKind::Method { .. }));
+            assert!(matches!(body[3].kind, StatementKind::Method { .. }));
         }
         _ => panic!("Expected Class statement"),
     }
@@ -5760,8 +5772,8 @@ fn parse_define_public_variable_in_class() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::VariableDeclaration { name, .. } => {
+    match stmt.kind {
+        StatementKind::VariableDeclaration { name, .. } => {
             assert_eq!(name.name, "x");
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -5774,8 +5786,8 @@ fn parse_method_with_class_return_type() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
-    match stmt {
-        Statement::Method { return_type, .. } => {
+    match stmt.kind {
+        StatementKind::Method { return_type, .. } => {
             assert_eq!(
                 return_type,
                 Some(DataType::Class("Progress.Lang.Object".to_string()))
@@ -5795,8 +5807,8 @@ fn parse_create_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target: CreateTarget::Name(name),
             no_error,
         } => {
@@ -5813,8 +5825,8 @@ fn parse_create_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target: CreateTarget::Name(name),
             no_error,
         } => {
@@ -5831,8 +5843,8 @@ fn parse_delete_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Delete { buffer, no_error } => {
+    match stmt.kind {
+        StatementKind::Delete { buffer, no_error } => {
             assert_eq!(buffer.name, "Customer");
             assert!(!no_error);
         }
@@ -5846,8 +5858,8 @@ fn parse_delete_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Delete { buffer, no_error } => {
+    match stmt.kind {
+        StatementKind::Delete { buffer, no_error } => {
             assert_eq!(buffer.name, "Customer");
             assert!(no_error);
         }
@@ -5861,8 +5873,8 @@ fn parse_release_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Release { buffer, no_error } => {
+    match stmt.kind {
+        StatementKind::Release { buffer, no_error } => {
             assert_eq!(buffer.name, "Customer");
             assert!(!no_error);
         }
@@ -5876,8 +5888,8 @@ fn parse_release_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Release { buffer, no_error } => {
+    match stmt.kind {
+        StatementKind::Release { buffer, no_error } => {
             assert_eq!(buffer.name, "Customer");
             assert!(no_error);
         }
@@ -5891,8 +5903,8 @@ fn parse_validate_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Validate { buffer, no_error } => {
+    match stmt.kind {
+        StatementKind::Validate { buffer, no_error } => {
             assert_eq!(buffer.name, "Customer");
             assert!(!no_error);
         }
@@ -5906,8 +5918,8 @@ fn parse_validate_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Validate { buffer, no_error } => {
+    match stmt.kind {
+        StatementKind::Validate { buffer, no_error } => {
             assert_eq!(buffer.name, "Customer");
             assert!(no_error);
         }
@@ -5921,8 +5933,8 @@ fn parse_buffer_copy_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCopy {
+    match stmt.kind {
+        StatementKind::BufferCopy {
             source,
             target,
             assignments,
@@ -5943,8 +5955,8 @@ fn parse_buffer_copy_with_assign() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCopy {
+    match stmt.kind {
+        StatementKind::BufferCopy {
             source,
             target,
             assignments,
@@ -5969,8 +5981,8 @@ fn parse_buffer_copy_with_multiple_assigns() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCopy {
+    match stmt.kind {
+        StatementKind::BufferCopy {
             assignments,
             no_error,
             ..
@@ -5996,8 +6008,8 @@ fn parse_buffer_copy_with_assign_and_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCopy {
+    match stmt.kind {
+        StatementKind::BufferCopy {
             assignments,
             no_error,
             ..
@@ -6015,8 +6027,8 @@ fn parse_buffer_copy_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCopy {
+    match stmt.kind {
+        StatementKind::BufferCopy {
             assignments,
             no_error,
             ..
@@ -6034,8 +6046,8 @@ fn parse_buffer_compare_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCompare {
+    match stmt.kind {
+        StatementKind::BufferCompare {
             source,
             target,
             result_var,
@@ -6056,8 +6068,8 @@ fn parse_buffer_compare_save_result_in() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCompare {
+    match stmt.kind {
+        StatementKind::BufferCompare {
             result_var,
             no_error,
             ..
@@ -6075,8 +6087,8 @@ fn parse_buffer_compare_save_result_in_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCompare {
+    match stmt.kind {
+        StatementKind::BufferCompare {
             result_var,
             no_error,
             ..
@@ -6094,8 +6106,8 @@ fn parse_buffer_compare_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::BufferCompare {
+    match stmt.kind {
+        StatementKind::BufferCompare {
             result_var,
             no_error,
             ..
@@ -6113,8 +6125,8 @@ fn parse_create_case_insensitive() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target: CreateTarget::Name(name),
             ..
         } => {
@@ -6135,10 +6147,22 @@ VALIDATE Customer NO-ERROR."#;
     let program = parser.parse_program();
     assert!(program.is_ok());
     assert_eq!(program.statements.len(), 4);
-    assert!(matches!(program.statements[0], Statement::Create { .. }));
-    assert!(matches!(program.statements[1], Statement::Delete { .. }));
-    assert!(matches!(program.statements[2], Statement::Release { .. }));
-    assert!(matches!(program.statements[3], Statement::Validate { .. }));
+    assert!(matches!(
+        program.statements[0].kind,
+        StatementKind::Create { .. }
+    ));
+    assert!(matches!(
+        program.statements[1].kind,
+        StatementKind::Delete { .. }
+    ));
+    assert!(matches!(
+        program.statements[2].kind,
+        StatementKind::Release { .. }
+    ));
+    assert!(matches!(
+        program.statements[3].kind,
+        StatementKind::Validate { .. }
+    ));
 }
 
 // ── Preprocessor statement tests ─────────────────────────────────
@@ -6149,8 +6173,8 @@ fn preproc_if_then_endif() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocIf(preproc) => {
+    match stmt.kind {
+        StatementKind::PreprocIf(preproc) => {
             assert!(matches!(preproc.condition, Expression::Literal(_)));
             assert_eq!(preproc.then_branch.len(), 1);
             assert!(preproc.elseif_branches.is_empty());
@@ -6166,8 +6190,8 @@ fn preproc_if_then_else_endif() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocIf(preproc) => {
+    match stmt.kind {
+        StatementKind::PreprocIf(preproc) => {
             assert_eq!(preproc.then_branch.len(), 1);
             assert!(preproc.else_branch.is_some());
             assert_eq!(preproc.else_branch.unwrap().len(), 1);
@@ -6182,8 +6206,8 @@ fn preproc_if_elseif_endif() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocIf(preproc) => {
+    match stmt.kind {
+        StatementKind::PreprocIf(preproc) => {
             assert_eq!(preproc.then_branch.len(), 1);
             assert_eq!(preproc.elseif_branches.len(), 1);
             assert!(preproc.else_branch.is_none());
@@ -6198,8 +6222,8 @@ fn preproc_if_elseif_else_endif() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocIf(preproc) => {
+    match stmt.kind {
+        StatementKind::PreprocIf(preproc) => {
             assert_eq!(preproc.then_branch.len(), 1);
             assert_eq!(preproc.elseif_branches.len(), 1);
             assert!(preproc.else_branch.is_some());
@@ -6215,10 +6239,13 @@ fn preproc_nested_if() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocIf(outer) => {
+    match stmt.kind {
+        StatementKind::PreprocIf(outer) => {
             assert_eq!(outer.then_branch.len(), 1);
-            assert!(matches!(outer.then_branch[0], Statement::PreprocIf(_)));
+            assert!(matches!(
+                outer.then_branch[0].kind,
+                StatementKind::PreprocIf(_)
+            ));
         }
         _ => panic!("Expected PreprocIf statement"),
     }
@@ -6232,8 +6259,8 @@ fn preproc_scoped_define_with_value() {
     let program = parser.parse_program();
     assert!(program.is_ok());
     assert_eq!(program.statements.len(), 2);
-    match &program.statements[0] {
-        Statement::PreprocDefine {
+    match &program.statements[0].kind {
+        StatementKind::PreprocDefine {
             name,
             value_span,
             is_global,
@@ -6256,8 +6283,8 @@ fn preproc_scoped_define_no_value() {
     let program = parser.parse_program();
     assert!(program.is_ok());
     assert_eq!(program.statements.len(), 2);
-    match &program.statements[0] {
-        Statement::PreprocDefine {
+    match &program.statements[0].kind {
+        StatementKind::PreprocDefine {
             name,
             value_span,
             is_global,
@@ -6277,8 +6304,8 @@ fn preproc_global_define() {
     let mut parser = Parser::new(&tokens, source);
     let program = parser.parse_program();
     assert!(program.is_ok());
-    match &program.statements[0] {
-        Statement::PreprocDefine {
+    match &program.statements[0].kind {
+        StatementKind::PreprocDefine {
             name,
             value_span,
             is_global,
@@ -6298,8 +6325,8 @@ fn preproc_define_complex_value() {
     let mut parser = Parser::new(&tokens, source);
     let program = parser.parse_program();
     assert!(program.is_ok());
-    match &program.statements[0] {
-        Statement::PreprocDefine {
+    match &program.statements[0].kind {
+        StatementKind::PreprocDefine {
             name, value_span, ..
         } => {
             assert_eq!(name.name, "EXPR");
@@ -6316,8 +6343,8 @@ fn preproc_undefine() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocUndefine { name } => {
+    match stmt.kind {
+        StatementKind::PreprocUndefine { name } => {
             assert_eq!(name.name, "FOO");
         }
         _ => panic!("Expected PreprocUndefine"),
@@ -6330,8 +6357,8 @@ fn preproc_message() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocMessage { expression } => {
+    match stmt.kind {
+        StatementKind::PreprocMessage { expression } => {
             assert!(matches!(
                 expression,
                 Expression::Literal(Literal::String(_))
@@ -6409,8 +6436,8 @@ fn preproc_if_data_type() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::VariableDeclaration {
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
             assert_eq!(name.name, "x");
@@ -6446,8 +6473,8 @@ fn preproc_if_statement_with_multiple_stmts_per_branch() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocIf(preproc) => {
+    match stmt.kind {
+        StatementKind::PreprocIf(preproc) => {
             assert_eq!(preproc.then_branch.len(), 2);
             assert_eq!(preproc.else_branch.unwrap().len(), 1);
         }
@@ -6461,8 +6488,8 @@ fn preproc_if_with_defined_condition() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::PreprocIf(preproc) => {
+    match stmt.kind {
+        StatementKind::PreprocIf(preproc) => {
             assert!(matches!(preproc.condition, Expression::FunctionCall { .. }));
         }
         _ => panic!("Expected PreprocIf statement"),
@@ -6476,8 +6503,8 @@ fn preproc_reference_in_assignment() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assignment { value, .. } => {
+    match stmt.kind {
+        StatementKind::Assignment { value, .. } => {
             assert!(matches!(value, Expression::PreprocReference(_)));
         }
         _ => panic!("Expected Assignment"),
@@ -6490,7 +6517,7 @@ fn preproc_case_insensitive() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert!(matches!(stmt, Statement::PreprocIf(_)));
+    assert!(matches!(stmt.kind, StatementKind::PreprocIf(_)));
 }
 
 #[test]
@@ -6503,11 +6530,17 @@ fn preproc_program_with_mixed_statements() {
     assert!(program.is_ok(), "Errors: {:?}", program.errors);
     assert_eq!(program.statements.len(), 3);
     assert!(matches!(
-        program.statements[0],
-        Statement::PreprocDefine { .. }
+        program.statements[0].kind,
+        StatementKind::PreprocDefine { .. }
     ));
-    assert!(matches!(program.statements[1], Statement::PreprocIf(_)));
-    assert!(matches!(program.statements[2], Statement::Display { .. }));
+    assert!(matches!(
+        program.statements[1].kind,
+        StatementKind::PreprocIf(_)
+    ));
+    assert!(matches!(
+        program.statements[2].kind,
+        StatementKind::Display { .. }
+    ));
 }
 
 #[test]
@@ -6534,8 +6567,8 @@ fn preproc_define_at_eof() {
     let program = parser.parse_program();
     assert!(program.is_ok(), "Errors: {:?}", program.errors);
     assert_eq!(program.statements.len(), 1);
-    match &program.statements[0] {
-        Statement::PreprocDefine {
+    match &program.statements[0].kind {
+        StatementKind::PreprocDefine {
             name, value_span, ..
         } => {
             assert_eq!(name.name, "NAME");
@@ -6554,8 +6587,8 @@ fn define_stream_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::DefineStream { name } => {
+    match stmt.kind {
+        StatementKind::DefineStream { name } => {
             assert_eq!(name.name, "s1");
         }
         _ => panic!("Expected DefineStream"),
@@ -6568,8 +6601,8 @@ fn define_stream_case_insensitive() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::DefineStream { name } => {
+    match stmt.kind {
+        StatementKind::DefineStream { name } => {
             assert_eq!(name.name, "MyStream");
         }
         _ => panic!("Expected DefineStream"),
@@ -6582,8 +6615,8 @@ fn define_frame_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::DefineFrame { name, .. } => {
+    match stmt.kind {
+        StatementKind::DefineFrame { name, .. } => {
             assert_eq!(name.name, "f1");
         }
         _ => panic!("Expected DefineFrame"),
@@ -6596,8 +6629,8 @@ fn define_frame_with_content() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::DefineFrame { name, raw_span } => {
+    match stmt.kind {
+        StatementKind::DefineFrame { name, raw_span } => {
             assert_eq!(name.name, "cust-frame");
             // raw_span should cover content between name and period
             let raw_text = &source[raw_span.start as usize..raw_span.end as usize];
@@ -6613,8 +6646,8 @@ fn input_from_string_literal() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             stream_name,
             operation,
@@ -6633,8 +6666,8 @@ fn input_from_identifier() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6652,8 +6685,8 @@ fn input_through() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6671,8 +6704,8 @@ fn input_thru_abbreviation() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6690,8 +6723,8 @@ fn input_close() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             stream_name,
             operation,
@@ -6710,8 +6743,8 @@ fn input_stream_named_from() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             stream_name,
             operation,
@@ -6730,8 +6763,8 @@ fn output_to_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6752,8 +6785,8 @@ fn output_to_with_append() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6774,8 +6807,8 @@ fn output_through() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6793,8 +6826,8 @@ fn output_close() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6812,8 +6845,8 @@ fn output_stream_named_to() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             stream_name,
             operation,
@@ -6835,8 +6868,8 @@ fn input_output_through() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6854,8 +6887,8 @@ fn input_output_close() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6873,8 +6906,8 @@ fn input_output_stream_named() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             stream_name,
             operation,
@@ -6893,8 +6926,8 @@ fn display_with_stream() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::Display {
+    match stmt.kind {
+        StatementKind::Display {
             stream_name, items, ..
         } => {
             assert_eq!(stream_name.unwrap().name, "s1");
@@ -6910,8 +6943,8 @@ fn display_without_stream() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::Display { stream_name, .. } => {
+    match stmt.kind {
+        StatementKind::Display { stream_name, .. } => {
             assert!(stream_name.is_none());
         }
         _ => panic!("Expected Display statement"),
@@ -6924,8 +6957,8 @@ fn stream_io_case_insensitive() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
-    match stmt {
-        Statement::StreamIo {
+    match stmt.kind {
+        StatementKind::StreamIo {
             direction,
             operation,
             ..
@@ -6944,7 +6977,7 @@ fn input_does_not_support_to() {
     let mut parser = Parser::new(&tokens, source);
     // INPUT TO should not be parsed as stream I/O (TO isn't in the lookahead)
     let result = parser.parse_statement();
-    if let Ok(Statement::StreamIo { .. }) = &result {
+    if matches!(&result, Ok(s) if matches!(s.kind, StatementKind::StreamIo { .. })) {
         panic!("INPUT should not support TO");
     }
 }
@@ -6956,7 +6989,7 @@ fn output_does_not_support_from() {
     let mut parser = Parser::new(&tokens, source);
     // OUTPUT FROM should not be parsed as stream I/O (FROM isn't in the lookahead)
     let result = parser.parse_statement();
-    if let Ok(Statement::StreamIo { .. }) = &result {
+    if matches!(&result, Ok(s) if matches!(s.kind, StatementKind::StreamIo { .. })) {
         panic!("OUTPUT should not support FROM");
     }
 }
@@ -6968,7 +7001,7 @@ fn input_output_does_not_support_from() {
     let mut parser = Parser::new(&tokens, source);
     // INPUT-OUTPUT FROM should not be parsed as stream I/O
     let result = parser.parse_statement();
-    if let Ok(Statement::StreamIo { .. }) = &result {
+    if matches!(&result, Ok(s) if matches!(s.kind, StatementKind::StreamIo { .. })) {
         panic!("INPUT-OUTPUT should not support FROM");
     }
 }
@@ -6980,7 +7013,7 @@ fn input_as_expression_not_stream() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_statement();
-    if let Ok(Statement::StreamIo { .. }) = &result {
+    if matches!(&result, Ok(s) if matches!(s.kind, StatementKind::StreamIo { .. })) {
         panic!("INPUT(identifier) should not be StreamIo");
     }
 }
@@ -6993,8 +7026,8 @@ fn parse_define_dataset_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset {
+    match stmt.kind {
+        StatementKind::DefineDataset {
             name,
             buffers,
             data_relations,
@@ -7017,8 +7050,8 @@ fn parse_define_dataset_multiple_buffers() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset { buffers, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataset { buffers, .. } => {
             assert_eq!(buffers.len(), 3);
             assert_eq!(buffers[0].name, "ttA");
             assert_eq!(buffers[1].name, "ttB");
@@ -7036,8 +7069,8 @@ fn parse_define_dataset_data_relation() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset { data_relations, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataset { data_relations, .. } => {
             assert_eq!(data_relations.len(), 1);
             let rel = &data_relations[0];
             assert_eq!(rel.name.as_ref().unwrap().name, "drPersonAddr");
@@ -7061,8 +7094,8 @@ fn parse_define_dataset_multiple_relations() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset { data_relations, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataset { data_relations, .. } => {
             assert_eq!(data_relations.len(), 2);
             assert_eq!(data_relations[0].name.as_ref().unwrap().name, "r1");
             assert_eq!(data_relations[1].name.as_ref().unwrap().name, "r2");
@@ -7080,8 +7113,8 @@ fn parse_define_dataset_relation_flags() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset { data_relations, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataset { data_relations, .. } => {
             let rel = &data_relations[0];
             assert!(rel.name.is_none()); // unnamed relation
             assert!(rel.reposition);
@@ -7104,8 +7137,8 @@ fn parse_define_dataset_parent_id_relation() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset {
+    match stmt.kind {
+        StatementKind::DefineDataset {
             parent_id_relations,
             ..
         } => {
@@ -7134,8 +7167,8 @@ fn parse_define_dataset_mixed_relations() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset {
+    match stmt.kind {
+        StatementKind::DefineDataset {
             data_relations,
             parent_id_relations,
             ..
@@ -7159,8 +7192,8 @@ fn parse_define_dataset_xml_serialize_options() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset { xml_options, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataset { xml_options, .. } => {
             assert_eq!(
                 xml_options.namespace_uri.as_ref().unwrap().name,
                 "urn:example"
@@ -7183,8 +7216,8 @@ fn parse_define_dataset_reference_only() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset { reference_only, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataset { reference_only, .. } => {
             assert!(reference_only);
         }
         _ => panic!("Expected DefineDataset"),
@@ -7198,8 +7231,8 @@ fn parse_define_dataset_modifiers() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset {
+    match stmt.kind {
+        StatementKind::DefineDataset {
             is_new_shared,
             is_shared,
             ..
@@ -7215,8 +7248,8 @@ fn parse_define_dataset_modifiers() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataset {
+    match stmt.kind {
+        StatementKind::DefineDataset {
             access,
             is_static,
             serializable,
@@ -7240,8 +7273,8 @@ fn parse_define_data_source_basic() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataSource {
+    match stmt.kind {
+        StatementKind::DefineDataSource {
             name,
             source_buffers,
             query,
@@ -7263,8 +7296,8 @@ fn parse_define_data_source_with_query() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataSource {
+    match stmt.kind {
+        StatementKind::DefineDataSource {
             query,
             source_buffers,
             ..
@@ -7283,8 +7316,8 @@ fn parse_define_data_source_multiple_buffers() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataSource { source_buffers, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataSource { source_buffers, .. } => {
             assert_eq!(source_buffers.len(), 2);
             assert_eq!(source_buffers[0].name.name, "Customer");
             assert_eq!(source_buffers[1].name.name, "Order");
@@ -7299,8 +7332,8 @@ fn parse_define_data_source_with_keys() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataSource { source_buffers, .. } => match &source_buffers[0].keys {
+    match stmt.kind {
+        StatementKind::DefineDataSource { source_buffers, .. } => match &source_buffers[0].keys {
             Some(DataSourceKeys::Fields(fields)) => {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].name, "CustNum");
@@ -7318,8 +7351,8 @@ fn parse_define_data_source_with_rowid_key() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataSource { source_buffers, .. } => {
+    match stmt.kind {
+        StatementKind::DefineDataSource { source_buffers, .. } => {
             assert!(matches!(
                 source_buffers[0].keys,
                 Some(DataSourceKeys::Rowid)
@@ -7335,8 +7368,8 @@ fn parse_define_data_source_access_static() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineDataSource {
+    match stmt.kind {
+        StatementKind::DefineDataSource {
             access, is_static, ..
         } => {
             assert_eq!(access, Some(AccessModifier::Private));
@@ -7354,8 +7387,8 @@ fn parse_create_dataset() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target:
                 CreateTarget::Handle {
                     kind,
@@ -7376,8 +7409,8 @@ fn parse_create_dataset() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target: CreateTarget::Handle {
                 kind, widget_pool, ..
             },
@@ -7396,8 +7429,8 @@ fn parse_create_data_source() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target: CreateTarget::Handle { kind, handle, .. },
             ..
         } => {
@@ -7414,8 +7447,8 @@ fn parse_create_temp_table() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target: CreateTarget::Handle { kind, handle, .. },
             ..
         } => {
@@ -7433,8 +7466,8 @@ fn parse_create_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Create {
+    match stmt.kind {
+        StatementKind::Create {
             target: CreateTarget::Name(name),
             no_error,
         } => {
@@ -7453,8 +7486,8 @@ fn parse_define_parameter_dataset() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type:
                 ParameterType::Handle {
@@ -7479,8 +7512,8 @@ fn parse_define_parameter_dataset_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             direction,
             param_type: ParameterType::Handle { kind, name, .. },
         } => {
@@ -7498,8 +7531,8 @@ fn parse_define_parameter_table_for() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             param_type: ParameterType::Handle { kind, name, .. },
             ..
         } => {
@@ -7516,8 +7549,8 @@ fn parse_define_parameter_table_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             param_type: ParameterType::Handle { kind, name, .. },
             ..
         } => {
@@ -7534,8 +7567,8 @@ fn parse_define_parameter_buffer() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             param_type: ParameterType::Buffer { name, target },
             ..
         } => {
@@ -7552,8 +7585,8 @@ fn parse_define_parameter_bind_append() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineParameter {
+    match stmt.kind {
+        StatementKind::DefineParameter {
             param_type: ParameterType::Handle { passing, .. },
             ..
         } => {
@@ -7576,8 +7609,8 @@ fn parse_define_temp_table_xml_options() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineTempTable {
+    match stmt.kind {
+        StatementKind::DefineTempTable {
             xml_options,
             fields,
             ..
@@ -7597,8 +7630,8 @@ fn parse_define_buffer_xml_options() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineBuffer { xml_options, .. } => {
+    match stmt.kind {
+        StatementKind::DefineBuffer { xml_options, .. } => {
             assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:foo");
             assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "cust");
         }
@@ -7614,8 +7647,8 @@ fn parse_publish_string_literal() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Publish {
+    match stmt.kind {
+        StatementKind::Publish {
             event_name,
             from_handle,
             arguments,
@@ -7637,8 +7670,8 @@ fn parse_publish_with_from() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Publish {
+    match stmt.kind {
+        StatementKind::Publish {
             from_handle,
             arguments,
             ..
@@ -7656,8 +7689,8 @@ fn parse_publish_with_params() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Publish {
+    match stmt.kind {
+        StatementKind::Publish {
             arguments,
             from_handle,
             ..
@@ -7676,8 +7709,8 @@ fn parse_publish_expression_event() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Publish {
+    match stmt.kind {
+        StatementKind::Publish {
             event_name,
             arguments,
             ..
@@ -7700,8 +7733,8 @@ fn parse_subscribe_anywhere() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Subscribe {
+    match stmt.kind {
+        StatementKind::Subscribe {
             subscriber,
             target,
             run_procedure,
@@ -7723,8 +7756,8 @@ fn parse_subscribe_in_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Subscribe { target, .. } => {
+    match stmt.kind {
+        StatementKind::Subscribe { target, .. } => {
             assert!(matches!(target, SubscribeTarget::InHandle(_)));
         }
         _ => panic!("Expected Subscribe statement"),
@@ -7737,8 +7770,8 @@ fn parse_subscribe_with_procedure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Subscribe {
+    match stmt.kind {
+        StatementKind::Subscribe {
             subscriber, target, ..
         } => {
             assert!(subscriber.is_some());
@@ -7754,8 +7787,8 @@ fn parse_subscribe_with_run_procedure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Subscribe { run_procedure, .. } => {
+    match stmt.kind {
+        StatementKind::Subscribe { run_procedure, .. } => {
             assert_eq!(run_procedure.as_ref().unwrap().name, "MyHandler");
         }
         _ => panic!("Expected Subscribe statement"),
@@ -7768,8 +7801,8 @@ fn parse_subscribe_no_to() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Subscribe { target, .. } => {
+    match stmt.kind {
+        StatementKind::Subscribe { target, .. } => {
             assert_eq!(target, SubscribeTarget::Anywhere);
         }
         _ => panic!("Expected Subscribe statement"),
@@ -7784,8 +7817,8 @@ fn parse_unsubscribe_event() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Unsubscribe {
+    match stmt.kind {
+        StatementKind::Unsubscribe {
             subscriber,
             event_name,
             in_handle,
@@ -7804,8 +7837,8 @@ fn parse_unsubscribe_all() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Unsubscribe {
+    match stmt.kind {
+        StatementKind::Unsubscribe {
             event_name,
             in_handle,
             ..
@@ -7823,8 +7856,8 @@ fn parse_unsubscribe_with_procedure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Unsubscribe { subscriber, .. } => {
+    match stmt.kind {
+        StatementKind::Unsubscribe { subscriber, .. } => {
             assert!(subscriber.is_some());
         }
         _ => panic!("Expected Unsubscribe statement"),
@@ -7837,8 +7870,8 @@ fn parse_unsubscribe_with_in_handle() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Unsubscribe { in_handle, .. } => {
+    match stmt.kind {
+        StatementKind::Unsubscribe { in_handle, .. } => {
             assert!(in_handle.is_some());
         }
         _ => panic!("Expected Unsubscribe statement"),
@@ -7853,8 +7886,8 @@ fn parse_define_event_minimal() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineEvent {
+    match stmt.kind {
+        StatementKind::DefineEvent {
             access,
             is_static,
             is_abstract,
@@ -7877,8 +7910,8 @@ fn parse_define_event_abstract() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineEvent {
+    match stmt.kind {
+        StatementKind::DefineEvent {
             access,
             is_abstract,
             name,
@@ -7898,15 +7931,15 @@ fn parse_define_event_multiple_params() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::DefineEvent {
+    match stmt.kind {
+        StatementKind::DefineEvent {
             parameters, name, ..
         } => {
             assert_eq!(name.name, "MyEvent");
             assert_eq!(parameters.len(), 3);
             // Verify first param
-            match &parameters[0] {
-                Statement::DefineParameter {
+            match &parameters[0].kind {
+                StatementKind::DefineParameter {
                     direction,
                     param_type,
                 } => {
@@ -7924,8 +7957,8 @@ fn parse_define_event_multiple_params() {
                 _ => panic!("Expected DefineParameter"),
             }
             // Verify third param is OUTPUT
-            match &parameters[2] {
-                Statement::DefineParameter { direction, .. } => {
+            match &parameters[2].kind {
+                StatementKind::DefineParameter { direction, .. } => {
                     assert_eq!(*direction, ParameterDirection::Output);
                 }
                 _ => panic!("Expected DefineParameter"),
@@ -7945,10 +7978,10 @@ END."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::Publish { .. }));
+            assert!(matches!(body[0].kind, StatementKind::Publish { .. }));
         }
         _ => panic!("Expected Do statement"),
     }
@@ -7962,11 +7995,11 @@ END INTERFACE.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Interface { body, name, .. } => {
+    match stmt.kind {
+        StatementKind::Interface { body, name, .. } => {
             assert_eq!(name.name, "IObservable");
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::DefineEvent { .. }));
+            assert!(matches!(body[0].kind, StatementKind::DefineEvent { .. }));
         }
         _ => panic!("Expected Interface statement"),
     }
@@ -7982,8 +8015,8 @@ fn parse_publish_event_name_not_function_call() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Publish {
+    match stmt.kind {
+        StatementKind::Publish {
             event_name,
             arguments,
             ..
@@ -8009,8 +8042,8 @@ fn parse_on_choose_of_button() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind:
                 OnKind::UiEvent {
                     clauses,
@@ -8037,8 +8070,8 @@ fn parse_on_multiple_events() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses[0].events.len(), 2);
@@ -8055,8 +8088,8 @@ fn parse_on_multiple_widgets() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses[0].widgets.len(), 2);
@@ -8073,8 +8106,8 @@ fn parse_on_widget_in_frame() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses[0].widgets.len(), 1);
@@ -8094,8 +8127,8 @@ fn parse_on_or_clause() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses.len(), 2);
@@ -8114,8 +8147,8 @@ fn parse_on_anywhere() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent {
                 clauses, anywhere, ..
             },
@@ -8133,8 +8166,8 @@ fn parse_on_anywhere_with_widgets() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent {
                 clauses, anywhere, ..
             },
@@ -8153,8 +8186,8 @@ fn parse_on_single_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { action, .. },
         } => {
             assert!(matches!(action, OnAction::Block(_)));
@@ -8169,8 +8202,8 @@ fn parse_on_revert() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { action, .. },
         } => {
             assert!(matches!(action, OnAction::Revert));
@@ -8185,8 +8218,8 @@ fn parse_on_persistent_run() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { action, .. },
         } => match action {
             OnAction::PersistentRun {
@@ -8208,8 +8241,8 @@ fn parse_on_persistent_run_with_args() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { action, .. },
         } => match action {
             OnAction::PersistentRun { arguments, .. } => {
@@ -8227,8 +8260,8 @@ fn parse_on_leave_event_name() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses[0].events[0].name, "LEAVE");
@@ -8243,8 +8276,8 @@ fn parse_on_web_notify() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::UiEvent { anywhere, .. },
         } => {
             assert!(anywhere);
@@ -8261,8 +8294,8 @@ fn parse_on_create_of_table() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind:
                 OnKind::DbEvent {
                     event,
@@ -8286,8 +8319,8 @@ fn parse_on_write_with_buffers() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::DbEvent {
                 event, referencing, ..
             },
@@ -8306,8 +8339,8 @@ fn parse_on_assign_of_field() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::DbEvent { event, target, .. },
         } => {
             assert_eq!(event, DbTriggerEvent::Assign);
@@ -8323,8 +8356,8 @@ fn parse_on_assign_old_value() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::DbEvent { referencing, .. },
         } => {
             assert_eq!(referencing.old_value.as_ref().unwrap().name, "oldName");
@@ -8339,8 +8372,8 @@ fn parse_on_write_override() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::DbEvent { is_override, .. },
         } => {
             assert!(is_override);
@@ -8355,8 +8388,8 @@ fn parse_on_db_revert() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind: OnKind::DbEvent { action, .. },
         } => {
             assert!(matches!(action, OnAction::Revert));
@@ -8373,8 +8406,8 @@ fn parse_on_key_remap() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::On {
+    match stmt.kind {
+        StatementKind::On {
             kind:
                 OnKind::KeyRemap {
                     key_label,
@@ -8396,8 +8429,8 @@ fn parse_trigger_procedure_create() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::TriggerProcedure { event, target, .. } => {
+    match stmt.kind {
+        StatementKind::TriggerProcedure { event, target, .. } => {
             assert_eq!(event, DbTriggerEvent::Create);
             assert_eq!(target.name, "Customer");
         }
@@ -8411,8 +8444,8 @@ fn parse_trigger_procedure_write() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::TriggerProcedure {
+    match stmt.kind {
+        StatementKind::TriggerProcedure {
             event, referencing, ..
         } => {
             assert_eq!(event, DbTriggerEvent::Write);
@@ -8429,8 +8462,8 @@ fn parse_trigger_procedure_write_no_buffer_keyword() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::TriggerProcedure { referencing, .. } => {
+    match stmt.kind {
+        StatementKind::TriggerProcedure { referencing, .. } => {
             assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
             assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
         }
@@ -8444,8 +8477,8 @@ fn parse_trigger_procedure_assign_of() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::TriggerProcedure {
+    match stmt.kind {
+        StatementKind::TriggerProcedure {
             event,
             target,
             new_value,
@@ -8465,8 +8498,8 @@ fn parse_trigger_procedure_assign_new_value() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::TriggerProcedure {
+    match stmt.kind {
+        StatementKind::TriggerProcedure {
             event,
             new_value,
             old_value_param,
@@ -8489,8 +8522,8 @@ fn parse_trigger_procedure_assign_new_old_value() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::TriggerProcedure {
+    match stmt.kind {
+        StatementKind::TriggerProcedure {
             new_value,
             old_value_param,
             ..
@@ -8518,11 +8551,11 @@ END PROCEDURE."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Procedure { name, body } => {
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
             assert_eq!(name.name, "myProc");
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::On { .. }));
+            assert!(matches!(body[0].kind, StatementKind::On { .. }));
         }
         _ => panic!("Expected Procedure statement"),
     }
@@ -8538,10 +8571,10 @@ END."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::On { .. }));
+            assert!(matches!(body[0].kind, StatementKind::On { .. }));
         }
         _ => panic!("Expected Do statement"),
     }
@@ -8557,10 +8590,10 @@ END CLASS."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Class { body, .. } => {
+    match stmt.kind {
+        StatementKind::Class { body, .. } => {
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::On { .. }));
+            assert!(matches!(body[0].kind, StatementKind::On { .. }));
         }
         _ => panic!("Expected Class statement"),
     }
@@ -8574,8 +8607,8 @@ fn parse_include_reference_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::IncludeReference {
+    match stmt.kind {
+        StatementKind::IncludeReference {
             path_and_args,
             span,
         } => {
@@ -8593,8 +8626,8 @@ fn parse_include_reference_with_path() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::IncludeReference { path_and_args, .. } => {
+    match stmt.kind {
+        StatementKind::IncludeReference { path_and_args, .. } => {
             assert_eq!(path_and_args, "globals/globals.i");
         }
         _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
@@ -8607,8 +8640,8 @@ fn parse_include_reference_with_args() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::IncludeReference { path_and_args, .. } => {
+    match stmt.kind {
+        StatementKind::IncludeReference { path_and_args, .. } => {
             assert_eq!(path_and_args, "file.i NEW shared");
         }
         _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
@@ -8623,7 +8656,7 @@ fn parse_include_reference_no_period() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert!(matches!(stmt, Statement::IncludeReference { .. }));
+    assert!(matches!(stmt.kind, StatementKind::IncludeReference { .. }));
 }
 
 #[test]
@@ -8632,8 +8665,8 @@ fn parse_include_arg_reference_statement() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::IncludeArgReference { index, span } => {
+    match stmt.kind {
+        StatementKind::IncludeArgReference { index, span } => {
             assert_eq!(index, 1);
             assert_eq!(span.start, 0);
             assert_eq!(span.end, 3);
@@ -8649,8 +8682,8 @@ fn parse_include_reference_as_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assignment { target, value } => {
+    match stmt.kind {
+        StatementKind::Assignment { target, value } => {
             assert!(matches!(target, Expression::Identifier(_)));
             match value {
                 Expression::IncludeReference { path_and_args, .. } => {
@@ -8670,8 +8703,8 @@ fn parse_include_arg_reference_as_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Assignment { target, value } => {
+    match stmt.kind {
+        StatementKind::Assignment { target, value } => {
             assert!(matches!(target, Expression::Identifier(_)));
             match value {
                 Expression::IncludeArgReference { index, .. } => {
@@ -8690,10 +8723,13 @@ fn parse_include_inside_do_block() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Do { body, .. } => {
+    match stmt.kind {
+        StatementKind::Do { body, .. } => {
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::IncludeReference { .. }));
+            assert!(matches!(
+                body[0].kind,
+                StatementKind::IncludeReference { .. }
+            ));
         }
         _ => panic!("Expected Do statement, got {:?}", stmt),
     }
@@ -8705,11 +8741,14 @@ fn parse_include_inside_procedure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::Procedure { name, body } => {
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
             assert_eq!(name.name, "my-proc");
             assert_eq!(body.len(), 1);
-            assert!(matches!(body[0], Statement::IncludeReference { .. }));
+            assert!(matches!(
+                body[0].kind,
+                StatementKind::IncludeReference { .. }
+            ));
         }
         _ => panic!("Expected Procedure statement, got {:?}", stmt),
     }
@@ -8722,13 +8761,13 @@ fn parse_multiple_includes() {
     let mut parser = Parser::new(&tokens, source);
 
     let stmt1 = parser.parse_statement().expect("Expected first statement");
-    assert!(matches!(stmt1, Statement::IncludeReference { .. }));
+    assert!(matches!(stmt1.kind, StatementKind::IncludeReference { .. }));
 
     let stmt2 = parser.parse_statement().expect("Expected second statement");
-    assert!(matches!(stmt2, Statement::IncludeReference { .. }));
+    assert!(matches!(stmt2.kind, StatementKind::IncludeReference { .. }));
 
     let stmt3 = parser.parse_statement().expect("Expected third statement");
-    assert!(matches!(stmt3, Statement::IncludeReference { .. }));
+    assert!(matches!(stmt3.kind, StatementKind::IncludeReference { .. }));
 }
 
 #[test]
@@ -8737,8 +8776,8 @@ fn parse_include_with_named_args() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt {
-        Statement::IncludeReference { path_and_args, .. } => {
+    match stmt.kind {
+        StatementKind::IncludeReference { path_and_args, .. } => {
             assert_eq!(
                 path_and_args,
                 r#"ms/report.i &event="start" &stream-name="s-printer""#

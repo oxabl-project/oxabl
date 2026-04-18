@@ -5,9 +5,11 @@
 //! variants, [`Literal`] types, and source location tracking via [`Span`].
 mod expression;
 mod literal;
+mod node_id;
 mod span;
 mod statement;
 pub use expression::*;
 pub use literal::*;
+pub use node_id::*;
 pub use span::*;
 pub use statement::*;

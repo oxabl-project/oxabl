@@ -13,8 +13,8 @@ pub mod statements;
 mod tests;
 
 use oxabl_ast::{
-    AccessModifier, DataType, HandleParamKind, HandlePassingOptions, Identifier,
-    ParameterDirection, ParameterType, Span, Statement, TypeSource,
+    AccessModifier, DataType, HandleParamKind, HandlePassingOptions, Identifier, NodeIdAllocator,
+    ParameterDirection, ParameterType, Span, Statement, StatementKind, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -76,7 +76,7 @@ impl Program {
 ///
 /// Holds a borrowed token slice and the original source string, advancing a
 /// cursor as it recognizes language constructs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct Parser<'a> {
     tokens: &'a [Token],
     source: &'a str,
@@ -86,6 +86,9 @@ pub struct Parser<'a> {
     /// `skip_comments()` call entirely, eliminating the per-advance overhead in
     /// files that only have leading comments (e.g. the expression benchmark).
     has_comments: bool,
+    /// Monotonic allocator for node ids assigned to parser-produced
+    /// [`Statement`]s. See `docs/design/ast-invariants.md` §NodeId invariants.
+    node_ids: NodeIdAllocator,
 }
 
 impl<'a> Parser<'a> {
@@ -104,7 +107,16 @@ impl<'a> Parser<'a> {
             source,
             current,
             has_comments,
+            node_ids: NodeIdAllocator::new(),
         }
+    }
+
+    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap a
+    /// [`StatementKind`] in a [`Statement`]. Every parser-produced statement
+    /// goes through this helper.
+    #[inline]
+    pub(crate) fn stmt(&mut self, kind: StatementKind) -> Statement {
+        Statement::with_id(self.node_ids.alloc(), kind)
     }
 
     /// Parse the entire token stream into a [`Program`] with error recovery.
@@ -975,7 +987,7 @@ impl<'a> Parser<'a> {
     ///
     /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
     ///
-    /// Each parameter becomes a `Statement::DefineParameter`.
+    /// Each parameter becomes a `self.stmt(StatementKind::DefineParameter)`.
     fn parse_parenthesized_params(&mut self) -> ParseResult<Vec<Statement>> {
         self.expect_kind(Kind::LeftParen, "Expected '(' for parameter list")?;
         let mut params = Vec::new();
@@ -1035,14 +1047,14 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(Statement::DefineParameter {
+                    params.push(self.stmt(StatementKind::DefineParameter {
                         direction,
                         param_type: ParameterType::Handle {
                             kind: HandleParamKind::Table,
                             name,
                             passing: HandlePassingOptions::default(),
                         },
-                    });
+                    }));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1058,13 +1070,13 @@ impl<'a> Parser<'a> {
                         self.advance(); // consume FOR
                         self.parse_identifier().ok(); // table name
                     }
-                    params.push(Statement::DefineParameter {
+                    params.push(self.stmt(StatementKind::DefineParameter {
                         direction,
                         param_type: ParameterType::Buffer {
                             name: name.clone(),
                             target: name,
                         },
-                    });
+                    }));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1082,14 +1094,14 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(Statement::DefineParameter {
+                    params.push(self.stmt(StatementKind::DefineParameter {
                         direction,
                         param_type: ParameterType::Handle {
                             kind: HandleParamKind::Dataset,
                             name,
                             passing: HandlePassingOptions::default(),
                         },
-                    });
+                    }));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1107,14 +1119,14 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(Statement::DefineParameter {
+                    params.push(self.stmt(StatementKind::DefineParameter {
                         direction,
                         param_type: ParameterType::Handle {
                             kind: HandleParamKind::DatasetHandle,
                             name,
                             passing: HandlePassingOptions::default(),
                         },
-                    });
+                    }));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1131,14 +1143,14 @@ impl<'a> Parser<'a> {
                     false
                 };
 
-                params.push(Statement::DefineParameter {
+                params.push(self.stmt(StatementKind::DefineParameter {
                     direction,
                     param_type: ParameterType::Variable {
                         name,
                         type_source,
                         no_undo,
                     },
-                });
+                }));
 
                 if !self.check(Kind::Comma) {
                     break;
