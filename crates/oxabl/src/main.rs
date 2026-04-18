@@ -5,10 +5,13 @@ use std::time::Instant;
 
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
+use oxabl_analyze::{dump_json, dump_text};
 use oxabl_common::{FileId, SourceMap};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
+use oxabl_schema::Schema;
+use oxabl_semantic::{AnalysisContext, analyze_file};
 use oxabl_workspace::RealFileSystem;
 use serde::Serialize;
 use walkdir::WalkDir;
@@ -39,6 +42,27 @@ enum Cli {
         /// Show AST context on parse failure (single-file mode only)
         #[arg(long)]
         debug: bool,
+    },
+    /// Parse + semantic-analyze a single ABL file and dump the resolved model.
+    Analyze {
+        /// Path to the ABL source file to analyze.
+        path: PathBuf,
+
+        /// Output format: `json` (stable, versioned) or `text` (human-oriented).
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        /// Skip the lint pass (semantic-layer diagnostics only).
+        #[arg(long)]
+        no_lint: bool,
+
+        /// Enable preprocessing (include expansion, &IF evaluation).
+        #[arg(long)]
+        preprocess: bool,
+
+        /// Include search paths (can be specified multiple times).
+        #[arg(long = "include-path", short = 'I')]
+        include_paths: Vec<PathBuf>,
     },
 }
 
@@ -98,7 +122,98 @@ fn main() -> ExitCode {
             include_paths,
             debug,
         } => run_check(&path, json, preprocess, &include_paths, debug),
+        Cli::Analyze {
+            path,
+            format,
+            no_lint,
+            preprocess,
+            include_paths,
+        } => run_analyze(&path, &format, no_lint, preprocess, &include_paths),
     }
+}
+
+fn run_analyze(
+    path: &Path,
+    format: &str,
+    no_lint: bool,
+    preprocess: bool,
+    include_paths: &[PathBuf],
+) -> ExitCode {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", path.display());
+            return ExitCode::from(2);
+        }
+    };
+
+    // Run preprocess or take raw source as expanded source.
+    let expanded = if preprocess {
+        let fs = RealFileSystem;
+        let preprocessor = Preprocessor::new(&fs, include_paths);
+        let file_id = FileId::new(1);
+        match preprocessor.process(file_id, &source) {
+            Ok(pf) => pf.to_text().to_string(),
+            Err(diags) => {
+                eprintln!(
+                    "error: preprocessing failed: {}",
+                    diags
+                        .first()
+                        .map(|d| d.message.as_str())
+                        .unwrap_or("unknown")
+                );
+                return ExitCode::from(3);
+            }
+        }
+    } else {
+        source
+    };
+
+    let tokens =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&expanded))) {
+            Ok(t) => t,
+            Err(_) => {
+                eprintln!("error: lexer panicked");
+                return ExitCode::from(4);
+            }
+        };
+
+    let mut parser = Parser::new(&tokens, &expanded);
+    let program = match parser.parse_statements() {
+        Ok(p) => p,
+        Err(e) => {
+            let sm = SourceMap::new(&expanded);
+            let (line, col) = sm.lookup(e.span.start as usize);
+            eprintln!("parse error at {line}:{col}: {}", e.message);
+            return ExitCode::from(5);
+        }
+    };
+
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(FileId::new(1), &expanded, &schema);
+    let sem = analyze_file(&program, &ctx);
+
+    match format {
+        "json" => {
+            let v = dump_json(&program, &sem, &ctx, !no_lint);
+            match serde_json::to_string_pretty(&v) {
+                Ok(s) => println!("{s}"),
+                Err(e) => {
+                    eprintln!("error: json serialize: {e}");
+                    return ExitCode::from(6);
+                }
+            }
+        }
+        "text" => {
+            print!("{}", dump_text(&program, &sem, &ctx));
+        }
+        other => {
+            eprintln!("error: unsupported format `{other}` (use `json` or `text`)");
+            return ExitCode::from(7);
+        }
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn run_check(

@@ -1,0 +1,20 @@
+[package]
+name = "oxabl_analyze"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "JSON dump + analyze CLI wiring for the oxabl semantic model"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_analyze"
+
+[dependencies]
+oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_lint = { path = "../oxabl_lint", version = "0.1.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
