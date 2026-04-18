@@ -13,8 +13,9 @@ pub mod statements;
 mod tests;
 
 use oxabl_ast::{
-    AccessModifier, DataType, HandleParamKind, HandlePassingOptions, Identifier, NodeIdAllocator,
-    ParameterDirection, ParameterType, Span, Statement, StatementKind, TypeSource,
+    AccessModifier, DataType, Expression, ExpressionKind, HandleParamKind, HandlePassingOptions,
+    Identifier, NodeIdAllocator, ParameterDirection, ParameterType, Span, Statement, StatementKind,
+    TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -117,6 +118,14 @@ impl<'a> Parser<'a> {
     #[inline]
     pub(crate) fn stmt(&mut self, kind: StatementKind) -> Statement {
         Statement::with_id(self.node_ids.alloc(), kind)
+    }
+
+    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap an
+    /// [`ExpressionKind`] in an [`Expression`]. Every parser-produced expression
+    /// goes through this helper.
+    #[inline]
+    pub(crate) fn expr(&mut self, kind: ExpressionKind) -> Expression {
+        Expression::with_id(self.node_ids.alloc(), kind)
     }
 
     /// Parse the entire token stream into a [`Program`] with error recovery.

@@ -1,10 +1,10 @@
 use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
-    DataType, DbTriggerEvent, DecimalLiteral, Expression, FindType, HandleParamKind, Identifier,
-    IntegerLiteral, Literal, LockType, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, SortDirection, Span, StatementKind, StreamDirection, StreamOperation, StringLiteral,
-    SubscribeTarget, TypeSource, UnknownLiteral, WhenBranch, WidgetQualifier,
+    DataType, DbTriggerEvent, DecimalLiteral, ExpressionKind, FindType, HandleParamKind,
+    Identifier, IntegerLiteral, Literal, LockType, OnAction, OnKind, ParameterDirection,
+    ParameterType, RunTarget, SortDirection, Span, StatementKind, StreamDirection, StreamOperation,
+    StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -19,15 +19,21 @@ fn parse_simple_add_expression() {
     println!("{:?}", expression);
     assert_eq!(
         expression,
-        Expression::Add(
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 0, end: 1 },
-                value: 1
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 4, end: 5 },
-                value: 2
-            })))
+        ExpressionKind::Add(
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 2
+                }))
+                .into()
+            )
         )
     );
 }
@@ -41,21 +47,33 @@ fn parse_double_add_expression() {
     println!("{:?}", expression);
     assert_eq!(
         expression,
-        Expression::Add(
-            Box::new(Expression::Add(
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1
-                }))),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                })))
-            )),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 8, end: 9 },
-                value: 3
-            })))
+        ExpressionKind::Add(
+            Box::new(
+                ExpressionKind::Add(
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 0, end: 1 },
+                            value: 1
+                        }))
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 4, end: 5 },
+                            value: 2
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 8, end: 9 },
+                    value: 3
+                }))
+                .into()
+            )
         )
     );
 }
@@ -69,15 +87,21 @@ fn parse_simple_minus_expression() {
     println!("{:?}", expression);
     assert_eq!(
         expression,
-        Expression::Minus(
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 0, end: 1 },
-                value: 1
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 4, end: 5 },
-                value: 2
-            })))
+        ExpressionKind::Minus(
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 2
+                }))
+                .into()
+            )
         )
     );
 }
@@ -91,21 +115,33 @@ fn parse_double_minus_expression() {
     println!("{:?}", expression);
     assert_eq!(
         expression,
-        Expression::Minus(
-            Box::new(Expression::Minus(
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1
-                }))),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                })))
-            )),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 8, end: 9 },
-                value: 3
-            })))
+        ExpressionKind::Minus(
+            Box::new(
+                ExpressionKind::Minus(
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 0, end: 1 },
+                            value: 1
+                        }))
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 4, end: 5 },
+                            value: 2
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 8, end: 9 },
+                    value: 3
+                }))
+                .into()
+            )
         )
     );
 }
@@ -119,21 +155,33 @@ fn parse_add_minus_expression() {
     println!("{:?}", expression);
     assert_eq!(
         expression,
-        Expression::Minus(
-            Box::new(Expression::Add(
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1
-                }))),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                })))
-            )),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 8, end: 9 },
-                value: 3
-            })))
+        ExpressionKind::Minus(
+            Box::new(
+                ExpressionKind::Add(
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 0, end: 1 },
+                            value: 1
+                        }))
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 4, end: 5 },
+                            value: 2
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 8, end: 9 },
+                    value: 3
+                }))
+                .into()
+            )
         )
     );
 }
@@ -147,15 +195,21 @@ fn parse_simple_multiplication_expression() {
     println!("{:?}", expression);
     assert_eq!(
         expression,
-        Expression::Multiply(
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 0, end: 1 },
-                value: 1
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 4, end: 5 },
-                value: 2
-            })))
+        ExpressionKind::Multiply(
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 2
+                }))
+                .into()
+            )
         )
     );
 }
@@ -169,21 +223,33 @@ fn parse_add_multiplication_expression() {
     println!("{:?}", expression);
     assert_eq!(
         expression,
-        Expression::Add(
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 0, end: 1 },
-                value: 1
-            }))),
-            Box::new(Expression::Multiply(
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                }))),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 9 },
-                    value: 3
-                })))
-            )),
+        ExpressionKind::Add(
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Multiply(
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 4, end: 5 },
+                            value: 2
+                        }))
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 8, end: 9 },
+                            value: 3
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
         )
     );
 }
@@ -196,15 +262,21 @@ fn parse_simple_division_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Divide(
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 0, end: 1 },
-                value: 6
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 4, end: 5 },
-                value: 2
-            })))
+        ExpressionKind::Divide(
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 6
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 2
+                }))
+                .into()
+            )
         )
     );
 }
@@ -217,15 +289,21 @@ fn parse_parenthesized_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Add(
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 1, end: 2 },
-                value: 1
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 5, end: 6 },
-                value: 2
-            })))
+        ExpressionKind::Add(
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 1, end: 2 },
+                    value: 1
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 5, end: 6 },
+                    value: 2
+                }))
+                .into()
+            )
         )
     );
 }
@@ -238,21 +316,33 @@ fn parse_parentheses_override_precedence() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Multiply(
-            Box::new(Expression::Add(
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 1, end: 2 },
-                    value: 1
-                }))),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 5, end: 6 },
-                    value: 2
-                })))
-            )),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 10, end: 11 },
-                value: 3
-            })))
+        ExpressionKind::Multiply(
+            Box::new(
+                ExpressionKind::Add(
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 1, end: 2 },
+                            value: 1
+                        }))
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 5, end: 6 },
+                            value: 2
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 10, end: 11 },
+                    value: 3
+                }))
+                .into()
+            )
         )
     );
 }
@@ -265,12 +355,13 @@ fn parse_unary_negate() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Negate(Box::new(Expression::Literal(Literal::Integer(
-            IntegerLiteral {
+        ExpressionKind::Negate(Box::new(
+            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                 span: Span { start: 1, end: 2 },
                 value: 5
-            }
-        ))))
+            }))
+            .into()
+        ))
     );
 }
 
@@ -282,12 +373,16 @@ fn parse_double_negate() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Negate(Box::new(Expression::Negate(Box::new(Expression::Literal(
-            Literal::Integer(IntegerLiteral {
-                span: Span { start: 2, end: 3 },
-                value: 5
-            })
-        )))))
+        ExpressionKind::Negate(Box::new(
+            ExpressionKind::Negate(Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 2, end: 3 },
+                    value: 5
+                }))
+                .into()
+            ))
+            .into()
+        ))
     );
 }
 
@@ -299,12 +394,13 @@ fn parse_unary_not() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Not(Box::new(Expression::Literal(Literal::Boolean(
-            BooleanLiteral {
+        ExpressionKind::Not(Box::new(
+            ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
                 span: Span { start: 4, end: 8 },
                 value: true
-            }
-        ))))
+            }))
+            .into()
+        ))
     );
 }
 
@@ -316,7 +412,7 @@ fn parse_decimal_literal() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Literal(Literal::Decimal(DecimalLiteral {
+        ExpressionKind::Literal(Literal::Decimal(DecimalLiteral {
             span: Span { start: 0, end: 4 },
             value: Decimal::from_str("3.14").unwrap()
         }))
@@ -331,7 +427,7 @@ fn parse_string_literal() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Literal(Literal::String(StringLiteral {
+        ExpressionKind::Literal(Literal::String(StringLiteral {
             span: Span { start: 0, end: 7 },
             value: "hello".to_string()
         }))
@@ -346,7 +442,7 @@ fn parse_boolean_literals() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Literal(Literal::Boolean(BooleanLiteral {
+        ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
             span: Span { start: 0, end: 4 },
             value: true
         }))
@@ -361,7 +457,7 @@ fn parse_unknown_literal() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Literal(Literal::Unknown(UnknownLiteral {
+        ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
             span: Span { start: 0, end: 1 }
         }))
     );
@@ -376,15 +472,21 @@ fn parse_modulo_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Modulo(
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 0, end: 2 },
-                value: 10
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 7, end: 8 },
-                value: 3
-            })))
+        ExpressionKind::Modulo(
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 0, end: 2 },
+                    value: 10
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 7, end: 8 },
+                    value: 3
+                }))
+                .into()
+            )
         )
     );
 }
@@ -397,7 +499,7 @@ fn parse_identifier() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Identifier(Identifier {
+        ExpressionKind::Identifier(Identifier {
             span: Span { start: 0, end: 5 },
             name: "myVar".to_string()
         })
@@ -412,7 +514,7 @@ fn parse_hyphenated_identifier() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Identifier(Identifier {
+        ExpressionKind::Identifier(Identifier {
             span: Span { start: 0, end: 17 },
             name: "my-hyphenated-var".to_string()
         })
@@ -427,15 +529,21 @@ fn parse_equal_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Equal(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 4, end: 5 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::Equal(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -448,15 +556,21 @@ fn parse_not_equal_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::NotEqual(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::NotEqual(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -469,15 +583,21 @@ fn parse_less_than_keyword() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::LessThan(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::LessThan(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -490,15 +610,21 @@ fn parse_begins_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Begins(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 8 },
-                name: "userName".to_string()
-            })),
-            Box::new(Expression::Literal(Literal::String(StringLiteral {
-                span: Span { start: 16, end: 20 },
-                value: "Jo".to_string()
-            })))
+        ExpressionKind::Begins(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 8 },
+                    name: "userName".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 16, end: 20 },
+                    value: "Jo".to_string()
+                }))
+                .into()
+            )
         )
     );
 }
@@ -511,15 +637,21 @@ fn parse_contains_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Contains(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 7 },
-                name: "content".to_string()
-            })),
-            Box::new(Expression::Literal(Literal::String(StringLiteral {
-                span: Span { start: 17, end: 22 },
-                value: "abc".to_string()
-            })))
+        ExpressionKind::Contains(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 7 },
+                    name: "content".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 17, end: 22 },
+                    value: "abc".to_string()
+                }))
+                .into()
+            )
         )
     );
 }
@@ -532,15 +664,21 @@ fn parse_and_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::And(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 6, end: 7 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::And(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 6, end: 7 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -553,15 +691,21 @@ fn parse_or_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Or(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::Or(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -575,21 +719,33 @@ fn parse_or_and_precedence() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Or(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::And(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })),
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 11, end: 12 },
-                    name: "c".to_string()
-                }))
-            ))
+        ExpressionKind::Or(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::And(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 5, end: 6 },
+                            name: "b".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 11, end: 12 },
+                            name: "c".to_string()
+                        })
+                        .into()
+                    )
+                )
+                .into()
+            )
         )
     );
 }
@@ -602,15 +758,21 @@ fn parse_less_than_symbol() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::LessThan(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 4, end: 5 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::LessThan(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -623,15 +785,21 @@ fn parse_less_than_or_equal_symbol() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::LessThanOrEqual(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::LessThanOrEqual(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -644,15 +812,21 @@ fn parse_less_than_or_equal_keyword() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::LessThanOrEqual(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::LessThanOrEqual(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -665,15 +839,21 @@ fn parse_greater_than_symbol() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::GreaterThan(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 4, end: 5 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::GreaterThan(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -686,15 +866,21 @@ fn parse_greater_than_keyword() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::GreaterThan(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::GreaterThan(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -707,15 +893,21 @@ fn parse_greater_than_or_equal_symbol() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::GreaterThanOrEqual(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::GreaterThanOrEqual(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -728,15 +920,21 @@ fn parse_greater_than_or_equal_keyword() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::GreaterThanOrEqual(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::GreaterThanOrEqual(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -749,15 +947,21 @@ fn parse_not_equal_keyword() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::NotEqual(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::NotEqual(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -770,15 +974,21 @@ fn parse_equal_keyword() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Equal(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::Equal(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 1 },
+                    name: "a".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 6 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -791,10 +1001,13 @@ fn parse_not_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Not(Box::new(Expression::Identifier(Identifier {
-            span: Span { start: 4, end: 5 },
-            name: "a".to_string()
-        })))
+        ExpressionKind::Not(Box::new(
+            ExpressionKind::Identifier(Identifier {
+                span: Span { start: 4, end: 5 },
+                name: "a".to_string()
+            })
+            .into()
+        ))
     );
 }
 
@@ -808,17 +1021,24 @@ fn parse_not_with_comparison() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Equal(
-            Box::new(Expression::Not(Box::new(Expression::Identifier(
-                Identifier {
-                    span: Span { start: 4, end: 5 },
-                    name: "a".to_string()
-                }
-            )))),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 8, end: 9 },
-                name: "b".to_string()
-            }))
+        ExpressionKind::Equal(
+            Box::new(
+                ExpressionKind::Not(Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 4, end: 5 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 8, end: 9 },
+                    name: "b".to_string()
+                })
+                .into()
+            )
         )
     );
 }
@@ -832,16 +1052,25 @@ fn parse_not_with_parenthesized_comparison() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Not(Box::new(Expression::Equal(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 6 },
-                name: "a".to_string()
-            })),
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 9, end: 10 },
-                name: "b".to_string()
-            }))
-        )))
+        ExpressionKind::Not(Box::new(
+            ExpressionKind::Equal(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 9, end: 10 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+            .into()
+        ))
     );
 }
 
@@ -853,15 +1082,21 @@ fn parse_matches_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Matches(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 4 },
-                name: "name".to_string()
-            })),
-            Box::new(Expression::Literal(Literal::String(StringLiteral {
-                span: Span { start: 13, end: 19 },
-                value: "*son".to_string()
-            })))
+        ExpressionKind::Matches(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 4 },
+                    name: "name".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 13, end: 19 },
+                    value: "*son".to_string()
+                }))
+                .into()
+            )
         )
     );
 }
@@ -875,25 +1110,40 @@ fn parse_simple_ternary() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::IfThenElse(
-            Box::new(Expression::GreaterThan(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 3, end: 5 },
-                    name: "xx".to_string()
-                })),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 9 },
-                    value: 5
-                })))
-            )),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 15, end: 17 },
-                value: 10
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 23, end: 25 },
-                value: 20
-            })))
+        ExpressionKind::IfThenElse(
+            Box::new(
+                ExpressionKind::GreaterThan(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 3, end: 5 },
+                            name: "xx".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 8, end: 9 },
+                            value: 5
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 15, end: 17 },
+                    value: 10
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 23, end: 25 },
+                    value: 20
+                }))
+                .into()
+            )
         )
     );
 }
@@ -907,41 +1157,71 @@ fn parse_nested_ternary_in_else() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::IfThenElse(
-            Box::new(Expression::GreaterThan(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 3, end: 5 },
-                    name: "xx".to_string()
-                })),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 10 },
-                    value: 10
-                })))
-            )),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 16, end: 17 },
-                value: 1
-            }))),
-            Box::new(Expression::IfThenElse(
-                Box::new(Expression::GreaterThan(
-                    Box::new(Expression::Identifier(Identifier {
-                        span: Span { start: 26, end: 28 },
-                        name: "xx".to_string()
-                    })),
-                    Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                        span: Span { start: 31, end: 32 },
-                        value: 5
-                    })))
-                )),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 38, end: 39 },
-                    value: 2
-                }))),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 45, end: 46 },
-                    value: 3
-                })))
-            ))
+        ExpressionKind::IfThenElse(
+            Box::new(
+                ExpressionKind::GreaterThan(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 3, end: 5 },
+                            name: "xx".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 8, end: 10 },
+                            value: 10
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 16, end: 17 },
+                    value: 1
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::IfThenElse(
+                    Box::new(
+                        ExpressionKind::GreaterThan(
+                            Box::new(
+                                ExpressionKind::Identifier(Identifier {
+                                    span: Span { start: 26, end: 28 },
+                                    name: "xx".to_string()
+                                })
+                                .into()
+                            ),
+                            Box::new(
+                                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                    span: Span { start: 31, end: 32 },
+                                    value: 5
+                                }))
+                                .into()
+                            )
+                        )
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 38, end: 39 },
+                            value: 2
+                        }))
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 45, end: 46 },
+                            value: 3
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            )
         )
     );
 }
@@ -955,37 +1235,64 @@ fn parse_ternary_with_complex_condition() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::IfThenElse(
-            Box::new(Expression::And(
-                Box::new(Expression::Equal(
-                    Box::new(Expression::Identifier(Identifier {
-                        span: Span { start: 3, end: 4 },
-                        name: "a".to_string()
-                    })),
-                    Box::new(Expression::Identifier(Identifier {
-                        span: Span { start: 7, end: 8 },
-                        name: "b".to_string()
-                    }))
-                )),
-                Box::new(Expression::GreaterThan(
-                    Box::new(Expression::Identifier(Identifier {
-                        span: Span { start: 13, end: 14 },
-                        name: "c".to_string()
-                    })),
-                    Box::new(Expression::Identifier(Identifier {
-                        span: Span { start: 17, end: 18 },
-                        name: "d".to_string()
-                    }))
-                ))
-            )),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 24, end: 25 },
-                value: 1
-            }))),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 31, end: 32 },
-                value: 0
-            })))
+        ExpressionKind::IfThenElse(
+            Box::new(
+                ExpressionKind::And(
+                    Box::new(
+                        ExpressionKind::Equal(
+                            Box::new(
+                                ExpressionKind::Identifier(Identifier {
+                                    span: Span { start: 3, end: 4 },
+                                    name: "a".to_string()
+                                })
+                                .into()
+                            ),
+                            Box::new(
+                                ExpressionKind::Identifier(Identifier {
+                                    span: Span { start: 7, end: 8 },
+                                    name: "b".to_string()
+                                })
+                                .into()
+                            )
+                        )
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::GreaterThan(
+                            Box::new(
+                                ExpressionKind::Identifier(Identifier {
+                                    span: Span { start: 13, end: 14 },
+                                    name: "c".to_string()
+                                })
+                                .into()
+                            ),
+                            Box::new(
+                                ExpressionKind::Identifier(Identifier {
+                                    span: Span { start: 17, end: 18 },
+                                    name: "d".to_string()
+                                })
+                                .into()
+                            )
+                        )
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 24, end: 25 },
+                    value: 1
+                }))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 31, end: 32 },
+                    value: 0
+                }))
+                .into()
+            )
         )
     );
 }
@@ -999,31 +1306,52 @@ fn parse_ternary_with_expressions_in_branches() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::IfThenElse(
-            Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 3, end: 7 },
-                name: "cond".to_string()
-            })),
-            Box::new(Expression::Add(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 13, end: 15 },
-                    name: "xx".to_string()
-                })),
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 18, end: 20 },
-                    name: "yy".to_string()
-                }))
-            )),
-            Box::new(Expression::Minus(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 26, end: 28 },
-                    name: "xx".to_string()
-                })),
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 31, end: 33 },
-                    name: "yy".to_string()
-                }))
-            ))
+        ExpressionKind::IfThenElse(
+            Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 3, end: 7 },
+                    name: "cond".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Add(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 13, end: 15 },
+                            name: "xx".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 18, end: 20 },
+                            name: "yy".to_string()
+                        })
+                        .into()
+                    )
+                )
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Minus(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 26, end: 28 },
+                            name: "xx".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 31, end: 33 },
+                            name: "yy".to_string()
+                        })
+                        .into()
+                    )
+                )
+                .into()
+            )
         )
     );
 }
@@ -1036,7 +1364,7 @@ fn parse_function_call_no_args() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::FunctionCall {
+        ExpressionKind::FunctionCall {
             name: Identifier {
                 span: Span { start: 0, end: 3 },
                 name: "NOW".to_string()
@@ -1054,15 +1382,18 @@ fn parse_function_call_1_arg() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::FunctionCall {
+        ExpressionKind::FunctionCall {
             name: Identifier {
                 span: Span { start: 0, end: 4 },
                 name: "TRIM".to_string()
             },
-            arguments: vec![Expression::Identifier(Identifier {
-                span: Span { start: 5, end: 9 },
-                name: "name".to_string()
-            })]
+            arguments: vec![
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 5, end: 9 },
+                    name: "name".to_string()
+                })
+                .into()
+            ]
         }
     );
 }
@@ -1075,24 +1406,27 @@ fn parse_function_call_multiple_args() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::FunctionCall {
+        ExpressionKind::FunctionCall {
             name: Identifier {
                 span: Span { start: 0, end: 9 },
                 name: "SUBSTRING".to_string()
             },
             arguments: vec![
-                Expression::Identifier(Identifier {
+                ExpressionKind::Identifier(Identifier {
                     span: Span { start: 10, end: 13 },
                     name: "str".to_string()
-                }),
-                Expression::Literal(Literal::Integer(IntegerLiteral {
+                })
+                .into(),
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                     span: Span { start: 15, end: 16 },
                     value: 1
-                })),
-                Expression::Literal(Literal::Integer(IntegerLiteral {
+                }))
+                .into(),
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                     span: Span { start: 18, end: 19 },
                     value: 5
                 }))
+                .into()
             ]
         }
     );
@@ -1106,21 +1440,30 @@ fn parse_function_call_with_expression_arg() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::FunctionCall {
+        ExpressionKind::FunctionCall {
             name: Identifier {
                 span: Span { start: 0, end: 3 },
                 name: "ABS".to_string()
             },
-            arguments: vec![Expression::Minus(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 4, end: 5 },
-                    name: "x".to_string()
-                })),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 9 },
-                    value: 5
-                })))
-            )]
+            arguments: vec![
+                ExpressionKind::Minus(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 4, end: 5 },
+                            name: "x".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 8, end: 9 },
+                            value: 5
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ]
         }
     );
 }
@@ -1133,31 +1476,37 @@ fn parse_nested_function_calls() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::FunctionCall {
+        ExpressionKind::FunctionCall {
             name: Identifier {
                 span: Span { start: 0, end: 4 },
                 name: "TRIM".to_string()
             },
-            arguments: vec![Expression::FunctionCall {
-                name: Identifier {
-                    span: Span { start: 5, end: 14 },
-                    name: "SUBSTRING".to_string()
-                },
-                arguments: vec![
-                    Expression::Identifier(Identifier {
-                        span: Span { start: 15, end: 19 },
-                        name: "name".to_string()
-                    }),
-                    Expression::Literal(Literal::Integer(IntegerLiteral {
-                        span: Span { start: 21, end: 22 },
-                        value: 1
-                    })),
-                    Expression::Literal(Literal::Integer(IntegerLiteral {
-                        span: Span { start: 24, end: 25 },
-                        value: 5
-                    }))
-                ]
-            }]
+            arguments: vec![
+                ExpressionKind::FunctionCall {
+                    name: Identifier {
+                        span: Span { start: 5, end: 14 },
+                        name: "SUBSTRING".to_string()
+                    },
+                    arguments: vec![
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 15, end: 19 },
+                            name: "name".to_string()
+                        })
+                        .into(),
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 21, end: 22 },
+                            value: 1
+                        }))
+                        .into(),
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 24, end: 25 },
+                            value: 5
+                        }))
+                        .into()
+                    ]
+                }
+                .into()
+            ]
         }
     );
 }
@@ -1170,21 +1519,30 @@ fn parse_function_in_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Add(
-            Box::new(Expression::FunctionCall {
-                name: Identifier {
-                    span: Span { start: 0, end: 6 },
-                    name: "LENGTH".to_string()
-                },
-                arguments: vec![Expression::Identifier(Identifier {
-                    span: Span { start: 7, end: 10 },
-                    name: "str".to_string()
-                })]
-            }),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 14, end: 15 },
-                value: 1
-            })))
+        ExpressionKind::Add(
+            Box::new(
+                ExpressionKind::FunctionCall {
+                    name: Identifier {
+                        span: Span { start: 0, end: 6 },
+                        name: "LENGTH".to_string()
+                    },
+                    arguments: vec![
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 7, end: 10 },
+                            name: "str".to_string()
+                        })
+                        .into()
+                    ]
+                }
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 1
+                }))
+                .into()
+            )
         )
     );
 }
@@ -1197,15 +1555,21 @@ fn parse_simple_array_access() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::ArrayAccess {
-            array: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 3 },
-                name: "arr".to_string()
-            })),
-            index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 4, end: 5 },
-                value: 1
-            })))
+        ExpressionKind::ArrayAccess {
+            array: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "arr".to_string()
+                })
+                .into()
+            ),
+            index: Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 1
+                }))
+                .into()
+            )
         }
     )
 }
@@ -1218,21 +1582,33 @@ fn parse_array_access_with_expression_index() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::ArrayAccess {
-            array: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 3 },
-                name: "arr".to_string()
-            })),
-            index: Box::new(Expression::Add(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 4, end: 5 },
-                    name: "i".to_string()
-                })),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 9 },
-                    value: 1
-                })))
-            ))
+        ExpressionKind::ArrayAccess {
+            array: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "arr".to_string()
+                })
+                .into()
+            ),
+            index: Box::new(
+                ExpressionKind::Add(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 4, end: 5 },
+                            name: "i".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 8, end: 9 },
+                            value: 1
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            )
         }
     );
 }
@@ -1245,15 +1621,21 @@ fn parse_hyphenated_array_access() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::ArrayAccess {
-            array: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 11 },
-                name: "month-quota".to_string()
-            })),
-            index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 12, end: 13 },
-                value: 3
-            })))
+        ExpressionKind::ArrayAccess {
+            array: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 11 },
+                    name: "month-quota".to_string()
+                })
+                .into()
+            ),
+            index: Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 12, end: 13 },
+                    value: 3
+                }))
+                .into()
+            )
         }
     );
 }
@@ -1266,21 +1648,33 @@ fn parse_multidimensional_array() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::ArrayAccess {
-            array: Box::new(Expression::ArrayAccess {
-                array: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 6 },
-                    name: "matrix".to_string()
-                })),
-                index: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 7, end: 10 },
-                    name: "row".to_string()
-                }))
-            }),
-            index: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 12, end: 15 },
-                name: "col".to_string()
-            }))
+        ExpressionKind::ArrayAccess {
+            array: Box::new(
+                ExpressionKind::ArrayAccess {
+                    array: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 6 },
+                            name: "matrix".to_string()
+                        })
+                        .into()
+                    ),
+                    index: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 7, end: 10 },
+                            name: "row".to_string()
+                        })
+                        .into()
+                    )
+                }
+                .into()
+            ),
+            index: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 12, end: 15 },
+                    name: "col".to_string()
+                })
+                .into()
+            )
         }
     );
 }
@@ -1293,27 +1687,45 @@ fn parse_array_in_arithmetic() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Add(
-            Box::new(Expression::ArrayAccess {
-                array: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 3 },
-                    name: "arr".to_string()
-                })),
-                index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 1
-                })))
-            }),
-            Box::new(Expression::ArrayAccess {
-                array: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 9, end: 12 },
-                    name: "arr".to_string()
-                })),
-                index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 13, end: 14 },
-                    value: 2
-                })))
-            })
+        ExpressionKind::Add(
+            Box::new(
+                ExpressionKind::ArrayAccess {
+                    array: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 3 },
+                            name: "arr".to_string()
+                        })
+                        .into()
+                    ),
+                    index: Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 4, end: 5 },
+                            value: 1
+                        }))
+                        .into()
+                    )
+                }
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::ArrayAccess {
+                    array: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 9, end: 12 },
+                            name: "arr".to_string()
+                        })
+                        .into()
+                    ),
+                    index: Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 13, end: 14 },
+                            value: 2
+                        }))
+                        .into()
+                    )
+                }
+                .into()
+            )
         )
     );
 }
@@ -1326,11 +1738,14 @@ fn parse_simple_member_access() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::MemberAccess {
-            object: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 6 },
-                name: "handle".to_string()
-            })),
+        ExpressionKind::MemberAccess {
+            object: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "handle".to_string()
+                })
+                .into()
+            ),
             member: Identifier {
                 span: Span { start: 7, end: 19 },
                 name: "PRIVATE-DATA".to_string()
@@ -1347,11 +1762,14 @@ fn parse_simple_method_call() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::MethodCall {
-            object: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 6 },
-                name: "buffer".to_string()
-            })),
+        ExpressionKind::MethodCall {
+            object: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "buffer".to_string()
+                })
+                .into()
+            ),
             method: Identifier {
                 span: Span { start: 7, end: 17 },
                 name: "FIND-FIRST".to_string()
@@ -1369,24 +1787,29 @@ fn parse_method_call_with_args() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::MethodCall {
-            object: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 6 },
-                name: "widget".to_string()
-            })),
+        ExpressionKind::MethodCall {
+            object: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "widget".to_string()
+                })
+                .into()
+            ),
             method: Identifier {
                 span: Span { start: 7, end: 11 },
                 name: "MOVE".to_string()
             },
             arguments: vec![
-                Expression::Literal(Literal::Integer(IntegerLiteral {
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                     span: Span { start: 12, end: 14 },
                     value: 10
-                })),
-                Expression::Literal(Literal::Integer(IntegerLiteral {
+                }))
+                .into(),
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                     span: Span { start: 16, end: 18 },
                     value: 20
                 }))
+                .into()
             ]
         }
     );
@@ -1400,17 +1823,23 @@ fn parse_chained_member_access() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::MemberAccess {
-            object: Box::new(Expression::MemberAccess {
-                object: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 3 },
-                    name: "obj".to_string()
-                })),
-                member: Identifier {
-                    span: Span { start: 4, end: 12 },
-                    name: "property".to_string()
+        ExpressionKind::MemberAccess {
+            object: Box::new(
+                ExpressionKind::MemberAccess {
+                    object: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 3 },
+                            name: "obj".to_string()
+                        })
+                        .into()
+                    ),
+                    member: Identifier {
+                        span: Span { start: 4, end: 12 },
+                        name: "property".to_string()
+                    }
                 }
-            }),
+                .into()
+            ),
             member: Identifier {
                 span: Span { start: 13, end: 19 },
                 name: "nested".to_string()
@@ -1427,17 +1856,23 @@ fn parse_member_then_method() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::MethodCall {
-            object: Box::new(Expression::MemberAccess {
-                object: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 3 },
-                    name: "obj".to_string()
-                })),
-                member: Identifier {
-                    span: Span { start: 4, end: 8 },
-                    name: "prop".to_string()
+        ExpressionKind::MethodCall {
+            object: Box::new(
+                ExpressionKind::MemberAccess {
+                    object: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 3 },
+                            name: "obj".to_string()
+                        })
+                        .into()
+                    ),
+                    member: Identifier {
+                        span: Span { start: 4, end: 8 },
+                        name: "prop".to_string()
+                    }
                 }
-            }),
+                .into()
+            ),
             method: Identifier {
                 span: Span { start: 9, end: 15 },
                 name: "method".to_string()
@@ -1455,21 +1890,30 @@ fn parse_member_access_with_array() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::ArrayAccess {
-            array: Box::new(Expression::MemberAccess {
-                object: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 5 },
-                    name: "myBuf".to_string()
-                })),
-                member: Identifier {
-                    span: Span { start: 6, end: 13 },
-                    name: "myField".to_string()
+        ExpressionKind::ArrayAccess {
+            array: Box::new(
+                ExpressionKind::MemberAccess {
+                    object: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 5 },
+                            name: "myBuf".to_string()
+                        })
+                        .into()
+                    ),
+                    member: Identifier {
+                        span: Span { start: 6, end: 13 },
+                        name: "myField".to_string()
+                    }
                 }
-            }),
-            index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 14, end: 15 },
-                value: 1
-            })))
+                .into()
+            ),
+            index: Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 1
+                }))
+                .into()
+            )
         }
     );
 }
@@ -1482,21 +1926,30 @@ fn parse_member_in_expression() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::Add(
-            Box::new(Expression::MemberAccess {
-                object: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 5 },
-                    name: "myObj".to_string()
-                })),
-                member: Identifier {
-                    span: Span { start: 6, end: 11 },
-                    name: "myVal".to_string()
+        ExpressionKind::Add(
+            Box::new(
+                ExpressionKind::MemberAccess {
+                    object: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 5 },
+                            name: "myObj".to_string()
+                        })
+                        .into()
+                    ),
+                    member: Identifier {
+                        span: Span { start: 6, end: 11 },
+                        name: "myVal".to_string()
+                    }
                 }
-            }),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 14, end: 15 },
-                value: 5
-            })))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 5
+                }))
+                .into()
+            )
         )
     );
 }
@@ -1509,11 +1962,14 @@ fn parse_simple_field_access() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::FieldAccess {
-            qualifier: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 8 },
-                name: "Customer".to_string()
-            })),
+        ExpressionKind::FieldAccess {
+            qualifier: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 0, end: 8 },
+                    name: "Customer".to_string()
+                })
+                .into()
+            ),
             field: Identifier {
                 span: Span { start: 9, end: 16 },
                 name: "CustNum".to_string()
@@ -1530,17 +1986,23 @@ fn parse_qualified_field_access() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::FieldAccess {
-            qualifier: Box::new(Expression::FieldAccess {
-                qualifier: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 10 },
-                    name: "Sports2020".to_string()
-                })),
-                field: Identifier {
-                    span: Span { start: 11, end: 19 },
-                    name: "Customer".to_string()
+        ExpressionKind::FieldAccess {
+            qualifier: Box::new(
+                ExpressionKind::FieldAccess {
+                    qualifier: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 10 },
+                            name: "Sports2020".to_string()
+                        })
+                        .into()
+                    ),
+                    field: Identifier {
+                        span: Span { start: 11, end: 19 },
+                        name: "Customer".to_string()
+                    }
                 }
-            }),
+                .into()
+            ),
             field: Identifier {
                 span: Span { start: 20, end: 24 },
                 name: "Name".to_string()
@@ -1557,21 +2019,30 @@ fn parse_field_access_with_array() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::ArrayAccess {
-            array: Box::new(Expression::FieldAccess {
-                qualifier: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 7 },
-                    name: "myTable".to_string()
-                })),
-                field: Identifier {
-                    span: Span { start: 8, end: 15 },
-                    name: "myField".to_string()
+        ExpressionKind::ArrayAccess {
+            array: Box::new(
+                ExpressionKind::FieldAccess {
+                    qualifier: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 7 },
+                            name: "myTable".to_string()
+                        })
+                        .into()
+                    ),
+                    field: Identifier {
+                        span: Span { start: 8, end: 15 },
+                        name: "myField".to_string()
+                    }
                 }
-            }),
-            index: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 16, end: 22 },
-                name: "extent".to_string()
-            }))
+                .into()
+            ),
+            index: Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 16, end: 22 },
+                    name: "extent".to_string()
+                })
+                .into()
+            )
         }
     );
 }
@@ -1584,21 +2055,30 @@ fn parse_field_in_comparison() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::GreaterThan(
-            Box::new(Expression::FieldAccess {
-                qualifier: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 8 },
-                    name: "Customer".to_string()
-                })),
-                field: Identifier {
-                    span: Span { start: 9, end: 16 },
-                    name: "Balance".to_string()
+        ExpressionKind::GreaterThan(
+            Box::new(
+                ExpressionKind::FieldAccess {
+                    qualifier: Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 0, end: 8 },
+                            name: "Customer".to_string()
+                        })
+                        .into()
+                    ),
+                    field: Identifier {
+                        span: Span { start: 9, end: 16 },
+                        name: "Balance".to_string()
+                    }
                 }
-            }),
-            Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 19, end: 23 },
-                value: 1000
-            })))
+                .into()
+            ),
+            Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 19, end: 23 },
+                    value: 1000
+                }))
+                .into()
+            )
         )
     );
 }
@@ -1612,27 +2092,39 @@ fn parse_mixed_access_operators() {
     let expression = parser.parse_expression().expect("Expected an expression");
     assert_eq!(
         expression,
-        Expression::ArrayAccess {
-            array: Box::new(Expression::MemberAccess {
-                object: Box::new(Expression::FieldAccess {
-                    qualifier: Box::new(Expression::Identifier(Identifier {
-                        span: Span { start: 0, end: 4 },
-                        name: "myDb".to_string()
-                    })),
-                    field: Identifier {
-                        span: Span { start: 5, end: 12 },
-                        name: "myTable".to_string()
+        ExpressionKind::ArrayAccess {
+            array: Box::new(
+                ExpressionKind::MemberAccess {
+                    object: Box::new(
+                        ExpressionKind::FieldAccess {
+                            qualifier: Box::new(
+                                ExpressionKind::Identifier(Identifier {
+                                    span: Span { start: 0, end: 4 },
+                                    name: "myDb".to_string()
+                                })
+                                .into()
+                            ),
+                            field: Identifier {
+                                span: Span { start: 5, end: 12 },
+                                name: "myTable".to_string()
+                            }
+                        }
+                        .into()
+                    ),
+                    member: Identifier {
+                        span: Span { start: 13, end: 19 },
+                        name: "buffer".to_string()
                     }
-                }),
-                member: Identifier {
-                    span: Span { start: 13, end: 19 },
-                    name: "buffer".to_string()
                 }
-            }),
-            index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 20, end: 21 },
-                value: 1
-            })))
+                .into()
+            ),
+            index: Box::new(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 20, end: 21 },
+                    value: 1
+                }))
+                .into()
+            )
         }
     );
 }
@@ -1646,14 +2138,16 @@ fn parse_simple_assignment() {
     assert_eq!(
         stmt,
         StatementKind::Assignment {
-            target: Expression::Identifier(Identifier {
+            target: ExpressionKind::Identifier(Identifier {
                 span: Span { start: 0, end: 1 },
                 name: "x".to_string()
-            }),
-            value: Expression::Literal(Literal::Integer(IntegerLiteral {
+            })
+            .into(),
+            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                 span: Span { start: 4, end: 5 },
                 value: 5
             }))
+            .into()
         }
     );
 }
@@ -1667,20 +2161,28 @@ fn parse_assignment_with_expression() {
     assert_eq!(
         stmt,
         StatementKind::Assignment {
-            target: Expression::Identifier(Identifier {
+            target: ExpressionKind::Identifier(Identifier {
                 span: Span { start: 0, end: 5 },
                 name: "total".to_string()
-            }),
-            value: Expression::Multiply(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 8, end: 13 },
-                    name: "price".to_string()
-                })),
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 16, end: 24 },
-                    name: "quantity".to_string()
-                }))
+            })
+            .into(),
+            value: ExpressionKind::Multiply(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 8, end: 13 },
+                        name: "price".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 16, end: 24 },
+                        name: "quantity".to_string()
+                    })
+                    .into()
+                )
             )
+            .into()
         }
     );
 }
@@ -1694,20 +2196,28 @@ fn parse_array_assignment() {
     assert_eq!(
         stmt,
         StatementKind::Assignment {
-            target: Expression::ArrayAccess {
-                array: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 3 },
-                    name: "arr".to_string()
-                })),
-                index: Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 1
-                })))
-            },
-            value: Expression::Literal(Literal::Integer(IntegerLiteral {
+            target: ExpressionKind::ArrayAccess {
+                array: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 3 },
+                        name: "arr".to_string()
+                    })
+                    .into()
+                ),
+                index: Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 1
+                    }))
+                    .into()
+                )
+            }
+            .into(),
+            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                 span: Span { start: 9, end: 11 },
                 value: 10
             }))
+            .into()
         }
     );
 }
@@ -1721,20 +2231,25 @@ fn parse_field_assignment() {
     assert_eq!(
         stmt,
         StatementKind::Assignment {
-            target: Expression::FieldAccess {
-                qualifier: Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 0, end: 8 },
-                    name: "Customer".to_string()
-                })),
+            target: ExpressionKind::FieldAccess {
+                qualifier: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 8 },
+                        name: "Customer".to_string()
+                    })
+                    .into()
+                ),
                 field: Identifier {
                     span: Span { start: 9, end: 13 },
                     name: "Name".to_string()
                 }
-            },
-            value: Expression::Literal(Literal::String(StringLiteral {
+            }
+            .into(),
+            value: ExpressionKind::Literal(Literal::String(StringLiteral {
                 span: Span { start: 16, end: 22 },
                 value: "John".to_string()
             }))
+            .into()
         }
     );
 }
@@ -1747,13 +2262,16 @@ fn parse_expression_statement() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        StatementKind::ExpressionStatement(Expression::FunctionCall {
-            name: Identifier {
-                span: Span { start: 0, end: 15 },
-                name: "calculateTotals".to_string()
-            },
-            arguments: vec![]
-        })
+        StatementKind::ExpressionStatement(
+            ExpressionKind::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 15 },
+                    name: "calculateTotals".to_string()
+                },
+                arguments: vec![]
+            }
+            .into()
+        )
     );
 }
 
@@ -1765,17 +2283,23 @@ fn parse_method_call_statement() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     assert_eq!(
         stmt,
-        StatementKind::ExpressionStatement(Expression::MethodCall {
-            object: Box::new(Expression::Identifier(Identifier {
-                span: Span { start: 0, end: 6 },
-                name: "buffer".to_string()
-            })),
-            method: Identifier {
-                span: Span { start: 7, end: 23 },
-                name: "save-row-changes".to_string()
-            },
-            arguments: vec![]
-        })
+        StatementKind::ExpressionStatement(
+            ExpressionKind::MethodCall {
+                object: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 6 },
+                        name: "buffer".to_string()
+                    })
+                    .into()
+                ),
+                method: Identifier {
+                    span: Span { start: 7, end: 23 },
+                    name: "save-row-changes".to_string()
+                },
+                arguments: vec![]
+            }
+            .into()
+        )
     );
 }
 
@@ -1832,10 +2356,13 @@ fn parse_define_variable_with_initial() {
                 name: "counter".to_string()
             },
             type_source: TypeSource::Explicit(DataType::Integer),
-            initial_value: Some(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 43, end: 44 },
-                value: 0
-            }))),
+            initial_value: Some(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 43, end: 44 },
+                    value: 0
+                }))
+                .into()
+            ),
             no_undo: false,
             extent: None,
         }
@@ -1921,8 +2448,8 @@ fn parse_var_logical() {
         } => {
             assert_eq!(type_source, TypeSource::Explicit(DataType::Logical));
             assert!(matches!(
-                initial_value,
-                Some(Expression::Literal(Literal::Boolean(_)))
+                initial_value.as_ref().map(|e| &e.kind),
+                Some(ExpressionKind::Literal(Literal::Boolean(_)))
             ));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -2223,7 +2750,7 @@ fn parse_if_then_simple() {
             then_branch,
             else_branch,
         } => {
-            assert!(matches!(condition, Expression::GreaterThan(_, _)));
+            assert!(matches!(condition.kind, ExpressionKind::GreaterThan(_, _)));
             assert!(matches!(then_branch.kind, StatementKind::Assignment { .. }));
             assert!(else_branch.is_none());
         }
@@ -2444,7 +2971,7 @@ fn parse_return_with_value() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Return(Some(expr)) => {
-            assert!(matches!(expr, Expression::Add(_, _)));
+            assert!(matches!(expr.kind, ExpressionKind::Add(_, _)));
         }
         _ => panic!("Expected Return with value"),
     }
@@ -2506,8 +3033,8 @@ fn parse_for_each_with_where() {
             assert_eq!(buffer.name, "Customer");
             assert!(where_clause.is_some());
             assert!(matches!(
-                where_clause.unwrap(),
-                Expression::GreaterThan(_, _)
+                where_clause.unwrap().kind,
+                ExpressionKind::GreaterThan(_, _)
             ));
             assert_eq!(lock_type, LockType::NoLock);
         }
@@ -2617,7 +3144,10 @@ fn parse_for_each_with_complex_where() {
     match stmt.kind {
         StatementKind::ForEach { where_clause, .. } => {
             assert!(where_clause.is_some());
-            assert!(matches!(where_clause.unwrap(), Expression::And(_, _)));
+            assert!(matches!(
+                where_clause.unwrap().kind,
+                ExpressionKind::And(_, _)
+            ));
         }
         _ => panic!("Expected ForEach statement"),
     }
@@ -2680,7 +3210,7 @@ fn parse_for_each_with_field_access_in_expression() {
             assert_eq!(body.len(), 1);
             match &body[0].kind {
                 StatementKind::Assignment { value, .. } => {
-                    assert!(matches!(value, Expression::Add(_, _)));
+                    assert!(matches!(value.kind, ExpressionKind::Add(_, _)));
                 }
                 _ => panic!("Expected Assignment statement"),
             }
@@ -2770,22 +3300,34 @@ fn parse_find_first_with_where() {
                 name: "Customer".to_string()
             },
             key_value: None,
-            where_clause: Some(Expression::Equal(
-                Box::new(Expression::FieldAccess {
-                    qualifier: Box::new(Expression::Identifier(Identifier {
-                        span: Span { start: 26, end: 34 },
-                        name: "Customer".to_string()
-                    })),
-                    field: Identifier {
-                        span: Span { start: 35, end: 42 },
-                        name: "CustNum".to_string()
-                    }
-                }),
-                Box::new(Expression::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 45, end: 46 },
-                    value: 1
-                })))
-            )),
+            where_clause: Some(
+                ExpressionKind::Equal(
+                    Box::new(
+                        ExpressionKind::FieldAccess {
+                            qualifier: Box::new(
+                                ExpressionKind::Identifier(Identifier {
+                                    span: Span { start: 26, end: 34 },
+                                    name: "Customer".to_string()
+                                })
+                                .into()
+                            ),
+                            field: Identifier {
+                                span: Span { start: 35, end: 42 },
+                                name: "CustNum".to_string()
+                            }
+                        }
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 45, end: 46 },
+                            value: 1
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
             lock_type: LockType::NoLock,
             no_error: false,
         }
@@ -2806,10 +3348,13 @@ fn parse_find_by_integer_key() {
                 span: Span { start: 5, end: 13 },
                 name: "Customer".to_string()
             },
-            key_value: Some(Expression::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 14, end: 15 },
-                value: 1
-            }))),
+            key_value: Some(
+                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span { start: 14, end: 15 },
+                    value: 1
+                }))
+                .into()
+            ),
             where_clause: None,
             lock_type: LockType::NoLock,
             no_error: false,
@@ -2831,10 +3376,13 @@ fn parse_find_by_string_key() {
                 span: Span { start: 5, end: 13 },
                 name: "Customer".to_string()
             },
-            key_value: Some(Expression::Literal(Literal::String(StringLiteral {
-                span: Span { start: 14, end: 20 },
-                value: "ACME".to_string()
-            }))),
+            key_value: Some(
+                ExpressionKind::Literal(Literal::String(StringLiteral {
+                    span: Span { start: 14, end: 20 },
+                    value: "ACME".to_string()
+                }))
+                .into()
+            ),
             where_clause: None,
             lock_type: LockType::NoLock,
             no_error: false,
@@ -2856,10 +3404,13 @@ fn parse_find_by_variable_key() {
                 span: Span { start: 5, end: 13 },
                 name: "Customer".to_string()
             },
-            key_value: Some(Expression::Identifier(Identifier {
-                span: Span { start: 14, end: 20 },
-                name: "custId".to_string()
-            })),
+            key_value: Some(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 14, end: 20 },
+                    name: "custId".to_string()
+                })
+                .into()
+            ),
             where_clause: None,
             lock_type: LockType::NoLock,
             no_error: false,
@@ -2882,16 +3433,25 @@ fn parse_find_with_no_error() {
                 name: "Customer".to_string()
             },
             key_value: None,
-            where_clause: Some(Expression::Equal(
-                Box::new(Expression::Identifier(Identifier {
-                    span: Span { start: 26, end: 32 },
-                    name: "active".to_string()
-                })),
-                Box::new(Expression::Literal(Literal::Boolean(BooleanLiteral {
-                    span: Span { start: 35, end: 39 },
-                    value: true
-                })))
-            )),
+            where_clause: Some(
+                ExpressionKind::Equal(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 26, end: 32 },
+                            name: "active".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
+                            span: Span { start: 35, end: 39 },
+                            value: true
+                        }))
+                        .into()
+                    )
+                )
+                .into()
+            ),
             lock_type: LockType::NoLock,
             no_error: true,
         }
@@ -3021,7 +3581,7 @@ fn parse_simple_case_statement() {
             when_branches,
             otherwise,
         } => {
-            assert!(matches!(expression, Expression::Identifier(_)));
+            assert!(matches!(expression.kind, ExpressionKind::Identifier(_)));
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].values.len(), 1);
             assert_eq!(when_branches[0].body.len(), 1);
@@ -3098,8 +3658,8 @@ fn parse_case_with_string_values() {
         StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
-                &when_branches[0].values[0],
-                Expression::Literal(Literal::String(_))
+                when_branches[0].values[0].kind,
+                ExpressionKind::Literal(Literal::String(_))
             ));
         }
         _ => panic!("Expected Case statement"),
@@ -3144,7 +3704,7 @@ fn parse_case_with_expression_condition() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Case { expression, .. } => {
-            assert!(matches!(expression, Expression::Add(_, _)));
+            assert!(matches!(expression.kind, ExpressionKind::Add(_, _)));
         }
         _ => panic!("Expected Case statement"),
     }
@@ -3159,45 +3719,56 @@ fn parse_case_full_structure() {
     assert_eq!(
         stmt,
         StatementKind::Case {
-            expression: Expression::Identifier(Identifier {
+            expression: ExpressionKind::Identifier(Identifier {
                 span: Span { start: 5, end: 10 },
                 name: "myVal".to_string()
-            }),
+            })
+            .into(),
             when_branches: vec![
                 WhenBranch {
-                    values: vec![Expression::Literal(Literal::Integer(IntegerLiteral {
-                        span: Span { start: 17, end: 18 },
-                        value: 1
-                    }))],
+                    values: vec![
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 17, end: 18 },
+                            value: 1
+                        }))
+                        .into()
+                    ],
                     body: vec![
                         StatementKind::Assignment {
-                            target: Expression::Identifier(Identifier {
+                            target: ExpressionKind::Identifier(Identifier {
                                 span: Span { start: 24, end: 25 },
                                 name: "x".to_string()
-                            }),
-                            value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                            })
+                            .into(),
+                            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                                 span: Span { start: 28, end: 29 },
                                 value: 1
                             }))
+                            .into()
                         }
                         .into()
                     ]
                 },
                 WhenBranch {
-                    values: vec![Expression::Literal(Literal::Integer(IntegerLiteral {
-                        span: Span { start: 36, end: 37 },
-                        value: 2
-                    }))],
+                    values: vec![
+                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                            span: Span { start: 36, end: 37 },
+                            value: 2
+                        }))
+                        .into()
+                    ],
                     body: vec![
                         StatementKind::Assignment {
-                            target: Expression::Identifier(Identifier {
+                            target: ExpressionKind::Identifier(Identifier {
                                 span: Span { start: 43, end: 44 },
                                 name: "x".to_string()
-                            }),
-                            value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                            })
+                            .into(),
+                            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                                 span: Span { start: 47, end: 48 },
                                 value: 2
                             }))
+                            .into()
                         }
                         .into()
                     ]
@@ -3205,14 +3776,16 @@ fn parse_case_full_structure() {
             ],
             otherwise: Some(vec![
                 StatementKind::Assignment {
-                    target: Expression::Identifier(Identifier {
+                    target: ExpressionKind::Identifier(Identifier {
                         span: Span { start: 60, end: 61 },
                         name: "x".to_string()
-                    }),
-                    value: Expression::Literal(Literal::Integer(IntegerLiteral {
+                    })
+                    .into(),
+                    value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
                         span: Span { start: 64, end: 65 },
                         value: 0
                     }))
+                    .into()
                 }
                 .into()
             ])
@@ -3248,12 +3821,12 @@ fn parse_case_boolean_values() {
         StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
-                &when_branches[0].values[0],
-                Expression::Literal(Literal::Boolean(BooleanLiteral { value: true, .. }))
+                when_branches[0].values[0].kind,
+                ExpressionKind::Literal(Literal::Boolean(BooleanLiteral { value: true, .. }))
             ));
             assert!(matches!(
-                &when_branches[1].values[0],
-                Expression::Literal(Literal::Boolean(BooleanLiteral { value: false, .. }))
+                when_branches[1].values[0].kind,
+                ExpressionKind::Literal(Literal::Boolean(BooleanLiteral { value: false, .. }))
             ));
         }
         _ => panic!("Expected Case statement"),
@@ -3541,7 +4114,10 @@ fn parse_display_expression() {
     match stmt.kind {
         StatementKind::Display { items, .. } => {
             assert_eq!(items.len(), 1);
-            assert!(matches!(items[0].expression, Expression::Add(_, _)));
+            assert!(matches!(
+                items[0].expression.kind,
+                ExpressionKind::Add(_, _)
+            ));
         }
         _ => panic!("Expected Display statement"),
     }
@@ -3801,7 +4377,10 @@ fn parse_run_with_expression_args() {
             assert_eq!(arguments.len(), 2);
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
             // First arg should be an Add expression
-            assert!(matches!(arguments[0].expression, Expression::Add(_, _)));
+            assert!(matches!(
+                arguments[0].expression.kind,
+                ExpressionKind::Add(_, _)
+            ));
             assert_eq!(arguments[1].direction, ParameterDirection::Output);
         }
         _ => panic!("Expected Run statement"),
@@ -4891,8 +5470,8 @@ fn parse_assign_field_access() {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 2);
             assert!(matches!(
-                assignments[0].target,
-                Expression::FieldAccess { .. }
+                assignments[0].target.kind,
+                ExpressionKind::FieldAccess { .. }
             ));
         }
         _ => panic!("Expected Assign statement"),
@@ -4908,7 +5487,10 @@ fn parse_assign_with_expression() {
     match stmt.kind {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 1);
-            assert!(matches!(assignments[0].value, Expression::Multiply(_, _)));
+            assert!(matches!(
+                assignments[0].value.kind,
+                ExpressionKind::Multiply(_, _)
+            ));
         }
         _ => panic!("Expected Assign statement"),
     }
@@ -5104,8 +5686,8 @@ fn parse_variable_keyword_assignment_disambiguation() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Assignment { target, .. } => match target {
-            Expression::Identifier(id) => assert_eq!(id.name, "variable"),
+        StatementKind::Assignment { target, .. } => match target.kind {
+            ExpressionKind::Identifier(id) => assert_eq!(id.name, "variable"),
             _ => panic!("Expected identifier target"),
         },
         _ => panic!("Expected Assignment, got {:?}", stmt),
@@ -5120,8 +5702,8 @@ fn parse_function_keyword_assignment_disambiguation() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Assignment { target, .. } => match target {
-            Expression::Identifier(id) => assert_eq!(id.name, "function"),
+        StatementKind::Assignment { target, .. } => match target.kind {
+            ExpressionKind::Identifier(id) => assert_eq!(id.name, "function"),
             _ => panic!("Expected identifier target"),
         },
         _ => panic!("Expected Assignment, got {:?}", stmt),
@@ -5965,8 +6547,8 @@ fn parse_buffer_copy_with_assign() {
             assert_eq!(source.name, "bSource");
             assert_eq!(target.name, "bTarget");
             assert_eq!(assignments.len(), 1);
-            match &assignments[0].target {
-                Expression::Identifier(ident) => assert_eq!(ident.name, "field1"),
+            match &assignments[0].target.kind {
+                ExpressionKind::Identifier(ident) => assert_eq!(ident.name, "field1"),
                 _ => panic!("Expected identifier target"),
             }
             assert!(!no_error);
@@ -5988,12 +6570,12 @@ fn parse_buffer_copy_with_multiple_assigns() {
             ..
         } => {
             assert_eq!(assignments.len(), 2);
-            match &assignments[0].target {
-                Expression::Identifier(ident) => assert_eq!(ident.name, "field1"),
+            match &assignments[0].target.kind {
+                ExpressionKind::Identifier(ident) => assert_eq!(ident.name, "field1"),
                 _ => panic!("Expected identifier target"),
             }
-            match &assignments[1].target {
-                Expression::Identifier(ident) => assert_eq!(ident.name, "field2"),
+            match &assignments[1].target.kind {
+                ExpressionKind::Identifier(ident) => assert_eq!(ident.name, "field2"),
                 _ => panic!("Expected identifier target"),
             }
             assert!(!no_error);
@@ -6175,7 +6757,7 @@ fn preproc_if_then_endif() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::PreprocIf(preproc) => {
-            assert!(matches!(preproc.condition, Expression::Literal(_)));
+            assert!(matches!(preproc.condition.kind, ExpressionKind::Literal(_)));
             assert_eq!(preproc.then_branch.len(), 1);
             assert!(preproc.elseif_branches.is_empty());
             assert!(preproc.else_branch.is_none());
@@ -6360,8 +6942,8 @@ fn preproc_message() {
     match stmt.kind {
         StatementKind::PreprocMessage { expression } => {
             assert!(matches!(
-                expression,
-                Expression::Literal(Literal::String(_))
+                expression.kind,
+                ExpressionKind::Literal(Literal::String(_))
             ));
         }
         _ => panic!("Expected PreprocMessage"),
@@ -6376,8 +6958,8 @@ fn preproc_reference_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr {
-        Expression::PreprocReference(name) => {
+    match expr.kind {
+        ExpressionKind::PreprocReference(name) => {
             assert_eq!(name, "myvar");
         }
         _ => panic!("Expected PreprocReference, got {:?}", expr),
@@ -6390,14 +6972,17 @@ fn preproc_if_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr {
-        Expression::PreprocIf(preproc) => {
-            assert!(matches!(preproc.condition, Expression::Literal(_)));
-            assert!(matches!(preproc.then_branch, Expression::Literal(_)));
+    match expr.kind {
+        ExpressionKind::PreprocIf(preproc) => {
+            assert!(matches!(preproc.condition.kind, ExpressionKind::Literal(_)));
+            assert!(matches!(
+                preproc.then_branch.kind,
+                ExpressionKind::Literal(_)
+            ));
             assert!(preproc.else_branch.is_some());
             assert!(matches!(
-                preproc.else_branch.as_ref().unwrap(),
-                Expression::Literal(_)
+                preproc.else_branch.as_ref().unwrap().kind,
+                ExpressionKind::Literal(_)
             ));
         }
         _ => panic!("Expected PreprocIf expression"),
@@ -6420,9 +7005,12 @@ fn preproc_if_expression_with_function_call() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr {
-        Expression::PreprocIf(preproc) => {
-            assert!(matches!(preproc.condition, Expression::FunctionCall { .. }));
+    match expr.kind {
+        ExpressionKind::PreprocIf(preproc) => {
+            assert!(matches!(
+                preproc.condition.kind,
+                ExpressionKind::FunctionCall { .. }
+            ));
         }
         _ => panic!("Expected PreprocIf expression"),
     }
@@ -6490,7 +7078,10 @@ fn preproc_if_with_defined_condition() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::PreprocIf(preproc) => {
-            assert!(matches!(preproc.condition, Expression::FunctionCall { .. }));
+            assert!(matches!(
+                preproc.condition.kind,
+                ExpressionKind::FunctionCall { .. }
+            ));
         }
         _ => panic!("Expected PreprocIf statement"),
     }
@@ -6505,7 +7096,7 @@ fn preproc_reference_in_assignment() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Assignment { value, .. } => {
-            assert!(matches!(value, Expression::PreprocReference(_)));
+            assert!(matches!(value.kind, ExpressionKind::PreprocReference(_)));
         }
         _ => panic!("Expected Assignment"),
     }
@@ -6549,8 +7140,8 @@ fn preproc_if_expression_with_elseif() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr {
-        Expression::PreprocIf(preproc) => {
+    match expr.kind {
+        ExpressionKind::PreprocIf(preproc) => {
             assert_eq!(preproc.elseif_branches.len(), 1);
             assert!(preproc.else_branch.is_some());
         }
@@ -7654,8 +8245,8 @@ fn parse_publish_string_literal() {
             arguments,
         } => {
             assert!(matches!(
-                event_name,
-                Expression::Literal(Literal::String(_))
+                event_name.kind,
+                ExpressionKind::Literal(Literal::String(_))
             ));
             assert!(from_handle.is_none());
             assert!(arguments.is_empty());
@@ -7715,8 +8306,8 @@ fn parse_publish_expression_event() {
             arguments,
             ..
         } => {
-            match &event_name {
-                Expression::Identifier(id) => assert_eq!(id.name, "cEventName"),
+            match event_name.kind {
+                ExpressionKind::Identifier(id) => assert_eq!(id.name, "cEventName"),
                 _ => panic!("Expected identifier event name"),
             }
             assert!(arguments.is_empty());
@@ -8022,8 +8613,8 @@ fn parse_publish_event_name_not_function_call() {
             ..
         } => {
             // Event name should be a plain identifier, not a function call
-            match &event_name {
-                Expression::Identifier(id) => assert_eq!(id.name, "myEvent"),
+            match event_name.kind {
+                ExpressionKind::Identifier(id) => assert_eq!(id.name, "myEvent"),
                 _ => panic!("Expected identifier event name, got {:?}", event_name),
             }
             // Arguments should be parsed as PUBLISH arguments
@@ -8684,9 +9275,9 @@ fn parse_include_reference_as_expression() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Assignment { target, value } => {
-            assert!(matches!(target, Expression::Identifier(_)));
-            match value {
-                Expression::IncludeReference { path_and_args, .. } => {
+            assert!(matches!(target.kind, ExpressionKind::Identifier(_)));
+            match value.kind {
+                ExpressionKind::IncludeReference { path_and_args, .. } => {
                     assert_eq!(path_and_args, "file.i");
                 }
                 _ => panic!("Expected IncludeReference expression, got {:?}", value),
@@ -8705,9 +9296,9 @@ fn parse_include_arg_reference_as_expression() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Assignment { target, value } => {
-            assert!(matches!(target, Expression::Identifier(_)));
-            match value {
-                Expression::IncludeArgReference { index, .. } => {
+            assert!(matches!(target.kind, ExpressionKind::Identifier(_)));
+            match value.kind {
+                ExpressionKind::IncludeArgReference { index, .. } => {
                     assert_eq!(index, 1);
                 }
                 _ => panic!("Expected IncludeArgReference expression, got {:?}", value),

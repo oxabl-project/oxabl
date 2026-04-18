@@ -56,28 +56,28 @@ currently has to code defensively around; they become targets for follow-up hard
 
 ## 2. NodeId invariants
 
-`Statement` carries a stable `NodeId` as of Phase 1a
-(`crates/oxabl_ast/src/node_id.rs`). `Expression` will carry one too as of Phase 1b.
+Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
+(`crates/oxabl_ast/src/node_id.rs`).
 
 - `NodeId(u32)` is a public, `Copy + Eq + Hash` handle. `NodeId::PROGRAM == NodeId(0)` is
   reserved for the `Program` root; `NodeId::DUMMY == NodeId(u32::MAX)` is reserved for
   hand-constructed nodes (tests, AST builders). `DUMMY` must never appear in a parser-produced
   tree.
 - `NodeIdAllocator::new()` starts allocation at `NodeId(1)` and is monotonic: `alloc()`
-  yields dense, unique, contiguous ids. The `Parser` owns one allocator per parse.
-- `Statement { id, kind }` is a wrapper struct; the original enum is now `StatementKind`.
-  `Statement::new(kind)` constructs with `id = NodeId::DUMMY` for tests; the parser uses the
-  `&mut self` helper `Parser::stmt(kind)` to allocate real ids.
-- `PartialEq` on `Statement` is **implemented manually** to ignore `id`: structural value
+  yields dense, unique, contiguous ids. The `Parser` owns one allocator per parse, shared by
+  statement and expression allocation so the id space is a single dense range.
+- `Statement { id, kind }` and `Expression { id, kind }` are wrapper structs; the original
+  enums are `StatementKind` and `ExpressionKind`. `Statement::new(kind)` / `Expression::new(kind)`
+  construct with `id = NodeId::DUMMY` for tests; the parser uses the `&mut self` helpers
+  `Parser::stmt(kind)` and `Parser::expr(kind)` to allocate real ids.
+- `PartialEq` on both wrappers is **implemented manually** to ignore `id`: structural value
   equality (`self.kind == other.kind`) is preserved. Cross-type `PartialEq<StatementKind> for
-  Statement` (and its symmetric partner) lets tests assert against a bare `StatementKind`
-  value. No compare-ignoring helper is required at call sites.
+  Statement` and `PartialEq<ExpressionKind> for Expression` (and their symmetric partners) let
+  tests assert against a bare `...Kind` value. No compare-ignoring helper is required at call
+  sites.
 - Recovery-generated `Statement { kind: StatementKind::Empty, .. }` nodes still get a NodeId
   like any other. Side tables (the future `references` / `types` in `oxabl_semantic`) are
   allowed to be absent at those NodeIds — consumers treat "no entry" as "not analyzed."
-- **Expression NodeIds land in Phase 1b.** Until then, `Expression` remains a plain enum and
-  carries no NodeId. Side tables that want to key on expression nodes must wait for 1b or use
-  the enclosing `Statement::id` as a coarser key.
 
 ## 3. Identifier casing
 
@@ -226,5 +226,3 @@ Concrete follow-ups likely worth an assertion:
   is an invariant change and must touch this doc.
 - **Non-scope:** adding a new downstream consumer that merely reads the AST does not require
   a doc update — that is what the doc exists for.
-- **Phase 1b update:** when `Expression` gains its own `NodeId` via the same wrapper
-  pattern, §2 removes the final "until Phase 1b" caveat and this paragraph is deleted.
