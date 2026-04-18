@@ -786,24 +786,30 @@ the new public `NodeId` type.
 
 Estimated effort: small. Mechanical churn across parser, but no algorithmic change.
 
-### Phase 2 — `oxabl_schema` crate
+### Phase 2 — `oxabl_schema` crate  ✅
 
 **Goal:** load `.df` files into a `Schema` with diagnostics. No integration with semantic yet.
 
 Tasks:
 
-- New `crates/oxabl_schema/` workspace member.
-- `schema.rs`: types (`Schema`, `SchemaRevision`, `Table`, `TableId`, `Field`, `Index`,
+- [x] New `crates/oxabl_schema/` workspace member.
+- [x] `schema.rs`: types (`Schema`, `SchemaRevision`, `Table`, `TableId`, `Field`, `Index`,
   `SchemaType`). Case-insensitive keying via `OxablAtom` (reused from `oxabl_lexer`).
-- `parser.rs`: a dedicated `.df` parser (line-oriented; not reusing the ABL lexer — format is
+- [x] `parser.rs`: a dedicated `.df` parser (line-oriented; not reusing the ABL lexer — format is
   not ABL). Tokenizes `ADD TABLE "name"`, indented attribute lines, `ADD FIELD`, `ADD INDEX`.
   Unknown attributes captured as opaque strings.
-- `loader.rs`: `SchemaLoader::load_files(paths, &dyn FileSystem)`. Merges with last-write-wins
-  + `SCHEMA0010` conflict diagnostic.
-- Tests: unit tests with inline `.df` strings; corpus sample `.df` fixtures in
-  `crates/oxabl_schema/fixtures/` drawn from pcna-erp (2–3 representative files).
-- Benchmark: `cargo bench -p oxabl_schema --bench schema_bench` on a 5 MB merged `.df` fixture.
-  Target: < 100 ms load.
+- [x] `loader.rs`: `SchemaLoader::load_files(paths, &dyn FileSystem)`. Merges with last-write-wins
+  + `SCHEMA0010` conflict diagnostic. Adds `SCHEMA0011` (duplicate field),
+  `SCHEMA0012` (field-type conflict → `SchemaType::Error`), `SCHEMA0030`
+  (workspace-root containment), `SCHEMA0031` (soft caps).
+- [x] Tests: 40 inline unit tests + 5 integration tests against Riverside
+  Software's `sp2k.df` golden (MIT; vendored under `fixtures/`). BOM/CRLF,
+  multi-line quoted strings, `#` comments, footer trailer, embedded `""`.
+- [x] Benchmark: `cargo bench -p oxabl_schema --bench schema_bench` on a 5 MB merged `.df` fixture.
+  Target: < 100 ms load. Actual: **7.2 ms** (~694 MB/s).
+- [x] Spike: OxablAtom supports runtime interning (lexer already uses
+  `OxablAtom::from(&str)` for string literals); unified regime kept, no
+  `lasso` fallback needed.
 
 Deliverables: standalone crate, no other crate depends on it yet. Consumable for spike work.
 
