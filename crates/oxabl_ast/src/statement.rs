@@ -1,4 +1,4 @@
-use crate::{Expression, Identifier, Span};
+use crate::{Expression, Identifier, NodeId, Span};
 use smallvec::SmallVec;
 
 /// Preprocessor conditional block, generic over the content type.
@@ -15,10 +15,13 @@ pub struct PreprocIf<T> {
     pub else_branch: Option<T>,
 }
 
-/// A statement in ABL - an executable unit that performs an action.
+/// A statement in ABL — an executable unit that performs an action.
 /// All statements are terminated by a period.
+///
+/// Wrapped by [`Statement`], which carries a parser-assigned [`NodeId`].
+/// See `docs/design/ast-invariants.md` §NodeId invariants.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Statement {
+pub enum StatementKind {
     /// Variables
     VariableDeclaration {
         name: Identifier,
@@ -569,6 +572,71 @@ pub enum Statement {
     /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
     /// The label can be referenced by LEAVE and NEXT statements.
     Label { name: String, body: Box<Statement> },
+}
+
+/// A statement in ABL paired with its parser-assigned [`NodeId`].
+///
+/// `PartialEq` is implemented manually to ignore the `id` field, so
+/// structural value-equality in tests continues to work unchanged — tests can
+/// hand-construct `Statement` values via [`Statement::new`] (which defaults
+/// `id` to [`NodeId::DUMMY`]) or compare directly against a [`StatementKind`]
+/// value (the impl short-circuits through the wrapper).
+///
+/// See `docs/design/ast-invariants.md` §NodeId invariants.
+#[derive(Debug, Clone, Eq)]
+pub struct Statement {
+    pub id: NodeId,
+    pub kind: StatementKind,
+}
+
+impl Statement {
+    /// Construct a `Statement` with `id` set to [`NodeId::DUMMY`].
+    ///
+    /// Intended for hand-constructed AST in tests. The parser always assigns
+    /// a real NodeId via its allocator.
+    #[inline]
+    pub fn new(kind: StatementKind) -> Self {
+        Statement {
+            id: NodeId::DUMMY,
+            kind,
+        }
+    }
+
+    /// Construct a `Statement` with an explicit `NodeId`.
+    ///
+    /// Used by the parser; external callers should prefer [`Statement::new`].
+    #[inline]
+    pub fn with_id(id: NodeId, kind: StatementKind) -> Self {
+        Statement { id, kind }
+    }
+}
+
+impl PartialEq for Statement {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl PartialEq<StatementKind> for Statement {
+    #[inline]
+    fn eq(&self, other: &StatementKind) -> bool {
+        &self.kind == other
+    }
+}
+
+impl PartialEq<Statement> for StatementKind {
+    #[inline]
+    fn eq(&self, other: &Statement) -> bool {
+        self == &other.kind
+    }
+}
+
+impl From<StatementKind> for Statement {
+    #[inline]
+    fn from(kind: StatementKind) -> Self {
+        Statement::new(kind)
+    }
 }
 
 /// Access modifier for OO-ABL members.

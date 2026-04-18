@@ -3,7 +3,7 @@
 //! Expressions are parsed with the following precedence (lowest to highest):
 //! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative > unary > postfix > primary.
 
-use crate::{FindType, Literal, LockType, PreprocIf, Span};
+use crate::{FindType, Literal, LockType, NodeId, PreprocIf, Span};
 
 /// A named identifier with its source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,7 +14,7 @@ pub struct Identifier {
 
 /// An ABL expression node.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Expression {
+pub enum ExpressionKind {
     /// A literal value (integer, decimal, string, boolean, or unknown `?`).
     Literal(Literal),
     /// A variable or buffer reference.
@@ -99,4 +99,64 @@ pub enum Expression {
         lock_type: LockType,
         no_error: bool,
     },
+}
+
+/// An ABL expression node with parser-assigned identity.
+///
+/// Wraps an [`ExpressionKind`] with a stable [`NodeId`] for semantic side tables.
+/// See `docs/design/ast-invariants.md` §NodeId invariants.
+#[derive(Debug, Clone, Eq)]
+pub struct Expression {
+    pub id: NodeId,
+    pub kind: ExpressionKind,
+}
+
+impl Expression {
+    /// Construct an `Expression` with `id` set to [`NodeId::DUMMY`].
+    ///
+    /// Intended for hand-constructed AST in tests. The parser always assigns
+    /// a real NodeId via its allocator.
+    #[inline]
+    pub fn new(kind: ExpressionKind) -> Self {
+        Expression {
+            id: NodeId::DUMMY,
+            kind,
+        }
+    }
+
+    /// Construct an `Expression` with an explicit `NodeId`.
+    ///
+    /// Used by the parser; external callers should prefer [`Expression::new`].
+    #[inline]
+    pub fn with_id(id: NodeId, kind: ExpressionKind) -> Self {
+        Expression { id, kind }
+    }
+}
+
+impl PartialEq for Expression {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl PartialEq<ExpressionKind> for Expression {
+    #[inline]
+    fn eq(&self, other: &ExpressionKind) -> bool {
+        &self.kind == other
+    }
+}
+
+impl PartialEq<Expression> for ExpressionKind {
+    #[inline]
+    fn eq(&self, other: &Expression) -> bool {
+        self == &other.kind
+    }
+}
+
+impl From<ExpressionKind> for Expression {
+    #[inline]
+    fn from(kind: ExpressionKind) -> Self {
+        Expression::new(kind)
+    }
 }

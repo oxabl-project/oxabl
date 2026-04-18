@@ -93,6 +93,8 @@ Defines AST nodes for the parser. Key types:
 - **Statements**: VariableDeclaration, Assignment, ExpressionStatement, Block, Do, If, Repeat, Leave, Next, Return, IncludeReference, IncludeArgReference, Empty, Class, Method, Property, Constructor, Destructor, Interface, Using
 - **Data Types**: Integer, Int64, Decimal, Character, Logical, Date, DateTime, DateTimeTz, Handle, Rowid, Recid, Raw, Memptr, Longchar, Clob, Blob, Com, Class
 
+AST invariants relied on by semantic/lint/analyze passes — span rules, NodeId behavior *(Phase 1)*, identifier casing, operator-precedence-in-tree-shape, postfix left-nesting, `PreprocIf<T>` branch treatment, declaration/recovery invariants, and property GET/SET body tri-state — are enumerated in [`docs/design/ast-invariants.md`](docs/design/ast-invariants.md). Any change to `oxabl_ast` that adds, removes, or reshapes a public type must update that doc in the same PR.
+
 ### Parser (`oxabl_parser`)
 
 Parses ABL source code into an AST. Key capabilities:
