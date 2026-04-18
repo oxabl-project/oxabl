@@ -8,13 +8,13 @@
 
 use oxabl_ast::{
     AccessModifier, AssignPair, BufferTarget, CreateTarget, CreateTargetKind, DataRelation,
-    DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, FindType,
-    HandleParamKind, HandlePassingOptions, Identifier, IndexField, Literal, LockType, OnAction,
-    OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation, PreprocIf,
-    RunArgument, RunTarget, SortDirection, Span, Statement, StatementKind, StreamDirection,
-    StreamOperation, SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam,
-    TriggerReferencing, TypeSource, UnknownLiteral, UseIndex, WhenBranch, WidgetQualifier,
-    WidgetRef, XmlSerializeOptions,
+    DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, ExpressionKind,
+    FindType, HandleParamKind, HandlePassingOptions, Identifier, IndexField, Literal, LockType,
+    OnAction, OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation,
+    PreprocIf, RunArgument, RunTarget, SortDirection, Span, Statement, StatementKind,
+    StreamDirection, StreamOperation, SubscribeTarget, TempTableField, TempTableIndex,
+    TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex, WhenBranch,
+    WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -2053,14 +2053,14 @@ impl Parser<'_> {
         while self.check(Kind::And) {
             self.advance();
             let right = self.parse_comparison()?;
-            expr = Expression::And(Box::new(expr), Box::new(right));
+            expr = self.expr(ExpressionKind::And(Box::new(expr), Box::new(right)));
         }
 
         // Handle OR
         while self.check(Kind::Or) {
             self.advance();
             let right = self.parse_and()?;
-            expr = Expression::Or(Box::new(expr), Box::new(right));
+            expr = self.expr(ExpressionKind::Or(Box::new(expr), Box::new(right)));
         }
 
         Ok(expr)
@@ -2086,25 +2086,26 @@ impl Parser<'_> {
         )
     }
 
-    fn make_comparison(&self, left: Expression, op: Kind, right: Expression) -> Expression {
-        match op {
-            Kind::Eq => Expression::Equal(Box::new(left), Box::new(right)),
-            Kind::NotEqual | Kind::Ne => Expression::NotEqual(Box::new(left), Box::new(right)),
-            Kind::LessThan | Kind::Lt => Expression::LessThan(Box::new(left), Box::new(right)),
+    fn make_comparison(&mut self, left: Expression, op: Kind, right: Expression) -> Expression {
+        let kind = match op {
+            Kind::Eq => ExpressionKind::Equal(Box::new(left), Box::new(right)),
+            Kind::NotEqual | Kind::Ne => ExpressionKind::NotEqual(Box::new(left), Box::new(right)),
+            Kind::LessThan | Kind::Lt => ExpressionKind::LessThan(Box::new(left), Box::new(right)),
             Kind::LessThanOrEqual | Kind::Le => {
-                Expression::LessThanOrEqual(Box::new(left), Box::new(right))
+                ExpressionKind::LessThanOrEqual(Box::new(left), Box::new(right))
             }
             Kind::GreaterThan | Kind::Gt => {
-                Expression::GreaterThan(Box::new(left), Box::new(right))
+                ExpressionKind::GreaterThan(Box::new(left), Box::new(right))
             }
             Kind::GreaterThanOrEqual | Kind::Ge => {
-                Expression::GreaterThanOrEqual(Box::new(left), Box::new(right))
+                ExpressionKind::GreaterThanOrEqual(Box::new(left), Box::new(right))
             }
-            Kind::Begins => Expression::Begins(Box::new(left), Box::new(right)),
-            Kind::Matches => Expression::Matches(Box::new(left), Box::new(right)),
-            Kind::Contains => Expression::Contains(Box::new(left), Box::new(right)),
+            Kind::Begins => ExpressionKind::Begins(Box::new(left), Box::new(right)),
+            Kind::Matches => ExpressionKind::Matches(Box::new(left), Box::new(right)),
+            Kind::Contains => ExpressionKind::Contains(Box::new(left), Box::new(right)),
             _ => unreachable!(),
-        }
+        };
+        self.expr(kind)
     }
 
     /// Parse multiple statements until we hit a terminator
@@ -2951,7 +2952,7 @@ impl Parser<'_> {
                 let rhs = self.parse_and()?;
                 // Combine into a logical OR expression using the AST Or variant
                 if let Some(last) = values.last_mut() {
-                    *last = Expression::Or(Box::new(last.clone()), Box::new(rhs));
+                    *last = self.expr(ExpressionKind::Or(Box::new(last.clone()), Box::new(rhs)));
                 }
             }
 
@@ -3173,7 +3174,7 @@ impl Parser<'_> {
                         self.advance(); // consume name
                     }
                     let last_was_include =
-                        matches!(expression, Expression::IncludeReference { .. });
+                        matches!(expression.kind, ExpressionKind::IncludeReference { .. });
                     args.push(RunArgument {
                         direction,
                         expression,
@@ -3236,7 +3237,8 @@ impl Parser<'_> {
                 persistent = true;
                 if self.check(Kind::Set) {
                     self.advance();
-                    persistent_handle = Some(Expression::Identifier(self.parse_identifier()?));
+                    let ident = self.parse_identifier()?;
+                    persistent_handle = Some(self.expr(ExpressionKind::Identifier(ident)));
                 }
             } else if self.check(Kind::Asynchronous) {
                 self.advance();
@@ -3291,7 +3293,7 @@ impl Parser<'_> {
                     }
                     let expression = self.parse_expression()?;
                     let last_was_include =
-                        matches!(expression, Expression::IncludeReference { .. });
+                        matches!(expression.kind, ExpressionKind::IncludeReference { .. });
                     args.push(RunArgument {
                         direction,
                         expression,
@@ -3389,7 +3391,7 @@ impl Parser<'_> {
     /// The `(` belongs to the RUN argument list.
     fn parse_run_in_handle(&mut self) -> ParseResult<Expression> {
         let identifier = self.parse_identifier()?;
-        let mut expr = Expression::Identifier(identifier);
+        let mut expr = self.expr(ExpressionKind::Identifier(identifier));
 
         loop {
             if self.check(Kind::Colon) {
@@ -3401,10 +3403,10 @@ impl Parser<'_> {
                 if next_is_member {
                     self.advance(); // consume ':'
                     let member = self.parse_identifier()?;
-                    expr = Expression::MemberAccess {
+                    expr = self.expr(ExpressionKind::MemberAccess {
                         object: Box::new(expr),
                         member,
-                    };
+                    });
                 } else {
                     break;
                 }
@@ -3412,10 +3414,10 @@ impl Parser<'_> {
                 self.advance(); // consume '['
                 let index = self.parse_expression()?;
                 self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
-                expr = Expression::ArrayAccess {
+                expr = self.expr(ExpressionKind::ArrayAccess {
                     array: Box::new(expr),
                     index: Box::new(index),
-                };
+                });
             } else {
                 break;
             }
@@ -3742,9 +3744,9 @@ impl Parser<'_> {
                 };
                 assignments.push(AssignPair {
                     target,
-                    value: Expression::Literal(oxabl_ast::Literal::Unknown(
+                    value: self.expr(ExpressionKind::Literal(oxabl_ast::Literal::Unknown(
                         oxabl_ast::UnknownLiteral { span },
-                    )),
+                    ))),
                 });
                 continue;
             }
@@ -5234,7 +5236,7 @@ impl Parser<'_> {
             // Bare identifier — do NOT use parse_primary() which promotes identifier( to function call.
             // Instead, parse just the identifier and return it as an Expression::Identifier.
             let ident = self.parse_identifier()?;
-            Ok(Expression::Identifier(ident))
+            Ok(self.expr(ExpressionKind::Identifier(ident)))
         } else {
             Err(ParseError {
                 message: "Expected event name (string literal, identifier, or VALUE expression)"
@@ -5600,14 +5602,15 @@ impl Parser<'_> {
                 Ok(expr) => expr,
                 Err(_) => {
                     self.skip_to_statement_end();
+                    let span = self.current_span();
+                    let dummy_expr =
+                        self.expr(ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
+                            span,
+                        })));
                     return Ok(self.stmt(StatementKind::StreamIo {
                         direction,
                         stream_name,
-                        operation: StreamOperation::Through(Expression::Literal(Literal::Unknown(
-                            UnknownLiteral {
-                                span: self.current_span(),
-                            },
-                        ))),
+                        operation: StreamOperation::Through(dummy_expr),
                     }));
                 }
             };
