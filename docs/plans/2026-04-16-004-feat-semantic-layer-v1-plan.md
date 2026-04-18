@@ -815,7 +815,7 @@ Deliverables: standalone crate, no other crate depends on it yet. Consumable for
 
 Estimated effort: medium. `.df` grammar is small but attribute variety is long-tailed.
 
-### Phase 3 — `oxabl_semantic` crate skeleton + declare pass
+### Phase 3 — `oxabl_semantic` crate skeleton + declare pass  ✅
 
 **Goal:** first of three passes. Symbol table + scope tree populated for every AST construct
 the parser supports. No types, no references yet.
@@ -840,21 +840,25 @@ crates/oxabl_semantic/src/
 
 Tasks:
 
-- New `crates/oxabl_semantic/` workspace member (no `serde_json` dep).
-- `scope.rs`: `ScopeId`, `ScopeTree`, `Scope`, `ScopeKind`, `BindingMap`.
-- `symbol.rs`: `SymbolId`, `Symbol`, `SymbolKind`, `SymbolFlags`, `SymbolTable`,
+- [x] New `crates/oxabl_semantic/` workspace member (no `serde_json` dep).
+- [x] `scope.rs`: `ScopeId`, `ScopeTree`, `Scope`, `ScopeKind`, `BindingMap`.
+- [x] `symbol.rs`: `SymbolId`, `Symbol`, `SymbolKind`, `SymbolFlags`, `SymbolTable`,
   `rebinding_scopes`.
-- `namespace.rs`: `NamespaceId`, `NUM_NAMESPACES` constant, resolution-order table.
-- `resolve.rs` (declare half): `declare_pass(program, ctx) -> (ScopeTree, SymbolTable,
+- [x] `namespace.rs`: `NamespaceId`, `NUM_NAMESPACES` constant, resolution-order table.
+- [x] `resolve.rs` (declare half): `declare_pass(program, ctx) -> (ScopeTree, SymbolTable,
   Vec<Diagnostic>)`. One case per statement kind the parser emits. Diagnostics:
-  `SEM0001`/`SEM0002`/`SEM0003`.
-- `builtins.rs`: seeds five entries (`THIS-OBJECT`, `SUPER`, `SELF`, `SESSION`,
+  `SEM0001`/`SEM0003` emitted in v1 (`SEM0002` reserved; SHARED-mismatch surfaces once
+  Phase 4a wires cross-scope lookup).
+- [x] `builtins.rs`: seeds five entries (`THIS-OBJECT`, `SUPER`, `SELF`, `SESSION`,
   `ERROR-STATUS`). Grows from Phase 5 corpus audit, not from a speculative catalog.
-- Tests: inline `assert_eq!` unit tests per declaration construct (DEFINE VARIABLE/VAR/
-  PARAMETER/TEMP-TABLE/BUFFER/STREAM/FRAME/EVENT/PROPERTY, PROCEDURE, FUNCTION, CLASS +
-  METHOD, INTERFACE, CONSTRUCTOR/DESTRUCTOR, CATCH variable, DO-counter variable, FOR EACH
-  implicit buffer). **Target: ≥ 40 tests** (matches existing repo convention — no `insta`
-  dependency).
+- [x] Tests: 47 inline `assert_eq!` tests per declaration construct
+  (VARIABLE/PARAMETER/TEMP-TABLE/BUFFER/STREAM/FRAME/EVENT/PROPERTY/DATASET/DATA-SOURCE,
+  PROCEDURE, FUNCTION, CLASS + METHOD, INTERFACE, CONSTRUCTOR/DESTRUCTOR, CATCH variable,
+  DO-counter variable, FOR EACH implicit buffer, PreprocIf branches, ON trigger, TRIGGER
+  PROCEDURE, SEM0001/SEM0003). Plus 19 scope/namespace/type/index_vec/builtins tests — 66
+  total in the crate. No `insta` dependency.
+- [x] `VirtualSpan` newtype added to `oxabl_common`; re-exported.
+- [x] `NodeIndexVec<T>` side table seeded (`references` + `types` reserved for Phase 4).
 
 Deliverables: `fn declare_pass(program, ctx) -> (...)` callable and tested.
 
