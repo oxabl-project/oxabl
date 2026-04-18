@@ -8,6 +8,11 @@
     "crates/oxabl_ast": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_common": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_codegen": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
-    "crates/oxabl_workspace": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
+    "crates/oxabl_workspace": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_preprocessor": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_schema": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_semantic": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_lint": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_analyze": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
   }
 }

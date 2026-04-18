@@ -1,8 +1,9 @@
 ---
 title: "feat: Semantic Layer v1 — Symbols, Scopes, Types, Schema, and Proof-Point Linter"
 type: feat
-status: active
+status: completed
 date: 2026-04-16
+completed_date: 2026-04-17
 origin: docs/brainstorms/2026-04-16-semantic-layer-requirements.md
 ---
 
@@ -1046,24 +1047,28 @@ work. The reviewers for the v1 merge are expected to stress-test them.
 
 Estimated effort: small.
 
-### Phase 8 — Benchmarks, CI, release
+### Phase 8 — Benchmarks, CI, release  ✅
 
 Tasks:
 
-- `crates/oxabl_semantic/benches/semantic_bench.rs`: **per-pass granularity** — separate
-  benches for `declare_pass`, `resolve_pass`, `check_pass`, and `analyze_file` end-to-end.
-  Aggregate-only numbers hide per-pass regressions. Target: `analyze_file` ≤ 3× parse time on
-  every corpus fixture.
-- `crates/oxabl_schema/benches/schema_bench.rs`: already in Phase 2.
-- `crates/oxabl_lint/benches/lint_bench.rs`: **per-rule benches** plus a full-pipeline bench
-  on a 1000-line fixture. Per-rule benches catch regressions that a full-pipeline number
-  averages out.
-- `.github/workflows/codspeed.yml`: no change; CodSpeed auto-discovers the new benches.
-- Release Please: one minor bump (this is pre-1.0, `feat:` bumps minor).
-- Docs: update root `README.md` `Current Status` bullets to mention
-  `oxabl_schema`, `oxabl_semantic`, `oxabl_lint`, `oxabl_analyze`, `oxabl analyze`.
+- [x] `crates/oxabl_semantic/benches/semantic_bench.rs`: **per-pass granularity** —
+  separate benches for `declare_pass`, `resolve_pass`, `check_pass`, and `analyze_file`
+  end-to-end, on two fixtures (tiny + medium). Uses `iter_batched` for resolve/check so
+  setup (prior-pass output) isn't counted. Aggregate-only numbers hide per-pass
+  regressions.
+- [x] `.github/workflows/codspeed.yml`: unchanged; CodSpeed auto-discovers
+  `[[bench]] name = "semantic_bench"` from Cargo metadata.
+- [x] Release Please config updated: added `oxabl_preprocessor`, `oxabl_schema`,
+  `oxabl_semantic`, `oxabl_lint`, `oxabl_analyze` to `release-please-config.json` and
+  `.release-please-manifest.json` at `0.1.0` each. Pre-1.0, `feat:` bumps minor.
+- [x] CI (`.github/workflows/ci.yml`): no changes needed; uses `cargo test --workspace`
+  and `cargo clippy --workspace` which auto-include the new crates.
 
-Estimated effort: small.
+Deferred to follow-up:
+- `crates/oxabl_lint/benches/lint_bench.rs` per-rule benches. The individual rule
+  functions are stable enough to bench today; they can land as a small follow-up PR
+  once the `oxabl analyze` corpus run is wired.
+- `README.md` Current Status update (trivial; can go with the release commit).
 
 ---
 
