@@ -9,5 +9,6 @@ members = [
     "crates/oxabl_workspace",
     "crates/oxabl_preprocessor",
     "crates/oxabl_schema",
+    "crates/oxabl_semantic",
 ]
 resolver = "2"
