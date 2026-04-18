@@ -12,17 +12,23 @@
 //! incrementality without an IR rewrite.
 
 mod builtins;
+mod check;
+mod coercion;
 mod diagnostics;
 mod index_vec;
 mod namespace;
+mod operators;
 mod resolve;
 mod scope;
 mod symbol;
 mod types;
 
+pub use check::check_pass;
+pub use coercion::{assignable, assignable_strict, is_narrowing_warning, widen_primitive};
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
 pub use index_vec::NodeIndexVec;
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
+pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
 pub use resolve::{Resolution, UnresolvedReason, declare_pass, resolve_pass};
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use symbol::{Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable};
@@ -71,12 +77,16 @@ pub struct Semantic {
 }
 
 /// Run every semantic pass over `program` and return a [`Semantic`]. v1
-/// runs declare (Phase 3) and resolve (Phase 4a); the type-check pass
-/// (Phase 4b) populates the remaining expression-body slots in `types`.
+/// runs all three passes: declare (Phase 3), resolve (Phase 4a), and
+/// type-check (Phase 4b). The resulting `Semantic` carries fully populated
+/// scope tree, symbol table, reference map, and type map.
 pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> Semantic {
     let (scope_tree, mut symbols, mut diagnostics) = declare_pass(program, ctx);
-    let (references, types, resolve_diags) = resolve_pass(program, ctx, &scope_tree, &mut symbols);
+    let (references, mut types, resolve_diags) =
+        resolve_pass(program, ctx, &scope_tree, &mut symbols);
     diagnostics.extend(resolve_diags);
+    let check_diags = check_pass(program, ctx, &scope_tree, &symbols, &references, &mut types);
+    diagnostics.extend(check_diags);
     Semantic {
         scope_tree,
         symbols,
