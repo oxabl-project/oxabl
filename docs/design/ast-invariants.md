@@ -54,25 +54,30 @@ currently has to code defensively around; they become targets for follow-up hard
   not currently asserted and should not be relied on as a hard invariant until a
   `debug_assert!` enforces it.
 
-## 2. NodeId invariants *(Phase 1)*
+## 2. NodeId invariants
 
-Not yet in the tree. When Phase 1 of the semantic-layer v1 plan lands:
+`Statement` carries a stable `NodeId` as of Phase 1a
+(`crates/oxabl_ast/src/node_id.rs`). `Expression` will carry one too as of Phase 1b.
 
-- Every `Statement` and `Expression` variant carries a `NodeId(u32)` field named `id`,
-  populated by the parser from a monotonic `NodeIdAllocator` on the `Parser` struct.
-- NodeIds are **dense, unique, monotonic** within a single parse: allocated contiguously from
-  `0`, never reused, never skipped.
-- `NodeId(0)` is reserved for the `Program` root; allocation for child nodes starts at `1`.
-  `NodeId::DUMMY == NodeId(u32::MAX)` is reserved for AST constructors that synthesize
-  placeholder nodes outside of parsing and must never appear in a parser-produced tree.
-- Recovery-generated `Statement::Empty` nodes get a NodeId like any other node. Side tables
-  keyed on those NodeIds (`references`, `types` in the future semantic layer) are allowed to
-  be absent — consumers treat "no entry" as "not analyzed."
-- AST `PartialEq` is derived to **exclude** the `id` field, so structural value-equality
-  tests (as used throughout `oxabl_parser/src/parser/tests.rs`) continue to work unchanged.
-  The derivation mechanism (project-local `#[derive(AstPartialEq)]` macro vs. manual impls) is
-  a Phase 1 decision; whichever is chosen, no compare-ignoring helper is required at call
-  sites.
+- `NodeId(u32)` is a public, `Copy + Eq + Hash` handle. `NodeId::PROGRAM == NodeId(0)` is
+  reserved for the `Program` root; `NodeId::DUMMY == NodeId(u32::MAX)` is reserved for
+  hand-constructed nodes (tests, AST builders). `DUMMY` must never appear in a parser-produced
+  tree.
+- `NodeIdAllocator::new()` starts allocation at `NodeId(1)` and is monotonic: `alloc()`
+  yields dense, unique, contiguous ids. The `Parser` owns one allocator per parse.
+- `Statement { id, kind }` is a wrapper struct; the original enum is now `StatementKind`.
+  `Statement::new(kind)` constructs with `id = NodeId::DUMMY` for tests; the parser uses the
+  `&mut self` helper `Parser::stmt(kind)` to allocate real ids.
+- `PartialEq` on `Statement` is **implemented manually** to ignore `id`: structural value
+  equality (`self.kind == other.kind`) is preserved. Cross-type `PartialEq<StatementKind> for
+  Statement` (and its symmetric partner) lets tests assert against a bare `StatementKind`
+  value. No compare-ignoring helper is required at call sites.
+- Recovery-generated `Statement { kind: StatementKind::Empty, .. }` nodes still get a NodeId
+  like any other. Side tables (the future `references` / `types` in `oxabl_semantic`) are
+  allowed to be absent at those NodeIds — consumers treat "no entry" as "not analyzed."
+- **Expression NodeIds land in Phase 1b.** Until then, `Expression` remains a plain enum and
+  carries no NodeId. Side tables that want to key on expression nodes must wait for 1b or use
+  the enclosing `Statement::id` as a coarser key.
 
 ## 3. Identifier casing
 
@@ -207,7 +212,8 @@ a runtime contract.
 Concrete follow-ups likely worth an assertion:
 
 - Span end ≥ span start wherever a `Span` is constructed.
-- NodeId monotonicity on allocation *(add at Phase 1)*.
+- NodeId allocator exhaustion (already asserted via `debug_assert!` in
+  `NodeIdAllocator::alloc`).
 - Parser cursor forward progress in `parse_program`'s recovery loop (already implicitly
   enforced by the `pos_before == self.current` force-advance; converting that branch to a
   `debug_assert!` once the force-advance is proven unreachable is the cleaner shape).
@@ -220,5 +226,5 @@ Concrete follow-ups likely worth an assertion:
   is an invariant change and must touch this doc.
 - **Non-scope:** adding a new downstream consumer that merely reads the AST does not require
   a doc update — that is what the doc exists for.
-- **Phase 1 update:** when NodeIds land, §2 moves from *(Phase 1)* to confirmed, and the
-  "AST value equality preserved" derivation mechanism is recorded verbatim.
+- **Phase 1b update:** when `Expression` gains its own `NodeId` via the same wrapper
+  pattern, §2 removes the final "until Phase 1b" caveat and this paragraph is deleted.

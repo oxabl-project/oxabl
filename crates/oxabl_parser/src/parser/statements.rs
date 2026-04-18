@@ -11,10 +11,10 @@ use oxabl_ast::{
     DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, FindType,
     HandleParamKind, HandlePassingOptions, Identifier, IndexField, Literal, LockType, OnAction,
     OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation, PreprocIf,
-    RunArgument, RunTarget, SortDirection, Span, Statement, StreamDirection, StreamOperation,
-    SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
-    TypeSource, UnknownLiteral, UseIndex, WhenBranch, WidgetQualifier, WidgetRef,
-    XmlSerializeOptions,
+    RunArgument, RunTarget, SortDirection, Span, Statement, StatementKind, StreamDirection,
+    StreamOperation, SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam,
+    TriggerReferencing, TypeSource, UnknownLiteral, UseIndex, WhenBranch, WidgetQualifier,
+    WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -87,7 +87,7 @@ impl Parser<'_> {
         // Skip empty statements
         if self.check(Kind::Period) {
             self.advance();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // CATCH / FINALLY blocks — must be checked before the block-label heuristic because
@@ -105,7 +105,7 @@ impl Parser<'_> {
         // widget (set by a prior CHOOSE or selection-list interaction).
         if self.check(Kind::Colon) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // Block label: `LABEL: DO: ...` or `LABEL: REPEAT: ...`
@@ -127,10 +127,10 @@ impl Parser<'_> {
             let name = self.source[token.start..token.end].to_string();
             self.advance(); // consume ':'
             let body = self.parse_statement()?;
-            return Ok(Statement::Label {
+            return Ok(self.stmt(StatementKind::Label {
                 name,
                 body: Box::new(body),
-            });
+            }));
         }
 
         // Numeric-prefixed block label: `1TO99-MILLIONS: DO:` — ABL allows labels that
@@ -156,10 +156,10 @@ impl Parser<'_> {
             );
             self.advance(); // consume ':'
             let body = self.parse_statement()?;
-            return Ok(Statement::Label {
+            return Ok(self.stmt(StatementKind::Label {
                 name,
                 body: Box::new(body),
-            });
+            }));
         }
 
         // DO blocks
@@ -187,7 +187,7 @@ impl Parser<'_> {
                 None
             };
             self.expect_period("Expected '.' to come after LEAVE")?;
-            return Ok(Statement::Leave(label));
+            return Ok(self.stmt(StatementKind::Leave(label)));
         }
 
         // NEXT [label].
@@ -200,14 +200,14 @@ impl Parser<'_> {
                 None
             };
             self.expect_period("Expected '.' to come after NEXT")?;
-            return Ok(Statement::Next(label));
+            return Ok(self.stmt(StatementKind::Next(label)));
         }
 
         // QUIT — exits the entire program; no label.
         if self.check(Kind::Quit) {
             self.advance();
             self.expect_period("Expected '.' after QUIT")?;
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // Bare END [qualifier]. — an orphaned block terminator appearing at the top-level
@@ -234,7 +234,7 @@ impl Parser<'_> {
             if self.check(Kind::Period) {
                 self.advance(); // consume '.'
             }
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // UNDO [label] [, LEAVE/RETRY/NEXT/RETURN [label]].
@@ -271,7 +271,7 @@ impl Parser<'_> {
                 }
             }
             self.expect_period("Expected '.' after UNDO statement")?;
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // Return
@@ -344,7 +344,7 @@ impl Parser<'_> {
             // Use skip_to_statement_end so field-access dots (e.g. vendor.vend-number) are not
             // mistaken for the statement-terminating period.
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // DOS / UNIX / VMS statements: launch the OS command interpreter.
@@ -354,14 +354,14 @@ impl Parser<'_> {
         if self.check(Kind::Dos) || self.check(Kind::Unix) {
             self.advance();
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
         if self.check(Kind::Identifier) {
             let tok = self.peek();
             if self.source[tok.start..tok.end].eq_ignore_ascii_case("vms") {
                 self.advance();
                 self.skip_to_statement_end();
-                return Ok(Statement::Empty);
+                return Ok(self.stmt(StatementKind::Empty));
             }
         }
 
@@ -369,27 +369,27 @@ impl Parser<'_> {
         if self.check(Kind::Compile) {
             self.advance(); // consume COMPILE
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // PROCESS EVENTS. — flush the ABL event queue.
         if self.check(Kind::Process) {
             self.advance(); // consume PROCESS
             self.skip_to_period();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // SYSTEM-DIALOG PRINTER-SETUP [UPDATE var]. — OS print-setup dialog.
         if self.check(Kind::SystemDialog) {
             self.advance(); // consume SYSTEM-DIALOG
             self.skip_to_period();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // BLOCK-LEVEL / ROUTINE-LEVEL ON ERROR UNDO, THROW. — error propagation directives.
         if self.check(Kind::BlockLevel) || self.check(Kind::RoutineLevel) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // THROW expr. — raise an exception.
@@ -399,7 +399,7 @@ impl Parser<'_> {
                 self.parse_expression().ok();
             }
             self.expect_period("Expected '.' after THROW")?;
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // ASSIGN statement
@@ -448,7 +448,7 @@ impl Parser<'_> {
             Kind::PreprocEndif | Kind::PreprocElse | Kind::PreprocElseif
         ) {
             self.advance();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // Stream I/O statements: INPUT/OUTPUT/INPUT-OUTPUT
@@ -522,7 +522,7 @@ impl Parser<'_> {
                 self.advance();
             }
             self.expect_period("Expected '.' after EMPTY TEMP-TABLE")?;
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // COPY-LOB: complex LOB manipulation statement — skip to next statement period.
@@ -530,32 +530,32 @@ impl Parser<'_> {
         // '.' field-access separators inside expressions like clob_data.datawad.
         if self.check(Kind::CopyLob) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // PUT [STREAM s] UNFORMATTED expr. — stream output statement, skip to statement end.
         if self.check(Kind::Put) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // FORM ... — legacy UI form definition, skip to statement end.
         // Uses skip_to_statement_end() to skip over .field-access in form items.
         if self.check(Kind::Form) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // VIEW [STREAM s] FRAME f — UI frame display statement, skip to statement end.
         if self.check(Kind::View) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // HIDE [STREAM s] FRAME f [NO-PAUSE] — UI hide statement, skip to statement end.
         if self.check(Kind::Hide) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // UPDATE / SET / PROMPT-FOR — may contain an EDITING: ... END. sub-block.
@@ -563,7 +563,7 @@ impl Parser<'_> {
         // along the way, parse the editing block body before consuming the outer END.
         if self.check(Kind::Update) || self.check(Kind::Set) || self.check(Kind::PromptFor) {
             self.skip_to_statement_end_editing_aware();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
@@ -615,13 +615,13 @@ impl Parser<'_> {
             || self.check(Kind::NextPrompt)
         {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // Embedded SQL: SELECT ... FROM ... / INSERT INTO ... — embedded SQL in ABL.
         if self.check(Kind::Select) || self.check(Kind::Insert) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // LOAD "key" [BASE-KEY "root"]. / UNLOAD "key". / USE "key". — Windows registry access.
@@ -631,7 +631,7 @@ impl Parser<'_> {
             let text = self.source[tok.start..tok.end].to_ascii_lowercase();
             if matches!(text.as_str(), "load" | "unload" | "use") {
                 self.skip_to_period();
-                return Ok(Statement::Empty);
+                return Ok(self.stmt(StatementKind::Empty));
             }
         }
 
@@ -639,7 +639,7 @@ impl Parser<'_> {
         // Uses skip_to_statement_end() to skip over ROWID(...) and NO-ERROR properly.
         if self.check(Kind::Reposition) && Self::can_be_identifier(self.peek_at(1).kind) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
@@ -654,7 +654,7 @@ impl Parser<'_> {
                 }
                 self.advance();
             }
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // Check for traditional define statement
@@ -714,10 +714,10 @@ impl Parser<'_> {
                 self.advance();
             }
             self.expect_period("Expected '.' to end statement")?;
-            return Ok(Statement::Assignment {
+            return Ok(self.stmt(StatementKind::Assignment {
                 target: left,
                 value,
-            });
+            }));
         }
 
         if self.check(Kind::Equals) {
@@ -736,10 +736,10 @@ impl Parser<'_> {
                 self.advance();
             }
             self.expect_period("Expected '.' to end statement")?;
-            return Ok(Statement::Assignment {
+            return Ok(self.stmt(StatementKind::Assignment {
                 target: left,
                 value,
-            });
+            }));
         }
 
         // not an assignment, continue parsing as full expression
@@ -751,7 +751,7 @@ impl Parser<'_> {
         // Fast path: statement ends with period (vast majority of cases).
         if self.check(Kind::Period) {
             self.advance();
-            return Ok(Statement::ExpressionStatement(expr));
+            return Ok(self.stmt(StatementKind::ExpressionStatement(expr)));
         }
 
         // Unified continuation logic for implicit output / preprop macro invocations.
@@ -796,15 +796,15 @@ impl Parser<'_> {
 
             if !next_is_new_statement && !next_is_block_label {
                 self.skip_to_statement_end();
-                return Ok(Statement::ExpressionStatement(expr));
+                return Ok(self.stmt(StatementKind::ExpressionStatement(expr)));
             }
             // Next token is a new statement — treat current expression as
             // already-terminated (preprop macro expanded its own period).
-            return Ok(Statement::ExpressionStatement(expr));
+            return Ok(self.stmt(StatementKind::ExpressionStatement(expr)));
         }
 
         self.expect_period("Expected '.' to end statement")?;
-        Ok(Statement::ExpressionStatement(expr))
+        Ok(self.stmt(StatementKind::ExpressionStatement(expr)))
     }
 
     // parse define variable as type [no-undo] [initial]
@@ -950,21 +950,21 @@ impl Parser<'_> {
         // DEFINE QUERY — skip to statement end (may contain table.field references)
         if self.check(Kind::Query) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to statement end.
         // Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
         if self.check(Kind::Workfile) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
         // etc. that are not separately handled. Skip the whole DEFINE statement.
         if self.check(Kind::Browse) || self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         // DEFINE VARIABLE / DEFINE VAR
@@ -1079,13 +1079,13 @@ impl Parser<'_> {
                 // size specs (e.g. 24.4 or .62) are not mistaken for the terminator.
                 Kind::ViewAs | Kind::Size => {
                     self.skip_to_statement_end();
-                    return Ok(Statement::VariableDeclaration {
+                    return Ok(self.stmt(StatementKind::VariableDeclaration {
                         name,
                         type_source,
                         initial_value,
                         no_undo,
                         extent,
-                    });
+                    }));
                 }
                 _ => break,
             }
@@ -1093,13 +1093,13 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' to end statement")?;
 
-        Ok(Statement::VariableDeclaration {
+        Ok(self.stmt(StatementKind::VariableDeclaration {
             name,
             type_source,
             initial_value,
             no_undo,
             extent,
-        })
+        }))
     }
 
     /// Parse: VAR type name [= value].
@@ -1146,13 +1146,13 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' to end statement")?;
 
-        Ok(Statement::VariableDeclaration {
+        Ok(self.stmt(StatementKind::VariableDeclaration {
             name,
             type_source,
             initial_value,
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
-        })
+        }))
     }
 
     fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
@@ -1299,10 +1299,10 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after parameter definition")?;
 
-        Ok(Statement::DefineParameter {
+        Ok(self.stmt(StatementKind::DefineParameter {
             direction,
             param_type,
-        })
+        }))
     }
 
     fn parse_handle_passing_options(&mut self) -> HandlePassingOptions {
@@ -1644,7 +1644,7 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after DEFINE TEMP-TABLE")?;
 
-        Ok(Statement::DefineTempTable {
+        Ok(self.stmt(StatementKind::DefineTempTable {
             name,
             no_undo,
             like_table,
@@ -1653,7 +1653,7 @@ impl Parser<'_> {
             fields,
             indexes,
             xml_options,
-        })
+        }))
     }
 
     // Parse DEFINE BUFFER name FOR [TEMP-TABLE] table [PRESELECT] [LABEL "str"].
@@ -1721,13 +1721,13 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after DEFINE BUFFER")?;
 
-        Ok(Statement::DefineBuffer {
+        Ok(self.stmt(StatementKind::DefineBuffer {
             name,
             target,
             preselect,
             label,
             xml_options,
-        })
+        }))
     }
 
     // Parse DEFINE DATASET statement.
@@ -1789,7 +1789,7 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after DEFINE DATASET")?;
 
-        Ok(Statement::DefineDataset {
+        Ok(self.stmt(StatementKind::DefineDataset {
             name,
             access,
             is_static,
@@ -1802,7 +1802,7 @@ impl Parser<'_> {
             buffers,
             data_relations,
             parent_id_relations,
-        })
+        }))
     }
 
     // Parse a DATA-RELATION clause.
@@ -2028,13 +2028,13 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after DEFINE DATA-SOURCE")?;
 
-        Ok(Statement::DefineDataSource {
+        Ok(self.stmt(StatementKind::DefineDataSource {
             name,
             access,
             is_static,
             query,
             source_buffers,
-        })
+        }))
     }
 
     /// Continue parsing an expression after additive level has been parsed
@@ -2309,7 +2309,7 @@ impl Parser<'_> {
 
         let body = self.parse_block_body()?;
 
-        Ok(Statement::Do {
+        Ok(self.stmt(StatementKind::Do {
             loop_var,
             from,
             to,
@@ -2317,7 +2317,7 @@ impl Parser<'_> {
             while_condition,
             transaction,
             body,
-        })
+        }))
     }
 
     fn parse_if_statement(&mut self) -> ParseResult<Statement> {
@@ -2379,7 +2379,7 @@ impl Parser<'_> {
             } else if self.check(Kind::End) {
                 // Empty ELSE branch: END belongs to the enclosing DO/FOR/REPEAT block.
                 // Don't consume it — the outer block parser handles it.
-                Statement::Empty
+                self.stmt(StatementKind::Empty)
             } else {
                 self.parse_statement()?
             };
@@ -2388,11 +2388,11 @@ impl Parser<'_> {
             None
         };
 
-        Ok(Statement::If {
+        Ok(self.stmt(StatementKind::If {
             condition,
             then_branch: Box::new(then_branch),
             else_branch,
-        })
+        }))
     }
 
     fn parse_repeat_statement(&mut self) -> ParseResult<Statement> {
@@ -2549,10 +2549,10 @@ impl Parser<'_> {
 
         let body = self.parse_block_body()?;
 
-        Ok(Statement::Repeat {
+        Ok(self.stmt(StatementKind::Repeat {
             while_condition,
             body,
-        })
+        }))
     }
 
     fn parse_return_statement(&mut self) -> ParseResult<Statement> {
@@ -2564,7 +2564,7 @@ impl Parser<'_> {
             && self.source[self.peek().start..self.peek().end].eq_ignore_ascii_case("error")
         {
             self.skip_to_statement_end();
-            return Ok(Statement::Return(None));
+            return Ok(self.stmt(StatementKind::Return(None)));
         }
 
         // Check if there's a return value (not just a period)
@@ -2579,7 +2579,7 @@ impl Parser<'_> {
             self.advance();
         }
         self.expect_period("Expected a '.' after RETURN")?;
-        Ok(Statement::Return(value))
+        Ok(self.stmt(StatementKind::Return(value)))
     }
 
     fn parse_for_each(&mut self) -> ParseResult<Statement> {
@@ -2780,13 +2780,13 @@ impl Parser<'_> {
         }
         let body = self.parse_block_body()?;
 
-        Ok(Statement::ForEach {
+        Ok(self.stmt(StatementKind::ForEach {
             buffer,
             of_relation,
             where_clause,
             lock_type,
             body,
-        })
+        }))
     }
 
     // parse find statements
@@ -2900,14 +2900,14 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after FIND statement")?;
 
-        Ok(Statement::Find {
+        Ok(self.stmt(StatementKind::Find {
             find_type,
             buffer,
             key_value,
             where_clause,
             lock_type,
             no_error,
-        })
+        }))
     }
 
     // Parse Case statement and when clauses
@@ -2985,11 +2985,11 @@ impl Parser<'_> {
         }
         self.expect_period("Expected '.' after END CASE")?;
 
-        Ok(Statement::Case {
+        Ok(self.stmt(StatementKind::Case {
             expression,
             when_branches,
             otherwise,
-        })
+        }))
     }
 
     fn parse_procedure(&mut self) -> ParseResult<Statement> {
@@ -3108,7 +3108,7 @@ impl Parser<'_> {
             self.advance();
         }
 
-        Ok(Statement::Procedure { name, body })
+        Ok(self.stmt(StatementKind::Procedure { name, body }))
     }
 
     // parse RUN statements
@@ -3370,7 +3370,7 @@ impl Parser<'_> {
             self.expect_period("Expected '.' after RUN statement")?;
         }
 
-        Ok(Statement::Run {
+        Ok(self.stmt(StatementKind::Run {
             target,
             arguments,
             in_handle,
@@ -3380,7 +3380,7 @@ impl Parser<'_> {
             async_handle,
             event_procedure,
             no_error,
-        })
+        }))
     }
 
     /// Parse a handle expression for `RUN ... IN <handle>`.
@@ -3568,12 +3568,12 @@ impl Parser<'_> {
             // Use skip_to_statement_end() to avoid stopping at field-access dots
             // inside expressions (e.g. title "..." + table.field + "...").
             self.skip_to_statement_end();
-            return Ok(Statement::Display {
+            return Ok(self.stmt(StatementKind::Display {
                 stream_name,
                 items,
                 except,
                 frame,
-            });
+            }));
         }
 
         // Parse optional WITH FRAME clause
@@ -3586,22 +3586,22 @@ impl Parser<'_> {
             // Skip all WITH options to statement end (handles field-access dots in
             // expressions like `title "prefix" + table.field + "suffix"`).
             self.skip_to_statement_end();
-            return Ok(Statement::Display {
+            return Ok(self.stmt(StatementKind::Display {
                 stream_name,
                 items,
                 except,
                 frame,
-            });
+            }));
         }
 
         self.expect_period("Expected '.' after DISPLAY statement")?;
 
-        Ok(Statement::Display {
+        Ok(self.stmt(StatementKind::Display {
             stream_name,
             items,
             except,
             frame,
-        })
+        }))
     }
 
     // Parse MESSAGE statement
@@ -3684,7 +3684,7 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after MESSAGE statement")?;
 
-        Ok(Statement::Message { items, set_targets })
+        Ok(self.stmt(StatementKind::Message { items, set_targets }))
     }
 
     // Parse ASSIGN statement: ASSIGN target = value [target = value ...].
@@ -3694,9 +3694,9 @@ impl Parser<'_> {
         // skip_to_period() already consumes the terminating period
         if self.check(Kind::Frame) {
             self.skip_to_period();
-            return Ok(Statement::Assign {
+            return Ok(self.stmt(StatementKind::Assign {
                 assignments: SmallVec::new(),
-            });
+            }));
         }
         let assignments = self.parse_assign_pairs()?;
         // Optional NO-ERROR after ASSIGN
@@ -3708,7 +3708,7 @@ impl Parser<'_> {
         if self.check(Kind::Period) {
             self.advance();
         }
-        Ok(Statement::Assign { assignments })
+        Ok(self.stmt(StatementKind::Assign { assignments }))
     }
 
     /// Parse one or more `target = value` pairs for ASSIGN and BUFFER-COPY ASSIGN clauses.
@@ -3845,22 +3845,22 @@ impl Parser<'_> {
                     span: self.current_span(),
                 });
             }
-            return Ok(Statement::Function {
+            return Ok(self.stmt(StatementKind::Function {
                 name,
                 return_type,
                 body: Vec::new(),
-            });
+            }));
         }
 
         // IN super|this-procedure|handle — external function reference (forward declaration)
         // e.g. "function name returns type (params) in super."
         if self.check(Kind::KwIn) {
             self.skip_to_statement_end();
-            return Ok(Statement::Function {
+            return Ok(self.stmt(StatementKind::Function {
                 name,
                 return_type,
                 body: Vec::new(),
-            });
+            }));
         }
 
         // MAP TO name IN handle — external function mapping (class context)
@@ -3869,11 +3869,11 @@ impl Parser<'_> {
                 self.advance();
             }
             self.expect_period("Expected '.' after MAP TO")?;
-            return Ok(Statement::Function {
+            return Ok(self.stmt(StatementKind::Function {
                 name,
                 return_type,
                 body: Vec::new(),
-            });
+            }));
         }
 
         // Accept either ':' or '.' to open the function body (legacy ABL uses '.')
@@ -3901,11 +3901,11 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after END FUNCTION")?;
 
-        Ok(Statement::Function {
+        Ok(self.stmt(StatementKind::Function {
             name,
             return_type,
             body,
-        })
+        }))
     }
 
     // Parse the block body for code blocks like DO, consume till END.
@@ -4009,11 +4009,11 @@ impl Parser<'_> {
         }
         self.expect_period("Expected '.' after END CATCH")?;
 
-        Ok(Statement::Catch {
+        Ok(self.stmt(StatementKind::Catch {
             error_var,
             error_type,
             body,
-        })
+        }))
     }
 
     // Parse FINALLY:
@@ -4035,7 +4035,7 @@ impl Parser<'_> {
         }
         self.expect_period("Expected '.' after END FINALLY")?;
 
-        Ok(Statement::Finally { body })
+        Ok(self.stmt(StatementKind::Finally { body }))
     }
 
     /// Parses an optional lock type (NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK)
@@ -4183,10 +4183,10 @@ impl Parser<'_> {
             self.advance();
         }
 
-        Ok(Statement::IncludeReference {
+        Ok(self.stmt(StatementKind::IncludeReference {
             path_and_args,
             span,
-        })
+        }))
     }
 
     /// Parse an include positional argument reference as a statement: {0}, {1}, {2}
@@ -4213,7 +4213,7 @@ impl Parser<'_> {
             self.advance();
         }
 
-        Ok(Statement::IncludeArgReference { index, span })
+        Ok(self.stmt(StatementKind::IncludeArgReference { index, span }))
     }
 
     // ===================== OO-ABL parsing =====================
@@ -4309,14 +4309,14 @@ impl Parser<'_> {
             body.push(self.parse_statement()?);
         }
 
-        Ok(Statement::Class {
+        Ok(self.stmt(StatementKind::Class {
             name,
             inherits,
             implements,
             is_abstract,
             is_final,
             body,
-        })
+        }))
     }
 
     /// Parse an INTERFACE definition.
@@ -4358,11 +4358,11 @@ impl Parser<'_> {
             body.push(self.parse_statement()?);
         }
 
-        Ok(Statement::Interface {
+        Ok(self.stmt(StatementKind::Interface {
             name,
             inherits,
             body,
-        })
+        }))
     }
 
     /// Parse a METHOD definition.
@@ -4439,7 +4439,7 @@ impl Parser<'_> {
         // Abstract methods have no body — just a period
         if is_abstract {
             self.expect_period("Expected '.' after abstract method signature")?;
-            return Ok(Statement::Method {
+            return Ok(self.stmt(StatementKind::Method {
                 access,
                 is_static,
                 is_abstract,
@@ -4448,7 +4448,7 @@ impl Parser<'_> {
                 name,
                 parameters,
                 body: Vec::new(),
-            });
+            }));
         }
 
         // FORWARD declaration: METHOD … FORWARD. — declares the method with
@@ -4461,7 +4461,7 @@ impl Parser<'_> {
         if is_forward {
             self.advance(); // consume FORWARD
             self.expect_period("Expected '.' after METHOD FORWARD")?;
-            return Ok(Statement::Method {
+            return Ok(self.stmt(StatementKind::Method {
                 access,
                 is_static,
                 is_abstract,
@@ -4470,7 +4470,7 @@ impl Parser<'_> {
                 name,
                 parameters,
                 body: Vec::new(),
-            });
+            }));
         }
 
         // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
@@ -4492,7 +4492,7 @@ impl Parser<'_> {
         // looking for END (not METHOD) immediately after the '.' opener. In that case,
         // return an empty body so the enclosing INTERFACE parser handles END INTERFACE.
         if opened_with_period && self.check(Kind::End) && !self.check_at(1, Kind::Method) {
-            return Ok(Statement::Method {
+            return Ok(self.stmt(StatementKind::Method {
                 access,
                 is_static,
                 is_abstract,
@@ -4501,7 +4501,7 @@ impl Parser<'_> {
                 name,
                 parameters,
                 body: Vec::new(),
-            });
+            }));
         }
 
         let mut body = Vec::new();
@@ -4526,7 +4526,7 @@ impl Parser<'_> {
             body.push(self.parse_statement()?);
         }
 
-        Ok(Statement::Method {
+        Ok(self.stmt(StatementKind::Method {
             access,
             is_static,
             is_abstract,
@@ -4535,7 +4535,7 @@ impl Parser<'_> {
             name,
             parameters,
             body,
-        })
+        }))
     }
 
     /// Parse a DEFINE PROPERTY statement.
@@ -4704,7 +4704,7 @@ impl Parser<'_> {
             None
         };
 
-        Ok(Statement::Property {
+        Ok(self.stmt(StatementKind::Property {
             access,
             is_static,
             name,
@@ -4712,7 +4712,7 @@ impl Parser<'_> {
             no_undo,
             get_body,
             set_body,
-        })
+        }))
     }
 
     /// Parse a CONSTRUCTOR definition.
@@ -4763,11 +4763,11 @@ impl Parser<'_> {
             body.push(self.parse_statement()?);
         }
 
-        Ok(Statement::Constructor {
+        Ok(self.stmt(StatementKind::Constructor {
             access,
             parameters,
             body,
-        })
+        }))
     }
 
     /// Parse a DESTRUCTOR definition.
@@ -4813,7 +4813,7 @@ impl Parser<'_> {
             body.push(self.parse_statement()?);
         }
 
-        Ok(Statement::Destructor { body })
+        Ok(self.stmt(StatementKind::Destructor { body }))
     }
 
     /// Parse a USING statement.
@@ -4879,7 +4879,7 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after USING statement")?;
 
-        Ok(Statement::Using { type_name })
+        Ok(self.stmt(StatementKind::Using { type_name }))
     }
 
     // =========================================================================
@@ -4958,12 +4958,12 @@ impl Parser<'_> {
             // CREATE WINDOW / CREATE SERVER / CREATE X-DOCUMENT etc. — complex UI/handle
             // creation forms with ASSIGN clauses we don't fully model.  Skip to end.
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         } else if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
             // CREATE VALUE(class-expr) handle NO-ERROR. — dynamic COM/OO object creation.
             // Skip the VALUE(expr) part and consume the handle name.
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         } else {
             let name = self.parse_identifier()?;
             // If a second identifier follows (e.g. CREATE SERVER hService or CREATE X-document hXML),
@@ -4983,14 +4983,14 @@ impl Parser<'_> {
             // skip the FOR DATABASE ... clause entirely.
             if self.check(Kind::Assign) || self.check(Kind::KwFor) {
                 self.skip_to_statement_end_triggers_aware();
-                return Ok(Statement::Empty);
+                return Ok(self.stmt(StatementKind::Empty));
             }
             CreateTarget::Name(name)
         };
 
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after CREATE statement")?;
-        Ok(Statement::Create { target, no_error })
+        Ok(self.stmt(StatementKind::Create { target, no_error }))
     }
 
     fn match_create_target_kind(&self) -> Option<CreateTargetKind> {
@@ -5025,13 +5025,13 @@ impl Parser<'_> {
             }
             let no_error = self.parse_no_error();
             self.expect_period("Expected '.' after DELETE statement")?;
-            return Ok(Statement::Delete {
+            return Ok(self.stmt(StatementKind::Delete {
                 buffer: Identifier {
                     span: Span { start: 0, end: 0 },
                     name: String::new(),
                 },
                 no_error,
-            });
+            }));
         }
         // Skip optional type prefixes: OBJECT, PROCEDURE, WIDGET, SERVER, ALIAS, etc.
         // DELETE OBJECT handle [NO-ERROR]. — delete a COM/OO object handle
@@ -5040,7 +5040,7 @@ impl Parser<'_> {
         if self.check(Kind::Alias) {
             // DELETE ALIAS name. — delete a database alias; skip to period.
             self.skip_to_statement_end();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
         if Self::can_be_identifier(self.peek().kind) {
             let token = &self.tokens[self.current];
@@ -5048,7 +5048,7 @@ impl Parser<'_> {
             if matches!(text.as_str(), "object") {
                 self.advance(); // consume OBJECT
                 self.skip_to_statement_end();
-                return Ok(Statement::Empty);
+                return Ok(self.stmt(StatementKind::Empty));
             }
             if matches!(text.as_str(), "procedure" | "widget" | "server")
                 && Self::can_be_identifier(self.peek_at(1).kind)
@@ -5072,7 +5072,7 @@ impl Parser<'_> {
         }
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after DELETE statement")?;
-        Ok(Statement::Delete { buffer, no_error })
+        Ok(self.stmt(StatementKind::Delete { buffer, no_error }))
     }
 
     // RELEASE buffer-name [NO-ERROR].
@@ -5087,19 +5087,19 @@ impl Parser<'_> {
             if text == "object" {
                 self.advance(); // consume OBJECT
                 self.skip_to_statement_end();
-                return Ok(Statement::Empty);
+                return Ok(self.stmt(StatementKind::Empty));
             }
         }
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
             self.skip_to_period();
-            return Ok(Statement::Empty);
+            return Ok(self.stmt(StatementKind::Empty));
         }
 
         let buffer = self.parse_identifier()?;
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after RELEASE statement")?;
-        Ok(Statement::Release { buffer, no_error })
+        Ok(self.stmt(StatementKind::Release { buffer, no_error }))
     }
 
     // VALIDATE buffer-name [NO-ERROR].
@@ -5108,7 +5108,7 @@ impl Parser<'_> {
         let buffer = self.parse_identifier()?;
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after VALIDATE statement")?;
-        Ok(Statement::Validate { buffer, no_error })
+        Ok(self.stmt(StatementKind::Validate { buffer, no_error }))
     }
 
     // BUFFER-COPY source [EXCEPT field...] TO target [ASSIGN field = expr ...] [NO-ERROR].
@@ -5155,12 +5155,12 @@ impl Parser<'_> {
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after BUFFER-COPY statement")?;
 
-        Ok(Statement::BufferCopy {
+        Ok(self.stmt(StatementKind::BufferCopy {
             source,
             target,
             assignments,
             no_error,
-        })
+        }))
     }
 
     // BUFFER-COMPARE source TO target [SAVE RESULT IN lvar] [NO-ERROR].
@@ -5204,12 +5204,12 @@ impl Parser<'_> {
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after BUFFER-COMPARE statement")?;
 
-        Ok(Statement::BufferCompare {
+        Ok(self.stmt(StatementKind::BufferCompare {
             source,
             target,
             result_var,
             no_error,
-        })
+        }))
     }
 
     // ── Event system parsing ────────────────────────────────────────
@@ -5322,11 +5322,11 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after PUBLISH statement")?;
 
-        Ok(Statement::Publish {
+        Ok(self.stmt(StatementKind::Publish {
             event_name,
             from_handle,
             arguments,
-        })
+        }))
     }
 
     /// SUBSCRIBE [PROCEDURE subscriber-handle] [TO] event-name {IN handle | ANYWHERE}
@@ -5374,13 +5374,13 @@ impl Parser<'_> {
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after SUBSCRIBE statement")?;
 
-        Ok(Statement::Subscribe {
+        Ok(self.stmt(StatementKind::Subscribe {
             subscriber,
             event_name,
             target,
             run_procedure,
             no_error,
-        })
+        }))
     }
 
     /// UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].
@@ -5418,11 +5418,11 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after UNSUBSCRIBE statement")?;
 
-        Ok(Statement::Unsubscribe {
+        Ok(self.stmt(StatementKind::Unsubscribe {
             subscriber,
             event_name,
             in_handle,
-        })
+        }))
     }
 
     /// DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).
@@ -5444,13 +5444,13 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after DEFINE EVENT statement")?;
 
-        Ok(Statement::DefineEvent {
+        Ok(self.stmt(StatementKind::DefineEvent {
             access,
             is_static,
             is_abstract,
             name,
             parameters,
-        })
+        }))
     }
 
     /// Helper: consume NO-ERROR if present.
@@ -5478,7 +5478,7 @@ impl Parser<'_> {
         let name = self.parse_identifier()?;
         // Skip any options or include files before the terminating period
         self.skip_to_statement_end();
-        Ok(Statement::DefineStream { name })
+        Ok(self.stmt(StatementKind::DefineStream { name }))
     }
 
     /// Parse DEFINE FRAME frame-name ... .
@@ -5502,7 +5502,7 @@ impl Parser<'_> {
             end: raw_end,
         };
 
-        Ok(Statement::DefineFrame { name, raw_span })
+        Ok(self.stmt(StatementKind::DefineFrame { name, raw_span }))
     }
 
     /// Parse INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.
@@ -5580,7 +5580,7 @@ impl Parser<'_> {
             // as an expression. Consume greedily until period and return an empty IO statement.
             if self.check(Kind::Slash) {
                 self.skip_to_statement_end();
-                return Ok(Statement::Empty);
+                return Ok(self.stmt(StatementKind::Empty));
             }
             let target = self.parse_expression()?;
             let append = if self.check(Kind::Append) {
@@ -5600,7 +5600,7 @@ impl Parser<'_> {
                 Ok(expr) => expr,
                 Err(_) => {
                     self.skip_to_statement_end();
-                    return Ok(Statement::StreamIo {
+                    return Ok(self.stmt(StatementKind::StreamIo {
                         direction,
                         stream_name,
                         operation: StreamOperation::Through(Expression::Literal(Literal::Unknown(
@@ -5608,7 +5608,7 @@ impl Parser<'_> {
                                 span: self.current_span(),
                             },
                         ))),
-                    });
+                    }));
                 }
             };
             StreamOperation::Through(target)
@@ -5630,11 +5630,11 @@ impl Parser<'_> {
         // inside VALUE() arguments (e.g. VALUE(warehouse.remote-host-name)).
         self.skip_to_statement_end();
 
-        Ok(Statement::StreamIo {
+        Ok(self.stmt(StatementKind::StreamIo {
             direction,
             stream_name,
             operation,
-        })
+        }))
     }
 
     // ── Preprocessor parsing ─────────────────────────────────────────
@@ -5708,7 +5708,7 @@ impl Parser<'_> {
     fn parse_preproc_if_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume &IF
         let preproc = self.parse_preproc_if(1, &Self::parse_block_until_preproc_boundary)?;
-        Ok(Statement::PreprocIf(preproc))
+        Ok(self.stmt(StatementKind::PreprocIf(preproc)))
     }
 
     /// &SCOPED-DEFINE name [value tokens...] PreprocEnd
@@ -5752,25 +5752,25 @@ impl Parser<'_> {
             self.advance();
         }
 
-        Ok(Statement::PreprocDefine {
+        Ok(self.stmt(StatementKind::PreprocDefine {
             name,
             value_span,
             is_global,
-        })
+        }))
     }
 
     /// &UNDEFINE name
     fn parse_preproc_undefine(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume &UNDEFINE
         let name = self.parse_identifier()?;
-        Ok(Statement::PreprocUndefine { name })
+        Ok(self.stmt(StatementKind::PreprocUndefine { name }))
     }
 
     /// &MESSAGE expression
     fn parse_preproc_message(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume &MESSAGE
         let expression = self.parse_expression()?;
-        Ok(Statement::PreprocMessage { expression })
+        Ok(self.stmt(StatementKind::PreprocMessage { expression }))
     }
 
     // =========================================================================
@@ -5855,13 +5855,13 @@ impl Parser<'_> {
         }
 
         let action = self.parse_trigger_action()?;
-        Ok(Statement::On {
+        Ok(self.stmt(StatementKind::On {
             kind: OnKind::UiEvent {
                 clauses,
                 anywhere,
                 action,
             },
-        })
+        }))
     }
 
     /// Parse a database event trigger:
@@ -5910,7 +5910,7 @@ impl Parser<'_> {
         };
 
         let action = self.parse_trigger_action()?;
-        Ok(Statement::On {
+        Ok(self.stmt(StatementKind::On {
             kind: OnKind::DbEvent {
                 event,
                 target,
@@ -5918,7 +5918,7 @@ impl Parser<'_> {
                 is_override,
                 action,
             },
-        })
+        }))
     }
 
     /// Parse key remapping: ON key-label key-function.
@@ -5928,12 +5928,12 @@ impl Parser<'_> {
         let key_label = self.parse_any_keyword_as_identifier()?;
         let key_function = self.parse_any_keyword_as_identifier()?;
         self.expect_period("Expected '.' after key remapping")?;
-        Ok(Statement::On {
+        Ok(self.stmt(StatementKind::On {
             kind: OnKind::KeyRemap {
                 key_label,
                 key_function,
             },
-        })
+        }))
     }
 
     /// Parse a trigger action: REVERT, PERSISTENT RUN, DO block, or single statement.
@@ -6248,13 +6248,13 @@ impl Parser<'_> {
                 self.advance();
                 let target = self.parse_dotted_name()?;
                 self.expect_period("Expected '.' after TRIGGER PROCEDURE")?;
-                return Ok(Statement::TriggerProcedure {
+                return Ok(self.stmt(StatementKind::TriggerProcedure {
                     event,
                     target,
                     referencing: TriggerReferencing::default(),
                     new_value: None,
                     old_value_param: None,
-                });
+                }));
             } else {
                 // NEW VALUE form
                 self.expect_kind(Kind::New, "Expected NEW or OF after ASSIGN")?;
@@ -6277,13 +6277,13 @@ impl Parser<'_> {
                     name: String::new(),
                     span: self.current_span(),
                 };
-                return Ok(Statement::TriggerProcedure {
+                return Ok(self.stmt(StatementKind::TriggerProcedure {
                     event,
                     target,
                     referencing: TriggerReferencing::default(),
                     new_value: Some(new_value),
                     old_value_param,
-                });
+                }));
             }
         }
 
@@ -6316,13 +6316,13 @@ impl Parser<'_> {
         }
 
         self.expect_period("Expected '.' after TRIGGER PROCEDURE")?;
-        Ok(Statement::TriggerProcedure {
+        Ok(self.stmt(StatementKind::TriggerProcedure {
             event,
             target,
             referencing,
             new_value: None,
             old_value_param: None,
-        })
+        }))
     }
 
     /// Parse a TRIGGER PROCEDURE ASSIGN parameter: name AS type.
