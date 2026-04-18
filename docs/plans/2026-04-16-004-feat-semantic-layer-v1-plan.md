@@ -864,28 +864,37 @@ Deliverables: `fn declare_pass(program, ctx) -> (...)` callable and tested.
 
 Estimated effort: ~3 days. Breadth of ABL declaration forms is the cost, not algorithmic depth.
 
-### Phase 4a — resolve pass (references + signatures)
+### Phase 4a — resolve pass (references + signatures)  ✅
 
 **Goal:** second pass. Every identifier reference resolved (or structured-unresolved); every
 declaration typed. No expression-body type-checking yet.
 
 Tasks:
 
-- `resolve.rs` (resolve half): walks reference positions only. For each identifier reference,
+- [x] `resolve.rs` (resolve half): walks reference positions only. For each identifier reference,
   consults scope chain with namespace-narrowing rules, populates
   `references: IndexVec<NodeId, Option<Resolution>>`. Handles qualified `table.field`,
   `object:member`, `array[i]`, `buffer.field`.
-- Signature typing: for each `Symbol` with declared type (parameters, return type, properties,
+- [x] Signature typing: for each `Symbol` with declared type (parameters, return type, properties,
   variable declarations, temp-table fields), populate `Symbol::data_type` and the `types`
-  side table at the declaration's NodeId.
-- Schema integration: when `schema_loaded`, `table.field` references consult the `Schema`;
+  side table at the declaration's NodeId. Class-typed declarations upgrade from
+  `Unknown` to `Class(SymbolId)` when the class is declared locally.
+- [x] Schema integration: when `schema_loaded`, `table.field` references consult the `Schema`;
   unresolved fields become `Resolution::Unresolved { reason: NotInScope }` in the field
   namespace — picked up by `unknown-table-or-field`. When schema is absent, they become
-  `reason: NoSchema`.
-- External-ness detection: `USING`-imported names, `RUN "name"`, `RUN VALUE(x)`,
-  `DYNAMIC-FUNCTION(...)`, dynamic buffer ops all produce `Unresolved { reason: External }`.
-- Tests: ≥ 40 inline unit tests across reference forms. Namespace-shadow fixture: variable
-  `customer` shadowing buffer `customer` shadowing schema table `customer`.
+  `reason: NoSchema`. v1 treats field-under-buffer as `External` until schema-backed
+  field lookup wires in Phase 4b.
+- [x] External-ness detection: `USING`-imported names, `RUN "name"`, `NEW ClassName` for
+  non-local types produce `Unresolved { reason: External }`. Dynamic forms (`RUN VALUE(x)`,
+  `DYNAMIC-FUNCTION`, dynamic buffer ops) surface their expressions normally.
+- [x] Idempotent read/write counts (plan §C7): per-symbol counts accumulate into a local
+  `FxHashMap<SymbolId, (u32, u32)>` and write back once at end-of-pass, so re-running
+  `resolve_pass` is a no-op.
+- [x] `Resolution::Unresolved` carries `name: OxablAtom` (plan §C5) so lint diagnostics
+  don't reslice the source span per emission.
+- [x] Tests: 50 inline unit tests across reference forms, including namespace shadowing
+  (variable vs buffer), scope-walk lookup, NEW class upgrades, schema-loaded vs
+  schema-absent field access, RUN OUTPUT write-count, and idempotence.
 
 ### Phase 4b — type-check pass (expression bodies)
 
