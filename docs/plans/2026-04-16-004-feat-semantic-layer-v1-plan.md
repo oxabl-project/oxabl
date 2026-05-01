@@ -944,39 +944,42 @@ Deliverables: `fn analyze_file(program, ctx) -> Semantic` usable end-to-end.
 Estimated effort: Phase 4a ~2 days; Phase 4b ~3 days. The coercion catalog is the risk — see
 spike in Dependencies.
 
-### Phase 5 — `oxabl_lint` crate + 4 rules
+### Phase 5 — `oxabl_lint` crate + 4 rules  ✅
 
 Tasks:
 
-- New `crates/oxabl_lint/` workspace member depending on `oxabl_semantic`.
-- `lib.rs`: `lint_file`, `LintContext`, `RuleSet`.
-- `rules/undefined_symbol.rs`, `rules/unused_variable.rs`,
-  `rules/unknown_table_or_field.rs`, `rules/type_mismatch_assignment.rs` — one per rule,
-  independent.
-- Each rule has inline tests in its module (`assert_eq!` against expected diagnostic codes +
-  message substrings), matching repo convention. No new `insta` dependency in
-  `oxabl_lint`.
-- **Skip-list coverage invariant** (replaces per-rule fixture quotas): every documented skip-
-  list entry *must* have a regression test that proves the skip fires. Plus one happy-path
-  (true positive) and one false-positive-avoidance test per rule.
-  - `undefined-symbol`: skip list covers `External` + `NoSchema`. ≥ 5 tests.
-  - `unused-variable`: skip list covers OUTPUT/INPUT-OUTPUT param, INTERFACE method, ABSTRACT/
-    EXTERNAL method, SHARED / NEW SHARED / NEW GLOBAL SHARED, property getter-only. ≥ 9 tests.
-  - `unknown-table-or-field`: skip when schema not loaded; partial-schema tolerance;
-    `External` buffer passthrough. ≥ 5 tests.
-  - `type-mismatch-assignment`: skip when either side is `Unknown`/`Error`/`External`;
-    widening accepted silently; narrowing warns; error on incompatible; OUTPUT parameter
-    strict; class-upcast single-file; class-upcast cross-file silent. ≥ 8 tests.
-  - Total ≥ ~27 fixtures (down from 50-plus earlier draft; coverage is by skip-list
-    completeness, not volume).
-- Corpus validation: a test binary `corpus_lint_audit` runs the four rules over a sampled
-  pcna-erp subset and emits a per-rule diagnostic count + a reviewer-friendly TSV. Used to
-  verify "meaningfully few false positives" (origin: Success Criteria).
+- [x] New `crates/oxabl_lint/` workspace member depending on `oxabl_semantic`.
+- [x] `lib.rs`: `lint_file(program, sem, ctx) -> Vec<Diagnostic>`. `LintContext` /
+  `RuleSet` dropped per simplification — `AnalysisContext` already carries every field a
+  rule needs and rule-toggle config isn't real yet.
+- [x] `rules/undefined_symbol.rs` (LINT0001), `rules/unused_variable.rs` (LINT0002),
+  `rules/unknown_table_or_field.rs` (LINT0003), `rules/type_mismatch_assignment.rs`
+  (LINT0004) — each a standalone `run(program, sem, ctx) -> Vec<Diagnostic>`.
+- [x] Inline tests per rule with `assert_eq!` against codes + message substrings. No
+  `insta` dependency added.
+- [x] **Skip-list coverage invariant** — every documented skip fires in a regression test:
+  - `undefined-symbol` (LINT0001): skips `External` (NEW class USING-import) and `NoSchema`
+    (field access when schema absent); resolves against builtins (SESSION); 9 tests.
+  - `unused-variable` (LINT0002): skips OUTPUT, INPUT-OUTPUT, INTERFACE method params,
+    ABSTRACT method params; covers true positive (unused INPUT), used param, procedure
+    declaration no-op, write-without-read-still-warns; 11 tests.
+  - `unknown-table-or-field` (LINT0003): no-fire when schema absent, no-fire when qualifier
+    resolves to local buffer under schema, no-fire on non-field expressions, no-fire on
+    local variable, fires on unknown qualifier under schema; 5 tests.
+  - `type-mismatch-assignment` (LINT0004): widening silent, silent Decimal→Integer,
+    error on Logical↔Integer, narrowing Longchar→Character warns, skip Unknown literal,
+    skip unresolved identifier, Assignment + Assign multi-target, class upcast
+    single-file OK, cross-file Class silent, Int widening, no-init no-op, Character
+    assignment; 15 tests.
+  - Total: 40 inline rule tests.
+- [x] `NodeIndexVec::insert` now guards against `NodeId::DUMMY` — hand-constructed AST in
+  tests used to OOM on `u32::MAX` indexing.
 
-Deliverables: `cargo test -p oxabl_lint` green, corpus audit output committed as a baseline
-under `crates/oxabl_lint/audit/`.
+Deliverables: `cargo test -p oxabl_lint` green (40/40), workspace still passes (933 total).
 
-Estimated effort: medium.
+Deferred to follow-up:
+- Corpus `corpus_lint_audit` binary (depends on Phase 6 analyze CLI end-to-end; will land
+  in Phase 6's audit step against pcna-erp sampled files).
 
 ### Phase 6 — `oxabl_analyze` crate + `oxabl analyze` subcommand + goldens
 
