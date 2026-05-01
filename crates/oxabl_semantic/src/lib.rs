@@ -12,18 +12,24 @@
 //! incrementality without an IR rewrite.
 
 mod builtins;
+mod check;
+mod coercion;
 mod diagnostics;
 mod index_vec;
 mod namespace;
+mod operators;
 mod resolve;
 mod scope;
 mod symbol;
 mod types;
 
+pub use check::check_pass;
+pub use coercion::{assignable, assignable_strict, is_narrowing_warning, widen_primitive};
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
 pub use index_vec::NodeIndexVec;
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
-pub use resolve::declare_pass;
+pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
+pub use resolve::{Resolution, UnresolvedReason, declare_pass, resolve_pass};
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use symbol::{Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable};
 pub use types::{PrimitiveTy, ResolvedType};
@@ -58,28 +64,34 @@ impl<'a> AnalysisContext<'a> {
     }
 }
 
-/// Output of `analyze_file`. In v1 only `scope_tree`, `symbols`, and
-/// `diagnostics` are populated (declare pass). `references` and `types` are
-/// reserved side tables for Phases 4a/4b.
+/// Output of `analyze_file`. Phases 3 and 4a populate `scope_tree`,
+/// `symbols`, `references`, `types` (declaration entries), and
+/// `diagnostics`; Phase 4b extends `types` with expression-body entries.
 pub struct Semantic {
     pub scope_tree: ScopeTree,
     pub symbols: SymbolTable,
-    pub references: NodeIndexVec<resolve::Resolution>,
+    pub references: NodeIndexVec<Resolution>,
     pub types: NodeIndexVec<ResolvedType>,
     pub schema_revision: SchemaRevision,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Run every semantic pass over `program` and return a [`Semantic`]. v1 ships
-/// only the declare pass; resolve and check populate their side tables but
-/// leave references/types empty for now.
+/// Run every semantic pass over `program` and return a [`Semantic`]. v1
+/// runs all three passes: declare (Phase 3), resolve (Phase 4a), and
+/// type-check (Phase 4b). The resulting `Semantic` carries fully populated
+/// scope tree, symbol table, reference map, and type map.
 pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> Semantic {
-    let (scope_tree, symbols, diagnostics) = declare_pass(program, ctx);
+    let (scope_tree, mut symbols, mut diagnostics) = declare_pass(program, ctx);
+    let (references, mut types, resolve_diags) =
+        resolve_pass(program, ctx, &scope_tree, &mut symbols);
+    diagnostics.extend(resolve_diags);
+    let check_diags = check_pass(program, ctx, &scope_tree, &symbols, &references, &mut types);
+    diagnostics.extend(check_diags);
     Semantic {
         scope_tree,
         symbols,
-        references: NodeIndexVec::new(),
-        types: NodeIndexVec::new(),
+        references,
+        types,
         schema_revision: ctx.schema.revision(),
         diagnostics,
     }
