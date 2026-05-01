@@ -49,7 +49,14 @@ impl<T> NodeIndexVec<T> {
 
     /// Insert `value` at `id`, extending the backing vec with `None` as
     /// needed. Overwrites any existing entry and returns the prior value.
+    ///
+    /// [`NodeId::DUMMY`] is silently ignored — it represents an unassigned
+    /// slot on hand-constructed AST (tests, error recovery) and keying a
+    /// side table on `u32::MAX` would resize the backing vec to 2^32 slots.
     pub fn insert(&mut self, id: NodeId, value: T) -> Option<T> {
+        if id == NodeId::DUMMY {
+            return None;
+        }
         let idx = id.as_u32() as usize;
         if idx >= self.inner.len() {
             self.inner.resize_with(idx + 1, || None);

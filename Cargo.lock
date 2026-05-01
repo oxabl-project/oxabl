@@ -830,6 +830,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_lint"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_common",
+ "oxabl_schema",
+ "oxabl_semantic",
+ "rust_decimal",
+ "smallvec",
+]
+
+[[package]]
 name = "oxabl_parser"
 version = "0.6.0"
 dependencies = [
