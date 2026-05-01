@@ -14,3 +14,6 @@ oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 bitflags = "2"
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union"] }
+
+[dev-dependencies]
+rust_decimal = "1.40.0"

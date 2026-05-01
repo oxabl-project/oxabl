@@ -24,24 +24,33 @@
 //! - `SEM0003` — BLOB/CLOB used as a local variable type
 
 use oxabl_ast::{
-    AccessModifier, DataType, Identifier, ParameterDirection, ParameterType, Span, Statement,
-    StatementKind, TypeSource,
+    AccessModifier, CreateTarget, DataType, Expression, ExpressionKind, Identifier, NodeId,
+    OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, Statement, StatementKind,
+    StreamOperation, SubscribeTarget, TypeSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
+use rustc_hash::FxHashMap;
 
 use crate::{
-    AnalysisContext, NamespaceId, ResolvedType, ScopeId, ScopeKind, ScopeTree, Symbol, SymbolFlags,
-    SymbolKind, SymbolTable, builtins, diagnostics, resolve_span,
+    AnalysisContext, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree,
+    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, builtins, diagnostics, resolve_span,
 };
 
 /// Resolution of a single reference site. Populated by Phase 4a; the type
 /// is defined here so the declare pass can ship without `references` being
 /// `()`-typed.
+///
+/// `Unresolved` carries the case-folded atom of the identifier so lint
+/// diagnostics (`LINT0001`) don't need to reslice the source span at emit
+/// time. See plan §C5 for the trade-off.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
     Resolved(crate::SymbolId),
-    Unresolved { reason: UnresolvedReason },
+    Unresolved {
+        name: OxablAtom,
+        reason: UnresolvedReason,
+    },
 }
 
 /// Reason a reference did not resolve. See plan §Resolution.
@@ -672,6 +681,1153 @@ impl<'a> Walker<'a> {
     }
 }
 
+// ===========================================================================
+// Resolve pass
+// ===========================================================================
+
+/// Run the resolve pass over `program` given a populated scope tree and
+/// symbol table from the declare pass. Walks every expression position,
+/// consults the scope chain with namespace narrowing, and populates the
+/// `references` side table. Also emits the declared-type entries into the
+/// `types` side table and upgrades `DataType::Class(_)` symbol types from
+/// `Unknown` to `Class(SymbolId)` where the class is declared in this file.
+///
+/// Idempotent: per-symbol read/write counts are collected into a local
+/// accumulator and written back at end-of-pass, so re-running the pass is a
+/// no-op. This is the Salsa-ready invariant called out in plan §C7.
+pub fn resolve_pass(
+    program: &[Statement],
+    ctx: &AnalysisContext,
+    tree: &ScopeTree,
+    symbols: &mut SymbolTable,
+) -> (
+    NodeIndexVec<Resolution>,
+    NodeIndexVec<ResolvedType>,
+    Vec<Diagnostic>,
+) {
+    let mut walker = ResolveWalker::new(ctx, tree);
+    walker.upgrade_class_types(program, symbols);
+    walker.walk_block(program, ScopeId::ROOT);
+
+    // Flush symbol-level read/write counts exactly once at pass end.
+    for (sym, (reads, writes)) in &walker.counts {
+        let s = symbols.get_mut(*sym);
+        s.read_count = *reads;
+        s.write_count = *writes;
+    }
+
+    // Mirror every symbol's declared type into the `types` side table keyed
+    // by the declaration's NodeId. Skips builtins (declaration = DUMMY).
+    for (_, sym) in symbols.iter() {
+        if sym.declaration == NodeId::DUMMY {
+            continue;
+        }
+        if let Some(ty) = sym.data_type.as_ref() {
+            walker.types.insert(sym.declaration, ty.clone());
+        }
+    }
+
+    (walker.references, walker.types, walker.diagnostics)
+}
+
+/// Access mode for a resolving reference — drives which counter bumps on
+/// [`Symbol`] (`read_count` or `write_count`). `ReadWrite` covers
+/// `INPUT-OUTPUT` parameter sites, where the callee both observes and
+/// mutates the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessMode {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+struct ResolveWalker<'a> {
+    ctx: &'a AnalysisContext<'a>,
+    tree: &'a ScopeTree,
+    references: NodeIndexVec<Resolution>,
+    types: NodeIndexVec<ResolvedType>,
+    diagnostics: Vec<Diagnostic>,
+    /// Per-symbol `(reads, writes)` accumulator. Written to `Symbol` exactly
+    /// once at end-of-pass so the pass stays idempotent under Salsa re-run.
+    counts: FxHashMap<SymbolId, (u32, u32)>,
+}
+
+impl<'a> ResolveWalker<'a> {
+    fn new(ctx: &'a AnalysisContext<'a>, tree: &'a ScopeTree) -> Self {
+        ResolveWalker {
+            ctx,
+            tree,
+            references: NodeIndexVec::new(),
+            types: NodeIndexVec::new(),
+            diagnostics: Vec::new(),
+            counts: FxHashMap::default(),
+        }
+    }
+
+    /// Walk the program once to find declarations with `DataType::Class(name)`
+    /// and upgrade their symbol's `data_type` from `ResolvedType::Unknown` to
+    /// `ResolvedType::Class(SymbolId)` when `name` resolves in the local
+    /// `Types` namespace. Class names that don't resolve locally are
+    /// `External` (cross-file or USING-imported) and stay `Unknown` — the
+    /// type-check pass treats `Unknown` as the lattice bottom.
+    fn upgrade_class_types(&self, program: &[Statement], symbols: &mut SymbolTable) {
+        let mut upgrades: Vec<(SymbolId, ResolvedType)> = Vec::new();
+        self.collect_class_upgrades(program, ScopeId::ROOT, symbols, &mut upgrades);
+        for (sid, rt) in upgrades {
+            symbols.get_mut(sid).data_type = Some(rt);
+        }
+    }
+
+    fn collect_class_upgrades(
+        &self,
+        stmts: &[Statement],
+        scope: ScopeId,
+        symbols: &SymbolTable,
+        out: &mut Vec<(SymbolId, ResolvedType)>,
+    ) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StatementKind::VariableDeclaration {
+                    name,
+                    type_source: TypeSource::Explicit(DataType::Class(class_name)),
+                    ..
+                } => {
+                    if let Some(up) = self.class_upgrade(class_name, scope, symbols, name) {
+                        out.push(up);
+                    }
+                }
+                StatementKind::DefineParameter {
+                    param_type:
+                        ParameterType::Variable {
+                            name,
+                            type_source: TypeSource::Explicit(DataType::Class(class_name)),
+                            ..
+                        },
+                    ..
+                } => {
+                    if let Some(up) = self.class_upgrade(class_name, scope, symbols, name) {
+                        out.push(up);
+                    }
+                }
+                StatementKind::Property {
+                    name,
+                    data_type: DataType::Class(class_name),
+                    ..
+                } => {
+                    if let Some(up) = self.class_upgrade(class_name, scope, symbols, name) {
+                        out.push(up);
+                    }
+                }
+                StatementKind::Function {
+                    name,
+                    return_type: DataType::Class(class_name),
+                    ..
+                } => {
+                    if let Some(up) = self.class_upgrade_in_ns(
+                        class_name,
+                        scope,
+                        NamespaceId::Functions,
+                        symbols,
+                        name,
+                    ) {
+                        out.push(up);
+                    }
+                }
+                _ => {}
+            }
+            // Recurse into body-bearing scopes so nested declarations also
+            // get upgraded. The correct scope for body resolution is the
+            // child scope declare created.
+            match &stmt.kind {
+                StatementKind::Procedure { body, .. } => {
+                    if let Some(ps) = self.find_child_scope(scope, stmt.id, ScopeKind::Procedure) {
+                        self.collect_class_upgrades(body, ps, symbols, out);
+                    }
+                }
+                StatementKind::Function { body, .. } => {
+                    if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
+                        self.collect_class_upgrades(body, fs, symbols, out);
+                    }
+                }
+                StatementKind::Class { body, .. } => {
+                    if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Class) {
+                        self.collect_class_upgrades(body, cs, symbols, out);
+                    }
+                }
+                StatementKind::Interface { body, .. } => {
+                    if let Some(is_) = self.find_child_scope(scope, stmt.id, ScopeKind::Interface) {
+                        self.collect_class_upgrades(body, is_, symbols, out);
+                    }
+                }
+                StatementKind::Method {
+                    parameters, body, ..
+                } => {
+                    if let Some(ms) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
+                        self.collect_class_upgrades(parameters, ms, symbols, out);
+                        self.collect_class_upgrades(body, ms, symbols, out);
+                    }
+                }
+                StatementKind::Constructor {
+                    parameters, body, ..
+                } => {
+                    if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Constructor)
+                    {
+                        self.collect_class_upgrades(parameters, cs, symbols, out);
+                        self.collect_class_upgrades(body, cs, symbols, out);
+                    }
+                }
+                StatementKind::Destructor { body } => {
+                    if let Some(ds) = self.find_child_scope(scope, stmt.id, ScopeKind::Destructor) {
+                        self.collect_class_upgrades(body, ds, symbols, out);
+                    }
+                }
+                StatementKind::Do { body, .. } | StatementKind::Repeat { body, .. } => {
+                    if let Some(bs) = self.find_child_scope(scope, stmt.id, ScopeKind::Block) {
+                        self.collect_class_upgrades(body, bs, symbols, out);
+                    }
+                }
+                StatementKind::ForEach { body, .. } => {
+                    if let Some(bs) = self.find_child_scope(scope, stmt.id, ScopeKind::Block) {
+                        self.collect_class_upgrades(body, bs, symbols, out);
+                    }
+                }
+                StatementKind::Catch { body, .. } => {
+                    if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Catch) {
+                        self.collect_class_upgrades(body, cs, symbols, out);
+                    }
+                }
+                StatementKind::Finally { body } => {
+                    if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Finally) {
+                        self.collect_class_upgrades(body, fs, symbols, out);
+                    }
+                }
+                StatementKind::Block(body) => {
+                    self.collect_class_upgrades(body, scope, symbols, out);
+                }
+                StatementKind::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    self.collect_class_upgrades(
+                        std::slice::from_ref(&**then_branch),
+                        scope,
+                        symbols,
+                        out,
+                    );
+                    if let Some(eb) = else_branch {
+                        self.collect_class_upgrades(
+                            std::slice::from_ref(&**eb),
+                            scope,
+                            symbols,
+                            out,
+                        );
+                    }
+                }
+                StatementKind::Case {
+                    when_branches,
+                    otherwise,
+                    ..
+                } => {
+                    for wb in when_branches {
+                        self.collect_class_upgrades(&wb.body, scope, symbols, out);
+                    }
+                    if let Some(o) = otherwise {
+                        self.collect_class_upgrades(o, scope, symbols, out);
+                    }
+                }
+                StatementKind::Label { body, .. } => {
+                    self.collect_class_upgrades(std::slice::from_ref(&**body), scope, symbols, out);
+                }
+                StatementKind::PreprocIf(pif) => {
+                    self.collect_class_upgrades(&pif.then_branch, scope, symbols, out);
+                    for (_, br) in &pif.elseif_branches {
+                        self.collect_class_upgrades(br, scope, symbols, out);
+                    }
+                    if let Some(eb) = &pif.else_branch {
+                        self.collect_class_upgrades(eb, scope, symbols, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn class_upgrade(
+        &self,
+        class_name: &str,
+        scope: ScopeId,
+        symbols: &SymbolTable,
+        decl_name: &Identifier,
+    ) -> Option<(SymbolId, ResolvedType)> {
+        self.class_upgrade_in_ns(class_name, scope, NamespaceId::Values, symbols, decl_name)
+    }
+
+    fn class_upgrade_in_ns(
+        &self,
+        class_name: &str,
+        scope: ScopeId,
+        decl_ns: NamespaceId,
+        symbols: &SymbolTable,
+        decl_name: &Identifier,
+    ) -> Option<(SymbolId, ResolvedType)> {
+        let class_atom = fold_atom(class_name);
+        let class_sym = self.tree.resolve(scope, NamespaceId::Types, &class_atom)?;
+        let decl_atom = fold_atom(&decl_name.name);
+        let decl_sym = self.tree.get(scope).get_in(decl_ns, &decl_atom)?;
+        // Only upgrade if still Unknown.
+        match symbols.get(decl_sym).data_type.as_ref() {
+            Some(ResolvedType::Unknown) => Some((decl_sym, ResolvedType::Class(class_sym))),
+            _ => None,
+        }
+    }
+
+    fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
+        for stmt in stmts {
+            self.walk_statement(stmt, scope);
+        }
+    }
+
+    fn walk_statement(&mut self, stmt: &Statement, scope: ScopeId) {
+        match &stmt.kind {
+            // ---- Declarations with initializers --------------------------
+            StatementKind::VariableDeclaration { initial_value, .. } => {
+                if let Some(e) = initial_value {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::DefineParameter { .. } => {}
+            StatementKind::DefineTempTable { fields, .. } => {
+                for f in fields {
+                    if let Some(init) = &f.initial_value {
+                        for e in init {
+                            self.walk_expression(e, scope, AccessMode::Read);
+                        }
+                    }
+                }
+            }
+            StatementKind::DefineBuffer { .. } => {}
+            StatementKind::DefineDataset { .. } => {}
+            StatementKind::DefineDataSource { .. } => {}
+            StatementKind::DefineStream { .. } => {}
+            StatementKind::DefineFrame { .. } => {}
+            StatementKind::DefineEvent { parameters, .. } => {
+                if let Some(ev) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
+                    self.walk_block(parameters, ev);
+                } else {
+                    self.walk_block(parameters, scope);
+                }
+            }
+            StatementKind::Property {
+                get_body, set_body, ..
+            } => {
+                if let Some(body) = get_body
+                    && let Some(gs) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertyGet)
+                {
+                    self.walk_block(body, gs);
+                }
+                if let Some(body) = set_body
+                    && let Some(ss) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertySet)
+                {
+                    self.walk_block(body, ss);
+                }
+            }
+
+            // ---- Scope-opening declarations ------------------------------
+            StatementKind::Procedure { body, .. } => {
+                if let Some(ps) = self.find_child_scope(scope, stmt.id, ScopeKind::Procedure) {
+                    self.walk_block(body, ps);
+                }
+            }
+            StatementKind::Function { body, .. } => {
+                if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
+                    self.walk_block(body, fs);
+                }
+            }
+            StatementKind::Class { body, .. } => {
+                if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Class) {
+                    self.walk_block(body, cs);
+                }
+            }
+            StatementKind::Interface { body, .. } => {
+                if let Some(is_) = self.find_child_scope(scope, stmt.id, ScopeKind::Interface) {
+                    self.walk_block(body, is_);
+                }
+            }
+            StatementKind::Method {
+                parameters, body, ..
+            } => {
+                if let Some(ms) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
+                    self.walk_block(parameters, ms);
+                    self.walk_block(body, ms);
+                }
+            }
+            StatementKind::Constructor {
+                parameters, body, ..
+            } => {
+                if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Constructor) {
+                    self.walk_block(parameters, cs);
+                    self.walk_block(body, cs);
+                }
+            }
+            StatementKind::Destructor { body } => {
+                if let Some(ds) = self.find_child_scope(scope, stmt.id, ScopeKind::Destructor) {
+                    self.walk_block(body, ds);
+                }
+            }
+            StatementKind::Catch { body, .. } => {
+                if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Catch) {
+                    self.walk_block(body, cs);
+                }
+            }
+            StatementKind::Finally { body } => {
+                if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Finally) {
+                    self.walk_block(body, fs);
+                }
+            }
+
+            // ---- Control-flow block statements ---------------------------
+            StatementKind::Do {
+                from,
+                to,
+                by,
+                while_condition,
+                body,
+                ..
+            } => {
+                let bs = self
+                    .find_child_scope(scope, stmt.id, ScopeKind::Block)
+                    .unwrap_or(scope);
+                if let Some(e) = from {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
+                if let Some(e) = to {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
+                if let Some(e) = by {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
+                if let Some(e) = while_condition {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
+                self.walk_block(body, bs);
+            }
+            StatementKind::Repeat {
+                while_condition,
+                body,
+            } => {
+                let bs = self
+                    .find_child_scope(scope, stmt.id, ScopeKind::Block)
+                    .unwrap_or(scope);
+                if let Some(e) = while_condition {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
+                self.walk_block(body, bs);
+            }
+            StatementKind::ForEach {
+                buffer,
+                of_relation,
+                where_clause,
+                body,
+                ..
+            } => {
+                let bs = self
+                    .find_child_scope(scope, stmt.id, ScopeKind::Block)
+                    .unwrap_or(scope);
+                // The implicit FOR EACH buffer was declared by the declare
+                // pass in this block scope; resolve it so `read_count` bumps.
+                self.resolve_statement_ident(
+                    buffer,
+                    bs,
+                    &[NamespaceId::Buffers, NamespaceId::Tables],
+                    AccessMode::Read,
+                );
+                if let Some(of) = of_relation {
+                    self.resolve_statement_ident(
+                        of,
+                        bs,
+                        &[NamespaceId::Buffers, NamespaceId::Tables],
+                        AccessMode::Read,
+                    );
+                }
+                if let Some(w) = where_clause {
+                    self.walk_expression(w, bs, AccessMode::Read);
+                }
+                self.walk_block(body, bs);
+            }
+            StatementKind::Find {
+                buffer,
+                key_value,
+                where_clause,
+                ..
+            } => {
+                self.resolve_statement_ident(
+                    buffer,
+                    scope,
+                    &[NamespaceId::Buffers, NamespaceId::Tables],
+                    AccessMode::Read,
+                );
+                if let Some(k) = key_value {
+                    self.walk_expression(k, scope, AccessMode::Read);
+                }
+                if let Some(w) = where_clause {
+                    self.walk_expression(w, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.walk_expression(condition, scope, AccessMode::Read);
+                self.walk_statement(then_branch, scope);
+                if let Some(eb) = else_branch {
+                    self.walk_statement(eb, scope);
+                }
+            }
+            StatementKind::Case {
+                expression,
+                when_branches,
+                otherwise,
+            } => {
+                self.walk_expression(expression, scope, AccessMode::Read);
+                for wb in when_branches {
+                    for v in &wb.values {
+                        self.walk_expression(v, scope, AccessMode::Read);
+                    }
+                    self.walk_block(&wb.body, scope);
+                }
+                if let Some(o) = otherwise {
+                    self.walk_block(o, scope);
+                }
+            }
+            StatementKind::Block(body) => {
+                self.walk_block(body, scope);
+            }
+            StatementKind::Label { body, .. } => {
+                self.walk_statement(body, scope);
+            }
+
+            // ---- Trigger / preprocessor ---------------------------------
+            StatementKind::On { kind } => match kind {
+                OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action {
+                    OnAction::Block(body) => {
+                        let ts = self
+                            .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
+                            .unwrap_or(scope);
+                        self.walk_statement(body, ts);
+                    }
+                    OnAction::PersistentRun { arguments, .. } => {
+                        for arg in arguments {
+                            self.walk_expression(arg, scope, AccessMode::Read);
+                        }
+                    }
+                    OnAction::Revert => {}
+                },
+                OnKind::KeyRemap { .. } => {}
+            },
+            StatementKind::TriggerProcedure { .. } => {}
+            StatementKind::PreprocIf(pif) => {
+                self.walk_expression(&pif.condition, scope, AccessMode::Read);
+                self.walk_block(&pif.then_branch, scope);
+                for (c, br) in &pif.elseif_branches {
+                    self.walk_expression(c, scope, AccessMode::Read);
+                    self.walk_block(br, scope);
+                }
+                if let Some(eb) = &pif.else_branch {
+                    self.walk_block(eb, scope);
+                }
+            }
+            StatementKind::PreprocDefine { .. } | StatementKind::PreprocUndefine { .. } => {}
+            StatementKind::PreprocMessage { expression } => {
+                self.walk_expression(expression, scope, AccessMode::Read);
+            }
+
+            // ---- Assignment forms ----------------------------------------
+            StatementKind::Assignment { target, value } => {
+                self.walk_expression(target, scope, AccessMode::Write);
+                self.walk_expression(value, scope, AccessMode::Read);
+            }
+            StatementKind::Assign { assignments } => {
+                for pair in assignments {
+                    self.walk_expression(&pair.target, scope, AccessMode::Write);
+                    self.walk_expression(&pair.value, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::ExpressionStatement(expr) => {
+                self.walk_expression(expr, scope, AccessMode::Read);
+            }
+            StatementKind::Return(opt) => {
+                if let Some(e) = opt {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Throw(expr) => {
+                self.walk_expression(expr, scope, AccessMode::Read);
+            }
+
+            // ---- Output / display ----------------------------------------
+            StatementKind::Display {
+                stream_name,
+                items,
+                except: _,
+                frame,
+            } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for item in items {
+                    self.walk_expression(&item.expression, scope, AccessMode::Read);
+                    if let Some(w) = &item.when_condition {
+                        self.walk_expression(w, scope, AccessMode::Read);
+                    }
+                }
+                if let Some(fr) = frame {
+                    self.resolve_statement_ident(
+                        fr,
+                        scope,
+                        &[NamespaceId::Frames],
+                        AccessMode::Read,
+                    );
+                }
+            }
+            StatementKind::Message { items, set_targets } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+                for t in set_targets {
+                    self.resolve_statement_ident(
+                        t,
+                        scope,
+                        &[NamespaceId::Values],
+                        AccessMode::Write,
+                    );
+                }
+            }
+
+            // ---- RUN / buffer ops ---------------------------------------
+            StatementKind::Run {
+                target,
+                arguments,
+                in_handle,
+                persistent_handle,
+                async_handle,
+                event_procedure,
+                ..
+            } => {
+                match target {
+                    RunTarget::Literal(_) => {
+                        // External procedure name — no statement-level NodeId
+                        // to bind; lint rules treat as External when needed.
+                    }
+                    RunTarget::Dynamic(e) => {
+                        self.walk_expression(e, scope, AccessMode::Read);
+                    }
+                }
+                for arg in arguments {
+                    let mode = match arg.direction {
+                        ParameterDirection::Input => AccessMode::Read,
+                        ParameterDirection::Output => AccessMode::Write,
+                        ParameterDirection::InputOutput | ParameterDirection::Return => {
+                            AccessMode::ReadWrite
+                        }
+                    };
+                    self.walk_expression(&arg.expression, scope, mode);
+                }
+                if let Some(h) = in_handle {
+                    self.walk_expression(h, scope, AccessMode::Read);
+                }
+                if let Some(h) = persistent_handle {
+                    self.walk_expression(h, scope, AccessMode::Write);
+                }
+                if let Some(h) = async_handle {
+                    self.walk_expression(h, scope, AccessMode::Write);
+                }
+                if let Some(e) = event_procedure {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Delete { buffer, .. }
+            | StatementKind::Release { buffer, .. }
+            | StatementKind::Validate { buffer, .. } => {
+                self.resolve_statement_ident(
+                    buffer,
+                    scope,
+                    &[NamespaceId::Buffers, NamespaceId::Tables],
+                    AccessMode::Read,
+                );
+            }
+            StatementKind::BufferCopy {
+                source,
+                target,
+                assignments,
+                ..
+            } => {
+                self.resolve_statement_ident(
+                    source,
+                    scope,
+                    &[NamespaceId::Buffers],
+                    AccessMode::Read,
+                );
+                self.resolve_statement_ident(
+                    target,
+                    scope,
+                    &[NamespaceId::Buffers],
+                    AccessMode::Write,
+                );
+                for pair in assignments {
+                    self.walk_expression(&pair.target, scope, AccessMode::Write);
+                    self.walk_expression(&pair.value, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::BufferCompare {
+                source,
+                target,
+                result_var,
+                ..
+            } => {
+                self.resolve_statement_ident(
+                    source,
+                    scope,
+                    &[NamespaceId::Buffers],
+                    AccessMode::Read,
+                );
+                self.resolve_statement_ident(
+                    target,
+                    scope,
+                    &[NamespaceId::Buffers],
+                    AccessMode::Read,
+                );
+                if let Some(rv) = result_var {
+                    self.resolve_statement_ident(
+                        rv,
+                        scope,
+                        &[NamespaceId::Values],
+                        AccessMode::Write,
+                    );
+                }
+            }
+            StatementKind::Create { target, .. } => match target {
+                CreateTarget::Name(n) => {
+                    self.resolve_statement_ident(
+                        n,
+                        scope,
+                        &[NamespaceId::Buffers, NamespaceId::Tables],
+                        AccessMode::Write,
+                    );
+                }
+                CreateTarget::Handle {
+                    handle,
+                    widget_pool,
+                    ..
+                } => {
+                    self.resolve_statement_ident(
+                        handle,
+                        scope,
+                        &[NamespaceId::Values],
+                        AccessMode::Write,
+                    );
+                    if let Some(wp) = widget_pool {
+                        self.walk_expression(wp, scope, AccessMode::Read);
+                    }
+                }
+            },
+
+            // ---- Event pub/sub ------------------------------------------
+            StatementKind::Publish {
+                event_name,
+                from_handle,
+                arguments,
+            } => {
+                self.walk_expression(event_name, scope, AccessMode::Read);
+                if let Some(fh) = from_handle {
+                    self.walk_expression(fh, scope, AccessMode::Read);
+                }
+                for arg in arguments {
+                    self.walk_expression(&arg.expression, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Subscribe {
+                subscriber,
+                event_name,
+                target,
+                ..
+            } => {
+                if let Some(s) = subscriber {
+                    self.walk_expression(s, scope, AccessMode::Read);
+                }
+                self.walk_expression(event_name, scope, AccessMode::Read);
+                if let SubscribeTarget::InHandle(h) = target {
+                    self.walk_expression(h, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Unsubscribe {
+                subscriber,
+                event_name,
+                in_handle,
+            } => {
+                if let Some(s) = subscriber {
+                    self.walk_expression(s, scope, AccessMode::Read);
+                }
+                if let Some(e) = event_name {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+                if let Some(h) = in_handle {
+                    self.walk_expression(h, scope, AccessMode::Read);
+                }
+            }
+
+            // ---- Stream I/O ---------------------------------------------
+            StatementKind::StreamIo {
+                stream_name,
+                operation,
+                ..
+            } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                match operation {
+                    StreamOperation::From(e) | StreamOperation::Through(e) => {
+                        self.walk_expression(e, scope, AccessMode::Read);
+                    }
+                    StreamOperation::To { target, .. } => {
+                        self.walk_expression(target, scope, AccessMode::Read);
+                    }
+                    StreamOperation::Close => {}
+                }
+            }
+
+            // ---- External / leaf forms ----------------------------------
+            StatementKind::Using { .. } => {}
+            StatementKind::Leave(_) | StatementKind::Next(_) => {}
+            StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => {}
+            StatementKind::Empty => {}
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Expression walking
+    // ------------------------------------------------------------------
+
+    fn walk_expression(&mut self, expr: &Expression, scope: ScopeId, mode: AccessMode) {
+        match &expr.kind {
+            ExpressionKind::Literal(_) => {}
+
+            ExpressionKind::Identifier(id) => {
+                // Bare identifier — try Values, then Buffers (ABL's default
+                // buffer / implicit-buffer fallthrough).
+                self.resolve_expr_ident(
+                    id,
+                    expr.id,
+                    scope,
+                    &[NamespaceId::Values, NamespaceId::Buffers],
+                    mode,
+                );
+            }
+
+            ExpressionKind::Add(l, r)
+            | ExpressionKind::Minus(l, r)
+            | ExpressionKind::Multiply(l, r)
+            | ExpressionKind::Divide(l, r)
+            | ExpressionKind::Modulo(l, r)
+            | ExpressionKind::Equal(l, r)
+            | ExpressionKind::NotEqual(l, r)
+            | ExpressionKind::LessThan(l, r)
+            | ExpressionKind::LessThanOrEqual(l, r)
+            | ExpressionKind::GreaterThan(l, r)
+            | ExpressionKind::GreaterThanOrEqual(l, r)
+            | ExpressionKind::And(l, r)
+            | ExpressionKind::Or(l, r)
+            | ExpressionKind::Begins(l, r)
+            | ExpressionKind::Matches(l, r)
+            | ExpressionKind::Contains(l, r) => {
+                self.walk_expression(l, scope, AccessMode::Read);
+                self.walk_expression(r, scope, AccessMode::Read);
+            }
+            ExpressionKind::Negate(e) | ExpressionKind::Not(e) => {
+                self.walk_expression(e, scope, AccessMode::Read);
+            }
+            ExpressionKind::IfThenElse(c, t, e) => {
+                self.walk_expression(c, scope, AccessMode::Read);
+                self.walk_expression(t, scope, AccessMode::Read);
+                self.walk_expression(e, scope, AccessMode::Read);
+            }
+
+            ExpressionKind::FunctionCall { name, arguments } => {
+                // Functions and Procedures share a call surface in expression
+                // position (internal procedure calls surface as function
+                // calls syntactically).
+                self.resolve_expr_ident(
+                    name,
+                    expr.id,
+                    scope,
+                    &[NamespaceId::Functions, NamespaceId::Procedures],
+                    AccessMode::Read,
+                );
+                for a in arguments {
+                    self.walk_expression(a, scope, AccessMode::Read);
+                }
+            }
+            ExpressionKind::MethodCall {
+                object, arguments, ..
+            } => {
+                // Method is a cross-class member — External in v1. We don't
+                // emit a reference entry for the call itself (the outer
+                // Expression's NodeId is shared with no resolvable symbol);
+                // recurse into `object` + `arguments` for their own idents.
+                self.walk_expression(object, scope, AccessMode::Read);
+                for a in arguments {
+                    self.walk_expression(a, scope, AccessMode::Read);
+                }
+            }
+            ExpressionKind::MemberAccess { object, .. } => {
+                self.walk_expression(object, scope, AccessMode::Read);
+                // Member is External; no reference entry in v1.
+            }
+            ExpressionKind::ArrayAccess { array, index } => {
+                self.walk_expression(array, scope, mode);
+                self.walk_expression(index, scope, AccessMode::Read);
+            }
+
+            ExpressionKind::FieldAccess { qualifier, field } => {
+                self.resolve_field_access(qualifier, field, expr.id, scope, mode);
+            }
+
+            ExpressionKind::New {
+                class_name,
+                arguments,
+            } => {
+                let atom = fold_atom(class_name);
+                match self.tree.resolve(scope, NamespaceId::Types, &atom) {
+                    Some(sym) => {
+                        self.references.insert(expr.id, Resolution::Resolved(sym));
+                        self.bump_count(sym, AccessMode::Read);
+                    }
+                    None => {
+                        self.references.insert(
+                            expr.id,
+                            Resolution::Unresolved {
+                                name: atom,
+                                reason: UnresolvedReason::External,
+                            },
+                        );
+                    }
+                }
+                for a in arguments {
+                    self.walk_expression(a, scope, AccessMode::Read);
+                }
+            }
+
+            ExpressionKind::CanFind {
+                buffer,
+                where_clause,
+                ..
+            } => {
+                self.resolve_expr_ident(
+                    buffer,
+                    expr.id,
+                    scope,
+                    &[NamespaceId::Buffers, NamespaceId::Tables],
+                    AccessMode::Read,
+                );
+                if let Some(w) = where_clause {
+                    self.walk_expression(w, scope, AccessMode::Read);
+                }
+            }
+
+            ExpressionKind::IncludeReference { .. }
+            | ExpressionKind::IncludeArgReference { .. }
+            | ExpressionKind::PreprocReference(_) => {}
+            ExpressionKind::PreprocIf(pif) => {
+                self.walk_expression(&pif.condition, scope, AccessMode::Read);
+                self.walk_expression(&pif.then_branch, scope, mode);
+                for (c, br) in &pif.elseif_branches {
+                    self.walk_expression(c, scope, AccessMode::Read);
+                    self.walk_expression(br, scope, mode);
+                }
+                if let Some(eb) = &pif.else_branch {
+                    self.walk_expression(eb, scope, mode);
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Resolution helpers
+    // ------------------------------------------------------------------
+
+    /// Resolve an `Identifier` in an **expression** position: records a
+    /// `Resolution` at the wrapping [`Expression`]'s NodeId.
+    fn resolve_expr_ident(
+        &mut self,
+        id: &Identifier,
+        expr_id: NodeId,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+        mode: AccessMode,
+    ) {
+        let atom = fold_atom(&id.name);
+        for &ns in namespaces {
+            if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
+                self.references.insert(expr_id, Resolution::Resolved(sym));
+                self.bump_count(sym, mode);
+                return;
+            }
+        }
+        self.references.insert(
+            expr_id,
+            Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::NotInScope,
+            },
+        );
+    }
+
+    /// Resolve an `Identifier` in a **statement** position (buffer name in
+    /// `DELETE`, stream name in `DISPLAY STREAM`, etc.). Statement-level
+    /// identifiers don't carry their own NodeId in v1, so no entry is
+    /// recorded in the `references` side table — only read/write counts
+    /// bump on resolution. Lint rules that need the statement-level
+    /// identifier span walk the AST directly.
+    fn resolve_statement_ident(
+        &mut self,
+        id: &Identifier,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+        mode: AccessMode,
+    ) {
+        let atom = fold_atom(&id.name);
+        for &ns in namespaces {
+            if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
+                self.bump_count(sym, mode);
+                return;
+            }
+        }
+    }
+
+    /// Resolve `qualifier.field`. When the qualifier is a bare identifier,
+    /// try `Buffers` (the common `table.field` / `buffer.field` case) and
+    /// fall through to `Tables` (implicit default buffer). When schema is
+    /// absent, the composite expression is `Unresolved { NoSchema }`.
+    fn resolve_field_access(
+        &mut self,
+        qualifier: &Expression,
+        field: &Identifier,
+        expr_id: NodeId,
+        scope: ScopeId,
+        mode: AccessMode,
+    ) {
+        // The qualifier is typically an Identifier (table/buffer name).
+        // Non-identifier qualifiers (e.g. `foo():bar.baz`) are walked
+        // normally; field is External and not recorded.
+        let ExpressionKind::Identifier(qid) = &qualifier.kind else {
+            self.walk_expression(qualifier, scope, AccessMode::Read);
+            return;
+        };
+
+        let qatom = fold_atom(&qid.name);
+        // 1. Try Buffers (DEFINE BUFFER, FOR EACH implicit, schema default
+        //    buffer), then Tables.
+        let qresolved = self
+            .tree
+            .resolve(scope, NamespaceId::Buffers, &qatom)
+            .or_else(|| self.tree.resolve(scope, NamespaceId::Tables, &qatom));
+
+        match qresolved {
+            Some(qsym) => {
+                // Qualifier bound to a local buffer/table symbol; record the
+                // qualifier Expression's NodeId as resolved. The outer
+                // `expr_id` (the FieldAccess Expression) is where the field
+                // reference lives.
+                self.references
+                    .insert(qualifier.id, Resolution::Resolved(qsym));
+                self.bump_count(qsym, AccessMode::Read);
+
+                let field_atom = fold_atom(&field.name);
+                // Field resolution: NoSchema (schema not loaded) vs
+                // NotInScope (schema loaded, field absent) vs External
+                // (schema loaded; no structured resolution in v1).
+                let reason = if self.ctx.schema_loaded {
+                    // v1: schema-backed field lookup requires knowing the
+                    // target table for the buffer symbol. This indirection
+                    // isn't cached on `Symbol` in v1, so we report External
+                    // — the field is known-to-exist-or-not only via a
+                    // schema query we haven't wired yet. `LINT0003` skips
+                    // External by design.
+                    UnresolvedReason::External
+                } else {
+                    UnresolvedReason::NoSchema
+                };
+                self.references.insert(
+                    expr_id,
+                    Resolution::Unresolved {
+                        name: field_atom,
+                        reason,
+                    },
+                );
+                let _ = mode;
+            }
+            None => {
+                // Unknown qualifier — either schema-absent buffer (NoSchema)
+                // or truly undefined (NotInScope). Without schema, buffers
+                // fall through to NoSchema; with schema they're NotInScope.
+                let reason = if self.ctx.schema_loaded {
+                    UnresolvedReason::NotInScope
+                } else {
+                    UnresolvedReason::NoSchema
+                };
+                self.references.insert(
+                    qualifier.id,
+                    Resolution::Unresolved {
+                        name: qatom.clone(),
+                        reason,
+                    },
+                );
+                let field_atom = fold_atom(&field.name);
+                self.references.insert(
+                    expr_id,
+                    Resolution::Unresolved {
+                        name: field_atom,
+                        reason,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Linear-search for the unique child scope of `parent` created by the
+    /// declare pass with `owner_node == owner && kind == kind`. Returns
+    /// `None` if no such scope exists (error recovery, skipped body).
+    fn find_child_scope(&self, parent: ScopeId, owner: NodeId, kind: ScopeKind) -> Option<ScopeId> {
+        self.tree
+            .iter()
+            .find(|(_, s)| s.parent == Some(parent) && s.owner_node == owner && s.kind == kind)
+            .map(|(id, _)| id)
+    }
+
+    fn bump_count(&mut self, sym: SymbolId, mode: AccessMode) {
+        let entry = self.counts.entry(sym).or_insert((0, 0));
+        match mode {
+            AccessMode::Read => entry.0 += 1,
+            AccessMode::Write => entry.1 += 1,
+            AccessMode::ReadWrite => {
+                entry.0 += 1;
+                entry.1 += 1;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -719,10 +1875,6 @@ fn fold_atom(s: &str) -> OxablAtom {
         OxablAtom::from(s.to_ascii_lowercase())
     }
 }
-
-// Suppress `unused` on the `Span` re-export until resolve pass uses it.
-#[allow(dead_code)]
-fn _span_alias(_: Span) {}
 
 #[cfg(test)]
 mod tests {
@@ -1651,5 +2803,1251 @@ mod tests {
         ]);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].labels.len(), 1);
+    }
+
+    // =======================================================================
+    // Resolve pass
+    // =======================================================================
+    //
+    // Tests below exercise `resolve_pass` — Phase 4a of the semantic layer
+    // plan. They construct small AST fragments with explicit NodeIds (so the
+    // `references` side table has distinct keys), run both passes, and
+    // inspect `references`, `symbols`, and `types`.
+
+    use oxabl_ast::{
+        AssignPair, CreateTarget, OnAction, OnKind, PreprocIf, RunArgument, RunTarget,
+    };
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Monotonic source of distinct `NodeId`s for test-authored AST. Starts
+    /// at 1 so that `NodeId::from_u32(0)` / `PROGRAM` stay reserved.
+    fn next_nid() -> NodeId {
+        static COUNTER: AtomicU32 = AtomicU32::new(1);
+        NodeId::from_u32(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn stmt_n(kind: StatementKind) -> Statement {
+        Statement::with_id(next_nid(), kind)
+    }
+
+    fn expr_n(kind: ExpressionKind) -> Expression {
+        Expression::with_id(next_nid(), kind)
+    }
+
+    fn id_expr(name: &str) -> Expression {
+        expr_n(ExpressionKind::Identifier(id(name)))
+    }
+
+    fn int_lit(v: i64) -> Expression {
+        expr_n(ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+            span: Span { start: 0, end: 0 },
+            value: v,
+        })))
+    }
+
+    fn var_stmt_n(name: &str, ty: DataType) -> Statement {
+        stmt_n(StatementKind::VariableDeclaration {
+            name: id(name),
+            type_source: TypeSource::Explicit(ty),
+            initial_value: None,
+            no_undo: false,
+            extent: None,
+        })
+    }
+
+    fn var_stmt_with_init(name: &str, ty: DataType, init: Expression) -> Statement {
+        stmt_n(StatementKind::VariableDeclaration {
+            name: id(name),
+            type_source: TypeSource::Explicit(ty),
+            initial_value: Some(init),
+            no_undo: false,
+            extent: None,
+        })
+    }
+
+    fn run_full(
+        stmts: &[Statement],
+    ) -> (
+        ScopeTree,
+        SymbolTable,
+        NodeIndexVec<Resolution>,
+        NodeIndexVec<ResolvedType>,
+    ) {
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree, mut symbols, _diags) = declare_pass(stmts, &ctx);
+        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols);
+        (tree, symbols, refs, types)
+    }
+
+    fn run_full_with_schema_loaded(
+        stmts: &[Statement],
+        schema_loaded: bool,
+    ) -> (
+        ScopeTree,
+        SymbolTable,
+        NodeIndexVec<Resolution>,
+        NodeIndexVec<ResolvedType>,
+    ) {
+        let schema = Schema::empty();
+        let mut ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        ctx.schema_loaded = schema_loaded;
+        let (tree, mut symbols, _diags) = declare_pass(stmts, &ctx);
+        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols);
+        (tree, symbols, refs, types)
+    }
+
+    fn resolution_of(refs: &NodeIndexVec<Resolution>, id: NodeId) -> &Resolution {
+        refs.get(id)
+            .unwrap_or_else(|| panic!("expected reference at NodeId {id:?}"))
+    }
+
+    // ---- Bare-identifier resolution --------------------------------------
+
+    #[test]
+    fn resolve_bare_identifier_resolves_to_local_variable() {
+        let use_x = id_expr("x");
+        let use_id = use_x.id;
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::ExpressionStatement(use_x)),
+        ];
+        let (tree, symbols, refs, _types) = run_full(&stmts);
+        let expected = tree
+            .resolve(ScopeId::ROOT, NamespaceId::Values, &fold_atom("x"))
+            .unwrap();
+        assert_eq!(
+            resolution_of(&refs, use_id),
+            &Resolution::Resolved(expected)
+        );
+        assert_eq!(symbols.get(expected).read_count, 1);
+    }
+
+    #[test]
+    fn resolve_undefined_identifier_is_not_in_scope() {
+        let ghost = id_expr("ghost");
+        let gid = ghost.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(ghost))];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert_eq!(
+            resolution_of(&refs, gid),
+            &Resolution::Unresolved {
+                name: fold_atom("ghost"),
+                reason: UnresolvedReason::NotInScope,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_bare_identifier_is_case_insensitive() {
+        let use_x = id_expr("MyVar");
+        let use_id = use_x.id;
+        let stmts = vec![
+            var_stmt_n("myvar", DataType::Character),
+            stmt_n(StatementKind::ExpressionStatement(use_x)),
+        ];
+        let (_tree, _symbols, refs, _types) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, use_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    // ---- Scope walking ---------------------------------------------------
+
+    #[test]
+    fn resolve_sees_outer_variable_from_inner_block() {
+        let inner_use = id_expr("outer");
+        let use_id = inner_use.id;
+        let do_block = stmt_n(StatementKind::Do {
+            loop_var: None,
+            from: None,
+            to: None,
+            by: None,
+            while_condition: None,
+            transaction: false,
+            body: vec![stmt_n(StatementKind::ExpressionStatement(inner_use))],
+        });
+        let stmts = vec![var_stmt_n("outer", DataType::Integer), do_block];
+        let (_tree, symbols, refs, _) = run_full(&stmts);
+        match resolution_of(&refs, use_id) {
+            Resolution::Resolved(sym) => {
+                assert_eq!(symbols.get(*sym).name, fold_atom("outer"));
+            }
+            other => panic!("expected resolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_inner_block_shadow_wins_over_outer() {
+        // Outer `x: INTEGER`, block introduces a counter `x` — the use of
+        // `x` inside the block must resolve to the block-scope counter, not
+        // the outer variable.
+        let block_use = id_expr("x");
+        let use_id = block_use.id;
+        let do_block = stmt_n(StatementKind::Do {
+            loop_var: Some(id("x")),
+            from: Some(int_lit(1)),
+            to: Some(int_lit(3)),
+            by: None,
+            while_condition: None,
+            transaction: false,
+            body: vec![stmt_n(StatementKind::ExpressionStatement(block_use))],
+        });
+        let stmts = vec![var_stmt_n("x", DataType::Character), do_block];
+        let (tree, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
+            panic!("expected resolved");
+        };
+        // The inner `x` is declared on the block scope with SymbolKind Variable.
+        let block = tree
+            .iter()
+            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .unwrap()
+            .1;
+        let block_x = block
+            .get_in(NamespaceId::Values, &fold_atom("x"))
+            .expect("block-scope x");
+        assert_eq!(*sym, block_x);
+        // And it's Integer (counter), not Character.
+        assert_eq!(
+            symbols.get(*sym).data_type,
+            Some(ResolvedType::Primitive(crate::PrimitiveTy::Integer))
+        );
+    }
+
+    #[test]
+    fn resolve_variable_shadows_builtin() {
+        let use_session = id_expr("session");
+        let use_id = use_session.id;
+        let stmts = vec![
+            var_stmt_n("session", DataType::Integer),
+            stmt_n(StatementKind::ExpressionStatement(use_session)),
+        ];
+        let (_tree, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
+            panic!("expected resolved");
+        };
+        // Must resolve to the user variable, not the BuiltIn.
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::Variable);
+    }
+
+    #[test]
+    fn resolve_builtin_session_when_not_shadowed() {
+        let use_session = id_expr("session");
+        let use_id = use_session.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(use_session))];
+        let (_tree, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::BuiltIn);
+    }
+
+    // ---- Function calls --------------------------------------------------
+
+    #[test]
+    fn resolve_function_call_to_user_function() {
+        let call = expr_n(ExpressionKind::FunctionCall {
+            name: id("calc"),
+            arguments: vec![],
+        });
+        let call_id = call.id;
+        let stmts = vec![
+            stmt_n(StatementKind::Function {
+                name: id("calc"),
+                return_type: DataType::Integer,
+                body: vec![],
+            }),
+            stmt_n(StatementKind::ExpressionStatement(call)),
+        ];
+        let (_t, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, call_id) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(symbols.get(*sym).name, fold_atom("calc"));
+    }
+
+    #[test]
+    fn resolve_function_call_unknown_is_not_in_scope() {
+        let call = expr_n(ExpressionKind::FunctionCall {
+            name: id("nope"),
+            arguments: vec![],
+        });
+        let call_id = call.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(call))];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert_eq!(
+            resolution_of(&refs, call_id),
+            &Resolution::Unresolved {
+                name: fold_atom("nope"),
+                reason: UnresolvedReason::NotInScope,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_function_call_arguments_recurse() {
+        let arg = id_expr("a");
+        let arg_id = arg.id;
+        let call = expr_n(ExpressionKind::FunctionCall {
+            name: id("calc"),
+            arguments: vec![arg],
+        });
+        let stmts = vec![
+            stmt_n(StatementKind::Function {
+                name: id("calc"),
+                return_type: DataType::Integer,
+                body: vec![],
+            }),
+            var_stmt_n("a", DataType::Integer),
+            stmt_n(StatementKind::ExpressionStatement(call)),
+        ];
+        let (_t, symbols, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, arg_id),
+            Resolution::Resolved(_)
+        ));
+        let a = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("a") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(a).read_count, 1);
+    }
+
+    // ---- NEW / class lookups --------------------------------------------
+
+    #[test]
+    fn resolve_new_class_local_resolves_to_type() {
+        let new_expr = expr_n(ExpressionKind::New {
+            class_name: "Foo".into(),
+            arguments: vec![],
+        });
+        let new_id = new_expr.id;
+        let stmts = vec![
+            stmt_n(StatementKind::Class {
+                name: id("Foo"),
+                inherits: None,
+                implements: vec![],
+                is_abstract: false,
+                is_final: false,
+                body: vec![],
+            }),
+            stmt_n(StatementKind::ExpressionStatement(new_expr)),
+        ];
+        let (_t, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, new_id) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::Class);
+    }
+
+    #[test]
+    fn resolve_new_class_unknown_is_external() {
+        let new_expr = expr_n(ExpressionKind::New {
+            class_name: "Nope".into(),
+            arguments: vec![],
+        });
+        let new_id = new_expr.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(new_expr))];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert_eq!(
+            resolution_of(&refs, new_id),
+            &Resolution::Unresolved {
+                name: fold_atom("nope"),
+                reason: UnresolvedReason::External,
+            }
+        );
+    }
+
+    // ---- Buffers / CAN-FIND ---------------------------------------------
+
+    #[test]
+    fn resolve_can_find_buffer_resolves() {
+        let cf = expr_n(ExpressionKind::CanFind {
+            find_type: oxabl_ast::FindType::First,
+            buffer: id("bCust"),
+            where_clause: None,
+            lock_type: LockType::NoLock,
+            no_error: false,
+        });
+        let cf_id = cf.id;
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(cf)),
+        ];
+        let (_t, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, cf_id) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::Buffer);
+    }
+
+    #[test]
+    fn resolve_can_find_unknown_buffer_is_not_in_scope() {
+        let cf = expr_n(ExpressionKind::CanFind {
+            find_type: oxabl_ast::FindType::First,
+            buffer: id("ghost"),
+            where_clause: None,
+            lock_type: LockType::NoLock,
+            no_error: false,
+        });
+        let cf_id = cf.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(cf))];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, cf_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NotInScope,
+                ..
+            }
+        ));
+    }
+
+    // ---- Field access / schema ------------------------------------------
+
+    #[test]
+    fn resolve_field_access_no_schema_loaded_is_no_schema() {
+        let qualifier = id_expr("Customer");
+        let qual_id = qualifier.id;
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field: id("CustNum"),
+        });
+        let fa_id = fa.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(fa))];
+        let (_t, _s, refs, _) = run_full_with_schema_loaded(&stmts, false);
+        // Both qualifier and composite are Unresolved NoSchema.
+        assert!(matches!(
+            resolution_of(&refs, qual_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NoSchema,
+                ..
+            }
+        ));
+        assert!(matches!(
+            resolution_of(&refs, fa_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NoSchema,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resolve_field_access_schema_loaded_unknown_qualifier_is_not_in_scope() {
+        let qualifier = id_expr("Customer");
+        let qual_id = qualifier.id;
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field: id("CustNum"),
+        });
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(fa))];
+        let (_t, _s, refs, _) = run_full_with_schema_loaded(&stmts, true);
+        assert!(matches!(
+            resolution_of(&refs, qual_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NotInScope,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resolve_field_access_resolves_local_buffer_qualifier() {
+        let qualifier = id_expr("bCust");
+        let qual_id = qualifier.id;
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field: id("CustNum"),
+        });
+        let fa_id = fa.id;
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(fa)),
+        ];
+        let (_t, symbols, refs, _) = run_full_with_schema_loaded(&stmts, true);
+        let Resolution::Resolved(sym) = resolution_of(&refs, qual_id) else {
+            panic!("qualifier should resolve to buffer");
+        };
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::Buffer);
+        // Field stays External (schema-backed field lookup not wired in v1).
+        assert!(matches!(
+            resolution_of(&refs, fa_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::External,
+                ..
+            }
+        ));
+    }
+
+    // ---- Read / write counts --------------------------------------------
+
+    #[test]
+    fn resolve_assign_counts_reads_and_writes() {
+        // ASSIGN x = x + 1.
+        let lhs = id_expr("x");
+        let rhs_x = id_expr("x");
+        let one = int_lit(1);
+        let sum = expr_n(ExpressionKind::Add(Box::new(rhs_x), Box::new(one)));
+        let assign = stmt_n(StatementKind::Assign {
+            assignments: {
+                let mut v: SmallVec<[AssignPair; 4]> = SmallVec::new();
+                v.push(AssignPair {
+                    target: lhs,
+                    value: sum,
+                });
+                v
+            },
+        });
+        let stmts = vec![var_stmt_n("x", DataType::Integer), assign];
+        let (_t, symbols, _refs, _types) = run_full(&stmts);
+        let x = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(x).read_count, 1);
+        assert_eq!(symbols.get(x).write_count, 1);
+    }
+
+    #[test]
+    fn resolve_unused_variable_has_zero_counts() {
+        let stmts = vec![var_stmt_n("x", DataType::Integer)];
+        let (_t, symbols, _refs, _) = run_full(&stmts);
+        let x = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(x).read_count, 0);
+        assert_eq!(symbols.get(x).write_count, 0);
+    }
+
+    #[test]
+    fn resolve_read_counts_on_display() {
+        let use_x = id_expr("x");
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::Display {
+                stream_name: None,
+                items: vec![oxabl_ast::DisplayItem {
+                    expression: use_x,
+                    when_condition: None,
+                }],
+                except: vec![],
+                frame: None,
+            }),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(x).read_count, 1);
+    }
+
+    #[test]
+    fn resolve_message_set_counts_as_write() {
+        let item = id_expr("greeting");
+        let stmts = vec![
+            var_stmt_n("greeting", DataType::Character),
+            var_stmt_n("answer", DataType::Integer),
+            stmt_n(StatementKind::Message {
+                items: vec![item],
+                set_targets: vec![id("answer")],
+            }),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let greeting = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("greeting"))
+            .unwrap()
+            .0;
+        let answer = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("answer"))
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(greeting).read_count, 1);
+        assert_eq!(symbols.get(answer).write_count, 1);
+        assert_eq!(symbols.get(answer).read_count, 0);
+    }
+
+    #[test]
+    fn resolve_run_output_argument_counts_as_write() {
+        // RUN proc (OUTPUT x).
+        let arg_expr = id_expr("x");
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::Run {
+                target: RunTarget::Literal("proc".into()),
+                arguments: vec![RunArgument {
+                    direction: ParameterDirection::Output,
+                    expression: arg_expr,
+                }],
+                in_handle: None,
+                persistent: false,
+                persistent_handle: None,
+                asynchronous: false,
+                async_handle: None,
+                event_procedure: None,
+                no_error: false,
+            }),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(x).write_count, 1);
+        assert_eq!(symbols.get(x).read_count, 0);
+    }
+
+    #[test]
+    fn resolve_run_input_output_argument_counts_both() {
+        let arg_expr = id_expr("x");
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::Run {
+                target: RunTarget::Literal("proc".into()),
+                arguments: vec![RunArgument {
+                    direction: ParameterDirection::InputOutput,
+                    expression: arg_expr,
+                }],
+                in_handle: None,
+                persistent: false,
+                persistent_handle: None,
+                asynchronous: false,
+                async_handle: None,
+                event_procedure: None,
+                no_error: false,
+            }),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(x).read_count, 1);
+        assert_eq!(symbols.get(x).write_count, 1);
+    }
+
+    // ---- Idempotence ----------------------------------------------------
+
+    #[test]
+    fn resolve_pass_is_idempotent_for_counts() {
+        let use_x = id_expr("x");
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::ExpressionStatement(use_x)),
+        ];
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree, mut symbols, _d) = declare_pass(&stmts, &ctx);
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols);
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols);
+        let x = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        // Running twice yields 1, not 2 — Salsa-ready precondition.
+        assert_eq!(symbols.get(x).read_count, 1);
+    }
+
+    // ---- Statement-level buffer references ------------------------------
+
+    #[test]
+    fn resolve_delete_buffer_bumps_read_count() {
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::Delete {
+                buffer: id("bCust"),
+                no_error: false,
+            }),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let b = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("bcust"))
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(b).read_count, 1);
+    }
+
+    #[test]
+    fn resolve_for_each_implicit_buffer_counts() {
+        let stmts = vec![stmt_n(StatementKind::ForEach {
+            buffer: id("Customer"),
+            of_relation: None,
+            where_clause: None,
+            lock_type: LockType::NoLock,
+            body: vec![],
+        })];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let b = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("customer") && s.kind == SymbolKind::Buffer)
+            .unwrap()
+            .0;
+        // The FOR-EACH buffer name is itself the only resolving read.
+        assert_eq!(symbols.get(b).read_count, 1);
+    }
+
+    // ---- Binary / unary expression recursion ----------------------------
+
+    #[test]
+    fn resolve_arithmetic_expression_walks_both_sides() {
+        let lhs = id_expr("a");
+        let rhs = id_expr("b");
+        let sum = expr_n(ExpressionKind::Add(Box::new(lhs), Box::new(rhs)));
+        let stmts = vec![
+            var_stmt_n("a", DataType::Integer),
+            var_stmt_n("b", DataType::Integer),
+            stmt_n(StatementKind::ExpressionStatement(sum)),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        for name in ["a", "b"] {
+            let s = symbols
+                .iter()
+                .find(|(_, s)| s.name == fold_atom(name))
+                .unwrap()
+                .0;
+            assert_eq!(symbols.get(s).read_count, 1);
+        }
+    }
+
+    #[test]
+    fn resolve_logical_and_walks_both_sides() {
+        let lhs = id_expr("p");
+        let rhs = id_expr("q");
+        let and_expr = expr_n(ExpressionKind::And(Box::new(lhs), Box::new(rhs)));
+        let stmts = vec![
+            var_stmt_n("p", DataType::Logical),
+            var_stmt_n("q", DataType::Logical),
+            stmt_n(StatementKind::ExpressionStatement(and_expr)),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        for name in ["p", "q"] {
+            let s = symbols
+                .iter()
+                .find(|(_, s)| s.name == fold_atom(name))
+                .unwrap()
+                .0;
+            assert_eq!(symbols.get(s).read_count, 1);
+        }
+    }
+
+    #[test]
+    fn resolve_negate_walks_operand() {
+        let x = id_expr("x");
+        let x_id = x.id;
+        let neg = expr_n(ExpressionKind::Negate(Box::new(x)));
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::ExpressionStatement(neg)),
+        ];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, x_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_array_access_walks_array_and_index() {
+        let arr = id_expr("arr");
+        let arr_id = arr.id;
+        let idx = id_expr("i");
+        let idx_id = idx.id;
+        let ax = expr_n(ExpressionKind::ArrayAccess {
+            array: Box::new(arr),
+            index: Box::new(idx),
+        });
+        let stmts = vec![
+            var_stmt_extent("arr", DataType::Integer, 5),
+            var_stmt_n("i", DataType::Integer),
+            stmt_n(StatementKind::ExpressionStatement(ax)),
+        ];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, arr_id),
+            Resolution::Resolved(_)
+        ));
+        assert!(matches!(
+            resolution_of(&refs, idx_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    // ---- Namespace shadowing --------------------------------------------
+
+    #[test]
+    fn resolve_bare_identifier_prefers_variable_over_buffer() {
+        // Variable `customer` and buffer `customer` both declared at root.
+        // A bare identifier `customer` in a value position resolves to the
+        // variable (Values NS wins over Buffers for bare idents).
+        let use_customer = id_expr("customer");
+        let use_id = use_customer.id;
+        let stmts = vec![
+            var_stmt_n("customer", DataType::Integer),
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("customer"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(use_customer)),
+        ];
+        let (_t, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::Variable);
+    }
+
+    #[test]
+    fn resolve_field_qualifier_finds_buffer_not_variable() {
+        // Same name variable + buffer — `customer.field` must resolve the
+        // qualifier via Buffers namespace.
+        let qualifier = id_expr("customer");
+        let qual_id = qualifier.id;
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field: id("CustNum"),
+        });
+        let stmts = vec![
+            var_stmt_n("customer", DataType::Integer),
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("customer"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(fa)),
+        ];
+        let (_t, symbols, refs, _) = run_full_with_schema_loaded(&stmts, true);
+        let Resolution::Resolved(sym) = resolution_of(&refs, qual_id) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::Buffer);
+    }
+
+    // ---- Method / member external --------------------------------------
+
+    #[test]
+    fn resolve_method_call_recurses_into_object() {
+        let obj = id_expr("svc");
+        let obj_id = obj.id;
+        let mc = expr_n(ExpressionKind::MethodCall {
+            object: Box::new(obj),
+            method: id("doIt"),
+            arguments: vec![],
+        });
+        let stmts = vec![
+            var_stmt_n("svc", DataType::Class("Foo".into())),
+            stmt_n(StatementKind::ExpressionStatement(mc)),
+        ];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, obj_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_member_access_recurses_into_object() {
+        let obj = id_expr("thing");
+        let obj_id = obj.id;
+        let ma = expr_n(ExpressionKind::MemberAccess {
+            object: Box::new(obj),
+            member: id("X"),
+        });
+        let stmts = vec![
+            var_stmt_n("thing", DataType::Handle),
+            stmt_n(StatementKind::ExpressionStatement(ma)),
+        ];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, obj_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    // ---- Types side table -----------------------------------------------
+
+    #[test]
+    fn resolve_types_side_table_contains_variable_decl() {
+        let vdecl = var_stmt_n("x", DataType::Integer);
+        let vid = vdecl.id;
+        let stmts = vec![vdecl];
+        let (_t, _s, _r, types) = run_full(&stmts);
+        assert_eq!(
+            types.get(vid),
+            Some(&ResolvedType::Primitive(crate::PrimitiveTy::Integer))
+        );
+    }
+
+    #[test]
+    fn resolve_types_side_table_contains_function_return_type() {
+        let fdecl = stmt_n(StatementKind::Function {
+            name: id("sum"),
+            return_type: DataType::Decimal,
+            body: vec![],
+        });
+        let fid = fdecl.id;
+        let stmts = vec![fdecl];
+        let (_t, _s, _r, types) = run_full(&stmts);
+        assert_eq!(
+            types.get(fid),
+            Some(&ResolvedType::Primitive(crate::PrimitiveTy::Decimal))
+        );
+    }
+
+    #[test]
+    fn resolve_types_side_table_contains_property_type() {
+        let pdecl = stmt_n(StatementKind::Property {
+            access: AccessModifier::Public,
+            is_static: false,
+            name: id("Name"),
+            data_type: DataType::Character,
+            no_undo: false,
+            get_body: Some(vec![]),
+            set_body: Some(vec![]),
+        });
+        let pid = pdecl.id;
+        let stmts = vec![stmt_n(StatementKind::Class {
+            name: id("Foo"),
+            inherits: None,
+            implements: vec![],
+            is_abstract: false,
+            is_final: false,
+            body: vec![pdecl],
+        })];
+        let (_t, _s, _r, types) = run_full(&stmts);
+        assert_eq!(
+            types.get(pid),
+            Some(&ResolvedType::Primitive(crate::PrimitiveTy::Character))
+        );
+    }
+
+    #[test]
+    fn resolve_variable_initializer_counts_rhs_read() {
+        // DEFINE VARIABLE y AS INTEGER INITIAL x.
+        let init_use = id_expr("x");
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            var_stmt_with_init("y", DataType::Integer, init_use),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(x).read_count, 1);
+    }
+
+    // ---- Class type upgrade ---------------------------------------------
+
+    #[test]
+    fn resolve_class_typed_variable_upgrades_to_class() {
+        let stmts = vec![
+            stmt_n(StatementKind::Class {
+                name: id("Foo"),
+                inherits: None,
+                implements: vec![],
+                is_abstract: false,
+                is_final: false,
+                body: vec![],
+            }),
+            var_stmt_n("svc", DataType::Class("Foo".into())),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let foo_sym = symbols
+            .iter()
+            .find(|(_, s)| s.kind == SymbolKind::Class && s.name == fold_atom("foo"))
+            .unwrap()
+            .0;
+        let svc = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("svc") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        assert_eq!(
+            symbols.get(svc).data_type,
+            Some(ResolvedType::Class(foo_sym))
+        );
+    }
+
+    #[test]
+    fn resolve_class_typed_variable_unknown_class_stays_unknown() {
+        let stmts = vec![var_stmt_n("svc", DataType::Class("Bar".into()))];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let svc = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("svc") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0;
+        // No Bar in Types namespace → stays Unknown.
+        assert_eq!(symbols.get(svc).data_type, Some(ResolvedType::Unknown));
+    }
+
+    // ---- Control-flow walking -------------------------------------------
+
+    #[test]
+    fn resolve_if_condition_and_branches_walked() {
+        let cond = id_expr("flag");
+        let cond_id = cond.id;
+        let then_use = id_expr("a");
+        let then_id = then_use.id;
+        let if_stmt = stmt_n(StatementKind::If {
+            condition: cond,
+            then_branch: Box::new(stmt_n(StatementKind::ExpressionStatement(then_use))),
+            else_branch: None,
+        });
+        let stmts = vec![
+            var_stmt_n("flag", DataType::Logical),
+            var_stmt_n("a", DataType::Integer),
+            if_stmt,
+        ];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, cond_id),
+            Resolution::Resolved(_)
+        ));
+        assert!(matches!(
+            resolution_of(&refs, then_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_case_expression_and_when_values_walked() {
+        let discr = id_expr("x");
+        let discr_id = discr.id;
+        let matcher = int_lit(1);
+        let body_use = id_expr("y");
+        let body_id = body_use.id;
+        let case = stmt_n(StatementKind::Case {
+            expression: discr,
+            when_branches: vec![oxabl_ast::WhenBranch {
+                values: vec![matcher],
+                body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
+            }],
+            otherwise: None,
+        });
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            var_stmt_n("y", DataType::Integer),
+            case,
+        ];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, discr_id),
+            Resolution::Resolved(_)
+        ));
+        assert!(matches!(
+            resolution_of(&refs, body_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_preproc_if_walks_both_branches() {
+        let then_use = id_expr("x");
+        let then_id = then_use.id;
+        let else_use = id_expr("y");
+        let else_id = else_use.id;
+        let cond = expr_n(ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
+            span: Span { start: 0, end: 4 },
+            value: true,
+        })));
+        let pif = stmt_n(StatementKind::PreprocIf(PreprocIf {
+            condition: cond,
+            then_branch: vec![stmt_n(StatementKind::ExpressionStatement(then_use))],
+            elseif_branches: vec![],
+            else_branch: Some(vec![stmt_n(StatementKind::ExpressionStatement(else_use))]),
+        }));
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            var_stmt_n("y", DataType::Integer),
+            pif,
+        ];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, then_id),
+            Resolution::Resolved(_)
+        ));
+        assert!(matches!(
+            resolution_of(&refs, else_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    // ---- Procedure / function body scope chain --------------------------
+
+    #[test]
+    fn resolve_inside_procedure_sees_file_scope_variable() {
+        let body_use = id_expr("outer");
+        let use_id = body_use.id;
+        let proc = stmt_n(StatementKind::Procedure {
+            name: id("p"),
+            body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
+        });
+        let stmts = vec![var_stmt_n("outer", DataType::Integer), proc];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, use_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_inside_method_sees_method_parameter() {
+        let body_use = id_expr("arg");
+        let use_id = body_use.id;
+        let method = stmt_n(StatementKind::Method {
+            access: AccessModifier::Public,
+            is_static: false,
+            is_abstract: false,
+            is_override: false,
+            return_type: None,
+            name: id("m"),
+            parameters: vec![param_stmt(
+                "arg",
+                ParameterDirection::Input,
+                DataType::Integer,
+            )],
+            body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
+        });
+        let stmts = vec![stmt_n(StatementKind::Class {
+            name: id("C"),
+            inherits: None,
+            implements: vec![],
+            is_abstract: false,
+            is_final: false,
+            body: vec![method],
+        })];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, use_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    // ---- Literal / preproc reference — no entry ------------------------
+
+    #[test]
+    fn resolve_literal_has_no_reference_entry() {
+        let lit = int_lit(42);
+        let lit_id = lit.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(lit))];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(refs.get(lit_id).is_none());
+    }
+
+    #[test]
+    fn resolve_preproc_reference_has_no_entry() {
+        let pref = expr_n(ExpressionKind::PreprocReference("foo".into()));
+        let pref_id = pref.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(pref))];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(refs.get(pref_id).is_none());
+    }
+
+    // ---- CREATE buffer / handle ----------------------------------------
+
+    #[test]
+    fn resolve_create_buffer_bumps_write() {
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::Create {
+                target: CreateTarget::Name(id("bCust")),
+                no_error: false,
+            }),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let b = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("bcust"))
+            .unwrap()
+            .0;
+        assert_eq!(symbols.get(b).write_count, 1);
+    }
+
+    // ---- ON trigger block walks -----------------------------------------
+
+    #[test]
+    fn resolve_on_trigger_block_walks_body() {
+        let body_use = id_expr("x");
+        let use_id = body_use.id;
+        let on = stmt_n(StatementKind::On {
+            kind: OnKind::UiEvent {
+                clauses: vec![oxabl_ast::OnEventClause {
+                    events: vec![id("CHOOSE")],
+                    widgets: vec![],
+                }],
+                anywhere: false,
+                action: OnAction::Block(Box::new(stmt_n(StatementKind::Block(vec![stmt_n(
+                    StatementKind::ExpressionStatement(body_use),
+                )])))),
+            },
+        });
+        let stmts = vec![var_stmt_n("x", DataType::Integer), on];
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, use_id),
+            Resolution::Resolved(_)
+        ));
+    }
+
+    // ---- Builtins visible inside nested scope ---------------------------
+
+    #[test]
+    fn resolve_builtin_visible_inside_procedure() {
+        let use_s = id_expr("SESSION");
+        let use_id = use_s.id;
+        let proc = stmt_n(StatementKind::Procedure {
+            name: id("p"),
+            body: vec![stmt_n(StatementKind::ExpressionStatement(use_s))],
+        });
+        let stmts = vec![proc];
+        let (_t, symbols, refs, _) = run_full(&stmts);
+        let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(symbols.get(*sym).kind, SymbolKind::BuiltIn);
     }
 }

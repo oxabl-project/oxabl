@@ -2,6 +2,7 @@
 
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/oxabl-project/oxabl?utm_source=badge)
 
+
 High performance oxidized tooling for Progress ABL, written in Rust.
 
 ## Unofficial

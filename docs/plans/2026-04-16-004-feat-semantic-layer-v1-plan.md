@@ -864,30 +864,39 @@ Deliverables: `fn declare_pass(program, ctx) -> (...)` callable and tested.
 
 Estimated effort: ~3 days. Breadth of ABL declaration forms is the cost, not algorithmic depth.
 
-### Phase 4a — resolve pass (references + signatures)
+### Phase 4a — resolve pass (references + signatures)  ✅
 
 **Goal:** second pass. Every identifier reference resolved (or structured-unresolved); every
 declaration typed. No expression-body type-checking yet.
 
 Tasks:
 
-- `resolve.rs` (resolve half): walks reference positions only. For each identifier reference,
+- [x] `resolve.rs` (resolve half): walks reference positions only. For each identifier reference,
   consults scope chain with namespace-narrowing rules, populates
   `references: IndexVec<NodeId, Option<Resolution>>`. Handles qualified `table.field`,
   `object:member`, `array[i]`, `buffer.field`.
-- Signature typing: for each `Symbol` with declared type (parameters, return type, properties,
+- [x] Signature typing: for each `Symbol` with declared type (parameters, return type, properties,
   variable declarations, temp-table fields), populate `Symbol::data_type` and the `types`
-  side table at the declaration's NodeId.
-- Schema integration: when `schema_loaded`, `table.field` references consult the `Schema`;
+  side table at the declaration's NodeId. Class-typed declarations upgrade from
+  `Unknown` to `Class(SymbolId)` when the class is declared locally.
+- [x] Schema integration: when `schema_loaded`, `table.field` references consult the `Schema`;
   unresolved fields become `Resolution::Unresolved { reason: NotInScope }` in the field
   namespace — picked up by `unknown-table-or-field`. When schema is absent, they become
-  `reason: NoSchema`.
-- External-ness detection: `USING`-imported names, `RUN "name"`, `RUN VALUE(x)`,
-  `DYNAMIC-FUNCTION(...)`, dynamic buffer ops all produce `Unresolved { reason: External }`.
-- Tests: ≥ 40 inline unit tests across reference forms. Namespace-shadow fixture: variable
-  `customer` shadowing buffer `customer` shadowing schema table `customer`.
+  `reason: NoSchema`. v1 treats field-under-buffer as `External` until schema-backed
+  field lookup wires in Phase 4b.
+- [x] External-ness detection: `USING`-imported names, `RUN "name"`, `NEW ClassName` for
+  non-local types produce `Unresolved { reason: External }`. Dynamic forms (`RUN VALUE(x)`,
+  `DYNAMIC-FUNCTION`, dynamic buffer ops) surface their expressions normally.
+- [x] Idempotent read/write counts (plan §C7): per-symbol counts accumulate into a local
+  `FxHashMap<SymbolId, (u32, u32)>` and write back once at end-of-pass, so re-running
+  `resolve_pass` is a no-op.
+- [x] `Resolution::Unresolved` carries `name: OxablAtom` (plan §C5) so lint diagnostics
+  don't reslice the source span per emission.
+- [x] Tests: 50 inline unit tests across reference forms, including namespace shadowing
+  (variable vs buffer), scope-walk lookup, NEW class upgrades, schema-loaded vs
+  schema-absent field access, RUN OUTPUT write-count, and idempotence.
 
-### Phase 4b — type-check pass (expression bodies)
+### Phase 4b — type-check pass (expression bodies)  ✅
 
 **Goal:** third pass. Every expression NodeId carries a `ResolvedType`. No diagnostics emitted
 by the semantic layer for type mismatches — lint owns `LINT0004` as the single user-facing
@@ -895,29 +904,40 @@ channel.
 
 Tasks:
 
-- `types.rs`: `ResolvedType`, `PrimitiveTy`.
-- `coercion.rs`: `assignable(from, to) -> bool` and `assignable_strict(from, to) -> bool` per
-  the catalog tables above.
-- `operators.rs`: binary/unary operator typing tables. Concrete entries include:
-  - `+`: `Integer×Integer → Integer`, `Int64×Int64 → Int64`, `Decimal×* → Decimal`,
-    `Character×Character → Character`, `Date + Integer → Date`,
-    `Datetime + Integer → Datetime`, `DatetimeTz + Integer → DatetimeTz`.
-  - `-`: numeric pairs; `Date - Date → Integer`, `Datetime - Datetime → Int64` (ms).
-  - `*`: numeric ladder.
-  - `/`: **always returns `Decimal`.**
-  - `MODULO`: `Integer×Integer → Integer`, `Int64×Int64 → Int64`.
-  - Comparison ops: return `Logical`; widen operands to common type.
-  - `AND`/`OR`/`NOT`: `Logical` → `Logical`.
-  - `BEGINS`/`MATCHES`/`CONTAINS`: `Character×Character → Logical`.
-- `check.rs`: bidirectional pass. Literals synthesize; declarations (via `Symbol::data_type`)
-  provide expected types; call sites type argument positions via `assignable_strict` for
-  OUTPUT/INPUT-OUTPUT, `assignable` otherwise. **No diagnostics emitted.** Type-mismatch
-  evidence is lint's to consume (reads the populated `types` side table + `Symbol::data_type`).
-- Poison-propagation: `Error` assignments propagate through; `Unknown` is the lattice bottom
-  and widens to anything.
-- Tests: ≥ 30 inline unit tests across coercion cases (widening ladder, narrowing cases,
-  `?` propagation, class-upcast single-file, cross-file `External` silent skip, `/` returns
-  `Decimal`, `DATE + INT` vs `DATETIME + INT` unit difference).
+- [x] `types.rs`: `ResolvedType`, `PrimitiveTy` (already shipped in Phase 3; unchanged).
+- [x] `coercion.rs`: `assignable`, `assignable_strict`, `is_narrowing_warning`,
+  `widen_primitive`. Primitive widening ladders, silent numeric narrowing,
+  Longchar→Character / Datetime→Date warnings, Unknown as universal bottom, Error
+  poisoning without cascade, array/Class/Buffer/Table compared by identity.
+- [x] `operators.rs`: binary + unary typing tables.
+  - `+`: numeric ladder, string concat (Character/Longchar), Date/Datetime + Integer/Int64
+    preserves date-like type.
+  - `-`: numeric pairs; `Date - Date → Integer` (days); `Datetime - Datetime → Int64` (ms).
+  - `*`: numeric widen.
+  - `/`: **always returns `Decimal`** (ABL quirk baked in).
+  - `MODULO`: `Integer×Integer → Integer`, `Int64×Int64 → Int64`, widen mixed to Int64.
+  - Comparisons: return `Logical` iff operands share a widening ladder, else Error.
+  - `AND`/`OR`: Logical × Logical → Logical.
+  - `BEGINS`/`MATCHES`/`CONTAINS`: Character × Character → Logical.
+  - Unary `Negate`: numeric only; `Not`: Logical only.
+  - `Unknown` propagates as Unknown; `Error` poisons without cascade.
+- [x] `check.rs`: bottom-up type synthesis walker. Literals synthesize (Integer literals
+  outside i32 range become Int64); identifiers consult `Symbol::data_type` via the resolve
+  side table; NEW / method / function call / member-access expressions take their type
+  from the resolved symbol (Class/Interface → `Class(SymbolId)`, Buffer/TempTable →
+  `Buffer(SymbolId)`). Ternary widens branches via `widen_primitive`;
+  FieldAccess/MemberAccess/MethodCall surface `Unknown` in v1 (schema-backed field types
+  and cross-class method return types deferred). **Emits no diagnostics** — type-mismatch
+  evidence lives in the populated `types` side table.
+- [x] Poison-propagation: `Error` cascades through operator evaluation; `Unknown` is the
+  lattice bottom and widens to anything.
+- [x] `analyze_file` now runs all three passes (declare → resolve → check).
+- [x] Tests: 79 unit tests across coercion (20 cases), operators (24 variants including
+  `/` → Decimal, DATE+INT preserve-Date, DATETIME-DATETIME → Int64), and end-to-end check
+  (35 integration tests via `analyze_file` covering literals, identifier types,
+  arithmetic/comparison/logical/string ops, ternary, array access, NEW class → Class
+  symbol, CAN-FIND → Logical, function call return types, Unknown propagation, Error
+  poisoning, no-diagnostics invariant, full `analyze_file` smoke test).
 
 Deliverables: `fn analyze_file(program, ctx) -> Semantic` usable end-to-end.
 
