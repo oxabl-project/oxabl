@@ -1022,7 +1022,7 @@ Deferred to follow-up:
 - Exact-JSON goldens under a stable NodeId allocator (blocked on parser's
   NodeId-minting determinism under feature growth).
 
-### Phase 7 — Architectural guardrail appendices
+### Phase 7 — Architectural guardrail appendices  ✅
 
 Two short written sketches that prove R10 and R11 remain reachable. **Non-blocking** for
 the v1 merge — the side-table + NodeId architecture *is* the contract, and these docs are
