@@ -81,9 +81,9 @@ pub struct Semantic {
 /// type-check (Phase 4b). The resulting `Semantic` carries fully populated
 /// scope tree, symbol table, reference map, and type map.
 pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> Semantic {
-    let (scope_tree, mut symbols, mut diagnostics) = declare_pass(program, ctx);
+    let (scope_tree, mut symbols, mut diagnostics, declare_revision) = declare_pass(program, ctx);
     let (references, mut types, resolve_diags) =
-        resolve_pass(program, ctx, &scope_tree, &mut symbols);
+        resolve_pass(program, ctx, &scope_tree, &mut symbols, declare_revision);
     diagnostics.extend(resolve_diags);
     let check_diags = check_pass(program, ctx, &scope_tree, &symbols, &references, &mut types);
     diagnostics.extend(check_diags);

@@ -502,9 +502,11 @@ impl<'a> CheckWalker<'a> {
             }
             ExpressionKind::FieldAccess { qualifier, .. } => {
                 self.check_expression(qualifier, scope);
-                // v1: schema-backed field types surface here in Phase 4b
-                // extensions; for now the field expression is Unknown.
-                ResolvedType::Unknown
+                // The resolve pass records the field's resolution on the
+                // composite node: a validated schema field resolves to a
+                // synthesized `Field` symbol whose `data_type` is the schema
+                // primitive, so the type flows out of the reference.
+                self.type_from_reference(expr)
             }
             ExpressionKind::New { arguments, .. } => {
                 for a in arguments {
@@ -1217,7 +1219,8 @@ mod tests {
         });
         let fid = fa.id;
         let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(fa))]);
-        // v1: Unknown — field types come from schema, not wired in 4b.
+        // No schema loaded: the field reference is `Unresolved { NoSchema }`,
+        // so the node types as Unknown.
         assert_eq!(ty_of(&sem, fid), &ResolvedType::Unknown);
     }
 

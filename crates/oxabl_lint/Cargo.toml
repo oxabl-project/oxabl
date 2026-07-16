@@ -12,6 +12,6 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 
 [dev-dependencies]
-oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = ["test-support"] }
 rust_decimal = "1.40.0"
 smallvec = { version = "1", features = ["union"] }

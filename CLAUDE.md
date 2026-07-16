@@ -180,7 +180,7 @@ cargo bench -p oxabl_common --bench source_map_bench
 - `oxabl_ast`: Implemented with expressions, statements, and data types (parser-assigned `NodeId` on every node)
 - `oxabl_parser`: Actively developed with 448 tests; parses expressions, control flow, variable declarations, include file references, functions, procedures, temp-tables, error handling, OO-ABL (CLASS, METHOD, PROPERTY, INTERFACE), preprocessor directives, stream I/O, frame definitions, ON triggers (UI events, database events, key remapping), TRIGGER PROCEDURE, embedded SQL (SELECT/INSERT), implicit output/display juxtaposition, widget `:attribute` access, and bare `.field` access
 - `oxabl_schema`: `.df` parser + case-insensitive `Schema` model
-- `oxabl_semantic`: Declare + resolve + check passes, side tables over NodeId; ~200 tests
-- `oxabl_lint`: 4 v1 rules — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003), `type-mismatch-assignment` (LINT0004); 40 tests
-- `oxabl_analyze`: JSON/text dump of the semantic model with per-section versioning; `oxabl analyze <file>` subcommand; 20 tests
-- Workspace total: ~950 tests passing
+- `oxabl_semantic`: Declare + resolve + check passes, side tables over NodeId; schema-backed resolution (buffer `table_id` links, field validation/typing via synthesized symbols, bare-table default-buffer fallback); ~210 tests
+- `oxabl_lint`: 4 v1 rules — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003, live under a loaded schema), `type-mismatch-assignment` (LINT0004); 54 tests
+- `oxabl_analyze`: JSON/text dump of the semantic model with per-section versioning; `oxabl analyze <file>` subcommand with `--schema <df>`; 21 tests
+- Workspace total: ~985 tests passing

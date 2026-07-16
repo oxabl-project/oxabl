@@ -10,7 +10,7 @@ use oxabl_common::{FileId, SourceMap};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
-use oxabl_schema::Schema;
+use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_semantic::{AnalysisContext, analyze_file};
 use oxabl_workspace::RealFileSystem;
 use serde::Serialize;
@@ -63,6 +63,11 @@ enum Cli {
         /// Include search paths (can be specified multiple times).
         #[arg(long = "include-path", short = 'I')]
         include_paths: Vec<PathBuf>,
+
+        /// Path to a `.df` schema file driving schema-backed resolution
+        /// (field validation, field types, unknown-table/field lint).
+        #[arg(long = "schema")]
+        schema: Option<PathBuf>,
     },
 }
 
@@ -128,7 +133,15 @@ fn main() -> ExitCode {
             no_lint,
             preprocess,
             include_paths,
-        } => run_analyze(&path, &format, no_lint, preprocess, &include_paths),
+            schema,
+        } => run_analyze(
+            &path,
+            &format,
+            no_lint,
+            preprocess,
+            &include_paths,
+            schema.as_deref(),
+        ),
     }
 }
 
@@ -138,6 +151,7 @@ fn run_analyze(
     no_lint: bool,
     preprocess: bool,
     include_paths: &[PathBuf],
+    schema_path: Option<&Path>,
 ) -> ExitCode {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -189,8 +203,28 @@ fn run_analyze(
         }
     };
 
-    let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::new(1), &expanded, &schema);
+    // Load the schema when `--schema` was passed. Load diagnostics are
+    // reported but non-fatal — a partially-loaded schema still drives
+    // resolution. `schema_loaded` is set explicitly (not derived from
+    // `Schema::is_empty`) so an intentionally empty `.df` still reads as
+    // "loaded" to schema-dependent diagnostics.
+    let (schema, schema_loaded) = match schema_path {
+        Some(p) => {
+            let fs = RealFileSystem;
+            let (schema, diags) = SchemaLoader::load_files(&[p.to_path_buf()], &fs);
+            for d in &diags {
+                eprintln!("schema: [{}] {}", d.code.0, d.message);
+            }
+            (schema, true)
+        }
+        None => (Schema::empty(), false),
+    };
+    let ctx = AnalysisContext {
+        file_id: FileId::new(1),
+        source: &expanded,
+        schema: &schema,
+        schema_loaded,
+    };
     let sem = analyze_file(&program, &ctx);
 
     match format {

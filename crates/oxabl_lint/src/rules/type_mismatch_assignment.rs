@@ -479,4 +479,59 @@ mod tests {
         let diags = analyze_and_lint(vec![var_with_init("s", DataType::Character, str_lit("hi"))]);
         assert!(diags.is_empty());
     }
+
+    // ---- Schema-backed field types ---------------------------------------
+
+    use oxabl_schema::test_support::customer_schema as test_schema;
+
+    fn analyze_and_lint_with_schema(stmts: Vec<Statement>, schema: &Schema) -> Vec<Diagnostic> {
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", schema);
+        let sem = analyze_file(&stmts, &ctx);
+        run(&stmts, &sem, &ctx)
+    }
+
+    /// `DEFINE BUFFER bCust FOR Customer.` + `target = bCust.CustNum`.
+    fn assign_from_custnum(target: &str, target_ty: DataType) -> Vec<Statement> {
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("bCust")),
+            field: id("CustNum"),
+        });
+        vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: oxabl_ast::BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: oxabl_ast::XmlSerializeOptions::default(),
+            }),
+            var_decl(target, target_ty),
+            stmt_n(StatementKind::Assignment {
+                target: id_expr(target),
+                value: fa,
+            }),
+        ]
+    }
+
+    #[test]
+    fn no_false_positive_on_matching_field_type() {
+        // `i = bCust.CustNum` — the field types as INTEGER from the schema
+        // (previously Unknown → skipped), so a matching assignment stays
+        // silent for the *right* reason.
+        let schema = test_schema();
+        let diags =
+            analyze_and_lint_with_schema(assign_from_custnum("i", DataType::Integer), &schema);
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
+
+    #[test]
+    fn fires_on_mismatched_field_type() {
+        // Companion proof that the field type flows: `c = bCust.CustNum`
+        // (CHARACTER ← INTEGER) is a genuine mismatch — only diagnosable
+        // because the field access no longer types as Unknown.
+        let schema = test_schema();
+        let diags =
+            analyze_and_lint_with_schema(assign_from_custnum("c", DataType::Character), &schema);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.0, LINT0004);
+    }
 }

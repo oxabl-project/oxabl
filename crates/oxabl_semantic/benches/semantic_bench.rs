@@ -63,8 +63,8 @@ fn bench_fixture(
     // Declare pass in isolation.
     group.bench_function(format!("{name}/declare"), |b| {
         b.iter(|| {
-            let (tree, symbols, diags) = declare_pass(black_box(&program), black_box(&ctx));
-            black_box((tree, symbols, diags));
+            let (tree, symbols, diags, rev) = declare_pass(black_box(&program), black_box(&ctx));
+            black_box((tree, symbols, diags, rev));
         })
     });
 
@@ -73,9 +73,14 @@ fn bench_fixture(
     group.bench_function(format!("{name}/resolve"), |b| {
         b.iter_batched(
             || declare_pass(&program, &ctx),
-            |(tree, mut symbols, _diags)| {
-                let (refs, types, rd) =
-                    resolve_pass(black_box(&program), black_box(&ctx), &tree, &mut symbols);
+            |(tree, mut symbols, _diags, rev)| {
+                let (refs, types, rd) = resolve_pass(
+                    black_box(&program),
+                    black_box(&ctx),
+                    &tree,
+                    &mut symbols,
+                    rev,
+                );
                 black_box((tree, symbols, refs, types, rd));
             },
             criterion::BatchSize::SmallInput,
@@ -86,8 +91,8 @@ fn bench_fixture(
     group.bench_function(format!("{name}/check"), |b| {
         b.iter_batched(
             || {
-                let (tree, mut symbols, _d) = declare_pass(&program, &ctx);
-                let (refs, types, _rd) = resolve_pass(&program, &ctx, &tree, &mut symbols);
+                let (tree, mut symbols, _d, rev) = declare_pass(&program, &ctx);
+                let (refs, types, _rd) = resolve_pass(&program, &ctx, &tree, &mut symbols, rev);
                 (tree, symbols, refs, types)
             },
             |(tree, symbols, refs, mut types)| {
@@ -119,6 +124,79 @@ fn semantic_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "tiny", TINY);
     bench_fixture(&mut group, "medium", MEDIUM);
     group.finish();
+
+    // Schema-loaded resolve bench: exercises the field-lookup hot path
+    // (`Schema::get_by_id` + `Table::get_field` + synth-cache probe per
+    // field access), which the `Schema::empty()` fixtures above never hit.
+    let mut schema_group = c.benchmark_group("schema_resolve");
+    bench_schema_heavy(&mut schema_group);
+    schema_group.finish();
+}
+
+/// `.df` text for the bench schema: two tables of ten fields each.
+fn bench_df() -> String {
+    let mut df = String::from("ADD TABLE \"Customer\"\nADD TABLE \"Item\"\n");
+    for (table, prefix) in [("Customer", "c"), ("Item", "i")] {
+        for n in 0..10 {
+            let ty = if n % 2 == 0 { "integer" } else { "character" };
+            df.push_str(&format!(
+                "ADD FIELD \"{prefix}{n}\" OF \"{table}\" AS {ty}\n"
+            ));
+        }
+    }
+    df
+}
+
+/// Field-access-heavy program: nested `FOR EACH` loops referencing many
+/// `Customer.Field` / `Item.Field` pairs (bare table qualifiers — the
+/// synthesized-default-buffer path) plus a `FIND`.
+fn schema_heavy_source() -> String {
+    let mut src = String::from("DEFINE VARIABLE t AS DECIMAL NO-UNDO.\n");
+    src.push_str("FOR EACH Customer:\n");
+    src.push_str("    FOR EACH Item:\n");
+    for n in 0..10 {
+        src.push_str(&format!("        t = t + Customer.c{n} + Item.i{n}.\n"));
+    }
+    src.push_str("    END.\nEND.\n");
+    src.push_str("FIND FIRST Customer.\n");
+    for n in 0..10 {
+        src.push_str(&format!("t = t + Customer.c{n}.\n"));
+    }
+    src
+}
+
+fn bench_schema_heavy(group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>) {
+    let source = schema_heavy_source();
+    let program = parse_program(&source);
+
+    let schema = oxabl_schema::test_support::schema_from_df(&bench_df());
+    let ctx = AnalysisContext::new(FileId::new(1), &source, &schema);
+
+    group.throughput(Throughput::Bytes(source.len() as u64));
+
+    group.bench_function("schema_heavy/declare", |b| {
+        b.iter(|| {
+            let (tree, symbols, diags, rev) = declare_pass(black_box(&program), black_box(&ctx));
+            black_box((tree, symbols, diags, rev));
+        })
+    });
+
+    group.bench_function("schema_heavy/resolve", |b| {
+        b.iter_batched(
+            || declare_pass(&program, &ctx),
+            |(tree, mut symbols, _diags, rev)| {
+                let (refs, types, rd) = resolve_pass(
+                    black_box(&program),
+                    black_box(&ctx),
+                    &tree,
+                    &mut symbols,
+                    rev,
+                );
+                black_box((tree, symbols, refs, types, rd));
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
 }
 
 criterion_group!(benches, semantic_benchmarks);

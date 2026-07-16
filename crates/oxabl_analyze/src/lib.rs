@@ -9,12 +9,17 @@
 //! section (scopes, symbols, references, types, diagnostics) bump only
 //! that section's version, not the whole envelope.
 //!
+//! `symbols` section v2: the symbol table now includes schema-derived
+//! entries — synthesized `field` symbols for schema-validated field
+//! references and default-`buffer` symbols for bare table names (both
+//! marked with `declaration == NodeId::DUMMY`, i.e. `u32::MAX`).
+//!
 //! ```text
 //! {
 //!   "envelope": 1,
 //!   "sections": {
 //!     "scopes": 1,
-//!     "symbols": 1,
+//!     "symbols": 2,
 //!     "types": 1,
 //!     "references": 1,
 //!     "diagnostics": 1
@@ -57,7 +62,9 @@ pub fn dump_json(
 
     let mut sections = Map::new();
     sections.insert("scopes".into(), json!(1));
-    sections.insert("symbols".into(), json!(1));
+    // v2: symbols include schema-derived synthetic entries (declaration =
+    // NodeId::DUMMY) when a schema is loaded.
+    sections.insert("symbols".into(), json!(2));
     sections.insert("types".into(), json!(1));
     sections.insert("references".into(), json!(1));
     sections.insert("diagnostics".into(), json!(1));
@@ -591,5 +598,62 @@ mod tests {
         ]);
         let diags = v["diagnostics"].as_array().unwrap();
         assert!(diags.iter().any(|d| d["code"] == "SEM0001"));
+    }
+
+    // ---- Schema-derived symbols (symbols section v2) ----------------------
+
+    use oxabl_schema::test_support::customer_schema as test_schema;
+
+    #[test]
+    fn symbols_section_v2_includes_schema_derived_symbols() {
+        use oxabl_ast::{BufferTarget, Expression, ExpressionKind, XmlSerializeOptions};
+
+        let schema = test_schema();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        // `Customer.Name` with no DEFINE BUFFER: the qualifier binds a
+        // synthesized default buffer and the field a synthesized Field
+        // symbol — both must appear in the dump.
+        let fa = Expression::with_id(
+            NodeId::from_u32(2),
+            ExpressionKind::FieldAccess {
+                qualifier: Box::new(Expression::with_id(
+                    NodeId::from_u32(3),
+                    ExpressionKind::Identifier(ident("Customer")),
+                )),
+                field: ident("Name"),
+            },
+        );
+        let stmts = vec![
+            Statement::with_id(
+                NodeId::from_u32(4),
+                StatementKind::DefineBuffer {
+                    name: ident("bCust"),
+                    target: BufferTarget::Table(ident("Customer")),
+                    preselect: false,
+                    label: None,
+                    xml_options: XmlSerializeOptions::default(),
+                },
+            ),
+            Statement::with_id(NodeId::from_u32(5), StatementKind::ExpressionStatement(fa)),
+        ];
+        let sem = analyze_file(&stmts, &ctx);
+        let v = dump_json(&stmts, &sem, &ctx, true);
+
+        assert_eq!(v["sections"]["symbols"], 2);
+        let symbols = v["symbols"].as_array().unwrap();
+        // Synthesized default buffer for `Customer` (kind buffer,
+        // declaration = NodeId::DUMMY = u32::MAX).
+        let synth_buffer = symbols
+            .iter()
+            .find(|s| s["name"] == "customer" && s["kind"] == "buffer")
+            .expect("synthesized default buffer in dump");
+        assert_eq!(synth_buffer["declaration"], u32::MAX);
+        // Synthesized field symbol for `Name`, typed from the schema.
+        let synth_field = symbols
+            .iter()
+            .find(|s| s["name"] == "name" && s["kind"] == "field")
+            .expect("synthesized field in dump");
+        assert_eq!(synth_field["declaration"], u32::MAX);
+        assert_eq!(synth_field["data_type"], "character");
     }
 }

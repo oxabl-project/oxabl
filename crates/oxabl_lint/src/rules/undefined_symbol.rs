@@ -757,4 +757,51 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("LENGT"));
     }
+
+    // ---- Schema-backed resolution regressions ----------------------------
+
+    use oxabl_schema::test_support::customer_schema as test_schema;
+
+    #[test]
+    fn synthetic_field_symbols_not_reported() {
+        // A schema-validated field access resolves to a synthesized `Field`
+        // symbol; neither the field nor the qualifier may ever surface as
+        // undefined-symbol.
+        let schema = test_schema();
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("bCust")),
+            field: id("CustNum"),
+        });
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: oxabl_ast::BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: oxabl_ast::XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(fa)),
+        ];
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        let sem = analyze_file(&stmts, &ctx);
+        let diags = run(&stmts, &sem, &ctx);
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
+
+    #[test]
+    fn bare_table_name_not_reported_with_schema() {
+        // `Customer.Name` with NO `DEFINE BUFFER`, schema loaded — the
+        // qualifier binds a synthesized default buffer; no LINT0001 on
+        // `Customer` (the headline double-FP fix, lint side).
+        let schema = test_schema();
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("Customer")),
+            field: id("Name"),
+        });
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(fa))];
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        let sem = analyze_file(&stmts, &ctx);
+        let diags = run(&stmts, &sem, &ctx);
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
 }

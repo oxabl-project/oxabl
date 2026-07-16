@@ -13,6 +13,10 @@ oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 rustc-hash = "2"
 
+[features]
+# Loader-built schema fixtures shared by downstream test suites.
+test-support = []
+
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 

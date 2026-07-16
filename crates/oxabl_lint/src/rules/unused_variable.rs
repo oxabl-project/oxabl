@@ -348,4 +348,27 @@ mod tests {
         })]);
         assert!(diags.is_empty());
     }
+
+    #[test]
+    fn synthetic_schema_symbols_not_reported() {
+        // Schema-backed resolution synthesizes symbols the resolve pass
+        // never counts as read: `Customer.Name` under a loaded schema mints
+        // a default-buffer symbol and a `Field` symbol whose read_count
+        // stays 0. Pin that the rule's Variable/Parameter kind filter keeps
+        // both out — if the filter ever widens to Buffer/Field, this is the
+        // regression that catches it.
+        use oxabl_ast::{Expression, ExpressionKind};
+        use oxabl_schema::test_support::customer_schema;
+
+        let fa = Expression::new(ExpressionKind::FieldAccess {
+            qualifier: Box::new(Expression::new(ExpressionKind::Identifier(id("Customer")))),
+            field: id("Name"),
+        });
+        let stmts = vec![stmt(StatementKind::ExpressionStatement(fa))];
+        let schema = customer_schema();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        let sem = analyze_file(&stmts, &ctx);
+        let diags = run(&stmts, &sem, &ctx);
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
 }

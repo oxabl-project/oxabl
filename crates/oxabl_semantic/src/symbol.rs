@@ -38,9 +38,11 @@ pub enum SymbolKind {
     Variable,
     Parameter,
     Property,
-    /// Field of a temp-table defined in this file. Schema-table fields are
-    /// resolved through `oxabl_schema::Field` directly and don't get a
-    /// symbol.
+    /// Field of a temp-table defined in this file, or a schema-table field
+    /// synthesized by the resolve pass on first reference. Synthesized
+    /// schema-field symbols carry `declaration: NodeId::DUMMY`, a
+    /// schema-derived `data_type`, and are never inserted into the scope
+    /// tree — they are reachable only through `references` entries.
     Field,
     TempTable,
     Buffer,
@@ -112,6 +114,13 @@ pub struct Symbol {
     /// Incremented by the resolve pass on every resolving write reference.
     pub write_count: u32,
     pub flags: SymbolFlags,
+    /// Link to the backing schema table for `Buffer` / `TempTable` symbols.
+    /// Populated at declare time for `DEFINE BUFFER ... FOR <table>` and
+    /// `FOR EACH <table>` (and synthesized default-buffer symbols at resolve
+    /// time). Valid only under the `Schema` whose `revision()` equals the
+    /// owning `Semantic`'s `schema_revision` — never resolve this id against
+    /// a `Schema` from a different revision.
+    pub table_id: Option<oxabl_schema::TableId>,
 }
 
 /// Arena of symbols plus the SHARED rebinding side map.

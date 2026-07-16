@@ -1,17 +1,18 @@
 //! `unknown-table-or-field` lint (LINT0003).
 //!
-//! Fires on buffer / field / qualified `table.field` references whose
-//! resolution is [`Resolution::Unresolved { reason: NoSchema }`] *and* the
+//! Fires on field-access references whose resolution is
+//! [`Resolution::Unresolved { reason: NoSchema | NotInScope }`] *and* the
 //! context has `schema_loaded == true`. When schema is absent, this rule
 //! emits zero diagnostics — matching the R7 "schema is first-class but
 //! optional" decision.
 //!
-//! In v1 the resolve walker emits `NoSchema` only when schema is *not*
-//! loaded, so the rule is effectively a no-op until the schema-backed
-//! field lookup lands as a follow-up. The rule still ships so that the
-//! public diagnostic surface is stable and rule-registration code is in
-//! place; tests pin the "no-schema → no-fire, schema-loaded-and-resolved
-//! → no-fire" invariants.
+//! The rule became live with schema-backed resolution: the resolve pass
+//! validates fields against the loaded schema (buffer → `table_id` →
+//! `Table::get_field`), emitting `Resolved` for real fields and
+//! `NotInScope` for absent ones — so a `bCust.NoSuchField` or
+//! `Ghost.Field` under a loaded schema now fires here. Fields the
+//! resolver cannot check (temp-table buffers, `External` resolutions)
+//! stay silent by design.
 
 use oxabl_ast::{Expression, ExpressionKind, Statement, StatementKind, StreamOperation};
 use oxabl_common::{Diagnostic, FileSpan};
@@ -379,6 +380,32 @@ mod tests {
         run(&stmts, &sem, &ctx)
     }
 
+    use oxabl_schema::test_support::customer_schema as test_schema;
+
+    fn lint_with_schema(stmts: Vec<Statement>, schema: &Schema) -> Vec<Diagnostic> {
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", schema);
+        let sem = analyze_file(&stmts, &ctx);
+        run(&stmts, &sem, &ctx)
+    }
+
+    /// `DEFINE BUFFER bCust FOR Customer.` + `bCust.<field>`.
+    fn buffer_customer_stmts(field_name: &str) -> Vec<Statement> {
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("bCust")),
+            field: id(field_name),
+        });
+        vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(fa)),
+        ]
+    }
+
     #[test]
     fn skip_list_no_fire_when_schema_not_loaded() {
         // `Customer.CustNum` with no schema → rule emits nothing.
@@ -392,9 +419,10 @@ mod tests {
 
     #[test]
     fn no_fire_when_qualifier_resolves_to_buffer_under_schema() {
-        // DEFINE BUFFER bCust FOR Customer. + bCust.CustNum with schema
-        // loaded → qualifier resolves, field is External (schema-backed
-        // lookup not wired in v1), LINT0003 doesn't fire.
+        // DEFINE BUFFER bCust FOR Customer. + bCust.CustNum with the loaded
+        // flag forced on an EMPTY schema → the buffer has no schema link,
+        // the field keeps the legacy External resolution, LINT0003 stays
+        // silent (unverifiable fields are not flagged).
         let fa = expr_n(ExpressionKind::FieldAccess {
             qualifier: Box::new(id_expr("bCust")),
             field: id("CustNum"),
@@ -413,6 +441,90 @@ mod tests {
             true,
         );
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn fires_on_unknown_field_when_schema_loaded() {
+        let schema = test_schema();
+        let diags = lint_with_schema(buffer_customer_stmts("BadField"), &schema);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.0, LINT0003);
+        assert!(diags[0].message.contains("BadField"));
+    }
+
+    #[test]
+    fn no_fire_on_valid_field_when_schema_loaded() {
+        let schema = test_schema();
+        let diags = lint_with_schema(buffer_customer_stmts("CustNum"), &schema);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn no_fire_on_temp_table_field() {
+        // Temp-table fields resolve locally; the qualifier has no schema
+        // link, so LINT0003 stays silent even under a loaded schema.
+        let schema = test_schema();
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("tt")),
+            field: id("f"),
+        });
+        let diags = lint_with_schema(
+            vec![
+                stmt_n(StatementKind::DefineTempTable {
+                    name: id("tt"),
+                    no_undo: false,
+                    like_table: None,
+                    validate: false,
+                    use_indexes: vec![],
+                    fields: vec![oxabl_ast::TempTableField {
+                        name: id("f"),
+                        type_source: TypeSource::Explicit(DataType::Integer),
+                        validate: false,
+                        initial_value: None,
+                        extent: None,
+                    }],
+                    indexes: vec![],
+                    xml_options: XmlSerializeOptions::default(),
+                }),
+                stmt_n(StatementKind::ExpressionStatement(fa)),
+            ],
+            &schema,
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn no_fire_on_bare_valid_qualifier_field() {
+        // The CRITICAL fix, viewed from the lint side: `Customer.Name` with
+        // NO `DEFINE BUFFER`, schema loaded → qualifier binds a synthesized
+        // default buffer, field resolves — no LINT0003.
+        let schema = test_schema();
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("Customer")),
+            field: id("Name"),
+        });
+        let diags = lint_with_schema(
+            vec![stmt_n(StatementKind::ExpressionStatement(fa))],
+            &schema,
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn fires_on_bare_unknown_table_field() {
+        // `Ghost.Field`, schema loaded, no buffer → qualifier is not a
+        // schema table (stays NotInScope), field is NotInScope → fires.
+        let schema = test_schema();
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("Ghost")),
+            field: id("Field"),
+        });
+        let diags = lint_with_schema(
+            vec![stmt_n(StatementKind::ExpressionStatement(fa))],
+            &schema,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.0, LINT0003);
     }
 
     #[test]

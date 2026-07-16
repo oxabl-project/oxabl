@@ -24,12 +24,13 @@
 //! - `SEM0003` — BLOB/CLOB used as a local variable type
 
 use oxabl_ast::{
-    AccessModifier, CreateTarget, DataType, Expression, ExpressionKind, Identifier, NodeId,
-    OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, Statement, StatementKind,
-    StreamOperation, SubscribeTarget, TypeSource,
+    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, Identifier,
+    NodeId, OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, Statement,
+    StatementKind, StreamOperation, SubscribeTarget, TypeSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
+use oxabl_schema::{SchemaRevision, TableId};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -69,14 +70,23 @@ pub enum UnresolvedReason {
 // ---------------------------------------------------------------------------
 
 /// Run the declare pass over `program` and return the populated scope tree,
-/// symbol table, and any declaration-level diagnostics.
+/// symbol table, any declaration-level diagnostics, and the `SchemaRevision`
+/// observed at declare time. The revision is handed to [`resolve_pass`] as a
+/// staleness tripwire: `Symbol::table_id` values minted during declare are
+/// only valid under the same schema revision.
 pub fn declare_pass(
     program: &[Statement],
     ctx: &AnalysisContext,
-) -> (ScopeTree, SymbolTable, Vec<Diagnostic>) {
+) -> (ScopeTree, SymbolTable, Vec<Diagnostic>, SchemaRevision) {
     let mut walker = Walker::new(ctx);
     walker.walk_block(program, ScopeId::ROOT);
-    (walker.tree, walker.symbols, walker.diagnostics)
+    let declare_revision = ctx.schema.revision();
+    (
+        walker.tree,
+        walker.symbols,
+        walker.diagnostics,
+        declare_revision,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +160,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Event,
                     None,
                     flags,
+                    None,
                 );
                 let event_scope = self.tree.push(ScopeKind::Method, scope, stmt.id);
                 let _ = sym;
@@ -177,6 +188,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Property,
                     Some(ResolvedType::from_data_type(data_type)),
                     flags,
+                    None,
                 );
                 if let Some(body) = get_body {
                     let getter = self.tree.push(ScopeKind::PropertyGet, scope, stmt.id);
@@ -194,8 +206,24 @@ impl<'a> Walker<'a> {
             }
 
             // ---- Buffer ---------------------------------------------------
-            StatementKind::DefineBuffer { name, .. } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Buffers, SymbolKind::Buffer);
+            StatementKind::DefineBuffer { name, target, .. } => {
+                // Link the buffer to its backing schema table so the resolve
+                // pass can validate and type field accesses. Temp-table
+                // targets have no schema table.
+                let table_id = match target {
+                    BufferTarget::Table(table) => self.schema_table_id(table),
+                    BufferTarget::TempTable(_) => None,
+                };
+                self.declare(
+                    stmt,
+                    scope,
+                    name,
+                    NamespaceId::Buffers,
+                    SymbolKind::Buffer,
+                    None,
+                    SymbolFlags::empty(),
+                    table_id,
+                );
             }
 
             // ---- Dataset / Data-source ------------------------------------
@@ -215,6 +243,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Dataset,
                     None,
                     flags,
+                    None,
                 );
             }
             StatementKind::DefineDataSource { name, .. } => {
@@ -226,6 +255,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::DataSource,
                     None,
                     SymbolFlags::empty(),
+                    None,
                 );
             }
 
@@ -239,6 +269,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Procedure,
                     None,
                     SymbolFlags::empty(),
+                    None,
                 );
                 let proc_scope = self.tree.push(ScopeKind::Procedure, scope, stmt.id);
                 self.walk_block(body, proc_scope);
@@ -256,6 +287,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Function,
                     Some(ResolvedType::from_data_type(return_type)),
                     SymbolFlags::empty(),
+                    None,
                 );
                 let fn_scope = self.tree.push(ScopeKind::Function, scope, stmt.id);
                 self.walk_block(body, fn_scope);
@@ -279,6 +311,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Class,
                     None,
                     flags,
+                    None,
                 );
                 let class_scope = self.tree.push(ScopeKind::Class, scope, stmt.id);
                 self.walk_block(body, class_scope);
@@ -292,6 +325,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Interface,
                     None,
                     SymbolFlags::empty(),
+                    None,
                 );
                 let iface_scope = self.tree.push(ScopeKind::Interface, scope, stmt.id);
                 self.walk_block(body, iface_scope);
@@ -319,6 +353,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Function,
                     ret,
                     flags,
+                    None,
                 );
                 let method_scope = self.tree.push(ScopeKind::Method, scope, stmt.id);
                 self.walk_block(parameters, method_scope);
@@ -357,6 +392,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Variable,
                     Some(ResolvedType::Unknown),
                     SymbolFlags::empty(),
+                    None,
                 );
                 self.walk_block(body, cs);
             }
@@ -377,6 +413,7 @@ impl<'a> Walker<'a> {
                         SymbolKind::Variable,
                         Some(ResolvedType::Primitive(crate::PrimitiveTy::Integer)),
                         SymbolFlags::empty(),
+                        None,
                     );
                 }
                 self.walk_block(body, bs);
@@ -387,7 +424,9 @@ impl<'a> Walker<'a> {
             }
             StatementKind::ForEach { buffer, body, .. } => {
                 let bs = self.tree.push(ScopeKind::Block, scope, stmt.id);
-                // FOR EACH introduces an implicit buffer at block scope.
+                // FOR EACH introduces an implicit buffer at block scope. Its
+                // name is the table name, so link it to the schema table.
+                let table_id = self.schema_table_id(buffer);
                 self.declare(
                     stmt,
                     bs,
@@ -396,6 +435,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Buffer,
                     None,
                     SymbolFlags::empty(),
+                    table_id,
                 );
                 self.walk_block(body, bs);
             }
@@ -509,6 +549,7 @@ impl<'a> Walker<'a> {
             SymbolKind::Variable,
             data_type,
             SymbolFlags::empty(),
+            None,
         );
     }
 
@@ -544,9 +585,13 @@ impl<'a> Walker<'a> {
                     SymbolKind::Parameter,
                     data_type,
                     flags,
+                    None,
                 );
             }
-            ParameterType::Buffer { name, .. } => {
+            ParameterType::Buffer { name, target } => {
+                // `DEFINE PARAMETER BUFFER b FOR <table>` — link the backing
+                // schema table like any other buffer-introducing site.
+                let table_id = self.schema_table_id(target);
                 self.declare(
                     stmt,
                     scope,
@@ -555,6 +600,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Buffer,
                     None,
                     dir_flag,
+                    table_id,
                 );
             }
             ParameterType::Handle { name, .. } => {
@@ -566,6 +612,7 @@ impl<'a> Walker<'a> {
                     SymbolKind::Parameter,
                     Some(ResolvedType::Primitive(crate::PrimitiveTy::Handle)),
                     dir_flag,
+                    None,
                 );
             }
         }
@@ -586,6 +633,8 @@ impl<'a> Walker<'a> {
             SymbolKind::TempTable,
             None,
             SymbolFlags::empty(),
+            // Temp-tables are file-local; no backing schema table.
+            None,
         );
         // Fields get their own symbols scoped to the file; namespace
         // `Values` is a simplification for v1 — Phase 4a will likely
@@ -607,6 +656,7 @@ impl<'a> Walker<'a> {
                 SymbolKind::Field,
                 data_type,
                 SymbolFlags::empty(),
+                None,
             );
         }
     }
@@ -619,11 +669,29 @@ impl<'a> Walker<'a> {
         ns: NamespaceId,
         kind: SymbolKind,
     ) {
-        self.declare(stmt, scope, name, ns, kind, None, SymbolFlags::empty());
+        self.declare(
+            stmt,
+            scope,
+            name,
+            ns,
+            kind,
+            None,
+            SymbolFlags::empty(),
+            None,
+        );
+    }
+
+    /// Case-insensitive schema lookup of a table-name identifier. Returns
+    /// `None` when the table is absent from the schema (or no schema is
+    /// loaded — an empty schema yields `None` here by construction).
+    fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
+        self.ctx.schema.table_id(&fold_atom(&table.name))
     }
 
     /// Core insertion routine. Returns the new `SymbolId` on success;
     /// returns `None` if a duplicate was suppressed (and emits `SEM0001`).
+    /// `table_id` links `Buffer` / `TempTable` symbols to their backing
+    /// schema table; every other kind passes `None`.
     #[allow(clippy::too_many_arguments)]
     fn declare(
         &mut self,
@@ -634,6 +702,7 @@ impl<'a> Walker<'a> {
         kind: SymbolKind,
         data_type: Option<ResolvedType>,
         flags: SymbolFlags,
+        table_id: Option<TableId>,
     ) -> Option<crate::SymbolId> {
         let atom = fold_atom(&name.name);
         let name_span = VirtualSpan::new(name.span.start, name.span.end);
@@ -674,6 +743,7 @@ impl<'a> Walker<'a> {
             read_count: 0,
             write_count: 0,
             flags,
+            table_id,
         };
         let id = self.symbols.insert(symbol);
         self.tree.get_mut(scope).bindings[ns.index()].insert(atom, id);
@@ -692,6 +762,17 @@ impl<'a> Walker<'a> {
 /// `types` side table and upgrades `DataType::Class(_)` symbol types from
 /// `Unknown` to `Class(SymbolId)` where the class is declared in this file.
 ///
+/// Schema-backed resolution: when `ctx.schema` carries tables, buffer
+/// symbols' `table_id` links drive field lookup (`Schema::get_by_id` →
+/// `Table::get_field`), synthesizing one `Field` symbol per distinct
+/// referenced field and one default-`Buffer` symbol per bare table name.
+///
+/// `declare_revision` is the `SchemaRevision` captured by [`declare_pass`];
+/// the tripwire below fires if resolve runs against a schema whose revision
+/// differs from the one declare saw, because `TableId`s are dense indices
+/// valid only within a single revision — `Schema::get_by_id` is a bare `Vec`
+/// index, so a stale id would *silently* read the wrong table.
+///
 /// Idempotent: per-symbol read/write counts are collected into a local
 /// accumulator and written back at end-of-pass, so re-running the pass is a
 /// no-op. This is the Salsa-ready invariant called out in plan §C7.
@@ -700,25 +781,32 @@ pub fn resolve_pass(
     ctx: &AnalysisContext,
     tree: &ScopeTree,
     symbols: &mut SymbolTable,
+    declare_revision: SchemaRevision,
 ) -> (
     NodeIndexVec<Resolution>,
     NodeIndexVec<ResolvedType>,
     Vec<Diagnostic>,
 ) {
-    let mut walker = ResolveWalker::new(ctx, tree);
-    walker.upgrade_class_types(program, symbols);
+    debug_assert_eq!(
+        declare_revision,
+        ctx.schema.revision(),
+        "resolve_pass must run against the same schema revision declare_pass saw"
+    );
+    let mut walker = ResolveWalker::new(ctx, tree, symbols);
+    walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
 
     // Flush symbol-level read/write counts exactly once at pass end.
     for (sym, (reads, writes)) in &walker.counts {
-        let s = symbols.get_mut(*sym);
+        let s = walker.symbols.get_mut(*sym);
         s.read_count = *reads;
         s.write_count = *writes;
     }
 
     // Mirror every symbol's declared type into the `types` side table keyed
-    // by the declaration's NodeId. Skips builtins (declaration = DUMMY).
-    for (_, sym) in symbols.iter() {
+    // by the declaration's NodeId. Skips builtins and synthesized
+    // schema-field/buffer symbols (declaration = DUMMY).
+    for (_, sym) in walker.symbols.iter() {
         if sym.declaration == NodeId::DUMMY {
             continue;
         }
@@ -744,23 +832,41 @@ enum AccessMode {
 struct ResolveWalker<'a> {
     ctx: &'a AnalysisContext<'a>,
     tree: &'a ScopeTree,
+    /// The declare-pass symbol table, mutated in place: synthesized
+    /// schema-field / default-buffer symbols are inserted mid-walk and
+    /// read/write counts flush here at end-of-pass.
+    symbols: &'a mut SymbolTable,
     references: NodeIndexVec<Resolution>,
     types: NodeIndexVec<ResolvedType>,
     diagnostics: Vec<Diagnostic>,
     /// Per-symbol `(reads, writes)` accumulator. Written to `Symbol` exactly
     /// once at end-of-pass so the pass stays idempotent under Salsa re-run.
     counts: FxHashMap<SymbolId, (u32, u32)>,
+    /// Dedup cache for synthesized schema-field symbols: one symbol per
+    /// distinct `(table, field)` referenced, no matter how many times the
+    /// field is accessed.
+    synth_fields: FxHashMap<(TableId, OxablAtom), SymbolId>,
+    /// Dedup cache for synthesized default-buffer symbols: one symbol per
+    /// schema table referenced by bare name.
+    synth_buffers: FxHashMap<TableId, SymbolId>,
 }
 
 impl<'a> ResolveWalker<'a> {
-    fn new(ctx: &'a AnalysisContext<'a>, tree: &'a ScopeTree) -> Self {
+    fn new(
+        ctx: &'a AnalysisContext<'a>,
+        tree: &'a ScopeTree,
+        symbols: &'a mut SymbolTable,
+    ) -> Self {
         ResolveWalker {
             ctx,
             tree,
+            symbols,
             references: NodeIndexVec::new(),
             types: NodeIndexVec::new(),
             diagnostics: Vec::new(),
             counts: FxHashMap::default(),
+            synth_fields: FxHashMap::default(),
+            synth_buffers: FxHashMap::default(),
         }
     }
 
@@ -770,11 +876,11 @@ impl<'a> ResolveWalker<'a> {
     /// `Types` namespace. Class names that don't resolve locally are
     /// `External` (cross-file or USING-imported) and stay `Unknown` — the
     /// type-check pass treats `Unknown` as the lattice bottom.
-    fn upgrade_class_types(&self, program: &[Statement], symbols: &mut SymbolTable) {
+    fn upgrade_class_types(&mut self, program: &[Statement]) {
         let mut upgrades: Vec<(SymbolId, ResolvedType)> = Vec::new();
-        self.collect_class_upgrades(program, ScopeId::ROOT, symbols, &mut upgrades);
+        self.collect_class_upgrades(program, ScopeId::ROOT, &mut upgrades);
         for (sid, rt) in upgrades {
-            symbols.get_mut(sid).data_type = Some(rt);
+            self.symbols.get_mut(sid).data_type = Some(rt);
         }
     }
 
@@ -782,7 +888,6 @@ impl<'a> ResolveWalker<'a> {
         &self,
         stmts: &[Statement],
         scope: ScopeId,
-        symbols: &SymbolTable,
         out: &mut Vec<(SymbolId, ResolvedType)>,
     ) {
         for stmt in stmts {
@@ -792,7 +897,7 @@ impl<'a> ResolveWalker<'a> {
                     type_source: TypeSource::Explicit(DataType::Class(class_name)),
                     ..
                 } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, symbols, name) {
+                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
                         out.push(up);
                     }
                 }
@@ -805,7 +910,7 @@ impl<'a> ResolveWalker<'a> {
                         },
                     ..
                 } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, symbols, name) {
+                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
                         out.push(up);
                     }
                 }
@@ -814,7 +919,7 @@ impl<'a> ResolveWalker<'a> {
                     data_type: DataType::Class(class_name),
                     ..
                 } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, symbols, name) {
+                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
                         out.push(up);
                     }
                 }
@@ -823,13 +928,9 @@ impl<'a> ResolveWalker<'a> {
                     return_type: DataType::Class(class_name),
                     ..
                 } => {
-                    if let Some(up) = self.class_upgrade_in_ns(
-                        class_name,
-                        scope,
-                        NamespaceId::Functions,
-                        symbols,
-                        name,
-                    ) {
+                    if let Some(up) =
+                        self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
+                    {
                         out.push(up);
                     }
                 }
@@ -841,30 +942,30 @@ impl<'a> ResolveWalker<'a> {
             match &stmt.kind {
                 StatementKind::Procedure { body, .. } => {
                     if let Some(ps) = self.find_child_scope(scope, stmt.id, ScopeKind::Procedure) {
-                        self.collect_class_upgrades(body, ps, symbols, out);
+                        self.collect_class_upgrades(body, ps, out);
                     }
                 }
                 StatementKind::Function { body, .. } => {
                     if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
-                        self.collect_class_upgrades(body, fs, symbols, out);
+                        self.collect_class_upgrades(body, fs, out);
                     }
                 }
                 StatementKind::Class { body, .. } => {
                     if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Class) {
-                        self.collect_class_upgrades(body, cs, symbols, out);
+                        self.collect_class_upgrades(body, cs, out);
                     }
                 }
                 StatementKind::Interface { body, .. } => {
                     if let Some(is_) = self.find_child_scope(scope, stmt.id, ScopeKind::Interface) {
-                        self.collect_class_upgrades(body, is_, symbols, out);
+                        self.collect_class_upgrades(body, is_, out);
                     }
                 }
                 StatementKind::Method {
                     parameters, body, ..
                 } => {
                     if let Some(ms) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
-                        self.collect_class_upgrades(parameters, ms, symbols, out);
-                        self.collect_class_upgrades(body, ms, symbols, out);
+                        self.collect_class_upgrades(parameters, ms, out);
+                        self.collect_class_upgrades(body, ms, out);
                     }
                 }
                 StatementKind::Constructor {
@@ -872,56 +973,46 @@ impl<'a> ResolveWalker<'a> {
                 } => {
                     if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Constructor)
                     {
-                        self.collect_class_upgrades(parameters, cs, symbols, out);
-                        self.collect_class_upgrades(body, cs, symbols, out);
+                        self.collect_class_upgrades(parameters, cs, out);
+                        self.collect_class_upgrades(body, cs, out);
                     }
                 }
                 StatementKind::Destructor { body } => {
                     if let Some(ds) = self.find_child_scope(scope, stmt.id, ScopeKind::Destructor) {
-                        self.collect_class_upgrades(body, ds, symbols, out);
+                        self.collect_class_upgrades(body, ds, out);
                     }
                 }
                 StatementKind::Do { body, .. } | StatementKind::Repeat { body, .. } => {
                     if let Some(bs) = self.find_child_scope(scope, stmt.id, ScopeKind::Block) {
-                        self.collect_class_upgrades(body, bs, symbols, out);
+                        self.collect_class_upgrades(body, bs, out);
                     }
                 }
                 StatementKind::ForEach { body, .. } => {
                     if let Some(bs) = self.find_child_scope(scope, stmt.id, ScopeKind::Block) {
-                        self.collect_class_upgrades(body, bs, symbols, out);
+                        self.collect_class_upgrades(body, bs, out);
                     }
                 }
                 StatementKind::Catch { body, .. } => {
                     if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Catch) {
-                        self.collect_class_upgrades(body, cs, symbols, out);
+                        self.collect_class_upgrades(body, cs, out);
                     }
                 }
                 StatementKind::Finally { body } => {
                     if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Finally) {
-                        self.collect_class_upgrades(body, fs, symbols, out);
+                        self.collect_class_upgrades(body, fs, out);
                     }
                 }
                 StatementKind::Block(body) => {
-                    self.collect_class_upgrades(body, scope, symbols, out);
+                    self.collect_class_upgrades(body, scope, out);
                 }
                 StatementKind::If {
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    self.collect_class_upgrades(
-                        std::slice::from_ref(&**then_branch),
-                        scope,
-                        symbols,
-                        out,
-                    );
+                    self.collect_class_upgrades(std::slice::from_ref(&**then_branch), scope, out);
                     if let Some(eb) = else_branch {
-                        self.collect_class_upgrades(
-                            std::slice::from_ref(&**eb),
-                            scope,
-                            symbols,
-                            out,
-                        );
+                        self.collect_class_upgrades(std::slice::from_ref(&**eb), scope, out);
                     }
                 }
                 StatementKind::Case {
@@ -930,22 +1021,22 @@ impl<'a> ResolveWalker<'a> {
                     ..
                 } => {
                     for wb in when_branches {
-                        self.collect_class_upgrades(&wb.body, scope, symbols, out);
+                        self.collect_class_upgrades(&wb.body, scope, out);
                     }
                     if let Some(o) = otherwise {
-                        self.collect_class_upgrades(o, scope, symbols, out);
+                        self.collect_class_upgrades(o, scope, out);
                     }
                 }
                 StatementKind::Label { body, .. } => {
-                    self.collect_class_upgrades(std::slice::from_ref(&**body), scope, symbols, out);
+                    self.collect_class_upgrades(std::slice::from_ref(&**body), scope, out);
                 }
                 StatementKind::PreprocIf(pif) => {
-                    self.collect_class_upgrades(&pif.then_branch, scope, symbols, out);
+                    self.collect_class_upgrades(&pif.then_branch, scope, out);
                     for (_, br) in &pif.elseif_branches {
-                        self.collect_class_upgrades(br, scope, symbols, out);
+                        self.collect_class_upgrades(br, scope, out);
                     }
                     if let Some(eb) = &pif.else_branch {
-                        self.collect_class_upgrades(eb, scope, symbols, out);
+                        self.collect_class_upgrades(eb, scope, out);
                     }
                 }
                 _ => {}
@@ -957,10 +1048,9 @@ impl<'a> ResolveWalker<'a> {
         &self,
         class_name: &str,
         scope: ScopeId,
-        symbols: &SymbolTable,
         decl_name: &Identifier,
     ) -> Option<(SymbolId, ResolvedType)> {
-        self.class_upgrade_in_ns(class_name, scope, NamespaceId::Values, symbols, decl_name)
+        self.class_upgrade_in_ns(class_name, scope, NamespaceId::Values, decl_name)
     }
 
     fn class_upgrade_in_ns(
@@ -968,7 +1058,6 @@ impl<'a> ResolveWalker<'a> {
         class_name: &str,
         scope: ScopeId,
         decl_ns: NamespaceId,
-        symbols: &SymbolTable,
         decl_name: &Identifier,
     ) -> Option<(SymbolId, ResolvedType)> {
         let class_atom = fold_atom(class_name);
@@ -976,7 +1065,7 @@ impl<'a> ResolveWalker<'a> {
         let decl_atom = fold_atom(&decl_name.name);
         let decl_sym = self.tree.get(scope).get_in(decl_ns, &decl_atom)?;
         // Only upgrade if still Unknown.
-        match symbols.get(decl_sym).data_type.as_ref() {
+        match self.symbols.get(decl_sym).data_type.as_ref() {
             Some(ResolvedType::Unknown) => Some((decl_sym, ResolvedType::Class(class_sym))),
             _ => None,
         }
@@ -1700,13 +1789,39 @@ impl<'a> ResolveWalker<'a> {
         // The cost is that a genuinely undefined name colliding with a built-in
         // function name is not flagged; that narrow false negative is an
         // accepted trade against the false-positive volume this eliminates.
-        let reason = if oxabl_lexer::is_builtin_function(&atom) {
-            UnresolvedReason::External
-        } else {
-            UnresolvedReason::NotInScope
-        };
-        self.references
-            .insert(expr_id, Resolution::Unresolved { name: atom, reason });
+        if oxabl_lexer::is_builtin_function(&atom) {
+            self.references.insert(
+                expr_id,
+                Resolution::Unresolved {
+                    name: atom,
+                    reason: UnresolvedReason::External,
+                },
+            );
+            return;
+        }
+        // Schema fallback: a bare table name in a buffer-capable position
+        // (bare identifier / CAN-FIND — anything whose namespace list
+        // includes `Buffers`) resolves to a synthesized default-buffer
+        // symbol when the schema is loaded. Local declarations and built-ins
+        // both win over the schema table, matching ABL shadowing rules.
+        // Function calls (Functions/Procedures) never reach this fallback —
+        // a call named like a table stays `NotInScope`.
+        if self.ctx.schema_loaded
+            && namespaces.contains(&NamespaceId::Buffers)
+            && let Some(tid) = self.ctx.schema.table_id(&atom)
+        {
+            let bsym = self.synth_table_buffer_symbol(tid, &atom, id);
+            self.references.insert(expr_id, Resolution::Resolved(bsym));
+            self.bump_count(bsym, mode);
+            return;
+        }
+        self.references.insert(
+            expr_id,
+            Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::NotInScope,
+            },
+        );
     }
 
     /// Resolve an `Identifier` in a **statement** position (buffer name in
@@ -1733,8 +1848,13 @@ impl<'a> ResolveWalker<'a> {
 
     /// Resolve `qualifier.field`. When the qualifier is a bare identifier,
     /// try `Buffers` (the common `table.field` / `buffer.field` case) and
-    /// fall through to `Tables` (implicit default buffer). When schema is
-    /// absent, the composite expression is `Unresolved { NoSchema }`.
+    /// fall through to `Tables` (implicit default buffer); if neither
+    /// resolves, fall back to the schema so a bare table name binds a
+    /// synthesized default buffer. A resolved qualifier with a `table_id`
+    /// link drives real field lookup against the schema — valid fields
+    /// resolve to a synthesized `Field` symbol (typed from the schema),
+    /// invalid fields are `NotInScope`. When schema is absent, the
+    /// composite expression is `Unresolved { NoSchema }`.
     fn resolve_field_access(
         &mut self,
         qualifier: &Expression,
@@ -1769,31 +1889,29 @@ impl<'a> ResolveWalker<'a> {
                     .insert(qualifier.id, Resolution::Resolved(qsym));
                 self.bump_count(qsym, AccessMode::Read);
 
-                let field_atom = fold_atom(&field.name);
-                // Field resolution: NoSchema (schema not loaded) vs
-                // NotInScope (schema loaded, field absent) vs External
-                // (schema loaded; no structured resolution in v1).
-                let reason = if self.ctx.schema_loaded {
-                    // v1: schema-backed field lookup requires knowing the
-                    // target table for the buffer symbol. This indirection
-                    // isn't cached on `Symbol` in v1, so we report External
-                    // — the field is known-to-exist-or-not only via a
-                    // schema query we haven't wired yet. `LINT0003` skips
-                    // External by design.
-                    UnresolvedReason::External
-                } else {
-                    UnresolvedReason::NoSchema
-                };
-                self.references.insert(
-                    expr_id,
-                    Resolution::Unresolved {
-                        name: field_atom,
-                        reason,
-                    },
-                );
+                let resolution = self.field_resolution(qsym, field);
+                self.references.insert(expr_id, resolution);
                 let _ = mode;
             }
             None => {
+                // Schema fallback for the bare `Customer.Name` case: the
+                // qualifier is no local buffer/table, but if it names a
+                // schema table it binds a synthesized default buffer and
+                // the field resolves through the same lookup as the
+                // resolved-qualifier arm. Without this, bare table.field
+                // references were a double false positive (LINT0001 on the
+                // qualifier *and* LINT0003 on the field).
+                if self.ctx.schema_loaded
+                    && let Some(tid) = self.ctx.schema.table_id(&qatom)
+                {
+                    let bsym = self.synth_table_buffer_symbol(tid, &qatom, qid);
+                    self.references
+                        .insert(qualifier.id, Resolution::Resolved(bsym));
+                    self.bump_count(bsym, AccessMode::Read);
+                    let resolution = self.field_resolution(bsym, field);
+                    self.references.insert(expr_id, resolution);
+                    return;
+                }
                 // Unknown qualifier — either schema-absent buffer (NoSchema)
                 // or truly undefined (NotInScope). Without schema, buffers
                 // fall through to NoSchema; with schema they're NotInScope.
@@ -1819,6 +1937,111 @@ impl<'a> ResolveWalker<'a> {
                 );
             }
         }
+    }
+
+    /// Resolve `field` against a resolved qualifier symbol. When the
+    /// qualifier carries a `table_id` link and the schema is loaded, this
+    /// performs real field lookup: a hit synthesizes (or reuses) a `Field`
+    /// symbol typed from the schema; a miss is `NotInScope`. Qualifiers
+    /// without a schema link (temp-table buffers, missing tables) keep the
+    /// legacy `External` resolution; schema-absent stays `NoSchema`.
+    fn field_resolution(&mut self, qsym: SymbolId, field: &Identifier) -> Resolution {
+        let field_atom = fold_atom(&field.name);
+        match self.symbols.get(qsym).table_id {
+            Some(tid) if self.ctx.schema_loaded => {
+                // `ctx.schema` is a shared reference copied out of `self`,
+                // so the field borrow is independent of the `&mut self`
+                // needed by symbol synthesis below.
+                let schema = self.ctx.schema;
+                match schema.get_by_id(tid).and_then(|t| t.get_field(&field_atom)) {
+                    Some(f) => {
+                        let resolved_ty = ResolvedType::from_schema_field(f);
+                        let fsym = self.synth_field_symbol(tid, &field_atom, resolved_ty, field);
+                        Resolution::Resolved(fsym)
+                    }
+                    // Field not on the table — genuinely unknown.
+                    None => Resolution::Unresolved {
+                        name: field_atom,
+                        reason: UnresolvedReason::NotInScope,
+                    },
+                }
+            }
+            // Qualifier resolved but has no schema link (temp-table buffer,
+            // or buffer for a table absent from the schema) → preserve the
+            // legacy behavior: External is skipped by every lint rule.
+            _ if self.ctx.schema_loaded => Resolution::Unresolved {
+                name: field_atom,
+                reason: UnresolvedReason::External,
+            },
+            _ => Resolution::Unresolved {
+                name: field_atom,
+                reason: UnresolvedReason::NoSchema,
+            },
+        }
+    }
+
+    /// Return the synthesized `Field` symbol for `(tid, field_atom)`,
+    /// minting one on first use. Synthetic symbols carry
+    /// `declaration: NodeId::DUMMY` (marking them as non-user-declared, the
+    /// same convention as built-ins) and `name_span` pointing at the use
+    /// site so diagnostics can still locate a reference. They are inserted
+    /// into the symbol table only — never into the scope tree — so name
+    /// resolution never observes them.
+    fn synth_field_symbol(
+        &mut self,
+        tid: TableId,
+        field_atom: &OxablAtom,
+        data_type: ResolvedType,
+        use_site: &Identifier,
+    ) -> SymbolId {
+        if let Some(sym) = self.synth_fields.get(&(tid, field_atom.clone())) {
+            return *sym;
+        }
+        let sym = self.symbols.insert(Symbol {
+            name: field_atom.clone(),
+            namespace: NamespaceId::Values,
+            kind: SymbolKind::Field,
+            declared_in: ScopeId::ROOT,
+            declaration: NodeId::DUMMY,
+            name_span: VirtualSpan::new(use_site.span.start, use_site.span.end),
+            data_type: Some(data_type),
+            read_count: 0,
+            write_count: 0,
+            flags: SymbolFlags::empty(),
+            table_id: None,
+        });
+        self.synth_fields.insert((tid, field_atom.clone()), sym);
+        sym
+    }
+
+    /// Return the synthesized default-buffer symbol for schema table `tid`,
+    /// minting one on first use. Same synthetic conventions as
+    /// [`Self::synth_field_symbol`]; the symbol carries the `table_id` link
+    /// so field accesses through it resolve against the schema.
+    fn synth_table_buffer_symbol(
+        &mut self,
+        tid: TableId,
+        table_atom: &OxablAtom,
+        use_site: &Identifier,
+    ) -> SymbolId {
+        if let Some(sym) = self.synth_buffers.get(&tid) {
+            return *sym;
+        }
+        let sym = self.symbols.insert(Symbol {
+            name: table_atom.clone(),
+            namespace: NamespaceId::Buffers,
+            kind: SymbolKind::Buffer,
+            declared_in: ScopeId::ROOT,
+            declaration: NodeId::DUMMY,
+            name_span: VirtualSpan::new(use_site.span.start, use_site.span.end),
+            data_type: None,
+            read_count: 0,
+            write_count: 0,
+            flags: SymbolFlags::empty(),
+            table_id: Some(tid),
+        });
+        self.synth_buffers.insert(tid, sym);
+        sym
     }
 
     /// Linear-search for the unique child scope of `parent` created by the
@@ -1928,7 +2151,8 @@ mod tests {
     fn run(stmts: Vec<Statement>) -> (ScopeTree, SymbolTable, Vec<Diagnostic>) {
         let schema = Schema::empty();
         let ctx = ctx("", &schema);
-        declare_pass(&stmts, &ctx)
+        let (tree, symbols, diags, _rev) = declare_pass(&stmts, &ctx);
+        (tree, symbols, diags)
     }
 
     fn find_symbol<'t>(
@@ -2891,8 +3115,8 @@ mod tests {
     ) {
         let schema = Schema::empty();
         let ctx = ctx("", &schema);
-        let (tree, mut symbols, _diags) = declare_pass(stmts, &ctx);
-        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols);
+        let (tree, mut symbols, _diags, rev) = declare_pass(stmts, &ctx);
+        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
         (tree, symbols, refs, types)
     }
 
@@ -2908,9 +3132,37 @@ mod tests {
         let schema = Schema::empty();
         let mut ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         ctx.schema_loaded = schema_loaded;
-        let (tree, mut symbols, _diags) = declare_pass(stmts, &ctx);
-        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols);
+        let (tree, mut symbols, _diags, rev) = declare_pass(stmts, &ctx);
+        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
         (tree, symbols, refs, types)
+    }
+
+    // ---- Schema-backed resolution harness --------------------------------
+
+    use oxabl_schema::test_support::customer_schema as test_schema;
+
+    /// Run declare + resolve against a real loaded schema. Callers that
+    /// need check-pass expression types use [`run_analyze_with_schema`].
+    fn run_full_with_schema(
+        stmts: &[Statement],
+        schema: &Schema,
+    ) -> (
+        ScopeTree,
+        SymbolTable,
+        NodeIndexVec<Resolution>,
+        NodeIndexVec<ResolvedType>,
+    ) {
+        let ctx = ctx("", schema);
+        let (tree, mut symbols, _diags, rev) = declare_pass(stmts, &ctx);
+        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
+        (tree, symbols, refs, types)
+    }
+
+    /// Full `analyze_file` (declare + resolve + check) against a loaded
+    /// schema — used when a test asserts on check-pass expression types.
+    fn run_analyze_with_schema(stmts: &[Statement], schema: &Schema) -> crate::Semantic {
+        let ctx = ctx("", schema);
+        crate::analyze_file(stmts, &ctx)
     }
 
     fn resolution_of(refs: &NodeIndexVec<Resolution>, id: NodeId) -> &Resolution {
@@ -3295,12 +3547,15 @@ mod tests {
             }),
             stmt_n(StatementKind::ExpressionStatement(fa)),
         ];
+        // Empty schema with the loaded flag forced: `Customer` is not in the
+        // schema, so the buffer has no `table_id` link and the field keeps
+        // the legacy `External` resolution.
         let (_t, symbols, refs, _) = run_full_with_schema_loaded(&stmts, true);
         let Resolution::Resolved(sym) = resolution_of(&refs, qual_id) else {
             panic!("qualifier should resolve to buffer");
         };
         assert_eq!(symbols.get(*sym).kind, SymbolKind::Buffer);
-        // Field stays External (schema-backed field lookup not wired in v1).
+        assert_eq!(symbols.get(*sym).table_id, None);
         assert!(matches!(
             resolution_of(&refs, fa_id),
             Resolution::Unresolved {
@@ -3308,6 +3563,307 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ---- Schema-backed resolution (real loaded schema) ------------------
+
+    /// `DEFINE BUFFER bCust FOR Customer.` under a loaded schema.
+    fn buffer_customer_stmts(field_name: &str) -> (Vec<Statement>, NodeId, NodeId) {
+        let qualifier = id_expr("bCust");
+        let qual_id = qualifier.id;
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field: id(field_name),
+        });
+        let fa_id = fa.id;
+        (
+            vec![
+                stmt_n(StatementKind::DefineBuffer {
+                    name: id("bCust"),
+                    target: BufferTarget::Table(id("Customer")),
+                    preselect: false,
+                    label: None,
+                    xml_options: XmlSerializeOptions::default(),
+                }),
+                stmt_n(StatementKind::ExpressionStatement(fa)),
+            ],
+            qual_id,
+            fa_id,
+        )
+    }
+
+    #[test]
+    fn declare_buffer_links_schema_table_id() {
+        let schema = test_schema();
+        let (stmts, _, _) = buffer_customer_stmts("CustNum");
+        let ctx = ctx("", &schema);
+        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let bsym = tree
+            .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("bcust"))
+            .expect("buffer declared");
+        assert_eq!(
+            symbols.get(bsym).table_id,
+            schema.table_id(&fold_atom("customer"))
+        );
+    }
+
+    #[test]
+    fn declare_buffer_for_missing_table_is_none() {
+        let schema = test_schema();
+        let stmts = vec![stmt_n(StatementKind::DefineBuffer {
+            name: id("b"),
+            target: BufferTarget::Table(id("Ghost")),
+            preselect: false,
+            label: None,
+            xml_options: XmlSerializeOptions::default(),
+        })];
+        let ctx = ctx("", &schema);
+        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let bsym = tree
+            .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("b"))
+            .expect("buffer declared");
+        assert_eq!(symbols.get(bsym).table_id, None);
+    }
+
+    #[test]
+    fn declare_buffer_for_temp_table_is_none() {
+        let schema = test_schema();
+        let stmts = vec![stmt_n(StatementKind::DefineBuffer {
+            name: id("b"),
+            target: BufferTarget::TempTable(id("tt")),
+            preselect: false,
+            label: None,
+            xml_options: XmlSerializeOptions::default(),
+        })];
+        let ctx = ctx("", &schema);
+        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let bsym = tree
+            .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("b"))
+            .expect("buffer declared");
+        assert_eq!(symbols.get(bsym).table_id, None);
+    }
+
+    #[test]
+    fn for_each_implicit_buffer_links_table_id() {
+        let schema = test_schema();
+        let stmts = vec![stmt_n(StatementKind::ForEach {
+            buffer: id("Customer"),
+            of_relation: None,
+            where_clause: None,
+            lock_type: LockType::NoLock,
+            body: vec![],
+        })];
+        let ctx = ctx("", &schema);
+        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let block = tree
+            .iter()
+            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .expect("block scope")
+            .1;
+        let bsym = block
+            .get_in(NamespaceId::Buffers, &fold_atom("customer"))
+            .expect("implicit buffer");
+        assert_eq!(
+            symbols.get(bsym).table_id,
+            schema.table_id(&fold_atom("customer"))
+        );
+    }
+
+    #[test]
+    fn unqualified_table_name_resolves_via_schema() {
+        // Bare `Customer` as a standalone reference (e.g. the argument of
+        // `AVAILABLE(Customer)`): no local buffer, schema loaded → resolves
+        // to a synthesized default-buffer symbol carrying the table link.
+        let schema = test_schema();
+        let use_c = id_expr("Customer");
+        let use_id = use_c.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(use_c))];
+        let (_t, symbols, refs, _) = run_full_with_schema(&stmts, &schema);
+        let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
+            panic!("bare table name should resolve via schema");
+        };
+        let s = symbols.get(*sym);
+        assert_eq!(s.kind, SymbolKind::Buffer);
+        assert_eq!(s.table_id, schema.table_id(&fold_atom("customer")));
+        assert_eq!(s.declaration, NodeId::DUMMY);
+        assert_eq!(s.read_count, 1);
+    }
+
+    #[test]
+    fn bare_field_access_qualifier_resolves_via_schema() {
+        // CRITICAL-fix guard: `Customer.Name` with NO `DEFINE BUFFER`,
+        // schema loaded. The qualifier must resolve (no LINT0001) and the
+        // field must resolve with its schema type (no LINT0003).
+        let schema = test_schema();
+        let qualifier = id_expr("Customer");
+        let qual_id = qualifier.id;
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field: id("Name"),
+        });
+        let fa_id = fa.id;
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(fa))];
+        let sem = run_analyze_with_schema(&stmts, &schema);
+
+        let Resolution::Resolved(qsym) = resolution_of(&sem.references, qual_id) else {
+            panic!("qualifier should resolve to synthesized default buffer");
+        };
+        assert_eq!(
+            sem.symbols.get(*qsym).table_id,
+            schema.table_id(&fold_atom("customer"))
+        );
+
+        let Resolution::Resolved(fsym) = resolution_of(&sem.references, fa_id) else {
+            panic!("field should resolve via schema");
+        };
+        assert_eq!(sem.symbols.get(*fsym).kind, SymbolKind::Field);
+        assert_eq!(
+            sem.symbols.get(*fsym).data_type,
+            Some(ResolvedType::Primitive(crate::PrimitiveTy::Character))
+        );
+        // The check pass types the field-access node from the schema field.
+        assert_eq!(
+            sem.types.get(fa_id),
+            Some(&ResolvedType::Primitive(crate::PrimitiveTy::Character))
+        );
+    }
+
+    #[test]
+    fn field_access_valid_field_resolves_and_types() {
+        let schema = test_schema();
+        let (stmts, qual_id, fa_id) = buffer_customer_stmts("CustNum");
+        let sem = run_analyze_with_schema(&stmts, &schema);
+
+        let Resolution::Resolved(qsym) = resolution_of(&sem.references, qual_id) else {
+            panic!("qualifier should resolve to the DEFINE BUFFER symbol");
+        };
+        assert_eq!(
+            sem.symbols.get(*qsym).table_id,
+            schema.table_id(&fold_atom("customer"))
+        );
+
+        let Resolution::Resolved(fsym) = resolution_of(&sem.references, fa_id) else {
+            panic!("valid field should resolve");
+        };
+        let f = sem.symbols.get(*fsym);
+        assert_eq!(f.kind, SymbolKind::Field);
+        assert_eq!(f.declaration, NodeId::DUMMY);
+        assert_eq!(
+            f.data_type,
+            Some(ResolvedType::Primitive(crate::PrimitiveTy::Integer))
+        );
+        assert_eq!(
+            sem.types.get(fa_id),
+            Some(&ResolvedType::Primitive(crate::PrimitiveTy::Integer))
+        );
+    }
+
+    #[test]
+    fn field_access_invalid_field_is_not_in_scope() {
+        let schema = test_schema();
+        let (stmts, _qual_id, fa_id) = buffer_customer_stmts("BadField");
+        let (_t, _s, refs, _) = run_full_with_schema(&stmts, &schema);
+        assert_eq!(
+            resolution_of(&refs, fa_id),
+            &Resolution::Unresolved {
+                name: fold_atom("BadField"),
+                reason: UnresolvedReason::NotInScope,
+            }
+        );
+    }
+
+    #[test]
+    fn field_access_buffer_for_unknown_table_is_external() {
+        // `DEFINE BUFFER b FOR Ghost` under a loaded schema: the buffer
+        // symbol resolves but has no schema link, so its fields keep the
+        // legacy `External` resolution (silent) — no new false positives.
+        let schema = test_schema();
+        let qualifier = id_expr("b");
+        let fa = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(qualifier),
+            field: id("Anything"),
+        });
+        let fa_id = fa.id;
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("b"),
+                target: BufferTarget::Table(id("Ghost")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(fa)),
+        ];
+        let (_t, _s, refs, _) = run_full_with_schema(&stmts, &schema);
+        assert!(matches!(
+            resolution_of(&refs, fa_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::External,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn duplicate_field_access_reuses_one_synthetic_symbol() {
+        let schema = test_schema();
+        let fa1 = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("bCust")),
+            field: id("CustNum"),
+        });
+        let fa2 = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("bCust")),
+            field: id("CustNum"),
+        });
+        let fa1_id = fa1.id;
+        let fa2_id = fa2.id;
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+            }),
+            stmt_n(StatementKind::ExpressionStatement(fa1)),
+            stmt_n(StatementKind::ExpressionStatement(fa2)),
+        ];
+        let (_t, symbols, refs, _) = run_full_with_schema(&stmts, &schema);
+        let Resolution::Resolved(f1) = resolution_of(&refs, fa1_id) else {
+            panic!("first field access should resolve");
+        };
+        let Resolution::Resolved(f2) = resolution_of(&refs, fa2_id) else {
+            panic!("second field access should resolve");
+        };
+        // Both references share exactly one synthesized field symbol.
+        assert_eq!(f1, f2);
+        assert_eq!(
+            symbols
+                .iter()
+                .filter(|(_, s)| s.kind == SymbolKind::Field && s.declaration == NodeId::DUMMY)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "same schema revision")]
+    fn stale_table_id_revision_guard() {
+        // Declare against a loaded schema (revision ≥ 1), then run resolve
+        // against a *different* (empty, revision 0) schema while passing the
+        // stale declare revision. `Schema::get_by_id` is a bare `Vec` index,
+        // so the tripwire in `resolve_pass` is the only thing standing
+        // between a revision mismatch and a silently-wrong resolution.
+        let schema_a = test_schema();
+        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(id_expr("x")))];
+        let ctx_a = ctx("", &schema_a);
+        let (tree, mut symbols, _d, declare_revision) = declare_pass(&stmts, &ctx_a);
+
+        let schema_b = Schema::empty();
+        let ctx_b = ctx("", &schema_b);
+        assert_ne!(declare_revision, schema_b.revision());
+        let _ = resolve_pass(&stmts, &ctx_b, &tree, &mut symbols, declare_revision);
     }
 
     // ---- Read / write counts --------------------------------------------
@@ -3476,9 +4032,9 @@ mod tests {
         ];
         let schema = Schema::empty();
         let ctx = ctx("", &schema);
-        let (tree, mut symbols, _d) = declare_pass(&stmts, &ctx);
-        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols);
-        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols);
+        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
         let x = symbols
             .iter()
             .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)

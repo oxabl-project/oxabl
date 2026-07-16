@@ -30,6 +30,7 @@ pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable) {
             read_count: 0,
             write_count: 0,
             flags: SymbolFlags::empty(),
+            table_id: None,
         });
         tree.get_mut(ScopeId::ROOT).bindings[NamespaceId::Values.index()].insert(atom, sym);
     }

@@ -25,6 +25,8 @@ mod diagnostics;
 mod loader;
 mod parser;
 mod schema;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 pub use atom::fold_atom;
 pub use diagnostics::{SCHEMA0001, SCHEMA0010, SCHEMA0011, SCHEMA0012, SCHEMA0030, SCHEMA0031};

@@ -7,7 +7,7 @@
 //! expression types in Phases 4a/4b.
 
 use oxabl_ast::DataType;
-use oxabl_schema::{SchemaRevision, TableId};
+use oxabl_schema::{Field, SchemaRevision, SchemaType, TableId};
 
 use crate::SymbolId;
 
@@ -90,6 +90,43 @@ impl ResolvedType {
         }
     }
 
+    /// Lower a schema [`Field`] into a [`ResolvedType`]. Each `SchemaType`
+    /// primitive maps 1:1 to the corresponding [`PrimitiveTy`];
+    /// `SchemaType::Unknown(_)` maps to `Unknown` and `SchemaType::Error`
+    /// maps to `Error` (the "prior error, suppress cascade" bottom — never
+    /// collapsed into `Unknown`). `EXTENT` fields wrap the scalar conversion
+    /// in `Array`, mirroring the declare pass's `wrap_extent`: extent `0` is
+    /// dynamic and represented as `None`.
+    pub fn from_schema_field(field: &Field) -> Self {
+        let scalar = match &field.data_type {
+            SchemaType::Integer => ResolvedType::Primitive(PrimitiveTy::Integer),
+            SchemaType::Int64 => ResolvedType::Primitive(PrimitiveTy::Int64),
+            SchemaType::Decimal => ResolvedType::Primitive(PrimitiveTy::Decimal),
+            SchemaType::Character => ResolvedType::Primitive(PrimitiveTy::Character),
+            SchemaType::Longchar => ResolvedType::Primitive(PrimitiveTy::Longchar),
+            SchemaType::Logical => ResolvedType::Primitive(PrimitiveTy::Logical),
+            SchemaType::Date => ResolvedType::Primitive(PrimitiveTy::Date),
+            SchemaType::Datetime => ResolvedType::Primitive(PrimitiveTy::Datetime),
+            SchemaType::DatetimeTz => ResolvedType::Primitive(PrimitiveTy::DatetimeTz),
+            SchemaType::Handle => ResolvedType::Primitive(PrimitiveTy::Handle),
+            SchemaType::Raw => ResolvedType::Primitive(PrimitiveTy::Raw),
+            SchemaType::Recid => ResolvedType::Primitive(PrimitiveTy::Recid),
+            SchemaType::Rowid => ResolvedType::Primitive(PrimitiveTy::Rowid),
+            SchemaType::Blob => ResolvedType::Primitive(PrimitiveTy::Blob),
+            SchemaType::Clob => ResolvedType::Primitive(PrimitiveTy::Clob),
+            SchemaType::Unknown(_) => ResolvedType::Unknown,
+            SchemaType::Error => ResolvedType::Error,
+        };
+        match field.extent {
+            None => scalar,
+            Some(n) => ResolvedType::Array {
+                element: Box::new(scalar),
+                // ABL extent `0` is dynamic; represent as `None`.
+                extent: if n == 0 { None } else { Some(n) },
+            },
+        }
+    }
+
     /// Whether this is the universal bottom (`?`).
     #[inline]
     pub fn is_unknown(&self) -> bool {
@@ -118,6 +155,87 @@ mod tests {
         assert_eq!(
             ResolvedType::from_data_type(&DataType::Class("Foo.Bar".into())),
             ResolvedType::Unknown
+        );
+    }
+
+    // ---- from_schema_field ------------------------------------------------
+
+    fn schema_field(ty: SchemaType, extent: Option<u32>) -> Field {
+        use oxabl_common::{FileId, FileSpan};
+        Field {
+            name: oxabl_lexer::oxabl_atom::OxablAtom::from("f"),
+            display_name: "f".into(),
+            data_type: ty,
+            extent,
+            mandatory: false,
+            case_sensitive: false,
+            format: None,
+            label: None,
+            initial: None,
+            description: None,
+            decimals: None,
+            position: None,
+            order: None,
+            max_width: None,
+            help: None,
+            valexp: None,
+            valmsg: None,
+            extras: Vec::new(),
+            source: FileSpan {
+                file: FileId::UNKNOWN,
+                span: oxabl_ast::Span { start: 0, end: 0 },
+            },
+        }
+    }
+
+    #[test]
+    fn schema_field_primitives_map_one_to_one() {
+        assert_eq!(
+            ResolvedType::from_schema_field(&schema_field(SchemaType::Integer, None)),
+            ResolvedType::Primitive(PrimitiveTy::Integer)
+        );
+        assert_eq!(
+            ResolvedType::from_schema_field(&schema_field(SchemaType::DatetimeTz, None)),
+            ResolvedType::Primitive(PrimitiveTy::DatetimeTz)
+        );
+        assert_eq!(
+            ResolvedType::from_schema_field(&schema_field(SchemaType::Clob, None)),
+            ResolvedType::Primitive(PrimitiveTy::Clob)
+        );
+    }
+
+    #[test]
+    fn schema_field_unknown_and_error_preserve_lattice_roles() {
+        assert_eq!(
+            ResolvedType::from_schema_field(&schema_field(
+                SchemaType::Unknown(oxabl_lexer::oxabl_atom::OxablAtom::from("weird")),
+                None
+            )),
+            ResolvedType::Unknown
+        );
+        // `Error` is the suppress-cascade bottom — never collapsed to Unknown.
+        assert_eq!(
+            ResolvedType::from_schema_field(&schema_field(SchemaType::Error, None)),
+            ResolvedType::Error
+        );
+    }
+
+    #[test]
+    fn schema_field_extent_wraps_array() {
+        assert_eq!(
+            ResolvedType::from_schema_field(&schema_field(SchemaType::Character, Some(3))),
+            ResolvedType::Array {
+                element: Box::new(ResolvedType::Primitive(PrimitiveTy::Character)),
+                extent: Some(3),
+            }
+        );
+        // Extent `0` is dynamic — represented as `None`.
+        assert_eq!(
+            ResolvedType::from_schema_field(&schema_field(SchemaType::Integer, Some(0))),
+            ResolvedType::Array {
+                element: Box::new(ResolvedType::Primitive(PrimitiveTy::Integer)),
+                extent: None,
+            }
         );
     }
 }
