@@ -642,4 +642,55 @@ mod tests {
         let diags = analyze_and_lint(vec![stmt_n(StatementKind::ExpressionStatement(u))]);
         assert!(diags.is_empty());
     }
+
+    #[test]
+    fn builtin_function_calls_do_not_fire() {
+        // The dominant #58 false positives: calls to built-in ABL functions
+        // that are not declared locally. These now resolve via the built-in
+        // registry (recorded as External) instead of NotInScope.
+        for name in [
+            "length",
+            "entry",
+            "substring",
+            "trim",
+            "round",
+            "num-entries",
+        ] {
+            let call = expr_n(ExpressionKind::FunctionCall {
+                name: id(name),
+                arguments: vec![int_lit(1)],
+            });
+            let diags = analyze_and_lint(vec![stmt_n(StatementKind::ExpressionStatement(call))]);
+            assert!(
+                diags.is_empty(),
+                "built-in `{name}` should not fire LINT0001, got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_function_matching_is_case_insensitive() {
+        let call = expr_n(ExpressionKind::FunctionCall {
+            name: id("SUBSTRING"),
+            arguments: vec![int_lit(1)],
+        });
+        let diags = analyze_and_lint(vec![stmt_n(StatementKind::ExpressionStatement(call))]);
+        assert!(
+            diags.is_empty(),
+            "SUBSTRING (upper) should not fire, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn non_builtin_function_still_fires() {
+        // A name that is not a built-in and not declared locally must still be
+        // reported — the registry must not blanket-suppress unknown calls.
+        let call = expr_n(ExpressionKind::FunctionCall {
+            name: id("frobnicate"),
+            arguments: vec![],
+        });
+        let diags = analyze_and_lint(vec![stmt_n(StatementKind::ExpressionStatement(call))]);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("frobnicate"));
+    }
 }

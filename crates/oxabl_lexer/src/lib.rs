@@ -11,9 +11,11 @@ pub mod oxabl_atom {
 }
 use rust_decimal::Decimal;
 
+mod builtins;
 mod callable;
 mod kind;
 use crate::{kind::match_keyword, oxabl_atom::OxablAtom};
+pub use builtins::{BUILTIN_FUNCTIONS, is_builtin_function};
 pub use callable::{CALLABLE_FUNCTION_KINDS, is_callable_kind};
 pub use kind::Kind;
 
@@ -832,6 +834,45 @@ impl<'a> Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_functions_registry() {
+        // Dominant #58 offenders must be recognized.
+        for name in [
+            "length",
+            "entry",
+            "substring",
+            "trim",
+            "round",
+            "num-entries",
+            "string",
+            "available",
+        ] {
+            assert!(is_builtin_function(name), "`{name}` should be a built-in");
+        }
+        // Non-functions must not be.
+        assert!(!is_builtin_function("frobnicate"));
+        assert!(!is_builtin_function("define"));
+    }
+
+    #[test]
+    fn builtin_functions_slice_is_sorted() {
+        // `is_builtin_function` relies on `binary_search`, which requires the
+        // generated slice to be sorted with no duplicates.
+        assert!(
+            BUILTIN_FUNCTIONS.windows(2).all(|w| w[0] < w[1]),
+            "BUILTIN_FUNCTIONS must be sorted and deduped for binary_search"
+        );
+        // No entry may contain whitespace: ABL identifiers never do, so a
+        // space signals a multi-word documentation phrase leaked into the
+        // registry (an unmatchable junk entry).
+        assert!(
+            BUILTIN_FUNCTIONS
+                .iter()
+                .all(|n| !n.contains(char::is_whitespace)),
+            "BUILTIN_FUNCTIONS entries must not contain whitespace"
+        );
+    }
 
     fn collect_tokens(source: &str) -> Vec<Token> {
         let mut lexer = Lexer::new(source);
