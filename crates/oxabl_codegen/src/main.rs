@@ -937,8 +937,35 @@ pub fn generate_callable_rs(keywords: &[Keyword]) -> String {
 /// reserved words and therefore never appear in `abl_reserved_keywords.txt`.
 /// `function_names` is the set collected by [`parse_builtin_functions`]; names
 /// are emitted ASCII-lowercased and sorted so the lookup is a `binary_search`.
-pub fn generate_builtins_rs(function_names: &[String]) -> String {
+///
+/// Nineteen built-in functions are **also** reserved keywords with a documented
+/// minimum abbreviation (`AVAILABLE` → `AVAIL`, `TERMINAL` → `TERM`, ...), and
+/// ABL source may legally call them by any prefix down to that minimum. For
+/// those, every prefix from `min_abbreviation` up to (but excluding) the full
+/// name is registered as well — the full name itself already comes from
+/// `function_names`. Membership in the built-in set is tested against the
+/// uppercased `function_names`, **not** `keyword_type`: the collapsed
+/// one-type-per-name map drops the function role for homonyms like `AVAILABLE`
+/// and `TERMINAL`, so filtering on `KeywordType::Function` would lose them.
+pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> String {
     let mut names: Vec<String> = function_names.iter().map(|n| n.to_lowercase()).collect();
+
+    // Expand documented abbreviations for built-in functions that are also
+    // reserved keywords (e.g. AVAILABLE -> avail, availa, availab, ...).
+    let builtin_upper: HashSet<&str> = function_names.iter().map(|n| n.as_str()).collect();
+    for kw in keywords {
+        let Some(ref abbrev) = kw.min_abbreviation else {
+            continue;
+        };
+        if !builtin_upper.contains(kw.name.to_uppercase().as_str()) {
+            continue;
+        }
+        let lower = kw.name.to_ascii_lowercase();
+        for len in abbrev.len()..lower.len() {
+            names.push(lower[..len].to_string());
+        }
+    }
+
     names.sort();
     names.dedup();
 
@@ -950,7 +977,10 @@ pub fn generate_builtins_rs(function_names: &[String]) -> String {
          //! Sourced from every `<NAME> function` entry in the ABL keyword\n\
          //! documentation index. Used by the semantic resolver so that calls to\n\
          //! built-in functions (`LENGTH`, `ENTRY`, `SUBSTRING`, ...) resolve as\n\
-         //! defined instead of surfacing as `undefined-symbol` diagnostics.\n\n",
+         //! defined instead of surfacing as `undefined-symbol` diagnostics.\n\
+         //! Reserved-keyword functions with a documented minimum abbreviation\n\
+         //! (`AVAILABLE` -> `AVAIL`, ...) are registered under every legal\n\
+         //! prefix, not just the full name.\n\n",
     );
 
     output.push_str(&format!(
@@ -1105,7 +1135,7 @@ fn main() {
         }
         "builtins" => {
             let function_names = parse_builtin_functions(&json_path);
-            let content = generate_builtins_rs(&function_names);
+            let content = generate_builtins_rs(&function_names, &keywords);
             write_generated_file(BUILTINS_RS_PATH, &content).expect("Failed to write builtins.rs");
         }
         "all" | "" => {
@@ -1121,7 +1151,7 @@ fn main() {
                 .expect("Failed to write callable.rs");
 
             let function_names = parse_builtin_functions(&json_path);
-            let builtins_content = generate_builtins_rs(&function_names);
+            let builtins_content = generate_builtins_rs(&function_names, &keywords);
             write_generated_file(BUILTINS_RS_PATH, &builtins_content)
                 .expect("Failed to write builtins.rs");
 

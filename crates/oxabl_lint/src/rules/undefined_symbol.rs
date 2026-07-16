@@ -693,4 +693,68 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("frobnicate"));
     }
+
+    #[test]
+    fn builtin_abbreviation_calls_do_not_fire() {
+        // Reserved-keyword built-ins may be called by any prefix down to the
+        // documented minimum abbreviation (e.g. `AVAIL(customer)`).
+        for name in [
+            "avail",
+            "ambig",
+            "dbrest",
+            "dbvers",
+            "gateway",
+            "is-attr",
+            "is-lead",
+            "keyfunc",
+            "line-count",
+            "num-ali",
+            "page-num",
+            "proc-ha",
+            "proc-st",
+            "provers",
+            "setuser",
+            "term",
+            // Data type conversion functions are reserved keywords too.
+            "dec",
+            "int",
+            "log",
+        ] {
+            let call = expr_n(ExpressionKind::FunctionCall {
+                name: id(name),
+                arguments: vec![int_lit(1)],
+            });
+            let diags = analyze_and_lint(vec![stmt_n(StatementKind::ExpressionStatement(call))]);
+            assert!(
+                diags.is_empty(),
+                "abbreviated built-in `{name}` should not fire LINT0001, got {diags:?}"
+            );
+        }
+        // Folding still applies to abbreviated forms.
+        for name in ["AVAIL", "Avail"] {
+            let call = expr_n(ExpressionKind::FunctionCall {
+                name: id(name),
+                arguments: vec![int_lit(1)],
+            });
+            let diags = analyze_and_lint(vec![stmt_n(StatementKind::ExpressionStatement(call))]);
+            assert!(
+                diags.is_empty(),
+                "mixed-case abbreviation `{name}` should not fire, got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_abbreviable_builtin_truncation_still_fires() {
+        // `LENGTH` is a built-in but NOT a reserved keyword, so ABL does not
+        // permit abbreviating it — a truncation like `LENGT` is simply an
+        // undefined symbol and must keep firing.
+        let call = expr_n(ExpressionKind::FunctionCall {
+            name: id("LENGT"),
+            arguments: vec![int_lit(1)],
+        });
+        let diags = analyze_and_lint(vec![stmt_n(StatementKind::ExpressionStatement(call))]);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("LENGT"));
+    }
 }

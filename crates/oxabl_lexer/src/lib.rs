@@ -865,13 +865,70 @@ mod tests {
         );
         // No entry may contain whitespace: ABL identifiers never do, so a
         // space signals a multi-word documentation phrase leaked into the
-        // registry (an unmatchable junk entry).
+        // registry (an unmatchable junk entry). Every entry must also be
+        // ASCII-lowercased, since callers pass case-folded atoms.
         assert!(
             BUILTIN_FUNCTIONS
                 .iter()
                 .all(|n| !n.contains(char::is_whitespace)),
             "BUILTIN_FUNCTIONS entries must not contain whitespace"
         );
+        assert!(
+            BUILTIN_FUNCTIONS
+                .iter()
+                .all(|n| *n == n.to_ascii_lowercase()),
+            "BUILTIN_FUNCTIONS entries must be ASCII-lowercased"
+        );
+    }
+
+    #[test]
+    fn builtin_abbreviations_are_registered() {
+        // Reserved-keyword built-in functions may be called by any prefix down
+        // to their documented minimum abbreviation. Each entry below is
+        // (min_abbreviation, full_name) for every such function; both ends of
+        // the prefix range must resolve.
+        let abbreviable: &[(&str, &str)] = &[
+            ("avail", "available"),
+            ("ambig", "ambiguous"),
+            ("dbrest", "dbrestrictions"),
+            ("dbvers", "dbversion"),
+            ("gateway", "gateways"),
+            ("is-attr", "is-attr-space"),
+            ("is-lead", "is-lead-byte"),
+            ("keyfunc", "keyfunction"),
+            ("line-count", "line-counter"),
+            ("num-ali", "num-aliases"),
+            ("page-num", "page-number"),
+            ("proc-ha", "proc-handle"),
+            ("proc-st", "proc-status"),
+            ("provers", "proversion"),
+            ("setuser", "setuserid"),
+            ("term", "terminal"),
+            // Data type conversion functions are reserved keywords too.
+            ("dec", "decimal"),
+            ("int", "integer"),
+            ("log", "logical"),
+        ];
+        for (abbrev, full) in abbreviable {
+            assert!(
+                is_builtin_function(abbrev),
+                "min-abbreviation `{abbrev}` should be a built-in"
+            );
+            assert!(
+                is_builtin_function(full),
+                "full name `{full}` should be a built-in"
+            );
+        }
+        // Note: `is-attr` (IS-ATTR-SPACE) and `is-lead` (IS-LEAD-BYTE) are
+        // distinct shortest forms, not a shared prefix — both must resolve.
+
+        // Fragments below the minimum abbreviation must NOT resolve.
+        for too_short in ["avai", "ambi", "is-att", "ter", "de", "in", "lo"] {
+            assert!(
+                !is_builtin_function(too_short),
+                "below-minimum fragment `{too_short}` must not be a built-in"
+            );
+        }
     }
 
     fn collect_tokens(source: &str) -> Vec<Token> {
