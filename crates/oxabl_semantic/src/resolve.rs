@@ -1684,13 +1684,29 @@ impl<'a> ResolveWalker<'a> {
                 return;
             }
         }
-        self.references.insert(
-            expr_id,
-            Resolution::Unresolved {
-                name: atom,
-                reason: UnresolvedReason::NotInScope,
-            },
-        );
+        // Fall back to the built-in ABL function registry. A locally declared
+        // symbol always wins (checked above), so user shadowing is preserved;
+        // only names that match no local declaration reach here. Built-ins are
+        // defined by the runtime rather than this file, so they are recorded as
+        // `External` — the same bucket used for USING imports and dynamic calls,
+        // which every lint rule already skips. Without this, every call to a
+        // built-in (`LENGTH`, `ENTRY`, `SUBSTRING`, ...) was reported as an
+        // `undefined-symbol` false positive.
+        //
+        // This helper backs bare identifiers (Values/Buffers), function calls
+        // (Functions/Procedures) and CAN-FIND (Buffers/Tables), so the fallback
+        // applies to all three — intentionally: many built-ins are used without
+        // parentheses (`TODAY`, `NOW`, `TIME`) and so parse as bare identifiers.
+        // The cost is that a genuinely undefined name colliding with a built-in
+        // function name is not flagged; that narrow false negative is an
+        // accepted trade against the false-positive volume this eliminates.
+        let reason = if oxabl_lexer::is_builtin_function(&atom) {
+            UnresolvedReason::External
+        } else {
+            UnresolvedReason::NotInScope
+        };
+        self.references
+            .insert(expr_id, Resolution::Unresolved { name: atom, reason });
     }
 
     /// Resolve an `Identifier` in a **statement** position (buffer name in
