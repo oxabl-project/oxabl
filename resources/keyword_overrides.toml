@@ -140,6 +140,12 @@ keyword_type = "Punctuation"
 name = "disp"
 keyword_type = "Statement"
 
+# Term is both a keyword (same as TERMINAL) and an abbreviation of TERMINAL.
+# Removing the standalone entry lets TERMINAL's prefix expansion claim "term",
+# so `TERM` lexes as Kind::Terminal instead of an unusable Kind::Term.
+[[remove]]
+name = "term"
+
 # Prev for Find Prev is missing from our keyword index
 [[add]]
 name = "prev"

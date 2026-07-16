@@ -1086,6 +1086,12 @@ mod tests {
             ("availab", Kind::Available, 7),
             ("availabl", Kind::Available, 8),
             ("available", Kind::Available, 9),
+            // TERM has its own reserved-word row in the keyword index but is
+            // just TERMINAL's minimum abbreviation; the standalone entry is
+            // removed via keyword_overrides.toml so the prefix wins.
+            ("term", Kind::Terminal, 4),
+            ("termi", Kind::Terminal, 5),
+            ("terminal", Kind::Terminal, 8),
         ];
 
         for (source, expected_kind, expected_len) in test_cases {
