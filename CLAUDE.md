@@ -183,4 +183,6 @@ cargo bench -p oxabl_common --bench source_map_bench
 - `oxabl_semantic`: Declare + resolve + check passes, side tables over NodeId; schema-backed resolution (buffer `table_id` links, field validation/typing via synthesized symbols, bare-table default-buffer fallback); ~210 tests
 - `oxabl_lint`: 4 v1 rules — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003, live under a loaded schema), `type-mismatch-assignment` (LINT0004); 54 tests
 - `oxabl_analyze`: JSON/text dump of the semantic model with per-section versioning; `oxabl analyze <file>` subcommand with `--schema <df>`; 21 tests
-- Workspace total: ~985 tests passing
+- `oxabl_workspace`: file-system abstraction + `oxabl.toml` config; `resolved_include_paths` auto-discovers `oxabl.toml` (nearest-ancestor walk) and merges `[workspace.sources].include_paths` with CLI `-I` flags (CLI-first, first-match-wins PROPATH)
+- Preprocessor include resolution: an unresolvable `{include}` emits a **loud** `PREPROC007` warning ("symbols it declares cannot be checked") that the CLI always surfaces (stderr for `check`, stderr + `preproc_diagnostics` JSON for `analyze`) — one honest diagnostic at the true cause instead of a flood of downstream `undefined-symbol` false positives
+- Workspace total: ~1000 tests passing

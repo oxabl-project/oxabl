@@ -13,8 +13,23 @@ pub trait FileSystem: Send + Sync {
     /// Check whether a path exists.
     fn exists(&self, path: &Path) -> bool;
 
-    /// Search `include_paths` in order for a file named `name`.
-    /// Returns the first match, or `None` if not found.
+    /// Search `include_paths` in order for a file named `name`, returning the
+    /// first match or `None` if not found.
+    ///
+    /// PROPATH resolution rules (matching the AVM):
+    ///
+    /// 1. **First-match-wins, in order.** Earlier `include_paths` entries shadow
+    ///    later ones — the list is a PROPATH, not a set.
+    /// 2. **Absolute vs relative.** `dir.join(name)` follows Rust's
+    ///    [`Path::join`] semantics: an absolute `name` replaces `dir` entirely
+    ///    (so `{/abs/x.i}` is an absolute reference); a relative `name` (the
+    ///    common case) is appended to `dir`. Callers normalize every search
+    ///    `dir` to an absolute path before calling, so relative-vs-absolute
+    ///    ambiguity is resolved at the config boundary and this function stays
+    ///    semantics-free.
+    /// 3. **No implicit current directory.** Unlike some AVM configurations we
+    ///    do not auto-prepend `"."`; users add it to `include_paths` explicitly
+    ///    if they want cwd searched.
     fn resolve_include(&self, include_paths: &[PathBuf], name: &str) -> Option<PathBuf> {
         for dir in include_paths {
             let candidate = dir.join(name);
