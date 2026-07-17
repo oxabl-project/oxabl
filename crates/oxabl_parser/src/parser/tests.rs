@@ -2832,8 +2832,9 @@ fn parse_next_prompt_statement() {
 fn parse_if_then_do_else_with_preproc_placeholder() {
     // Corpus pattern (ad100.p, secco.p, static/*.p): an undefined preprocessor
     // variable placeholder appears between `End.` and `Else`. The placeholder
-    // would normally expand to additional `Else If` branches; when undefined
-    // it preserves as `{&name}`. The parser must look past it to bind ELSE.
+    // would normally expand to additional `Else If` branches; in raw
+    // (unpreprocessed) source it lexes as `{&name}`. The parser must look past
+    // it to bind ELSE.
     let source = "\
         IF a THEN DO: x = 1. END.\n\
         {&extra-else-branches}\n\
