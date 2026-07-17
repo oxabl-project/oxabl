@@ -509,6 +509,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: oxabl_ast::XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             var_decl(target, target_ty),
             stmt_n(StatementKind::Assignment {

@@ -3767,6 +3767,9 @@ mod tests {
                     preselect: false,
                     label: None,
                     xml_options: XmlSerializeOptions::default(),
+                    is_new_shared: false,
+                    is_shared: false,
+                    is_new_global_shared: false,
                 }),
                 stmt_n(StatementKind::ExpressionStatement(fa)),
             ],
@@ -3799,6 +3802,9 @@ mod tests {
             preselect: false,
             label: None,
             xml_options: XmlSerializeOptions::default(),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })];
         let ctx = ctx("", &schema);
         let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
@@ -3817,6 +3823,9 @@ mod tests {
             preselect: false,
             label: None,
             xml_options: XmlSerializeOptions::default(),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })];
         let ctx = ctx("", &schema);
         let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
@@ -3974,6 +3983,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(fa)),
         ];
@@ -4007,6 +4019,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(fa1)),
             stmt_n(StatementKind::ExpressionStatement(fa2)),
