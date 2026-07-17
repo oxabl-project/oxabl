@@ -2338,6 +2338,9 @@ fn parse_define_variable_simple() {
             initial_value: None,
             no_undo: true,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         }
     );
 }
@@ -2365,6 +2368,9 @@ fn parse_define_variable_with_initial() {
             ),
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         }
     );
 }
@@ -2407,6 +2413,9 @@ fn parse_var_statement_simple() {
             initial_value: None,
             no_undo: true,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         }
     );
 }
@@ -7853,6 +7862,130 @@ fn parse_define_dataset_modifiers() {
             assert!(!non_serializable);
         }
         _ => panic!("Expected DefineDataset"),
+    }
+}
+
+// ── SHARED / NEW [GLOBAL] SHARED flag capture (ast-invariants §12) ──
+
+fn parse_one(source: &str) -> StatementKind {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.parse_statement().expect("Expected a statement").kind
+}
+
+#[test]
+fn parse_shared_variable_sets_is_shared() {
+    match parse_one("DEFINE SHARED VARIABLE x AS INTEGER.") {
+        StatementKind::VariableDeclaration {
+            is_shared,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => {
+            assert!(is_shared);
+            assert!(!is_new_shared);
+            assert!(!is_new_global_shared);
+        }
+        other => panic!("Expected VariableDeclaration, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_new_shared_variable_sets_is_new_shared() {
+    match parse_one("DEFINE NEW SHARED VARIABLE y AS CHARACTER.") {
+        StatementKind::VariableDeclaration {
+            is_shared,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => {
+            assert!(!is_shared);
+            assert!(is_new_shared);
+            assert!(!is_new_global_shared);
+        }
+        other => panic!("Expected VariableDeclaration, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_new_global_shared_variable_sets_global() {
+    match parse_one("DEFINE NEW GLOBAL SHARED VARIABLE z AS DECIMAL.") {
+        StatementKind::VariableDeclaration {
+            is_shared,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => {
+            assert!(!is_shared);
+            assert!(!is_new_shared);
+            assert!(is_new_global_shared);
+        }
+        other => panic!("Expected VariableDeclaration, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_shared_temp_table_and_buffer() {
+    match parse_one("DEFINE SHARED TEMP-TABLE tt FIELD f AS INTEGER.") {
+        StatementKind::DefineTempTable {
+            is_shared,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => {
+            assert!(is_shared);
+            assert!(!is_new_shared);
+            assert!(!is_new_global_shared);
+        }
+        other => panic!("Expected DefineTempTable, got {other:?}"),
+    }
+
+    match parse_one("DEFINE NEW SHARED BUFFER b FOR customer.") {
+        StatementKind::DefineBuffer {
+            is_shared,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => {
+            assert!(!is_shared);
+            assert!(is_new_shared);
+            assert!(!is_new_global_shared);
+        }
+        other => panic!("Expected DefineBuffer, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_new_global_shared_dataset_sets_global() {
+    match parse_one("DEFINE NEW GLOBAL SHARED DATASET ds FOR ttA.") {
+        StatementKind::DefineDataset {
+            is_shared,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => {
+            assert!(!is_shared);
+            assert!(!is_new_shared);
+            assert!(is_new_global_shared);
+        }
+        other => panic!("Expected DefineDataset, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_plain_variable_has_no_shared_flags() {
+    match parse_one("DEFINE VARIABLE n AS INTEGER.") {
+        StatementKind::VariableDeclaration {
+            is_shared,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => {
+            assert!(!is_shared);
+            assert!(!is_new_shared);
+            assert!(!is_new_global_shared);
+        }
+        other => panic!("Expected VariableDeclaration, got {other:?}"),
     }
 }
 

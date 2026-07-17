@@ -201,6 +201,38 @@ empty if the method is `ABSTRACT`; the "no body" case is carried by the `is_abst
 
 ---
 
+## 12. SHARED / NEW SHARED declaration flags
+
+`VariableDeclaration`, `DefineTempTable`, `DefineBuffer`, and `DefineDataset` each carry
+`is_shared`, `is_new_shared`, and `is_new_global_shared` booleans capturing the
+`[NEW [GLOBAL]] SHARED` prefix of the originating `DEFINE`. All four variants carry the
+identical triple — there is no longer a two-flag odd-one-out.
+
+- **At most one is true.** The parser's capture grammar
+  (`crates/oxabl_parser/src/parser/statements.rs`, the `NEW [GLOBAL] SHARED` block) produces
+  `SHARED` (consumer), `NEW SHARED`, or `NEW GLOBAL SHARED` (producers) as mutually exclusive
+  alternatives — the `GLOBAL` and non-`GLOBAL` producer paths are an `if`/`else`, and the
+  consumer `is_shared` is guarded by both producer flags being false. A tree with two of these
+  `true` on one node is a parser bug.
+- **Non-shared defines set all three `false`** — the common case; behavior is identical to
+  before these flags existed.
+- **Semantic contract:** the declare pass maps these to `SymbolFlags::SHARED` / `NEW_SHARED` /
+  `NEW_GLOBAL_SHARED` respectively via `shared_flags` (`flag_if` per bit). The flags are
+  metadata; within a single file they do not change symbol resolution — a consumer's `SHARED`
+  declaration still declares the symbol locally in its own scope.
+- **`rebinding_scopes` is not populated by within-file analysis.** It is reserved for
+  cross-file work that re-links a `SHARED` consumer to a `NEW SHARED` producer across files.
+  Within-file v1 sets flags only.
+- **Only these four `DEFINE` subtypes carry the flags.** A `SHARED` prefix on other subtypes
+  (STREAM, FRAME, QUERY, WORKFILE, …) is still consumed and discarded — no regression from
+  prior behavior, but not represented in the model.
+- `DefineDataset` previously stored only `is_shared` / `is_new_shared` and collapsed
+  `NEW GLOBAL SHARED` into `NEW_SHARED`. This change adds its third flag in lockstep so the
+  `GLOBAL` distinction is observable and no dataset form regresses — all four `DEFINE`
+  variants now behave identically.
+
+---
+
 ## Debug assertions
 
 Parser code opportunistically asserts a subset of these invariants via `debug_assert!` — for

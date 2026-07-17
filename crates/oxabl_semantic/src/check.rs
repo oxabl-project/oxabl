@@ -810,6 +810,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
 
@@ -1086,6 +1089,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(cf)),
         ]);
@@ -1132,6 +1138,9 @@ mod tests {
                 initial_value: None,
                 no_undo: false,
                 extent: Some(5),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(ax)),
         ]);
@@ -1280,6 +1289,9 @@ mod tests {
             initial_value: Some(int_lit(1)),
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })]);
         // No type-mismatch diagnostic here — lint handles it.
         assert!(sem.diagnostics.is_empty());
