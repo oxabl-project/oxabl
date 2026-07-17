@@ -308,6 +308,9 @@ mod tests {
             initial_value: Some(init),
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
 
@@ -318,6 +321,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
 

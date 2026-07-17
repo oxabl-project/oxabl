@@ -116,8 +116,14 @@ impl<'a> Walker<'a> {
                 name,
                 type_source,
                 extent,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
                 ..
-            } => self.declare_variable(stmt, scope, name, type_source, *extent),
+            } => {
+                let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
+                self.declare_variable(stmt, scope, name, type_source, *extent, flags);
+            }
 
             // ---- Parameters (DEFINE [IN|OUT|IN-OUT] PARAMETER ...) --------
             StatementKind::DefineParameter {
@@ -189,13 +195,39 @@ impl<'a> Walker<'a> {
             }
 
             // ---- Temp-table -----------------------------------------------
-            StatementKind::DefineTempTable { name, fields, .. } => {
-                self.declare_temp_table(stmt, scope, name, fields);
+            StatementKind::DefineTempTable {
+                name,
+                fields,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+                ..
+            } => {
+                let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
+                self.declare_temp_table(stmt, scope, name, fields, flags);
             }
 
             // ---- Buffer ---------------------------------------------------
-            StatementKind::DefineBuffer { name, .. } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Buffers, SymbolKind::Buffer);
+            // Inlined rather than via `declare_simple` so the shared-mode flags
+            // reach the symbol; `declare_simple` stays flag-less for its
+            // Stream/Frame callers.
+            StatementKind::DefineBuffer {
+                name,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+                ..
+            } => {
+                let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
+                self.declare(
+                    stmt,
+                    scope,
+                    name,
+                    NamespaceId::Buffers,
+                    SymbolKind::Buffer,
+                    None,
+                    flags,
+                );
             }
 
             // ---- Dataset / Data-source ------------------------------------
@@ -203,10 +235,10 @@ impl<'a> Walker<'a> {
                 name,
                 is_shared,
                 is_new_shared,
+                is_new_global_shared,
                 ..
             } => {
-                let flags = flag_if(*is_shared, SymbolFlags::SHARED)
-                    | flag_if(*is_new_shared, SymbolFlags::NEW_SHARED);
+                let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
                 self.declare(
                     stmt,
                     scope,
@@ -476,6 +508,7 @@ impl<'a> Walker<'a> {
         name: &Identifier,
         type_source: &TypeSource,
         extent: Option<u32>,
+        flags: SymbolFlags,
     ) {
         // BLOB / CLOB rejection per plan §Type system.
         if let TypeSource::Explicit(dt) = type_source
@@ -508,7 +541,7 @@ impl<'a> Walker<'a> {
             NamespaceId::Values,
             SymbolKind::Variable,
             data_type,
-            SymbolFlags::empty(),
+            flags,
         );
     }
 
@@ -577,6 +610,7 @@ impl<'a> Walker<'a> {
         scope: ScopeId,
         name: &Identifier,
         fields: &[oxabl_ast::TempTableField],
+        flags: SymbolFlags,
     ) {
         let tt_sym = self.declare(
             stmt,
@@ -585,7 +619,7 @@ impl<'a> Walker<'a> {
             NamespaceId::Buffers,
             SymbolKind::TempTable,
             None,
-            SymbolFlags::empty(),
+            flags,
         );
         // Fields get their own symbols scoped to the file; namespace
         // `Values` is a simplification for v1 — Phase 4a will likely
@@ -1865,6 +1899,15 @@ fn flag_if(cond: bool, f: SymbolFlags) -> SymbolFlags {
     if cond { f } else { SymbolFlags::empty() }
 }
 
+/// Map the mutually-exclusive `[NEW [GLOBAL]] SHARED` declaration booleans to
+/// their `SymbolFlags`. At most one input is ever true (ast-invariants.md §12),
+/// so at most one bit is set; all-false yields `SymbolFlags::empty()`.
+fn shared_flags(is_shared: bool, is_new_shared: bool, is_new_global_shared: bool) -> SymbolFlags {
+    flag_if(is_shared, SymbolFlags::SHARED)
+        | flag_if(is_new_shared, SymbolFlags::NEW_SHARED)
+        | flag_if(is_new_global_shared, SymbolFlags::NEW_GLOBAL_SHARED)
+}
+
 fn wrap_extent(ty: ResolvedType, extent: Option<u32>) -> ResolvedType {
     match extent {
         None => ty,
@@ -1948,6 +1991,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
 
@@ -1958,6 +2004,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: Some(extent),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
 
@@ -2023,6 +2072,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })]);
         let s = find_symbol(&tree, &symbols, NamespaceId::Values, "x").unwrap();
         assert!(s.data_type.is_none());
@@ -2107,6 +2159,9 @@ mod tests {
             preselect: false,
             label: None,
             xml_options: XmlSerializeOptions::default(),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })]);
         let s = find_symbol(&tree, &symbols, NamespaceId::Buffers, "bCust").unwrap();
         assert_eq!(s.kind, SymbolKind::Buffer);
@@ -2138,6 +2193,9 @@ mod tests {
             ],
             indexes: vec![],
             xml_options: XmlSerializeOptions::default(),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })]);
         assert!(find_symbol(&tree, &symbols, NamespaceId::Buffers, "ttCust").is_some());
         let cust_num = find_symbol(&tree, &symbols, NamespaceId::Values, "custnum").unwrap();
@@ -2511,12 +2569,132 @@ mod tests {
             buffers: vec![],
             data_relations: vec![],
             parent_id_relations: vec![],
+            is_new_global_shared: false,
         })]);
         let (_, s) = symbols
             .iter()
             .find(|(_, s)| s.kind == SymbolKind::Dataset)
             .unwrap();
         assert!(s.flags.contains(SymbolFlags::SHARED));
+    }
+
+    // ── SHARED / NEW [GLOBAL] SHARED symbol flags (ast-invariants §12) ──
+
+    fn shared_var(
+        name: &str,
+        is_shared: bool,
+        is_new_shared: bool,
+        is_new_global: bool,
+    ) -> Statement {
+        stmt(StatementKind::VariableDeclaration {
+            name: id(name),
+            type_source: TypeSource::Explicit(DataType::Integer),
+            initial_value: None,
+            no_undo: false,
+            extent: None,
+            is_new_shared,
+            is_shared,
+            is_new_global_shared: is_new_global,
+        })
+    }
+
+    #[test]
+    fn shared_variable_has_shared_flag() {
+        let (tree, symbols, _) = run(vec![shared_var("x", true, false, false)]);
+        let s = find_symbol(&tree, &symbols, NamespaceId::Values, "x").unwrap();
+        assert!(s.flags.contains(SymbolFlags::SHARED));
+        assert!(!s.flags.contains(SymbolFlags::NEW_SHARED));
+        assert!(!s.flags.contains(SymbolFlags::NEW_GLOBAL_SHARED));
+    }
+
+    #[test]
+    fn new_shared_variable_has_new_shared_flag() {
+        let (tree, symbols, _) = run(vec![shared_var("y", false, true, false)]);
+        let s = find_symbol(&tree, &symbols, NamespaceId::Values, "y").unwrap();
+        assert!(s.flags.contains(SymbolFlags::NEW_SHARED));
+        assert!(!s.flags.contains(SymbolFlags::SHARED));
+        assert!(!s.flags.contains(SymbolFlags::NEW_GLOBAL_SHARED));
+    }
+
+    #[test]
+    fn new_global_shared_variable_has_new_global_shared_flag() {
+        let (tree, symbols, _) = run(vec![shared_var("z", false, false, true)]);
+        let s = find_symbol(&tree, &symbols, NamespaceId::Values, "z").unwrap();
+        assert!(s.flags.contains(SymbolFlags::NEW_GLOBAL_SHARED));
+        assert!(!s.flags.contains(SymbolFlags::SHARED));
+        assert!(!s.flags.contains(SymbolFlags::NEW_SHARED));
+    }
+
+    #[test]
+    fn plain_variable_has_empty_flags() {
+        let (tree, symbols, _) = run(vec![shared_var("n", false, false, false)]);
+        let s = find_symbol(&tree, &symbols, NamespaceId::Values, "n").unwrap();
+        assert!(!s.flags.contains(SymbolFlags::SHARED));
+        assert!(!s.flags.contains(SymbolFlags::NEW_SHARED));
+        assert!(!s.flags.contains(SymbolFlags::NEW_GLOBAL_SHARED));
+    }
+
+    #[test]
+    fn shared_temp_table_has_shared_flag() {
+        let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineTempTable {
+            name: id("tt"),
+            no_undo: false,
+            like_table: None,
+            validate: false,
+            use_indexes: vec![],
+            fields: vec![],
+            indexes: vec![],
+            xml_options: XmlSerializeOptions::default(),
+            is_new_shared: false,
+            is_shared: true,
+            is_new_global_shared: false,
+        })]);
+        let s = find_symbol(&tree, &symbols, NamespaceId::Buffers, "tt").unwrap();
+        assert!(s.flags.contains(SymbolFlags::SHARED));
+    }
+
+    #[test]
+    fn shared_buffer_has_new_shared_flag() {
+        let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineBuffer {
+            name: id("b"),
+            target: BufferTarget::Table(id("customer")),
+            preselect: false,
+            label: None,
+            xml_options: XmlSerializeOptions::default(),
+            is_new_shared: true,
+            is_shared: false,
+            is_new_global_shared: false,
+        })]);
+        let s = find_symbol(&tree, &symbols, NamespaceId::Buffers, "b").unwrap();
+        assert!(s.flags.contains(SymbolFlags::NEW_SHARED));
+        assert!(!s.flags.contains(SymbolFlags::SHARED));
+    }
+
+    #[test]
+    fn new_global_shared_dataset_has_new_global_shared_flag() {
+        // Regression guard for the DefineDataset lockstep retrofit: the GLOBAL
+        // form must set NEW_GLOBAL_SHARED and NOT collapse into NEW_SHARED.
+        let (_tree, symbols, _) = run(vec![stmt(StatementKind::DefineDataset {
+            name: id("dsGlobal"),
+            access: None,
+            is_static: false,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: true,
+            serializable: false,
+            non_serializable: false,
+            xml_options: XmlSerializeOptions::default(),
+            reference_only: false,
+            buffers: vec![],
+            data_relations: vec![],
+            parent_id_relations: vec![],
+        })]);
+        let (_, s) = symbols
+            .iter()
+            .find(|(_, s)| s.kind == SymbolKind::Dataset)
+            .unwrap();
+        assert!(s.flags.contains(SymbolFlags::NEW_GLOBAL_SHARED));
+        assert!(!s.flags.contains(SymbolFlags::NEW_SHARED));
     }
 
     #[test]
@@ -2868,6 +3046,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
 
@@ -2878,6 +3059,9 @@ mod tests {
             initial_value: Some(init),
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
 
@@ -3196,6 +3380,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(cf)),
         ];
@@ -3292,6 +3479,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(fa)),
         ];
@@ -3499,6 +3689,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::Delete {
                 buffer: id("bCust"),
@@ -3636,6 +3829,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(use_customer)),
         ];
@@ -3664,6 +3860,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::ExpressionStatement(fa)),
         ];
@@ -4008,6 +4207,9 @@ mod tests {
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
             }),
             stmt_n(StatementKind::Create {
                 target: CreateTarget::Name(id("bCust")),

@@ -508,6 +508,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
     fn analyze_and_lint(stmts: Vec<Statement>) -> Vec<Diagnostic> {

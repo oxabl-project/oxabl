@@ -826,22 +826,25 @@ impl Parser<'_> {
             return self.parse_define_parameter();
         }
 
-        // Parse optional NEW [GLOBAL] SHARED / SHARED
-        let is_new_shared = if self.check(Kind::New)
-            && matches!(self.peek_at(1).kind, Kind::Shared | Kind::Global)
-        {
+        // Parse optional NEW [GLOBAL] SHARED / SHARED. These three modes are
+        // mutually exclusive by construction (see ast-invariants.md §12): the
+        // GLOBAL form sets `is_new_global_shared`, plain NEW sets
+        // `is_new_shared`, and the SHARED-only consumer form sets `is_shared`.
+        let mut is_new_shared = false;
+        let mut is_new_global_shared = false;
+        if self.check(Kind::New) && matches!(self.peek_at(1).kind, Kind::Shared | Kind::Global) {
             self.advance(); // consume NEW
             if self.check(Kind::Global) {
-                self.advance(); // consume GLOBAL (in NEW GLOBAL SHARED form)
+                self.advance(); // consume GLOBAL (NEW GLOBAL [SHARED] form)
+                is_new_global_shared = true;
+            } else {
+                is_new_shared = true;
             }
             if self.check(Kind::Shared) {
-                self.advance(); // consume SHARED
+                self.advance(); // consume the optional trailing SHARED
             }
-            true
-        } else {
-            false
-        };
-        let is_shared = if !is_new_shared && self.check(Kind::Shared) {
+        }
+        let is_shared = if !is_new_shared && !is_new_global_shared && self.check(Kind::Shared) {
             self.advance();
             true
         } else {
@@ -913,6 +916,7 @@ impl Parser<'_> {
                 is_static,
                 is_new_shared,
                 is_shared,
+                is_new_global_shared,
                 serializable,
                 non_serializable,
             );
@@ -929,12 +933,12 @@ impl Parser<'_> {
 
         // DEFINE TEMP-TABLE
         if self.check(Kind::TempTable) {
-            return self.parse_define_temp_table();
+            return self.parse_define_temp_table(is_new_shared, is_shared, is_new_global_shared);
         }
 
         // DEFINE BUFFER
         if self.check(Kind::Buffer) {
-            return self.parse_define_buffer();
+            return self.parse_define_buffer(is_new_shared, is_shared, is_new_global_shared);
         }
 
         // DEFINE STREAM
@@ -1085,6 +1089,9 @@ impl Parser<'_> {
                         initial_value,
                         no_undo,
                         extent,
+                        is_new_shared,
+                        is_shared,
+                        is_new_global_shared,
                     }));
                 }
                 _ => break,
@@ -1099,6 +1106,9 @@ impl Parser<'_> {
             initial_value,
             no_undo,
             extent,
+            is_new_shared,
+            is_shared,
+            is_new_global_shared,
         }))
     }
 
@@ -1152,6 +1162,10 @@ impl Parser<'_> {
             initial_value,
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
+            // VAR has no SHARED syntax.
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         }))
     }
 
@@ -1400,7 +1414,12 @@ impl Parser<'_> {
     }
 
     // Parse DEFINE TEMP-TABLE
-    fn parse_define_temp_table(&mut self) -> ParseResult<Statement> {
+    fn parse_define_temp_table(
+        &mut self,
+        is_new_shared: bool,
+        is_shared: bool,
+        is_new_global_shared: bool,
+    ) -> ParseResult<Statement> {
         self.advance(); // consume TEMP-TABLE
 
         let name = self.parse_identifier()?;
@@ -1653,11 +1672,19 @@ impl Parser<'_> {
             fields,
             indexes,
             xml_options,
+            is_new_shared,
+            is_shared,
+            is_new_global_shared,
         }))
     }
 
     // Parse DEFINE BUFFER name FOR [TEMP-TABLE] table [PRESELECT] [LABEL "str"].
-    fn parse_define_buffer(&mut self) -> ParseResult<Statement> {
+    fn parse_define_buffer(
+        &mut self,
+        is_new_shared: bool,
+        is_shared: bool,
+        is_new_global_shared: bool,
+    ) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER
 
         let mut name = self.parse_identifier()?;
@@ -1727,16 +1754,21 @@ impl Parser<'_> {
             preselect,
             label,
             xml_options,
+            is_new_shared,
+            is_shared,
+            is_new_global_shared,
         }))
     }
 
     // Parse DEFINE DATASET statement.
+    #[allow(clippy::too_many_arguments)]
     fn parse_define_dataset(
         &mut self,
         access: Option<AccessModifier>,
         is_static: bool,
         is_new_shared: bool,
         is_shared: bool,
+        is_new_global_shared: bool,
         serializable: bool,
         non_serializable: bool,
     ) -> ParseResult<Statement> {
@@ -1795,6 +1827,7 @@ impl Parser<'_> {
             is_static,
             is_new_shared,
             is_shared,
+            is_new_global_shared,
             serializable,
             non_serializable,
             xml_options,

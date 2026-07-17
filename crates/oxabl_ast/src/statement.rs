@@ -15,6 +15,14 @@ pub struct PreprocIf<T> {
     pub else_branch: Option<T>,
 }
 
+// Guard against accidental growth of the AST's central enum. `StatementKind`'s
+// size is dominated by its largest variant (`Class`/`Method`/`DefineDataset`),
+// so the SHARED-flag `bool`s (ast-invariants.md §12) fit existing padding and
+// don't move this. Gated to 64-bit; bump the bound deliberately if a variant
+// legitimately grows.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<StatementKind>() <= 656);
+
 /// A statement in ABL — an executable unit that performs an action.
 /// All statements are terminated by a period.
 ///
@@ -30,6 +38,12 @@ pub enum StatementKind {
         no_undo: bool,
         /// Extent/Array, none for scalar, some(0) for dynamic
         extent: Option<u32>,
+        /// `DEFINE NEW SHARED …` — producer, visible to callees in this file.
+        is_new_shared: bool,
+        /// `DEFINE SHARED …` — consumer, binds an existing shared var.
+        is_shared: bool,
+        /// `DEFINE NEW GLOBAL SHARED …` — producer, visible session-wide.
+        is_new_global_shared: bool,
     },
 
     /// Assignment
@@ -199,6 +213,12 @@ pub enum StatementKind {
         indexes: Vec<TempTableIndex>,
         /// XML and serialization options (NAMESPACE-URI, SERIALIZE-NAME, etc.).
         xml_options: XmlSerializeOptions,
+        /// `DEFINE NEW SHARED …` — producer, visible to callees in this file.
+        is_new_shared: bool,
+        /// `DEFINE SHARED …` — consumer, binds an existing shared temp-table.
+        is_shared: bool,
+        /// `DEFINE NEW GLOBAL SHARED …` — producer, visible session-wide.
+        is_new_global_shared: bool,
     },
 
     /// DEFINE BUFFER statement.
@@ -216,6 +236,12 @@ pub enum StatementKind {
         label: Option<String>,
         /// XML and serialization options (NAMESPACE-URI, SERIALIZE-NAME, etc.).
         xml_options: XmlSerializeOptions,
+        /// `DEFINE NEW SHARED …` — producer, visible to callees in this file.
+        is_new_shared: bool,
+        /// `DEFINE SHARED …` — consumer, binds an existing shared buffer.
+        is_shared: bool,
+        /// `DEFINE NEW GLOBAL SHARED …` — producer, visible session-wide.
+        is_new_global_shared: bool,
     },
 
     /// CATCH block within a DO/REPEAT/FOR block.
@@ -449,8 +475,12 @@ pub enum StatementKind {
         name: Identifier,
         access: Option<AccessModifier>,
         is_static: bool,
-        is_new_shared: bool, // TODO: Retrofit on DefineTempTable, DefineBuffer, VariableDeclaration
-        is_shared: bool,     // TODO: Retrofit on DefineTempTable, DefineBuffer, VariableDeclaration
+        /// `DEFINE NEW SHARED …` — producer, visible to callees in this file.
+        is_new_shared: bool,
+        /// `DEFINE SHARED …` — consumer, binds an existing shared dataset.
+        is_shared: bool,
+        /// `DEFINE NEW GLOBAL SHARED …` — producer, visible session-wide.
+        is_new_global_shared: bool,
         serializable: bool,
         non_serializable: bool,
         xml_options: XmlSerializeOptions,

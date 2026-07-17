@@ -154,6 +154,9 @@ mod tests {
             initial_value: None,
             no_undo: false,
             extent: None,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
         })
     }
     fn param(n: &str, dir: ParameterDirection) -> Statement {
@@ -179,6 +182,28 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code.0, LINT0002);
         assert!(diags[0].message.contains("unused variable"));
+    }
+
+    #[test]
+    fn does_not_fire_on_unused_shared_variable() {
+        // A SHARED variable's readers may live in another file, so an unused
+        // one within this file must not be flagged. Guards the within-file
+        // SHARED flag → LINT0002 exemption.
+        let shared = stmt(StatementKind::VariableDeclaration {
+            name: id("gShared"),
+            type_source: TypeSource::Explicit(DataType::Integer),
+            initial_value: None,
+            no_undo: false,
+            extent: None,
+            is_new_shared: false,
+            is_shared: true,
+            is_new_global_shared: false,
+        });
+        let diags = analyze_and_lint(vec![shared]);
+        assert!(
+            diags.is_empty(),
+            "unused SHARED variable must be skipped: {diags:?}"
+        );
     }
 
     #[test]
