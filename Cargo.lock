@@ -881,6 +881,8 @@ version = "0.1.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_common",
+ "oxabl_lexer",
+ "oxabl_parser",
  "oxabl_schema",
  "oxabl_semantic",
  "rust_decimal",

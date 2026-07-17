@@ -221,7 +221,7 @@ fn every_fixture_has_file_scope() {
 }
 
 #[test]
-fn every_fixture_seeds_five_builtins() {
+fn every_fixture_seeds_system_handle_builtins() {
     for name in [
         "simple_variable.p",
         "procedure_with_params.p",
@@ -236,7 +236,11 @@ fn every_fixture_seeds_five_builtins() {
             .iter()
             .filter(|s| s["kind"] == "builtin")
             .collect();
-        assert_eq!(builtins.len(), 5, "{name} should have 5 builtins");
+        assert_eq!(
+            builtins.len(),
+            oxabl_semantic::SYSTEM_HANDLES.len(),
+            "{name} should seed the full system-handle set"
+        );
     }
 }
 

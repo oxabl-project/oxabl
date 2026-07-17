@@ -651,6 +651,17 @@ impl<'a> Parser<'a> {
                     // System handle keywords (property access via ':')
                     | Kind::SecurityPolicy
                     | Kind::Propath
+                    // System handles usable in expression position (#58 seed set)
+                    | Kind::AuditControl
+                    | Kind::AuditPolicy
+                    | Kind::DefaultWindow
+                    | Kind::Clipboard
+                    | Kind::Compiler
+                    | Kind::Debugger
+                    | Kind::Profiler
+                    | Kind::LogManager
+                    | Kind::RcodeInformation
+                    | Kind::CodebaseLocator
                     // Memory manipulation functions (usable in assignment LHS / expression position)
                     | Kind::PutByte
                     | Kind::GetByte
@@ -715,8 +726,6 @@ impl<'a> Parser<'a> {
                     | Kind::Window
                     // SCREEN-LINES is an ABL system variable (number of screen rows)
                     | Kind::ScreenLines
-                    // LOG-MANAGER is a system handle for logging (e.g. LOG-MANAGER:LOGGING-LEVEL)
-                    | Kind::LogManager
                     // XREF / XREF-XML are COMPILE statement options used as member names (e.g. compile.xref)
                     | Kind::Xref
                     | Kind::XrefXml
