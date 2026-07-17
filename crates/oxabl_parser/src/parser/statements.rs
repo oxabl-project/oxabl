@@ -2382,10 +2382,12 @@ impl Parser<'_> {
 
         // Legacy ABL sometimes embeds an *undefined* preprocessor placeholder
         // (e.g. `{&misc-keys}`) between `End.` and `Else`, used as an
-        // extensibility hook for additional `Else If` branches. When the
-        // variable is undefined the preprocessor preserves it as a `Preprop`
+        // extensibility hook for additional `Else If` branches. In
+        // unpreprocessed source such a reference lexes as a `Preprop`
         // token, which would otherwise be parsed as a standalone statement
-        // and leave the trailing `Else` orphaned. If the next meaningful
+        // and leave the trailing `Else` orphaned. (Under `--preprocess` the
+        // preprocessor expands undefined refs to empty, so this never
+        // arises there.) If the next meaningful
         // token after one or more `Preprop` references is `Else`, consume
         // those placeholders so the ELSE binds correctly.
         if self.check(Kind::Preprop) {

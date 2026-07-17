@@ -321,49 +321,17 @@ impl<'fs> ProcessContext<'fs> {
                     // Possible include reference or preprocessor variable ref
                     if i + 1 < len {
                         if bytes[i + 1] == b'&' {
-                            // Preprocessor variable reference {&name}
-                            if let Some(close) = source[i..].find('}') {
-                                let ref_end = i + close + 1;
-                                let var_name = &source[i + 2..i + close];
-                                if let Some(val) = self.vars.get(var_name).cloned() {
-                                    // Emit chunk before the reference
-                                    if i as u32 > chunk_start {
-                                        nodes.push(SpanNode::Chunk {
-                                            file,
-                                            start: chunk_start,
-                                            end: i as u32,
-                                        });
-                                    }
-                                    // Create a synthetic chunk for the expanded value.
-                                    // We store it as a new source entry.
-                                    let expanded_id = self.next_file_id();
-                                    let val_len = val.len() as u32;
-                                    self.sources.push((expanded_id, val));
-
-                                    if val_len > 0 {
-                                        nodes.push(SpanNode::Include {
-                                            site: FileSpan {
-                                                file,
-                                                span: Span {
-                                                    start: i as u32,
-                                                    end: ref_end as u32,
-                                                },
-                                            },
-                                            children: vec![SpanNode::Chunk {
-                                                file: expanded_id,
-                                                start: 0,
-                                                end: val_len,
-                                            }],
-                                        });
-                                    }
-
-                                    i = ref_end;
-                                    chunk_start = i as u32;
-                                    continue;
-                                }
-                                // Undefined variable — preserve as-is so the
-                                // downstream lexer sees it as Kind::Preprop.
-                                i = ref_end;
+                            // Preprocessor variable reference {&name}.
+                            // ABL expands undefined {&name} to empty; do not
+                            // preserve the literal reference text (#64).
+                            if let Some(next) = self.expand_var_ref_at(
+                                file,
+                                source,
+                                i,
+                                &mut chunk_start,
+                                &mut nodes,
+                            ) {
+                                i = next;
                                 continue;
                             }
                         } else if bytes[i + 1].is_ascii_alphabetic()
@@ -514,8 +482,12 @@ impl<'fs> ProcessContext<'fs> {
                     }
                 }
                 b'\'' | b'"' => {
-                    // String literal — skip to matching quote to avoid
-                    // interpreting { or & inside strings.
+                    // String literal — skip to matching quote so `{file.i}`
+                    // include refs inside strings stay literal text, but still
+                    // expand `{&name}` preprocessor references: the AVM
+                    // preprocessor substitutes inside quotes too, and an
+                    // undefined {&name} expands to empty (#64). A literal
+                    // `{` must be written as `~{` in ABL strings.
                     let quote = bytes[i];
                     i += 1;
                     while i < len {
@@ -524,6 +496,19 @@ impl<'fs> ProcessContext<'fs> {
                         } else if bytes[i] == quote {
                             i += 1;
                             break;
+                        } else if emitting
+                            && i + 1 < len
+                            && bytes[i] == b'{'
+                            && bytes[i + 1] == b'&'
+                            && let Some(next) = self.expand_var_ref_at(
+                                file,
+                                source,
+                                i,
+                                &mut chunk_start,
+                                &mut nodes,
+                            )
+                        {
+                            i = next;
                         } else {
                             i += 1;
                         }
@@ -561,6 +546,67 @@ impl<'fs> ProcessContext<'fs> {
         }
 
         nodes
+    }
+
+    /// Expand a `{&name}` preprocessor variable reference whose `{` sits at
+    /// byte offset `i`. Flushes the pending chunk, then emits a synthetic
+    /// expansion node when the variable is defined with a non-empty value.
+    ///
+    /// ABL expands undefined `{&name}` to the empty string; do not preserve
+    /// the literal reference text (#64). The undefined path therefore emits
+    /// nothing — the chunk break plus the `chunk_start` reset past the
+    /// reference is what removes the `{&name}` bytes from the output.
+    ///
+    /// Returns the offset just past the closing `}`, or `None` when the
+    /// reference has no closing brace (caller advances normally).
+    fn expand_var_ref_at(
+        &mut self,
+        file: FileId,
+        source: &str,
+        i: usize,
+        chunk_start: &mut u32,
+        nodes: &mut Vec<SpanNode>,
+    ) -> Option<usize> {
+        let close = source[i..].find('}')?;
+        let ref_end = i + close + 1;
+        let var_name = &source[i + 2..i + close];
+
+        // Emit chunk before the reference
+        if i as u32 > *chunk_start {
+            nodes.push(SpanNode::Chunk {
+                file,
+                start: *chunk_start,
+                end: i as u32,
+            });
+        }
+
+        if let Some(val) = self.vars.get(var_name).cloned() {
+            // Create a synthetic chunk for the expanded value.
+            // We store it as a new source entry.
+            let expanded_id = self.next_file_id();
+            let val_len = val.len() as u32;
+            self.sources.push((expanded_id, val));
+
+            if val_len > 0 {
+                nodes.push(SpanNode::Include {
+                    site: FileSpan {
+                        file,
+                        span: Span {
+                            start: i as u32,
+                            end: ref_end as u32,
+                        },
+                    },
+                    children: vec![SpanNode::Chunk {
+                        file: expanded_id,
+                        start: 0,
+                        end: val_len,
+                    }],
+                });
+            }
+        }
+
+        *chunk_start = ref_end as u32;
+        Some(ref_end)
     }
 
     /// Try to parse a preprocessor directive starting at position `i`.
@@ -672,12 +718,13 @@ impl<'fs> ProcessContext<'fs> {
             {
                 let end = i + close_rel;
                 let name = &text[i + 2..end];
+                // ABL expands undefined {&name} to empty; do not preserve (#64).
                 if let Some(val) = self.vars.get(name) {
                     out.push_str(val);
-                    i = end + 1;
-                    changed = true;
-                    continue;
                 }
+                i = end + 1;
+                changed = true;
+                continue;
             }
             out.push(bytes[i] as char);
             i += 1;
@@ -1184,7 +1231,8 @@ mod tests {
         let source = "&SCOPED-DEFINE X 1\n&UNDEFINE X\n{&X}rest";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "{&X}rest");
+        // After &UNDEFINE the reference is undefined — ABL expands it to empty.
+        assert_eq!(&*result.to_text(), "rest");
     }
 
     #[test]
@@ -1415,13 +1463,50 @@ mod tests {
     }
 
     #[test]
-    fn string_literals_not_processed() {
+    fn undefined_var_ref_in_string_expands_to_empty() {
+        // The AVM preprocessor substitutes inside quoted strings too; an
+        // undefined {&name} expands to empty there as well (#64).
         let fs = make_fs(&[]);
         let pp = Preprocessor::new(&fs, &[]);
         let source = "MESSAGE '{&not-a-ref}'.";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "MESSAGE '{&not-a-ref}'.");
+        assert_eq!(&*result.to_text(), "MESSAGE ''.");
+    }
+
+    #[test]
+    fn defined_var_ref_in_string_expands() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE WHO world\nMESSAGE 'hello {&WHO}'.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "MESSAGE 'hello world'.");
+    }
+
+    #[test]
+    fn include_ref_in_string_not_expanded() {
+        // Include references inside string literals stay literal text.
+        let fs = make_fs(&[("/inc/foo.i", "EXPANDED")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "MESSAGE '{foo.i}'.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "MESSAGE '{foo.i}'.");
+        assert!(result.dependencies.is_empty());
+    }
+
+    #[test]
+    fn tilde_escaped_brace_in_string_stays_literal() {
+        // `~{` is the ABL escape for a literal `{` inside a string — the
+        // preprocessor must not treat the escaped brace as a `{&ref}` opener.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "MESSAGE '~{&not-a-ref}'.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "MESSAGE '~{&not-a-ref}'.");
     }
 
     #[test]
@@ -1574,9 +1659,9 @@ mod tests {
         // `&SCOPED-DEFINE` inside a comment should NOT define the variable.
         let source = "/* &SCOPED-DEFINE FOO bar */\nresult: {&FOO}";
         let result = pp.process(FileId::new(1), source).unwrap();
-        // FOO is undefined, so `{&FOO}` is preserved as-is (per the existing
-        // "preserve undefined references" behavior).
-        assert!(result.to_text().contains("{&FOO}"));
+        // FOO is undefined, so `{&FOO}` expands to empty — it must not pick
+        // up the value from the commented-out define.
+        assert_eq!(&*result.to_text(), "/* &SCOPED-DEFINE FOO bar */\nresult: ");
     }
 
     #[test]
@@ -1714,8 +1799,8 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         // The define inside the comment should not take effect;
-        // the undefined {&X} is preserved as-is.
-        assert_eq!(&*result.to_text(), "/* &SCOPED-DEFINE X 1 */\nval={&X}.");
+        // the undefined {&X} expands to empty.
+        assert_eq!(&*result.to_text(), "/* &SCOPED-DEFINE X 1 */\nval=.");
     }
 
     #[test]
@@ -1725,7 +1810,7 @@ ELSE
         let source = "// &SCOPED-DEFINE X 1\nval={&X}.";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "// &SCOPED-DEFINE X 1\nval={&X}.");
+        assert_eq!(&*result.to_text(), "// &SCOPED-DEFINE X 1\nval=.");
     }
 
     #[test]
@@ -1859,8 +1944,8 @@ ELSE
         let source = "{scoped.i &arg=secret}outside={&arg}";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // {&arg} after the include is undefined — preserved as-is
-        assert_eq!(&*result.to_text(), "inside=secretoutside={&arg}");
+        // {&arg} after the include is undefined — expands to empty
+        assert_eq!(&*result.to_text(), "inside=secretoutside=");
     }
 
     #[test]
@@ -1962,5 +2047,105 @@ ELSE
         let args = parse_include_args("file.i", "file.i");
         assert_eq!(args.positional, vec!["file.i"]);
         assert!(args.named.is_empty());
+    }
+
+    // ── Undefined {&name} expands to empty (#64) ────────────────────
+
+    #[test]
+    fn undefined_var_ref_expands_to_empty() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "A{&never-defined}B";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "AB");
+    }
+
+    #[test]
+    fn undefined_var_ref_mid_declaration_expands_empty() {
+        // #64 preprocessor-only shape: an undefined macro slot in the middle
+        // of a declaration must vanish so the line parses as a DEFINE.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE var-type DEFINE VARIABLE\n{&var-type} {&batch_global_alt}myvar AS CHARACTER NO-UNDO.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(
+            &*result.to_text(),
+            "DEFINE VARIABLE myvar AS CHARACTER NO-UNDO."
+        );
+    }
+
+    #[test]
+    fn issue_64_include_arg_with_undefined_slot_expands_empty() {
+        // End-to-end repro from GitHub #64: def.i uses two macro slots; the
+        // host supplies only &var-type. The undefined {&batch_global_alt}
+        // must expand to empty so `myvar` declares.
+        let fs = make_fs(&[(
+            "/inc/def.i",
+            "{&var-type} {&batch_global_alt}myvar AS CHARACTER NO-UNDO.\n",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{def.i &var-type = \"DEFINE NEW GLOBAL SHARED VARIABLE \"}\nDISPLAY myvar.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        let text = result.to_text();
+        assert_eq!(
+            &*text,
+            "DEFINE NEW GLOBAL SHARED VARIABLE  myvar AS CHARACTER NO-UNDO.\n\nDISPLAY myvar.\n"
+        );
+        assert!(
+            !text.contains("{&"),
+            "no unexpanded macro refs may remain, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn issue_64_control_defined_empty_macro_still_expands() {
+        // Control from GitHub #64: with &GLOBAL-DEFINE batch_global_alt
+        // (empty value) the same include expands identically.
+        let fs = make_fs(&[(
+            "/inc/def.i",
+            "{&var-type} {&batch_global_alt}myvar AS CHARACTER NO-UNDO.\n",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&GLOBAL-DEFINE batch_global_alt\n{def.i &var-type = \"DEFINE NEW GLOBAL SHARED VARIABLE \"}\nDISPLAY myvar.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(
+            &*result.to_text(),
+            "DEFINE NEW GLOBAL SHARED VARIABLE  myvar AS CHARACTER NO-UNDO.\n\nDISPLAY myvar.\n"
+        );
+    }
+
+    #[test]
+    fn dynamic_include_with_undefined_frame_no_panic() {
+        // `{{&frame}.f}` with `frame` undefined: the name collapses to `.f`,
+        // which cannot resolve — PREPROC007, no panic, no leftover `{&`.
+        let fs = make_fs(&[]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{{&frame}.f}after";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "after");
+        assert!(
+            result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "unresolvable dynamic include must stay loud"
+        );
+    }
+
+    #[test]
+    fn expand_preproc_vars_undefined_name_substitutes_empty() {
+        // expand_preproc_vars must report `changed` for undefined refs so
+        // callers use the substituted (emptied) string.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE known k\nx={&known}{&unknown}y";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "x=ky");
     }
 }
