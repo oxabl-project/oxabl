@@ -77,3 +77,86 @@ fn undefined_symbol_still_fires_next_to_system_handles() {
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].contains("ghost"));
 }
+
+// ---------------------------------------------------------------------
+// Item E1 — logical `no` literal
+// ---------------------------------------------------------------------
+
+#[test]
+fn bare_no_as_boolean_is_silent() {
+    let diags = lint0001("DEFINE VARIABLE f AS LOGICAL NO-UNDO.\nf = no.");
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+// ---------------------------------------------------------------------
+// Item E3 — SUBSTR builtin
+// ---------------------------------------------------------------------
+
+#[test]
+fn substr_builtin_call_is_silent() {
+    let diags = lint0001(r#"MESSAGE SUBSTR("abcdef", 1, 3)."#);
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+// ---------------------------------------------------------------------
+// Item C — QUERY handle syntax
+// ---------------------------------------------------------------------
+
+#[test]
+fn query_handle_method_without_define_is_silent() {
+    // Dynamic handle: no local qh — receiver softens to External.
+    let diags = lint0001(r#"QUERY qh:QUERY-PREPARE("FOR EACH cust")."#);
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn query_handle_resolves_when_variable_defined() {
+    let diags = lint0001(
+        r#"
+DEFINE VARIABLE qh AS HANDLE NO-UNDO.
+QUERY qh:QUERY-PREPARE("FOR EACH cust").
+"#,
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+// ---------------------------------------------------------------------
+// Item D — static / package-qualified receivers
+// ---------------------------------------------------------------------
+
+#[test]
+fn package_qualified_static_method_is_silent() {
+    let diags = lint0001("acme.security.Auth:CheckUser(INPUT uid).");
+    // `uid` is undefined and should still fire; receiver must not.
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].contains("uid"), "{diags:?}");
+}
+
+#[test]
+fn static_class_member_receiver_is_silent() {
+    let diags = lint0001("MyStatics:CurrentCompany = coId.");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].contains("coId"), "{diags:?}");
+}
+
+// ---------------------------------------------------------------------
+// Item B — PROPERTY SET accessor parameter
+// ---------------------------------------------------------------------
+
+#[test]
+fn property_set_parameter_is_in_scope() {
+    let src = r#"
+CLASS Foo:
+  DEFINE PUBLIC PROPERTY Title AS CHARACTER
+    GET.
+    SET (INPUT pv AS CHARACTER):
+      MESSAGE pv.
+    END SET.
+END CLASS.
+"#;
+    let diags = lint0001(src);
+    assert!(
+        !diags.iter().any(|m| m.contains("`pv`")),
+        "SET param pv must not be undefined: {diags:?}"
+    );
+}

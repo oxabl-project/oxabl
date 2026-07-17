@@ -60,6 +60,16 @@ pub fn token_to_literal(token: &Token) -> Option<Literal> {
             },
             value: true,
         })),
+        // NO is an alias for FALSE in ABL. Bare `no` only reaches the parser
+        // when the lexer's space-separated lock lookahead did not claim a
+        // following LOCK, so this never shadows `NO LOCK`.
+        (Kind::No, _) => Some(Literal::Boolean(BooleanLiteral {
+            span: Span {
+                start: token.start as u32,
+                end: token.end as u32,
+            },
+            value: false,
+        })),
         _ => None,
     }
 }

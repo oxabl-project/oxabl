@@ -966,6 +966,11 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
         }
     }
 
+    // Progress documents SUBSTR as a practical abbreviation of SUBSTRING even
+    // though SUBSTRING is not a reserved keyword (so min_abbreviation expansion
+    // above cannot pick it up). Corpus LINT0001 residual (#58 item E3).
+    names.push("substr".to_string());
+
     names.sort();
     names.dedup();
 

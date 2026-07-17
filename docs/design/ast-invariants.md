@@ -174,6 +174,11 @@ is observable and load-bearing: lint rules that need to tell "no getter" from "t
 auto-getter" must not collapse them. (`Method.body`, in contrast, is always `Vec<Statement>`,
 empty if the method is `ABSTRACT`; the "no body" case is carried by the `is_abstract` flag.)
 
+`set_parameters: Vec<Statement>` holds the optional parenthesized SET parameter list
+(`SET (INPUT pv AS CHARACTER):`). Entries are `DefineParameter` statements (same shape as
+method parameters). Empty when the setter has no parameter list. Parameters bind in the
+`PropertySet` scope so the computed SET body can reference them.
+
 ## 10. `Program.errors` non-empty does not invalidate `Program.statements`
 
 - `Program.statements` contains every successfully-parsed statement in source order, even

@@ -4693,23 +4693,12 @@ impl Parser<'_> {
         {
             self.advance(); // consume access modifier
         }
+        let mut set_parameters = Vec::new();
         let set_body = if self.check(Kind::Set) {
             self.advance(); // consume SET
             // Optional parameter list: SET (INPUT p AS TYPE)
             if self.check(Kind::LeftParen) {
-                let mut depth = 1;
-                self.advance(); // consume '('
-                while depth > 0 && !self.at_end() {
-                    if self.check(Kind::LeftParen) {
-                        depth += 1;
-                    } else if self.check(Kind::RightParen) {
-                        depth -= 1;
-                    }
-                    if depth > 0 {
-                        self.advance();
-                    }
-                }
-                self.advance(); // consume final ')'
+                set_parameters = self.parse_parenthesized_params()?;
             }
             if self.check(Kind::Period) {
                 self.advance(); // auto-setter: SET.
@@ -4747,6 +4736,7 @@ impl Parser<'_> {
             no_undo,
             get_body,
             set_body,
+            set_parameters,
         }))
     }
 

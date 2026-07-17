@@ -384,6 +384,7 @@ fn main() {
             "new",
             "next",
             "next-prompt",
+            "no",
             "no-attr",
             "no-attr-list",
             "no-attr-space",
