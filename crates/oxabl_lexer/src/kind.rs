@@ -338,6 +338,7 @@ pub enum Kind {
     Browse,
     External,
     Size,
+    NoApply,
 
     // Phrases
     Editing,
@@ -1119,6 +1120,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "keylabel" => Some(Kind::Keylabel),
             "last-key" => Some(Kind::LastKey),
             "longchar" => Some(Kind::Longchar),
+            "no-apply" => Some(Kind::NoApply),
             "no-attr-" => Some(Kind::NoAttrList),
             "no-error" => Some(Kind::NoError),
             "no-focus" => Some(Kind::NoFocus),

@@ -847,6 +847,14 @@ mod tests {
             "num-entries",
             "string",
             "available",
+            // #58 second-pass residuals (unreserved abbrevs + VALUE phrase)
+            "max",
+            "min",
+            "abs",
+            "value",
+            "maximum",
+            "minimum",
+            "absolute",
         ] {
             assert!(is_builtin_function(name), "`{name}` should be a built-in");
         }
@@ -922,8 +930,33 @@ mod tests {
         // Note: `is-attr` (IS-ATTR-SPACE) and `is-lead` (IS-LEAD-BYTE) are
         // distinct shortest forms, not a shared prefix — both must resolve.
 
+        // Unreserved function abbreviations (not on the reserved-keyword list,
+        // so expansion comes from the curated UNRESERVED_FUNCTION_ABBREVS table).
+        let unreserved_abbreviable: &[(&str, &str)] = &[
+            ("abs", "absolute"),
+            ("max", "maximum"),
+            ("min", "minimum"),
+            ("substr", "substring"),
+            ("os-drive", "os-drives"),
+            ("return-val", "return-value"),
+            ("subst", "substitute"),
+            ("trunc", "truncate"),
+        ];
+        for (abbrev, full) in unreserved_abbreviable {
+            assert!(
+                is_builtin_function(abbrev),
+                "unreserved min-abbreviation `{abbrev}` should be a built-in"
+            );
+            assert!(
+                is_builtin_function(full),
+                "full name `{full}` should be a built-in"
+            );
+        }
+
         // Fragments below the minimum abbreviation must NOT resolve.
-        for too_short in ["avai", "ambi", "is-att", "ter", "de", "in", "lo"] {
+        for too_short in [
+            "avai", "ambi", "is-att", "ter", "de", "in", "lo", "ab", "ma", "mi",
+        ] {
             assert!(
                 !is_builtin_function(too_short),
                 "below-minimum fragment `{too_short}` must not be a built-in"

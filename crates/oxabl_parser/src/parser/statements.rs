@@ -2603,6 +2603,18 @@ impl Parser<'_> {
             return Ok(self.stmt(StatementKind::Return(None)));
         }
 
+        // RETURN NO-APPLY. — standard UI-trigger return keyword. Consumed as a
+        // keyword return with no value expression so it is not walked as an
+        // undefined identifier (#58 second-pass residual).
+        if self.check(Kind::NoApply) {
+            self.advance();
+            if self.check(Kind::NoError) {
+                self.advance();
+            }
+            self.expect_period("Expected a '.' after RETURN NO-APPLY")?;
+            return Ok(self.stmt(StatementKind::Return(None)));
+        }
+
         // Check if there's a return value (not just a period)
         let value = if !self.check(Kind::Period) {
             Some(self.parse_expression()?)

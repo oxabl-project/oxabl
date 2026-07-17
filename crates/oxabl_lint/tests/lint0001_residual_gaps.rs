@@ -160,3 +160,70 @@ END CLASS.
         "SET param pv must not be undefined: {diags:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// #58 second-pass residuals (2026-07-17 latest comment)
+// ---------------------------------------------------------------------
+
+#[test]
+fn unreserved_builtin_abbrevs_and_value_are_silent() {
+    // MAX/MIN/ABS are unreserved abbrevs of MAXIMUM/MINIMUM/ABSOLUTE;
+    // VALUE is a reserved phrase used in call position.
+    let src = r#"
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+i = MAX(1, 2).
+i = MIN(1, 2).
+i = ABS(-3).
+c = VALUE(i).
+"#;
+    let diags = lint0001(src);
+    assert!(
+        diags.is_empty(),
+        "expected no LINT0001 for MAX/MIN/ABS/VALUE: {diags:?}"
+    );
+}
+
+#[test]
+fn return_no_apply_is_silent() {
+    let src = r#"
+ON CHOOSE OF btn-ok
+DO:
+  RETURN NO-APPLY.
+END.
+"#;
+    let diags = lint0001(src);
+    assert!(
+        !diags
+            .iter()
+            .any(|m| m.to_ascii_lowercase().contains("no-apply")),
+        "NO-APPLY must not be undefined: {diags:?}"
+    );
+}
+
+#[test]
+fn query_method_lock_option_args_are_silent() {
+    let src = r#"
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+hq:GET-FIRST(NO-LOCK, NO-WAIT) NO-ERROR.
+hq:GET-NEXT(NO-LOCK).
+hq:GET-PREV(SHARE-LOCK).
+hq:GET-LAST(EXCLUSIVE-LOCK).
+"#;
+    let diags = lint0001(src);
+    assert!(
+        diags.is_empty(),
+        "lock options as query method args must not fire LINT0001: {diags:?}"
+    );
+}
+
+#[test]
+fn query_method_undefined_arg_still_fires() {
+    let src = r#"
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+hq:GET-FIRST(ghost).
+"#;
+    let diags = lint0001(src);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].contains("ghost"), "{diags:?}");
+}

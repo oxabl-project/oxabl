@@ -1814,6 +1814,26 @@ impl<'a> ResolveWalker<'a> {
                 return;
             }
         }
+        // Reserved lock / wait option keywords used as bare identifiers —
+        // most commonly as arguments to dynamic query methods
+        // (`hq:GET-FIRST(NO-LOCK, NO-WAIT)`). The parser admits them via
+        // `can_be_identifier`; they are reserved words so they cannot be
+        // user variables. Soft-resolve as External so LINT0001 stays silent
+        // (#58 second-pass residual).
+        if matches!(
+            atom.as_ref(),
+            "no-lock" | "share-lock" | "exclusive-lock" | "no-wait"
+        ) {
+            self.references.insert(
+                expr_id,
+                Resolution::Unresolved {
+                    name: atom,
+                    reason: UnresolvedReason::External,
+                },
+            );
+            return;
+        }
+
         // Fall back to the built-in ABL function registry. A locally declared
         // symbol always wins (checked above), so user shadowing is preserved;
         // only names that match no local declaration reach here. Built-ins are

@@ -966,10 +966,36 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
         }
     }
 
-    // Progress documents SUBSTR as a practical abbreviation of SUBSTRING even
-    // though SUBSTRING is not a reserved keyword (so min_abbreviation expansion
-    // above cannot pick it up). Corpus LINT0001 residual (#58 item E3).
-    names.push("substr".to_string());
+    // Unreserved built-in functions with documented min abbreviations from the
+    // Progress keyword index. Reserved-keyword expansion above cannot see these
+    // because they never appear in abl_reserved_keywords.txt. Emit every legal
+    // prefix from min..full (same algorithm as reserved abbrevs). Also covers
+    // the former one-off `substr` entry (#58 E3 / second-pass MAX/MIN/ABS).
+    // Only expand when the full name is already in the function set.
+    const UNRESERVED_FUNCTION_ABBREVS: &[(&str, &str)] = &[
+        ("absolute", "abs"),
+        ("maximum", "max"),
+        ("minimum", "min"),
+        ("substring", "substr"),
+        ("os-drives", "os-drive"),
+        ("return-value", "return-val"),
+        ("substitute", "subst"),
+        ("truncate", "trunc"),
+    ];
+    for &(full, abbrev) in UNRESERVED_FUNCTION_ABBREVS {
+        if !builtin_upper.contains(full.to_uppercase().as_str()) {
+            continue;
+        }
+        for len in abbrev.len()..full.len() {
+            names.push(full[..len].to_string());
+        }
+    }
+
+    // VALUE is a reserved phrase used in call position (`VALUE(expr)`,
+    // `RUN VALUE(...)`, etc.) but is not listed as a "function" in the JSON
+    // index, so parse_builtin_functions never admits it. Register the full
+    // name so expression-position VALUE(...) does not fire LINT0001 (#58).
+    names.push("value".to_string());
 
     names.sort();
     names.dedup();

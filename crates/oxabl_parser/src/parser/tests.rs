@@ -2988,6 +2988,21 @@ fn parse_return_with_value() {
 }
 
 #[test]
+fn parse_return_no_apply() {
+    // UI-trigger return keyword — must not leave NO-APPLY as an expression.
+    let source = "RETURN NO-APPLY.";
+    let tokens = tokenize(source);
+    assert!(
+        tokens.iter().any(|t| t.kind == oxabl_lexer::Kind::NoApply),
+        "NO-APPLY must lex as Kind::NoApply, got {:?}",
+        tokens.iter().map(|t| t.kind).collect::<Vec<_>>()
+    );
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert_eq!(stmt.kind, StatementKind::Return(None));
+}
+
+#[test]
 fn parse_loop_with_leave_and_next() {
     let source = "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
     let tokens = tokenize(source);

@@ -815,3 +815,15 @@ keyword_type = "Statement"
 name = "COMPILE"
 keyword_type = "Statement"
 min_abbreviation = "COMP"
+
+# =============================================================================
+# UI TRIGGER RETURN KEYWORD
+# NO-APPLY is in the HTML keyword index (unreserved) but not in the reserved
+# keywords file or JSON, so it never got a Kind variant. RETURN NO-APPLY. is
+# the standard UI-trigger return form and was firing LINT0001 (#58 second pass).
+# =============================================================================
+
+[[add]]
+name = "NO-APPLY"
+reserved = false
+keyword_type = "Option"
