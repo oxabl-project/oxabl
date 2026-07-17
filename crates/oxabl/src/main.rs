@@ -6,13 +6,13 @@ use std::time::Instant;
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{dump_json, dump_text};
-use oxabl_common::{FileId, SourceMap};
+use oxabl_common::{Diagnostic, FileId, Severity, SourceMap};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::Schema;
 use oxabl_semantic::{AnalysisContext, analyze_file};
-use oxabl_workspace::RealFileSystem;
+use oxabl_workspace::{RealFileSystem, resolved_include_paths};
 use serde::Serialize;
 use walkdir::WalkDir;
 
@@ -111,6 +111,85 @@ struct JsonErrorPattern {
     count: usize,
 }
 
+/// A preprocessor diagnostic surfaced to machine-readable output.
+#[derive(Serialize)]
+struct JsonDiagnostic {
+    file: String,
+    code: String,
+    severity: String,
+    /// Absent for diagnostics that originate in a nested include: their offset
+    /// is meaningful only against the include's own source, not the root file,
+    /// so we omit a position rather than emit a misleading `0`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    col: Option<usize>,
+    message: String,
+}
+
+/// Surface *loud* preprocessor diagnostics — errors plus `PREPROC007`
+/// (unresolvable include) — to stderr and collect them for machine-readable
+/// output.
+///
+/// Line/col is computed against the root source only when the diagnostic
+/// belongs to the root file (`d.span.file == root_file_id`). Diagnostics from a
+/// nested include carry a different `FileId`; resolving their offset against the
+/// root `SourceMap` would print a garbage position, so those are reported
+/// without a (misleading) root-relative line/col.
+fn surface_preproc_diagnostics(
+    path: &Path,
+    root_source: &str,
+    root_file_id: FileId,
+    diagnostics: &[Diagnostic],
+) -> Vec<JsonDiagnostic> {
+    let mut out = Vec::new();
+    let is_loud =
+        |d: &Diagnostic| matches!(d.severity, Severity::Error) || d.code.0 == "PREPROC007";
+    // Only build a SourceMap if there's actually a loud diagnostic to place.
+    if !diagnostics.iter().any(is_loud) {
+        return out;
+    }
+    let source_map = SourceMap::new(root_source);
+    for d in diagnostics.iter().filter(|d| is_loud(d)) {
+        let severity = format!("{:?}", d.severity).to_lowercase();
+        if d.span.file == root_file_id {
+            let (line, col) = source_map.lookup(d.span.span.start as usize);
+            eprintln!(
+                "{}:{}:{} [preprocess {}] {}",
+                path.display(),
+                line,
+                col,
+                d.code.0,
+                d.message
+            );
+            out.push(JsonDiagnostic {
+                file: path.display().to_string(),
+                code: d.code.0.to_string(),
+                severity,
+                line: Some(line),
+                col: Some(col),
+                message: d.message.clone(),
+            });
+        } else {
+            eprintln!(
+                "{}: [preprocess {}] in included file: {}",
+                path.display(),
+                d.code.0,
+                d.message
+            );
+            out.push(JsonDiagnostic {
+                file: path.display().to_string(),
+                code: d.code.0.to_string(),
+                severity,
+                line: None,
+                col: None,
+                message: d.message.clone(),
+            });
+        }
+    }
+    out
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -147,13 +226,24 @@ fn run_analyze(
         }
     };
 
-    // Run preprocess or take raw source as expanded source.
+    // Run preprocess or take raw source as expanded source. Loud preprocessor
+    // diagnostics (errors + PREPROC007 unresolvable-include) are surfaced to
+    // stderr during expansion and collected for the JSON channel below.
+    let mut preproc_diags: Vec<JsonDiagnostic> = Vec::new();
     let expanded = if preprocess {
         let fs = RealFileSystem;
-        let preprocessor = Preprocessor::new(&fs, include_paths);
+        let (paths, cfg_err) = resolved_include_paths(path, include_paths);
+        if let Some(err) = cfg_err {
+            eprintln!("warning: {err}");
+        }
+        let preprocessor = Preprocessor::new(&fs, &paths);
         let file_id = FileId::new(1);
         match preprocessor.process(file_id, &source) {
-            Ok(pf) => pf.to_text().to_string(),
+            Ok(pf) => {
+                preproc_diags =
+                    surface_preproc_diagnostics(path, &source, file_id, &pf.diagnostics);
+                pf.to_text().to_string()
+            }
             Err(diags) => {
                 eprintln!(
                     "error: preprocessing failed: {}",
@@ -195,7 +285,16 @@ fn run_analyze(
 
     match format {
         "json" => {
-            let v = dump_json(&program, &sem, &ctx, !no_lint);
+            let mut v = dump_json(&program, &sem, &ctx, !no_lint);
+            // CLI-owned channel (not part of the versioned analyze envelope):
+            // surface unresolvable-include / preprocessor diagnostics so machine
+            // consumers see the same "loud, not silent" signal as stderr.
+            if let serde_json::Value::Object(ref mut map) = v {
+                map.insert(
+                    "preproc_diagnostics".to_string(),
+                    serde_json::to_value(&preproc_diags).unwrap_or(serde_json::Value::Null),
+                );
+            }
             match serde_json::to_string_pretty(&v) {
                 Ok(s) => println!("{s}"),
                 Err(e) => {
@@ -237,12 +336,23 @@ fn run_check(
         return ExitCode::from(2);
     }
 
+    // Merge CLI `-I` flags with any auto-discovered `oxabl.toml` include paths.
+    let effective_paths: Vec<PathBuf> = if preprocess {
+        let (merged, cfg_err) = resolved_include_paths(path, include_paths);
+        if let Some(err) = cfg_err {
+            eprintln!("warning: {err}");
+        }
+        merged
+    } else {
+        Vec::new()
+    };
+
     if !json_output {
         eprintln!("Found {} ABL files", files.len());
         if preprocess {
             eprintln!(
                 "Preprocessing enabled with {} include path(s)",
-                include_paths.len()
+                effective_paths.len()
             );
         }
     }
@@ -251,7 +361,7 @@ fn run_check(
     if debug {
         let real_fs = RealFileSystem;
         for file in &files {
-            run_debug_parse(file, preprocess, &real_fs, include_paths);
+            run_debug_parse(file, preprocess, &real_fs, &effective_paths);
         }
         return ExitCode::SUCCESS;
     }
@@ -278,7 +388,7 @@ fn run_check(
 
     for file in &files {
         if preprocess {
-            results.push(parse_file_with_preprocess(file, &real_fs, include_paths));
+            results.push(parse_file_with_preprocess(file, &real_fs, &effective_paths));
         } else {
             results.push(parse_file(file));
         }
@@ -426,26 +536,11 @@ fn parse_file_with_preprocess(
         }
     };
 
-    // Surface error-level preprocessor diagnostics (e.g. include file not found)
-    // so problems in include resolution aren't hidden behind downstream parser
-    // errors caused by missing content. Warnings and informational diagnostics
-    // would spam batch output and are only shown via `--debug`.
-    if !preprocessed.diagnostics.is_empty() {
-        let source_map = SourceMap::new(&source);
-        for d in &preprocessed.diagnostics {
-            if !matches!(d.severity, oxabl_common::Severity::Error) {
-                continue;
-            }
-            let (line, col) = source_map.lookup(d.span.span.start as usize);
-            eprintln!(
-                "{}:{}:{} [preprocess] {}",
-                path.display(),
-                line,
-                col,
-                d.message
-            );
-        }
-    }
+    // Surface loud preprocessor diagnostics — errors plus PREPROC007
+    // (unresolvable include) — so include-resolution problems aren't hidden
+    // behind the downstream parser errors that missing content causes. Benign
+    // warnings still stay quiet (they'd spam batch output; use `--debug`).
+    surface_preproc_diagnostics(path, &source, file_id, &preprocessed.diagnostics);
 
     // Get the expanded source text
     let expanded = preprocessed.to_text();

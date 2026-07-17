@@ -701,16 +701,28 @@ impl<'fs> ProcessContext<'fs> {
             Some(p) => p,
             None => {
                 // Recoverable: the include is elided and processing continues.
-                // Severity is Warning (not Error) because system-level includes
-                // (e.g. Progress runtime `src/web2/wrap-cgi.i`) often can't be
-                // located on developer machines and would otherwise spam every
-                // web file in the corpus. Visible via `--debug`; suppressed in
-                // batch `check` output.
-                self.diagnostics.push(Diagnostic::warning(
-                    "PREPROC004",
-                    format!("include file not found: '{include_name}'"),
-                    site,
-                ));
+                // Severity stays Warning (not Error) because system-level
+                // includes (e.g. Progress runtime `src/web2/wrap-cgi.i`) often
+                // can't be located on developer machines, and making them errors
+                // would break exit codes / CI for corpora full of unlocatable
+                // system includes. But the *surfacing* is loud: PREPROC007 is
+                // always printed (unlike generic warnings) so the symbol loss is
+                // never silent — one honest "I can't resolve this" beats the flood
+                // of downstream `undefined-symbol` findings it would otherwise
+                // cause. See docs/plans/2026-07-16-003-*.
+                self.diagnostics.push(
+                    Diagnostic::warning(
+                        "PREPROC007",
+                        format!(
+                            "unresolvable include '{include_name}' — symbols it declares cannot be checked"
+                        ),
+                        site,
+                    )
+                    .with_help(
+                        "add its directory to include_paths (oxabl.toml [workspace.sources]) or pass -I"
+                            .to_string(),
+                    ),
+                );
                 return Vec::new();
             }
         };
@@ -1262,6 +1274,109 @@ mod tests {
 
         // Missing include is removed, but surrounding text preserved
         assert_eq!(&*result.to_text(), "BEFORE  AFTER");
+        // ...and the failure is loud, not silent: a PREPROC007 diagnostic marks
+        // the symbol loss so downstream `undefined-symbol` findings have a cause.
+        assert!(
+            result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "expected a PREPROC007 diagnostic for the unresolved include"
+        );
+    }
+
+    #[test]
+    fn include_found_in_configured_second_path_expands_symbols() {
+        // File only in the second search dir; symbols must still expand (so no
+        // downstream false positives), and no PREPROC007 fires.
+        let fs = make_fs(&[(
+            "/inc2/globals.i",
+            "define variable gcCompany as character no-undo.\n",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc1"), PathBuf::from("/inc2")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{globals.i}gcCompany = \"acme\".";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert!(result.to_text().contains("define variable gcCompany"));
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "resolved include must not emit PREPROC007"
+        );
+    }
+
+    #[test]
+    fn unresolved_include_emits_loud_diagnostic_not_silent() {
+        let fs = make_fs(&[]);
+        let include_paths = vec![PathBuf::from("/inc1"), PathBuf::from("/inc2")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{shared/globals.i}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        let hits: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.0 == "PREPROC007")
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "exactly one PREPROC007 per unresolved include"
+        );
+        let d = hits[0];
+        assert!(d.message.contains("shared/globals.i"));
+        assert!(d.message.contains("cannot be checked"));
+        assert!(
+            d.help.is_some(),
+            "PREPROC007 must carry a remediation help line"
+        );
+    }
+
+    #[test]
+    fn propath_first_match_wins_uses_earliest_dir() {
+        let fs = make_fs(&[("/inc1/shared.i", "FIRST"), ("/inc2/shared.i", "SECOND")]);
+        let include_paths = vec![PathBuf::from("/inc1"), PathBuf::from("/inc2")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{shared.i}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "FIRST");
+    }
+
+    #[test]
+    fn include_relative_vs_absolute_dir_resolution() {
+        // Both search dirs pre-normalized to absolute (as the config helper
+        // would produce); file lives in the absolute one.
+        let fs = make_fs(&[("/abs/inc/util.i", "UTIL")]);
+        let include_paths = vec![PathBuf::from("/other"), PathBuf::from("/abs/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{util.i}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "UTIL");
+    }
+
+    #[test]
+    fn nested_unresolved_include_carries_inner_file_id() {
+        // Root resolves {outer.i}; outer.i references a missing {inner.i}.
+        // The PREPROC007 must belong to outer.i's FileId, not the root's —
+        // this is what forces the CLI to guard its root-SourceMap rendering.
+        let fs = make_fs(&[("/inc/outer.i", "OUTER-{inner.i}-END")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let root = FileId::new(1);
+        let result = pp.process(root, "{outer.i}").unwrap();
+
+        // outer.i still expands its own text around the elided inner include.
+        assert_eq!(&*result.to_text(), "OUTER--END");
+
+        let hits: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.0 == "PREPROC007")
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_ne!(
+            hits[0].span.file, root,
+            "the diagnostic must carry the inner include's FileId, not the root's"
+        );
     }
 
     #[test]
