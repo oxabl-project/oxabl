@@ -631,6 +631,7 @@ impl Parser<'_> {
             || self.check(Kind::KwTrue)
             || self.check(Kind::KwFalse)
             || self.check(Kind::Yes)
+            || self.check(Kind::No)
             || self.check(Kind::Question)
         {
             let token = self.advance();
@@ -1000,6 +1001,7 @@ impl Parser<'_> {
             let kw_token = self.advance(); // consume TEMP-TABLE or BUFFER
             let start = kw_token.start;
             let name_token = self.advance(); // consume the table/buffer name
+            let name_start = name_token.start;
             let mut end = name_token.end;
 
             // Extend with directly-adjacent Preprop or identifier parts so that
@@ -1034,13 +1036,17 @@ impl Parser<'_> {
                 }
             }
 
-            let compound_name = self.source[start..end].to_string();
+            // Use only the handle *name* (qh), not the keyword prefix (QUERY).
+            // `QUERY qh:ATTR` is handle-qualified access; resolving "QUERY qh"
+            // as a single atom always fails LINT0001 (#58 item C).
+            let _ = start; // keyword start kept for potential span diagnostics
+            let handle_name = self.source[name_start..end].to_string();
             let identifier = Identifier {
                 span: Span {
-                    start: start as u32,
+                    start: name_start as u32,
                     end: end as u32,
                 },
-                name: compound_name,
+                name: handle_name,
             };
             return Ok(self.expr(ExpressionKind::Identifier(identifier)));
         }

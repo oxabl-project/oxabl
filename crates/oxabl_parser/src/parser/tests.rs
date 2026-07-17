@@ -6168,6 +6168,7 @@ fn parse_property_auto_get_set() {
             no_undo,
             get_body,
             set_body,
+            set_parameters,
         } => {
             assert_eq!(access, AccessModifier::Public);
             assert!(!is_static);
@@ -6176,6 +6177,7 @@ fn parse_property_auto_get_set() {
             assert!(no_undo);
             assert_eq!(get_body, Some(Vec::new())); // auto-getter
             assert_eq!(set_body, Some(Vec::new())); // auto-setter
+            assert!(set_parameters.is_empty());
         }
         _ => panic!("Expected Property statement"),
     }
@@ -6195,12 +6197,16 @@ fn parse_property_computed_get_set() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Property {
-            get_body, set_body, ..
+            get_body,
+            set_body,
+            set_parameters,
+            ..
         } => {
             let get = get_body.unwrap();
             assert_eq!(get.len(), 1); // RETURN "hello".
             let set = set_body.unwrap();
             assert_eq!(set.len(), 1); // DEFINE VARIABLE x AS CHARACTER.
+            assert!(set_parameters.is_empty());
         }
         _ => panic!("Expected Property statement"),
     }
@@ -6214,10 +6220,14 @@ fn parse_property_read_only() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Property {
-            get_body, set_body, ..
+            get_body,
+            set_body,
+            set_parameters,
+            ..
         } => {
             assert_eq!(get_body, Some(Vec::new())); // has getter
             assert!(set_body.is_none()); // no setter — read-only
+            assert!(set_parameters.is_empty());
         }
         _ => panic!("Expected Property statement"),
     }

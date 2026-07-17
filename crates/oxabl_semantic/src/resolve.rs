@@ -182,6 +182,7 @@ impl<'a> Walker<'a> {
                 no_undo,
                 get_body,
                 set_body,
+                set_parameters,
             } => {
                 let flags = access_flag(*access)
                     | flag_if(*is_static, SymbolFlags::STATIC)
@@ -202,7 +203,14 @@ impl<'a> Walker<'a> {
                 }
                 if let Some(body) = set_body {
                     let setter = self.tree.push(ScopeKind::PropertySet, scope, stmt.id);
+                    // SET (INPUT pv AS TYPE) parameters bind in the setter scope
+                    // so the body can reference them (#58 item B).
+                    self.walk_block(set_parameters, setter);
                     self.walk_block(body, setter);
+                } else if !set_parameters.is_empty() {
+                    // Defensive: params without a body still get a scope.
+                    let setter = self.tree.push(ScopeKind::PropertySet, scope, stmt.id);
+                    self.walk_block(set_parameters, setter);
                 }
             }
 
@@ -1135,17 +1143,21 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             StatementKind::Property {
-                get_body, set_body, ..
+                get_body,
+                set_body,
+                set_parameters,
+                ..
             } => {
                 if let Some(body) = get_body
                     && let Some(gs) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertyGet)
                 {
                     self.walk_block(body, gs);
                 }
-                if let Some(body) = set_body
-                    && let Some(ss) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertySet)
-                {
-                    self.walk_block(body, ss);
+                if let Some(ss) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertySet) {
+                    self.walk_block(set_parameters, ss);
+                    if let Some(body) = set_body {
+                        self.walk_block(body, ss);
+                    }
                 }
             }
 
@@ -1697,17 +1709,19 @@ impl<'a> ResolveWalker<'a> {
             ExpressionKind::MethodCall {
                 object, arguments, ..
             } => {
-                // Method is a cross-class member — External in v1. We don't
-                // emit a reference entry for the call itself (the outer
-                // Expression's NodeId is shared with no resolvable symbol);
-                // recurse into `object` + `arguments` for their own idents.
-                self.walk_expression(object, scope, AccessMode::Read);
+                // Method is a cross-class member — External in v1. The
+                // receiver may be a local handle, a package-qualified type
+                // (`acme.security.Auth:Check`), or a static class name
+                // (`MyStatics:CurrentCompany`). Unresolved receivers are
+                // softened to External so LINT0001 does not fire on type
+                // references the single-file model cannot see (#58 D/C).
+                self.walk_receiver(object, scope);
                 for a in arguments {
                     self.walk_expression(a, scope, AccessMode::Read);
                 }
             }
             ExpressionKind::MemberAccess { object, .. } => {
-                self.walk_expression(object, scope, AccessMode::Read);
+                self.walk_receiver(object, scope);
                 // Member is External; no reference entry in v1.
             }
             ExpressionKind::ArrayAccess { array, index } => {
@@ -1849,6 +1863,57 @@ impl<'a> ResolveWalker<'a> {
                 reason: UnresolvedReason::NotInScope,
             },
         );
+    }
+
+    /// Walk an expression used as a method/member *receiver*. Unresolved
+    /// identifiers and field-access chains become `External` rather than
+    /// `NotInScope` — package-qualified static types and dynamic handles are
+    /// not local symbols (#58 items C/D).
+    fn walk_receiver(&mut self, expr: &Expression, scope: ScopeId) {
+        match &expr.kind {
+            ExpressionKind::Identifier(_) => {
+                self.walk_expression(expr, scope, AccessMode::Read);
+                self.soften_unresolved_to_external(expr.id);
+            }
+            ExpressionKind::FieldAccess { qualifier, field } => {
+                // Soften each link of a package path; still attempt real
+                // buffer/table field resolution first.
+                self.walk_receiver(qualifier, scope);
+                self.resolve_field_access(qualifier, field, expr.id, scope, AccessMode::Read);
+                self.soften_unresolved_to_external(expr.id);
+                // resolve_field_access also records the bare-identifier
+                // qualifier; soften that too when it was NotInScope.
+                self.soften_unresolved_to_external(qualifier.id);
+            }
+            ExpressionKind::MemberAccess { object, .. }
+            | ExpressionKind::MethodCall { object, .. } => {
+                self.walk_receiver(object, scope);
+            }
+            ExpressionKind::ArrayAccess { array, index } => {
+                self.walk_receiver(array, scope);
+                self.walk_expression(index, scope, AccessMode::Read);
+            }
+            _ => {
+                self.walk_expression(expr, scope, AccessMode::Read);
+                self.soften_unresolved_to_external(expr.id);
+            }
+        }
+    }
+
+    fn soften_unresolved_to_external(&mut self, expr_id: NodeId) {
+        if let Some(Resolution::Unresolved {
+            name,
+            reason: UnresolvedReason::NotInScope,
+        }) = self.references.get(expr_id).cloned()
+        {
+            self.references.insert(
+                expr_id,
+                Resolution::Unresolved {
+                    name,
+                    reason: UnresolvedReason::External,
+                },
+            );
+        }
     }
 
     /// Resolve an `Identifier` in a **statement** position (buffer name in
@@ -2585,6 +2650,7 @@ mod tests {
             no_undo: false,
             get_body: Some(vec![]),
             set_body: Some(vec![]),
+            set_parameters: vec![],
         })]);
         let p = find_symbol(&tree, &symbols, NamespaceId::Values, "Name").unwrap();
         assert_eq!(p.kind, SymbolKind::Property);
@@ -2602,6 +2668,7 @@ mod tests {
             no_undo: false,
             get_body: Some(vec![]),
             set_body: None,
+            set_parameters: vec![],
         })]);
         assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::PropertyGet));
         assert!(!tree.iter().any(|(_, s)| s.kind == ScopeKind::PropertySet));
@@ -3174,6 +3241,7 @@ mod tests {
                 no_undo: true,
                 get_body: Some(vec![]),
                 set_body: Some(vec![]),
+                set_parameters: vec![],
             })],
         })]);
         let class_scope = tree
@@ -4518,6 +4586,7 @@ mod tests {
             no_undo: false,
             get_body: Some(vec![]),
             set_body: Some(vec![]),
+            set_parameters: vec![],
         });
         let pid = pdecl.id;
         let stmts = vec![stmt_n(StatementKind::Class {

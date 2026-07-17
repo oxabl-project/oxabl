@@ -1809,17 +1809,19 @@ end."#;
         // Newline between words should NOT match as lock type
         let source = "NO\nLOCK";
         let tokens = collect_tokens(source);
-        // Should be: Identifier("NO"), Identifier("LOCK"), Eof
+        // Bare NO is the boolean-literal keyword (Kind::No); LOCK alone is not a keyword.
+        // Space-separated NO LOCK only matches when whitespace is horizontal (no newline).
         assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].kind, Kind::Identifier);
+        assert_eq!(tokens[0].kind, Kind::No);
         assert_eq!(tokens[1].kind, Kind::Identifier); // LOCK alone is not a keyword
     }
 
     #[test]
     fn lock_type_standalone_words_are_identifiers() {
-        // "share" and "no" alone (without -lock suffix) are identifiers —
-        // they have no minimum abbreviation in the keyword table.
-        let identifier_cases = vec!["share", "SHARE", "no", "NO"];
+        // "share" alone (without -lock suffix) is an identifier.
+        // Bare "no"/"NO" is Kind::No (boolean literal); NO LOCK still uses
+        // space-separated lock lookahead before keyword matching.
+        let identifier_cases = vec!["share", "SHARE"];
         for source in identifier_cases {
             let tokens = collect_tokens(source);
             assert_eq!(
@@ -1833,6 +1835,17 @@ end."#;
                 tokens[0].kind,
                 Kind::Identifier,
                 "Expected Identifier for '{}', got {:?}",
+                source,
+                tokens[0].kind
+            );
+        }
+        for source in ["no", "NO"] {
+            let tokens = collect_tokens(source);
+            assert_eq!(tokens.len(), 2);
+            assert_eq!(
+                tokens[0].kind,
+                Kind::No,
+                "Expected Kind::No for '{}', got {:?}",
                 source,
                 tokens[0].kind
             );

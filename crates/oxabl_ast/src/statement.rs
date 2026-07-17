@@ -366,6 +366,10 @@ pub enum StatementKind {
         /// SET accessor: None = no setter, Some(vec![]) = auto-setter (`SET.`),
         /// Some(body) = computed setter (`SET: body END SET.`).
         set_body: Option<Vec<Statement>>,
+        /// Parameters of a computed SET accessor (`SET (INPUT pv AS CHARACTER):`).
+        /// Empty when the setter has no parenthesized parameter list. Each
+        /// entry is a `DefineParameter` statement (same shape as METHOD params).
+        set_parameters: Vec<Statement>,
     },
 
     /// CONSTRUCTOR definition inside a CLASS.
