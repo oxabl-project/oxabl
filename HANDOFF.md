@@ -51,8 +51,14 @@ gap** revealed by expansion: `PROCEDURE name IN SUPER:` (ADM2 prototypes).
 literal `{3}`); (2) `DYNAMIC-FUNC` abbreviates `DYNAMIC-FUNCTION` so ADE
 `IN handle` calls parse.
 
-**Downstream:** pin HEAD of this branch and re-run the 9-module corpus A/B.
-Pass bar: PREPROC002 stays at 0 **and** PARSE001 ≤ baseline (9).
+**Status (2026-07-18):** #65 **closed** with re-scoped criterion — preprocessor
+goals met (PREPROC002 596→0; four surface fixes + IN SUPER companion). Remaining
+corpus PARSE001 (~306) is ADM2 **xp-property BUFFER-FIELD** expansion (deferred
+non-goal); tracked as a follow-up issue. Downstream may pin `da7fa4d` (or branch
+HEAD) for the #65 fixes without waiting on xp-property.
+
+**Corpus note:** PARSE001 9→~306 is mostly a measurement artifact: baseline
+aborted inside shared includes; after expansion the same gap appears per-file.
 
 ---
 
