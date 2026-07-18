@@ -1469,6 +1469,33 @@ fn parse_function_call_with_expression_arg() {
 }
 
 #[test]
+fn parse_dynamic_func_abbreviation_with_in_handle() {
+    // ADE tty/set emits DYNAMIC-FUNC (abbrev of DYNAMIC-FUNCTION). #65 round 4.
+    let source = r#"DYNAMIC-FUNC("setDataSourceEvents":U IN TARGET-PROCEDURE, evtList)"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expression = parser
+        .parse_expression()
+        .expect("DYNAMIC-FUNC … IN handle must parse");
+    match expression.kind {
+        ExpressionKind::FunctionCall { name, arguments } => {
+            assert!(
+                name.name.eq_ignore_ascii_case("dynamic-func")
+                    || name.name.eq_ignore_ascii_case("dynamic-function"),
+                "name={}",
+                name.name
+            );
+            assert!(
+                arguments.len() >= 2,
+                "name + handle (+ args), got {}",
+                arguments.len()
+            );
+        }
+        other => panic!("Expected FunctionCall, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_nested_function_calls() {
     let source = "TRIM(SUBSTRING(name, 1, 5))";
     let tokens = tokenize(source);
@@ -4047,6 +4074,149 @@ END PROCEDURE.
             }
         }
         _ => panic!("Expected Procedure statement"),
+    }
+}
+
+// ===================== PROCEDURE IN SUPER / IN handle (#65 follow-up) =====================
+
+#[test]
+fn parse_procedure_in_super_with_body() {
+    // ADM2 prototype include shape (smrtprto.i / qryprto.i).
+    let source = r#"
+PROCEDURE assignDBRow IN SUPER:
+  DEFINE INPUT PARAMETER phRowObjUpd AS HANDLE.
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN SUPER: must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "assignDBRow");
+            assert_eq!(body.len(), 1);
+            match &body[0].kind {
+                StatementKind::DefineParameter { direction, .. } => {
+                    assert_eq!(*direction, ParameterDirection::Input);
+                }
+                _ => panic!("Expected DEFINE INPUT PARAMETER in body"),
+            }
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_super_period_only_empty_body() {
+    let source = "PROCEDURE assignDBRow IN SUPER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN SUPER. must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "assignDBRow");
+            assert!(body.is_empty(), "period form has empty body");
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_this_procedure() {
+    let source = r#"
+PROCEDURE local-hook IN THIS-PROCEDURE:
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN THIS-PROCEDURE: must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "local-hook");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_handle_identifier() {
+    let source = r#"
+PROCEDURE doWork IN hSuper:
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN hSuper: must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "doWork");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_super_period_then_next_procedure() {
+    // Guard: period form must not swallow the following prototype as body.
+    let source = r#"
+PROCEDURE a IN SUPER.
+PROCEDURE b IN SUPER:
+  DEFINE INPUT PARAMETER x AS INTEGER.
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(
+        program.errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        program.errors
+    );
+    assert_eq!(program.statements.len(), 2);
+    match &program.statements[0].kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "a");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected first Procedure"),
+    }
+    match &program.statements[1].kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "b");
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected second Procedure"),
+    }
+}
+
+#[test]
+fn parse_function_in_super_still_works() {
+    let source = "FUNCTION getX RETURNS CHARACTER IN SUPER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("FUNCTION … IN SUPER. must parse");
+    match stmt.kind {
+        StatementKind::Function {
+            name,
+            return_type,
+            body,
+        } => {
+            assert_eq!(name.name, "getX");
+            assert_eq!(return_type, DataType::Character);
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Function statement"),
     }
 }
 
@@ -9668,4 +9838,182 @@ End."#;
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_program();
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+}
+
+// ===================== #66 xp-property BUFFER-FIELD fast path =====================
+
+#[test]
+fn buffer_value_unquoted_comma_list_standalone() {
+    // ADM2 set expansion: unquoted comma-separated event list as BUFFER-VALUE.
+    let source = "ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = dataAvailable,confirmContinue,isUpdatePending,buildDataRequest.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assignment { value, .. } => match value.kind {
+            ExpressionKind::Literal(Literal::String(s)) => {
+                assert_eq!(
+                    s.value,
+                    "dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"
+                );
+            }
+            other => panic!("expected string literal value, got {other:?}"),
+        },
+        other => panic!("expected Assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn buffer_value_unquoted_comma_list_under_assign() {
+    let source = "ASSIGN ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = dataAvailable,confirmContinue,isUpdatePending,buildDataRequest.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => {
+                    assert_eq!(
+                        s.value,
+                        "dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"
+                    );
+                }
+                other => panic!("expected string literal value, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn buffer_field_chained_lvalue_quoted_still_works() {
+    let source = "ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = \"dataAvailable,confirmContinue\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assignment { value, .. } => match value.kind {
+            ExpressionKind::Literal(Literal::String(s)) => {
+                assert_eq!(s.value, "dataAvailable,confirmContinue");
+            }
+            other => panic!("expected string literal, got {other:?}"),
+        },
+        other => panic!("expected Assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_consecutive_buffer_field_assigns() {
+    // xp-assign gated off: no ASSIGN keyword, two accessor pairs, one trailing period.
+    let source = "\
+ghProp:BUFFER-FIELD('ObjectType':U):BUFFER-VALUE = 'Procedure':U
+ghProp:BUFFER-FIELD('ContainerType':U):BUFFER-VALUE = '':U.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2, "expected two bare assign pairs");
+        }
+        other => panic!("expected Assign with 2 pairs, got {other:?}"),
+    }
+}
+
+#[test]
+fn comma_list_then_no_error_under_assign() {
+    let source = "ASSIGN ghProp:BUFFER-FIELD('x':U):BUFFER-VALUE = a,b,c NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => assert_eq!(s.value, "a,b,c"),
+                other => panic!("expected string list, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn comma_list_then_second_assign_pair() {
+    // Fold must stop before the next ASSIGN pair (space-separated, no comma between pairs).
+    let source = "ASSIGN t1 = a,b t2 = c.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => assert_eq!(s.value, "a,b"),
+                other => panic!("expected folded list for t1, got {other:?}"),
+            }
+            match &assignments[1].value.kind {
+                ExpressionKind::Identifier(id) => assert_eq!(id.name, "c"),
+                other => panic!("expected identifier c for t2, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_multi_with_comma_list_value() {
+    // Combined A+B: bare multi-pair where first value is a comma-list.
+    let source = "\
+ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = dataAvailable,confirmContinue
+ghProp:BUFFER-FIELD('ObjectType':U):BUFFER-VALUE = 'Procedure':U.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => {
+                    assert_eq!(s.value, "dataAvailable,confirmContinue");
+                }
+                other => panic!("expected folded comma list, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_assign_does_not_swallow_run() {
+    // Negative: unterminated assignment followed by a real statement must not
+    // treat RUN as a second bare assign pair.
+    let source = "x = 1 RUN foo.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    // Either an error on the first statement, or recovery — but must not parse
+    // the whole line as a single successful multi-assign with a RUN target.
+    let has_run_as_assign = result.statements.iter().any(|s| {
+        matches!(
+            &s.kind,
+            StatementKind::Assign { assignments } if assignments.len() > 1
+        )
+    });
+    assert!(
+        !has_run_as_assign,
+        "RUN must not be absorbed as a bare assign pair: {:?}",
+        result.statements
+    );
+    // Primary expectation: parse error about missing period (or recovery Empty).
+    assert!(
+        !result.errors.is_empty()
+            || result
+                .statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Empty)),
+        "expected error or recovery for `x = 1 RUN foo.`, got stmts={:?} errs={:?}",
+        result.statements,
+        result.errors
+    );
 }

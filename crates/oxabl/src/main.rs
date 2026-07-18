@@ -132,9 +132,12 @@ struct JsonDiagnostic {
     message: String,
 }
 
-/// Surface *loud* preprocessor diagnostics — errors plus `PREPROC007`
-/// (unresolvable include) — to stderr and collect them for machine-readable
-/// output.
+/// Surface *loud* preprocessor diagnostics — errors plus selected warnings —
+/// to stderr and collect them for machine-readable output.
+///
+/// Always-loud warning codes:
+/// - `PREPROC007` unresolvable include (symbol loss)
+/// - `PREPROC002` unclosed `&IF` (inline/`skip_to_eol` regressions; #65 gate)
 ///
 /// Line/col is computed against the root source only when the diagnostic
 /// belongs to the root file (`d.span.file == root_file_id`). Diagnostics from a
@@ -148,8 +151,11 @@ fn surface_preproc_diagnostics(
     diagnostics: &[Diagnostic],
 ) -> Vec<JsonDiagnostic> {
     let mut out = Vec::new();
-    let is_loud =
-        |d: &Diagnostic| matches!(d.severity, Severity::Error) || d.code.0 == "PREPROC007";
+    let is_loud = |d: &Diagnostic| {
+        matches!(d.severity, Severity::Error)
+            || d.code.0 == "PREPROC007"
+            || d.code.0 == "PREPROC002"
+    };
     // Only build a SourceMap if there's actually a loud diagnostic to place.
     if !diagnostics.iter().any(is_loud) {
         return out;
@@ -241,7 +247,7 @@ fn run_analyze(
     };
 
     // Run preprocess or take raw source as expanded source. Loud preprocessor
-    // diagnostics (errors + PREPROC007 unresolvable-include) are surfaced to
+    // diagnostics (errors + PREPROC007/PREPROC002) are surfaced to
     // stderr during expansion and collected for the JSON channel below.
     let mut preproc_diags: Vec<JsonDiagnostic> = Vec::new();
     let expanded = if preprocess {
@@ -571,9 +577,8 @@ fn parse_file_with_preprocess(
     };
 
     // Surface loud preprocessor diagnostics — errors plus PREPROC007
-    // (unresolvable include) — so include-resolution problems aren't hidden
-    // behind the downstream parser errors that missing content causes. Benign
-    // warnings still stay quiet (they'd spam batch output; use `--debug`).
+    // (unresolvable include) and PREPROC002 (unclosed &IF) — so true
+    // preproc problems aren't hidden. Other warnings stay quiet.
     surface_preproc_diagnostics(path, &source, file_id, &preprocessed.diagnostics);
 
     // Get the expanded source text

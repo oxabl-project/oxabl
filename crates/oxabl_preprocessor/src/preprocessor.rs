@@ -176,7 +176,18 @@ impl<'fs> ProcessContext<'fs> {
                                     });
                                 }
                                 if emitting {
-                                    self.vars.define(name, value);
+                                    // Expand positional `{N}` inside the value at
+                                    // define time (ADM2 `set`/`get` store
+                                    // `&SCOPED-DEFINE ADMHdl {3}`). Only inside
+                                    // an include — top-level keeps literal `{N}`
+                                    // for the lexer, matching body-scan rules.
+                                    // #65 round 4.
+                                    let expanded = if !positional_args.is_empty() {
+                                        expand_positional_refs(value, positional_args)
+                                    } else {
+                                        value.clone()
+                                    };
+                                    self.vars.define(name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -194,8 +205,13 @@ impl<'fs> ProcessContext<'fs> {
                                     });
                                 }
                                 if emitting {
-                                    self.vars.define(name, value);
-                                    self.global_vars.define(name, value);
+                                    let expanded = if !positional_args.is_empty() {
+                                        expand_positional_refs(value, positional_args)
+                                    } else {
+                                        value.clone()
+                                    };
+                                    self.vars.define(name, &expanded);
+                                    self.global_vars.define(name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -226,7 +242,9 @@ impl<'fs> ProcessContext<'fs> {
                                     });
                                 }
                                 let cond_result = if emitting {
-                                    evaluate_with_defined(condition, &self.vars)
+                                    let condition =
+                                        expand_positional_refs(condition, positional_args);
+                                    evaluate_with_defined(&condition, &self.vars)
                                 } else {
                                     false
                                 };
@@ -249,8 +267,10 @@ impl<'fs> ProcessContext<'fs> {
                                 }
                                 if let Some(state) = if_stack.last_mut() {
                                     if state.parent_emitting && !state.any_branch_taken {
+                                        let condition =
+                                            expand_positional_refs(condition, positional_args);
                                         let cond_result =
-                                            evaluate_with_defined(condition, &self.vars);
+                                            evaluate_with_defined(&condition, &self.vars);
                                         state.emitting = cond_result;
                                         if cond_result {
                                             state.any_branch_taken = true;
@@ -281,7 +301,9 @@ impl<'fs> ProcessContext<'fs> {
                             }
                             DirectiveKind::EndIf => {
                                 // Emit the chunk from the *previous* emitting state
-                                // (the &ENDIF line itself should not appear in output)
+                                // (the &ENDIF itself should not appear in output).
+                                // Do not skip to EOL — trailing code after mid-line
+                                // `&ENDIF` (e.g. the period in `… &ENDIF.`) must remain.
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
@@ -408,54 +430,15 @@ impl<'fs> ProcessContext<'fs> {
                             }
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
-                            // Resolve against the current include's positional args.
-                            let mut j = i + 1;
-                            while j < len && bytes[j].is_ascii_digit() {
-                                j += 1;
-                            }
-                            if j < len && bytes[j] == b'}' {
-                                let ref_end = j + 1;
-                                let index: usize = source[i + 1..j].parse().unwrap_or(usize::MAX);
-
-                                if let Some(arg_val) = positional_args.get(index) {
-                                    // Emit chunk before the reference
-                                    if i as u32 > chunk_start {
-                                        nodes.push(SpanNode::Chunk {
-                                            file,
-                                            start: chunk_start,
-                                            end: i as u32,
-                                        });
-                                    }
-
-                                    if !arg_val.is_empty() {
-                                        let expanded_id = self.next_file_id();
-                                        let val: Arc<str> = Arc::from(arg_val.as_str());
-                                        let val_len = val.len() as u32;
-                                        self.sources.push((expanded_id, val));
-
-                                        nodes.push(SpanNode::Include {
-                                            site: FileSpan {
-                                                file,
-                                                span: Span {
-                                                    start: i as u32,
-                                                    end: ref_end as u32,
-                                                },
-                                            },
-                                            children: vec![SpanNode::Chunk {
-                                                file: expanded_id,
-                                                start: 0,
-                                                end: val_len,
-                                            }],
-                                        });
-                                    }
-
-                                    i = ref_end;
-                                    chunk_start = i as u32;
-                                    continue;
-                                }
-                                // No arg at this index — preserve as-is so the
-                                // downstream lexer sees it as Kind::IncludeArgReference.
-                                i = ref_end;
+                            if let Some(next) = self.expand_positional_ref_at(
+                                file,
+                                source,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            ) {
+                                i = next;
                                 continue;
                             }
                             // Not a valid {N} reference, advance normally
@@ -508,6 +491,23 @@ impl<'fs> ProcessContext<'fs> {
                                 &mut nodes,
                             )
                         {
+                            // `{&name}` inside strings — AVM substitutes these.
+                            i = next;
+                        } else if emitting
+                            && i + 1 < len
+                            && bytes[i] == b'{'
+                            && bytes[i + 1].is_ascii_digit()
+                            && let Some(next) = self.expand_positional_ref_at(
+                                file,
+                                source,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            )
+                        {
+                            // `{N}` include args expand inside strings too
+                            // (e.g. `"{1}":U` in ADM2 fn/fnarg).
                             i = next;
                         } else {
                             i += 1;
@@ -609,6 +609,94 @@ impl<'fs> ProcessContext<'fs> {
         Some(ref_end)
     }
 
+    /// Expand a `{N}` positional include-argument reference at byte offset `i`.
+    ///
+    /// Inside an include (`positional_args` non-empty), a missing index expands
+    /// to empty (ABL semantics). At top level (empty args), the reference is
+    /// left as-is for the downstream lexer.
+    ///
+    /// Returns the offset just past `}`, or `None` when the span is not a valid
+    /// `{digits}` reference.
+    fn expand_positional_ref_at(
+        &mut self,
+        file: FileId,
+        source: &str,
+        i: usize,
+        positional_args: &[String],
+        chunk_start: &mut u32,
+        nodes: &mut Vec<SpanNode>,
+    ) -> Option<usize> {
+        let bytes = source.as_bytes();
+        let len = bytes.len();
+        if i + 1 >= len || !bytes[i + 1].is_ascii_digit() {
+            return None;
+        }
+        let mut j = i + 1;
+        while j < len && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j >= len || bytes[j] != b'}' {
+            return None;
+        }
+        let ref_end = j + 1;
+        let index: usize = source[i + 1..j].parse().unwrap_or(usize::MAX);
+
+        let in_include = !positional_args.is_empty();
+        let arg_val = positional_args.get(index).map(|s| s.as_str());
+
+        match (arg_val, in_include) {
+            (Some(arg_val), _) => {
+                if i as u32 > *chunk_start {
+                    nodes.push(SpanNode::Chunk {
+                        file,
+                        start: *chunk_start,
+                        end: i as u32,
+                    });
+                }
+                if !arg_val.is_empty() {
+                    let expanded_id = self.next_file_id();
+                    let val: Arc<str> = Arc::from(arg_val);
+                    let val_len = val.len() as u32;
+                    self.sources.push((expanded_id, val));
+                    nodes.push(SpanNode::Include {
+                        site: FileSpan {
+                            file,
+                            span: Span {
+                                start: i as u32,
+                                end: ref_end as u32,
+                            },
+                        },
+                        children: vec![SpanNode::Chunk {
+                            file: expanded_id,
+                            start: 0,
+                            end: val_len,
+                        }],
+                    });
+                }
+                *chunk_start = ref_end as u32;
+                Some(ref_end)
+            }
+            (None, true) => {
+                // Inside include, missing `{N}` → empty (elide the reference).
+                if i as u32 > *chunk_start {
+                    nodes.push(SpanNode::Chunk {
+                        file,
+                        start: *chunk_start,
+                        end: i as u32,
+                    });
+                }
+                *chunk_start = ref_end as u32;
+                Some(ref_end)
+            }
+            (None, false) => {
+                // Top-level: leave `{N}` in the current chunk for the lexer
+                // (IncludeArgReference). Advance past the reference without
+                // flushing or eliding.
+                Some(ref_end)
+            }
+        }
+    }
+
     /// Try to parse a preprocessor directive starting at position `i`.
     fn try_parse_directive(&self, source: &str, i: usize) -> Option<Directive> {
         let rest = &source[i..];
@@ -664,17 +752,17 @@ impl<'fs> ProcessContext<'fs> {
                 })
             }
             "ELSE" => {
-                let end = skip_to_eol(source, i + j);
+                // Mid-line `&ELSE branch` keeps the body; multi-line drops EOL.
                 Some(Directive {
                     kind: DirectiveKind::Else,
-                    end,
+                    end: skip_after_if_keyword(source, i + j),
                 })
             }
             "ENDIF" => {
-                let end = skip_to_eol(source, i + j);
+                // Mid-line `&ENDIF.` keeps the period; multi-line drops EOL.
                 Some(Directive {
                     kind: DirectiveKind::EndIf,
-                    end,
+                    end: skip_after_if_keyword(source, i + j),
                 })
             }
             "THEN" => {
@@ -683,11 +771,21 @@ impl<'fs> ProcessContext<'fs> {
                 None
             }
             "MESSAGE" => {
-                let rest_after = &source[i + j..];
-                let end_offset = rest_after.find('\n').unwrap_or(rest_after.len());
+                // Stop before a trailing same-line `&ENDIF`/`&ELSE`/`&ELSEIF`
+                // so inline forms like `&IF … &THEN &MESSAGE … &ENDIF` close
+                // correctly (ADM2 / #65). Without a boundary, preserve the
+                // historical end-at-newline (not past it) semantics.
+                let from = i + j;
+                let end = if let Some(b) = find_same_line_if_boundary(source, from) {
+                    b
+                } else {
+                    let rest_after = &source[from..];
+                    let end_offset = rest_after.find('\n').unwrap_or(rest_after.len());
+                    from + end_offset
+                };
                 Some(Directive {
                     kind: DirectiveKind::Message,
-                    end: i + j + end_offset,
+                    end,
                 })
             }
             _ => None,
@@ -852,7 +950,10 @@ enum DirectiveKind {
 
 /// Parse the body of `&SCOPED-DEFINE name value` or `&GLOBAL-DEFINE name value`.
 ///
-/// Returns `(name, value, end_offset)`. The value runs to EOL (or EOF).
+/// Returns `(name, value, end_offset)`. The value runs to EOL (or EOF), or to
+/// a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` so inline forms like
+/// `&IF … &THEN &SCOPED-DEFINE x 1 &ENDIF` leave the closer for the scanner
+/// (#65 follow-up / ADM2).
 fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let rest = &source[start..];
 
@@ -880,20 +981,36 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
 
     // Value runs to EOL, but tilde (~) at EOL means continuation.
     // ABL uses ~ as the line continuation character in &DEFINE values.
+    // A same-line if-chain boundary also ends the value (inline directive body).
     let value_start = i;
     let mut value = String::new();
     loop {
-        // Read to end of line
         let line_start = i;
-        while i < rest.len() && rest.as_bytes()[i] != b'\n' && rest.as_bytes()[i] != b'\r' {
-            i += 1;
+        // Physical end of line (newline / EOF)
+        let mut line_end = i;
+        while line_end < rest.len()
+            && rest.as_bytes()[line_end] != b'\n'
+            && rest.as_bytes()[line_end] != b'\r'
+        {
+            line_end += 1;
         }
-        let line = &rest[line_start..i];
+
+        // Truncate at same-line &ELSE / &ELSEIF / &ENDIF when present.
+        let boundary_rel =
+            find_same_line_if_boundary(source, start + line_start).map(|b| b - start);
+        let hit_boundary = boundary_rel.is_some_and(|b| b >= line_start && b < line_end);
+        let content_end = match boundary_rel {
+            Some(b) if hit_boundary => b,
+            _ => line_end,
+        };
+
+        let line = &rest[line_start..content_end];
         let trimmed = line.trim_end();
 
-        if let Some(continued) = trimmed.strip_suffix('~') {
+        if !hit_boundary && let Some(continued) = trimmed.strip_suffix('~') {
             // Continuation: append line without trailing ~ and continue
             value.push_str(continued);
+            i = line_end;
             // Skip the newline
             if i < rest.len() && rest.as_bytes()[i] == b'\r' {
                 i += 1;
@@ -901,18 +1018,24 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
             if i < rest.len() && rest.as_bytes()[i] == b'\n' {
                 i += 1;
             }
-        } else {
-            // Final line — append and break
-            value.push_str(trimmed);
-            // Skip the newline
-            if i < rest.len() && rest.as_bytes()[i] == b'\r' {
-                i += 1;
-            }
-            if i < rest.len() && rest.as_bytes()[i] == b'\n' {
-                i += 1;
-            }
-            break;
+            continue;
         }
+
+        // Final segment — append and stop. Do not consume an if-boundary;
+        // leave it for the main scanner. Do consume a trailing newline.
+        value.push_str(trimmed);
+        if hit_boundary {
+            let _ = value_start;
+            return (name, value, start + content_end);
+        }
+        i = line_end;
+        if i < rest.len() && rest.as_bytes()[i] == b'\r' {
+            i += 1;
+        }
+        if i < rest.len() && rest.as_bytes()[i] == b'\n' {
+            i += 1;
+        }
+        break;
     }
     // Trim leading whitespace that was part of the continuation indent,
     // but only from the value_start — the first line's leading space was
@@ -923,6 +1046,10 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
 }
 
 /// Parse the body of `&UNDEFINE name`.
+///
+/// Ends at EOL, or at a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` so the ADM2
+/// `get`/`set` shape
+/// `&IF … &THEN &UNDEFINE xp-reset-values &ENDIF` closes correctly (#65).
 fn parse_undefine_body(source: &str, start: usize) -> (String, usize) {
     let rest = &source[start..];
     let mut i = 0;
@@ -943,13 +1070,16 @@ fn parse_undefine_body(source: &str, start: usize) -> (String, usize) {
     }
     let name = rest[name_start..i].to_string();
 
-    let end = skip_to_eol(source, start + i);
+    let end = skip_to_eol_or_if_boundary(source, start + i);
     (name, end)
 }
 
 /// Parse the condition expression between `&IF` and `&THEN`.
 ///
-/// Returns `(condition_text, end_offset)`.
+/// Returns `(condition_text, end_offset)` where `end_offset` is positioned via
+/// [`skip_after_if_keyword`] after `&THEN` so mid-line branch bodies remain in
+/// the scan stream (#65) while multi-line forms still drop the directive-line
+/// newline.
 fn parse_if_condition(source: &str, start: usize) -> (String, usize) {
     let rest = &source[start..];
     let upper = rest.to_ascii_uppercase();
@@ -958,15 +1088,74 @@ fn parse_if_condition(source: &str, start: usize) -> (String, usize) {
     if let Some(then_pos) = find_keyword(&upper, "&THEN") {
         let condition = rest[..then_pos].trim().to_string();
         let after_then = start + then_pos + 5; // len("&THEN")
-        let end = skip_to_eol(source, after_then);
-        return (condition, end);
+        return (condition, skip_after_if_keyword(source, after_then));
     }
 
-    // No &THEN found — take the rest of the line as the condition
+    // No &THEN found — take the rest of the line as the condition and stop at EOL.
     let eol = rest.find('\n').unwrap_or(rest.len());
     let condition = rest[..eol].trim().to_string();
     let end = skip_to_eol(source, start + eol);
     (condition, end)
+}
+
+/// After an `&IF`-family keyword (`&THEN`, `&ELSE`, `&ENDIF`), skip trailing
+/// spaces/tabs. If that reaches end-of-line, also consume the newline so classic
+/// multi-line forms do not emit a blank line for the directive line. If
+/// non-whitespace content follows on the same line, leave it in the stream
+/// (inline / expression-position form, #65).
+///
+/// Same-line trailing content after multi-line-style directives is rare in
+/// real corpora (which almost always put `/* … */` comments on their own
+/// lines, not `//`). When present it is now scanned as code — closer to the
+/// AVM, and the reason the corpus A/B gate is required before merge.
+fn skip_after_if_keyword(source: &str, from: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut i = from;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b'\r' {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b'\n' {
+        return i + 1;
+    }
+    // Inline body starts here (horizontal whitespace already skipped).
+    i
+}
+
+/// Expand `{N}` positional include-argument references in `text`.
+///
+/// Missing indices become the empty string (ABL include-arg semantics). Used
+/// when evaluating `&IF`/`&ELSEIF` conditions that contain `"{3}"`-style refs
+/// before the body scanner would see them.
+fn expand_positional_refs(text: &str, positional_args: &[String]) -> String {
+    if !text.contains('{') {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'}' {
+                let index: usize = text[i + 1..j].parse().unwrap_or(usize::MAX);
+                if let Some(val) = positional_args.get(index) {
+                    out.push_str(val);
+                }
+                // missing index → empty
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 /// Find a keyword in uppercase text, ensuring it's at a word boundary.
@@ -991,6 +1180,47 @@ fn skip_to_eol(source: &str, from: usize) -> usize {
     let rest = &source[from..];
     let eol = rest.find('\n').map(|p| p + 1).unwrap_or(rest.len());
     from + eol
+}
+
+/// Like [`skip_to_eol`], but stop at a same-line `&ELSE` / `&ELSEIF` / `&ENDIF`
+/// so line-oriented directives do not swallow a trailing inline closer (#65).
+fn skip_to_eol_or_if_boundary(source: &str, from: usize) -> usize {
+    if let Some(b) = find_same_line_if_boundary(source, from) {
+        return b;
+    }
+    skip_to_eol(source, from)
+}
+
+/// Find the earliest same-line `&ELSEIF`, `&ENDIF`, or `&ELSE` at or after
+/// `from`. Returns the absolute byte offset of the leading `&`, or `None` if
+/// none appears before the next newline (or EOF).
+///
+/// Used so line-oriented directive payloads (`&UNDEFINE`, `&SCOPED-DEFINE`,
+/// `&GLOBAL-DEFINE`, `&MESSAGE`) leave a trailing inline if-chain closer for
+/// the main scanner — the ADM2 `get`/`set` shape
+/// `&IF … &THEN &UNDEFINE xp-reset-values &ENDIF` (#65 follow-up).
+fn find_same_line_if_boundary(source: &str, from: usize) -> Option<usize> {
+    let rest = &source[from..];
+    let mut line_end = rest.find('\n').unwrap_or(rest.len());
+    if let Some(cr) = rest[..line_end].find('\r') {
+        line_end = cr;
+    }
+    if line_end == 0 {
+        return None;
+    }
+    let line = &rest[..line_end];
+    let upper = line.to_ascii_uppercase();
+
+    let mut best: Option<usize> = None;
+    for kw in ["&ELSEIF", "&ENDIF", "&ELSE"] {
+        if let Some(pos) = find_keyword(&upper, kw) {
+            best = Some(match best {
+                Some(b) => b.min(pos),
+                None => pos,
+            });
+        }
+    }
+    best.map(|p| from + p)
 }
 
 /// Find the matching `}` for a `{` at position `open`, handling nested braces.
@@ -1960,8 +2190,9 @@ ELSE
         let source = r#"{outer.i "OUTER_ARG"}"#;
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // inner.i has no args passed, so {1} is preserved as-is
-        assert_eq!(&*result.to_text(), "O=OUTER_ARG I={1}");
+        // inner.i is invoked with no user args — ABL expands missing `{1}` to
+        // empty (not the literal `{1}` text). Outer `{1}` still resolves.
+        assert_eq!(&*result.to_text(), "O=OUTER_ARG I=");
     }
 
     #[test]
@@ -2147,5 +2378,691 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "x=ky");
+    }
+
+    // =========================================================================
+    // Inline / mid-line &IF — GitHub #65
+    // =========================================================================
+
+    #[test]
+    fn inline_if_then_else_emits_true_branch() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF TRUE &THEN 5 &ELSE 6 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('5'), "true branch must emit, got: {text}");
+        assert!(
+            !text.contains('6'),
+            "false branch must be elided, got: {text}"
+        );
+        assert!(
+            !text.contains("&IF") && !text.contains("&THEN") && !text.contains("&ENDIF"),
+            "directives must be elided, got: {text}"
+        );
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must not warn unclosed &IF"
+        );
+        // Trailing period after &ENDIF must survive.
+        assert!(
+            text.trim_end().ends_with('.'),
+            "statement terminator after &ENDIF must remain, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn inline_if_false_emits_else_branch() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF FALSE &THEN 5 &ELSE 6 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('6'), "else branch must emit, got: {text}");
+        assert!(
+            !text.contains('5'),
+            "then branch must be elided, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_false_without_else_emits_nothing() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF FALSE &THEN 5 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !text.contains('5'),
+            "false then-body without else must not appear, got: {text}"
+        );
+        assert!(text.contains("i ="), "prefix must remain, got: {text}");
+        assert!(
+            text.contains('.'),
+            "trailing period must remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_empty_string_eq_with_u_qualifier() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = r#"i = &IF "":U = "":U &THEN 5 &ELSE 6 &ENDIF."#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains('5'),
+            "empty-string :U equality must take true branch, got: {text}"
+        );
+        assert!(!text.contains('6'), "else must be elided, got: {text}");
+    }
+
+    #[test]
+    fn inline_if_in_if_not_expression() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "IF NOT &IF TRUE &THEN YES &ELSE NO &ENDIF THEN RETURN.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains("YES"),
+            "selected branch must appear in expression position, got: {text}"
+        );
+        assert!(
+            !text.contains("IF NOT THEN"),
+            "must not collapse to IF NOT THEN, got: {text}"
+        );
+        assert!(
+            text.contains("IF NOT") && text.contains("THEN RETURN"),
+            "outer IF structure must remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_elseif_chain_one_line() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF FALSE &THEN A &ELSEIF TRUE &THEN B &ELSE C &ENDIF";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('B'), "elseif true branch, got: {text}");
+        assert!(!text.contains('A'), "first then elided, got: {text}");
+        assert!(!text.contains('C'), "else elided, got: {text}");
+    }
+
+    #[test]
+    fn inline_nested_if() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE &THEN &IF FALSE &THEN A &ELSE B &ENDIF &ENDIF";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('B'), "nested else must win, got: {text}");
+        assert!(!text.contains('A'), "nested then elided, got: {text}");
+    }
+
+    #[test]
+    fn multiline_if_still_works_alongside_inline() {
+        // Mixed file: multi-line form must remain correct after the end-offset fix.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&IF TRUE &THEN
+multi
+&ENDIF
+x = &IF FALSE &THEN no &ELSE yes &ENDIF.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains("multi"), "multi-line branch, got: {text}");
+        assert!(text.contains("yes"), "inline else, got: {text}");
+        assert!(!text.contains("no"), "inline then elided, got: {text}");
+    }
+
+    #[test]
+    fn positional_expanded_inside_string_in_include() {
+        let fs = make_fs(&[("/inc/s.i", r#""pre{1}post""#)]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), r#"{s.i MID}"#).unwrap();
+        assert_eq!(&*result.to_text(), r#""preMIDpost""#);
+    }
+
+    #[test]
+    fn positional_expanded_in_if_condition() {
+        let fs = make_fs(&[(
+            "/inc/c.i",
+            r#"&IF "{1}":U = "ok":U &THEN HIT &ELSE MISS &ENDIF"#,
+        )]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+
+        let hit = pp.process(FileId::new(1), "{c.i ok}").unwrap();
+        assert!(
+            hit.to_text().contains("HIT") && !hit.to_text().contains("MISS"),
+            "got: {}",
+            hit.to_text()
+        );
+
+        let miss = pp.process(FileId::new(1), "{c.i no}").unwrap();
+        assert!(
+            miss.to_text().contains("MISS") && !miss.to_text().contains("HIT"),
+            "got: {}",
+            miss.to_text()
+        );
+    }
+
+    #[test]
+    fn missing_positional_is_empty_in_condition() {
+        // `{0}` = include name, `{1}`/`{2}` supplied, `{3}` missing → empty.
+        let fs = make_fs(&[(
+            "/inc/m.i",
+            r#"&IF "{3}":U = "":U &THEN EMPTY &ELSE HAS &ENDIF"#,
+        )]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), "{m.i a b}").unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains("EMPTY") && !text.contains("HAS"),
+            "missing {{3}} must be empty → true branch, got: {text}"
+        );
+    }
+
+    /// Real ADM2 `fnarg` one-liner shape (must keep inline `&IF` or the test
+    /// false-passes against a still-broken preprocessor).
+    const FNARG_STUB: &str = r#"&IF "{3}":U = "":U &THEN dynamic-function("{1}":U IN TARGET-PROCEDURE, {2}) &ELSE dynamic-function("{1}":U IN {3}, {2}) &ENDIF"#;
+
+    #[test]
+    fn fnarg_shaped_include_two_args() {
+        let fs = make_fs(&[("/tty/fnarg", FNARG_STUB)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "IF NOT {fnarg setOpenQuery cQ} THEN RETURN.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "fnarg must resolve, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(!text.contains("{fnarg"), "include must expand, got: {text}");
+        assert!(
+            !text.contains("IF NOT THEN"),
+            "must not collapse expression, got: {text}"
+        );
+        assert!(
+            text.to_ascii_lowercase().contains("dynamic-function"),
+            "THEN branch body expected, got: {text}"
+        );
+        assert!(
+            text.contains("setOpenQuery"),
+            "{{1}} inside string must expand, got: {text}"
+        );
+        assert!(text.contains("cQ"), "{{2}} must expand, got: {text}");
+        assert!(
+            text.contains("TARGET-PROCEDURE"),
+            "2-arg form must take THEN (no handle) branch, got: {text}"
+        );
+        // ELSE branch would reference a bare handle position; ensure we did not
+        // take a broken `IN ,` form.
+        assert!(
+            !text.contains("IN ,") && !text.contains("IN,"),
+            "must not emit broken ELSE branch, got: {text}"
+        );
+    }
+
+    #[test]
+    fn fnarg_shaped_include_three_args_uses_else_handle() {
+        let fs = make_fs(&[("/tty/fnarg", FNARG_STUB)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "x = {fnarg setOpenQuery cQ hProc}.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains("hProc"),
+            "3-arg form must take ELSE branch with handle, got: {text}"
+        );
+        assert!(
+            !text.contains("TARGET-PROCEDURE"),
+            "ELSE branch must not use TARGET-PROCEDURE, got: {text}"
+        );
+        assert!(
+            text.contains("setOpenQuery") && text.contains("cQ"),
+            "args must expand, got: {text}"
+        );
+    }
+
+    #[test]
+    fn fn_shaped_include_expression() {
+        // Simplified fn shape (no arg list) still uses inline &IF in real ADE;
+        // exercise expression-position expansion.
+        let fn_stub = r#"&IF "{2}":U = "":U &THEN dynamic-function("{1}":U IN TARGET-PROCEDURE) &ELSE dynamic-function("{1}":U IN {2}) &ENDIF"#;
+        let fs = make_fs(&[("/tty/fn", fn_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "x = {fn getQueryHandle}.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.to_ascii_lowercase().contains("dynamic-function"),
+            "got: {text}"
+        );
+        assert!(text.contains("getQueryHandle"), "got: {text}");
+        assert!(text.contains("TARGET-PROCEDURE"), "got: {text}");
+    }
+
+    #[test]
+    fn expand_positional_refs_helper() {
+        let args = vec!["inc".to_string(), "one".to_string(), "two".to_string()];
+        assert_eq!(expand_positional_refs("{1}-{2}", &args), "one-two");
+        assert_eq!(expand_positional_refs(r#""{3}""#, &args), r#""""#);
+        assert_eq!(expand_positional_refs("plain", &args), "plain");
+    }
+
+    // --- #65 follow-up: line-oriented directive as inline &IF body -----------
+    //
+    // When the body after mid-line `&THEN` is itself a line-oriented directive
+    // (`&UNDEFINE` / `&SCOPED-DEFINE` / `&GLOBAL-DEFINE` / `&MESSAGE`), that
+    // directive must not skip_to_eol past a trailing same-line `&ENDIF`.
+    // This is the shipped `$DLC/tty/get` and `$DLC/tty/set` shape.
+
+    #[test]
+    fn inline_if_then_undefine_endif_closes() {
+        // Minimal repro from #65 corpus follow-up.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&GLOBAL-DEFINE foo bar
+&IF TRUE &THEN &UNDEFINE foo &ENDIF
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must not warn unclosed &IF, diags: {:?}",
+            result.diagnostics
+        );
+        // Variable must actually be undefined after the branch runs.
+        let check = pp
+            .process(
+                FileId::new(1),
+                "\
+&GLOBAL-DEFINE foo bar
+&IF TRUE &THEN &UNDEFINE foo &ENDIF
+x={&foo}.
+",
+            )
+            .unwrap();
+        assert_eq!(
+            &*check.to_text().replace('\n', ""),
+            "x=.",
+            "foo must be undefined after inline &UNDEFINE, got: {}",
+            check.to_text()
+        );
+    }
+
+    #[test]
+    fn adm2_get_set_shaped_inline_undefine() {
+        // Real `$DLC/tty/get` / `$DLC/tty/set` one-liner shape (line 1 / 18).
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&GLOBAL-DEFINE xp-reset-values yes
+&IF DEFINED(xp-assign) = 0 AND DEFINED(xp-reset-values) <> 0 &THEN &UNDEFINE xp-reset-values &ENDIF
+after
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("after"),
+            "content after closed &IF must remain, got: {text}"
+        );
+        // xp-reset-values should be gone; a following DEFINED check is false.
+        let follow = "\
+&GLOBAL-DEFINE xp-reset-values yes
+&IF DEFINED(xp-assign) = 0 AND DEFINED(xp-reset-values) <> 0 &THEN &UNDEFINE xp-reset-values &ENDIF
+&IF DEFINED(xp-reset-values) <> 0 &THEN STILL &ELSE GONE &ENDIF
+";
+        let result2 = pp.process(FileId::new(1), follow).unwrap();
+        let text2 = result2.to_text();
+        assert!(
+            text2.contains("GONE") && !text2.contains("STILL"),
+            "xp-reset-values must be undefined, got: {text2}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_scoped_define_endif() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&IF TRUE &THEN &SCOPED-DEFINE x 1 &ENDIF
+val={&x}.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("val=1"),
+            "scoped define inside inline then must take effect, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_global_define_endif() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&IF TRUE &THEN &GLOBAL-DEFINE g yes &ENDIF
+val={&g}.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("val=yes"),
+            "global define inside inline then must take effect, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_message_endif() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE &THEN &MESSAGE hello world &ENDIF\nkept.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("kept."),
+            "content after message/endif must remain, got: {text}"
+        );
+        assert!(
+            !text.to_ascii_uppercase().contains("&MESSAGE"),
+            "message directive must be elided, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_undefine_else_undefine_endif() {
+        // Both then and else branches are line-oriented directives on one line.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&GLOBAL-DEFINE a 1
+&GLOBAL-DEFINE b 2
+&IF TRUE &THEN &UNDEFINE a &ELSE &UNDEFINE b &ENDIF
+A={&a}.B={&b}.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text().replace('\n', "");
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("A=.") && text.contains("B=2"),
+            "true branch must undefine a only, got: {text}"
+        );
+    }
+
+    #[test]
+    fn plain_code_inline_if_still_works_with_directive_boundary() {
+        // Guard: the boundary fix must not break plain-code inline bodies.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF TRUE &THEN 5 &ELSE 6 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+        assert!(text.contains('5') && !text.contains('6'), "got: {text}");
+    }
+
+    #[test]
+    fn get_set_shaped_include_stub() {
+        // Full include-shaped stand-in for `$DLC/tty/get` / `set` first line.
+        // Asserts the include expands and the inline `&UNDEFINE … &ENDIF` closes
+        // without PREPROC002 (the corpus regression). UNDEFINE→parent-global
+        // restore semantics are out of scope for this test.
+        let get_stub = "\
+&IF DEFINED(xp-assign) = 0 AND DEFINED(xp-reset-values) <> 0 &THEN &UNDEFINE xp-reset-values &ENDIF
+ASSIGN x = 1.
+";
+        let fs = make_fs(&[("/tty/get", get_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "\
+&GLOBAL-DEFINE xp-reset-values yes
+{get}
+done.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "get must resolve, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "inline &UNDEFINE must not leave unclosed &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("ASSIGN") && text.contains("done."),
+            "include body must expand, got: {text}"
+        );
+    }
+
+    // --- #65 round 4: positional {N} inside &SCOPED/GLOBAL-DEFINE values ---
+
+    #[test]
+    fn positional_expanded_in_scoped_define_value() {
+        let fs = make_fs(&[("/inc/d.i", "&SCOPED-DEFINE H {3}\nval={&H}.\n")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), "{d.i a b handleX}").unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val=handleX"),
+            "{{3}} must expand at define time, got: {text}"
+        );
+        assert!(
+            !text.contains("{3}"),
+            "literal {{3}} must not remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn set_shaped_admhdl_from_positional() {
+        // Simplified $DLC/tty/set shape: ADMHdl from {3} via scoped-define.
+        let set_stub = r#"&IF "{3}":U = "":U &THEN &SCOPED-DEFINE ADMHdl TARGET-PROCEDURE &ELSE &SCOPED-DEFINE ADMHdl {3} &ENDIF
+DYNAMIC-FUNC("set{1}":U IN {&ADMHdl}, {2})
+"#;
+        let fs = make_fs(&[("/tty/set", set_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+
+        // 3-arg form: ELSE branch, ADMHdl = third arg
+        let three = pp
+            .process(
+                FileId::new(1),
+                r#"{set DataSourceEvents "evtList" TARGET-PROCEDURE}"#,
+            )
+            .unwrap();
+        let t3 = three.to_text();
+        assert!(
+            t3.contains("TARGET-PROCEDURE") && t3.contains("setDataSourceEvents"),
+            "3-arg set must use handle arg, got: {t3}"
+        );
+        assert!(
+            !t3.contains("{3}") && !t3.contains("IN {"),
+            "must not leave literal positional in IN clause, got: {t3}"
+        );
+        assert!(t3.contains("evtList"), "arg 2 must expand, got: {t3}");
+
+        // 2-arg form: THEN branch, ADMHdl = TARGET-PROCEDURE literal
+        let two = pp
+            .process(FileId::new(1), r#"{set DataSourceEvents "evtList"}"#)
+            .unwrap();
+        let t2 = two.to_text();
+        assert!(
+            t2.contains("TARGET-PROCEDURE") && t2.contains("setDataSourceEvents"),
+            "2-arg set must default TARGET-PROCEDURE, got: {t2}"
+        );
+        assert!(!t2.contains("{3}"), "got: {t2}");
+    }
+
+    // --- #66 xp-property BUFFER-FIELD path fixtures ---
+
+    #[test]
+    fn set_xp_property_buffer_field_branch() {
+        // When DEFINED(xp{1}) is true, real set takes the BUFFER-FIELD fast path
+        // instead of DYNAMIC-FUNC. Stub forces that branch with an unquoted
+        // comma-list positional arg (the dominant corpus shape).
+        let set_stub = r#"&IF DEFINED(xp{1}) <> 0 &THEN
+ASSIGN ghProp:BUFFER-FIELD('{1}':U):BUFFER-VALUE = {2}.
+&ELSE
+DYNAMIC-FUNC("set{1}":U IN TARGET-PROCEDURE, {2})
+&ENDIF
+"#;
+        let fs = make_fs(&[("/tty/set", set_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "\
+&GLOBAL-DEFINE xpDataSourceEvents yes
+DEFINE VARIABLE ghProp AS HANDLE NO-UNDO.
+{set DataSourceEvents dataAvailable,confirmContinue,isUpdatePending,buildDataRequest}
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "set must resolve, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must not leave unclosed &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("BUFFER-FIELD") && text.contains("BUFFER-VALUE"),
+            "xp branch must emit BUFFER-FIELD path, got: {text}"
+        );
+        assert!(
+            text.contains("dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"),
+            "comma-list arg must expand into BUFFER-VALUE, got: {text}"
+        );
+        assert!(
+            !text.contains("DYNAMIC-FUNC"),
+            "DYNAMIC-FUNC branch must not run when xp prop defined, got: {text}"
+        );
+    }
+
+    #[test]
+    fn set_single_quoted_comma_list_arg_characterization() {
+        // Characterization (#66 Fable amendment): single-quoted host args are
+        // stripped by read_arg_value (quotes are delimiters). Trailing `:U`
+        // after the closing quote is a separate token/arg — pin current
+        // behavior; no quote-policy change in this PR.
+        let set_stub = "val={2}.\n";
+        let fs = make_fs(&[("/tty/set", set_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), "{set X 'a,b,c':U}").unwrap();
+        let text = result.to_text();
+        // Quotes stripped from the positional value.
+        assert!(
+            text.contains("val=a,b,c") || text.contains("val='a,b,c'"),
+            "pin single-quoted comma-list expansion, got: {text}"
+        );
+        // Prefer documenting strip (Progress-like delimiter semantics).
+        assert!(
+            text.contains("a,b,c"),
+            "comma list content must appear, got: {text}"
+        );
+    }
+
+    #[test]
+    fn missing_positional_in_define_value_is_empty() {
+        let fs = make_fs(&[("/inc/m.i", "&SCOPED-DEFINE H {3}\nval=[{&H}]\n")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        // only {0}=name, {1}=a, {2}=b — {3} missing → empty
+        let result = pp.process(FileId::new(1), "{m.i a b}").unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val=[]"),
+            "missing {{3}} in define value → empty, got: {text}"
+        );
+    }
+
+    #[test]
+    fn top_level_define_preserves_literal_positional() {
+        // Outside an include, `{N}` in a define value must not be erased
+        // (body scanner leaves top-level positionals for the lexer).
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE X {1}\nval={&X}.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val={1}"),
+            "top-level define must keep literal {{1}}, got: {text}"
+        );
+    }
+
+    #[test]
+    fn positional_expanded_in_global_define_value() {
+        let fs = make_fs(&[("/inc/g.i", "&GLOBAL-DEFINE GH {2}\n")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp
+            .process(FileId::new(1), "{g.i ignored handleY}\nval={&GH}.\n")
+            .unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val=handleY"),
+            "global define value must expand {{2}}, got: {text}"
+        );
     }
 }
