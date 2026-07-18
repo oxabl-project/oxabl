@@ -121,6 +121,22 @@ fn tokenize(input: &str) -> Vec<CondToken> {
                 if i < bytes.len() {
                     i += 1; // skip closing quote
                 }
+                // ABL string attributes after a *quoted literal* (`"x":U`,
+                // `"":U`) are compile-time markers (untranslated, etc.). Ignore
+                // them in preprocessor conditions so `"":U = "":U` compares as
+                // equal (ADM2 fn/fnarg; #65).
+                //
+                // Scope note: this only strips `:U`/`:L`/… immediately after a
+                // string literal token. A bare `{&macro}:U` that expands to an
+                // *unquoted* value (e.g. define `x` = `hello`, condition
+                // `{&x}:U = "hello"`) is not covered — ADM2 always writes the
+                // quoted form `"{N}":U` / `"{&name}":U`, which we handle.
+                if i < bytes.len() && bytes[i] == b':' {
+                    i += 1;
+                    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                        i += 1;
+                    }
+                }
             }
             b'0'..=b'9' => {
                 let start = i;
@@ -658,5 +674,37 @@ mod tests {
         assert!(evaluate("{&ver} LE 10", &vars));
         assert!(evaluate("{&ver} EQ 10", &vars));
         assert!(evaluate("{&ver} NE 5", &vars));
+    }
+
+    // --- String attributes (`:U`, etc.) — #65 ADM2 conditions ---
+
+    #[test]
+    fn string_attribute_u_empty_eq() {
+        // Real fnarg condition shape after empty `{3}` expansion.
+        assert!(evaluate(r#""":U = "":U"#, &PreprocVarTable::new()));
+    }
+
+    #[test]
+    fn string_attribute_u_equal() {
+        assert!(evaluate(r#""x":U = "x":U"#, &PreprocVarTable::new()));
+    }
+
+    #[test]
+    fn string_attribute_u_unequal() {
+        assert!(!evaluate(r#""x":U = "y":U"#, &PreprocVarTable::new()));
+    }
+
+    #[test]
+    fn string_attribute_does_not_break_plain_string_eq() {
+        assert!(evaluate(r#""a" = "a""#, &PreprocVarTable::new()));
+        assert!(!evaluate(r#""a" = "b""#, &PreprocVarTable::new()));
+    }
+
+    #[test]
+    fn string_attribute_l_ignored() {
+        assert!(evaluate(
+            r#""hello":L = "hello":L"#,
+            &PreprocVarTable::new()
+        ));
     }
 }

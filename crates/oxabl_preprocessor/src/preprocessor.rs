@@ -226,7 +226,9 @@ impl<'fs> ProcessContext<'fs> {
                                     });
                                 }
                                 let cond_result = if emitting {
-                                    evaluate_with_defined(condition, &self.vars)
+                                    let condition =
+                                        expand_positional_refs(condition, positional_args);
+                                    evaluate_with_defined(&condition, &self.vars)
                                 } else {
                                     false
                                 };
@@ -249,8 +251,10 @@ impl<'fs> ProcessContext<'fs> {
                                 }
                                 if let Some(state) = if_stack.last_mut() {
                                     if state.parent_emitting && !state.any_branch_taken {
+                                        let condition =
+                                            expand_positional_refs(condition, positional_args);
                                         let cond_result =
-                                            evaluate_with_defined(condition, &self.vars);
+                                            evaluate_with_defined(&condition, &self.vars);
                                         state.emitting = cond_result;
                                         if cond_result {
                                             state.any_branch_taken = true;
@@ -281,7 +285,9 @@ impl<'fs> ProcessContext<'fs> {
                             }
                             DirectiveKind::EndIf => {
                                 // Emit the chunk from the *previous* emitting state
-                                // (the &ENDIF line itself should not appear in output)
+                                // (the &ENDIF itself should not appear in output).
+                                // Do not skip to EOL — trailing code after mid-line
+                                // `&ENDIF` (e.g. the period in `… &ENDIF.`) must remain.
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
@@ -408,54 +414,15 @@ impl<'fs> ProcessContext<'fs> {
                             }
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
-                            // Resolve against the current include's positional args.
-                            let mut j = i + 1;
-                            while j < len && bytes[j].is_ascii_digit() {
-                                j += 1;
-                            }
-                            if j < len && bytes[j] == b'}' {
-                                let ref_end = j + 1;
-                                let index: usize = source[i + 1..j].parse().unwrap_or(usize::MAX);
-
-                                if let Some(arg_val) = positional_args.get(index) {
-                                    // Emit chunk before the reference
-                                    if i as u32 > chunk_start {
-                                        nodes.push(SpanNode::Chunk {
-                                            file,
-                                            start: chunk_start,
-                                            end: i as u32,
-                                        });
-                                    }
-
-                                    if !arg_val.is_empty() {
-                                        let expanded_id = self.next_file_id();
-                                        let val: Arc<str> = Arc::from(arg_val.as_str());
-                                        let val_len = val.len() as u32;
-                                        self.sources.push((expanded_id, val));
-
-                                        nodes.push(SpanNode::Include {
-                                            site: FileSpan {
-                                                file,
-                                                span: Span {
-                                                    start: i as u32,
-                                                    end: ref_end as u32,
-                                                },
-                                            },
-                                            children: vec![SpanNode::Chunk {
-                                                file: expanded_id,
-                                                start: 0,
-                                                end: val_len,
-                                            }],
-                                        });
-                                    }
-
-                                    i = ref_end;
-                                    chunk_start = i as u32;
-                                    continue;
-                                }
-                                // No arg at this index — preserve as-is so the
-                                // downstream lexer sees it as Kind::IncludeArgReference.
-                                i = ref_end;
+                            if let Some(next) = self.expand_positional_ref_at(
+                                file,
+                                source,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            ) {
+                                i = next;
                                 continue;
                             }
                             // Not a valid {N} reference, advance normally
@@ -508,6 +475,23 @@ impl<'fs> ProcessContext<'fs> {
                                 &mut nodes,
                             )
                         {
+                            // `{&name}` inside strings — AVM substitutes these.
+                            i = next;
+                        } else if emitting
+                            && i + 1 < len
+                            && bytes[i] == b'{'
+                            && bytes[i + 1].is_ascii_digit()
+                            && let Some(next) = self.expand_positional_ref_at(
+                                file,
+                                source,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            )
+                        {
+                            // `{N}` include args expand inside strings too
+                            // (e.g. `"{1}":U` in ADM2 fn/fnarg).
                             i = next;
                         } else {
                             i += 1;
@@ -609,6 +593,94 @@ impl<'fs> ProcessContext<'fs> {
         Some(ref_end)
     }
 
+    /// Expand a `{N}` positional include-argument reference at byte offset `i`.
+    ///
+    /// Inside an include (`positional_args` non-empty), a missing index expands
+    /// to empty (ABL semantics). At top level (empty args), the reference is
+    /// left as-is for the downstream lexer.
+    ///
+    /// Returns the offset just past `}`, or `None` when the span is not a valid
+    /// `{digits}` reference.
+    fn expand_positional_ref_at(
+        &mut self,
+        file: FileId,
+        source: &str,
+        i: usize,
+        positional_args: &[String],
+        chunk_start: &mut u32,
+        nodes: &mut Vec<SpanNode>,
+    ) -> Option<usize> {
+        let bytes = source.as_bytes();
+        let len = bytes.len();
+        if i + 1 >= len || !bytes[i + 1].is_ascii_digit() {
+            return None;
+        }
+        let mut j = i + 1;
+        while j < len && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j >= len || bytes[j] != b'}' {
+            return None;
+        }
+        let ref_end = j + 1;
+        let index: usize = source[i + 1..j].parse().unwrap_or(usize::MAX);
+
+        let in_include = !positional_args.is_empty();
+        let arg_val = positional_args.get(index).map(|s| s.as_str());
+
+        match (arg_val, in_include) {
+            (Some(arg_val), _) => {
+                if i as u32 > *chunk_start {
+                    nodes.push(SpanNode::Chunk {
+                        file,
+                        start: *chunk_start,
+                        end: i as u32,
+                    });
+                }
+                if !arg_val.is_empty() {
+                    let expanded_id = self.next_file_id();
+                    let val: Arc<str> = Arc::from(arg_val);
+                    let val_len = val.len() as u32;
+                    self.sources.push((expanded_id, val));
+                    nodes.push(SpanNode::Include {
+                        site: FileSpan {
+                            file,
+                            span: Span {
+                                start: i as u32,
+                                end: ref_end as u32,
+                            },
+                        },
+                        children: vec![SpanNode::Chunk {
+                            file: expanded_id,
+                            start: 0,
+                            end: val_len,
+                        }],
+                    });
+                }
+                *chunk_start = ref_end as u32;
+                Some(ref_end)
+            }
+            (None, true) => {
+                // Inside include, missing `{N}` → empty (elide the reference).
+                if i as u32 > *chunk_start {
+                    nodes.push(SpanNode::Chunk {
+                        file,
+                        start: *chunk_start,
+                        end: i as u32,
+                    });
+                }
+                *chunk_start = ref_end as u32;
+                Some(ref_end)
+            }
+            (None, false) => {
+                // Top-level: leave `{N}` in the current chunk for the lexer
+                // (IncludeArgReference). Advance past the reference without
+                // flushing or eliding.
+                Some(ref_end)
+            }
+        }
+    }
+
     /// Try to parse a preprocessor directive starting at position `i`.
     fn try_parse_directive(&self, source: &str, i: usize) -> Option<Directive> {
         let rest = &source[i..];
@@ -664,17 +736,17 @@ impl<'fs> ProcessContext<'fs> {
                 })
             }
             "ELSE" => {
-                let end = skip_to_eol(source, i + j);
+                // Mid-line `&ELSE branch` keeps the body; multi-line drops EOL.
                 Some(Directive {
                     kind: DirectiveKind::Else,
-                    end,
+                    end: skip_after_if_keyword(source, i + j),
                 })
             }
             "ENDIF" => {
-                let end = skip_to_eol(source, i + j);
+                // Mid-line `&ENDIF.` keeps the period; multi-line drops EOL.
                 Some(Directive {
                     kind: DirectiveKind::EndIf,
-                    end,
+                    end: skip_after_if_keyword(source, i + j),
                 })
             }
             "THEN" => {
@@ -949,7 +1021,10 @@ fn parse_undefine_body(source: &str, start: usize) -> (String, usize) {
 
 /// Parse the condition expression between `&IF` and `&THEN`.
 ///
-/// Returns `(condition_text, end_offset)`.
+/// Returns `(condition_text, end_offset)` where `end_offset` is positioned via
+/// [`skip_after_if_keyword`] after `&THEN` so mid-line branch bodies remain in
+/// the scan stream (#65) while multi-line forms still drop the directive-line
+/// newline.
 fn parse_if_condition(source: &str, start: usize) -> (String, usize) {
     let rest = &source[start..];
     let upper = rest.to_ascii_uppercase();
@@ -958,15 +1033,74 @@ fn parse_if_condition(source: &str, start: usize) -> (String, usize) {
     if let Some(then_pos) = find_keyword(&upper, "&THEN") {
         let condition = rest[..then_pos].trim().to_string();
         let after_then = start + then_pos + 5; // len("&THEN")
-        let end = skip_to_eol(source, after_then);
-        return (condition, end);
+        return (condition, skip_after_if_keyword(source, after_then));
     }
 
-    // No &THEN found — take the rest of the line as the condition
+    // No &THEN found — take the rest of the line as the condition and stop at EOL.
     let eol = rest.find('\n').unwrap_or(rest.len());
     let condition = rest[..eol].trim().to_string();
     let end = skip_to_eol(source, start + eol);
     (condition, end)
+}
+
+/// After an `&IF`-family keyword (`&THEN`, `&ELSE`, `&ENDIF`), skip trailing
+/// spaces/tabs. If that reaches end-of-line, also consume the newline so classic
+/// multi-line forms do not emit a blank line for the directive line. If
+/// non-whitespace content follows on the same line, leave it in the stream
+/// (inline / expression-position form, #65).
+///
+/// Same-line trailing content after multi-line-style directives is rare in
+/// real corpora (which almost always put `/* … */` comments on their own
+/// lines, not `//`). When present it is now scanned as code — closer to the
+/// AVM, and the reason the corpus A/B gate is required before merge.
+fn skip_after_if_keyword(source: &str, from: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut i = from;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b'\r' {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b'\n' {
+        return i + 1;
+    }
+    // Inline body starts here (horizontal whitespace already skipped).
+    i
+}
+
+/// Expand `{N}` positional include-argument references in `text`.
+///
+/// Missing indices become the empty string (ABL include-arg semantics). Used
+/// when evaluating `&IF`/`&ELSEIF` conditions that contain `"{3}"`-style refs
+/// before the body scanner would see them.
+fn expand_positional_refs(text: &str, positional_args: &[String]) -> String {
+    if !text.contains('{') {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'}' {
+                let index: usize = text[i + 1..j].parse().unwrap_or(usize::MAX);
+                if let Some(val) = positional_args.get(index) {
+                    out.push_str(val);
+                }
+                // missing index → empty
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 /// Find a keyword in uppercase text, ensuring it's at a word boundary.
@@ -1960,8 +2094,9 @@ ELSE
         let source = r#"{outer.i "OUTER_ARG"}"#;
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        // inner.i has no args passed, so {1} is preserved as-is
-        assert_eq!(&*result.to_text(), "O=OUTER_ARG I={1}");
+        // inner.i is invoked with no user args — ABL expands missing `{1}` to
+        // empty (not the literal `{1}` text). Outer `{1}` still resolves.
+        assert_eq!(&*result.to_text(), "O=OUTER_ARG I=");
     }
 
     #[test]
@@ -2147,5 +2282,298 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "x=ky");
+    }
+
+    // =========================================================================
+    // Inline / mid-line &IF — GitHub #65
+    // =========================================================================
+
+    #[test]
+    fn inline_if_then_else_emits_true_branch() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF TRUE &THEN 5 &ELSE 6 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('5'), "true branch must emit, got: {text}");
+        assert!(
+            !text.contains('6'),
+            "false branch must be elided, got: {text}"
+        );
+        assert!(
+            !text.contains("&IF") && !text.contains("&THEN") && !text.contains("&ENDIF"),
+            "directives must be elided, got: {text}"
+        );
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must not warn unclosed &IF"
+        );
+        // Trailing period after &ENDIF must survive.
+        assert!(
+            text.trim_end().ends_with('.'),
+            "statement terminator after &ENDIF must remain, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn inline_if_false_emits_else_branch() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF FALSE &THEN 5 &ELSE 6 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('6'), "else branch must emit, got: {text}");
+        assert!(
+            !text.contains('5'),
+            "then branch must be elided, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_false_without_else_emits_nothing() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF FALSE &THEN 5 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !text.contains('5'),
+            "false then-body without else must not appear, got: {text}"
+        );
+        assert!(text.contains("i ="), "prefix must remain, got: {text}");
+        assert!(
+            text.contains('.'),
+            "trailing period must remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_empty_string_eq_with_u_qualifier() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = r#"i = &IF "":U = "":U &THEN 5 &ELSE 6 &ENDIF."#;
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains('5'),
+            "empty-string :U equality must take true branch, got: {text}"
+        );
+        assert!(!text.contains('6'), "else must be elided, got: {text}");
+    }
+
+    #[test]
+    fn inline_if_in_if_not_expression() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "IF NOT &IF TRUE &THEN YES &ELSE NO &ENDIF THEN RETURN.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains("YES"),
+            "selected branch must appear in expression position, got: {text}"
+        );
+        assert!(
+            !text.contains("IF NOT THEN"),
+            "must not collapse to IF NOT THEN, got: {text}"
+        );
+        assert!(
+            text.contains("IF NOT") && text.contains("THEN RETURN"),
+            "outer IF structure must remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_elseif_chain_one_line() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF FALSE &THEN A &ELSEIF TRUE &THEN B &ELSE C &ENDIF";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('B'), "elseif true branch, got: {text}");
+        assert!(!text.contains('A'), "first then elided, got: {text}");
+        assert!(!text.contains('C'), "else elided, got: {text}");
+    }
+
+    #[test]
+    fn inline_nested_if() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE &THEN &IF FALSE &THEN A &ELSE B &ENDIF &ENDIF";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains('B'), "nested else must win, got: {text}");
+        assert!(!text.contains('A'), "nested then elided, got: {text}");
+    }
+
+    #[test]
+    fn multiline_if_still_works_alongside_inline() {
+        // Mixed file: multi-line form must remain correct after the end-offset fix.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&IF TRUE &THEN
+multi
+&ENDIF
+x = &IF FALSE &THEN no &ELSE yes &ENDIF.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(text.contains("multi"), "multi-line branch, got: {text}");
+        assert!(text.contains("yes"), "inline else, got: {text}");
+        assert!(!text.contains("no"), "inline then elided, got: {text}");
+    }
+
+    #[test]
+    fn positional_expanded_inside_string_in_include() {
+        let fs = make_fs(&[("/inc/s.i", r#""pre{1}post""#)]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), r#"{s.i MID}"#).unwrap();
+        assert_eq!(&*result.to_text(), r#""preMIDpost""#);
+    }
+
+    #[test]
+    fn positional_expanded_in_if_condition() {
+        let fs = make_fs(&[(
+            "/inc/c.i",
+            r#"&IF "{1}":U = "ok":U &THEN HIT &ELSE MISS &ENDIF"#,
+        )]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+
+        let hit = pp.process(FileId::new(1), "{c.i ok}").unwrap();
+        assert!(
+            hit.to_text().contains("HIT") && !hit.to_text().contains("MISS"),
+            "got: {}",
+            hit.to_text()
+        );
+
+        let miss = pp.process(FileId::new(1), "{c.i no}").unwrap();
+        assert!(
+            miss.to_text().contains("MISS") && !miss.to_text().contains("HIT"),
+            "got: {}",
+            miss.to_text()
+        );
+    }
+
+    #[test]
+    fn missing_positional_is_empty_in_condition() {
+        // `{0}` = include name, `{1}`/`{2}` supplied, `{3}` missing → empty.
+        let fs = make_fs(&[(
+            "/inc/m.i",
+            r#"&IF "{3}":U = "":U &THEN EMPTY &ELSE HAS &ENDIF"#,
+        )]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), "{m.i a b}").unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains("EMPTY") && !text.contains("HAS"),
+            "missing {{3}} must be empty → true branch, got: {text}"
+        );
+    }
+
+    /// Real ADM2 `fnarg` one-liner shape (must keep inline `&IF` or the test
+    /// false-passes against a still-broken preprocessor).
+    const FNARG_STUB: &str = r#"&IF "{3}":U = "":U &THEN dynamic-function("{1}":U IN TARGET-PROCEDURE, {2}) &ELSE dynamic-function("{1}":U IN {3}, {2}) &ENDIF"#;
+
+    #[test]
+    fn fnarg_shaped_include_two_args() {
+        let fs = make_fs(&[("/tty/fnarg", FNARG_STUB)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "IF NOT {fnarg setOpenQuery cQ} THEN RETURN.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "fnarg must resolve, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(!text.contains("{fnarg"), "include must expand, got: {text}");
+        assert!(
+            !text.contains("IF NOT THEN"),
+            "must not collapse expression, got: {text}"
+        );
+        assert!(
+            text.to_ascii_lowercase().contains("dynamic-function"),
+            "THEN branch body expected, got: {text}"
+        );
+        assert!(
+            text.contains("setOpenQuery"),
+            "{{1}} inside string must expand, got: {text}"
+        );
+        assert!(text.contains("cQ"), "{{2}} must expand, got: {text}");
+        assert!(
+            text.contains("TARGET-PROCEDURE"),
+            "2-arg form must take THEN (no handle) branch, got: {text}"
+        );
+        // ELSE branch would reference a bare handle position; ensure we did not
+        // take a broken `IN ,` form.
+        assert!(
+            !text.contains("IN ,") && !text.contains("IN,"),
+            "must not emit broken ELSE branch, got: {text}"
+        );
+    }
+
+    #[test]
+    fn fnarg_shaped_include_three_args_uses_else_handle() {
+        let fs = make_fs(&[("/tty/fnarg", FNARG_STUB)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "x = {fnarg setOpenQuery cQ hProc}.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.contains("hProc"),
+            "3-arg form must take ELSE branch with handle, got: {text}"
+        );
+        assert!(
+            !text.contains("TARGET-PROCEDURE"),
+            "ELSE branch must not use TARGET-PROCEDURE, got: {text}"
+        );
+        assert!(
+            text.contains("setOpenQuery") && text.contains("cQ"),
+            "args must expand, got: {text}"
+        );
+    }
+
+    #[test]
+    fn fn_shaped_include_expression() {
+        // Simplified fn shape (no arg list) still uses inline &IF in real ADE;
+        // exercise expression-position expansion.
+        let fn_stub = r#"&IF "{2}":U = "":U &THEN dynamic-function("{1}":U IN TARGET-PROCEDURE) &ELSE dynamic-function("{1}":U IN {2}) &ENDIF"#;
+        let fs = make_fs(&[("/tty/fn", fn_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "x = {fn getQueryHandle}.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            text.to_ascii_lowercase().contains("dynamic-function"),
+            "got: {text}"
+        );
+        assert!(text.contains("getQueryHandle"), "got: {text}");
+        assert!(text.contains("TARGET-PROCEDURE"), "got: {text}");
+    }
+
+    #[test]
+    fn expand_positional_refs_helper() {
+        let args = vec!["inc".to_string(), "one".to_string(), "two".to_string()];
+        assert_eq!(expand_positional_refs("{1}-{2}", &args), "one-two");
+        assert_eq!(expand_positional_refs(r#""{3}""#, &args), r#""""#);
+        assert_eq!(expand_positional_refs("plain", &args), "plain");
     }
 }
