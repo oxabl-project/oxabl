@@ -744,6 +744,18 @@ name = "DYNAMIC-NEW"
 keyword_type = "Statement"
 
 # =============================================================================
+# DYNAMIC-FUNCTION abbreviation
+# ADE tty/set and tty/get emit DYNAMIC-FUNC(...). Without a min abbreviation the
+# lexer treats DYNAMIC-FUNC as an Identifier, so the IN-handle clause fails to
+# parse ("Expected ')' after function arguments"). #65 round 4.
+# =============================================================================
+
+# Primary reserved-keyword name uses a space; hyphen form is the alternate.
+[[override]]
+name = "DYNAMIC FUNCTION"
+min_abbreviation = "DYNAMIC-FUNC"
+
+# =============================================================================
 # LIBRARY keyword
 # Used as handle attribute name (e.g. builder:Library)
 # =============================================================================

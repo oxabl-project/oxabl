@@ -1469,6 +1469,33 @@ fn parse_function_call_with_expression_arg() {
 }
 
 #[test]
+fn parse_dynamic_func_abbreviation_with_in_handle() {
+    // ADE tty/set emits DYNAMIC-FUNC (abbrev of DYNAMIC-FUNCTION). #65 round 4.
+    let source = r#"DYNAMIC-FUNC("setDataSourceEvents":U IN TARGET-PROCEDURE, evtList)"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let expression = parser
+        .parse_expression()
+        .expect("DYNAMIC-FUNC … IN handle must parse");
+    match expression.kind {
+        ExpressionKind::FunctionCall { name, arguments } => {
+            assert!(
+                name.name.eq_ignore_ascii_case("dynamic-func")
+                    || name.name.eq_ignore_ascii_case("dynamic-function"),
+                "name={}",
+                name.name
+            );
+            assert!(
+                arguments.len() >= 2,
+                "name + handle (+ args), got {}",
+                arguments.len()
+            );
+        }
+        other => panic!("Expected FunctionCall, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_nested_function_calls() {
     let source = "TRIM(SUBSTRING(name, 1, 5))";
     let tokens = tokenize(source);

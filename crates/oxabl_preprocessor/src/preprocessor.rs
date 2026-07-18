@@ -176,7 +176,18 @@ impl<'fs> ProcessContext<'fs> {
                                     });
                                 }
                                 if emitting {
-                                    self.vars.define(name, value);
+                                    // Expand positional `{N}` inside the value at
+                                    // define time (ADM2 `set`/`get` store
+                                    // `&SCOPED-DEFINE ADMHdl {3}`). Only inside
+                                    // an include — top-level keeps literal `{N}`
+                                    // for the lexer, matching body-scan rules.
+                                    // #65 round 4.
+                                    let expanded = if !positional_args.is_empty() {
+                                        expand_positional_refs(value, positional_args)
+                                    } else {
+                                        value.clone()
+                                    };
+                                    self.vars.define(name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -194,8 +205,13 @@ impl<'fs> ProcessContext<'fs> {
                                     });
                                 }
                                 if emitting {
-                                    self.vars.define(name, value);
-                                    self.global_vars.define(name, value);
+                                    let expanded = if !positional_args.is_empty() {
+                                        expand_positional_refs(value, positional_args)
+                                    } else {
+                                        value.clone()
+                                    };
+                                    self.vars.define(name, &expanded);
+                                    self.global_vars.define(name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -2876,4 +2892,108 @@ done.
             "include body must expand, got: {text}"
         );
     }
+
+    // --- #65 round 4: positional {N} inside &SCOPED/GLOBAL-DEFINE values ---
+
+    #[test]
+    fn positional_expanded_in_scoped_define_value() {
+        let fs = make_fs(&[("/inc/d.i", "&SCOPED-DEFINE H {3}\nval={&H}.\n")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), "{d.i a b handleX}").unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val=handleX"),
+            "{{3}} must expand at define time, got: {text}"
+        );
+        assert!(
+            !text.contains("{3}"),
+            "literal {{3}} must not remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn set_shaped_admhdl_from_positional() {
+        // Simplified $DLC/tty/set shape: ADMHdl from {3} via scoped-define.
+        let set_stub = r#"&IF "{3}":U = "":U &THEN &SCOPED-DEFINE ADMHdl TARGET-PROCEDURE &ELSE &SCOPED-DEFINE ADMHdl {3} &ENDIF
+DYNAMIC-FUNC("set{1}":U IN {&ADMHdl}, {2})
+"#;
+        let fs = make_fs(&[("/tty/set", set_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+
+        // 3-arg form: ELSE branch, ADMHdl = third arg
+        let three = pp
+            .process(
+                FileId::new(1),
+                r#"{set DataSourceEvents "evtList" TARGET-PROCEDURE}"#,
+            )
+            .unwrap();
+        let t3 = three.to_text();
+        assert!(
+            t3.contains("TARGET-PROCEDURE") && t3.contains("setDataSourceEvents"),
+            "3-arg set must use handle arg, got: {t3}"
+        );
+        assert!(
+            !t3.contains("{3}") && !t3.contains("IN {"),
+            "must not leave literal positional in IN clause, got: {t3}"
+        );
+        assert!(t3.contains("evtList"), "arg 2 must expand, got: {t3}");
+
+        // 2-arg form: THEN branch, ADMHdl = TARGET-PROCEDURE literal
+        let two = pp
+            .process(FileId::new(1), r#"{set DataSourceEvents "evtList"}"#)
+            .unwrap();
+        let t2 = two.to_text();
+        assert!(
+            t2.contains("TARGET-PROCEDURE") && t2.contains("setDataSourceEvents"),
+            "2-arg set must default TARGET-PROCEDURE, got: {t2}"
+        );
+        assert!(!t2.contains("{3}"), "got: {t2}");
+    }
+
+    #[test]
+    fn missing_positional_in_define_value_is_empty() {
+        let fs = make_fs(&[("/inc/m.i", "&SCOPED-DEFINE H {3}\nval=[{&H}]\n")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        // only {0}=name, {1}=a, {2}=b — {3} missing → empty
+        let result = pp.process(FileId::new(1), "{m.i a b}").unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val=[]"),
+            "missing {{3}} in define value → empty, got: {text}"
+        );
+    }
+
+    #[test]
+    fn top_level_define_preserves_literal_positional() {
+        // Outside an include, `{N}` in a define value must not be erased
+        // (body scanner leaves top-level positionals for the lexer).
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE X {1}\nval={&X}.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val={1}"),
+            "top-level define must keep literal {{1}}, got: {text}"
+        );
+    }
+
+    #[test]
+    fn positional_expanded_in_global_define_value() {
+        let fs = make_fs(&[("/inc/g.i", "&GLOBAL-DEFINE GH {2}\n")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp
+            .process(FileId::new(1), "{g.i ignored handleY}\nval={&GH}.\n")
+            .unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("val=handleY"),
+            "global define value must expand {{2}}, got: {text}"
+        );
+    }
+
 }

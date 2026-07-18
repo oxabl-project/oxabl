@@ -45,6 +45,12 @@ gap** revealed by expansion: `PROCEDURE name IN SUPER:` (ADM2 prototypes).
 `parse_procedure` now accepts optional `IN SUPER|THIS-PROCEDURE|handle` before
 `:` / `.` (period form = empty body). FUNCTION already handled `IN SUPER`.
 
+**Follow-up (round 4):** after IN SUPER, PARSE001 climbed further as `{get}`/
+`{set}` expand. Two companion fixes: (1) expand positional `{N}` inside
+`&SCOPED-DEFINE`/`&GLOBAL-DEFINE` values at define time (so `ADMHdl` is not
+literal `{3}`); (2) `DYNAMIC-FUNC` abbreviates `DYNAMIC-FUNCTION` so ADE
+`IN handle` calls parse.
+
 **Downstream:** pin HEAD of this branch and re-run the 9-module corpus A/B.
 Pass bar: PREPROC002 stays at 0 **and** PARSE001 ≤ baseline (9).
 
