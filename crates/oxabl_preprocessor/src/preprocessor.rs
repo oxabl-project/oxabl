@@ -1007,9 +1007,7 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
         let line = &rest[line_start..content_end];
         let trimmed = line.trim_end();
 
-        if !hit_boundary
-            && let Some(continued) = trimmed.strip_suffix('~')
-        {
+        if !hit_boundary && let Some(continued) = trimmed.strip_suffix('~') {
             // Continuation: append line without trailing ~ and continue
             value.push_str(continued);
             i = line_end;
@@ -2952,6 +2950,78 @@ DYNAMIC-FUNC("set{1}":U IN {&ADMHdl}, {2})
         assert!(!t2.contains("{3}"), "got: {t2}");
     }
 
+    // --- #66 xp-property BUFFER-FIELD path fixtures ---
+
+    #[test]
+    fn set_xp_property_buffer_field_branch() {
+        // When DEFINED(xp{1}) is true, real set takes the BUFFER-FIELD fast path
+        // instead of DYNAMIC-FUNC. Stub forces that branch with an unquoted
+        // comma-list positional arg (the dominant corpus shape).
+        let set_stub = r#"&IF DEFINED(xp{1}) <> 0 &THEN
+ASSIGN ghProp:BUFFER-FIELD('{1}':U):BUFFER-VALUE = {2}.
+&ELSE
+DYNAMIC-FUNC("set{1}":U IN TARGET-PROCEDURE, {2})
+&ENDIF
+"#;
+        let fs = make_fs(&[("/tty/set", set_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "\
+&GLOBAL-DEFINE xpDataSourceEvents yes
+DEFINE VARIABLE ghProp AS HANDLE NO-UNDO.
+{set DataSourceEvents dataAvailable,confirmContinue,isUpdatePending,buildDataRequest}
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "set must resolve, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must not leave unclosed &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("BUFFER-FIELD") && text.contains("BUFFER-VALUE"),
+            "xp branch must emit BUFFER-FIELD path, got: {text}"
+        );
+        assert!(
+            text.contains("dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"),
+            "comma-list arg must expand into BUFFER-VALUE, got: {text}"
+        );
+        assert!(
+            !text.contains("DYNAMIC-FUNC"),
+            "DYNAMIC-FUNC branch must not run when xp prop defined, got: {text}"
+        );
+    }
+
+    #[test]
+    fn set_single_quoted_comma_list_arg_characterization() {
+        // Characterization (#66 Fable amendment): single-quoted host args are
+        // stripped by read_arg_value (quotes are delimiters). Trailing `:U`
+        // after the closing quote is a separate token/arg — pin current
+        // behavior; no quote-policy change in this PR.
+        let set_stub = "val={2}.\n";
+        let fs = make_fs(&[("/tty/set", set_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp.process(FileId::new(1), "{set X 'a,b,c':U}").unwrap();
+        let text = result.to_text();
+        // Quotes stripped from the positional value.
+        assert!(
+            text.contains("val=a,b,c") || text.contains("val='a,b,c'"),
+            "pin single-quoted comma-list expansion, got: {text}"
+        );
+        // Prefer documenting strip (Progress-like delimiter semantics).
+        assert!(
+            text.contains("a,b,c"),
+            "comma list content must appear, got: {text}"
+        );
+    }
+
     #[test]
     fn missing_positional_in_define_value_is_empty() {
         let fs = make_fs(&[("/inc/m.i", "&SCOPED-DEFINE H {3}\nval=[{&H}]\n")]);
@@ -2995,5 +3065,4 @@ DYNAMIC-FUNC("set{1}":U IN {&ADMHdl}, {2})
             "global define value must expand {{2}}, got: {text}"
         );
     }
-
 }

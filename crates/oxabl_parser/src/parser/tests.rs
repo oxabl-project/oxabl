@@ -9839,3 +9839,181 @@ End."#;
     let result = parser.parse_program();
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
 }
+
+// ===================== #66 xp-property BUFFER-FIELD fast path =====================
+
+#[test]
+fn buffer_value_unquoted_comma_list_standalone() {
+    // ADM2 set expansion: unquoted comma-separated event list as BUFFER-VALUE.
+    let source = "ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = dataAvailable,confirmContinue,isUpdatePending,buildDataRequest.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assignment { value, .. } => match value.kind {
+            ExpressionKind::Literal(Literal::String(s)) => {
+                assert_eq!(
+                    s.value,
+                    "dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"
+                );
+            }
+            other => panic!("expected string literal value, got {other:?}"),
+        },
+        other => panic!("expected Assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn buffer_value_unquoted_comma_list_under_assign() {
+    let source = "ASSIGN ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = dataAvailable,confirmContinue,isUpdatePending,buildDataRequest.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => {
+                    assert_eq!(
+                        s.value,
+                        "dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"
+                    );
+                }
+                other => panic!("expected string literal value, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn buffer_field_chained_lvalue_quoted_still_works() {
+    let source = "ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = \"dataAvailable,confirmContinue\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assignment { value, .. } => match value.kind {
+            ExpressionKind::Literal(Literal::String(s)) => {
+                assert_eq!(s.value, "dataAvailable,confirmContinue");
+            }
+            other => panic!("expected string literal, got {other:?}"),
+        },
+        other => panic!("expected Assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_consecutive_buffer_field_assigns() {
+    // xp-assign gated off: no ASSIGN keyword, two accessor pairs, one trailing period.
+    let source = "\
+ghProp:BUFFER-FIELD('ObjectType':U):BUFFER-VALUE = 'Procedure':U
+ghProp:BUFFER-FIELD('ContainerType':U):BUFFER-VALUE = '':U.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2, "expected two bare assign pairs");
+        }
+        other => panic!("expected Assign with 2 pairs, got {other:?}"),
+    }
+}
+
+#[test]
+fn comma_list_then_no_error_under_assign() {
+    let source = "ASSIGN ghProp:BUFFER-FIELD('x':U):BUFFER-VALUE = a,b,c NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 1);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => assert_eq!(s.value, "a,b,c"),
+                other => panic!("expected string list, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn comma_list_then_second_assign_pair() {
+    // Fold must stop before the next ASSIGN pair (space-separated, no comma between pairs).
+    let source = "ASSIGN t1 = a,b t2 = c.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => assert_eq!(s.value, "a,b"),
+                other => panic!("expected folded list for t1, got {other:?}"),
+            }
+            match &assignments[1].value.kind {
+                ExpressionKind::Identifier(id) => assert_eq!(id.name, "c"),
+                other => panic!("expected identifier c for t2, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_multi_with_comma_list_value() {
+    // Combined A+B: bare multi-pair where first value is a comma-list.
+    let source = "\
+ghProp:BUFFER-FIELD('DataSourceEvents':U):BUFFER-VALUE = dataAvailable,confirmContinue
+ghProp:BUFFER-FIELD('ObjectType':U):BUFFER-VALUE = 'Procedure':U.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Assign { assignments } => {
+            assert_eq!(assignments.len(), 2);
+            match &assignments[0].value.kind {
+                ExpressionKind::Literal(Literal::String(s)) => {
+                    assert_eq!(s.value, "dataAvailable,confirmContinue");
+                }
+                other => panic!("expected folded comma list, got {other:?}"),
+            }
+        }
+        other => panic!("expected Assign, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_assign_does_not_swallow_run() {
+    // Negative: unterminated assignment followed by a real statement must not
+    // treat RUN as a second bare assign pair.
+    let source = "x = 1 RUN foo.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let result = parser.parse_program();
+    // Either an error on the first statement, or recovery — but must not parse
+    // the whole line as a single successful multi-assign with a RUN target.
+    let has_run_as_assign = result.statements.iter().any(|s| {
+        matches!(
+            &s.kind,
+            StatementKind::Assign { assignments } if assignments.len() > 1
+        )
+    });
+    assert!(
+        !has_run_as_assign,
+        "RUN must not be absorbed as a bare assign pair: {:?}",
+        result.statements
+    );
+    // Primary expectation: parse error about missing period (or recovery Empty).
+    assert!(
+        !result.errors.is_empty()
+            || result
+                .statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Empty)),
+        "expected error or recovery for `x = 1 RUN foo.`, got stmts={:?} errs={:?}",
+        result.statements,
+        result.errors
+    );
+}

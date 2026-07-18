@@ -12,9 +12,9 @@ use oxabl_ast::{
     FindType, HandleParamKind, HandlePassingOptions, Identifier, IndexField, Literal, LockType,
     OnAction, OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation,
     PreprocIf, RunArgument, RunTarget, SortDirection, Span, Statement, StatementKind,
-    StreamDirection, StreamOperation, SubscribeTarget, TempTableField, TempTableIndex,
-    TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex, WhenBranch,
-    WidgetQualifier, WidgetRef, XmlSerializeOptions,
+    StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TempTableField,
+    TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex,
+    WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -722,7 +722,7 @@ impl Parser<'_> {
 
         if self.check(Kind::Equals) {
             self.advance(); // consume the "="
-            let value = self.parse_expression()?;
+            let value = self.parse_assignment_value()?;
             // Consume optional IN FRAME/BROWSE qualifier on the value side
             // e.g. handle = widget:attr IN FRAME fname.
             if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
@@ -731,6 +731,57 @@ impl Parser<'_> {
                 self.advance(); // consume FRAME or BROWSE
                 self.advance(); // consume name
             }
+
+            // ADM2 xp-property path: consecutive accessor assignments without a
+            // leading ASSIGN keyword (gated off when xp-assign is defined).
+            //   ghProp:BUFFER-FIELD('a':U):BUFFER-VALUE = 'x':U
+            //   ghProp:BUFFER-FIELD('b':U):BUFFER-VALUE = 'y':U.
+            // Collect multi-pair into Assign; single pair stays Assignment.
+            if self.looks_like_bare_assign_pair_ahead() {
+                let mut assignments = SmallVec::new();
+                assignments.push(AssignPair {
+                    target: left,
+                    value,
+                });
+                while self.looks_like_bare_assign_pair_ahead() {
+                    let target = self.parse_additive()?;
+                    if self.check(Kind::KwIn)
+                        && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+                    {
+                        self.advance(); // IN
+                        self.advance(); // FRAME/BROWSE
+                        self.advance(); // name
+                    }
+                    if !self.check(Kind::Equals) {
+                        // Lookahead said `=` was ahead; if tokens moved under us,
+                        // stop collecting rather than erroring mid-statement.
+                        break;
+                    }
+                    self.advance(); // '='
+                    let pair_value = self.parse_assignment_value()?;
+                    if self.check(Kind::KwIn)
+                        && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
+                    {
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                    }
+                    if self.check(Kind::When) {
+                        self.advance();
+                        self.parse_expression().ok();
+                    }
+                    assignments.push(AssignPair {
+                        target,
+                        value: pair_value,
+                    });
+                }
+                if self.check(Kind::NoError) {
+                    self.advance();
+                }
+                self.expect_period("Expected '.' to end statement")?;
+                return Ok(self.stmt(StatementKind::Assign { assignments }));
+            }
+
             // Consume optional NO-ERROR trailing clause (e.g. x = func() NO-ERROR.)
             if self.check(Kind::NoError) {
                 self.advance();
@@ -3833,13 +3884,7 @@ impl Parser<'_> {
                 });
                 continue;
             }
-            // Fast path: most ASSIGN values are not ternary. Skip the parse_expression →
-            // parse_ternary indirection for non-IF values; parse_or handles AND/OR/comparisons.
-            let value = if self.check(Kind::KwIf) {
-                self.parse_expression()?
-            } else {
-                self.parse_or()?
-            };
+            let value = self.parse_assignment_value()?;
             // Optional IN FRAME framename clause (specifies frame context for widget assignment)
             if self.check(Kind::KwIn) && self.peek_at(1).kind == Kind::Frame {
                 self.advance(); // consume IN
@@ -3854,6 +3899,141 @@ impl Parser<'_> {
             assignments.push(AssignPair { target, value });
         }
         Ok(assignments)
+    }
+
+    /// Parse the RHS of `target = value` for ASSIGN and bare assignment.
+    ///
+    /// Fast path: non-IF values go through `parse_or` (same as historical ASSIGN).
+    ///
+    /// ADM2 xp-property / include-arg character lists expand to unquoted
+    /// comma-separated identifiers after Progress-like quote stripping:
+    /// `BUFFER-VALUE = dataAvailable,confirmContinue,isUpdatePending`.
+    /// When the value starts with `ident ',' ident`, fold the list into one
+    /// string literal covering the full source span. This only fires on token
+    /// sequences that are parse errors without the fold.
+    fn parse_assignment_value(&mut self) -> ParseResult<Expression> {
+        if self.check(Kind::KwIf) {
+            return self.parse_expression();
+        }
+        if self.looks_like_unquoted_comma_ident_list() {
+            return Ok(self.parse_unquoted_comma_ident_list());
+        }
+        self.parse_or()
+    }
+
+    /// `ident ',' ident …` at the current cursor (no `=` after the post-comma ident).
+    fn looks_like_unquoted_comma_ident_list(&self) -> bool {
+        if !Self::can_be_identifier(self.peek().kind) {
+            return false;
+        }
+        if !self.check_at(1, Kind::Comma) {
+            return false;
+        }
+        self.can_continue_comma_list_at(2)
+    }
+
+    /// Whether the token at `ident_offset` can extend an unquoted comma-ident list.
+    ///
+    /// Excludes `NO-ERROR` / `WHEN` / `IN`, and refuses `ident =` (next ASSIGN pair).
+    fn can_continue_comma_list_at(&self, ident_offset: usize) -> bool {
+        let ident_kind = self.peek_at(ident_offset).kind;
+        if matches!(
+            ident_kind,
+            Kind::NoError
+                | Kind::When
+                | Kind::KwIn
+                | Kind::Period
+                | Kind::Eof
+                | Kind::Comma
+                | Kind::Equals
+        ) {
+            return false;
+        }
+        if !Self::can_be_identifier(ident_kind) {
+            return false;
+        }
+        // Do not swallow `, name =` as a list continuation.
+        if self.peek_at(ident_offset + 1).kind == Kind::Equals {
+            return false;
+        }
+        true
+    }
+
+    /// Consume `ident (',' ident)+` and emit a synthetic character string literal.
+    fn parse_unquoted_comma_ident_list(&mut self) -> Expression {
+        let start = self.peek().start as u32;
+        self.advance(); // first identifier
+        while self.check(Kind::Comma) && self.can_continue_comma_list_at(1) {
+            self.advance(); // ','
+            self.advance(); // identifier
+        }
+        let end = self.tokens[self.current - 1].end as u32;
+        let text = self.source[start as usize..end as usize].to_string();
+        self.expr(ExpressionKind::Literal(Literal::String(StringLiteral {
+            span: Span { start, end },
+            value: text,
+        })))
+    }
+
+    /// Non-allocating lookahead: does the upcoming token stream look like another
+    /// `target = value` pair for bare multi-assign (no leading ASSIGN keyword)?
+    ///
+    /// Must not parse or allocate NodeIds (ast-invariants.md §2 — dense contiguous
+    /// allocator; no speculative parse + rollback).
+    fn looks_like_bare_assign_pair_ahead(&self) -> bool {
+        if self.at_end() || self.check(Kind::Period) || self.check(Kind::NoError) {
+            return false;
+        }
+        let next = self.peek().kind;
+        // Negative guard: next token starts a new statement / block closer.
+        if can_start_statement(next)
+            || matches!(
+                next,
+                Kind::PreprocIf
+                    | Kind::PreprocElse
+                    | Kind::PreprocElseif
+                    | Kind::PreprocEndif
+                    | Kind::PreprocScopedDefine
+                    | Kind::PreprocGlobalDefine
+                    | Kind::PreprocUndefine
+                    | Kind::KwReturn
+                    | Kind::End
+                    | Kind::KwElse
+                    | Kind::Leave
+                    | Kind::Next
+            )
+        {
+            return false;
+        }
+        // Assignment targets start with an identifier-like token (variable, handle,
+        // or keyword-as-ident). Reject punctuation / literals as pair starts.
+        if !Self::can_be_identifier(next) {
+            return false;
+        }
+
+        // Scan forward for `=` at paren/bracket depth 0 before period / EOF.
+        // Bound the scan so a runaway stream cannot quadratic-scan forever;
+        // chained `h:BUFFER-FIELD(...):BUFFER-VALUE` is well under 64 tokens.
+        let mut depth: i32 = 0;
+        for i in 0..64 {
+            if self.current + i >= self.tokens.len() {
+                break;
+            }
+            let k = self.peek_at(i).kind;
+            match k {
+                Kind::LeftParen | Kind::LeftBracket => depth += 1,
+                Kind::RightParen | Kind::RightBracket => {
+                    depth = depth.saturating_sub(1);
+                }
+                Kind::Equals if depth == 0 => {
+                    // Need at least one target token before `=`.
+                    return i > 0;
+                }
+                Kind::Period | Kind::Eof if depth == 0 => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     // Parse FUNCTION definition
