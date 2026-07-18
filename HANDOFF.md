@@ -1,10 +1,11 @@
-# Handoff: #65 + #66 merged to master
+# Handoff: #65 + #66 done — tree clean, skill extracted
 
 **Date:** 2026-07-18  
 **Branch:** `master`  
-**Merge commit:** `872c7411bdd0d9d8a91a695993fbc390f159ebe6` (PR #67)  
+**Merge commit (feature stack):** `872c7411bdd0d9d8a91a695993fbc390f159ebe6` (PR #67)  
 **Closed:** #65, #66  
-**PR:** https://github.com/oxabl-project/oxabl/pull/67 (merged)
+**PR:** https://github.com/oxabl-project/oxabl/pull/67 (merged)  
+**Skill:** `.grok/skills/gh-issue-loop/` (also mirrored to `~/.grok/skills/gh-issue-loop/`)
 
 ---
 
@@ -12,11 +13,13 @@
 
 | Item | Status |
 |------|--------|
-| #65 (mid-line `&IF` / ADM2 accessor preproc) | **Closed + merged** |
-| #66 (xp-property BUFFER-FIELD path) | **Closed + merged** — corpus GREEN |
+| #65 mid-line `&IF` / ADM2 preproc | **Closed + merged** |
+| #66 xp-property BUFFER-FIELD path | **Closed + merged** — corpus GREEN |
 | PREPROC002 (9-module sample) | **0** |
 | PARSE001 (deduped, schema-loaded) | **6** (≤ baseline 9) |
 | PR #67 | **Merged** |
+| Working tree | Clean after committing leftover plans + skill |
+| Local branch `fix/inline-preproc-if-expression` | Deleted (merged) |
 
 ---
 
@@ -27,7 +30,7 @@
 rev = "872c7411bdd0d9d8a91a695993fbc390f159ebe6"
 ```
 
-Or track `master`.
+Or track `master` (includes HANDOFF/skill docs after this cleanup commit).
 
 ### Smoke
 
@@ -66,7 +69,7 @@ With real OpenEdge: put `$DLC/tty` (and `gui`/`src`/`adm2` as needed) on `-I`.
 
 ---
 
-## What landed
+## What landed (#65 / #66)
 
 ### #65 (preprocessor + companions)
 
@@ -87,13 +90,40 @@ With real OpenEdge: put `$DLC/tty` (and `gui`/`src`/`adm2` as needed) on `-I`.
 
 Corpus residual PARSE001 (6) is unrelated ambient noise (non-accessor assigns, malformed RUN trailing comma, `&ELSE`/positional edges) — not a #66 regression.
 
+Plans: `docs/plans/2026-07-17-003-…` through `2026-07-18-004-fix-xp-property-buffer-field-plan.md`.
+
+---
+
+## Reusable skill: `/gh-issue-loop`
+
+Distilled from this session’s AFK loop (plan → Fable verify → implement → push →
+issue comment → poll 2m / idle 2h → merge on green).
+
+| Path | Role |
+|------|------|
+| `.grok/skills/gh-issue-loop/SKILL.md` | Full workflow (project, committed) |
+| `.grok/skills/gh-issue-loop/scripts/watch-issue.sh` | Issue poller for `monitor` |
+| `~/.grok/skills/gh-issue-loop/` | User-scope mirror (cross-project) |
+
+**Invoke:** `/gh-issue-loop` or natural language (“AFK issue loop on #N”, “watch the issue”).
+
+**Watcher example:**
+
+```bash
+.grok/skills/gh-issue-loop/scripts/watch-issue.sh 66 \
+  --poll-secs 120 \
+  --idle-hours 2 \
+  --baseline-comment-id <id-of-your-fix-comment>
+```
+
 ---
 
 ## Next (optional)
 
-1. Bump downstream oxabl pin to `872c741` / master; re-smoke WebSpeed entry points.
+1. Bump downstream oxabl pin to `872c741` / latest `master`; re-smoke WebSpeed entry points with `$DLC/tty` on `-I`.
 2. Residual 6 PARSE001: track only if they matter for lint/analyze accuracy.
-3. CodSpeed “Performance Analysis” showed FAIL on the PR check (benchmark job itself passed) — investigate if a real regression surfaces on master, not a merge blocker.
+3. CodSpeed “Performance Analysis” was FAIL on PR #67 while the benchmark job itself passed — investigate only if master shows a real regression.
+4. Backlog plans now on master (`docs/plans/2026-07-16-005` … `010`, semantic v1.1 followups) — pick next focus when ready.
 
 ---
 
