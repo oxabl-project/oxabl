@@ -3119,6 +3119,42 @@ impl Parser<'_> {
             self.advance();
         }
 
+        // Optional super-procedure / external-procedure reference:
+        //   PROCEDURE name IN SUPER:
+        //   PROCEDURE name IN THIS-PROCEDURE:
+        //   PROCEDURE name IN hProc.
+        //   PROCEDURE name IN {&HANDLE}:
+        // Target is elided from the AST (same as EXTERNAL) — name + body remain.
+        // ADM2 prototype includes (smrtprto.i, qryprto.i, …) rely on this form (#65).
+        if self.check(Kind::KwIn) {
+            self.advance(); // consume IN
+            if self.check(Kind::ThisProcedure)
+                || self.check(Kind::StringLiteral)
+                || self.check(Kind::Preprop)
+                || self.check(Kind::IncludeReference)
+                || self.check(Kind::Identifier)
+                || Self::can_be_identifier(self.peek().kind)
+            {
+                self.advance(); // SUPER | THIS-PROCEDURE | handle | {&…}
+            } else {
+                return Err(ParseError {
+                    message: "Expected SUPER, THIS-PROCEDURE, or handle after IN".to_string(),
+                    span: self.current_span(),
+                });
+            }
+
+            // Period-only form is a header/prototype with no body — do not treat
+            // '.' as a legacy body opener (that would swallow following statements
+            // until END). Colon form continues to body-until-END below.
+            if self.check(Kind::Period) {
+                self.advance();
+                return Ok(self.stmt(StatementKind::Procedure {
+                    name,
+                    body: Vec::new(),
+                }));
+            }
+        }
+
         // Accept both ':' and '.' as the body opener (legacy ABL uses '.')
         if self.check(Kind::Colon) || self.check(Kind::Period) {
             self.advance();

@@ -4050,6 +4050,149 @@ END PROCEDURE.
     }
 }
 
+// ===================== PROCEDURE IN SUPER / IN handle (#65 follow-up) =====================
+
+#[test]
+fn parse_procedure_in_super_with_body() {
+    // ADM2 prototype include shape (smrtprto.i / qryprto.i).
+    let source = r#"
+PROCEDURE assignDBRow IN SUPER:
+  DEFINE INPUT PARAMETER phRowObjUpd AS HANDLE.
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN SUPER: must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "assignDBRow");
+            assert_eq!(body.len(), 1);
+            match &body[0].kind {
+                StatementKind::DefineParameter { direction, .. } => {
+                    assert_eq!(*direction, ParameterDirection::Input);
+                }
+                _ => panic!("Expected DEFINE INPUT PARAMETER in body"),
+            }
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_super_period_only_empty_body() {
+    let source = "PROCEDURE assignDBRow IN SUPER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN SUPER. must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "assignDBRow");
+            assert!(body.is_empty(), "period form has empty body");
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_this_procedure() {
+    let source = r#"
+PROCEDURE local-hook IN THIS-PROCEDURE:
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN THIS-PROCEDURE: must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "local-hook");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_handle_identifier() {
+    let source = r#"
+PROCEDURE doWork IN hSuper:
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("PROCEDURE … IN hSuper: must parse");
+    match stmt.kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "doWork");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Procedure statement"),
+    }
+}
+
+#[test]
+fn parse_procedure_in_super_period_then_next_procedure() {
+    // Guard: period form must not swallow the following prototype as body.
+    let source = r#"
+PROCEDURE a IN SUPER.
+PROCEDURE b IN SUPER:
+  DEFINE INPUT PARAMETER x AS INTEGER.
+END PROCEDURE.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert!(
+        program.errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        program.errors
+    );
+    assert_eq!(program.statements.len(), 2);
+    match &program.statements[0].kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "a");
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected first Procedure"),
+    }
+    match &program.statements[1].kind {
+        StatementKind::Procedure { name, body } => {
+            assert_eq!(name.name, "b");
+            assert_eq!(body.len(), 1);
+        }
+        _ => panic!("Expected second Procedure"),
+    }
+}
+
+#[test]
+fn parse_function_in_super_still_works() {
+    let source = "FUNCTION getX RETURNS CHARACTER IN SUPER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser
+        .parse_statement()
+        .expect("FUNCTION … IN SUPER. must parse");
+    match stmt.kind {
+        StatementKind::Function {
+            name,
+            return_type,
+            body,
+        } => {
+            assert_eq!(name.name, "getX");
+            assert_eq!(return_type, DataType::Character);
+            assert!(body.is_empty());
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
 // ===================== DISPLAY statement tests =====================
 
 #[test]

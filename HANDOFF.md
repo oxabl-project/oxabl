@@ -38,10 +38,15 @@ and regressed PARSE001. Shape:
 (`$DLC/tty/get` / `set` line 1 and 18). `&UNDEFINE` / `&SCOPED-DEFINE` /
 `&GLOBAL-DEFINE` / `&MESSAGE` used `skip_to_eol` and swallowed the trailing
 `&ENDIF`. **Fix:** those payloads stop at a same-line `&ELSE` / `&ELSEIF` /
-`&ENDIF` boundary.
+`&ENDIF` boundary. Round-2 cleared PREPROC002 596→0.
+
+**Follow-up (round 3):** remaining PARSE001 +48 was a **pre-existing parser
+gap** revealed by expansion: `PROCEDURE name IN SUPER:` (ADM2 prototypes).
+`parse_procedure` now accepts optional `IN SUPER|THIS-PROCEDURE|handle` before
+`:` / `.` (period form = empty body). FUNCTION already handled `IN SUPER`.
 
 **Downstream:** pin HEAD of this branch and re-run the 9-module corpus A/B.
-Pass bar: PREPROC002 stays down **and** PARSE001 ≤ baseline (9).
+Pass bar: PREPROC002 stays at 0 **and** PARSE001 ≤ baseline (9).
 
 ---
 
