@@ -755,11 +755,21 @@ impl<'fs> ProcessContext<'fs> {
                 None
             }
             "MESSAGE" => {
-                let rest_after = &source[i + j..];
-                let end_offset = rest_after.find('\n').unwrap_or(rest_after.len());
+                // Stop before a trailing same-line `&ENDIF`/`&ELSE`/`&ELSEIF`
+                // so inline forms like `&IF … &THEN &MESSAGE … &ENDIF` close
+                // correctly (ADM2 / #65). Without a boundary, preserve the
+                // historical end-at-newline (not past it) semantics.
+                let from = i + j;
+                let end = if let Some(b) = find_same_line_if_boundary(source, from) {
+                    b
+                } else {
+                    let rest_after = &source[from..];
+                    let end_offset = rest_after.find('\n').unwrap_or(rest_after.len());
+                    from + end_offset
+                };
                 Some(Directive {
                     kind: DirectiveKind::Message,
-                    end: i + j + end_offset,
+                    end,
                 })
             }
             _ => None,
@@ -924,7 +934,10 @@ enum DirectiveKind {
 
 /// Parse the body of `&SCOPED-DEFINE name value` or `&GLOBAL-DEFINE name value`.
 ///
-/// Returns `(name, value, end_offset)`. The value runs to EOL (or EOF).
+/// Returns `(name, value, end_offset)`. The value runs to EOL (or EOF), or to
+/// a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` so inline forms like
+/// `&IF … &THEN &SCOPED-DEFINE x 1 &ENDIF` leave the closer for the scanner
+/// (#65 follow-up / ADM2).
 fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let rest = &source[start..];
 
@@ -952,20 +965,38 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
 
     // Value runs to EOL, but tilde (~) at EOL means continuation.
     // ABL uses ~ as the line continuation character in &DEFINE values.
+    // A same-line if-chain boundary also ends the value (inline directive body).
     let value_start = i;
     let mut value = String::new();
     loop {
-        // Read to end of line
         let line_start = i;
-        while i < rest.len() && rest.as_bytes()[i] != b'\n' && rest.as_bytes()[i] != b'\r' {
-            i += 1;
+        // Physical end of line (newline / EOF)
+        let mut line_end = i;
+        while line_end < rest.len()
+            && rest.as_bytes()[line_end] != b'\n'
+            && rest.as_bytes()[line_end] != b'\r'
+        {
+            line_end += 1;
         }
-        let line = &rest[line_start..i];
+
+        // Truncate at same-line &ELSE / &ELSEIF / &ENDIF when present.
+        let boundary_rel =
+            find_same_line_if_boundary(source, start + line_start).map(|b| b - start);
+        let hit_boundary = boundary_rel.is_some_and(|b| b >= line_start && b < line_end);
+        let content_end = match boundary_rel {
+            Some(b) if hit_boundary => b,
+            _ => line_end,
+        };
+
+        let line = &rest[line_start..content_end];
         let trimmed = line.trim_end();
 
-        if let Some(continued) = trimmed.strip_suffix('~') {
+        if !hit_boundary
+            && let Some(continued) = trimmed.strip_suffix('~')
+        {
             // Continuation: append line without trailing ~ and continue
             value.push_str(continued);
+            i = line_end;
             // Skip the newline
             if i < rest.len() && rest.as_bytes()[i] == b'\r' {
                 i += 1;
@@ -973,18 +1004,24 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
             if i < rest.len() && rest.as_bytes()[i] == b'\n' {
                 i += 1;
             }
-        } else {
-            // Final line — append and break
-            value.push_str(trimmed);
-            // Skip the newline
-            if i < rest.len() && rest.as_bytes()[i] == b'\r' {
-                i += 1;
-            }
-            if i < rest.len() && rest.as_bytes()[i] == b'\n' {
-                i += 1;
-            }
-            break;
+            continue;
         }
+
+        // Final segment — append and stop. Do not consume an if-boundary;
+        // leave it for the main scanner. Do consume a trailing newline.
+        value.push_str(trimmed);
+        if hit_boundary {
+            let _ = value_start;
+            return (name, value, start + content_end);
+        }
+        i = line_end;
+        if i < rest.len() && rest.as_bytes()[i] == b'\r' {
+            i += 1;
+        }
+        if i < rest.len() && rest.as_bytes()[i] == b'\n' {
+            i += 1;
+        }
+        break;
     }
     // Trim leading whitespace that was part of the continuation indent,
     // but only from the value_start — the first line's leading space was
@@ -995,6 +1032,10 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
 }
 
 /// Parse the body of `&UNDEFINE name`.
+///
+/// Ends at EOL, or at a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` so the ADM2
+/// `get`/`set` shape
+/// `&IF … &THEN &UNDEFINE xp-reset-values &ENDIF` closes correctly (#65).
 fn parse_undefine_body(source: &str, start: usize) -> (String, usize) {
     let rest = &source[start..];
     let mut i = 0;
@@ -1015,7 +1056,7 @@ fn parse_undefine_body(source: &str, start: usize) -> (String, usize) {
     }
     let name = rest[name_start..i].to_string();
 
-    let end = skip_to_eol(source, start + i);
+    let end = skip_to_eol_or_if_boundary(source, start + i);
     (name, end)
 }
 
@@ -1125,6 +1166,47 @@ fn skip_to_eol(source: &str, from: usize) -> usize {
     let rest = &source[from..];
     let eol = rest.find('\n').map(|p| p + 1).unwrap_or(rest.len());
     from + eol
+}
+
+/// Like [`skip_to_eol`], but stop at a same-line `&ELSE` / `&ELSEIF` / `&ENDIF`
+/// so line-oriented directives do not swallow a trailing inline closer (#65).
+fn skip_to_eol_or_if_boundary(source: &str, from: usize) -> usize {
+    if let Some(b) = find_same_line_if_boundary(source, from) {
+        return b;
+    }
+    skip_to_eol(source, from)
+}
+
+/// Find the earliest same-line `&ELSEIF`, `&ENDIF`, or `&ELSE` at or after
+/// `from`. Returns the absolute byte offset of the leading `&`, or `None` if
+/// none appears before the next newline (or EOF).
+///
+/// Used so line-oriented directive payloads (`&UNDEFINE`, `&SCOPED-DEFINE`,
+/// `&GLOBAL-DEFINE`, `&MESSAGE`) leave a trailing inline if-chain closer for
+/// the main scanner — the ADM2 `get`/`set` shape
+/// `&IF … &THEN &UNDEFINE xp-reset-values &ENDIF` (#65 follow-up).
+fn find_same_line_if_boundary(source: &str, from: usize) -> Option<usize> {
+    let rest = &source[from..];
+    let mut line_end = rest.find('\n').unwrap_or(rest.len());
+    if let Some(cr) = rest[..line_end].find('\r') {
+        line_end = cr;
+    }
+    if line_end == 0 {
+        return None;
+    }
+    let line = &rest[..line_end];
+    let upper = line.to_ascii_uppercase();
+
+    let mut best: Option<usize> = None;
+    for kw in ["&ELSEIF", "&ENDIF", "&ELSE"] {
+        if let Some(pos) = find_keyword(&upper, kw) {
+            best = Some(match best {
+                Some(b) => b.min(pos),
+                None => pos,
+            });
+        }
+    }
+    best.map(|p| from + p)
 }
 
 /// Find the matching `}` for a `{` at position `open`, handling nested braces.
@@ -2575,5 +2657,223 @@ x = &IF FALSE &THEN no &ELSE yes &ENDIF.
         assert_eq!(expand_positional_refs("{1}-{2}", &args), "one-two");
         assert_eq!(expand_positional_refs(r#""{3}""#, &args), r#""""#);
         assert_eq!(expand_positional_refs("plain", &args), "plain");
+    }
+
+    // --- #65 follow-up: line-oriented directive as inline &IF body -----------
+    //
+    // When the body after mid-line `&THEN` is itself a line-oriented directive
+    // (`&UNDEFINE` / `&SCOPED-DEFINE` / `&GLOBAL-DEFINE` / `&MESSAGE`), that
+    // directive must not skip_to_eol past a trailing same-line `&ENDIF`.
+    // This is the shipped `$DLC/tty/get` and `$DLC/tty/set` shape.
+
+    #[test]
+    fn inline_if_then_undefine_endif_closes() {
+        // Minimal repro from #65 corpus follow-up.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&GLOBAL-DEFINE foo bar
+&IF TRUE &THEN &UNDEFINE foo &ENDIF
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must not warn unclosed &IF, diags: {:?}",
+            result.diagnostics
+        );
+        // Variable must actually be undefined after the branch runs.
+        let check = pp
+            .process(
+                FileId::new(1),
+                "\
+&GLOBAL-DEFINE foo bar
+&IF TRUE &THEN &UNDEFINE foo &ENDIF
+x={&foo}.
+",
+            )
+            .unwrap();
+        assert_eq!(
+            &*check.to_text().replace('\n', ""),
+            "x=.",
+            "foo must be undefined after inline &UNDEFINE, got: {}",
+            check.to_text()
+        );
+    }
+
+    #[test]
+    fn adm2_get_set_shaped_inline_undefine() {
+        // Real `$DLC/tty/get` / `$DLC/tty/set` one-liner shape (line 1 / 18).
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&GLOBAL-DEFINE xp-reset-values yes
+&IF DEFINED(xp-assign) = 0 AND DEFINED(xp-reset-values) <> 0 &THEN &UNDEFINE xp-reset-values &ENDIF
+after
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("after"),
+            "content after closed &IF must remain, got: {text}"
+        );
+        // xp-reset-values should be gone; a following DEFINED check is false.
+        let follow = "\
+&GLOBAL-DEFINE xp-reset-values yes
+&IF DEFINED(xp-assign) = 0 AND DEFINED(xp-reset-values) <> 0 &THEN &UNDEFINE xp-reset-values &ENDIF
+&IF DEFINED(xp-reset-values) <> 0 &THEN STILL &ELSE GONE &ENDIF
+";
+        let result2 = pp.process(FileId::new(1), follow).unwrap();
+        let text2 = result2.to_text();
+        assert!(
+            text2.contains("GONE") && !text2.contains("STILL"),
+            "xp-reset-values must be undefined, got: {text2}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_scoped_define_endif() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&IF TRUE &THEN &SCOPED-DEFINE x 1 &ENDIF
+val={&x}.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("val=1"),
+            "scoped define inside inline then must take effect, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_global_define_endif() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&IF TRUE &THEN &GLOBAL-DEFINE g yes &ENDIF
+val={&g}.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("val=yes"),
+            "global define inside inline then must take effect, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_message_endif() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE &THEN &MESSAGE hello world &ENDIF\nkept.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("kept."),
+            "content after message/endif must remain, got: {text}"
+        );
+        assert!(
+            !text.to_ascii_uppercase().contains("&MESSAGE"),
+            "message directive must be elided, got: {text}"
+        );
+    }
+
+    #[test]
+    fn inline_if_then_undefine_else_undefine_endif() {
+        // Both then and else branches are line-oriented directives on one line.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\
+&GLOBAL-DEFINE a 1
+&GLOBAL-DEFINE b 2
+&IF TRUE &THEN &UNDEFINE a &ELSE &UNDEFINE b &ENDIF
+A={&a}.B={&b}.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text().replace('\n', "");
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "must close &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("A=.") && text.contains("B=2"),
+            "true branch must undefine a only, got: {text}"
+        );
+    }
+
+    #[test]
+    fn plain_code_inline_if_still_works_with_directive_boundary() {
+        // Guard: the boundary fix must not break plain-code inline bodies.
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "i = &IF TRUE &THEN 5 &ELSE 6 &ENDIF.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+        assert!(text.contains('5') && !text.contains('6'), "got: {text}");
+    }
+
+    #[test]
+    fn get_set_shaped_include_stub() {
+        // Full include-shaped stand-in for `$DLC/tty/get` / `set` first line.
+        // Asserts the include expands and the inline `&UNDEFINE … &ENDIF` closes
+        // without PREPROC002 (the corpus regression). UNDEFINE→parent-global
+        // restore semantics are out of scope for this test.
+        let get_stub = "\
+&IF DEFINED(xp-assign) = 0 AND DEFINED(xp-reset-values) <> 0 &THEN &UNDEFINE xp-reset-values &ENDIF
+ASSIGN x = 1.
+";
+        let fs = make_fs(&[("/tty/get", get_stub)]);
+        let paths = vec![PathBuf::from("/tty")];
+        let pp = Preprocessor::new(&fs, &paths);
+        let source = "\
+&GLOBAL-DEFINE xp-reset-values yes
+{get}
+done.
+";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let text = result.to_text();
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"),
+            "get must resolve, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code.0 == "PREPROC002"),
+            "inline &UNDEFINE must not leave unclosed &IF, diags: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            text.contains("ASSIGN") && text.contains("done."),
+            "include body must expand, got: {text}"
+        );
     }
 }

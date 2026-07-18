@@ -1,8 +1,7 @@
 # Handoff: #65 mid-line `&IF` / ADM2 `{fn}` `{fnarg}`
 
-**Date:** 2026-07-17  
+**Date:** 2026-07-17 (updated 2026-07-18)  
 **Branch:** `fix/inline-preproc-if-expression` (pushed to `origin`)  
-**Commit:** `11d19d9c50cb224a565115278221ef8b1033c7d6`  
 **Issue:** https://github.com/oxabl-project/oxabl/issues/65  
 **Plan:** `docs/plans/2026-07-17-003-fix-inline-preproc-if-expression-plan.md`
 
@@ -22,13 +21,27 @@ treated the end of `&THEN` / `&ELSE` / `&ENDIF` as end-of-line, so the branch
 body on the same line was discarded. Expression position collapsed to
 `IF NOT THEN` → parse abort.
 
-**Fix:** stop at the keyword (plus optional horizontal whitespace / single
-newline), keep same-line body in the scan stream. Also make real `fnarg` work:
-positional `{N}` in conditions and strings, `:U` after quoted string literals
-in conditions. PREPROC002 is now loud on `check` for corpus counting.
+**Fix (round 1):** stop at the keyword (plus optional horizontal whitespace /
+single newline), keep same-line body in the scan stream. Also make real
+`fnarg` work: positional `{N}` in conditions and strings, `:U` after quoted
+string literals in conditions. PREPROC002 is now loud on `check` for corpus
+counting.
 
-**Not done here:** erp-5899 9-module corpus A/B (tree not on this machine).
-Downstream should pin this rev and run the gate.
+**Follow-up (round 2, after corpus A/B):** expression-position worked, but
+inline `&IF` whose body is a **line-oriented directive** still left PREPROC002
+and regressed PARSE001. Shape:
+
+```abl
+&IF TRUE &THEN &UNDEFINE foo &ENDIF
+```
+
+(`$DLC/tty/get` / `set` line 1 and 18). `&UNDEFINE` / `&SCOPED-DEFINE` /
+`&GLOBAL-DEFINE` / `&MESSAGE` used `skip_to_eol` and swallowed the trailing
+`&ENDIF`. **Fix:** those payloads stop at a same-line `&ELSE` / `&ELSEIF` /
+`&ENDIF` boundary.
+
+**Downstream:** pin HEAD of this branch and re-run the 9-module corpus A/B.
+Pass bar: PREPROC002 stays down **and** PARSE001 ≤ baseline (9).
 
 ---
 
@@ -77,6 +90,13 @@ Downstream should pin this rev and run the gate.
   consume one newline (multi-line forms stay clean); if non-ws follows, leave
   it (inline forms keep the body).
 
+### 1b. Line-oriented directive payloads stop at if-chain boundary
+
+- `&UNDEFINE`, `&SCOPED-DEFINE` / `&GLOBAL-DEFINE`, `&MESSAGE`: end at EOL
+  **or** at same-line `&ELSE` / `&ELSEIF` / `&ENDIF` (via
+  `find_same_line_if_boundary` / `skip_to_eol_or_if_boundary`).
+- Unlocks ADM2 `get`/`set` one-liners without unclosed `&IF`.
+
 ### 2. Positional args for real `fnarg`
 
 - Expand `{N}` in `&IF` / `&ELSEIF` **condition text** before evaluate.
@@ -96,12 +116,13 @@ Downstream should pin this rev and run the gate.
 - `oxabl check` / analyze surface `PREPROC002` (unclosed `&IF`) like
   `PREPROC007`, so corpus A/B can count it on stderr.
 
-### 5. Tests (~20 new; 128 preprocessor tests green)
+### 5. Tests (~28 new; 136 preprocessor tests green)
 
 Coverage includes: inline true/false/else, expression `IF NOT &IF…`, `:U`
 empty-eq, nested/elseif one-liners, multi-line still OK, positional in string +
 condition, missing positional empty, **real-shape** `fnarg` 2-arg and 3-arg
-stubs, `fn` expression smoke.
+stubs, `fn` expression smoke, **inline `&UNDEFINE`/`&SCOPED-DEFINE`/
+`&GLOBAL-DEFINE`/`&MESSAGE` + `&ENDIF`**, ADM2 `get`/`set` shape, include stub.
 
 ### 6. Corpus gate harness (not executed here)
 
@@ -140,14 +161,16 @@ stubs, `fn` expression smoke.
 
 ```toml
 # Cargo.toml (all oxabl_* crates share one rev)
-rev = "11d19d9c50cb224a565115278221ef8b1033c7d6"
-# or branch: fix/inline-preproc-if-expression
+# Prefer branch HEAD after the get/set follow-up (post-11d19d9):
+branch = "fix/inline-preproc-if-expression"
+# or pin the follow-up commit once pushed (see latest on that branch)
 ```
 
 ### Suggested smoke (no full corpus)
 
 ```bash
-# real-shape stub in a temp dir
+# 1) expression-position fnarg (round 1)
+mkdir -p /tmp/tty
 cat > /tmp/tty/fnarg << 'EOF'
 &IF "{3}":U = "":U &THEN dynamic-function("{1}":U IN TARGET-PROCEDURE, {2}) &ELSE dynamic-function("{1}":U IN {3}, {2}) &ENDIF
 EOF
@@ -159,6 +182,17 @@ EOF
 
 oxabl analyze /tmp/host.p --preprocess -I /tmp/tty
 # expect exit 0, no PREPROC007 for fnarg, no Unexpected token Then
+
+# 2) get/set-shaped inline UNDEFINE (round 2)
+cat > /tmp/getset.p << 'EOF'
+&GLOBAL-DEFINE foo bar
+&IF TRUE &THEN &UNDEFINE foo &ENDIF
+&GLOBAL-DEFINE xp-reset-values yes
+&IF DEFINED(xp-assign) = 0 AND DEFINED(xp-reset-values) <> 0 &THEN &UNDEFINE xp-reset-values &ENDIF
+MESSAGE "ok".
+EOF
+oxabl check /tmp/getset.p --preprocess
+# expect exit 0, no PREPROC002
 ```
 
 With a real OpenEdge install:
@@ -166,7 +200,7 @@ With a real OpenEdge install:
 ```bash
 oxabl analyze "$DLC/src/adm2/query.i" --preprocess \
   -I "$DLC/tty" -I "$DLC/gui" -I "$DLC/src" -I "$DLC/src/adm2"
-# expect no exit 5 solely from {fnarg}/{fn} inline &IF
+# expect no exit 5 from {fnarg}/{fn} or get/set inline &UNDEFINE
 ```
 
 ### Corpus A/B (required before treating this as production-clean)
@@ -187,12 +221,13 @@ cargo build --release -p oxabl
 | Signal | Pass |
 |--------|------|
 | Parse fail count (B − A) | ≤ 0 |
-| PREPROC002 (B vs A) | B ≤ A (prefer large drop) |
-| New top parse-error patterns | empty or fixed |
+| PARSE001 (deduped file count) | B ≤ A (baseline was 9) |
+| PREPROC002 (B vs A) | B ≤ A (prefer stay near post-round-1 drop) |
+| New top parse-error patterns | empty or fixed (esp. `smrtprto.i` / `qryprto.i`) |
 
-**Note:** This agent machine did **not** have the erp-5899 / pcna-erp tree, so
-criterion 7 was **not** run here. That is the main open item for the consumer
-(or anyone with the corpus).
+**Note:** Round 1 was A/B'd by the consumer: PREPROC002 −293 (good) but
+PARSE001 **+48** (fail). Round 2 targets that regression. This agent machine
+still does not have the erp-5899 tree — please re-run A/B on the follow-up pin.
 
 ---
 
@@ -233,12 +268,12 @@ criterion 7 was **not** run here. That is the main open item for the consumer
 
 ## Open questions / next steps
 
-1. **Run criterion 7** on erp-5899 with this pin; paste A/B numbers into the PR
-   or issue before merge.
-2. Optionally open a PR from `fix/inline-preproc-if-expression` → `master`
-   (not opened in this session).
+1. **Re-run criterion 7** on erp-5899 with the round-2 pin; paste A/B numbers
+   into the PR or issue before merge. Bar: PARSE001 ≤ 9 and PREPROC002 stays
+   well below baseline 596.
+2. Optionally open a PR from `fix/inline-preproc-if-expression` → `master`.
 3. After merge, bump downstream oxabl pin and re-check WebSpeed/ADM2 entry
-   points (`wrap-cgi.i` chain / `query.i`).
+   points (`wrap-cgi.i` chain / `query.i` / `get`+`set`).
 
 ---
 
