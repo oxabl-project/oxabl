@@ -804,10 +804,11 @@ impl<'a> Walker<'a> {
         Some(id)
     }
 
-    /// Reconcile a FUNCTION prototype with a later (or earlier) definition.
+    /// Reconcile FUNCTION prototype(s) with a later (or earlier) definition.
     ///
-    /// Returns `Some(prior)` when the collision is a legal prototype/definition
-    /// pairing; `None` when the caller should emit SEM0001.
+    /// Returns `Some(prior)` when the collision is a legal prototype/prototype
+    /// or prototype/definition pairing; `None` when the caller should emit
+    /// SEM0001 (true duplicate definitions).
     fn try_merge_function_prototype(
         &mut self,
         prior: crate::SymbolId,
@@ -835,10 +836,14 @@ impl<'a> Walker<'a> {
                 sym.flags.remove(SymbolFlags::PROTOTYPE);
                 Some(prior)
             }
+            // Prototype then prototype — merge (idempotent). Repeated
+            // prototypes are idiomatic in ADM2/WebSpeed preprocessed output
+            // (e.g. FORWARD + IN SUPER before the full definition).
+            (true, true) => Some(prior),
             // Definition then prototype — ignore the redundant prototype.
             (false, true) => Some(prior),
-            // Two prototypes or two definitions — true duplicate.
-            (true, true) | (false, false) => None,
+            // Two full definitions — true duplicate.
+            (false, false) => None,
         }
     }
 }
@@ -3001,21 +3006,31 @@ mod tests {
     }
 
     #[test]
-    fn function_two_prototypes_still_sem0001() {
-        let (_t, _s, diags) = run(vec![
-            stmt(StatementKind::Function {
-                name: id("f"),
-                return_type: DataType::Integer,
-                body: vec![],
-            }),
+    fn function_two_prototypes_no_sem0001() {
+        let proto0 = stmt(StatementKind::Function {
+            name: id("f"),
+            return_type: DataType::Integer,
+            body: vec![],
+        });
+        let proto0_id = proto0.id;
+        let (tree, symbols, diags) = run(vec![
+            proto0,
             stmt(StatementKind::Function {
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![],
             }),
         ]);
-        assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].code.0, diagnostics::SEM0001);
+        assert!(diags.is_empty(), "{diags:?}");
+        let s = find_symbol(&tree, &symbols, NamespaceId::Functions, "f").unwrap();
+        assert!(
+            s.flags.contains(SymbolFlags::PROTOTYPE),
+            "PROTOTYPE flag kept when no definition merges"
+        );
+        assert_eq!(
+            s.declaration, proto0_id,
+            "symbol keeps first prototype declaration"
+        );
     }
 
     #[test]
@@ -3041,6 +3056,44 @@ mod tests {
         let s = find_symbol(&tree, &symbols, NamespaceId::Functions, "f").unwrap();
         assert_eq!(s.declaration, def_id);
         assert!(!s.flags.contains(SymbolFlags::PROTOTYPE));
+    }
+
+    #[test]
+    fn function_forward_and_in_super_then_definition_no_sem0001() {
+        // WebSpeed/ADM common pattern: FORWARD + IN SUPER + definition.
+        let def = stmt(StatementKind::Function {
+            name: id("getVal"),
+            return_type: DataType::Character,
+            body: vec![param_stmt(
+                "s",
+                ParameterDirection::Input,
+                DataType::Character,
+            )],
+        });
+        let def_id = def.id;
+        let (tree, symbols, diags) = run(vec![
+            stmt(StatementKind::Function {
+                name: id("getVal"),
+                return_type: DataType::Character,
+                body: vec![], // FORWARD prototype
+            }),
+            stmt(StatementKind::Function {
+                name: id("getVal"),
+                return_type: DataType::Character,
+                body: vec![], // IN SUPER prototype
+            }),
+            def,
+        ]);
+        assert!(
+            diags.iter().all(|d| d.code.0 != diagnostics::SEM0001),
+            "FORWARD + IN SUPER + definition must not SEM0001: {diags:?}"
+        );
+        let s = find_symbol(&tree, &symbols, NamespaceId::Functions, "getval").unwrap();
+        assert_eq!(s.declaration, def_id, "symbol should point at definition");
+        assert!(
+            !s.flags.contains(SymbolFlags::PROTOTYPE),
+            "PROTOTYPE flag cleared after definition merges"
+        );
     }
 
     #[test]

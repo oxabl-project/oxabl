@@ -1,7 +1,7 @@
 ---
 title: "fix: reconcile FUNCTION FORWARD/IN SUPER prototype + definition (SEM0001) (#69)"
 type: fix
-status: active
+status: active (partially superseded — see plan 007 for multi-prototype reconciliation)
 date: 2026-07-18
 origin: GitHub #69
 branch: fix/function-forward-prototype-sem0001
@@ -71,7 +71,7 @@ incoming kinds are `SymbolKind::Function` **and** the incoming statement is
 |-------|----------|--------|
 | PROTOTYPE | definition (non-empty body) | **Merge**: clear PROTOTYPE, set `declaration`/`name_span`/`data_type` from definition; return prior `SymbolId` (no SEM0001) |
 | definition | PROTOTYPE | **Ignore** prototype; return prior (no SEM0001) |
-| PROTOTYPE | PROTOTYPE | **SEM0001** (two incomplete decls of same name) |
+| PROTOTYPE | PROTOTYPE | **Merge** (idempotent — plan 007 supersedes original SEM0001 intent) |
 | definition | definition | **SEM0001** (true duplicate) |
 | any (Method/Function) | Method | **SEM0001** (unchanged — Methods do not set/consume PROTOTYPE) |
 
@@ -92,9 +92,10 @@ Semantic unit:
 3. Prototype only (`IN h`) → 0 SEM0001, one symbol (unchanged).
 4. MAP TO prototype only → 0 SEM0001, one symbol.
 5. Two full definitions of same name → still SEM0001.
-6. Two FORWARD prototypes of same name → SEM0001.
+6. Two FORWARD prototypes of same name → merge (0 SEM0001 — plan 007 changed this).
 7. Definition then FORWARD (reverse order) → 0 SEM0001, keep definition.
-8. Two same-name METHODs in a class → still SEM0001 (guard shared kind).
+8. FORWARD + IN SUPER + definition → 0 SEM0001 (plan 007).
+9. Two same-name METHODs in a class → still SEM0001 (guard shared kind).
 
 E2e / analyze smoke (optional in lint tests or semantic):
 
