@@ -1,7 +1,7 @@
 ---
 title: "fix: allow '.' in preprocessor macro names for filename-based include-once guards (#74)"
 type: fix
-status: draft
+status: complete
 date: 2026-07-19
 origin: GitHub #74
 branch: fix/dot-in-preproc-macro-names
