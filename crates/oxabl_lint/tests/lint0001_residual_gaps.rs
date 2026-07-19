@@ -99,6 +99,58 @@ fn substr_builtin_call_is_silent() {
 }
 
 // ---------------------------------------------------------------------
+// #68 — FUNCTION signature parameters bind in the function body scope
+// ---------------------------------------------------------------------
+
+#[test]
+fn function_signature_param_is_silent() {
+    let diags = lint0001(
+        r#"
+FUNCTION getVal RETURNS CHARACTER (INPUT sValue AS CHARACTER):
+  RETURN sValue + "x".
+END FUNCTION.
+"#,
+    );
+    assert!(
+        diags.is_empty(),
+        "FUNCTION signature param must not fire LINT0001: {diags:?}"
+    );
+}
+
+#[test]
+fn function_multi_param_and_local_are_silent() {
+    let diags = lint0001(
+        r#"
+FUNCTION calc RETURNS INTEGER (INPUT a AS INTEGER, INPUT b AS INTEGER):
+  DEFINE VARIABLE r AS INTEGER NO-UNDO.
+  r = a + b.
+  RETURN r.
+END FUNCTION.
+"#,
+    );
+    assert!(
+        diags.is_empty(),
+        "FUNCTION params + local must not fire LINT0001: {diags:?}"
+    );
+}
+
+#[test]
+fn function_body_still_flags_undefined_name() {
+    let diags = lint0001(
+        r#"
+FUNCTION f RETURNS INTEGER (INPUT a AS INTEGER):
+  RETURN a + missingName.
+END FUNCTION.
+"#,
+    );
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].contains("missingName"),
+        "expected LINT0001 only for missingName: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
 // Item C — QUERY handle syntax
 // ---------------------------------------------------------------------
 

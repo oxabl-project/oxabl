@@ -4071,27 +4071,16 @@ impl Parser<'_> {
             self.advance();
         }
 
-        // Optional parameter list in parentheses
-        if self.check(Kind::LeftParen) {
-            self.advance();
-            // Skip parameter declarations inside parens for now
-            // Full parameter parsing would need its own implementation
-            // Parameters are typically re-declared in the body with DEFINE INPUT PARAMETER
-            let mut depth = 1;
-            while depth > 0 && !self.at_end() {
-                if self.check(Kind::LeftParen) {
-                    depth += 1;
-                } else if self.check(Kind::RightParen) {
-                    depth -= 1;
-                }
-                if depth > 0 {
-                    self.advance();
-                }
-            }
-            if self.check(Kind::RightParen) {
-                self.advance();
-            }
-        }
+        // Optional parameter list in parentheses. Signature params become
+        // DefineParameter statements prepended onto the function body so the
+        // semantic declare pass binds them into ScopeKind::Function (#68).
+        // Prototypes (FORWARD / IN … / MAP TO …) parse params then discard them
+        // so prototype-only symbols do not collide with a later definition.
+        let signature_params = if self.check(Kind::LeftParen) {
+            self.parse_parenthesized_params()?
+        } else {
+            Vec::new()
+        };
 
         // FORWARD declaration: FUNCTION name [RETURNS] type [(params)] FORWARD.
         // FORWARD is an identifier token (not a reserved keyword).
@@ -4100,6 +4089,7 @@ impl Parser<'_> {
             self.source[tok.start..tok.end].eq_ignore_ascii_case("forward")
         };
         if is_forward {
+            let _ = signature_params; // discard — prototype has empty body
             self.advance(); // consume FORWARD
             // FORWARD declarations may end with '.' or ':' (legacy ABL uses ':')
             if self.check(Kind::Period) || self.check(Kind::Colon) {
@@ -4120,6 +4110,7 @@ impl Parser<'_> {
         // IN super|this-procedure|handle — external function reference (forward declaration)
         // e.g. "function name returns type (params) in super."
         if self.check(Kind::KwIn) {
+            let _ = signature_params; // discard — prototype has empty body
             self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Function {
                 name,
@@ -4130,6 +4121,7 @@ impl Parser<'_> {
 
         // MAP TO name IN handle — external function mapping (class context)
         if self.check(Kind::Map) {
+            let _ = signature_params; // discard — prototype has empty body
             while !self.check(Kind::Period) && !self.at_end() {
                 self.advance();
             }
@@ -4151,8 +4143,8 @@ impl Parser<'_> {
             });
         }
 
-        // Parse body until END
-        let mut body = Vec::new();
+        // Parse body until END; prepend signature params so they bind in-scope.
+        let mut body = signature_params;
         while !self.check(Kind::End) && !self.at_end() {
             body.push(self.parse_statement()?);
         }

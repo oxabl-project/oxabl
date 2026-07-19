@@ -5735,7 +5735,106 @@ END FUNCTION.
         } => {
             assert_eq!(name.name, "calc-total");
             assert_eq!(return_type, DataType::Integer);
-            assert_eq!(body.len(), 1); // RETURN x + y.
+            // Signature params prepended as DefineParameter, then RETURN.
+            assert_eq!(body.len(), 3, "expected 2 params + RETURN, got {body:?}");
+            match &body[0].kind {
+                StatementKind::DefineParameter {
+                    direction,
+                    param_type: ParameterType::Variable { name, .. },
+                } => {
+                    assert_eq!(*direction, ParameterDirection::Input);
+                    assert_eq!(name.name, "x");
+                }
+                other => panic!("expected first param, got {other:?}"),
+            }
+            match &body[1].kind {
+                StatementKind::DefineParameter {
+                    direction,
+                    param_type: ParameterType::Variable { name, .. },
+                } => {
+                    assert_eq!(*direction, ParameterDirection::Input);
+                    assert_eq!(name.name, "y");
+                }
+                other => panic!("expected second param, got {other:?}"),
+            }
+            assert!(matches!(body[2].kind, StatementKind::Return(_)));
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_empty_param_list() {
+    let source = r#"
+FUNCTION f RETURNS INTEGER ():
+    RETURN 1.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { body, .. } => {
+            assert_eq!(body.len(), 1);
+            assert!(matches!(body[0].kind, StatementKind::Return(_)));
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_forward_with_params_has_empty_body() {
+    let source = "FUNCTION getVal RETURNS CHARACTER (INPUT sValue AS CHARACTER) FORWARD.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { name, body, .. } => {
+            assert_eq!(name.name, "getVal");
+            assert!(body.is_empty(), "FORWARD prototype must discard params");
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_in_super_with_params_has_empty_body() {
+    let source = "FUNCTION getVal RETURNS CHARACTER (INPUT s AS CHARACTER) IN SUPER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { name, body, .. } => {
+            assert_eq!(name.name, "getVal");
+            assert!(body.is_empty(), "IN SUPER prototype must discard params");
+        }
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_table_handle_param() {
+    let source = r#"
+FUNCTION f RETURNS LOGICAL (INPUT TABLE-HANDLE hTt):
+    RETURN TRUE.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { body, .. } => {
+            assert_eq!(body.len(), 2);
+            match &body[0].kind {
+                StatementKind::DefineParameter {
+                    param_type: ParameterType::Handle { kind, name, .. },
+                    ..
+                } => {
+                    assert_eq!(*kind, HandleParamKind::TableHandle);
+                    assert_eq!(name.name, "hTt");
+                }
+                other => panic!("expected TABLE-HANDLE param, got {other:?}"),
+            }
         }
         _ => panic!("Expected Function statement"),
     }

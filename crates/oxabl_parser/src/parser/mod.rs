@@ -1001,7 +1001,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR.
+    /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR/FUNCTION.
     ///
     /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
     ///
@@ -1141,6 +1141,31 @@ impl<'a> Parser<'a> {
                         direction,
                         param_type: ParameterType::Handle {
                             kind: HandleParamKind::DatasetHandle,
+                            name,
+                            passing: HandlePassingOptions::default(),
+                        },
+                    }));
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
+                // TABLE-HANDLE <name> [APPEND] [BIND] [BY-VALUE] — table handle parameter (no AS/LIKE)
+                if self.check(Kind::TableHandle) {
+                    self.advance(); // consume TABLE-HANDLE
+                    let name = self.parse_identifier()?;
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
+                    ) {
+                        self.advance();
+                    }
+                    params.push(self.stmt(StatementKind::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Handle {
+                            kind: HandleParamKind::TableHandle,
                             name,
                             passing: HandlePassingOptions::default(),
                         },
