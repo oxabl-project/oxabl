@@ -10,11 +10,16 @@
 //! access on a seeded handle (`SESSION:BATCH-MODE`) needs no attribute
 //! modeling — the member side is already treated as External.
 
+use std::sync::LazyLock;
+
 use oxabl_ast::NodeId;
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 
-use crate::{NamespaceId, ScopeId, ScopeTree, Symbol, SymbolFlags, SymbolKind, SymbolTable};
+use crate::{
+    BindingMap, NamespaceId, ScopeId, ScopeTree, Symbol, SymbolFlags, SymbolId, SymbolKind,
+    SymbolTable,
+};
 
 /// ASCII-lowercased names of every ABL system handle / pseudo-variable
 /// seeded into the root scope. Includes the documented abbreviation forms
@@ -86,11 +91,26 @@ pub static SYSTEM_HANDLES: &[&str] = &[
     "codepage-table",
 ];
 
-/// Seed the ABL system handles into the file scope.
-pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable) {
-    for name in SYSTEM_HANDLES {
+/// Precomputed seed state: the built-in `Symbol` records (arena order =
+/// `SYSTEM_HANDLES` order, so ids are `0..len`) plus the root `Values`
+/// binding map pointing at those ids.
+///
+/// `seed` runs on every declare pass; interning 49 atoms (string_cache
+/// dynamic-set insert + hash) and re-driving the `BindingMap` small→large
+/// spill per call was a measurable fixed tax on every analysis. Doing it
+/// once and cloning (atom clones are refcount bumps) keeps the hot path
+/// allocation-light while producing byte-identical results.
+struct SeedData {
+    symbols: Vec<Symbol>,
+    bindings: BindingMap,
+}
+
+static SEED: LazyLock<SeedData> = LazyLock::new(|| {
+    let mut seeded = Vec::with_capacity(SYSTEM_HANDLES.len());
+    let mut bindings = BindingMap::default();
+    for (idx, name) in SYSTEM_HANDLES.iter().enumerate() {
         let atom = OxablAtom::from(*name);
-        let sym = symbols.insert(Symbol {
+        seeded.push(Symbol {
             name: atom.clone(),
             namespace: NamespaceId::Values,
             kind: SymbolKind::BuiltIn,
@@ -103,8 +123,30 @@ pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable) {
             flags: SymbolFlags::empty(),
             table_id: None,
         });
-        tree.get_mut(ScopeId::ROOT).bindings[NamespaceId::Values.index()].insert(atom, sym);
+        bindings.insert(atom, SymbolId::new(idx as u32));
     }
+    SeedData {
+        symbols: seeded,
+        bindings,
+    }
+});
+
+/// Seed the ABL system handles into the file scope.
+///
+/// Must be called on a freshly constructed `SymbolTable`/`ScopeTree`: the
+/// precomputed binding map assumes the built-ins occupy symbol ids
+/// `0..SYSTEM_HANDLES.len()` and replaces the root `Values` bindings.
+pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable) {
+    let data = &*SEED;
+    debug_assert!(symbols.is_empty(), "seed() requires an empty symbol table");
+    debug_assert!(
+        tree.get(ScopeId::ROOT).bindings[NamespaceId::Values.index()].is_empty(),
+        "seed() requires an empty root Values binding map"
+    );
+    for sym in &data.symbols {
+        symbols.insert(sym.clone());
+    }
+    tree.get_mut(ScopeId::ROOT).bindings[NamespaceId::Values.index()] = data.bindings.clone();
 }
 
 #[cfg(test)]
