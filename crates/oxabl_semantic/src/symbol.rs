@@ -83,6 +83,10 @@ bitflags! {
         const PROTECTED        = 1 << 13;
         const PUBLIC           = 1 << 14;
         const PACKAGE_PRIVATE  = 1 << 15;
+        /// Incomplete FUNCTION declaration (FORWARD / IN handle / MAP TO).
+        /// Cleared when a later full definition in the same scope merges into
+        /// this symbol (#69).
+        const PROTOTYPE        = 1 << 16;
     }
 }
 

@@ -434,6 +434,9 @@ fn symbol_flags_list(f: oxabl_semantic::SymbolFlags) -> Vec<&'static str> {
     if f.contains(F::PACKAGE_PRIVATE) {
         out.push("package_private");
     }
+    if f.contains(F::PROTOTYPE) {
+        out.push("prototype");
+    }
     out
 }
 
