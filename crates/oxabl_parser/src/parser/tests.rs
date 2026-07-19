@@ -5841,6 +5841,79 @@ END FUNCTION.
 }
 
 #[test]
+fn parse_function_type_only_params_forward() {
+    // ABL prototypes may omit parameter names: mode + type only.
+    for source in [
+        "FUNCTION f RETURNS CHARACTER (INPUT CHARACTER) FORWARD.",
+        "FUNCTION f RETURNS CHARACTER (CHARACTER) FORWARD.",
+        "FUNCTION f RETURNS CHARACTER (INPUT CHARACTER, INPUT INTEGER) FORWARD.",
+        "FUNCTION f RETURNS CHARACTER (INPUT CHARACTER) IN SUPER.",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("parse failed for {source:?}: {e:?}"));
+        match stmt.kind {
+            StatementKind::Function { body, .. } => {
+                assert!(
+                    body.is_empty(),
+                    "prototype body must stay empty: {source:?}"
+                );
+            }
+            other => panic!("Expected Function for {source:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn parse_function_named_param_with_comment_before_as() {
+    // A comment between the param name and AS must not trip the
+    // type-only-param heuristic into misreading the name as a type.
+    let source = r#"
+FUNCTION f RETURNS INTEGER (INPUT pc /* customer name */ AS CHARACTER):
+    RETURN 1.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { body, .. } => match &body[0].kind {
+            StatementKind::DefineParameter {
+                param_type: ParameterType::Variable { name, .. },
+                ..
+            } => assert_eq!(name.name, "pc"),
+            other => panic!("expected named param, got {other:?}"),
+        },
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
+fn parse_function_named_param_still_requires_as() {
+    // Type keyword used as a *name* still works with AS/LIKE.
+    let source = r#"
+FUNCTION f RETURNS INTEGER (INPUT character AS INTEGER):
+    RETURN character.
+END FUNCTION.
+"#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { body, .. } => match &body[0].kind {
+            StatementKind::DefineParameter {
+                param_type: ParameterType::Variable { name, .. },
+                ..
+            } => assert_eq!(name.name, "character"),
+            other => panic!("expected named param, got {other:?}"),
+        },
+        _ => panic!("Expected Function statement"),
+    }
+}
+
+#[test]
 fn parse_function_end_without_keyword() {
     let source = r#"
 FUNCTION get-value RETURNS LOGICAL:
