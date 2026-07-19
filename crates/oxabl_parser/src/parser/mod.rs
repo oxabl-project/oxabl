@@ -1001,7 +1001,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR.
+    /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR/FUNCTION.
     ///
     /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
     ///
@@ -1152,6 +1152,78 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                // TABLE-HANDLE <name> [APPEND] [BIND] [BY-VALUE] — table handle parameter (no AS/LIKE)
+                if self.check(Kind::TableHandle) {
+                    self.advance(); // consume TABLE-HANDLE
+                    let name = self.parse_identifier()?;
+                    while matches!(
+                        self.peek().kind,
+                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
+                    ) {
+                        self.advance();
+                    }
+                    params.push(self.stmt(StatementKind::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Handle {
+                            kind: HandleParamKind::TableHandle,
+                            name,
+                            passing: HandlePassingOptions::default(),
+                        },
+                    }));
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
+                // Type-only (unnamed) parameter — legal in FUNCTION prototypes:
+                //   (INPUT CHARACTER) FORWARD.
+                //   (CHARACTER, INTEGER) IN SUPER.
+                //   (INPUT CLASS Progress.Lang.Object) FORWARD.
+                // Named form keeps requiring AS/LIKE: (INPUT x AS CHARACTER).
+                if self.looks_like_type_only_param() {
+                    let type_start = self.current_span().start;
+                    let data_type = self.parse_data_type()?;
+                    if self.check(Kind::Extent) {
+                        self.advance();
+                        if self.check(Kind::IntegerLiteral)
+                            || self.check(Kind::Preprop)
+                            || self.check(Kind::IncludeArgReference)
+                        {
+                            self.advance();
+                        }
+                    }
+                    let no_undo = if self.check(Kind::NoUndo) {
+                        self.advance();
+                        true
+                    } else {
+                        false
+                    };
+                    // Synthetic name keeps the AST well-formed; prototypes discard
+                    // these statements, and named definitions never use this arm.
+                    let name = Identifier {
+                        name: format!("${}", params.len()),
+                        span: Span {
+                            start: type_start,
+                            end: self.current_span().start,
+                        },
+                    };
+                    params.push(self.stmt(StatementKind::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Variable {
+                            name,
+                            type_source: TypeSource::Explicit(data_type),
+                            no_undo,
+                        },
+                    }));
+                    if !self.check(Kind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                    continue;
+                }
+
                 let name = self.parse_identifier()?;
                 let type_source = self.parse_type_source()?;
                 let no_undo = if self.check(Kind::NoUndo) {
@@ -1179,6 +1251,56 @@ impl<'a> Parser<'a> {
 
         self.expect_kind(Kind::RightParen, "Expected ')'")?;
         Ok(params)
+    }
+
+    /// True when the next tokens are a type-only (unnamed) parameter rather than
+    /// `name AS/LIKE type`. Used for FUNCTION prototype signatures where ABL
+    /// permits omitting the parameter name (#68 PARSE001 follow-up).
+    fn looks_like_type_only_param(&self) -> bool {
+        let k = self.peek().kind;
+        // CLASS Foo / Progress.Lang… always introduce a type, never a param name.
+        if matches!(k, Kind::Class | Kind::Progress) {
+            return true;
+        }
+        // Primitive type keywords and bare identifiers: type-only unless the
+        // next token is AS/LIKE (then the current token is the parameter name).
+        // A following `.` is a class path (`forms.deco`) — also type-only.
+        if Self::is_primitive_data_type_kind(k) || Self::can_be_identifier(k) {
+            let next = self.peek_nth_non_comment(2);
+            if next.kind == Kind::Period {
+                return true;
+            }
+            if next.kind == Kind::KwAs || next.kind == Kind::Like {
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Built-in data type keyword kinds recognized by [`Self::parse_data_type`].
+    fn is_primitive_data_type_kind(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Integer
+                | Kind::Int64
+                | Kind::Decimal
+                | Kind::Character
+                | Kind::Logical
+                | Kind::Date
+                | Kind::Datetime
+                | Kind::DatetimeTz
+                | Kind::Handle
+                | Kind::Rowid
+                | Kind::Recid
+                | Kind::Raw
+                | Kind::Memptr
+                | Kind::Longchar
+                | Kind::Clob
+                | Kind::Blob
+                | Kind::ComHandle
+                | Kind::KwIn // "in" abbreviates integer
+        )
     }
 
     /// Parse `AS type | LIKE field` for DEFINE VARIABLE and DEFINE PARAMETER contexts.
