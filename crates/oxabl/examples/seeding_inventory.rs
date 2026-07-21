@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_ast::{Statement, StatementKind as SK};
 use oxabl_common::SourceMap;
-use oxabl_lexer::{tokenize, Kind};
+use oxabl_lexer::{tokenize, Kind, Token};
 use oxabl_parser::Parser;
 use walkdir::WalkDir;
 
@@ -142,6 +142,8 @@ fn main() {
         let ctx = WalkCtx {
             sm: &sm,
             end_offsets: &end_offsets,
+            tokens: &tokens,
+            src: source.as_bytes(),
             file: &file_display,
         };
         walk_routines(&program.statements, None, false, &ctx, &mut rows);
@@ -171,6 +173,11 @@ fn main() {
 struct WalkCtx<'a> {
     sm: &'a SourceMap,
     end_offsets: &'a [usize],
+    /// Full token stream for the file — used to resolve the decl point to a real
+    /// statement boundary (ABL's `.`/`:`-followed-by-whitespace rule).
+    tokens: &'a [Token],
+    /// Raw source bytes — for the whitespace-after-punctuation check.
+    src: &'a [u8],
     file: &'a str,
 }
 
@@ -274,14 +281,11 @@ fn build_routine(
         }
     };
 
-    // --- decl point: first executable child (not a declaration, CATCH or FINALLY) ---
-    let first_exec = body
-        .iter()
-        .find(|c| !is_declaration(&c.kind) && !is_catch_or_finally(&c.kind) && statement_span(c).is_some());
-    let decl = match first_exec.and_then(statement_span) {
-        Some((s, _)) => Some(line_col1(ctx.sm, s)),
-        None => {
-            row.flag_reason = "no locatable executable statement".into();
+    // --- decl point: the statement boundary AFTER the leading declaration region ---
+    let decl = match compute_decl(ctx, node, body) {
+        Ok(pt) => Some(pt),
+        Err(reason) => {
+            row.flag_reason = reason;
             return row;
         }
     };
@@ -334,6 +338,148 @@ fn build_routine(
         }
     }
     row
+}
+
+/// Resolve the post-declaration decl point to a real statement boundary.
+///
+/// The include takes a whole line (col 1), so it must be inserted *between*
+/// statements — never in the middle of one, and never before a `DEFINE …
+/// PARAMETER`. Two legacy shapes broke the naive "start of the first executable
+/// child" rule:
+///
+/// - (a) The whole routine body is wrapped in a single `DO:` block that also
+///   holds the `DEFINE … PARAMETER` statements. The first *top-level* child is
+///   then the `DO`, so anchoring to it lands the include before the parameters
+///   (illegal ordering, and the routine-level FINALLY the end-include supplies
+///   then attaches to a non-undoable inner block). We descend into that DO — but
+///   only when it actually traps parameters — so the decl point lands after them.
+///
+/// - (b) The routine has no declaration block and its first executable statement
+///   is multi-line (e.g. a leading `ASSIGN` whose first target is on the next
+///   line). A leaf-span start reports the target line, not the keyword line, so
+///   the include splices into the middle of the statement. We instead anchor to
+///   the statement's *true* first token.
+///
+/// Method: find the first executable statement, then walk to the statement
+/// boundary that precedes it. ABL's real rule decides the boundary — a `.` or
+/// `:` **followed by whitespace/EOF** ends a statement / opens a block, while the
+/// same character inside `a.b`, a decimal, or `"x":U` is not a boundary. The decl
+/// line is the first significant token after that boundary — the executable's own
+/// leading keyword. Any shape that cannot be pinned to such a boundary returns an
+/// `Err`, which the caller turns into a non-seedable flag (fail safe, never guess).
+fn compute_decl(ctx: &WalkCtx, node: &Statement, body: &[Statement]) -> Result<(usize, usize), String> {
+    let eff = effective_decl_body(body);
+
+    let first_exec = eff.iter().find(|c| {
+        !is_declaration(&c.kind) && !is_catch_or_finally(&c.kind) && statement_span(c).is_some()
+    });
+    let s0 = match first_exec.and_then(statement_span) {
+        Some((s, _)) => s,
+        None => return Err("no locatable executable statement".into()),
+    };
+
+    // Boundary preceding the first executable: prefer the nearest statement-
+    // terminating period before it (end of the leading declaration region); if
+    // there is none (no declaration block), fall back to the routine header's
+    // block-opening colon. Either anchors us cleanly ahead of the executable.
+    let node_start = statement_span(node).map(|(s, _)| s).unwrap_or(0);
+    let last_period_end = ctx
+        .tokens
+        .iter()
+        .filter(|t| {
+            t.kind == Kind::Period
+                && t.start >= node_start
+                && t.end <= s0
+                && ws_or_eof(ctx.src, t.end)
+        })
+        .map(|t| t.end)
+        .max();
+    let boundary = match last_period_end {
+        Some(e) => e,
+        None => ctx
+            .tokens
+            .iter()
+            .find(|t| {
+                t.kind == Kind::Colon
+                    && t.start >= node_start
+                    && t.end <= s0
+                    && ws_or_eof(ctx.src, t.end)
+            })
+            .map(|t| t.end)
+            .ok_or_else(|| "cannot locate a statement boundary before the first executable".to_string())?,
+    };
+
+    // The executable's true first token = first significant token after the
+    // boundary (comments/preproc-end skipped). Bounded by s0 as a safety net.
+    let true_start = ctx
+        .tokens
+        .iter()
+        .filter(|t| t.start >= boundary && t.start <= s0 && !is_trivia(t.kind))
+        .map(|t| t.start)
+        .min()
+        .unwrap_or(s0);
+
+    Ok(line_col1(ctx.sm, true_start))
+}
+
+/// Descend through a leading whole-body `DO:` envelope that traps the routine's
+/// `DEFINE … PARAMETER` statements, returning the body the decl point should be
+/// computed against. Parameters may only appear at a routine's top level, so a
+/// `DO` whose leading region contains one is never an ordinary control block —
+/// it is the legacy "wrap the whole body" idiom (a). A control `DO` (loop,
+/// transaction, `IF … THEN DO:`) never holds parameters and is left alone, so the
+/// include stays in the routine's top-level block. Bounded against pathological
+/// nesting.
+fn effective_decl_body(body: &[Statement]) -> &[Statement] {
+    let mut cur = body;
+    for _ in 0..4 {
+        match cur.first().map(|s| &s.kind) {
+            Some(SK::Do { body: inner, .. }) if leading_region_has_parameter(inner) => {
+                cur = inner;
+            }
+            _ => break,
+        }
+    }
+    cur
+}
+
+/// True when a `DEFINE … PARAMETER` appears in the leading declaration region of
+/// `stmts` (before the first executable statement).
+fn leading_region_has_parameter(stmts: &[Statement]) -> bool {
+    for s in stmts {
+        if matches!(s.kind, SK::DefineParameter { .. }) {
+            return true;
+        }
+        // Keep scanning across the declaration region (and spanless artifacts such
+        // as DEFINE QUERY, which the parser may not model); stop at the first
+        // real executable statement.
+        if !is_declaration(&s.kind) && !is_catch_or_finally(&s.kind) && statement_span(s).is_some() {
+            return false;
+        }
+    }
+    false
+}
+
+/// A `.`/`:` at `off` ends a statement / opens a block only when what follows is
+/// whitespace or end-of-input — ABL's actual tokenizing rule. This is what tells
+/// a statement-terminating `.` apart from the `.` in `db.tbl`, a decimal, or the
+/// `:` in `obj:method` and `"x":U`.
+fn ws_or_eof(src: &[u8], off: usize) -> bool {
+    off >= src.len() || src[off].is_ascii_whitespace()
+}
+
+/// Comment / preprocessor-boundary tokens carry no statement structure and are
+/// skipped when looking for a statement's true first token.
+fn is_trivia(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Comment
+            | Kind::LineComment
+            | Kind::BlockCommentStart
+            | Kind::BlockCommentEnd
+            | Kind::PreprocEnd
+            | Kind::Eof
+    )
 }
 
 /// (line, 1) for a byte offset — the two include insertions take a whole line,
@@ -568,4 +714,178 @@ fn parse_args() -> Result<Config, String> {
         out,
         exts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Placement fixtures. Every snippet here is synthetic, minimal ABL written to
+    //! reproduce a *structural shape* — not derived from any real source. Names are
+    //! deliberately neutral (doStuff, cFoo, ttThing, …).
+    use super::*;
+
+    /// Run the same walk `main` runs, over an in-memory snippet.
+    fn rows_for(src: &str) -> Vec<Row> {
+        let tokens = tokenize(src);
+        let end_offsets: Vec<usize> = tokens
+            .iter()
+            .filter(|t| t.kind == Kind::End)
+            .map(|t| t.start)
+            .collect();
+        let mut parser = Parser::new(&tokens, src);
+        let program = parser.parse_program();
+        let sm = SourceMap::new(src);
+        let ctx = WalkCtx {
+            sm: &sm,
+            end_offsets: &end_offsets,
+            tokens: &tokens,
+            src: src.as_bytes(),
+            file: "fixture.p",
+        };
+        let mut rows = Vec::new();
+        walk_routines(&program.statements, None, false, &ctx, &mut rows);
+        rows
+    }
+
+    fn row<'a>(rows: &'a [Row], name: &str) -> &'a Row {
+        rows.iter().find(|r| r.span_name == name).expect("row exists")
+    }
+
+    /// Trimmed text of a 1-based source line — what the include would be inserted
+    /// *before*.
+    fn line_text(src: &str, line: usize) -> String {
+        src.lines().nth(line - 1).unwrap_or("").trim().to_string()
+    }
+
+    /// 1-based line a substring first appears on.
+    fn line_of(src: &str, needle: &str) -> usize {
+        src.lines().position(|l| l.contains(needle)).expect("needle present") + 1
+    }
+
+    // ── Shape (a): DEFINE … PARAMETER trapped inside a leading whole-body DO. ──
+    // The naive "first top-level child" rule anchors to the DO and lands the decl
+    // point before the parameters; the decl point must instead fall after them,
+    // at the first executable inside the DO.
+    const SHAPE_A: &str = "\
+PROCEDURE doStuff:
+DO:
+    DEFINE INPUT PARAMETER pThing AS INTEGER NO-UNDO.
+    DEFINE OUTPUT PARAMETER pResult AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cFoo AS CHARACTER NO-UNDO.
+    cFoo = \"x\".
+    pResult = cFoo.
+END.
+END PROCEDURE.
+";
+
+    #[test]
+    fn shape_a_params_in_do_lands_after_params() {
+        let rows = rows_for(SHAPE_A);
+        let r = row(&rows, "doStuff");
+        assert!(r.seedable, "should be seedable: {}", r.flag_reason);
+        let (dl, dc) = r.decl.expect("decl point");
+        assert_eq!(dc, 1, "include takes a whole line");
+        // Lands on the first executable, not before the parameters.
+        assert_eq!(line_text(SHAPE_A, dl), "cFoo = \"x\".");
+        let last_param = line_of(SHAPE_A, "DEFINE OUTPUT PARAMETER");
+        assert!(dl > last_param, "decl {dl} must be past the params (line {last_param})");
+    }
+
+    // ── Shape (b): no declaration block; first statement is a multi-line ASSIGN. ─
+    // A leaf-span start reports the first *target* line; the decl point must be the
+    // ASSIGN keyword line so the include is not spliced into the statement.
+    const SHAPE_B: &str = "\
+PROCEDURE assignFirst:
+   ASSIGN
+      cFoo = \"a\"
+      cBar = \"b\".
+   cBaz = \"c\".
+END PROCEDURE.
+";
+
+    #[test]
+    fn shape_b_multiline_assign_lands_on_keyword_line() {
+        let rows = rows_for(SHAPE_B);
+        let r = row(&rows, "assignFirst");
+        assert!(r.seedable, "should be seedable: {}", r.flag_reason);
+        let (dl, dc) = r.decl.expect("decl point");
+        assert_eq!(dc, 1);
+        // The ASSIGN keyword line — never a line in the middle of the statement.
+        assert_eq!(line_text(SHAPE_B, dl), "ASSIGN");
+        assert!(!line_text(SHAPE_B, dl).starts_with("cFoo"), "must not splice mid-ASSIGN");
+    }
+
+    // ── Control: ordinary declaration block, then executable. ──
+    const NORMAL: &str = "\
+PROCEDURE plain:
+   DEFINE INPUT PARAMETER pIn AS INTEGER NO-UNDO.
+   DEFINE VARIABLE cFoo AS CHARACTER NO-UNDO.
+
+   cFoo = \"y\".
+   pIn = 1.
+END PROCEDURE.
+";
+
+    #[test]
+    fn normal_decl_block_lands_after_declarations() {
+        let rows = rows_for(NORMAL);
+        let r = row(&rows, "plain");
+        assert!(r.seedable);
+        let (dl, _) = r.decl.expect("decl point");
+        assert_eq!(line_text(NORMAL, dl), "cFoo = \"y\".");
+        assert!(dl > line_of(NORMAL, "DEFINE VARIABLE"));
+    }
+
+    // ── Control: a genuine control DO (loop) with a local var but NO parameter
+    // must NOT be descended into — the include stays in the routine's top-level
+    // block, ahead of the DO. ──
+    const CONTROL_DO: &str = "\
+PROCEDURE looper:
+   DEFINE VARIABLE iIdx AS INTEGER NO-UNDO.
+   DO iIdx = 1 TO 10:
+      DEFINE VARIABLE cTmp AS CHARACTER NO-UNDO.
+      cTmp = STRING(iIdx).
+   END.
+END PROCEDURE.
+";
+
+    #[test]
+    fn control_do_without_params_is_not_descended() {
+        let rows = rows_for(CONTROL_DO);
+        let r = row(&rows, "looper");
+        assert!(r.seedable);
+        let (dl, _) = r.decl.expect("decl point");
+        // Anchored to the DO header (top level), not inside the loop body.
+        assert!(line_text(CONTROL_DO, dl).starts_with("DO "), "got: {}", line_text(CONTROL_DO, dl));
+        assert!(dl < line_of(CONTROL_DO, "cTmp = STRING"));
+    }
+
+    // ── Fail-safe: an empty routine body has no statement boundary to anchor to
+    // and is flagged non-seedable rather than guessed. ──
+    const EMPTY_BODY: &str = "\
+PROCEDURE hollow:
+END PROCEDURE.
+";
+
+    #[test]
+    fn empty_body_is_flagged_non_seedable() {
+        let rows = rows_for(EMPTY_BODY);
+        let r = row(&rows, "hollow");
+        assert!(!r.seedable);
+        assert_eq!(r.flag_reason, "no locatable executable statement");
+        assert!(r.decl.is_none());
+    }
+
+    // ── Determinism: identical input yields identical rows. ──
+    #[test]
+    fn determinism_same_input_same_rows() {
+        let a = rows_for(SHAPE_A);
+        let b = rows_for(SHAPE_A);
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.span_name, y.span_name);
+            assert_eq!(x.decl, y.decl);
+            assert_eq!(x.end, y.end);
+            assert_eq!(x.seedable, y.seedable);
+        }
+    }
 }
