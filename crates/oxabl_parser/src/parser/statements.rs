@@ -2193,14 +2193,23 @@ impl Parser<'_> {
     }
 
     /// Parse multiple statements until we hit a terminator
+    /// Parse the whole token stream, returning the statements on a clean parse
+    /// or the first error otherwise.
+    ///
+    /// This is the non-`Program` entry point used by the `analyze` CLI path. It
+    /// now shares [`parse_program`](Self::parse_program)'s per-statement error
+    /// recovery: block bodies no longer bubble the first in-body error out of
+    /// the whole file. To preserve this method's original observable contract
+    /// (report the first parse error, treat the file as failed), it surfaces the
+    /// first accumulated error as `Err`; nothing that previously reported an
+    /// error becomes silent. On a clean parse it returns the statements as
+    /// before.
     pub fn parse_statements(&mut self) -> ParseResult<Vec<Statement>> {
-        let mut statements = Vec::new();
-
-        while !self.at_end() {
-            statements.push(self.parse_statement()?);
+        let program = self.parse_program();
+        match program.errors.into_iter().next() {
+            Some(err) => Err(err),
+            None => Ok(program.statements),
         }
-
-        Ok(statements)
     }
 
     fn parse_do_statement(&mut self) -> ParseResult<Statement> {
@@ -3058,9 +3067,12 @@ impl Parser<'_> {
 
             // parse statements until next WHEN, OTHERWISE, or END
             let mut body = Vec::new();
-            while !self.check(Kind::When) && !self.check(Kind::Otherwise) && !self.check(Kind::End)
+            while !self.check(Kind::When)
+                && !self.check(Kind::Otherwise)
+                && !self.check(Kind::End)
+                && !self.at_end()
             {
-                body.push(self.parse_statement()?);
+                self.parse_block_statement_recovering(&mut body);
             }
 
             when_branches.push(WhenBranch { values, body });
@@ -3069,20 +3081,15 @@ impl Parser<'_> {
         let otherwise = if self.check(Kind::Otherwise) {
             self.advance();
             let mut body = Vec::new();
-            while !self.check(Kind::End) {
-                body.push(self.parse_statement()?);
+            while !self.check(Kind::End) && !self.at_end() {
+                self.parse_block_statement_recovering(&mut body);
             }
             Some(body)
         } else {
             None
         };
 
-        self.expect_kind(Kind::End, "Expected END")?;
-        // CASE keyword after END is optional in ABL — some code uses just END.
-        if self.check(Kind::Case) {
-            self.advance();
-        }
-        self.expect_period("Expected '.' after END CASE")?;
+        self.recover_block_end(Some(Kind::Case), "Expected END", "Expected '.' after END CASE");
 
         Ok(self.stmt(StatementKind::Case {
             expression,
@@ -3228,19 +3235,25 @@ impl Parser<'_> {
                 body.push(self.parse_finally_block()?);
                 continue;
             }
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
-        self.expect_kind(Kind::End, "Expected END at end of PROCEDURE body")?;
-
-        // END PROCEDURE or just END. both are valid.
-        if self.check(Kind::Procedure) {
+        // Recover a missing END rather than discarding the whole PROCEDURE.
+        if self.check(Kind::End) {
             self.advance();
-        }
-
-        // Period is required but may be missing in legacy code — make it optional
-        if self.check(Kind::Period) {
-            self.advance();
+            // END PROCEDURE or just END. both are valid.
+            if self.check(Kind::Procedure) {
+                self.advance();
+            }
+            // Period is required but may be missing in legacy code — optional.
+            if self.check(Kind::Period) {
+                self.advance();
+            }
+        } else {
+            self.record_error(ParseError {
+                message: "Expected END at end of PROCEDURE body".to_string(),
+                span: self.current_span(),
+            });
         }
 
         Ok(self.stmt(StatementKind::Procedure { name, body }))
@@ -4146,17 +4159,14 @@ impl Parser<'_> {
         // Parse body until END; prepend signature params so they bind in-scope.
         let mut body = signature_params;
         while !self.check(Kind::End) && !self.at_end() {
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
-        self.expect_kind(Kind::End, "Expected END at end of FUNCTION body")?;
-
-        // Optional FUNCTION keyword after END
-        if self.check(Kind::Function) {
-            self.advance();
-        }
-
-        self.expect_period("Expected '.' after END FUNCTION")?;
+        self.recover_block_end(
+            Some(Kind::Function),
+            "Expected END at end of FUNCTION body",
+            "Expected '.' after END FUNCTION",
+        );
 
         Ok(self.stmt(StatementKind::Function {
             name,
@@ -4211,12 +4221,16 @@ impl Parser<'_> {
                 }
                 break; // This END closes the current block.
             }
-            statements.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut statements);
         }
 
-        // Consume the END
-        self.expect_kind(Kind::End, "Expected END to close block")?;
-        self.expect_period("Expected '.' to end statement")?;
+        // Consume the END (or record its absence at EOF) — either way the block
+        // survives with the statements parsed so far. See recover_block_end.
+        self.recover_block_end(
+            None,
+            "Expected END to close block",
+            "Expected '.' to end statement",
+        );
 
         Ok(statements)
     }
@@ -4256,15 +4270,14 @@ impl Parser<'_> {
         // Parse body until END
         let mut body = Vec::new();
         while !self.check(Kind::End) && !self.at_end() {
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
-        self.expect_kind(Kind::End, "Expected END to close CATCH")?;
-        // Optional CATCH keyword after END
-        if self.check(Kind::Catch) {
-            self.advance();
-        }
-        self.expect_period("Expected '.' after END CATCH")?;
+        self.recover_block_end(
+            Some(Kind::Catch),
+            "Expected END to close CATCH",
+            "Expected '.' after END CATCH",
+        );
 
         Ok(self.stmt(StatementKind::Catch {
             error_var,
@@ -4282,15 +4295,14 @@ impl Parser<'_> {
 
         let mut body = Vec::new();
         while !self.check(Kind::End) && !self.at_end() {
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
-        self.expect_kind(Kind::End, "Expected END to close FINALLY")?;
-        // Optional FINALLY keyword after END
-        if self.check(Kind::Finally) {
-            self.advance();
-        }
-        self.expect_period("Expected '.' after END FINALLY")?;
+        self.recover_block_end(
+            Some(Kind::Finally),
+            "Expected END to close FINALLY",
+            "Expected '.' after END FINALLY",
+        );
 
         Ok(self.stmt(StatementKind::Finally { body }))
     }
@@ -4563,7 +4575,7 @@ impl Parser<'_> {
                 }
                 break;
             }
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
         Ok(self.stmt(StatementKind::Class {
@@ -4609,10 +4621,12 @@ impl Parser<'_> {
                 if self.check(Kind::Interface) {
                     self.advance();
                 }
-                self.expect_period("Expected '.' after END INTERFACE")?;
+                if let Err(err) = self.expect_period("Expected '.' after END INTERFACE") {
+                    self.record_error(err);
+                }
                 break;
             }
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
         Ok(self.stmt(StatementKind::Interface {
@@ -4768,7 +4782,9 @@ impl Parser<'_> {
                 if self.check(Kind::Method) {
                     self.advance(); // consume METHOD
                 }
-                self.expect_period("Expected '.' after END METHOD")?;
+                if let Err(err) = self.expect_period("Expected '.' after END METHOD") {
+                    self.record_error(err);
+                }
                 break;
             }
             // Handle CATCH and FINALLY blocks that may appear at the end of a METHOD body
@@ -4780,7 +4796,7 @@ impl Parser<'_> {
                 body.push(self.parse_finally_block()?);
                 continue;
             }
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
         Ok(self.stmt(StatementKind::Method {
@@ -4891,10 +4907,12 @@ impl Parser<'_> {
                         if self.check(Kind::Get) {
                             self.advance();
                         }
-                        self.expect_period("Expected '.' after END GET")?;
+                        if let Err(err) = self.expect_period("Expected '.' after END GET") {
+                            self.record_error(err);
+                        }
                         break;
                     }
-                    body.push(self.parse_statement()?);
+                    self.parse_block_statement_recovering(&mut body);
                 }
                 Some(body)
             } else {
@@ -4934,10 +4952,12 @@ impl Parser<'_> {
                         if self.check(Kind::Set) {
                             self.advance();
                         }
-                        self.expect_period("Expected '.' after END SET")?;
+                        if let Err(err) = self.expect_period("Expected '.' after END SET") {
+                            self.record_error(err);
+                        }
                         break;
                     }
-                    body.push(self.parse_statement()?);
+                    self.parse_block_statement_recovering(&mut body);
                 }
                 Some(body)
             } else {
@@ -5004,10 +5024,12 @@ impl Parser<'_> {
                 if self.check(Kind::Constructor) || self.check(Kind::Method) {
                     self.advance();
                 }
-                self.expect_period("Expected '.' after END CONSTRUCTOR")?;
+                if let Err(err) = self.expect_period("Expected '.' after END CONSTRUCTOR") {
+                    self.record_error(err);
+                }
                 break;
             }
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
         Ok(self.stmt(StatementKind::Constructor {
@@ -5054,10 +5076,12 @@ impl Parser<'_> {
                 if self.check(Kind::Destructor) || self.check(Kind::Method) {
                     self.advance();
                 }
-                self.expect_period("Expected '.' after END DESTRUCTOR")?;
+                if let Err(err) = self.expect_period("Expected '.' after END DESTRUCTOR") {
+                    self.record_error(err);
+                }
                 break;
             }
-            body.push(self.parse_statement()?);
+            self.parse_block_statement_recovering(&mut body);
         }
 
         Ok(self.stmt(StatementKind::Destructor { body }))

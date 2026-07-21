@@ -10189,3 +10189,101 @@ fn bare_assign_does_not_swallow_run() {
         result.errors
     );
 }
+
+// ---- oxabl#79: per-statement block-body error recovery ----
+
+#[test]
+fn block_survives_in_body_error_keeping_header_and_statements() {
+    // A stray `else` inside the DO body is an in-body parse error. The DO must
+    // survive with its while_condition header and the well-formed statements
+    // parsed before and after the error; the error is still reported.
+    let source = "do while not done:\n\
+                    x = 1.\n\
+                    else foo.\n\
+                    y = 2.\n\
+                  end.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+
+    assert!(
+        !program.errors.is_empty(),
+        "the in-body error must still be reported"
+    );
+    assert_eq!(program.statements.len(), 1, "the DO block must survive");
+    match &program.statements[0].kind {
+        StatementKind::Do {
+            while_condition,
+            body,
+            ..
+        } => {
+            assert!(
+                while_condition.is_some(),
+                "DO WHILE header condition must be preserved"
+            );
+            // Both well-formed assignments (`x = 1`, `y = 2`) survive recovery.
+            let assigns = body
+                .iter()
+                .filter(|s| matches!(s.kind, StatementKind::Assignment { .. }))
+                .count();
+            assert_eq!(assigns, 2, "both surrounding assignments must survive: {body:?}");
+        }
+        other => panic!("expected surviving Do block, got {other:?}"),
+    }
+}
+
+#[test]
+fn unterminated_block_recovers_and_survives() {
+    // Missing END at EOF is recovered: the DO survives with its header rather
+    // than being discarded, and the missing-END error is reported.
+    let source = "do while not lcheck:\n  x = 1.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+
+    assert!(
+        !program.errors.is_empty(),
+        "an unterminated block must still report an error"
+    );
+    assert_eq!(program.statements.len(), 1, "the DO block must survive");
+    assert!(
+        matches!(
+            &program.statements[0].kind,
+            StatementKind::Do { while_condition: Some(_), .. }
+        ),
+        "unterminated DO WHILE must survive with its header: {:?}",
+        program.statements[0].kind
+    );
+}
+
+#[test]
+fn nested_block_error_does_not_orphan_outer_block() {
+    // An error deep in an inner block must be contained there; the outer DO and
+    // the inner DO both survive with intact nesting.
+    let source = "do while a:\n\
+                    do while b:\n\
+                      else oops.\n\
+                    end.\n\
+                    z = 1.\n\
+                  end.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+
+    assert!(!program.errors.is_empty(), "inner error must be reported");
+    assert_eq!(program.statements.len(), 1, "outer DO must survive");
+    match &program.statements[0].kind {
+        StatementKind::Do { body, .. } => {
+            // Inner DO survived as a nested statement, and `z = 1` after it too.
+            assert!(
+                body.iter().any(|s| matches!(s.kind, StatementKind::Do { .. })),
+                "inner DO must survive nested: {body:?}"
+            );
+            assert!(
+                body.iter().any(|s| matches!(s.kind, StatementKind::Assignment { .. })),
+                "statement after inner block must survive: {body:?}"
+            );
+        }
+        other => panic!("expected outer Do, got {other:?}"),
+    }
+}
