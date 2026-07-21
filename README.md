@@ -9,29 +9,60 @@ High performance oxidized tooling for Progress ABL, written in Rust.
 
 No affiliation with Progress.
 
-## Status
+## Project Roadmap
 
-The first library will be `oxabl_parser`.
+**Goal**: A high performance suite of command line tools and libraries to make ABL development fast and effective.
+
+### Tooling
+
+These are the current high-priority goals for oxabl tooling. As it stands, oxabl has laid the groundwork for high-performance pre-processing, parsing, and semantic analysis. Next comes tooling on top of that. The foundation is still very new, so tooling is either unavailable or unstable.
+
+- LSP
+  - Work with oxabl to parse, lint, and format code directly in your editor
+  - sub-millisecond time for single file operations
+  - format/lint on save
+  - Status: Experimental, not available
+- Formatter
+  - Format ABL code from the CLI or LSP
+  - Status: Not started
+- Conformance harness
+  - A real-world test suite to ensure ox_abl is conformant with all ABL fragments and the compiler
+  - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
+- Linter
+  - Lint rule engine
+  - Public API for creating new lint rules and submitting them upstream for inclusion in oxabl's default rule set
+  - Status: the `oxabl check` command has been extended for linting real-world code bases and outputting our first LINT0001 rule (unused variables). Still experimental and unavailable.
+- Easy one-line installer and VS Code extension for getting started
+  - Status: Not started
+- Build system
+  - Incremental compiling (via the Progress compiler)
+  - Remote cache
+  - Status: Experimental, closed source, planning on bringing to oxabl once ready
+
+## Project Status
+
+The lexer, source map, ast, and parser crates are passing 100% of our test suite against our corpus. Next work is `oxabl check`.
 
 Requirements:
-- `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer` with 57 tests.
+- `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer`.
   - Produces tokens against all known ABL keywords, primitive datatypes, operators, and identifiers.
-  - Run against a realistic 390kb syntactically correct ABL file and correctly tokenized it.
+  - Correctly tokenises our corpus.
   - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl`.
-- `source_map`: MVP has been completed in `crates/oxabl_common` with 11 tests.
-  - It's able to produce line and column numbers from byte offsets stored in tokens.
-  - Used in our token dumps and benchmarks, appears to be accurate.
+- `source_map`: MVP has been completed in `crates/oxabl_common`.
+  - Produces line and column numbers from byte offsets stored in tokens.
+  - Used in our token dumps and benchmarks.
+  - Souce maps generated from the corpus line up to it's source accurately.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
-- `oxabl_parser`: MVP has been completed, parses 100% of our corpus code base. 
-  - Parses expressions with proper operator precedence
-  - Parses declarations
-  - Parses statements
-  - Parses OO-ABL
-  - Parses preprocessor
-  - Parses include file references and positional argument references
-  - Parses postfix operations
-  - Error recovery via synchronization on period boundaries
+- `oxabl_parser`: MVP has been completed, parses 100% of our corpus code base. Parses:
+  - Expressions with proper operator precedence
+  - Declarations
+  - Statements
+  - OO-ABL
+  - Preprocessor statements
+  - Include file references and positional argument references
+  - Postfix operations, and
+  - Has error recovery via synchronization on period boundaries
 - `oxabl check`: A CLI validation tool in `crates/oxabl` for testing parser coverage against real ABL codebases.
   - Walks a directory (or checks a single file) for ABL files (`.p`, `.w`, `.cls`) and runs each through the preprocessor, lexer and parser.
   - Reports pass/fail counts, error locations, and top error patterns. Supports `--json` output.
@@ -40,30 +71,13 @@ Requirements:
 
 Current Work: Semantic analysis.
 
-## Roadmap
-
-**Goal**: A high performance suite of command line tools and libraries to make ABL development blazingly fast and more effective.
-
-- `oxabl_parser` - foundation for understanding ABL code.
-  - `oxabl_lexer` and the `oxabl_ast` make up the foundation of the foundation.
-- `oxabl_fmt`    - CLI tool for formatting ABL code.
-- `oxabl_lint`   - CLI tool for linting ABL code.
-- `oxabl_minify` - CLI tool for removing dead code, shortening syntax, and code obfuscation.
-- `oxabl_build`  - CLI tool for *assisting* in the compilation of ABL.
-- `oxabl_run`    - CLI tool for *assisting* in the running of ABL.
-- `oxabl_test`   - CLI tool for *assisting* in the testing of ABL.
-
-**Disclaimer**: There is no long-term plan to take all of these stand-alone libraries and executables and create a cohesive experience. For now, it will be duct-taping things together. Perhaps an `oxabl` CLI?
-
-**Assisting?**: Some of these are stand alone executables or libraries that *assist* the developer working with ABL, they don't do everything. ABL is closed source, and you cannot compile ABL to byte code without the ABL compiler. That being said, you can make the process faster and more enjoyable. Because you need the AVM and compiler at the end of the day, what Oxabl can accomplish is limited.
-
 ## Benchmarks
 
-As a high performance oriented library, Oxabl is focused on hitting low numbers and keeping them low across versions.
+Oxabl's priority is correctness and speed.
 
 Benchmarks are run with `cargo bench -p <crate>`. Each crate has its own benchmark so we can track the performance of individual components in the toolset.
 
-These are not sanitized benchmarks — they were run on real hardware with normal background processes, similar to how a developer would actually use the tools.
+These are not sanitized benchmarks — they were run on real hardware with normal background processes, similar to how a developer would actually use the tools. The CI benchmarks are run by CodSpeed.
 
 ### Intel i7-8550U Laptop
 
@@ -112,9 +126,7 @@ These are not sanitized benchmarks — they were run on real hardware with norma
 
 ## Optimizations
 
-I don't know anything about these techniques! But I'm excited to learn.
-
-I consider the parser's current status as production grade. It's more than fast enough to parse the average ABL file in under a few ms. That's plenty fast enough for parsing when a file is saved, and on many files we get that number under 1ms, meaning it's fast enough to be run on keystrokes. Eventually we will be using the Salsa framework so only things we need to parse in the project get parsed, not the whole project, but files that have been updated and their dependencies. At that point, when we're parsing multiple files at a time to provide real-time feedback, it would be ideal to improve the parser's speed a bit.
+The current speeds of oxabl are production grade. The goal is to get these speeds faster, or maintain the current speed, never decline.
 
 ## Contributing
 
