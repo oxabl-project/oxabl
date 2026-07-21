@@ -40,7 +40,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Build system
   - Incremental compiling (via the Progress compiler)
   - Remote cache
-  - Status: Experimental, closed source, planning on bringing to oxabl once ready
+  - Status: Experimental, not available
 
 ## Project Status
 
