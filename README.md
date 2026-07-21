@@ -29,7 +29,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - A "try it in 10 seconds" demo in the browser
   - Make WASM a compile target in the release pipeline, past a code block into the browser, lint and format instantly
 - Conformance harness
-  - A real-world test suite to ensure ox_abl is conformant with all ABL fragments and the compiler
+  - A real-world test suite to ensure oxabl is conformant with all ABL fragments and the compiler
   - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
 - Linter
   - Lint rule engine
@@ -76,7 +76,7 @@ Current Work: Semantic analysis.
 
 ## Benchmarks
 
-Oxabl's priority is correctness and speed.
+Oxabl's priority is correctness and speed. A typical file can be parsed in sub-millisecond time, a 10k file codebase is done in a few seconds (with preprocessing off)
 
 Benchmarks are run with `cargo bench -p <crate>`. Each crate has its own benchmark so we can track the performance of individual components in the toolset.
 
@@ -129,7 +129,7 @@ These are not sanitized benchmarks — they were run on real hardware with norma
 
 ## Optimizations
 
-The current speeds of oxabl are production grade. The goal is to get these speeds faster, or maintain the current speed, never decline.
+The current speeds of oxabl are for enough for interactive use. The goal is to get these speeds faster, or maintain the current speed, never decline.
 
 ## Contributing
 
@@ -180,3 +180,7 @@ Valid commands are:
   - generates all files
 
 Commands write generated files directly to their target locations. Generated files include a "DO NOT EDIT" header. No manual file redirection is needed.
+
+# License
+
+[MIT[(https://github.com/oxabl-project/oxabl/blob/master/LICENSE)
