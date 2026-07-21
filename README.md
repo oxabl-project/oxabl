@@ -25,6 +25,9 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Formatter
   - Format ABL code from the CLI or LSP
   - Status: Not started
+- Try-it-yourself
+  - A "try it in 10 seconds" demo in the browser
+  - Make WASM a compile target in the release pipeline, past a code block into the browser, lint and format instantly
 - Conformance harness
   - A real-world test suite to ensure ox_abl is conformant with all ABL fragments and the compiler
   - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
