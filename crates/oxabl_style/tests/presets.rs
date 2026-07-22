@@ -1,6 +1,6 @@
 use oxabl_style::{
-    BufferNaming, ClassNaming, FileNameCasing, IndentStyle, KeywordAbbreviation, KeywordCase,
-    MethodCase, ParameterPrefix, Scope, StaticMemberRef, StyleGuide, SubstitutePolicy,
+    BufferNaming, ClassNaming, CommentStyle, FileNameCasing, IndentStyle, KeywordAbbreviation,
+    KeywordCase, MethodCase, ParameterPrefix, Scope, StaticMemberRef, StyleGuide, SubstitutePolicy,
     TempTablePrefix, VariableCase, VariableDeclAlignment,
 };
 
@@ -17,23 +17,41 @@ fn default_base_has_standard_indent() {
 }
 
 #[test]
-fn default_base_keywords_uppercase_unabbreviated() {
+fn default_base_preserves_keywords() {
+    // The safe default must not rewrite the author's keywords or abbreviations.
     let base = StyleGuide::default_base();
-    assert_eq!(base.keyword_case, KeywordCase::Uppercase);
+    assert_eq!(base.keyword_case, KeywordCase::Preserve);
     assert_eq!(
         base.keyword_abbreviation,
+        KeywordAbbreviation::KeepAbbreviations
+    );
+    assert_eq!(base.comment_style, CommentStyle::Either);
+}
+
+#[test]
+fn default_base_does_not_inject_constructs() {
+    // Opinionated "required construct" rules are off in the safe default so a
+    // first pass tidies layout without mangling existing code.
+    let base = StyleGuide::default_base();
+    assert!(!base.end_with_type);
+    assert!(!base.require_no_undo);
+    assert!(!base.require_file_headers);
+    assert!(!base.variable_type_prefix);
+    assert!(!base.blank_lines_between_sections);
+}
+
+#[test]
+fn strict_base_reapplies_shared_agreements() {
+    // The preset foundation restores the opinionated values both standards agree on.
+    let strict = StyleGuide::strict_base();
+    assert_eq!(strict.keyword_case, KeywordCase::Uppercase);
+    assert_eq!(
+        strict.keyword_abbreviation,
         KeywordAbbreviation::AbbreviateNothing
     );
-}
-
-#[test]
-fn default_base_end_with_type() {
-    assert!(StyleGuide::default_base().end_with_type);
-}
-
-#[test]
-fn default_base_require_no_undo() {
-    assert!(StyleGuide::default_base().require_no_undo);
+    assert!(strict.end_with_type);
+    assert!(strict.require_no_undo);
+    assert!(strict.require_file_headers);
 }
 
 // ---- oestandards preset ----
@@ -124,17 +142,23 @@ fn consultingwerk_constructs() {
     assert!(cw.named_events_on_prefix);
 }
 
-// ---- Presets don't stomp shared base ----
+// ---- Presets carry the strict shared agreements (not the safe default) ----
 
 #[test]
-fn both_presets_inherit_base_keyword_case() {
+fn both_presets_uppercase_keywords() {
+    // Presets are opinionated: uppercase keywords even though the safe
+    // default preserves them.
     assert_eq!(
         StyleGuide::oestandards().keyword_case,
-        StyleGuide::default_base().keyword_case
+        KeywordCase::Uppercase
     );
     assert_eq!(
         StyleGuide::consultingwerk().keyword_case,
-        StyleGuide::default_base().keyword_case
+        KeywordCase::Uppercase
+    );
+    assert_eq!(
+        StyleGuide::default_base().keyword_case,
+        KeywordCase::Preserve
     );
 }
 
@@ -151,27 +175,18 @@ fn both_presets_inherit_base_indent() {
 }
 
 #[test]
-fn both_presets_inherit_base_no_undo() {
-    assert_eq!(
-        StyleGuide::oestandards().require_no_undo,
-        StyleGuide::default_base().require_no_undo
-    );
-    assert_eq!(
-        StyleGuide::consultingwerk().require_no_undo,
-        StyleGuide::default_base().require_no_undo
-    );
+fn both_presets_require_no_undo() {
+    assert!(StyleGuide::oestandards().require_no_undo);
+    assert!(StyleGuide::consultingwerk().require_no_undo);
+    // …but the safe default does not.
+    assert!(!StyleGuide::default_base().require_no_undo);
 }
 
 #[test]
-fn both_presets_inherit_base_end_with_type() {
-    assert_eq!(
-        StyleGuide::oestandards().end_with_type,
-        StyleGuide::default_base().end_with_type
-    );
-    assert_eq!(
-        StyleGuide::consultingwerk().end_with_type,
-        StyleGuide::default_base().end_with_type
-    );
+fn both_presets_end_with_type() {
+    assert!(StyleGuide::oestandards().end_with_type);
+    assert!(StyleGuide::consultingwerk().end_with_type);
+    assert!(!StyleGuide::default_base().end_with_type);
 }
 
 // =============================================================================

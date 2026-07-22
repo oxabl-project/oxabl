@@ -79,15 +79,31 @@ pub struct StyleGuide {
 }
 
 impl StyleGuide {
-    /// Shared base — rules both standards agree on.
+    /// Safe, non-mangling default — the baseline a user gets with no config.
+    ///
+    /// The guiding principle is **preserve what the author already wrote** for
+    /// anything that touches their identifiers, keywords, or intent, and only
+    /// fix pure layout (whitespace, indentation, line length). So keyword
+    /// casing and abbreviations are [`KeywordCase::Preserve`] /
+    /// [`KeywordAbbreviation::KeepAbbreviations`], comment style is
+    /// [`CommentStyle::Either`], and opinionated "required construct" rules
+    /// (`require_no_undo`, `require_file_headers`, `end_with_type`,
+    /// `variable_type_prefix`, `blank_lines_between_sections`) default to
+    /// off/false. A first pass over an existing codebase must not rewrite
+    /// keywords or inject constructs — it just tidies layout.
+    ///
+    /// The named presets ([`StyleGuide::oestandards`],
+    /// [`StyleGuide::consultingwerk`]) build on [`StyleGuide::strict_base`],
+    /// which layers the opinionated values both standards agree on back on
+    /// top of this safe baseline.
     pub fn default_base() -> Self {
         Self {
-            // Keywords & Operators
-            keyword_case: KeywordCase::Uppercase,
-            keyword_abbreviation: KeywordAbbreviation::AbbreviateNothing,
+            // Keywords & Operators — preserve the author's keywords as written
+            keyword_case: KeywordCase::Preserve,
+            keyword_abbreviation: KeywordAbbreviation::KeepAbbreviations,
             require_symbolic_operators: false,
 
-            // Layout & Whitespace
+            // Layout & Whitespace — the only things a safe first pass fixes
             indent_size: 4,
             indent_style: IndentStyle::Spaces,
             do_placement: Placement::SameLine,
@@ -99,10 +115,10 @@ impl StyleGuide {
             multi_param_threshold: 3,
             max_line_length: 120,
             wrap_long_lines: true,
-            blank_lines_between_sections: true,
+            blank_lines_between_sections: false,
 
             // Block & Statement Structure
-            end_with_type: true,
+            end_with_type: false,
             using_sort: false,
             require_block_labels: false,
             disallow_unnecessary_blocks: false,
@@ -111,10 +127,10 @@ impl StyleGuide {
             run_in_this_procedure: false,
             require_if_parentheses: false,
 
-            // Naming Conventions
+            // Naming Conventions — all unspecified: never rename the author's code
             variable_case: VariableCase::Unspecified,
             method_case: MethodCase::Unspecified,
-            variable_type_prefix: true,
+            variable_type_prefix: false,
             global_prefix: None,
             parameter_prefix: ParameterPrefix::None,
             buffer_naming: BufferNaming::Unspecified,
@@ -123,11 +139,11 @@ impl StyleGuide {
             interface_prefix: None,
             file_name_casing: FileNameCasing::Unspecified,
 
-            // Required Constructs
-            require_no_undo: true,
+            // Required Constructs — off by default: don't inject what isn't there
+            require_no_undo: false,
             require_this_object: false,
             static_member_ref: StaticMemberRef::Unspecified,
-            require_file_headers: true,
+            require_file_headers: false,
             require_widget_pool: false,
             temp_table_in_include: false,
             named_events_on_prefix: false,
@@ -136,10 +152,32 @@ impl StyleGuide {
             disallow_commented_code: false,
             variable_decl_alignment: VariableDeclAlignment::None,
 
-            // File & Comment Structure
-            comment_style: CommentStyle::BlockComment,
+            // File & Comment Structure — accept whatever comment style is present
+            comment_style: CommentStyle::Either,
             class_structure_order: Vec::new(),
             procedure_structure_order: Vec::new(),
+        }
+    }
+
+    /// Opinionated baseline shared by the named presets.
+    ///
+    /// Layers the values **both** the oestandards and consultingwerk standards
+    /// agree on (uppercase unabbreviated keywords, `END <type>`, `NO-UNDO`,
+    /// file headers, type-prefixed variables, block comments, section spacing)
+    /// on top of [`StyleGuide::default_base`]. Presets extend this, not the
+    /// safe default, so they keep their strictness while the user-facing
+    /// default stays non-mangling.
+    pub fn strict_base() -> Self {
+        Self {
+            keyword_case: KeywordCase::Uppercase,
+            keyword_abbreviation: KeywordAbbreviation::AbbreviateNothing,
+            end_with_type: true,
+            blank_lines_between_sections: true,
+            variable_type_prefix: true,
+            require_no_undo: true,
+            require_file_headers: true,
+            comment_style: CommentStyle::BlockComment,
+            ..Self::default_base()
         }
     }
 
@@ -195,7 +233,7 @@ impl StyleGuide {
                 "Main Block".into(),
                 "Define Procedures".into(),
             ],
-            ..Self::default_base()
+            ..Self::strict_base()
         }
     }
 
@@ -218,7 +256,7 @@ impl StyleGuide {
             temp_table_in_include: true,
             named_events_on_prefix: true,
             variable_decl_alignment: VariableDeclAlignment::Tabular,
-            ..Self::default_base()
+            ..Self::strict_base()
         }
     }
 

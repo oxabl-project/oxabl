@@ -18,6 +18,25 @@ one of two [`Scope`] values:
 The `StyleGuide` struct holds ALL rules regardless of scope. Consumers
 filter by scope at use sites.
 
+## Baselines: safe default vs. strict preset foundation
+
+There are two baselines, and the distinction is deliberate:
+
+- **`StyleGuide::default_base()` — the safe, non-mangling default.** This is
+  what a user gets with no configuration. The guiding principle is *preserve
+  what the author already wrote* for anything that touches their identifiers,
+  keywords, or intent, and only fix pure layout (whitespace, indentation, line
+  length). So keyword casing is `Preserve`, abbreviations are
+  `KeepAbbreviations`, comment style is `Either`, and opinionated
+  "required construct" rules (`require_no_undo`, `require_file_headers`,
+  `end_with_type`, `variable_type_prefix`, `blank_lines_between_sections`)
+  default to off. A first pass over an existing codebase must not rewrite
+  keywords or inject constructs.
+- **`StyleGuide::strict_base()` — the opinionated preset foundation.** Layers
+  the values *both* standards agree on (uppercase unabbreviated keywords,
+  `END <type>`, `NO-UNDO`, file headers, type-prefixed variables, block
+  comments, section spacing) back on top of `default_base()`.
+
 ## Named Presets
 
 Two reference standards ship as first-class profiles:
@@ -27,8 +46,8 @@ Two reference standards ship as first-class profiles:
 | `StyleGuide::oestandards()` | alextrs/oestandards |
 | `StyleGuide::consultingwerk()` | consultingwerk/ABL-Coding-Standards |
 
-Both inherit from `StyleGuide::default_base()` which captures rules the
-two standards agree on.
+Both build on `StyleGuide::strict_base()` (not the safe default), so they keep
+their strictness while the user-facing default stays non-mangling.
 
 ## Rule Catalog
 
