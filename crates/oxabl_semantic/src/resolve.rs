@@ -446,16 +446,26 @@ impl<'a> Walker<'a> {
             StatementKind::Do { loop_var, body, .. } => {
                 let bs = self.tree.push(ScopeKind::Block, scope, stmt.id);
                 if let Some(id) = loop_var {
-                    self.declare(
-                        stmt,
-                        bs,
-                        id,
-                        NamespaceId::Values,
-                        SymbolKind::Variable,
-                        Some(ResolvedType::Primitive(crate::PrimitiveTy::Integer)),
-                        SymbolFlags::empty(),
-                        None,
-                    );
+                    // A DO counter references an existing variable — ABL never
+                    // implicitly declares it. Only mint a block-scoped counter
+                    // when nothing by that name already resolves in an
+                    // enclosing scope; otherwise the reference pass binds the
+                    // counter to that outer symbol (bumping its use), so
+                    // declaring a shadow here would leave the real variable
+                    // looking unused (false LINT0002).
+                    let atom = fold_atom(&id.name);
+                    if self.tree.resolve(scope, NamespaceId::Values, &atom).is_none() {
+                        self.declare(
+                            stmt,
+                            bs,
+                            id,
+                            NamespaceId::Values,
+                            SymbolKind::Variable,
+                            Some(ResolvedType::Primitive(crate::PrimitiveTy::Integer)),
+                            SymbolFlags::empty(),
+                            None,
+                        );
+                    }
                 }
                 self.walk_block(body, bs);
             }
@@ -1278,6 +1288,7 @@ impl<'a> ResolveWalker<'a> {
 
             // ---- Control-flow block statements ---------------------------
             StatementKind::Do {
+                loop_var,
                 from,
                 to,
                 by,
@@ -1288,6 +1299,19 @@ impl<'a> ResolveWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt.id, ScopeKind::Block)
                     .unwrap_or(scope);
+                if let Some(counter) = loop_var {
+                    // The loop assigns the counter its initial value and
+                    // reads/compares it each iteration — resolve it as a use
+                    // (ReadWrite) so the counter variable isn't flagged unused.
+                    // Binds to the enclosing definition, or to the fallback
+                    // block-scoped counter minted by the declare pass.
+                    self.resolve_statement_ident(
+                        counter,
+                        bs,
+                        &[NamespaceId::Values],
+                        AccessMode::ReadWrite,
+                    );
+                }
                 if let Some(e) = from {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
@@ -2805,6 +2829,57 @@ mod tests {
     }
 
     #[test]
+    fn do_loop_counter_binds_existing_variable_and_counts_as_use() {
+        // `DEF VAR i` then `DO i = 1 TO 10:` — ABL reuses the already-defined
+        // variable as the counter. The loop must count as a use (no LINT0002)
+        // and must NOT mint a shadow counter in the block scope, which would
+        // otherwise leave the real `i` looking unused.
+        let stmts = vec![
+            var_stmt_n("i", DataType::Integer),
+            stmt_n(StatementKind::Do {
+                loop_var: Some(id("i")),
+                from: Some(Expression::new(ExpressionKind::Literal(Literal::Integer(
+                    IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1,
+                    },
+                )))),
+                to: Some(Expression::new(ExpressionKind::Literal(Literal::Integer(
+                    IntegerLiteral {
+                        span: Span { start: 0, end: 2 },
+                        value: 10,
+                    },
+                )))),
+                by: None,
+                while_condition: None,
+                transaction: false,
+                body: vec![],
+            }),
+        ];
+        let (tree, symbols, _refs, _types) = run_full(&stmts);
+
+        // Exactly one `i` Variable symbol (the outer def) — no block shadow.
+        let i_syms: Vec<_> = symbols
+            .iter()
+            .filter(|(_, s)| s.name == fold_atom("i") && s.kind == SymbolKind::Variable)
+            .collect();
+        assert_eq!(i_syms.len(), 1, "expected no shadow counter: {i_syms:?}");
+        // The loop counts as a use of the counter.
+        assert!(
+            symbols.get(i_syms[0].0).read_count > 0,
+            "DO counter should read the loop variable"
+        );
+
+        // The block scope holds no `i` binding of its own.
+        let block = tree
+            .iter()
+            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .unwrap()
+            .1;
+        assert!(block.get_in(NamespaceId::Values, &fold_atom("i")).is_none());
+    }
+
+    #[test]
     fn for_each_introduces_implicit_buffer_in_block_scope() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::ForEach {
             buffer: id("Customer"),
@@ -3802,10 +3877,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_inner_block_shadow_wins_over_outer() {
-        // Outer `x: INTEGER`, block introduces a counter `x` — the use of
-        // `x` inside the block must resolve to the block-scope counter, not
-        // the outer variable.
+    fn do_loop_counter_reuses_outer_variable_not_a_shadow() {
+        // Outer `x`, and `DO x = 1 TO 3:` — ABL never implicitly declares a
+        // loop counter; it reuses the existing `x`. So the counter must NOT
+        // mint a block-scoped shadow, and a use of `x` inside the body
+        // resolves to the outer variable (its declared type). Minting an
+        // implicit integer shadow here was the #83 false positive: it left the
+        // real `x` looking unused. (This test previously asserted the shadow
+        // behavior; corrected to ABL semantics.)
         let block_use = id_expr("x");
         let use_id = block_use.id;
         let do_block = stmt_n(StatementKind::Do {
@@ -3822,21 +3901,27 @@ mod tests {
         let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
             panic!("expected resolved");
         };
-        // The inner `x` is declared on the block scope with SymbolKind Variable.
+        // No block-scope shadow of `x`.
         let block = tree
             .iter()
             .find(|(_, s)| s.kind == ScopeKind::Block)
             .unwrap()
             .1;
-        let block_x = block
-            .get_in(NamespaceId::Values, &fold_atom("x"))
-            .expect("block-scope x");
-        assert_eq!(*sym, block_x);
-        // And it's Integer (counter), not Character.
+        assert!(
+            block.get_in(NamespaceId::Values, &fold_atom("x")).is_none(),
+            "counter must not mint a block-scope shadow"
+        );
+        // The body use binds to the single, outer `x` (its Character type).
+        assert_eq!(symbols.get(*sym).name, fold_atom("x"));
         assert_eq!(
             symbols.get(*sym).data_type,
-            Some(ResolvedType::Primitive(crate::PrimitiveTy::Integer))
+            Some(ResolvedType::Primitive(crate::PrimitiveTy::Character))
         );
+        let x_count = symbols
+            .iter()
+            .filter(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .count();
+        assert_eq!(x_count, 1, "expected exactly one `x` variable");
     }
 
     #[test]

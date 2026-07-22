@@ -364,6 +364,37 @@ mod tests {
     }
 
     #[test]
+    fn no_diagnostic_for_variable_used_as_do_loop_counter() {
+        // `DEF VAR i` then `DO i = 1 TO 10:` — the counter is a use of `i`,
+        // so LINT0002 must not fire (regression for #83, where the counter was
+        // shadowed and both the def and the `DO i =` site were flagged).
+        use oxabl_ast::{Expression, ExpressionKind, IntegerLiteral, Literal};
+        let int_lit = |v: i64, end: u32| {
+            Expression::new(ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                span: Span { start: 0, end },
+                value: v,
+            })))
+        };
+        let stmts = vec![
+            var_decl("i", DataType::Integer),
+            stmt(StatementKind::Do {
+                loop_var: Some(id("i")),
+                from: Some(int_lit(1, 1)),
+                to: Some(int_lit(10, 2)),
+                by: None,
+                while_condition: None,
+                transaction: false,
+                body: vec![],
+            }),
+        ];
+        let diags = analyze_and_lint(stmts);
+        assert!(
+            diags.is_empty(),
+            "DO-loop counter must not be flagged unused: {diags:?}"
+        );
+    }
+
+    #[test]
     fn no_diagnostic_on_procedure_declaration() {
         // Procedure symbols aren't candidates (SymbolKind::Procedure, not
         // Variable/Parameter).
