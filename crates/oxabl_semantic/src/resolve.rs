@@ -30,7 +30,7 @@ use oxabl_ast::{
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
-use oxabl_schema::{SchemaRevision, TableId};
+use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -2127,14 +2127,19 @@ impl<'a> ResolveWalker<'a> {
                 // so the field borrow is independent of the `&mut self`
                 // needed by symbol synthesis below.
                 let schema = self.ctx.schema;
-                match schema.get_by_id(tid).and_then(|t| t.get_field(&field_atom)) {
-                    Some(f) => {
+                // ABL allows an unambiguous leading-substring abbreviation of a
+                // field name, so resolve by exact-then-unique-prefix. An
+                // ambiguous abbreviation (prefix matching 2+ fields) is not a
+                // legal reference and stays unresolved, same as a true miss.
+                match schema.get_by_id(tid).map(|t| t.resolve_field(&field_atom)) {
+                    Some(FieldResolution::Unique(f)) => {
                         let resolved_ty = ResolvedType::from_schema_field(f);
                         let fsym = self.synth_field_symbol(tid, &field_atom, resolved_ty, field);
                         Resolution::Resolved(fsym)
                     }
-                    // Field not on the table — genuinely unknown.
-                    None => Resolution::Unresolved {
+                    // Field not on the table, or an ambiguous abbreviation —
+                    // genuinely unknown.
+                    _ => Resolution::Unresolved {
                         name: field_atom,
                         reason: UnresolvedReason::NotInScope,
                     },
@@ -4339,6 +4344,26 @@ mod tests {
                 name: fold_atom("BadField"),
                 reason: UnresolvedReason::NotInScope,
             }
+        );
+    }
+
+    #[test]
+    fn field_access_abbreviated_field_resolves_via_schema() {
+        // ABL abbreviation: `bCust.CustN` is an unambiguous leading substring
+        // of `CustNum`, so it must resolve (no LINT0003) with the schema type —
+        // the same class of reference as the real corpus `scr-wiper.method`.
+        let schema = test_schema();
+        let (stmts, _qual_id, fa_id) = buffer_customer_stmts("CustN");
+        let sem = run_analyze_with_schema(&stmts, &schema);
+
+        let Resolution::Resolved(fsym) = resolution_of(&sem.references, fa_id) else {
+            panic!("abbreviated field should resolve");
+        };
+        let f = sem.symbols.get(*fsym);
+        assert_eq!(f.kind, SymbolKind::Field);
+        assert_eq!(
+            f.data_type,
+            Some(ResolvedType::Primitive(crate::PrimitiveTy::Integer))
         );
     }
 
