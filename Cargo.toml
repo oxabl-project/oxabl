@@ -12,5 +12,6 @@ members = [
     "crates/oxabl_semantic",
     "crates/oxabl_lint",
     "crates/oxabl_analyze",
+    "crates/oxabl_style",
 ]
 resolver = "2"

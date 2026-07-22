@@ -1,0 +1,15 @@
+[package]
+name = "oxabl_style"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "ABL style guide — typed, configurable formatting and diagnostic rules for the oxabl toolchain"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_style"
+
+[[bin]]
+name = "oxabl-style"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
