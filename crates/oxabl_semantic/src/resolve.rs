@@ -454,7 +454,11 @@ impl<'a> Walker<'a> {
                     // declaring a shadow here would leave the real variable
                     // looking unused (false LINT0002).
                     let atom = fold_atom(&id.name);
-                    if self.tree.resolve(scope, NamespaceId::Values, &atom).is_none() {
+                    if self
+                        .tree
+                        .resolve(scope, NamespaceId::Values, &atom)
+                        .is_none()
+                    {
                         self.declare(
                             stmt,
                             bs,
