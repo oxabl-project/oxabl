@@ -182,10 +182,48 @@ pub struct Table {
     pub source: FileSpan,
 }
 
+/// Outcome of resolving a (possibly abbreviated) field reference against a
+/// table. ABL lets a field name be written as an unambiguous leading
+/// substring (e.g. `cust-num` for `customer-number`), so a reference either
+/// hits exactly one field or, when a prefix matches two or more, is ambiguous
+/// and stays unresolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldResolution<'a> {
+    /// Exactly one field matched (by full name or a unique prefix).
+    Unique(&'a Field),
+    /// A prefix matched two or more fields — not a legal abbreviation.
+    Ambiguous,
+    /// No field matched, by full name or prefix.
+    NotFound,
+}
+
 impl Table {
     /// Case-insensitive lookup of a field within this table.
     pub fn get_field(&self, name: &OxablAtom) -> Option<&Field> {
         self.fields.iter().find(|f| f.name == *name)
+    }
+
+    /// Resolve a (possibly abbreviated) field reference, ABL-style:
+    /// 1. an exact (case-insensitive) match wins — even when the name is also
+    ///    a prefix of a longer field;
+    /// 2. otherwise a *unique* leading-substring (prefix) match resolves;
+    /// 3. a prefix matching two or more fields is `Ambiguous`; no match at all
+    ///    is `NotFound`.
+    ///
+    /// `name` is expected to be case-folded (as [`fold_atom`](crate::fold_atom)
+    /// produces), matching how field names are stored, so both the exact and
+    /// prefix comparisons are effectively case-insensitive.
+    pub fn resolve_field(&self, name: &OxablAtom) -> FieldResolution<'_> {
+        if let Some(f) = self.get_field(name) {
+            return FieldResolution::Unique(f);
+        }
+        let prefix = name.as_ref();
+        let mut it = self.fields.iter().filter(|f| f.name.starts_with(prefix));
+        match (it.next(), it.next()) {
+            (Some(f), None) => FieldResolution::Unique(f),
+            (Some(_), Some(_)) => FieldResolution::Ambiguous,
+            _ => FieldResolution::NotFound,
+        }
     }
 
     /// Case-insensitive lookup of an index within this table.
@@ -389,5 +427,93 @@ mod tests {
         });
         assert!(t.get_field(&fold_atom("custnum")).is_some());
         assert!(t.get_field(&fold_atom("other")).is_none());
+    }
+
+    fn push_field(t: &mut Table, name: &str) {
+        t.fields.push(Field {
+            name: fold_atom(name),
+            display_name: name.into(),
+            data_type: SchemaType::Character,
+            extent: None,
+            mandatory: false,
+            case_sensitive: false,
+            format: None,
+            label: None,
+            initial: None,
+            description: None,
+            decimals: None,
+            position: None,
+            order: None,
+            max_width: None,
+            help: None,
+            valexp: None,
+            valmsg: None,
+            extras: Vec::new(),
+            source: span(),
+        });
+    }
+
+    #[test]
+    fn resolve_field_exact_match_wins() {
+        let mut t = new_table("scr-wiper");
+        push_field(&mut t, "Class");
+        push_field(&mut t, "Methods");
+        push_field(&mut t, "Source");
+        // Full name, any casing.
+        match t.resolve_field(&fold_atom("methods")) {
+            FieldResolution::Unique(f) => assert_eq!(f.name, fold_atom("methods")),
+            other => panic!("expected Unique, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_field_unique_prefix_resolves() {
+        let mut t = new_table("scr-wiper");
+        push_field(&mut t, "Class");
+        push_field(&mut t, "Methods");
+        push_field(&mut t, "Source");
+        // `method` is an unambiguous abbreviation of `Methods` (the real
+        // corpus case: scr-wiper.method).
+        match t.resolve_field(&fold_atom("method")) {
+            FieldResolution::Unique(f) => assert_eq!(f.name, fold_atom("methods")),
+            other => panic!("expected Unique, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_field_ambiguous_prefix_is_ambiguous() {
+        let mut t = new_table("Order");
+        push_field(&mut t, "customer-number");
+        push_field(&mut t, "customer-name");
+        push_field(&mut t, "order-number");
+        // `customer` prefixes two fields → not a legal abbreviation.
+        assert_eq!(
+            t.resolve_field(&fold_atom("customer")),
+            FieldResolution::Ambiguous
+        );
+    }
+
+    #[test]
+    fn resolve_field_exact_beats_longer_prefix_sibling() {
+        let mut t = new_table("Order");
+        push_field(&mut t, "order");
+        push_field(&mut t, "order-number");
+        // `order` matches a field exactly even though it's also a prefix of
+        // `order-number`; the exact match must win, not report Ambiguous.
+        match t.resolve_field(&fold_atom("order")) {
+            FieldResolution::Unique(f) => assert_eq!(f.name, fold_atom("order")),
+            other => panic!("expected Unique exact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_field_no_match_is_not_found() {
+        let mut t = new_table("scr-wiper");
+        push_field(&mut t, "Class");
+        push_field(&mut t, "Methods");
+        assert_eq!(
+            t.resolve_field(&fold_atom("nonexistent")),
+            FieldResolution::NotFound
+        );
     }
 }

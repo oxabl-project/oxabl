@@ -32,4 +32,6 @@ pub use atom::fold_atom;
 pub use diagnostics::{SCHEMA0001, SCHEMA0010, SCHEMA0011, SCHEMA0012, SCHEMA0030, SCHEMA0031};
 pub use loader::{LOAD_FIELD_CAP, LOAD_TABLE_CAP, SchemaLoader};
 pub use parser::{ParseOutcome, parse_df};
-pub use schema::{Field, Index, IndexField, Schema, SchemaRevision, SchemaType, Table, TableId};
+pub use schema::{
+    Field, FieldResolution, Index, IndexField, Schema, SchemaRevision, SchemaType, Table, TableId,
+};
