@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_ast::{Statement, StatementKind as SK};
 use oxabl_common::SourceMap;
-use oxabl_lexer::{tokenize, Kind, Token};
+use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_parser::Parser;
 use walkdir::WalkDir;
 
@@ -95,9 +95,7 @@ fn main() {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("{msg}");
-            eprintln!(
-                "\nusage: seeding_inventory <root> [--out file.csv] [--ext p,w,cls,i,v]"
-            );
+            eprintln!("\nusage: seeding_inventory <root> [--out file.csv] [--ext p,w,cls,i,v]");
             std::process::exit(2);
         }
     };
@@ -206,10 +204,26 @@ fn walk_routines(
                 walk_routines(body, Some(&name.name), true, ctx, out);
             }
             SK::Procedure { name, body } => {
-                out.push(build_routine(ctx, "Procedure", &name.name, false, in_interface, s, body));
+                out.push(build_routine(
+                    ctx,
+                    "Procedure",
+                    &name.name,
+                    false,
+                    in_interface,
+                    s,
+                    body,
+                ));
             }
             SK::Function { name, body, .. } => {
-                out.push(build_routine(ctx, "Function", &name.name, false, in_interface, s, body));
+                out.push(build_routine(
+                    ctx,
+                    "Function",
+                    &name.name,
+                    false,
+                    in_interface,
+                    s,
+                    body,
+                ));
             }
             SK::Method {
                 name,
@@ -379,7 +393,11 @@ fn build_routine(
 /// line is the first significant token after that boundary — the executable's own
 /// leading keyword. Any shape that cannot be pinned to such a boundary returns an
 /// `Err`, which the caller turns into a non-seedable flag (fail safe, never guess).
-fn compute_decl(ctx: &WalkCtx, node: &Statement, body: &[Statement]) -> Result<(usize, usize), String> {
+fn compute_decl(
+    ctx: &WalkCtx,
+    node: &Statement,
+    body: &[Statement],
+) -> Result<(usize, usize), String> {
     let eff = effective_decl_body(body);
 
     let first_exec = eff.iter().find(|c| {
@@ -418,7 +436,9 @@ fn compute_decl(ctx: &WalkCtx, node: &Statement, body: &[Statement]) -> Result<(
                     && ws_or_eof(ctx.src, t.end)
             })
             .map(|t| t.end)
-            .ok_or_else(|| "cannot locate a statement boundary before the first executable".to_string())?,
+            .ok_or_else(|| {
+                "cannot locate a statement boundary before the first executable".to_string()
+            })?,
     };
 
     // The executable's true first token = first significant token after the
@@ -465,7 +485,8 @@ fn leading_region_has_parameter(stmts: &[Statement]) -> bool {
         // Keep scanning across the declaration region (and spanless artifacts such
         // as DEFINE QUERY, which the parser may not model); stop at the first
         // real executable statement.
-        if !is_declaration(&s.kind) && !is_catch_or_finally(&s.kind) && statement_span(s).is_some() {
+        if !is_declaration(&s.kind) && !is_catch_or_finally(&s.kind) && statement_span(s).is_some()
+        {
             return false;
         }
     }
@@ -504,8 +525,10 @@ fn line_col1(sm: &SourceMap, offset: usize) -> (usize, usize) {
 /// True for DEFINE-family declarations that make up the leading declaration
 /// block. The start-include is placed *after* these.
 fn is_declaration(kind: &SK) -> bool {
-    matches!(kind, SK::VariableDeclaration { .. } | SK::DefineParameter { .. })
-        || variant_name(kind).starts_with("Define")
+    matches!(
+        kind,
+        SK::VariableDeclaration { .. } | SK::DefineParameter { .. }
+    ) || variant_name(kind).starts_with("Define")
 }
 
 fn is_catch_or_finally(kind: &SK) -> bool {
@@ -622,7 +645,9 @@ fn statement_span(stmt: &Statement) -> Option<(usize, usize)> {
     let mut rest = dbg.as_str();
     while let Some(pos) = rest.find(needle) {
         rest = &rest[pos + needle.len()..];
-        let start_len = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let start_len = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         let start: usize = rest[..start_len].parse().ok()?;
         rest = &rest[start_len..];
         let end_marker = "end: ";
@@ -631,7 +656,9 @@ fn statement_span(stmt: &Statement) -> Option<(usize, usize)> {
             None => break,
         };
         rest = &rest[epos + end_marker.len()..];
-        let end_len = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end_len = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         let end: usize = rest[..end_len].parse().ok()?;
         rest = &rest[end_len..];
 
@@ -732,7 +759,9 @@ fn parse_args() -> Result<Config, String> {
                     .filter(|s| !s.is_empty())
                     .collect();
             }
-            "-h" | "--help" => return Err("seeding_inventory: emit span-seeding placement CSV".into()),
+            "-h" | "--help" => {
+                return Err("seeding_inventory: emit span-seeding placement CSV".into());
+            }
             other if other.starts_with('-') => return Err(format!("unknown flag: {other}")),
             other => {
                 if root.is_some() {
@@ -781,7 +810,9 @@ mod tests {
     }
 
     fn row<'a>(rows: &'a [Row], name: &str) -> &'a Row {
-        rows.iter().find(|r| r.span_name == name).expect("row exists")
+        rows.iter()
+            .find(|r| r.span_name == name)
+            .expect("row exists")
     }
 
     /// Trimmed text of a 1-based source line — what the include would be inserted
@@ -792,7 +823,10 @@ mod tests {
 
     /// 1-based line a substring first appears on.
     fn line_of(src: &str, needle: &str) -> usize {
-        src.lines().position(|l| l.contains(needle)).expect("needle present") + 1
+        src.lines()
+            .position(|l| l.contains(needle))
+            .expect("needle present")
+            + 1
     }
 
     // ── Shape (a): DEFINE … PARAMETER trapped inside a leading whole-body DO. ──
@@ -821,7 +855,10 @@ END PROCEDURE.
         // Lands on the first executable, not before the parameters.
         assert_eq!(line_text(SHAPE_A, dl), "cFoo = \"x\".");
         let last_param = line_of(SHAPE_A, "DEFINE OUTPUT PARAMETER");
-        assert!(dl > last_param, "decl {dl} must be past the params (line {last_param})");
+        assert!(
+            dl > last_param,
+            "decl {dl} must be past the params (line {last_param})"
+        );
     }
 
     // ── Shape (b): no declaration block; first statement is a multi-line ASSIGN. ─
@@ -845,7 +882,10 @@ END PROCEDURE.
         assert_eq!(dc, 1);
         // The ASSIGN keyword line — never a line in the middle of the statement.
         assert_eq!(line_text(SHAPE_B, dl), "ASSIGN");
-        assert!(!line_text(SHAPE_B, dl).starts_with("cFoo"), "must not splice mid-ASSIGN");
+        assert!(
+            !line_text(SHAPE_B, dl).starts_with("cFoo"),
+            "must not splice mid-ASSIGN"
+        );
     }
 
     // ── Control: ordinary declaration block, then executable. ──
@@ -889,7 +929,11 @@ END PROCEDURE.
         assert!(r.seedable);
         let (dl, _) = r.decl.expect("decl point");
         // Anchored to the DO header (top level), not inside the loop body.
-        assert!(line_text(CONTROL_DO, dl).starts_with("DO "), "got: {}", line_text(CONTROL_DO, dl));
+        assert!(
+            line_text(CONTROL_DO, dl).starts_with("DO "),
+            "got: {}",
+            line_text(CONTROL_DO, dl)
+        );
         assert!(dl < line_of(CONTROL_DO, "cTmp = STRING"));
     }
 
@@ -956,7 +1000,10 @@ END PROCEDURE.
 ";
     #[test]
     fn end_trailing_inner_do_resolves_to_routine_end() {
-        assert_eq!(end_line_text(END_TRAILING_DO, "endsWithDo"), "END PROCEDURE.");
+        assert_eq!(
+            end_line_text(END_TRAILING_DO, "endsWithDo"),
+            "END PROCEDURE."
+        );
     }
 
     // (2) Whole-body DO envelope with a trapped parameter and an inner IF-DO whose
@@ -983,7 +1030,10 @@ END PROCEDURE.
         // decl after the trapped parameter (inside the DO), end on the routine END.
         let (dl, _) = r.decl.expect("decl");
         assert!(dl > line_of(END_WHOLE_BODY_DO, "DEFINE INPUT PARAMETER"));
-        assert_eq!(end_line_text(END_WHOLE_BODY_DO, "wholeBodyDo"), "END PROCEDURE.");
+        assert_eq!(
+            end_line_text(END_WHOLE_BODY_DO, "wholeBodyDo"),
+            "END PROCEDURE."
+        );
     }
 
     // (3) Trailing CATCH after an inner DO — the FINALLY must land after END CATCH,
@@ -1006,7 +1056,10 @@ END PROCEDURE.
         assert!(r.seedable, "{}", r.flag_reason);
         let (el, _) = r.end.expect("end");
         assert_eq!(line_text(END_CATCH_AFTER_DO, el), "END PROCEDURE.");
-        assert!(el > line_of(END_CATCH_AFTER_DO, "END CATCH."), "FINALLY must follow the CATCH");
+        assert!(
+            el > line_of(END_CATCH_AFTER_DO, "END CATCH."),
+            "FINALLY must follow the CATCH"
+        );
     }
 
     // (4) Existing FINALLY after an inner DO — merge into the ROUTINE's FINALLY,
@@ -1067,8 +1120,10 @@ END PROCEDURE.
             let b = rows_for(src);
             assert_eq!(a.len(), b.len());
             for (x, y) in a.iter().zip(b.iter()) {
-                assert_eq!((&x.span_name, x.decl, x.end, x.merge, x.seedable),
-                           (&y.span_name, y.decl, y.end, y.merge, y.seedable));
+                assert_eq!(
+                    (&x.span_name, x.decl, x.end, x.merge, x.seedable),
+                    (&y.span_name, y.decl, y.end, y.merge, y.seedable)
+                );
             }
         }
     }
