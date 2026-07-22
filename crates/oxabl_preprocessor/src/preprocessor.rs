@@ -963,12 +963,13 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
         i += 1;
     }
 
-    // Read name (alphanumeric, hyphens, underscores)
+    // Read name (alphanumeric, hyphens, underscores, dots — #74)
     let name_start = i;
     while i < rest.len()
         && (rest.as_bytes()[i].is_ascii_alphanumeric()
             || rest.as_bytes()[i] == b'-'
-            || rest.as_bytes()[i] == b'_')
+            || rest.as_bytes()[i] == b'_'
+            || rest.as_bytes()[i] == b'.')
     {
         i += 1;
     }
@@ -1064,7 +1065,8 @@ fn parse_undefine_body(source: &str, start: usize) -> (String, usize) {
     while i < rest.len()
         && (rest.as_bytes()[i].is_ascii_alphanumeric()
             || rest.as_bytes()[i] == b'-'
-            || rest.as_bytes()[i] == b'_')
+            || rest.as_bytes()[i] == b'_'
+            || rest.as_bytes()[i] == b'.')
     {
         i += 1;
     }
@@ -1463,6 +1465,137 @@ mod tests {
 
         // After &UNDEFINE the reference is undefined — ABL expands it to empty.
         assert_eq!(&*result.to_text(), "rest");
+    }
+
+    // ---- #74 dot in preprocessor macro names ----------------------------
+
+    #[test]
+    fn global_define_with_dot() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&GLOBAL-DEFINE foo.i true\n&IF DEFINED(foo.i) &THEN\nworked\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "worked\n");
+        assert!(result.vars.is_defined("foo.i"));
+    }
+
+    #[test]
+    fn scoped_define_with_dot() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source =
+            "&SCOPED-DEFINE bar.i x\n&IF DEFINED(bar.i) &THEN\n{&bar.i}\n&ELSE\nmiss\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "x\n");
+        assert!(result.vars.is_defined("bar.i"));
+    }
+
+    #[test]
+    fn undefine_with_dot() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE foo.i 1\n&UNDEFINE foo.i\n{&foo.i}rest";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "rest");
+        assert!(!result.vars.is_defined("foo.i"));
+    }
+
+    #[test]
+    fn dot_name_expansion() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE foo.i hello\n{&foo.i} world";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "hello world");
+    }
+
+    #[test]
+    fn dot_name_leading_dot() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE .foo val\n&IF DEFINED(.foo) &THEN\nok\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "ok\n");
+        assert!(result.vars.is_defined(".foo"));
+    }
+
+    #[test]
+    fn dot_name_trailing_dot() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE foo. val\n&IF DEFINED(foo.) &THEN\nok\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "ok\n");
+        assert!(result.vars.is_defined("foo."));
+    }
+
+    #[test]
+    fn dot_name_double_dot() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE foo..i val\n&IF DEFINED(foo..i) &THEN\nok\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "ok\n");
+        assert!(result.vars.is_defined("foo..i"));
+    }
+
+    #[test]
+    fn hyphen_still_works_in_define_names() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE my-guard true\n&IF DEFINED(my-guard) &THEN\nok\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "ok\n");
+        assert!(result.vars.is_defined("my-guard"));
+    }
+
+    #[test]
+    fn plain_name_still_works_in_define() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE PLAIN true\n&IF DEFINED(PLAIN) &THEN\nok\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "ok\n");
+        assert!(result.vars.is_defined("PLAIN"));
+    }
+
+    #[test]
+    fn include_once_guard_with_dot_filename() {
+        let guarded = "&IF DEFINED(guarded.i) &THEN\n.\n&ELSE\n   &GLOBAL-DEFINE guarded.i true\n   DEFINE VARIABLE vv AS INTEGER NO-UNDO.\n&ENDIF\n";
+        let mid = "{guarded.i}\n";
+        let main = "{guarded.i}\n{mid.i}\nvv = 1.\n";
+        let fs = make_fs(&[("/inc/guarded.i", guarded), ("/inc/mid.i", mid)]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp.process(FileId::new(1), main).unwrap();
+
+        // Guard worked: "vv" should appear exactly once.
+        let text = result.to_text();
+        let vv_count = text.matches("DEFINE VARIABLE vv").count();
+        assert_eq!(
+            vv_count, 1,
+            "include-once guard failed — vv declared {vv_count} times:\n{text}"
+        );
+    }
+
+    #[test]
+    fn define_value_starting_with_dot_still_works() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        // Name is "X", value is ".field". The dot in the value must not be consumed as name.
+        let source = "&SCOPED-DEFINE X .field\n{&X}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), ".field");
     }
 
     #[test]
