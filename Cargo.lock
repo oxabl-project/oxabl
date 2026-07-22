@@ -942,6 +942,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_style"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "oxabl_workspace"
 version = "0.4.0"
 dependencies = [
