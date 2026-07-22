@@ -35,10 +35,16 @@
 //! The one thing leaf spans cannot give directly is the offset of a block-closing
 //! `END` keyword. Rather than depth-count raw tokens (ambiguous: `FOR` appears in
 //! `DEFINE BUFFER b FOR t` and `OPEN QUERY q FOR EACH …`, which are not blocks),
-//! we count **`End` tokens** — which are *only ever* block terminators — starting
-//! at the routine body's last leaf, and take the N-th, where N is derived from the
-//! AST's rightmost block spine (`rightmost_end_count`). Any trailing shape the
-//! spine walker does not recognise flags the row non-seedable rather than guessing.
+//! we count **`End` tokens** — which are *only ever* block terminators. The
+//! routine's own END is the `(N + 1)`-th `End` token from the routine's first
+//! leaf, where `N` is the number of block-closing ENDs the AST reports across the
+//! *whole* body subtree (`count_block_ends`), so it lands after every nested block
+//! and any trailing CATCH — never inside one. Anchoring at the first leaf (not a
+//! trailing leaf that may sit mid-block) is what makes this hold when a routine's
+//! last statement is spanless or a nested block is off the rightmost spine. Any
+//! body shape whose ENDs cannot be counted reliably flags the row rather than
+//! guessing. The decl point is resolved the same way — to a real statement
+//! boundary — via ABL's `.`/`:`-followed-by-whitespace rule (see `compute_decl`).
 //!
 //! # Determinism
 //! Files are discovered in sorted order and routines are emitted in AST (source)
@@ -287,8 +293,8 @@ fn build_routine(
         row.flag_reason = "abstract method".into();
         return row;
     }
-    let node_end = match statement_span(node) {
-        Some((_, e)) => e,
+    let (node_start, _node_end) = match statement_span(node) {
+        Some((s, e)) => (s, e),
         None => {
             row.flag_reason = "no source span (no leaf tokens)".into();
             return row;
@@ -330,16 +336,22 @@ fn build_routine(
         }
     }
 
-    // --- pre-END point: the N-th `End` after the body's last leaf ---
-    let n = match rightmost_end_count(body) {
+    // --- pre-END point: the routine block's OWN `END`, after any trailing CATCH ---
+    // Count every block-closing `END` inside the routine body (not just the
+    // rightmost spine). The routine's own END is the one immediately after all of
+    // them: the (N+1)-th `End` token at or after the routine's first leaf. Anchoring
+    // at the start (never a mid-body leaf) means trailing spanless statements — a
+    // bare RETURN, an inner DO whose last child has no span — can no longer make the
+    // count resolve to a nested block's END and attach the FINALLY to it (14144).
+    let n = match count_block_ends(body) {
         Some(n) => n + 1, // + the routine's own END
         None => {
-            row.flag_reason = "unrecognized trailing block — cannot place END include".into();
+            row.flag_reason = "unrecognized block shape — cannot place END include".into();
             row.decl = decl;
             return row;
         }
     };
-    let routine_end = nth_end_at_or_after(ctx.end_offsets, node_end, n);
+    let routine_end = nth_end_at_or_after(ctx.end_offsets, node_start, n);
     match routine_end {
         Some(off) => {
             row.decl = decl;
@@ -523,49 +535,72 @@ fn is_catch_or_finally(kind: &SK) -> bool {
     matches!(kind, SK::Catch { .. } | SK::Finally { .. })
 }
 
-/// Number of block-closing `END` tokens that appear *after the last leaf* of a
-/// body but *before* the enclosing routine's own END — i.e. the depth of the
-/// rightmost block spine. `None` means the trailing shape isn't one we place
-/// safely, so the caller flags the row.
-fn rightmost_end_count(stmts: &[Statement]) -> Option<usize> {
-    match stmts.last() {
-        None => Some(0),
-        Some(s) => end_count_of(s),
+/// Total number of block-closing `END` tokens inside `stmts` — every nested
+/// block anywhere in the subtree, not just the rightmost spine. The routine's own
+/// END is the one right after all of these, so the caller adds 1 and takes the
+/// (total + 1)-th `End` token from the routine start. Counting the *whole* subtree
+/// (rather than following the last statement) is what keeps the anchor off inner
+/// block ENDs when a trailing statement is spanless or a nested block does not sit
+/// on the rightmost spine. `None` means a shape whose END tokens we cannot count
+/// reliably (a nested routine, property, etc.), so the caller flags the row.
+fn count_block_ends(stmts: &[Statement]) -> Option<usize> {
+    let mut total = 0;
+    for s in stmts {
+        total += block_ends_of(s)?;
     }
+    Some(total)
 }
 
-fn end_count_of(s: &Statement) -> Option<usize> {
+fn block_ends_of(s: &Statement) -> Option<usize> {
     match &s.kind {
-        // END-closed blocks: their own END, plus whatever closes after their body.
+        // END-closed blocks: their own END, plus every END inside their body.
         SK::Do { body, .. }
         | SK::Repeat { body, .. }
         | SK::ForEach { body, .. }
         | SK::Catch { body, .. }
-        | SK::Finally { body, .. } => Some(1 + rightmost_end_count(body)?),
+        | SK::Finally { body, .. } => Some(1 + count_block_ends(body)?),
         SK::Case {
             when_branches,
             otherwise,
             ..
         } => {
-            let inner = if let Some(o) = otherwise {
-                rightmost_end_count(o)?
-            } else if let Some(w) = when_branches.last() {
-                rightmost_end_count(&w.body)?
-            } else {
-                0
-            };
+            let mut inner = 0;
+            for w in when_branches {
+                inner += count_block_ends(&w.body)?;
+            }
+            if let Some(o) = otherwise {
+                inner += count_block_ends(o)?;
+            }
             Some(1 + inner) // END CASE
         }
-        // IF is not END-closed; the closers come from whichever branch trails.
+        // IF is not END-closed; count the ENDs in both branches.
         SK::If {
             then_branch,
             else_branch,
             ..
-        } => end_count_of(else_branch.as_ref().unwrap_or(then_branch)),
-        SK::Label { body, .. } => end_count_of(body),
-        SK::Block(body) => rightmost_end_count(body),
-        // Nested routine/preproc/property as a trailing child: not something we
-        // place against — flag for a human.
+        } => {
+            let mut c = block_ends_of(then_branch)?;
+            if let Some(e) = else_branch {
+                c += block_ends_of(e)?;
+            }
+            Some(c)
+        }
+        SK::Label { body, .. } => block_ends_of(body),
+        SK::Block(body) => count_block_ends(body),
+        // `&IF …&THEN …&ELSE …&ENDIF` emits no `END` tokens, but its branches are
+        // all present in unpreprocessed source — count the block ENDs in each.
+        SK::PreprocIf(p) => {
+            let mut c = count_block_ends(&p.then_branch)?;
+            for (_, b) in &p.elseif_branches {
+                c += count_block_ends(b)?;
+            }
+            if let Some(e) = &p.else_branch {
+                c += count_block_ends(e)?;
+            }
+            Some(c)
+        }
+        // Nested routine/property as a body child: not something we can count END
+        // tokens through safely — flag for a human.
         SK::Procedure { .. }
         | SK::Function { .. }
         | SK::Method { .. }
@@ -573,8 +608,7 @@ fn end_count_of(s: &Statement) -> Option<usize> {
         | SK::Interface { .. }
         | SK::Constructor { .. }
         | SK::Destructor { .. }
-        | SK::Property { .. }
-        | SK::PreprocIf(_) => None,
+        | SK::Property { .. } => None,
         // Any simple, non-block statement closes nothing.
         _ => Some(0),
     }
@@ -930,6 +964,167 @@ END PROCEDURE.
             assert_eq!(x.decl, y.decl);
             assert_eq!(x.end, y.end);
             assert_eq!(x.seedable, y.seedable);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // END-point resolution: the pre-END insert must land on the ROUTINE's own
+    // END, never an inner block's. The routine close is written `END PROCEDURE.`
+    // in these fixtures; every inner block closes with a bare `END.` (or
+    // `END CATCH.`/`END FINALLY.`), so asserting the end line starts with
+    // `END PROCEDURE` proves it is the routine block, not a nested one.
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// Trimmed end-point line for the single routine in `src`.
+    fn end_line_text(src: &str, name: &str) -> String {
+        let rows = rows_for(src);
+        let r = row(&rows, name);
+        assert!(r.seedable, "{name} should be seedable: {}", r.flag_reason);
+        let (el, ec) = r.end.expect("end point");
+        assert_eq!(ec, 1);
+        line_text(src, el)
+    }
+
+    // (1) Trailing plain inner DO … END right before the routine END. The DO's
+    // last child is a spanless RETURN — the exact mechanism that let the old
+    // rightmost-spine counter miss the inner DO's END and anchor there.
+    const END_TRAILING_DO: &str = "\
+PROCEDURE endsWithDo:
+   DEFINE VARIABLE iX AS INTEGER NO-UNDO.
+   iX = 1.
+   DO:
+      iX = 2.
+      RETURN.
+   END.
+END PROCEDURE.
+";
+    #[test]
+    fn end_trailing_inner_do_resolves_to_routine_end() {
+        assert_eq!(
+            end_line_text(END_TRAILING_DO, "endsWithDo"),
+            "END PROCEDURE."
+        );
+    }
+
+    // (2) Whole-body DO envelope with a trapped parameter and an inner IF-DO whose
+    // branch ends in a spanless RETURN (the save-key shape).
+    const END_WHOLE_BODY_DO: &str = "\
+PROCEDURE wholeBodyDo:
+DO:
+   DEFINE INPUT PARAMETER pIn AS INTEGER NO-UNDO.
+   DEFINE VARIABLE iX AS INTEGER NO-UNDO.
+   iX = pIn.
+   IF iX > 0 THEN
+   DO:
+      iX = 0.
+      RETURN.
+   END.
+END.
+END PROCEDURE.
+";
+    #[test]
+    fn end_whole_body_do_resolves_to_routine_end() {
+        let rows = rows_for(END_WHOLE_BODY_DO);
+        let r = row(&rows, "wholeBodyDo");
+        assert!(r.seedable, "{}", r.flag_reason);
+        // decl after the trapped parameter (inside the DO), end on the routine END.
+        let (dl, _) = r.decl.expect("decl");
+        assert!(dl > line_of(END_WHOLE_BODY_DO, "DEFINE INPUT PARAMETER"));
+        assert_eq!(
+            end_line_text(END_WHOLE_BODY_DO, "wholeBodyDo"),
+            "END PROCEDURE."
+        );
+    }
+
+    // (3) Trailing CATCH after an inner DO — the FINALLY must land after END CATCH,
+    // at the routine END.
+    const END_CATCH_AFTER_DO: &str = "\
+PROCEDURE catchAfterDo:
+   DEFINE VARIABLE iX AS INTEGER NO-UNDO.
+   DO:
+      iX = 1.
+   END.
+   CATCH eErr AS Progress.Lang.Error:
+      iX = 2.
+   END CATCH.
+END PROCEDURE.
+";
+    #[test]
+    fn end_trailing_catch_lands_after_catch_at_routine_end() {
+        let rows = rows_for(END_CATCH_AFTER_DO);
+        let r = row(&rows, "catchAfterDo");
+        assert!(r.seedable, "{}", r.flag_reason);
+        let (el, _) = r.end.expect("end");
+        assert_eq!(line_text(END_CATCH_AFTER_DO, el), "END PROCEDURE.");
+        assert!(
+            el > line_of(END_CATCH_AFTER_DO, "END CATCH."),
+            "FINALLY must follow the CATCH"
+        );
+    }
+
+    // (4) Existing FINALLY after an inner DO — merge into the ROUTINE's FINALLY,
+    // do not emit an end-include.
+    const END_FINALLY_AFTER_DO: &str = "\
+PROCEDURE finallyAfterDo:
+   DEFINE VARIABLE iX AS INTEGER NO-UNDO.
+   DO:
+      iX = 1.
+   END.
+   FINALLY:
+      iX = 2.
+   END FINALLY.
+END PROCEDURE.
+";
+    #[test]
+    fn end_existing_finally_merges_into_routine_finally() {
+        let rows = rows_for(END_FINALLY_AFTER_DO);
+        let r = row(&rows, "finallyAfterDo");
+        assert!(r.seedable, "{}", r.flag_reason);
+        assert!(r.has_finally, "routine-level FINALLY should be detected");
+        assert!(r.end.is_none(), "no end-include when merging");
+        let (ml, mc) = r.merge.expect("merge point");
+        assert_eq!(mc, 1);
+        // Merge line is the FINALLY body's first statement, inside the routine's
+        // own FINALLY (past the inner DO's END).
+        assert_eq!(line_text(END_FINALLY_AFTER_DO, ml), "iX = 2.");
+        assert!(ml > line_of(END_FINALLY_AFTER_DO, "FINALLY:"));
+    }
+
+    // (5) Nested DO within DO.
+    const END_NESTED_DO: &str = "\
+PROCEDURE nestedDo:
+   DEFINE VARIABLE iX AS INTEGER NO-UNDO.
+   DO:
+      DO:
+         iX = 1.
+      END.
+   END.
+END PROCEDURE.
+";
+    #[test]
+    fn end_nested_do_resolves_to_routine_end() {
+        assert_eq!(end_line_text(END_NESTED_DO, "nestedDo"), "END PROCEDURE.");
+    }
+
+    // (6) Determinism re-check across the end-resolution fixtures.
+    #[test]
+    fn end_resolution_is_deterministic() {
+        for src in [
+            END_TRAILING_DO,
+            END_WHOLE_BODY_DO,
+            END_CATCH_AFTER_DO,
+            END_FINALLY_AFTER_DO,
+            END_NESTED_DO,
+        ] {
+            let a = rows_for(src);
+            let b = rows_for(src);
+            assert_eq!(a.len(), b.len());
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert_eq!(
+                    (&x.span_name, x.decl, x.end, x.merge, x.seedable),
+                    (&y.span_name, y.decl, y.end, y.merge, y.seedable)
+                );
+            }
         }
     }
 }
