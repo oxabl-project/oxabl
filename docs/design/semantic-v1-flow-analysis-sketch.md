@@ -119,7 +119,7 @@ pre-solve:
   the innermost CATCH). The AST preserves enough shape — `Throw(expr)` is a
   distinct node, `Catch { body }` is a distinct scope — but the CFG builder
   has to walk scope ancestors at each throw site. This is O(n·d) on depth
-  `d` and is fine in practice (depth ≤ 5 in pcna-erp samples).
+  `d` and is fine in practice (depth ≤ 5 in corpus samples).
 - **Alias analysis via `BUFFER-COPY` / dynamic handles**. These are
   recorded as External in v1. Cross-file alias is a post-v1 problem and
   requires both the cross-file sketch (R10) and a live-variable dataflow

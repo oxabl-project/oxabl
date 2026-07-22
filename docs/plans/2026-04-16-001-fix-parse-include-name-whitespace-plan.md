@@ -10,16 +10,16 @@ date: 2026-04-16
 ## Overview
 
 When an include reference puts the include name on its own line and the first
-argument on the next line (a very common style in the pcna-erp corpus), the
+argument on the next line (a very common style in the ABL corpus), the
 preprocessor silently erases the whole include. The outer code then looks
 syntactically broken and the parser reports a confusing error far from the
 root cause.
 
-Example call site (from `PRET010000`):
+Example call site (from a caller program):
 
 ```abl
 If sv-currency ne local-currency THEN
-    {ms/currexch.i
+    {svc/rate-calc.i
     &currency = "sv-currency"
     &date     = "today"
     &exchange = "c-exchange" }
@@ -27,7 +27,7 @@ ELSE
     ASSIGN c-exchange = 1.
 ```
 
-Include body (`ms/currexch.i`) — expected to expand to ~15 lines of ABL:
+Include body (`svc/rate-calc.i`) — expected to expand to ~15 lines of ABL:
 
 ```abl
 If {&currency} gt " "             and
@@ -74,17 +74,17 @@ The split pattern is `[' ', '&']` — only space and `&`. `\n`, `\r`, and `\t`
 are *not* treated as delimiters. When the source is
 
 ```
-{ms/currexch.i
+{svc/rate-calc.i
                  &currency = "sv-currency"
 ```
 
 the inner content (after outer `.trim()`) is
 
 ```
-ms/currexch.i\n                 &currency = "sv-currency"\n …
+svc/rate-calc.i\n                 &currency = "sv-currency"\n …
 ```
 
-`.split([' ', '&']).next()` returns `"ms/currexch.i\n"` — the newline is
+`.split([' ', '&']).next()` returns `"svc/rate-calc.i\n"` — the newline is
 included in the returned name. That value is then passed to
 `self.fs.resolve_include(…)`, which cannot match a real path with an embedded
 newline, so resolution fails.
@@ -125,7 +125,7 @@ if !children.is_empty() {
 }
 ```
 
-skips the push, and the whole `{ms/currexch.i …}` span becomes blank in the
+skips the push, and the whole `{svc/rate-calc.i …}` span becomes blank in the
 preprocessed text. The user sees only the downstream parser error.
 
 ## Proposed Solution
@@ -182,7 +182,7 @@ Minimum change for this PR:
    discarding with `let _`.
 3. In `parse_file_with_preprocess`, before the parser runs, print each
    preprocessor error diagnostic using the same `ParseError` formatter so the
-   user sees e.g. `[preprocess] include file not found: 'ms/currexch.i'` at
+   user sees e.g. `[preprocess] include file not found: 'svc/rate-calc.i'` at
    the correct line/col.
 
 This is the high-value part of the change: without it, any future name/path
@@ -205,10 +205,10 @@ resolution regression will be equally invisible.
 - [ ] `parse_include_name("file.i\r\n&arg=v")` returns `"file.i"`.
 - [ ] New end-to-end test: an include reference with the name on one line and
       args on the next expands the include body correctly (model the
-      `ms/currexch.i` shape).
+      `svc/rate-calc.i` shape).
 - [ ] All existing `oxabl_preprocessor` tests pass unchanged.
 - [ ] `cargo fmt --check` and `cargo clippy -D warnings` pass.
-- [ ] Running `oxabl check --preprocess` against `PRET010000` no longer
+- [ ] Running `oxabl check --preprocess` against `a caller program` no longer
       reports `Unexpected token KwElse` for this construct. The include
       expands to its body.
 - [ ] (Secondary fix) When `oxabl check --preprocess` runs against a file
@@ -249,13 +249,13 @@ fn parse_include_name_crlf_terminator() {
 #[test]
 fn expand_include_multiline_args_name_on_own_line() {
     let fs = make_fs(&[(
-        "/inc/currexch.i",
+        "/inc/rate-calc.i",
         "If {&currency} gt \" \" then {&exchange} = 1.\nElse {&exchange} = -1.",
     )]);
     let pp = Preprocessor::new(&fs, &[PathBuf::from("/inc")]);
     let source = "\
 If x ne y THEN
-    {currexch.i
+    {rate-calc.i
     &currency = \"sv-currency\"
     &exchange = \"c-exchange\" }
 ELSE
@@ -270,7 +270,7 @@ ELSE
 
 ### Corpus verification
 
-The `refine-oxabl-parser` workflow / pcna-erp corpus should be re-run after
+The `refine-oxabl-parser` workflow / ABL corpus should be re-run after
 the fix to confirm:
 
 - Files using the `{inc.i␤&arg=...}` shape stop failing to preprocess.

@@ -26,7 +26,7 @@ END PROCEDURE.
 parse error: Expected ':' after procedure name   # same on baseline and 1aedb17
 ```
 
-ADM2/web2 prototype includes (`smrtprto.i`, `qryprto.i`, …) are full of this
+ADM2/web2 prototype includes (the smart/query prototype includes, …) are full of this
 form. Once `get`/`set`/`fn`/`fnarg` expand, those includes reach the parser and
 fail.
 

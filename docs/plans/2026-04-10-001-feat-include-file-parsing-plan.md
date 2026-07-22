@@ -149,4 +149,4 @@ IncludeArgReference {
 - Existing preprocessor handling: `crates/oxabl_lexer/src/lib.rs:215-227` (brace dispatch), `crates/oxabl_lexer/src/lib.rs:459-472` (read_preprocessor_reference)
 - Parser dispatch: `crates/oxabl_parser/src/parser/statements.rs:12-113`
 - Expression primary: `crates/oxabl_parser/src/parser/expressions.rs`
-- ABL include file syntax reference: FDM4 codebase analysis (extensive real-world examples)
+- ABL include file syntax reference: real-world ABL codebase analysis (extensive real-world examples)

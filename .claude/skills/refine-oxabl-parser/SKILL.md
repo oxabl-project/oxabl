@@ -1,15 +1,15 @@
 ---
 name: refine-oxabl-parser
-description: Iteratively improve the oxabl ABL parser by identifying parse failures, locating the fix site, applying it, validating, and committing. Use when you want to run a fix loop against subdirectories of the pcna-erp test corpus.
+description: Iteratively improve the oxabl ABL parser by identifying parse failures, locating the fix site, applying it, validating, and committing. Use when you want to run a fix loop against subdirectories of a local ABL test corpus.
 argument-hint: "[optional: max iterations, default unlimited]"
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep, Agent
 ---
 
 # Refine Oxabl Parser
 
-Runs an iterative fix loop against the ABL corpus in `~/Code/pcna-erp`.
+Runs an iterative fix loop against a local ABL corpus whose path is set via the `ABL_CORPUS` environment variable (the corpus is kept outside the repo).
 
-**Directory strategy:** List the subdirectories of `~/Code/pcna-erp` at the start. Begin with the first subdirectory. If the corpus check produces no errors for that directory, move on to the next subdirectory and continue. Work through them in order until errors are found, then run the full fix loop against that directory.
+**Directory strategy:** List the subdirectories of `$ABL_CORPUS` at the start. Begin with the first subdirectory. If the corpus check produces no errors for that directory, move on to the next subdirectory and continue. Work through them in order until errors are found, then run the full fix loop against that directory.
 
 Each iteration:
 1. Run the check command for the current directory, collect the error breakdown
@@ -27,15 +27,15 @@ Repeat until no further progress can be made or you are told to stop.
 
 **Without preprocessing** (default — tests parser against raw source):
 ```bash
-cargo run --bin oxabl check ~/Code/pcna-erp/<directory>
+cargo run --bin oxabl check $ABL_CORPUS/<directory>
 ```
 
 **With preprocessing** (tests parser against preprocessor-expanded source):
 ```bash
-cargo run --bin oxabl check ~/Code/pcna-erp/<directory> --preprocess -I ~/Code/pcna-erp
+cargo run --bin oxabl check $ABL_CORPUS/<directory> --preprocess -I $ABL_CORPUS
 ```
 
-The `-I` flag sets the include search path (PROPATH equivalent). Use `~/Code/pcna-erp` as the root since include references in the corpus are relative to it (e.g. `{gl/global-input.i}`).
+The `-I` flag sets the include search path (PROPATH equivalent). Use `$ABL_CORPUS` as the root since include references in the corpus are relative to it (e.g. `{gl/global-input.i}`).
 
 Replace `<directory>` with the current subdirectory being analysed.
 

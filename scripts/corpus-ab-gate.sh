@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Corpus A/B gate for preprocessor / parse regressions (oxabl#65 criterion 7).
 #
-# Same role as the 9-module erp-5899 A/B used for #58: micro-tests cannot prove
+# Same role as the 9-module private-corpus A/B used for #58: micro-tests cannot prove
 # that a global change to &IF / &ELSE / &ENDIF end-offsets is net-safe on a
 # real tree. This script runs `oxabl check --preprocess --json` over a module
 # list and diffs pass/fail + error-pattern counts between baseline and candidate.
 #
 # Usage:
-#   export CORPUS_ROOT=/path/to/erp-5899/erp/code   # required
+#   export CORPUS_ROOT=/path/to/abl/corpus       # required
 #   export INCLUDE_PATHS="-I $CORPUS_ROOT"          # optional extra -I flags
 #   export MODULES="ar ap gl …"                    # space-separated subdirs
 #   export OXABL_BIN=./target/release/oxabl        # optional
@@ -41,8 +41,8 @@ usage() {
 need_corpus() {
   if [[ -z "${CORPUS_ROOT:-}" ]]; then
     echo "error: CORPUS_ROOT is not set." >&2
-    echo "  Point it at the erp-5899 (or pcna-erp) code root used for the #58 A/B." >&2
-    echo "  Example: export CORPUS_ROOT=/u/workspaces/.../erp-5899/erp/code" >&2
+    echo "  Point it at the private ABL code corpus root used for the #58 A/B." >&2
+    echo "  Example: export CORPUS_ROOT=/path/to/abl/corpus" >&2
     exit 2
   fi
   if [[ ! -d "$CORPUS_ROOT" ]]; then

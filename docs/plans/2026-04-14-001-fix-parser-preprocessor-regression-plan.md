@@ -29,7 +29,7 @@ deepened: 2026-04-14
 
 ## Overview
 
-After introducing the preprocessor and running corpus checks with `--preprocess`, the pass rate dropped from **99.2% (raw) to 93.4% (preprocessed)** against the pcna-erp corpus (14,008 files, 912 failures). The preprocessor correctly expands includes, exposing ABL constructs inside `.i` files that the parser has never seen. These are real parser gaps, not preprocessor bugs.
+After introducing the preprocessor and running corpus checks with `--preprocess`, the pass rate dropped from **99.2% (raw) to 93.4% (preprocessed)** against the ABL corpus (14,008 files, 912 failures). The preprocessor correctly expands includes, exposing ABL constructs inside `.i` files that the parser has never seen. These are real parser gaps, not preprocessor bugs.
 
 This is distinct from the preprocessor-structural failures documented in `docs/solutions/corpus-remaining-failures.md` — those involve AST structure that depends on preprocessor condition evaluation (e.g., blocks opened in one `&IF` branch and closed in another). The failures addressed here are valid ABL syntax the parser simply never implemented because it was hidden inside `.i` include files.
 
@@ -38,7 +38,7 @@ This is distinct from the preprocessor-structural failures documented in `docs/s
 **Debug tooling:** A `--debug` flag has been added to `oxabl check` that uses `parse_program()` (error recovery) and dumps the last 10 AST statements before the error plus source context. Usage:
 
 ```bash
-cargo run --release --bin oxabl check <file> --preprocess -I ~/Code/pcna-erp --debug
+cargo run --release --bin oxabl check <file> --preprocess -I $ABL_CORPUS --debug
 ```
 
 ## Error Landscape
@@ -279,7 +279,7 @@ The `--debug` flag on `oxabl check` is available for investigating individual fa
 
 ```bash
 # Single file debug with preprocessing
-cargo run --release --bin oxabl check <file> --preprocess -I ~/Code/pcna-erp --debug
+cargo run --release --bin oxabl check <file> --preprocess -I $ABL_CORPUS --debug
 
 # Single file debug without preprocessing
 cargo run --release --bin oxabl check <file> --debug

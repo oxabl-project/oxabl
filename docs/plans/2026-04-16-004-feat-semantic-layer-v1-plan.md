@@ -30,7 +30,7 @@ origin: docs/brainstorms/2026-04-16-semantic-layer-requirements.md
 12. **Dump serialization lives outside `oxabl_semantic`** (architect review): new `oxabl_analyze` crate (or inlined in `oxabl` binary). `oxabl_semantic` stays `serde_json`-free so formatter/LSP don't transitively pull it.
 13. **Scope-bindings sizing heuristic** (performance review): pre-size maps from statement count. For ≤8 bindings use `SmallVec<[(OxablAtom, SymbolId); 8]>` with linear scan (faster than hash at that size with atom equality).
 14. **Bench granularity** (performance review): split `declare`, `resolve`, `type-check`, `analyze_file` end-to-end, and per-rule lint benches. Aggregate numbers hide regressions.
-15. **`.df` grammar sourced from sonar-openedge's `DumpFileGrammar.g4`** (best-practices research): production-tested Riverside ANTLR4 grammar. Test against `sp2k.df` golden then pcna-erp. Open attribute sets (warn-don't-fail on unknowns). Support `""` embedded quotes, `#` line comments from hand-edited files, `PSC`/`cpstream`/trailer, `?` as unknown-value marker.
+15. **`.df` grammar sourced from sonar-openedge's `DumpFileGrammar.g4`** (best-practices research): production-tested Riverside ANTLR4 grammar. Test against `sp2k.df` golden then the ABL corpus. Open attribute sets (warn-don't-fail on unknowns). Support `""` embedded quotes, `#` line comments from hand-edited files, `PSC`/`cpstream`/trailer, `?` as unknown-value marker.
 16. **ABL coercion catalog grounded in primary sources** (best-practices research): authoritative widening ladder table below; `/` always returns DECIMAL; `DATE+INT=days` vs `DATETIME+INT=milliseconds` discontinuity; `?` is universal bottom and propagates through arithmetic; `=` and `EQ` are identical (no syntactic distinction for null-compare).
 
 ### Simplifications accepted
@@ -204,7 +204,7 @@ See `oxabl_ast/src/statement.rs` and `expression.rs` for target types.
 Dedicated crate because it has exactly one job (parse `.df` → `Schema`), is reused by
 semantic + every later consumer (formatter, LSP, codemods), and has an independent test surface.
 
-**Scope of `.df` support in v1:** the common subset observed in the pcna-erp corpus —
+**Scope of `.df` support in v1:** the common subset observed in the ABL corpus —
 `ADD TABLE "..."`, `ADD FIELD "..." OF "..." AS <datatype>`, `ADD INDEX "..." ON "..."`, and
 their associated attribute lines (`FORMAT`, `INITIAL`, `LABEL`, `POSITION`, `MAX-WIDTH`, `ORDER`,
 `MANDATORY`, `CASE-SENSITIVE`, `HELP`, `VALEXP`, `VALMSG`, `DECIMALS`, `EXTENT`, `UNIQUE`,
@@ -272,7 +272,7 @@ production grammar. Implementation is hand-written recursive descent in Rust —
 unnecessary for a line-oriented grammar this small, and hand-writing gives us the same
 zero-alloc posture the rest of oxabl uses.
 
-Goldens: sonar-openedge's `sp2k.df` and two hand-picked samples from the pcna-erp corpus
+Goldens: sonar-openedge's `sp2k.df` and two hand-picked samples from the ABL corpus
 covering multi-index, BLOB/CLOB, and hand-edited files (`#` line comments, `""` embedded
 quotes, `?` as unknown-value marker, `PSC`/`cpstream`/trailer handling).
 
@@ -481,7 +481,7 @@ pattern for dynamic languages.
 
 **Coercion catalog (`crates/oxabl_semantic/src/coercion.rs`)** — the v1 rules, grounded in
 Progress's documented implicit-conversion table plus the FWD project's transpiler behavior,
-cross-checked against pcna-erp assignment sites.
+cross-checked against corpus assignment sites.
 
 **Widening ladder (implicit, silent):**
 
@@ -980,7 +980,7 @@ Deliverables: `cargo test -p oxabl_lint` green (40/40), workspace still passes (
 
 Deferred to follow-up:
 - Corpus `corpus_lint_audit` binary (depends on Phase 6 analyze CLI end-to-end; will land
-  in Phase 6's audit step against pcna-erp sampled files).
+  in Phase 6's audit step against corpus sampled files).
 
 ### Phase 6 — `oxabl_analyze` crate + `oxabl analyze` subcommand + goldens  ✅
 
@@ -1019,7 +1019,7 @@ diffs. More fixtures can grow organically — the runner in
 `tests/fixtures/`, so adding a `.p` there automatically extends the property checks.
 
 Deferred to follow-up:
-- `corpus_lint_audit` binary against sampled pcna-erp (scope creep for v1 ship).
+- `corpus_lint_audit` binary against sampled corpus (scope creep for v1 ship).
 - Exact-JSON goldens under a stable NodeId allocator (blocked on parser's
   NodeId-minting determinism under feature growth).
 
@@ -1165,7 +1165,7 @@ this surface. Confirmed by the two design sketches in Phase 7.
 ### Functional Requirements
 
 - [ ] Every AST node has a stable `NodeId` after parse.
-- [ ] `oxabl_schema` parses the pcna-erp `.df` sample corpus without error; conflicts produce
+- [ ] `oxabl_schema` parses the corpus `.df` sample set without error; conflicts produce
   `SCHEMA0010` warnings.
 - [ ] `semantic::analyze_file` produces a `Semantic` whose `references` map is populated for
   every identifier reference in the parser's supported constructs.
@@ -1206,9 +1206,9 @@ this surface. Confirmed by the two design sketches in Phase 7.
 
 ## Success Metrics
 
-- True-positive / false-positive rate per rule on the sampled pcna-erp audit (target ≥ 0.9
+- True-positive / false-positive rate per rule on the sampled corpus audit (target ≥ 0.9
   precision each).
-- Corpus coverage: % of pcna-erp files where `oxabl analyze` produces a parseable, non-error
+- Corpus coverage: % of corpus files where `oxabl analyze` produces a parseable, non-error
   dump (target ≥ the parser's current success rate, since semantic degrades gracefully where
   parse succeeds).
 - Third-party consumability: a fifth lint rule can be added in a follow-up PR touching only
@@ -1596,7 +1596,7 @@ From the Rust-quality review:
 
 **P1. Tighten `analyze_file` target.** "≤ 3× parse time" is a ceiling (regression gate),
 not a goal. Target **≤ 1.5× parse time** end-to-end. Rationale: parse is ~5-20 ms/file
-on the pcna-erp corpus; three naive tree walks alone consume 30-100 ms/file before any
+on the ABL corpus; three naive tree walks alone consume 30-100 ms/file before any
 semantic work. 3× is nominal; 1.5× forces the single-walker-multi-pass optimization up
 front.
 
@@ -1752,7 +1752,7 @@ The code reviewer caught un-measurable gates:
   candidate builtin triggers `LINT0001` on > N files in the audit, it is added.** Pick
   N = 5 as provisional.
 - "100-file manual audit sample" → **specify the adjudication process: the plan author
-  labels; per-rule disagreement with the pcna-erp maintainer is a plan-merge blocker.**
+  labels; per-rule disagreement with the corpus maintainer is a plan-merge blocker.**
 
 ### Coercion-Catalog Spike — Gate Explicitly
 
@@ -1774,7 +1774,7 @@ anchor the claim to the measured PR #19 (~20%) result.
 
 From memory `feedback_corpus_validity.md`: "When diagnosing corpus failures, assume the
 source code is correct." Add a one-line reminder at the Phase 5 `corpus_lint_audit`
-step: **a lint false positive on pcna-erp is a rule bug until proven otherwise.**
+step: **a lint false positive on the ABL corpus is a rule bug until proven otherwise.**
 
 ### Revised Effort Estimate
 

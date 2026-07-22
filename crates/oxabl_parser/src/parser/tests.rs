@@ -6315,7 +6315,7 @@ fn parse_method_public_void_no_params() {
 
 #[test]
 fn parse_method_with_preproc_access_modifier() {
-    // ABL code in the pcna-erp corpus (ms/fedexRest.cls) uses a preprocessor
+    // Real-world ABL code uses a preprocessor
     // variable where an access modifier would normally appear:
     //     method {&method-access-type} JsonObject foo (input x as char):
     // `{&method-access-type}` resolves to PUBLIC or PRIVATE at preprocessing
@@ -6415,7 +6415,7 @@ fn parse_method_forward_declaration() {
 
 #[test]
 fn parse_method_forward_with_preproc_access() {
-    // Combined case from ms/fedexRest.cls: preprocessor access modifier plus
+    // Combined real-world case: preprocessor access modifier plus
     // forward declaration.
     let source = "METHOD {&method-access-type} LOGICAL GetErrors(OUTPUT hError AS HANDLE) FORWARD.";
     let tokens = tokenize(source);
@@ -9922,7 +9922,7 @@ fn parse_create_widget_assign_triggers_block() {
     // CREATE widget ASSIGN ... TRIGGERS: ... END TRIGGERS. inside a DO block.
     // TRIGGERS lexes as Kind::Triggers, not Kind::Identifier — the block-end
     // detection must use Kind::Triggers, not string comparison.
-    let source = "if x eq 0 then\ndo:\n   create sub-menu head-ptr\n      assign parent = fdm4-menu\n             label  = x-menu.\nend.\nelse\ndo:\n   create menu-item head-ptr\n   assign parent = fdm4-menu\n          label  = x-menu\n          sensitive = true\n   triggers:\n    on choose\n        persistent run value (\"ms/data_conv.w\") (y).\n    end triggers.\nend.\n";
+    let source = "if x eq 0 then\ndo:\n   create sub-menu head-ptr\n      assign parent = app-menu\n             label  = x-menu.\nend.\nelse\ndo:\n   create menu-item head-ptr\n   assign parent = app-menu\n          label  = x-menu\n          sensitive = true\n   triggers:\n    on choose\n        persistent run value (\"lib/data-util.w\") (y).\n    end triggers.\nend.\n";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_program();

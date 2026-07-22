@@ -92,7 +92,7 @@ follow-up wants Progress parity review).
 
 ## Goal
 
-On the same 9-module erp-5899 sample, schema-loaded, oxabl ≥ this fix:
+On the same 9-module private-corpus sample, schema-loaded, oxabl ≥ this fix:
 
 | Signal | Pass |
 |--------|------|
@@ -238,7 +238,7 @@ No lexer/codegen changes. No new AST variants. No CLI changes.
 | Multi-pair without ASSIGN swallows next statement | Non-allocating scan + `can_start_statement` guard; negative test `x = 1 RUN foo.`. |
 | Speculative parse NodeId gaps | Slice B uses token scan only; Slice A parses the list in one pass as a string. |
 | Semantic/lint treat synthetic string oddly | Acceptable; event lists are character data, not var refs. |
-| Corpus bar needs `$DLC` + erp-5899 | Unit tests are merge gate; full A/B is downstream-owned when `CORPUS_ROOT` unavailable. |
+| Corpus bar needs `$DLC` + the private corpus | Unit tests are merge gate; full A/B is downstream-owned when `CORPUS_ROOT` unavailable. |
 | ~3 of ~306 PARSE001 unattributed | ≤ 9 bar leaves slack. |
 
 ## Success criteria

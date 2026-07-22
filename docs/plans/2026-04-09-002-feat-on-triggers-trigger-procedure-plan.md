@@ -12,7 +12,7 @@ origin: docs/brainstorms/2026-04-09-on-triggers-brainstorm.md
 
 **Deepened on:** 2026-04-09
 **Sections enhanced:** 6
-**Review agents used:** architecture-strategist, code-simplicity-reviewer, pattern-recognition-specialist, performance-oracle, FDM4/ABL syntax validator, spec-flow-analyzer
+**Review agents used:** architecture-strategist, code-simplicity-reviewer, pattern-recognition-specialist, performance-oracle, ABL syntax validator, spec-flow-analyzer
 
 ### Key Improvements
 1. Fixed incorrect disambiguation safety claim -- `parse_do_statement()` does NOT consume ON in block headers today; the dispatch is safe trivially because that construct isn't implemented yet

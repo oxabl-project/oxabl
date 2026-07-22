@@ -26,12 +26,12 @@ The parser operates on a raw token stream that includes unexpanded `&IF`/`&ELSE`
 
 | File | Error | Root cause |
 |---|---|---|
-| `oecrhead.i` | `LeftBrace` | `{{&var} args}` — dynamic include, filename is a preproc variable |
-| `UPSReady.cls` | `KwElse` | ABL `IF...ELSE` split across `&IF...&ENDIF` |
-| `oe100fr.p` | `PreprocElse` | DO block opened in one `&IF` branch, `END.` in a separate `&IF` block |
-| `oe_deco_price_line.p` | `PreprocElse` | `OR` right-hand operand split across `&IF/&ELSE` |
-| `check-vas-item.i` | `PreprocElse` | METHOD vs FUNCTION header conditionalized; body shared after `&ENDIF` |
-| `perfectly_packaged_common.i` | `PreprocElseif` | Same three-way `&IF/&ELSEIF/&ELSE` pattern |
+| Doubly-nested include | `LeftBrace` | `{{&var} args}` — dynamic include, filename is a preproc variable |
+| Dangling ELSE | `KwElse` | ABL `IF...ELSE` split across `&IF...&ENDIF` |
+| DO block split | `PreprocElse` | DO block opened in one `&IF` branch, `END.` in a separate `&IF` block |
+| Expression split mid-OR | `PreprocElse` | `OR` right-hand operand split across `&IF/&ELSE` |
+| Conditional method/function header | `PreprocElse` | METHOD vs FUNCTION header conditionalized; body shared after `&ENDIF` |
+| Three-way conditional header | `PreprocElseif` | Same three-way `&IF/&ELSEIF/&ELSE` pattern |
 
 None of these are grammar problems. They are all structural ambiguities that dissolve once you know which `&IF` branches are active.
 
@@ -121,8 +121,8 @@ crates/
 - [ ] `&IF DEFINED(name)` evaluation correct for defined and undefined names
 - [ ] `&IF "{&var}" EQ/NE "literal"` evaluation correct for known values
 - [ ] Undefined variable → pessimistic (all branches passed through, `condition_unresolved` flagged)
-- [ ] Corpus check improves: `oe100fr.p`, `oe_deco_price_line.p`, `check-vas-item.i`, `perfectly_packaged_common.i` all pass
-- [ ] `oecrhead.i` and `UPSReady.cls` pass (these also resolve once `{&include-prog}` and `DBTYPE()` are handled, or via pessimistic passthrough)
+- [ ] Corpus check improves: the DO-block-split, expression-split-mid-OR, and conditional method/function-header patterns all parse
+- [ ] The doubly-nested-include and dangling-ELSE patterns pass (these also resolve once `{&include-prog}` and `DBTYPE()` are handled, or via pessimistic passthrough)
 - [ ] All existing 428 parser tests still pass (preprocessor is additive, not breaking)
 - [ ] `cargo fmt`, `cargo clippy`, `cargo test` clean
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-09
 **Status:** Complete
-**Author:** Claude + Evan
+**Author:** Claude + the project owner
 
 ## What We're Building
 
