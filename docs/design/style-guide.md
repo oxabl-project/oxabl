@@ -64,7 +64,7 @@ Rules a formatter can mechanically enforce.
 | `do_placement` | SameLine | SameLine |
 | `dot_colon_same_line` | true | false |
 | `period_placement` | SameLine | SameLine |
-| `where_placement` | NextLine | NextLine |
+| `where_placement` | NewLine | NewLine |
 | `and_or_placement` | EndOfLine | EndOfLine |
 | `first_param_same_line` | true | true |
 | `multi_param_threshold` | 3 | 3 |
