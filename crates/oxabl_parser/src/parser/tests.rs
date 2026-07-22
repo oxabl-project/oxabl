@@ -10226,7 +10226,10 @@ fn block_survives_in_body_error_keeping_header_and_statements() {
                 .iter()
                 .filter(|s| matches!(s.kind, StatementKind::Assignment { .. }))
                 .count();
-            assert_eq!(assigns, 2, "both surrounding assignments must survive: {body:?}");
+            assert_eq!(
+                assigns, 2,
+                "both surrounding assignments must survive: {body:?}"
+            );
         }
         other => panic!("expected surviving Do block, got {other:?}"),
     }
@@ -10249,7 +10252,10 @@ fn unterminated_block_recovers_and_survives() {
     assert!(
         matches!(
             &program.statements[0].kind,
-            StatementKind::Do { while_condition: Some(_), .. }
+            StatementKind::Do {
+                while_condition: Some(_),
+                ..
+            }
         ),
         "unterminated DO WHILE must survive with its header: {:?}",
         program.statements[0].kind
@@ -10276,11 +10282,13 @@ fn nested_block_error_does_not_orphan_outer_block() {
         StatementKind::Do { body, .. } => {
             // Inner DO survived as a nested statement, and `z = 1` after it too.
             assert!(
-                body.iter().any(|s| matches!(s.kind, StatementKind::Do { .. })),
+                body.iter()
+                    .any(|s| matches!(s.kind, StatementKind::Do { .. })),
                 "inner DO must survive nested: {body:?}"
             );
             assert!(
-                body.iter().any(|s| matches!(s.kind, StatementKind::Assignment { .. })),
+                body.iter()
+                    .any(|s| matches!(s.kind, StatementKind::Assignment { .. })),
                 "statement after inner block must survive: {body:?}"
             );
         }

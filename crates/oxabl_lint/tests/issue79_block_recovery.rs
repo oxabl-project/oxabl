@@ -62,7 +62,10 @@ fn issue_snippet_incomplete_block_no_fp() {
     let src = "def var lCheck as log no-undo.\n\
                do while not lCheck on error undo, retry on endkey undo, retry:\n";
     let (msgs, nerr) = unused(src);
-    assert!(nerr >= 1, "the unterminated block must still report an error");
+    assert!(
+        nerr >= 1,
+        "the unterminated block must still report an error"
+    );
     assert!(
         !msgs.iter().any(|m| m.contains("lCheck")),
         "FP on `lCheck`: {msgs:?}"

@@ -3089,7 +3089,11 @@ impl Parser<'_> {
             None
         };
 
-        self.recover_block_end(Some(Kind::Case), "Expected END", "Expected '.' after END CASE");
+        self.recover_block_end(
+            Some(Kind::Case),
+            "Expected END",
+            "Expected '.' after END CASE",
+        );
 
         Ok(self.stmt(StatementKind::Case {
             expression,
