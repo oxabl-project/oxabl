@@ -12,7 +12,7 @@
 
 ### Bug Fixes
 
-* **parser:** handle many real-world ABL patterns from pcna-erp ([386fbce](https://github.com/oxabl-project/oxabl/commit/386fbce593b5972586760d3f3f5872d76bf69d9a))
+* **parser:** handle many real-world ABL patterns ([386fbce](https://github.com/oxabl-project/oxabl/commit/386fbce593b5972586760d3f3f5872d76bf69d9a))
 
 
 ### Performance Improvements

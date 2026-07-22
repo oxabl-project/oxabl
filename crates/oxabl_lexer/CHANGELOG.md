@@ -41,7 +41,7 @@
 * **parser:** add PUBLISH/SUBSCRIBE/UNSUBSCRIBE and DEFINE EVENT parsing ([233af8c](https://github.com/oxabl-project/oxabl/commit/233af8ca8df241e00606241a38b8aaed5e86871c))
 * **parser:** add stream and frame parsing ([e959ffd](https://github.com/oxabl-project/oxabl/commit/e959ffd74e5a2459800eb076a4e19547d3b3ae70))
 * **parser:** add stream and frame parsing ([8182d4e](https://github.com/oxabl-project/oxabl/commit/8182d4e1b952d7de365348469b9d69ba2a9e599c))
-* **parser:** handle real-world ABL patterns from oe100fi.p ([15b4405](https://github.com/oxabl-project/oxabl/commit/15b4405e906e6d4dd1c9853590885a212db12a47))
+* **parser:** handle real-world ABL patterns ([15b4405](https://github.com/oxabl-project/oxabl/commit/15b4405e906e6d4dd1c9853590885a212db12a47))
 
 
 ### Bug Fixes
@@ -67,7 +67,7 @@
 * **parser:** DELETE/CREATE type prefixes, IMPORT/OS-DELETE stmts, .01 decimal literals ([0503d90](https://github.com/oxabl-project/oxabl/commit/0503d900476dc988528ca0d38eda3a8221bae06a))
 * **parser:** EXTERNAL procedure, RETURN param, BREAK BY, identifier keywords ([fa2c220](https://github.com/oxabl-project/oxabl/commit/fa2c220d44a17c0cf293d1dcabf0923431d1298e))
 * **parser:** FUNCTION MAP TO, DISPLAY WHEN/TO, tilde line continuation in &DEFINE ([10c6494](https://github.com/oxabl-project/oxabl/commit/10c6494193e49da770fdbbdfb48433e77ffcec4c))
-* **parser:** handle many real-world ABL patterns from pcna-erp ([386fbce](https://github.com/oxabl-project/oxabl/commit/386fbce593b5972586760d3f3f5872d76bf69d9a))
+* **parser:** handle many real-world ABL patterns ([386fbce](https://github.com/oxabl-project/oxabl/commit/386fbce593b5972586760d3f3f5872d76bf69d9a))
 * **parser:** LAST-EVENT/CONNECT as identifiers, WAIT-FOR/SET stmt, stream IO dots, ON frame widget ([fd11b4d](https://github.com/oxabl-project/oxabl/commit/fd11b4d770aea071cecf911a2314cd19e69aa0a2))
 * **parser:** reach 100% on api/ — DYNAMIC-NEW, compound assignments, property EXTENT, method body with period ([6115db5](https://github.com/oxabl-project/oxabl/commit/6115db52d9ea4a25a63c3048fd0c70702e8b9633))
 * **parser:** UI widgets, DEFINE FRAME, numeric labels, CLEAR/HIDE, SIZE keyword ([ab5eb21](https://github.com/oxabl-project/oxabl/commit/ab5eb213bd115a1ab07e018a35809d027e51723f))

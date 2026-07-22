@@ -34,7 +34,7 @@ The lexer, parser, and preprocessor pipeline now successfully consumes our real-
 - R11. Likewise, the design must not preclude later flow analysis (definite assignment, unreachable code, NO-UNDO enforcement). Avoid IR shapes that would force a rewrite to add it.
 
 ## Success Criteria
-- The four v1 lint rules produce true positives and meaningfully few false positives on the pcna-erp corpus, both with and without `.df` schema loaded.
+- The four v1 lint rules produce true positives and meaningfully few false positives on the ABL corpus, both with and without `.df` schema loaded.
 - The `analyze` dump tool produces stable, golden-tested output on a representative fixture set covering each AST construct the parser supports.
 - Onboarding a fifth lint rule in a follow-up does not require any change to the semantic layer's public API — only new code that consumes it.
 - The deferred capabilities (cross-file, flow analysis) can be added without an IR rewrite; this is verified during planning by sketching how each would attach.

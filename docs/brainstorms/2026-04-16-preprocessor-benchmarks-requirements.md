@@ -6,7 +6,7 @@ topic: preprocessor-benchmarks
 # Preprocessor Benchmark Suite
 
 ## Problem Frame
-With the parser+preprocessor now successfully processing the pcna-erp corpus, throughput drops from ~1k files/sec (parse-only) to ~70 files/sec (parse + preprocess with real includes). The existing CodSpeed benches cover only self-contained fixtures and give us zero signal on preprocessor performance or regressions. Before we start optimizing (include cache, hot-path tuning), we need a measurable baseline.
+With the parser+preprocessor now successfully processing the ABL corpus, throughput drops from ~1k files/sec (parse-only) to ~70 files/sec (parse + preprocess with real includes). The existing CodSpeed benches cover only self-contained fixtures and give us zero signal on preprocessor performance or regressions. Before we start optimizing (include cache, hot-path tuning), we need a measurable baseline.
 
 ## Requirements
 - R1. Add a `preprocessor_bench` target in `oxabl_preprocessor` that measures the preprocessor pass in isolation on synthetic fixtures.
@@ -23,7 +23,7 @@ With the parser+preprocessor now successfully processing the pcna-erp corpus, th
 - No throughput target. We are establishing a baseline, not chasing a number.
 - No include-file cache implementation. Cache work is a separate effort that this baseline will measure.
 - No cold-vs-warm cache bench variants. Revisit once a cache exists.
-- No real-corpus fixtures. The pcna-erp corpus stays out of the repo; synthetic fixtures only.
+- No real-corpus fixtures. The ABL corpus stays out of the repo; synthetic fixtures only.
 - No flamegraph-driven hotspot report as part of this work. Optimization is a follow-up.
 
 ## Key Decisions

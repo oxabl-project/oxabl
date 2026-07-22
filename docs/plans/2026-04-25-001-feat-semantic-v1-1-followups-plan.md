@@ -20,7 +20,7 @@ origin: docs/plans/2026-04-16-004-feat-semantic-layer-v1-plan.md
 3. **`NodeId` on `Identifier` and `RunTarget::Literal`** gives every statement-level reference site a stable side-table key, enabling the cross-file sketch's `RUN "other.p"` resolution.
 4. **Cross-file resolution** implements the `Workspace::resolve_cross_file -> CrossFileResolutions` side table from the v1 design sketch, limited to single-workspace files.
 5. **Flow analysis** implements `CfgBuilder::build` and a definite-assignment dataflow pass, producing `LINT0005` (read-before-assignment).
-6. **Corpus audit** ships a `corpus_lint_audit` binary that runs the four rules across a sampled pcna-erp subset and emits TSV, validating "meaningfully few false positives" empirically.
+6. **Corpus audit** ships a `corpus_lint_audit` binary that runs the four rules across a sampled corpus subset and emits TSV, validating "meaningfully few false positives" empirically.
 7. **Per-rule lint benches** add `crates/oxabl_lint/benches/lint_bench.rs` mirroring the per-pass semantic benches.
 8. **Exact-JSON goldens** replace shape-based property tests with byte-level golden files once the parser's NodeId minter is deterministic under feature growth.
 
@@ -40,7 +40,7 @@ side tables. v1.1 hardens that foundation by:
 - Filling in the OO-ABL type-system gaps (inheritance, interfaces).
 - Extending the model to cross-file references within a workspace.
 - Adding the first dataflow pass (definite assignment).
-- Validating rule quality empirically against the pcna-erp corpus.
+- Validating rule quality empirically against the ABL corpus.
 
 Every item in this plan is additive — no v1 public type is removed or renamed.
 The only AST change is adding an `id: NodeId` field to `Identifier` and
@@ -66,7 +66,7 @@ v1's semantic layer is structurally sound but has four categories of
   don't appear in the `references` side table. Cross-file resolution and
   reference-counting are incomplete.
 4. **No validation at scale.** The four lint rules have unit tests but have
-  never been run against the pcna-erp corpus. False-positive rate is unknown.
+  never been run against the ABL corpus. False-positive rate is unknown.
 
 v1.1 closes these gaps while preserving the v1 architectural contract:
 side-table-only, no AST mutation, no HIR lowering, Salsa-ready.
@@ -488,7 +488,7 @@ Estimated effort: 3 days.
 
 ### Phase 6 — Corpus lint audit
 
-**Goal:** Run the lint rules against a sampled pcna-erp subset, emit TSV, and
+**Goal:** Run the lint rules against a sampled corpus subset, emit TSV, and
 validate precision ≥ 0.9 per rule.
 
 #### Current state
@@ -522,7 +522,7 @@ semantic analysis or lint.
 
 3. **Sampling strategy**
 
-   - 100 files randomly sampled from pcna-erp (or stratified by directory to
+   - 100 files randomly sampled from the ABL corpus (or stratified by directory to
      ensure coverage of sales, inventory, finance, etc.).
    - All four rules run on each file.
    - Parse failures are recorded separately but do not count against precision.
@@ -532,7 +532,7 @@ semantic analysis or lint.
    Per-rule precision = true_positives / (true_positives + false_positives).
    Target: ≥ 0.9 for each of LINT0001–LINT0005.
 
-   If a rule falls below 0.9, the plan author and pcna-erp maintainer jointly
+   If a rule falls below 0.9, the plan author and corpus maintainer jointly
    decide whether to:
    - Add skip-list entries (rule bug)
    - Document the limitation (semantic gap)
@@ -631,7 +631,7 @@ Phases 1, 2, 3, 5, and 7a are parallelizable. Phases 4 and 6 are sequential.
   within the workspace; unresolved cross-file references emit `LINT0001`.
 - [ ] `CfgBuilder::build` produces a valid CFG for all parser-supported statement
   kinds; definite-assignment pass emits `LINT0005` on read-before-write.
-- [ ] `corpus_lint_audit` runs on 100-file pcna-erp sample and emits TSV.
+- [ ] `corpus_lint_audit` runs on 100-file corpus sample and emits TSV.
 - [ ] `cargo bench -p oxabl_lint` runs per-rule benches.
 - [ ] Exact-JSON goldens pass byte-level diff (or documented limitation if
   NodeIds are not deterministic).
@@ -661,7 +661,7 @@ Phases 1, 2, 3, 5, and 7a are parallelizable. Phases 4 and 6 are sequential.
   (field types no longer `Unknown`).
 - Cross-file resolution resolves ≥ 50% of `External` references in a
   multi-file workspace sample.
-- `LINT0005` finds ≥ 1 real read-before-write bug in pcna-erp sample.
+- `LINT0005` finds ≥ 1 real read-before-write bug in corpus sample.
 
 ---
 
@@ -671,8 +671,8 @@ Phases 1, 2, 3, 5, and 7a are parallelizable. Phases 4 and 6 are sequential.
 - v1 design sketches for cross-file and flow analysis are reviewed and stable
   (confirmed: `docs/design/semantic-v1-cross-file-sketch.md` and
   `semantic-v1-flow-analysis-sketch.md`).
-- pcna-erp corpus is accessible for sampling (confirmed: used in parser tests).
-- `.df` schema loads successfully for pcna-erp (confirmed: `oxabl_schema`
+- ABL corpus is accessible for sampling (confirmed: used in parser tests).
+- `.df` schema loads successfully for the ABL corpus (confirmed: `oxabl_schema`
   parses the corpus `.df` files).
 
 ## Risk Analysis & Mitigation
@@ -684,7 +684,7 @@ Phases 1, 2, 3, 5, and 7a are parallelizable. Phases 4 and 6 are sequential.
 | NodeId on Identifier is a wide refactor across parser + AST | Mechanical: add field, update constructor call sites, update hand-constructed AST in tests. No semantic changes. |
 | Cross-file resolution is slow on large workspaces | Workspace name index is built once; lookup is `FxHashMap` O(1). Benchmark and optimize if > 1000 files. |
 | Flow analysis CFG builder misses ABL-specific control flow | Extensive fixture coverage for `ON ERROR`, `UNDO`, `RETRY`, `NEXT`, `LEAVE`. Document known gaps. |
-| Corpus audit reveals systematic false positives | Joint review with pcna-erp maintainer; add skip-list entries or document limitations. |
+| Corpus audit reveals systematic false positives | Joint review with corpus maintainer; add skip-list entries or document limitations. |
 | NodeId non-determinism blocks exact-JSON goldens | Spike first; if blocked, document limitation and keep shape-based tests. |
 
 ## Resource Requirements
@@ -694,7 +694,7 @@ Single engineer, sequential phases with parallelization noted. Total: ~15 days.
 Gated by:
 - Phase 1 + 2 code review (jointly, since independent)
 - Phase 4 code review (depends on Phase 3)
-- Phase 6 manual audit (requires pcna-erp maintainer time)
+- Phase 6 manual audit (requires corpus maintainer time)
 
 ## Documentation Plan
 

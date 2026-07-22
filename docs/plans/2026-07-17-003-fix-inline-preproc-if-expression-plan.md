@@ -403,7 +403,7 @@ Expect: no exit 5 from `IF NOT {fnarg …} THEN` / empty inline `&IF`.
 | 4 | Real-shape `fnarg` stub + `IF NOT {fnarg setOpenQuery cQ} THEN RETURN.` preprocesses without exit 5 |
 | 5 | `fnarg` 3-arg form selects ELSE/handle branch (condition false path) |
 | 6 | Positional `{N}` expands inside strings and inside `&IF` conditions |
-| 7 | **Corpus A/B gate (merge-blocking):** no net-new PARSE001 / preproc abort signal on the 9-module erp-5899 sample (same harness as #58). Expect PREPROC002 (“unclosed &IF”) to drop toward 0; PARSE001 must not climb. See [Corpus A/B gate](#corpus-ab-gate) below. |
+| 7 | **Corpus A/B gate (merge-blocking):** no net-new PARSE001 / preproc abort signal on the 9-module private-corpus sample (same harness as #58). Expect PREPROC002 (“unclosed &IF”) to drop toward 0; PARSE001 must not climb. See [Corpus A/B gate](#corpus-ab-gate) below. |
 | 8 | Existing multi-line `&IF` unit tests still pass |
 | 9 | Test coverage matrix (section above) complete |
 | 10 | Issue “done-when”: with `$DLC/tty` on `-I`, ADM2 `{fn}`/`{fnarg}` forms no longer abort solely due to empty inline `&IF` |
@@ -418,7 +418,7 @@ protects real check numbers.
 ### Procedure (same pattern as #58)
 
 1. **Baseline (A):** on `master` (or the pre-fix pin), run
-   `scripts/corpus-ab-gate.sh` against the 9-module erp-5899 sample with
+   `scripts/corpus-ab-gate.sh` against the 9-module private-corpus sample with
    `--preprocess` and the workspace’s usual `-I` paths. Save the JSON summary
    as `ab-baseline.json`.
 2. **Candidate (B):** on `fix/inline-preproc-if-expression`, rebuild oxabl,
@@ -447,8 +447,8 @@ Fail the PR if PARSE001 climbs even when micro-tests are green.
 `scripts/corpus-ab-gate.sh` — see script header for env vars:
 
 ```bash
-# Example (paths are machine-local; erp-5899 sample is not in-repo)
-export CORPUS_ROOT=/path/to/erp-5899/erp/code   # or pcna-erp root
+# Example (paths are machine-local; the private corpus sample is not in-repo)
+export CORPUS_ROOT=/path/to/abl/corpus   # or the ABL corpus root
 export INCLUDE_PATHS="-I $CORPUS_ROOT -I $DLC/src -I $DLC/tty"
 export MODULES="mod1 mod2 …"   # 9 modules used for #58; override as needed
 ./scripts/corpus-ab-gate.sh baseline   # → ab-baseline.json

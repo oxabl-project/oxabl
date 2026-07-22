@@ -14,7 +14,7 @@ Add CodSpeed-tracked benchmarks for the preprocessor pass at three granularities
 
 ## Problem Statement / Motivation
 
-The current bench suite (`oxabl_lexer`, `oxabl_parser`, `oxabl_common`) covers self-contained ABL fixtures only. Real-world throughput on the pcna-erp corpus drops from ~1k files/sec (parse-only) to ~70 files/sec once preprocessing and include resolution run. Today, oxabl has zero CodSpeed signal on that drop, on the preprocessor itself, or on its hot paths. Before optimizing anything (especially before introducing an include-file cache), we need a stable baseline; otherwise every "improvement" is unfalsifiable.
+The current bench suite (`oxabl_lexer`, `oxabl_parser`, `oxabl_common`) covers self-contained ABL fixtures only. Real-world throughput on the ABL corpus drops from ~1k files/sec (parse-only) to ~70 files/sec once preprocessing and include resolution run. Today, oxabl has zero CodSpeed signal on that drop, on the preprocessor itself, or on its hot paths. Before optimizing anything (especially before introducing an include-file cache), we need a stable baseline; otherwise every "improvement" is unfalsifiable.
 
 (see origin: docs/brainstorms/2026-04-16-preprocessor-benchmarks-requirements.md)
 
@@ -98,7 +98,7 @@ Target per-iteration time ~10µs–10ms so CodSpeed has enough signal without th
 
 - **`Preprocessor` public API sufficiency** — driving it from a bench requires `Preprocessor::new` + `process` + access to a `FileSystem` impl + `FileId` construction. All exist (`crates/oxabl_preprocessor/src/lib.rs:6`, `oxabl_common::FileId`, `oxabl_workspace::{InMemoryFileSystem, RealFileSystem}`). Low risk; confirm during implementation.
 - **CodSpeed auto-discovery** — relies on `cargo codspeed` honoring all workspace `[[bench]]` entries. Existing setup at `.github/workflows/codspeed.yml` suggests yes; verify locally with `cargo codspeed build`.
-- **Fixture realism** — synthetic fixtures may not exercise the same hot paths as the real corpus. Acceptable for v1 — the brainstorm explicitly chose synthetic over corpus-vendoring for reproducibility. Mitigate by sizing the pipeline fixture's include nesting to reflect what we observe in pcna-erp.
+- **Fixture realism** — synthetic fixtures may not exercise the same hot paths as the real corpus. Acceptable for v1 — the brainstorm explicitly chose synthetic over corpus-vendoring for reproducibility. Mitigate by sizing the pipeline fixture's include nesting to reflect what we observe in the ABL corpus.
 - **Per-iteration time band** — CodSpeed has a sweet spot; fixtures that run too fast are noisy, too slow are flaky. Mitigate by sizing fixtures iteratively when running `cargo bench` locally.
 
 ## Implementation Steps

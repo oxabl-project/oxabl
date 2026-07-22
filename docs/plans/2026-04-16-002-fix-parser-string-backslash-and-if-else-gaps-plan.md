@@ -9,7 +9,7 @@ date: 2026-04-16
 
 ## Overview
 
-Corpus runs against `~/legacy-fdm4/pcna-erp` surface two real parser defects that
+Corpus runs against `$ABL_CORPUS` surface two real parser defects that
 masquerade as ~40 distinct failures. Both are regressions/gaps, not user syntax
 errors, and both have sharply scoped fix sites. This plan addresses:
 
@@ -20,9 +20,9 @@ errors, and both have sharply scoped fix sites. This plan addresses:
    `IF … THEN DO: … END. ELSE …` is used. Either `parse_if_statement` is never
    reached for the outer IF, or an inner construct is swallowing the IF scope.
 
-Template files (`refsingle*.cls`, `tempwp.cls`, `transwp.cls`), I/O (non-UTF-8)
-files, and the single real typo in `erp_gl_bank_rec_host.p` are **out of scope** —
-confirmed unparseable or legitimate source bugs.
+Generated template files, I/O (non-UTF-8) files, and a single real source typo
+in one file are **out of scope** — confirmed unparseable or legitimate source
+bugs.
 
 ## Problem Statement
 
@@ -55,21 +55,18 @@ quotes inside string literals") against the prior behaviour established in
 official string escape is tilde (`~`); the lexer already handles that
 correctly at lines 590-593.
 
-**Representative corpus hits** (all cascade from this single bug):
+**Representative corpus hits** (all cascade from this single bug). Dozens of
+real-world files across many modules trip this; they share a small set of
+shapes, all involving a `"\\"` (two-backslash) Windows-path literal:
 
-| File | Reported location | Pattern |
-| --- | --- | --- |
-| `b2c/b2cStoreLocatorAjax.p:85` | `Expected ')'` | `replace(s, "\\", "&#92;")` |
-| `oe/comprehensive-rpt-async.p:353` | `Unexpected token Invalid` | `"\\" + cFilename.` |
-| `ms/stamper.p:77` | `Expected ')'` | `Replace(Entry(ndx, MergeList), "\\", "/")` |
-| `ms/mf_print_docket.p:805` | `Expected ')'` | same shape |
-| `ms/excel_host.p:319` | `Expected ')'` | same shape |
-| `ms/recordattachbl.p:47` | `Unexpected token Invalid` | `"\\" + order.cust-number` |
-| `forms/deco_proof_form.cls:207` | `Expected ')'` | same shape |
-| `dotnetrm/erp_rm_path_control_host.p:80` | `Expected ')'` | path concatenation |
-| `edi/xml_get.p:660`, `zf/easi-get.p:1212`, `zf/xfer-get.p:781` | `Expected ')'` | Windows path strings |
-| `oe/*-q.p`, `oe/csm_*.p`, `oe/workorderx-q.p`, `oe/mfworkorderx-q.p`, `oe/proofx-q.p`, `oe/storyboardx-q.p`, `oe/masterproofx-q.p`, `oe/gui_batch_report_async.p`, `oe/oe944-excel-a.p`, `oe/oe987*.p` | `Expected ')'` / `Invalid` | all contain `"\\"` path literals |
-| `po/po991-q.p`, `po/wspo991-q_batch.p`, `rm/rm444-a.p`, `rm/wsrm601.p`, `mf/mf_prod_step_form.p`, `ms/compile10.w`, `ms/fedexReturnLabelSendEmail.p`, `ms/upsReturnlabelSendEmail.p`, `xml/wsaGIPMCP.p` | various | same |
+| Reported error | Representative pattern |
+| --- | --- |
+| `Expected ')'` | `replace(s, "\\", "&#92;")` |
+| `Unexpected token Invalid` | `"\\" + cFilename.` |
+| `Expected ')'` | `Replace(Entry(ndx, someList), "\\", "/")` |
+| `Unexpected token Invalid` | `"\\" + some-buffer.some-field` |
+| `Expected ')'` | path concatenation with `"\\"` |
+| `Expected ')'` / `Invalid` | any statement embedding a `"\\"` path literal |
 
 ### Bug 2 — `IF … THEN DO: … END. ELSE …` treated as stray `KwElse`
 
@@ -100,7 +97,7 @@ of:
   `parse_block_body`/`parse_program` **before** the IF's else branch is
   considered (e.g. an error-recovery synchronise on period loses the IF frame).
 - The IF's then-branch is something other than `parse_do_statement` /
-  `parse_statement` (e.g. a `{&misc-keys}` preprocessor expansion whose last
+  `parse_statement` (e.g. a `{&some-macro}` preprocessor expansion whose last
   token is a period), leaving `parse_if_statement` to not see the real block.
 - A stray preprocessor reference / include boundary emits a `Period` that the
   enclosing caller consumes as the statement terminator.
@@ -114,10 +111,10 @@ and the error-recovery synchronise path in `parse_program` / `parse_block_body`.
 
 | Location | Shape |
 | --- | --- |
-| `wam_tmpl/manage_store.p:3890` (preprocessed 11655) | `end. else do:` after `if prod_property Then do:` |
-| `ad/ad100.p` (in include, line 1400) | `{&misc-keys}` then `Else do:` |
-| `ms/secco.p`, `secem.p`, `secss.p` (includes) | `end. else do:` after `{&…}` block |
-| `static/cleanm.p`, `ld-mnuprc.p`, `menu_hed.p`, `menu_prc.p`, `mnuprc-diff.p`, `table-de.p` (includes) | same |
+| a large program (~3890 raw / ~11655 preprocessed) | `end. else do:` after `if some-flag Then do:` |
+| a program pulling in a macro-heavy include | `{&some-macro}` then `Else do:` |
+| several include files | `end. else do:` after `{&…}` block |
+| several menu/utility includes | same |
 
 ## Proposed Solution
 
@@ -160,7 +157,7 @@ Two-step approach:
    - `if x then run p. else do: end.`
    Run under `cargo test -p oxabl_parser` and confirm which cases fail. If any
    of the synthetic forms pass, the defect is entirely tied to preprocessor /
-   include expansion (investigate `ad100.p`-style `{&misc-keys}` cases first).
+   include expansion (investigate the macro-heavy `{&some-macro}` include cases first).
 2. **Fix the identified site.** Based on where the failure reproduces:
    - If the period-skip loop at `statements.rs:2343` is never reached, the
      fix belongs in `parse_statement`'s dispatch (allow a trailing `KwElse`
@@ -186,7 +183,7 @@ failing test risks the same mis-targeted patch that caused Bug 1.
   in dispatch.
 - **Test corpus.** The success criterion is the corpus run command from the
   user's report:
-  `cargo run --bin oxabl check ~/legacy-fdm4/pcna-erp/<mod>/<file> --include-path /psc/dlc/ --include-path ~/legacy-fdm4/pcna-erp/ --preprocess`.
+  `cargo run --bin oxabl check $ABL_CORPUS/<mod>/<file> --include-path /psc/dlc/ --include-path $ABL_CORPUS/ --preprocess`.
   Expect the ~30 backslash-regression files to become clean and the 11
   `KwElse` files to parse successfully.
 - **Benchmarks.** No new benchmark warranted — the fixes are correctness only,
@@ -219,7 +216,7 @@ failing test risks the same mis-targeted patch that caused Bug 1.
   4. Parse the same pattern across preprocessor include boundaries to pin down
      whether include expansion preserves enough context for the parser to
      rebind ELSE.
-  5. Re-run the full pcna-erp corpus post-fix and compare remaining failures
+  5. Re-run the full ABL corpus post-fix and compare remaining failures
      against the baseline in the user's report.
 
 ## Acceptance Criteria
@@ -283,4 +280,4 @@ failing test risks the same mis-targeted patch that caused Bug 1.
 ### Corpus
 
 - Failing-file inventory captured in session: see user report of
-  2026-04-16 against `~/legacy-fdm4/pcna-erp/`.
+  2026-04-16 against `$ABL_CORPUS/`.

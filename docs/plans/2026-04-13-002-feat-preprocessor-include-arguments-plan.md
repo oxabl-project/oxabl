@@ -31,12 +31,12 @@ references expand to nothing, producing broken ABL:
 
 ```
 /* Call site: */
-{ gl/global-pdf.i "SHARED"}
+{ shared/defs.i "SHARED"}
 
-/* Inside global-pdf.i: */
-DEFINE {1} VARIABLE h_PDFinc AS HANDLE NO-UNDO.
+/* Inside shared/defs.i: */
+DEFINE {1} VARIABLE hInc AS HANDLE NO-UNDO.
 /*     ^^^ expands to empty, producing: */
-DEFINE  VARIABLE h_PDFinc AS HANDLE NO-UNDO.
+DEFINE  VARIABLE hInc AS HANDLE NO-UNDO.
 /*     ^ wrong — should be "DEFINE SHARED VARIABLE ..." */
 ```
 
@@ -44,10 +44,10 @@ Named arguments have the same issue:
 
 ```
 /* Call site: */
-{api/promo/ps_inv_service.i &dataset="InventoryLevels"}
+{svc/some_service.i &dataset="SomeData"}
 
 /* Inside include: */
-&IF "{&dataset}" EQ "InventoryLevels" &THEN
+&IF "{&dataset}" EQ "SomeData" &THEN
 /*    ^^^^^^^^^^ expands to empty, condition is always false */
 ```
 
@@ -207,5 +207,5 @@ Arguments must not leak between include levels:
 - Current `expand_include`: `crates/oxabl_preprocessor/src/preprocessor.rs:562`
 - Current `parse_include_name`: `crates/oxabl_preprocessor/src/preprocessor.rs:799`
 - Lexer `IncludeArgReference` handling: `crates/oxabl_lexer/src/lib.rs:699`
-- Corpus example (positional): `{gl/global-pdf.i "SHARED"}` → `DEFINE {1} VARIABLE ...`
-- Corpus example (named): `{api/promo/ps_inv_service.i &dataset="InventoryLevels"}`
+- Corpus example (positional): `{shared/defs.i "SHARED"}` → `DEFINE {1} VARIABLE ...`
+- Corpus example (named): `{svc/some_service.i &dataset="SomeData"}`

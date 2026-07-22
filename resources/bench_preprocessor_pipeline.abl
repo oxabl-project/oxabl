@@ -1,6 +1,6 @@
 /* Benchmark fixture: full pipeline (tokenize -> preprocess -> parse) with
    real include-file resolution from the workspace resources/ directory.
-   Models the include-heavy shape of files in our real ABL corpus. */
+   Models the include-heavy shape of typical real-world ABL files. */
 
 &scoped-define MODULE-NAME order-entry
 &scoped-define MODULE-VERSION "2.4.0"

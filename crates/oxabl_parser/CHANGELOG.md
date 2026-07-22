@@ -57,7 +57,7 @@
 * **parser:** add PUBLISH/SUBSCRIBE/UNSUBSCRIBE and DEFINE EVENT parsing ([233af8c](https://github.com/oxabl-project/oxabl/commit/233af8ca8df241e00606241a38b8aaed5e86871c))
 * **parser:** add stream and frame parsing ([e959ffd](https://github.com/oxabl-project/oxabl/commit/e959ffd74e5a2459800eb076a4e19547d3b3ae70))
 * **parser:** add stream and frame parsing ([8182d4e](https://github.com/oxabl-project/oxabl/commit/8182d4e1b952d7de365348469b9d69ba2a9e599c))
-* **parser:** handle real-world ABL patterns from oe100fi.p ([15b4405](https://github.com/oxabl-project/oxabl/commit/15b4405e906e6d4dd1c9853590885a212db12a47))
+* **parser:** handle real-world ABL patterns ([15b4405](https://github.com/oxabl-project/oxabl/commit/15b4405e906e6d4dd1c9853590885a212db12a47))
 * **parser:** Support LIKE syntax in DEFINE VARIABLE, DEFINE PARAMETER, and VAR ([edf3b84](https://github.com/oxabl-project/oxabl/commit/edf3b8463dc6b32afb564352546b4312877fdcf8))
 * **parser:** Support LIKE syntax in DEFINE VARIABLE, DEFINE PARAMETER, and VAR ([dbb1fdf](https://github.com/oxabl-project/oxabl/commit/dbb1fdf325c9dc77ecd89437d74ac2cf03986021))
 
@@ -137,7 +137,7 @@
 * **parser:** handle ic/ ABL patterns (99.5% → 99.8%) ([cf86ebc](https://github.com/oxabl-project/oxabl/commit/cf86ebc1a2f445eee35c18e1ba39038ea438f63b))
 * **parser:** handle inc/ ABL patterns (88.5% → 89.9%) ([7d4e82a](https://github.com/oxabl-project/oxabl/commit/7d4e82a12c9b205bd630204fddc20b7a220429a7))
 * **parser:** handle LOCKED(), UNDO statement, VIEW/HIDE, FIND OF, NEW with direction args ([39e4723](https://github.com/oxabl-project/oxabl/commit/39e47234863592a835e23375dbdc60dfafc42e91))
-* **parser:** handle many real-world ABL patterns from pcna-erp ([386fbce](https://github.com/oxabl-project/oxabl/commit/386fbce593b5972586760d3f3f5872d76bf69d9a))
+* **parser:** handle many real-world ABL patterns ([386fbce](https://github.com/oxabl-project/oxabl/commit/386fbce593b5972586760d3f3f5872d76bf69d9a))
 * **parser:** handle mf/ patterns — ACCUM form 2, NO-UNDO before LIKE, PRESELECT clauses, GROUP BY, OF after lock ([ba82762](https://github.com/oxabl-project/oxabl/commit/ba82762b893e43438cccbfdd8bd4af3ba8233153))
 * **parser:** handle ms/ patterns — PROCESS EVENTS, SYSTEM-DIALOG, EXTERNAL proc, ON RETURN, stream preprop, terminal/input expr ([bd6b5cc](https://github.com/oxabl-project/oxabl/commit/bd6b5cc2ed439c604ee29a700002305a3f9cfa74))
 * **parser:** handle NO-UNDO before LIKE, BUFFER-COMPARE SAVE, and FORM as FORMAT ([5d53c2d](https://github.com/oxabl-project/oxabl/commit/5d53c2daaa5436d2279ae3eca4ea6648fc32044a))

@@ -2705,7 +2705,7 @@ impl Parser<'_> {
 
         // Parse buffer name — may be a preprocessor reference {&find-orders}, a positional
         // include argument {1}, a compound name like {&web}order-line (preprop + adjacent
-        // identifier), or a database-qualified name like fdm4._field (db.table dotted form).
+        // identifier), or a database-qualified name like dictdb._field (db.table dotted form).
         // parse_qualified_identifier → parse_identifier handles all of these: bare identifiers,
         // preprop refs, adjacent preprop+identifier compounds, and hyphenated names.
         let buffer = self.parse_qualified_identifier()?;
@@ -2926,7 +2926,7 @@ impl Parser<'_> {
             _ => FindType::Unique,
         };
 
-        // parse buffer/table name — may be database-qualified (fdm4._file) or a compound
+        // parse buffer/table name — may be database-qualified (dictdb._file) or a compound
         // like b-{&preproc} (identifier + adjacent Preprop).
         // Use parse_qualified_identifier to handle db.table dotted forms on the same line.
         let mut buffer = self.parse_qualified_identifier()?;

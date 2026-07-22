@@ -967,7 +967,7 @@ impl Parser<'_> {
                 return self.parse_function_call(name);
             }
             // Bare form: AVAILABLE table / AMBIGUOUS table
-            // Use parse_postfix to handle database-qualified names like fdm4._file
+            // Use parse_postfix to handle database-qualified names like dictdb._file
             // Guard: if the next token cannot be a buffer/table name, treat as bare
             // AVAILABLE with no argument (bad practice but valid ABL — evaluates the
             // default buffer in scope).

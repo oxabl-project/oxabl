@@ -2042,7 +2042,7 @@ mod tests {
 
     #[test]
     fn expand_include_with_name_on_own_line() {
-        // Real-world shape from pcna-erp: the include name appears on one line
+        // Real-world shape observed in production ABL: the include name appears on one line
         // and named args follow on subsequent lines. The whole reference spans
         // multiple lines inside `{...}`. Previously, parse_include_name captured
         // the trailing newline as part of the name and resolution silently failed.
