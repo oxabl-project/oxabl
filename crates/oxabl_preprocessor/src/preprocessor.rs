@@ -1271,9 +1271,13 @@ fn parse_include_name(inner: &str) -> String {
 
 /// Parsed include file arguments.
 struct IncludeArgs {
-    /// Positional arguments. Index 0 = include file name, 1+ = user args.
+    /// Every argument's value, indexed by invocation position for `{N}`
+    /// resolution. Index 0 = include file name; 1+ = each user argument in the
+    /// order written, whether it was passed positionally or as `&name=value`
+    /// (Progress numbers named args positionally too).
     positional: Vec<String>,
-    /// Named arguments (`&name=value` pairs).
+    /// Named arguments (`&name=value` pairs) for `{&name}` resolution. Each also
+    /// occupies a slot in `positional`.
     named: Vec<(String, String)>,
 }
 
@@ -1328,9 +1332,18 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
             if i < bytes.len() && bytes[i] == b'=' {
                 i += 1; // skip =
                 let value = read_arg_value(args_str, &mut i);
+                // A named argument also occupies a positional slot: Progress
+                // numbers ALL arguments by their order in the invocation, so
+                // `{N}` resolves to the Nth argument's value whether it was
+                // written positionally or as `&name=value` (verified against
+                // `COMPILE … PREPROCESS`). Push the value here, in parse order,
+                // so positional numbering stays aligned even when positional and
+                // named args interleave.
+                positional.push(value.clone());
                 named.push((name, value));
             } else {
-                // &name with no =value — treat as empty value
+                // &name with no =value — treat as empty value (still a slot).
+                positional.push(String::new());
                 named.push((name, String::new()));
             }
         } else {
@@ -2362,7 +2375,9 @@ ELSE
     #[test]
     fn parse_include_args_named() {
         let args = parse_include_args(r#"file.i &table=customer &field="cust-num""#, "file.i");
-        assert!(args.positional.len() == 1); // just the include name
+        // Named args also occupy positional slots (Progress numbers them by
+        // order): {1}=customer, {2}=cust-num.
+        assert_eq!(args.positional, vec!["file.i", "customer", "cust-num"]);
         assert_eq!(args.named.len(), 2);
         assert_eq!(args.named[0], ("table".to_string(), "customer".to_string()));
         assert_eq!(args.named[1], ("field".to_string(), "cust-num".to_string()));
@@ -2371,8 +2386,23 @@ ELSE
     #[test]
     fn parse_include_args_mixed() {
         let args = parse_include_args(r#"file.i "SHARED" &extra=yes"#, "file.i");
-        assert_eq!(args.positional, vec!["file.i", "SHARED"]);
+        // Both the positional and the named arg get a slot, in written order.
+        assert_eq!(args.positional, vec!["file.i", "SHARED", "yes"]);
         assert_eq!(args.named, vec![("extra".to_string(), "yes".to_string())]);
+    }
+
+    #[test]
+    fn parse_include_args_named_are_numbered_positionally() {
+        // Regression for the ad100.p -> dbfcntl.i -> dbspdn.i `{3}` gap: an
+        // include invoked with only named args must still resolve `{N}` to the
+        // Nth argument's value. Here {3} = the third named arg (max-down = 8).
+        let args = parse_include_args(
+            "db/dbspdn.i &file=file-cleanup &frame=ad/ad100 &max-down=8 &find=ad/ad100.a",
+            "db/dbspdn.i",
+        );
+        assert_eq!(args.positional[3], "8", "{{3}} must be the 3rd arg's value");
+        assert_eq!(args.positional[1], "file-cleanup");
+        assert_eq!(args.positional[2], "ad/ad100");
     }
 
     #[test]
@@ -2385,7 +2415,10 @@ ELSE
     fn parse_include_args_multiline() {
         let inner = "ms/report.i &event       = \"start\"\n             &stream-name = \"s-printer\"\n             &rpt-printer = \"p-printer\"\n             &max-columns = 80";
         let args = parse_include_args(inner, "ms/report.i");
-        assert_eq!(args.positional, vec!["ms/report.i"]);
+        assert_eq!(
+            args.positional,
+            vec!["ms/report.i", "start", "s-printer", "p-printer", "80"]
+        );
         assert_eq!(args.named.len(), 4);
         assert_eq!(args.named[0], ("event".to_string(), "start".to_string()));
         assert_eq!(
@@ -2397,6 +2430,35 @@ ELSE
             ("rpt-printer".to_string(), "p-printer".to_string())
         );
         assert_eq!(args.named[3], ("max-columns".to_string(), "80".to_string()));
+    }
+
+    #[test]
+    fn named_arg_resolves_positionally_through_nested_includes() {
+        // End-to-end analogue of ad100.p -> dbfcntl.i -> dbspdn.i: a value
+        // enters the top include by name and is forwarded down by name at each
+        // level, then the innermost include consumes it positionally as `{3}`.
+        // Progress expands `{3}` to that value (verified via COMPILE PREPROCESS
+        // on ad100.p, where `{3}` -> 8); before the fix it expanded to empty,
+        // producing `id_[]` -> a spurious parse error that cascaded upward.
+        let fs = make_fs(&[
+            (
+                "/inc/inner.i",
+                "find first t where recid(t) = id_[{3}] no-error.",
+            ),
+            (
+                "/inc/outer.i",
+                "{inner.i &file={&file} &frame={&frame} &max-down={&max-down}}",
+            ),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{outer.i &file=file-cleanup &frame=ad/f &max-down=8}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(
+            &*result.to_text(),
+            "find first t where recid(t) = id_[8] no-error.",
+            "{{3}} must thread the third named arg (max-down=8) down the chain",
+        );
     }
 
     #[test]

@@ -90,6 +90,13 @@ pub struct Parser<'a> {
     /// Monotonic allocator for node ids assigned to parser-produced
     /// [`Statement`]s. See `docs/design/ast-invariants.md` §NodeId invariants.
     node_ids: NodeIdAllocator,
+    /// Accumulated parse errors recovered from anywhere in the parse — both the
+    /// top-level [`parse_program`](Self::parse_program) loop and the per-statement
+    /// recovery inside block bodies (see
+    /// [`parse_block_statement_recovering`](Self::parse_block_statement_recovering)).
+    /// Drained by `parse_program` into [`Program::errors`]. Capped at
+    /// [`MAX_ERRORS`](Self::MAX_ERRORS) to bound memory on pathological input.
+    errors: Vec<ParseError>,
 }
 
 impl<'a> Parser<'a> {
@@ -109,6 +116,7 @@ impl<'a> Parser<'a> {
             current,
             has_comments,
             node_ids: NodeIdAllocator::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -139,15 +147,17 @@ impl<'a> Parser<'a> {
 
     pub fn parse_program(&mut self) -> Program {
         let mut statements = Vec::new();
-        let mut errors = Vec::new();
 
         while !self.at_end() {
+            if self.errors.len() >= Self::MAX_ERRORS {
+                break;
+            }
             let pos_before = self.current;
             match self.parse_statement() {
                 Ok(stmt) => statements.push(stmt),
                 Err(err) => {
-                    errors.push(err);
-                    if errors.len() >= Self::MAX_ERRORS {
+                    self.record_error(err);
+                    if self.errors.len() >= Self::MAX_ERRORS {
                         break;
                     }
                     self.synchronize();
@@ -162,7 +172,85 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Program { statements, errors }
+        // Drain the accumulator: it holds both top-level errors recorded above
+        // and any per-statement errors recovered inside block bodies during the
+        // parse_statement calls. This preserves the aggregate error-reporting
+        // contract even though block bodies now recover instead of bubbling.
+        Program {
+            statements,
+            errors: std::mem::take(&mut self.errors),
+        }
+    }
+
+    /// Record a recovered parse error in the accumulator, capping the total at
+    /// [`MAX_ERRORS`](Self::MAX_ERRORS) so pathological input cannot grow the
+    /// vector without bound. Errors past the cap are dropped (the parse still
+    /// terminates because recovery always makes forward progress).
+    fn record_error(&mut self, err: ParseError) {
+        if self.errors.len() < Self::MAX_ERRORS {
+            self.errors.push(err);
+        }
+    }
+
+    /// Parse one statement inside a block body with per-statement error
+    /// recovery, mirroring the top-level [`parse_program`](Self::parse_program)
+    /// loop. On success the statement is pushed into `out`. On error the error
+    /// is recorded and the cursor is synchronized to the next statement
+    /// boundary.
+    ///
+    /// Recovery is bounded to the enclosing block: [`synchronize`](Self::synchronize)
+    /// stops at any statement-starting keyword, and `END` is one of them
+    /// (see [`can_start_statement`](statements::can_start_statement)), so it
+    /// never consumes the block's own `END`/`END CASE`/… terminator nor
+    /// overruns into a parent block — nesting stays intact.
+    ///
+    /// Always makes forward progress unless already at EOF, so every caller
+    /// must also bound its loop with `!self.at_end()` to terminate on an
+    /// unterminated block.
+    fn parse_block_statement_recovering(&mut self, out: &mut Vec<Statement>) {
+        let pos_before = self.current;
+        match self.parse_statement() {
+            Ok(stmt) => out.push(stmt),
+            Err(err) => {
+                self.record_error(err);
+                self.synchronize();
+                // Force progress if neither parse_statement nor synchronize
+                // advanced (e.g. stuck on a keyword synchronize stops at but
+                // parse_statement rejects), but never step past EOF.
+                if self.current == pos_before && !self.at_end() {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /// Close a block body that terminates with `END`. If `END` is present it is
+    /// consumed and the terminating period is expected (a missing period is
+    /// recorded, not returned). If `END` is absent — an unterminated block at
+    /// EOF — the missing-`END` error is recorded rather than returned, so the
+    /// enclosing block statement survives with the statements parsed so far.
+    ///
+    /// `trailing` names the optional keyword ABL allows between `END` and the
+    /// period for this block kind (`END CASE`, `END FUNCTION`, …); pass `None`
+    /// for a bare `END .` (DO/FOR/REPEAT). Blocks that accept more than one
+    /// trailing keyword handle their terminator inline instead.
+    fn recover_block_end(&mut self, trailing: Option<Kind>, end_msg: &str, period_msg: &str) {
+        if self.check(Kind::End) {
+            self.advance();
+            if let Some(kw) = trailing
+                && self.check(kw)
+            {
+                self.advance();
+            }
+            if let Err(err) = self.expect_period(period_msg) {
+                self.record_error(err);
+            }
+        } else {
+            self.record_error(ParseError {
+                message: end_msg.to_string(),
+                span: self.current_span(),
+            });
+        }
     }
 
     /// Skip tokens until we reach a statement boundary.
