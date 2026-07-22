@@ -326,3 +326,14 @@ fn partial_toml_falls_back_to_base() {
         StyleGuide::default_base().require_no_undo
     );
 }
+
+#[test]
+fn unknown_field_is_rejected() {
+    // A misspelled rule key must fail loudly, not be silently dropped.
+    let typo = "keyword_cse = \"Lowercase\"\n";
+    let err = StyleGuide::from_toml(typo).expect_err("unknown key must error");
+    assert!(
+        err.to_string().contains("keyword_cse") || err.to_string().contains("unknown field"),
+        "error should name the offending key, got: {err}"
+    );
+}

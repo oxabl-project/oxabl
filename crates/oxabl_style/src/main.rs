@@ -81,13 +81,22 @@ fn main() -> ExitCode {
                 }
             };
             let base = StyleGuide::default_base();
-            if user.to_toml().ok() == base.to_toml().ok() {
+            let deviations = match style_diff(&base, &user) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            if deviations.is_empty() {
                 eprintln!("{path}: matches default base (no deviations)");
             } else {
-                eprintln!("{path}: differs from default base");
-                match base.to_toml() {
-                    Ok(s) => println!("--- Base:\n{s}"),
-                    Err(e) => eprintln!("error: {e}"),
+                eprintln!(
+                    "{path}: {} field(s) differ from default base",
+                    deviations.len()
+                );
+                for (field, base_val, user_val) in deviations {
+                    println!("{field}: {base_val} => {user_val}");
                 }
             }
         }
@@ -102,4 +111,40 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// Field-by-field deviations of `user` from `base`, as
+/// `(field_name, base_value, user_value)` string triples.
+///
+/// Both guides are serialized to TOML and compared key-by-key, so the diff
+/// stays in sync with the struct automatically as fields are added. `Option`
+/// fields that are `None` serialize to no key and render as `(unset)` on
+/// whichever side omits them.
+fn style_diff(
+    base: &StyleGuide,
+    user: &StyleGuide,
+) -> Result<Vec<(String, String, String)>, toml::ser::Error> {
+    let base_tbl: toml::Table =
+        toml::from_str(&base.to_toml()?).expect("serialized StyleGuide must parse as a TOML table");
+    let user_tbl: toml::Table =
+        toml::from_str(&user.to_toml()?).expect("serialized StyleGuide must parse as a TOML table");
+
+    let mut keys: Vec<&String> = base_tbl.keys().chain(user_tbl.keys()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+
+    let render = |v: Option<&toml::Value>| match v {
+        Some(val) => val.to_string(),
+        None => "(unset)".to_string(),
+    };
+
+    let mut out = Vec::new();
+    for key in keys {
+        let b = base_tbl.get(key);
+        let u = user_tbl.get(key);
+        if b != u {
+            out.push((key.clone(), render(b), render(u)));
+        }
+    }
+    Ok(out)
 }

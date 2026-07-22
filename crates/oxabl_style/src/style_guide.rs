@@ -14,9 +14,11 @@ pub enum Scope {
 ///
 /// The struct uses `#[serde(default)]` so partial TOML files work: any missing
 /// field falls back to `Default::default()` which delegates to
-/// [`StyleGuide::default_base`].
+/// [`StyleGuide::default_base`]. It also uses `deny_unknown_fields` so a
+/// misspelled or unrecognized rule key is a hard error rather than being
+/// silently ignored — the config is user-facing, so a typo must fail loudly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StyleGuide {
     // Keywords & Operators ------------------------------------------------
     pub keyword_case: KeywordCase,
