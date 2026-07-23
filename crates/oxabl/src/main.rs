@@ -368,7 +368,8 @@ fn resolve_style_arg(value: &str) -> Result<StyleGuide, String> {
     let content = std::fs::read_to_string(value).map_err(|e| {
         format!("--style `{value}` is not a known preset (oestandards, consultingwerk) and cannot be read as a file: {e}")
     })?;
-    StyleGuide::from_toml(&content).map_err(|e| format!("--style `{value}`: invalid style TOML: {e}"))
+    StyleGuide::from_toml(&content)
+        .map_err(|e| format!("--style `{value}`: invalid style TOML: {e}"))
 }
 
 /// `oxabl format`: resolve a [`StyleGuide`], then format each discovered file

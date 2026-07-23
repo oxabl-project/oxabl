@@ -36,7 +36,7 @@ use oxabl_style::StyleGuide;
 use crate::attach::CommentMap;
 use crate::ir::LineBuf;
 use crate::keywords;
-use crate::tree::{block_children, typed_end_keyword};
+use crate::tree::{block_children, is_prefix_wrapper, typed_end_keyword};
 
 /// A physical source line with its measured leading indent and content
 /// (leading whitespace and line terminator stripped).
@@ -135,10 +135,20 @@ fn collect(
         // block's own depth, not delta-preserve like an intra-statement
         // continuation.
         block_ends.push((ll, depth));
+        // A prefix wrapper (`IF … THEN`, `ELSE`, a label, `ON …`) does not add
+        // its own indentation level for a branch that is itself a block — the
+        // block's `DO:`/`END` already supplies it (`IF x THEN DO:` is one level,
+        // not two). A leaf branch has no such opener, so it keeps the normal +1.
+        let wrapper = is_prefix_wrapper(&stmt.kind);
         for ch in children {
+            let delta = if wrapper && block_children(&ch.kind).is_some() {
+                0
+            } else {
+                1
+            };
             collect(
                 ch,
-                depth + 1,
+                depth + delta,
                 line_starts,
                 leadings,
                 starter,

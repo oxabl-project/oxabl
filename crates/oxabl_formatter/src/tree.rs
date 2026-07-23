@@ -97,6 +97,22 @@ pub(crate) fn block_children(kind: &StatementKind) -> Option<Vec<&Statement>> {
     Some(out)
 }
 
+/// Is this a *prefix wrapper* — a statement that introduces a branch/body via a
+/// keyword prefix (`IF … THEN`, `ELSE`, a block label, an `ON … ` trigger)
+/// rather than delimiting its own block with a dedicated opener/closer?
+///
+/// Prefix wrappers matter to indentation: when their branch is itself a block
+/// (`IF x THEN DO: … END`), the block already supplies the indentation level, so
+/// the wrapper must **not** add a second one — otherwise `IF … THEN DO:` bodies
+/// indent twice per wrapper. A leaf branch (`IF x THEN\n  msg.`) has no block to
+/// supply the level, so it keeps the normal `+1` (see the printer's `collect`).
+pub(crate) fn is_prefix_wrapper(kind: &StatementKind) -> bool {
+    matches!(
+        kind,
+        StatementKind::If { .. } | StatementKind::Label { .. } | StatementKind::On { .. }
+    )
+}
+
 /// The trigger-block statement of an `ON` statement, if it has one.
 fn on_action(on_kind: &OnKind) -> Option<&Statement> {
     let action = match on_kind {

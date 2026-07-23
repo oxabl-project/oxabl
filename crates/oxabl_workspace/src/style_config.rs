@@ -45,7 +45,10 @@ fn absolutize(p: &Path) -> PathBuf {
 /// key, which `deny_unknown_fields` rejects) degrades to `default_base()` and
 /// surfaces the error string in the returned `Option<String>` rather than
 /// aborting.
-pub fn resolved_style(target: &Path, cli_style: Option<StyleGuide>) -> (StyleGuide, Option<String>) {
+pub fn resolved_style(
+    target: &Path,
+    cli_style: Option<StyleGuide>,
+) -> (StyleGuide, Option<String>) {
     // CLI wins wholesale (KTD1 tier 1): no discovery, no config error.
     if let Some(style) = cli_style {
         return (style, None);

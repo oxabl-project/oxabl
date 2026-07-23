@@ -45,6 +45,54 @@ fn reindents_nested_blocks() {
 }
 
 #[test]
+fn if_then_do_is_one_indent_level_not_two() {
+    // `IF … THEN DO:` is a single opener: the DO block supplies the indentation
+    // level, so its body is one level deep (4), not two (8). Regression: the
+    // prefix `IF` used to add a second level per wrapper.
+    let src = "IF x THEN DO:\nMESSAGE \"a\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "IF x THEN DO:\n    MESSAGE \"a\".\nEND.\n");
+}
+
+#[test]
+fn nested_if_then_do_indents_by_one_level_each() {
+    let src = "IF x > 1 THEN DO:\nIF y > 2 THEN DO:\nMESSAGE \"deep\".\nEND.\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF x > 1 THEN DO:\n    IF y > 2 THEN DO:\n        MESSAGE \"deep\".\n    END.\nEND.\n"
+    );
+}
+
+#[test]
+fn if_else_do_branches_share_the_if_level() {
+    let src = "IF x THEN DO:\nMESSAGE \"t\".\nEND.\nELSE DO:\nMESSAGE \"e\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF x THEN DO:\n    MESSAGE \"t\".\nEND.\nELSE DO:\n    MESSAGE \"e\".\nEND.\n"
+    );
+}
+
+#[test]
+fn if_then_leaf_branch_on_own_line_still_indents_one_level() {
+    // The case the fix must preserve: a non-block THEN branch on its own line has
+    // no DO to supply the level, so it keeps the +1.
+    let src = "IF x THEN\nMESSAGE \"a\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "IF x THEN\n    MESSAGE \"a\".\n");
+}
+
+#[test]
+fn labeled_block_does_not_double_indent() {
+    // A block label is a prefix, not its own level: the labeled `DO:` sits at the
+    // label's depth and its body one level deeper.
+    let src = "lbl:\nDO:\nMESSAGE \"a\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "lbl:\nDO:\n    MESSAGE \"a\".\nEND.\n");
+}
+
+#[test]
 fn do_placement_sameline_default_preserves_conforming_block() {
     // do_placement defaults to SameLine; a conforming `DO:` stays put.
     let src = "DO:\n    MESSAGE \"x\".\nEND.\n";

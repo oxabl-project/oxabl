@@ -56,7 +56,11 @@ fn check_nonconforming_exits_1_and_does_not_modify() {
         .arg("--check")
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1), "non-conforming --check → exit 1");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "non-conforming --check → exit 1"
+    );
     // File must not be touched, and nothing is printed to stdout.
     assert_eq!(fs::read_to_string(&file).unwrap(), MIS_INDENTED);
     assert!(out.stdout.is_empty(), "--check writes nothing to stdout");
@@ -128,7 +132,10 @@ fn parse_error_bails_unchanged_and_reports_write_mode() {
 
     let out = oxabl().arg("format").arg(&file).output().unwrap();
     // A bail is not a failure in write mode (KTD5).
-    assert!(out.status.success(), "bail is not a hard failure in write mode");
+    assert!(
+        out.status.success(),
+        "bail is not a hard failure in write mode"
+    );
     // File left byte-for-byte unchanged (R7.1b).
     assert_eq!(fs::read_to_string(&file).unwrap(), bad);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -152,8 +159,14 @@ fn batch_continues_past_a_bailing_file() {
     let out = oxabl().arg("format").arg(root).output().unwrap();
     assert!(out.status.success());
     // Both valid files formatted despite the bad file between/around them.
-    assert_eq!(fs::read_to_string(root.join("a_good.p")).unwrap(), FORMATTED_4);
-    assert_eq!(fs::read_to_string(root.join("c_good.p")).unwrap(), FORMATTED_4);
+    assert_eq!(
+        fs::read_to_string(root.join("a_good.p")).unwrap(),
+        FORMATTED_4
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("c_good.p")).unwrap(),
+        FORMATTED_4
+    );
     // The bad file is untouched and reported.
     assert_eq!(
         fs::read_to_string(root.join("b_bad.p")).unwrap(),
