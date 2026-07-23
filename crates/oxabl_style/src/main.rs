@@ -10,24 +10,17 @@ fn main() -> ExitCode {
     match command {
         "preset" => {
             let name = args.get(2).map(|s| s.as_str()).unwrap_or("oestandards");
-            match name {
-                "oestandards" => match StyleGuide::oestandards().to_toml() {
+            match StyleGuide::from_preset_name(name) {
+                Some(guide) => match guide.to_toml() {
                     Ok(s) => println!("{s}"),
                     Err(e) => {
                         eprintln!("error: {e}");
                         return ExitCode::from(2);
                     }
                 },
-                "consultingwerk" => match StyleGuide::consultingwerk().to_toml() {
-                    Ok(s) => println!("{s}"),
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return ExitCode::from(2);
-                    }
-                },
-                other => {
+                None => {
                     eprintln!(
-                        "error: unknown preset `{other}` (use `oestandards` or `consultingwerk`)"
+                        "error: unknown preset `{name}` (use `oestandards` or `consultingwerk`)"
                     );
                     return ExitCode::from(1);
                 }

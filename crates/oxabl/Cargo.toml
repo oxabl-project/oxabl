@@ -21,6 +21,8 @@ oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
 oxabl_lsp = { path = "../oxabl_lsp", version = "0.1.0" }
+oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
+oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 indicatif = "0.17"

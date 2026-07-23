@@ -36,7 +36,7 @@ use oxabl_style::StyleGuide;
 use crate::attach::CommentMap;
 use crate::ir::LineBuf;
 use crate::keywords;
-use crate::tree::{block_children, typed_end_keyword};
+use crate::tree::{children_with_deltas, typed_end_keyword};
 
 /// A physical source line with its measured leading indent and content
 /// (leading whitespace and line terminator stripped).
@@ -130,15 +130,20 @@ fn collect(
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
         typed_ends.push((ll, ty));
     }
-    if let Some(children) = block_children(&stmt.kind) {
+    if let Some(children) = children_with_deltas(&stmt.kind) {
         // A block's closing `END` line is a structural line that must snap to the
         // block's own depth, not delta-preserve like an intra-statement
         // continuation.
         block_ends.push((ll, depth));
-        for ch in children {
+        // Each child nests by its own delta: normally +1, but a prefix wrapper
+        // (`IF … THEN`, `ELSE`, a label, `ON …`) contributes 0 for a branch that
+        // is itself a self-delimiting block or an else-if (the block's own
+        // `DO:`/`END` supplies the level), so `IF x THEN DO:` is one level, not
+        // two — while a leaf or a THEN-nested bare `IF` still gets its +1.
+        for (ch, delta) in children {
             collect(
                 ch,
-                depth + 1,
+                depth + delta,
                 line_starts,
                 leadings,
                 starter,
@@ -244,11 +249,21 @@ pub(crate) fn print(
     // the led node's depth, dangling → the block's body depth. This corrects the
     // one-off where a comment line sits inside a block's span (so `cover` put it
     // at the block's depth, not the body's).
+    //
+    // A line a statement *starts* on already carries that statement's structural
+    // indent, so a comment that merely shares such a line — a trailing comment
+    // like `IF … THEN DO: /* x */`, which attachment may hand back as a *leading*
+    // comment of the block body — must not drag the code line to the comment's
+    // depth. Skip those lines; the code's indent wins (matching the `block_ends`
+    // guard above).
     let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, depth: usize| {
         let cfl = line_index(&line_starts, span_start);
         let cll = line_index(&line_starts, span_end.saturating_sub(1));
         let delta = depth as isize * size as isize - leadings[cfl] as isize;
         for l in cfl..=cll {
+            if starter[l].is_some() {
+                continue;
+            }
             indent[l] = (leadings[l] as isize + delta).max(0) as usize;
         }
     };

@@ -267,6 +267,22 @@ impl StyleGuide {
         }
     }
 
+    /// Resolve a named preset to its [`StyleGuide`], or `None` if the name is
+    /// not a selectable preset.
+    ///
+    /// The single source of truth for "preset name string → guide", shared by
+    /// the `oxabl-style` binary and the `oxabl format --style` flag. Matching is
+    /// case-sensitive (the existing binary convention). `default_base` is
+    /// deliberately *not* nameable — it is the no-config fallback, not a preset —
+    /// and `strict_base` is an internal building block, so neither resolves here.
+    pub fn from_preset_name(name: &str) -> Option<StyleGuide> {
+        match name {
+            "oestandards" => Some(StyleGuide::oestandards()),
+            "consultingwerk" => Some(StyleGuide::consultingwerk()),
+            _ => None,
+        }
+    }
+
     /// Returns the [`Scope`] of a rule by field name, or `None` if unknown.
     pub fn scope(field_name: &str) -> Option<Scope> {
         match field_name {
@@ -342,5 +358,42 @@ impl StyleGuide {
 impl Default for StyleGuide {
     fn default() -> Self {
         Self::default_base()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_preset_name_resolves_known_presets() {
+        // StyleGuide has no PartialEq; compare the TOML projection, matching the
+        // equality convention used by the `oxabl-style` binary's diff command.
+        assert_eq!(
+            StyleGuide::from_preset_name("oestandards")
+                .unwrap()
+                .to_toml()
+                .unwrap(),
+            StyleGuide::oestandards().to_toml().unwrap()
+        );
+        assert_eq!(
+            StyleGuide::from_preset_name("consultingwerk")
+                .unwrap()
+                .to_toml()
+                .unwrap(),
+            StyleGuide::consultingwerk().to_toml().unwrap()
+        );
+    }
+
+    #[test]
+    fn from_preset_name_rejects_non_presets() {
+        // default_base is the no-config fallback, not a selectable preset.
+        assert!(StyleGuide::from_preset_name("default_base").is_none());
+        // strict_base is an internal building block.
+        assert!(StyleGuide::from_preset_name("strict_base").is_none());
+        // Matching is case-sensitive.
+        assert!(StyleGuide::from_preset_name("Oestandards").is_none());
+        assert!(StyleGuide::from_preset_name("nope").is_none());
+        assert!(StyleGuide::from_preset_name("").is_none());
     }
 }

@@ -45,6 +45,94 @@ fn reindents_nested_blocks() {
 }
 
 #[test]
+fn if_then_do_is_one_indent_level_not_two() {
+    // `IF … THEN DO:` is a single opener: the DO block supplies the indentation
+    // level, so its body is one level deep (4), not two (8). Regression: the
+    // prefix `IF` used to add a second level per wrapper.
+    let src = "IF x THEN DO:\nMESSAGE \"a\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "IF x THEN DO:\n    MESSAGE \"a\".\nEND.\n");
+}
+
+#[test]
+fn nested_if_then_do_indents_by_one_level_each() {
+    let src = "IF x > 1 THEN DO:\nIF y > 2 THEN DO:\nMESSAGE \"deep\".\nEND.\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF x > 1 THEN DO:\n    IF y > 2 THEN DO:\n        MESSAGE \"deep\".\n    END.\nEND.\n"
+    );
+}
+
+#[test]
+fn if_else_do_branches_share_the_if_level() {
+    let src = "IF x THEN DO:\nMESSAGE \"t\".\nEND.\nELSE DO:\nMESSAGE \"e\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF x THEN DO:\n    MESSAGE \"t\".\nEND.\nELSE DO:\n    MESSAGE \"e\".\nEND.\n"
+    );
+}
+
+#[test]
+fn then_nested_bare_if_still_indents() {
+    // A THEN-position nested `IF` (no DO) has no block to borrow a level from, so
+    // it must still indent one level per nesting. Regression guard for the
+    // over-broad "child has children ⇒ delta 0" predicate.
+    let src = "IF a > 1 THEN\nIF b > 2 THEN\nMESSAGE \"x\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF a > 1 THEN\n    IF b > 2 THEN\n        MESSAGE \"x\".\n"
+    );
+}
+
+#[test]
+fn else_if_chain_stays_flush_with_opening_if() {
+    // An else-position `IF` (else-if chain) borrows the opening IF's level rather
+    // than stair-stepping deeper on each `ELSE IF`.
+    let src = "IF a THEN DO:\nMESSAGE \"t\".\nEND.\nELSE IF b THEN DO:\nMESSAGE \"e\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF a THEN DO:\n    MESSAGE \"t\".\nEND.\nELSE IF b THEN DO:\n    MESSAGE \"e\".\nEND.\n"
+    );
+}
+
+#[test]
+fn if_then_leaf_branch_on_own_line_still_indents_one_level() {
+    // The case the fix must preserve: a non-block THEN branch on its own line has
+    // no DO to supply the level, so it keeps the +1.
+    let src = "IF x THEN\nMESSAGE \"a\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "IF x THEN\n    MESSAGE \"a\".\n");
+}
+
+#[test]
+fn labeled_block_does_not_double_indent() {
+    // A block label is a prefix, not its own level: the labeled `DO:` sits at the
+    // label's depth and its body one level deeper.
+    let src = "lbl:\nDO:\nMESSAGE \"a\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "lbl:\nDO:\n    MESSAGE \"a\".\nEND.\n");
+}
+
+#[test]
+fn trailing_comment_on_block_opener_does_not_reindent_that_line() {
+    // A trailing `/* … */` on a block-opener line must not drag the opener to the
+    // body's depth. Attachment can hand the comment back as a *leading* comment
+    // of the body's first statement; the printer must let the statement that
+    // starts on the line own its indent. Reproduced from a real file where a
+    // preceding leaf-`THEN` IF made the misattachment fire.
+    let src = "IF c EQ \"no\" THEN\nMESSAGE \"n\".\n\n        IF c BEGINS \"hi\" THEN DO: /* check */\nMESSAGE \"x\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF c EQ \"no\" THEN\n    MESSAGE \"n\".\n\nIF c BEGINS \"hi\" THEN DO: /* check */\n    MESSAGE \"x\".\nEND.\n"
+    );
+}
+
+#[test]
 fn do_placement_sameline_default_preserves_conforming_block() {
     // do_placement defaults to SameLine; a conforming `DO:` stays put.
     let src = "DO:\n    MESSAGE \"x\".\nEND.\n";
@@ -201,6 +289,16 @@ fn drops_blank_after_opener_and_before_end() {
     let src = "DO:\n\n    MESSAGE \"x\".\n\nEND.\n";
     let out = fmt(src, &StyleGuide::default_base());
     assert_eq!(out, "DO:\n    MESSAGE \"x\".\nEND.\n");
+}
+
+#[test]
+fn drops_blank_after_opener_with_trailing_comment() {
+    // The opener's last *code* token is `:` even when a trailing comment follows
+    // (`DO: /* c */`), so the after-opener blank run is still dropped. Regression:
+    // a naive `ends_with(':')` saw `*/` and kept a spurious blank.
+    let src = "DO: /* c */\n\n\n    MESSAGE \"x\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "DO: /* c */\n    MESSAGE \"x\".\nEND.\n");
 }
 
 #[test]

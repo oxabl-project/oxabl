@@ -97,6 +97,95 @@ pub(crate) fn block_children(kind: &StatementKind) -> Option<Vec<&Statement>> {
     Some(out)
 }
 
+/// Is this a *self-delimiting block* — a construct that introduces its own
+/// indentation level via a dedicated opener and `END` (or equivalent body
+/// delimiters)?
+///
+/// This is the discriminator for prefix-wrapper indentation: a wrapper
+/// (`IF … THEN`, `ELSE`, a label, `ON …`) does not add its own level for a
+/// branch that is a self-delimiting block, because the block's own `DO:`/`END`
+/// already supplies it (`IF x THEN DO:` is one level, not two). It deliberately
+/// **excludes** the wrappers/conditionals themselves (`If`, `Label`, `On`,
+/// `PreprocIf`): a `THEN`-nested bare `IF` (`IF a THEN IF b THEN …`) has no
+/// block to borrow, so it must still indent (Fable finding 1).
+fn is_self_delimiting_block(kind: &StatementKind) -> bool {
+    matches!(
+        kind,
+        StatementKind::Block(_)
+            | StatementKind::Do { .. }
+            | StatementKind::Repeat { .. }
+            | StatementKind::ForEach { .. }
+            | StatementKind::Procedure { .. }
+            | StatementKind::Function { .. }
+            | StatementKind::Class { .. }
+            | StatementKind::Interface { .. }
+            | StatementKind::Method { .. }
+            | StatementKind::Constructor { .. }
+            | StatementKind::Destructor { .. }
+            | StatementKind::Catch { .. }
+            | StatementKind::Finally { .. }
+            | StatementKind::Property { .. }
+            | StatementKind::Case { .. }
+    )
+}
+
+/// Depth delta for a prefix-wrapper branch: `0` when the branch borrows an
+/// existing level, `1` when it needs its own.
+///
+/// A self-delimiting block borrows its own level (`IF x THEN DO:`). An
+/// **else-position** `IF` borrows too, so an else-if chain
+/// (`… ELSE IF y THEN DO:`) stays flush with the opening `IF` rather than
+/// stair-stepping. Everything else — a leaf branch on its own line, or a
+/// **then-position** nested `IF` — needs `+1`.
+fn wrapper_child_delta(child: &Statement, is_else: bool) -> usize {
+    if is_self_delimiting_block(&child.kind)
+        || (is_else && matches!(child.kind, StatementKind::If { .. }))
+    {
+        0
+    } else {
+        1
+    }
+}
+
+/// Like [`block_children`], but pairs each child with the indentation depth
+/// delta it should nest by (used only by the printer's depth walk).
+///
+/// Every child of an ordinary block nests `+1`. The prefix wrappers `If` /
+/// `Label` / `On` instead defer to [`wrapper_child_delta`], so a block branch
+/// (or an else-if) does not double-indent while a leaf branch still gets its
+/// level. Non-wrapper kinds delegate to [`block_children`], so any block kind
+/// added there is automatically covered here with the default `+1`.
+pub(crate) fn children_with_deltas(kind: &StatementKind) -> Option<Vec<(&Statement, usize)>> {
+    let mut out: Vec<(&Statement, usize)> = Vec::new();
+    match kind {
+        StatementKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            out.push((then_branch, wrapper_child_delta(then_branch, false)));
+            if let Some(e) = else_branch {
+                out.push((e, wrapper_child_delta(e, true)));
+            }
+        }
+        StatementKind::Label { body, .. } => {
+            out.push((body, wrapper_child_delta(body, false)));
+        }
+        StatementKind::On { kind: on_kind } => {
+            let action = on_action(on_kind)?;
+            out.push((action, wrapper_child_delta(action, false)));
+        }
+        _ => {
+            for ch in block_children(kind)? {
+                out.push((ch, 1));
+            }
+        }
+    }
+    // Guarantee source order regardless of field declaration order.
+    out.sort_by_key(|(s, _)| s.span.start);
+    Some(out)
+}
+
 /// The trigger-block statement of an `ON` statement, if it has one.
 fn on_action(on_kind: &OnKind) -> Option<&Statement> {
     let action = match on_kind {
