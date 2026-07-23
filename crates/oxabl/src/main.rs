@@ -337,24 +337,26 @@ enum FormatOutcome {
 }
 
 /// Parse `source` raw (preprocessing OFF, per KTD4/R8 so spans are real byte
-/// offsets) and run the formatter, classifying the outcome. The raw
-/// `tokenize`/`parse_program` is wrapped in `catch_unwind` — the lexer can panic
-/// on some inputs, and one bad file must not unwind the whole directory walk
-/// after earlier files were already rewritten (R7.1b). A panic is treated as a
-/// bail: the file is reported and left unchanged.
+/// offsets) and run the formatter, classifying the outcome. The whole
+/// tokenize → parse → format pipeline is wrapped in `catch_unwind`: a panic
+/// anywhere in it (the lexer on some inputs, or the formatter engine itself)
+/// must not unwind the whole directory walk after earlier files were already
+/// rewritten (R7.1b). A panic is treated as a bail — the file is reported and
+/// left unchanged. The write happens only on `Reformatted`, so a panic never
+/// leaves a half-written file.
 fn format_one(source: &str, style: &StyleGuide) -> FormatOutcome {
-    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let tokens = tokenize(source);
-        Parser::new(&tokens, source).parse_program()
+        let program = Parser::new(&tokens, source).parse_program();
+        oxabl_formatter::format(source, &program, style)
     }));
-    let program = match parsed {
-        Ok(p) => p,
-        Err(_) => return FormatOutcome::Bailed("lexer panicked; left unchanged".to_string()),
-    };
-    match oxabl_formatter::format(source, &program, style) {
-        Ok(formatted) if formatted == source => FormatOutcome::Unchanged,
-        Ok(formatted) => FormatOutcome::Reformatted(formatted),
-        Err(bail) => FormatOutcome::Bailed(bail.to_string()),
+    match result {
+        Ok(Ok(formatted)) if formatted == source => FormatOutcome::Unchanged,
+        Ok(Ok(formatted)) => FormatOutcome::Reformatted(formatted),
+        Ok(Err(bail)) => FormatOutcome::Bailed(bail.to_string()),
+        Err(_) => {
+            FormatOutcome::Bailed("internal panic while formatting; left unchanged".to_string())
+        }
     }
 }
 
@@ -396,12 +398,12 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
     let files = match discover_files(path) {
         Ok(files) => files,
         Err(e) => {
-            eprintln!("Error: {e}");
+            eprintln!("error: {e}");
             return ExitCode::from(2);
         }
     };
     if files.is_empty() {
-        eprintln!("No ABL files found in {}", path.display());
+        eprintln!("error: no ABL files found in {}", path.display());
         return ExitCode::from(2);
     }
 

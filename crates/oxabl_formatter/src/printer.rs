@@ -36,7 +36,7 @@ use oxabl_style::StyleGuide;
 use crate::attach::CommentMap;
 use crate::ir::LineBuf;
 use crate::keywords;
-use crate::tree::{block_children, is_prefix_wrapper, typed_end_keyword};
+use crate::tree::{children_with_deltas, typed_end_keyword};
 
 /// A physical source line with its measured leading indent and content
 /// (leading whitespace and line terminator stripped).
@@ -130,22 +130,17 @@ fn collect(
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
         typed_ends.push((ll, ty));
     }
-    if let Some(children) = block_children(&stmt.kind) {
+    if let Some(children) = children_with_deltas(&stmt.kind) {
         // A block's closing `END` line is a structural line that must snap to the
         // block's own depth, not delta-preserve like an intra-statement
         // continuation.
         block_ends.push((ll, depth));
-        // A prefix wrapper (`IF … THEN`, `ELSE`, a label, `ON …`) does not add
-        // its own indentation level for a branch that is itself a block — the
-        // block's `DO:`/`END` already supplies it (`IF x THEN DO:` is one level,
-        // not two). A leaf branch has no such opener, so it keeps the normal +1.
-        let wrapper = is_prefix_wrapper(&stmt.kind);
-        for ch in children {
-            let delta = if wrapper && block_children(&ch.kind).is_some() {
-                0
-            } else {
-                1
-            };
+        // Each child nests by its own delta: normally +1, but a prefix wrapper
+        // (`IF … THEN`, `ELSE`, a label, `ON …`) contributes 0 for a branch that
+        // is itself a self-delimiting block or an else-if (the block's own
+        // `DO:`/`END` supplies the level), so `IF x THEN DO:` is one level, not
+        // two — while a leaf or a THEN-nested bare `IF` still gets its +1.
+        for (ch, delta) in children {
             collect(
                 ch,
                 depth + delta,

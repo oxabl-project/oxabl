@@ -75,6 +75,31 @@ fn if_else_do_branches_share_the_if_level() {
 }
 
 #[test]
+fn then_nested_bare_if_still_indents() {
+    // A THEN-position nested `IF` (no DO) has no block to borrow a level from, so
+    // it must still indent one level per nesting. Regression guard for the
+    // over-broad "child has children ⇒ delta 0" predicate.
+    let src = "IF a > 1 THEN\nIF b > 2 THEN\nMESSAGE \"x\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF a > 1 THEN\n    IF b > 2 THEN\n        MESSAGE \"x\".\n"
+    );
+}
+
+#[test]
+fn else_if_chain_stays_flush_with_opening_if() {
+    // An else-position `IF` (else-if chain) borrows the opening IF's level rather
+    // than stair-stepping deeper on each `ELSE IF`.
+    let src = "IF a THEN DO:\nMESSAGE \"t\".\nEND.\nELSE IF b THEN DO:\nMESSAGE \"e\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF a THEN DO:\n    MESSAGE \"t\".\nEND.\nELSE IF b THEN DO:\n    MESSAGE \"e\".\nEND.\n"
+    );
+}
+
+#[test]
 fn if_then_leaf_branch_on_own_line_still_indents_one_level() {
     // The case the fix must preserve: a non-block THEN branch on its own line has
     // no DO to supply the level, so it keeps the +1.
