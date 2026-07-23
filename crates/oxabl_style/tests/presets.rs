@@ -337,3 +337,36 @@ fn unknown_field_is_rejected() {
         "error should name the offending key, got: {err}"
     );
 }
+
+// =============================================================================
+// U4: max_consecutive_blank_lines field (plumbing only; enforcement deferred)
+// =============================================================================
+
+#[test]
+fn max_consecutive_blank_lines_defaults_to_one() {
+    assert_eq!(StyleGuide::default_base().max_consecutive_blank_lines, 1);
+}
+
+#[test]
+fn max_consecutive_blank_lines_is_formatting_scoped() {
+    assert_eq!(
+        StyleGuide::scope("max_consecutive_blank_lines"),
+        Some(Scope::Formatting)
+    );
+}
+
+#[test]
+fn max_consecutive_blank_lines_round_trips_explicit_value() {
+    let toml_str = "max_consecutive_blank_lines = 3\n";
+    let guide = StyleGuide::from_toml(toml_str).expect("parse TOML");
+    assert_eq!(guide.max_consecutive_blank_lines, 3);
+    // And it survives a serialize → deserialize round-trip.
+    let reparsed = StyleGuide::from_toml(&guide.to_toml().unwrap()).expect("re-parse");
+    assert_eq!(reparsed.max_consecutive_blank_lines, 3);
+}
+
+#[test]
+fn max_consecutive_blank_lines_omitted_falls_back_to_default() {
+    let guide = StyleGuide::from_toml("keyword_case = \"Lowercase\"\n").expect("parse partial");
+    assert_eq!(guide.max_consecutive_blank_lines, 1);
+}

@@ -1,10 +1,11 @@
 use super::*;
 use oxabl_ast::{
-    AccessModifier, BooleanLiteral, BufferTarget, CreateTarget, CreateTargetKind, DataSourceKeys,
-    DataType, DbTriggerEvent, DecimalLiteral, ExpressionKind, FindType, HandleParamKind,
-    Identifier, IntegerLiteral, Literal, LockType, OnAction, OnKind, ParameterDirection,
-    ParameterType, RunTarget, SortDirection, Span, StatementKind, StreamDirection, StreamOperation,
-    StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral, WhenBranch, WidgetQualifier,
+    AccessModifier, BooleanLiteral, BufferTarget, CommentKind, CreateTarget, CreateTargetKind,
+    DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, ExpressionKind, FindType,
+    HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, OnAction, OnKind,
+    ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
+    StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral,
+    WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -10477,4 +10478,161 @@ fn u4_zero_width_empty_between_reals_is_tolerated() {
     b.span = Span { start: 5, end: 10 };
     // Must not panic — `<=` tolerates zero-width nodes abutting neighbours.
     debug_assert_stmt_sibling_order(&[a, mid, b]);
+}
+
+// ---------------------------------------------------------------------------
+// U2: comment side-table collection (`Program.comments`)
+// ---------------------------------------------------------------------------
+
+/// Parse `source` and return its collected comment table.
+fn collect_program_comments(source: &str) -> Vec<oxabl_ast::Comment> {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.parse_program().comments
+}
+
+#[test]
+fn comments_single_line_includes_trailing_newline() {
+    // Mirrors lexer test `comments_line`: the `//` span includes the `\n`.
+    let source = "def // this is a comment\nvar x as int.";
+    let comments = collect_program_comments(source);
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].kind, CommentKind::Line);
+    // `//` starts at byte 4; the span runs through and includes the `\n` at 24.
+    assert_eq!(comments[0].span, Span { start: 4, end: 25 });
+    assert_eq!(&source[..source.len()][24..25], "\n");
+}
+
+#[test]
+fn comments_single_block_excludes_following_newline() {
+    let source = "def /* block */ var\n";
+    let comments = collect_program_comments(source);
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].kind, CommentKind::Block);
+    // Full extent through `*/`, excluding the following space/newline.
+    assert_eq!(comments[0].span, Span { start: 4, end: 15 });
+    assert_eq!(&source[4..15], "/* block */");
+}
+
+#[test]
+fn comments_nested_block_is_one_entry() {
+    let source = "a = /* a /* b */ c */ b.";
+    let comments = collect_program_comments(source);
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].kind, CommentKind::Block);
+    let s = comments[0].span;
+    assert_eq!(
+        &source[s.start as usize..s.end as usize],
+        "/* a /* b */ c */"
+    );
+}
+
+#[test]
+fn comments_are_sorted_by_start_without_manual_sort() {
+    let source = "/* first */ a = 1. // second\nb = 2. /* third */";
+    let comments = collect_program_comments(source);
+    assert_eq!(comments.len(), 3);
+    assert_eq!(comments[0].kind, CommentKind::Block);
+    assert_eq!(comments[1].kind, CommentKind::Line);
+    assert_eq!(comments[2].kind, CommentKind::Block);
+    // Ascending by span.start, strictly increasing (non-overlapping).
+    assert!(comments[0].span.start < comments[1].span.start);
+    assert!(comments[1].span.start < comments[2].span.start);
+}
+
+#[test]
+fn comments_between_and_trailing_statements_do_not_overlap_nodes() {
+    let source = "do:\nend. /* done */";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let program = parser.parse_program();
+    assert_eq!(program.comments.len(), 1);
+    let c = program.comments[0].span;
+    assert_eq!(&source[c.start as usize..c.end as usize], "/* done */");
+    // The trailing comment must start after the last statement's span ends.
+    let last = program.statements.last().expect("a statement");
+    assert!(last.span.end <= c.start, "comment overlaps statement span");
+}
+
+#[test]
+fn comments_leading_only_file_still_captured() {
+    // A file whose only comments are leading: `has_comments` is `false`, yet
+    // the collector must still capture them (KTD2 regression guard).
+    let source = "// leading one\n/* leading two */\nvar x as int.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    // Sanity: the leading skip in `Parser::new` cleared the fast-path flag.
+    assert!(!parser.has_comments, "expected leading-only fast-path");
+    let program = parser.parse_program();
+    assert_eq!(program.comments.len(), 2);
+    assert_eq!(program.comments[0].kind, CommentKind::Line);
+    assert_eq!(program.comments[1].kind, CommentKind::Block);
+}
+
+#[test]
+fn comments_appbuilder_directive_is_line_excluding_newline() {
+    let source = "&ANALYZE-SUSPEND _VERSION-NUMBER\nvar x as int.";
+    let comments = collect_program_comments(source);
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].kind, CommentKind::Line);
+    let s = comments[0].span;
+    // Span excludes the trailing `\n` (KTD3 asymmetry vs `//`).
+    assert_eq!(
+        &source[s.start as usize..s.end as usize],
+        "&ANALYZE-SUSPEND _VERSION-NUMBER"
+    );
+    assert_eq!(&source[s.end as usize..s.end as usize + 1], "\n");
+}
+
+#[test]
+fn comments_include_and_macro_refs_are_not_comments() {
+    let source = "{lib/util.i}\n{&MY-MACRO}\nvar x as int.";
+    let comments = collect_program_comments(source);
+    assert!(
+        comments.is_empty(),
+        "include/preprocessor refs must not enter the comment table: {comments:?}"
+    );
+}
+
+#[test]
+fn comments_unterminated_block_is_not_captured() {
+    // Unterminated block comment lexes to `Kind::Invalid`, not `Kind::Comment`.
+    let source = "var x as int. /* never closed";
+    let comments = collect_program_comments(source);
+    assert!(
+        comments.is_empty(),
+        "unterminated block must be excluded: {comments:?}"
+    );
+}
+
+#[test]
+fn comments_no_comment_file_is_empty() {
+    let source = "var x as int.\ndisplay x.";
+    let comments = collect_program_comments(source);
+    assert!(comments.is_empty());
+}
+
+#[test]
+fn classify_comment_defensive_brace_branch_is_excluded() {
+    // The `{`-led branch of the leading-byte gate is defensive: no real lexer
+    // output produces it, so it is exercised as a direct function-level test
+    // (KTD3). A synthetic `{`-led span must classify to `None` (excluded)
+    // without tripping the debug_assert on the fallthrough arm.
+    let source = "{not a comment}";
+    let tokens = tokenize(source);
+    let parser = Parser::new(&tokens, source);
+    assert_eq!(parser.classify_comment(0), None);
+    // And the two live shapes classify as expected via the same entry point.
+    let line_src = "// hi";
+    let lt = tokenize(line_src);
+    let lp = Parser::new(&lt, line_src);
+    assert_eq!(lp.classify_comment(0), Some(CommentKind::Line));
+    let block_src = "/* hi */";
+    let bt = tokenize(block_src);
+    let bp = Parser::new(&bt, block_src);
+    assert_eq!(bp.classify_comment(0), Some(CommentKind::Block));
+    let amp_src = "&ANALYZE-SUSPEND x";
+    let at = tokenize(amp_src);
+    let ap = Parser::new(&at, amp_src);
+    assert_eq!(ap.classify_comment(0), Some(CommentKind::Line));
 }

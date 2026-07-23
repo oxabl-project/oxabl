@@ -13,9 +13,9 @@ pub mod statements;
 mod tests;
 
 use oxabl_ast::{
-    AccessModifier, DataType, Expression, ExpressionKind, HandleParamKind, HandlePassingOptions,
-    Identifier, NodeIdAllocator, ParameterDirection, ParameterType, Span, Statement, StatementKind,
-    TypeSource,
+    AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, HandleParamKind,
+    HandlePassingOptions, Identifier, NodeIdAllocator, ParameterDirection, ParameterType, Span,
+    Statement, StatementKind, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -101,6 +101,11 @@ pub struct Program {
     pub statements: Vec<Statement>,
     /// Errors encountered during parsing.
     pub errors: Vec<ParseError>,
+    /// Every comment recognized by the lexer, in source order, hung off the
+    /// root as advisory fidelity data for the future formatter. Empty for files
+    /// with no comments. Never read by semantic/lint/analyze passes. See
+    /// `docs/design/ast-invariants.md` §13.
+    pub comments: Vec<Comment>,
 }
 
 impl Program {
@@ -235,9 +240,72 @@ impl<'a> Parser<'a> {
         // parse_statement calls. This preserves the aggregate error-reporting
         // contract even though block bodies now recover instead of bubbling.
         debug_assert_stmt_sibling_order(&statements);
+        let comments = self.collect_comments();
         Program {
             statements,
             errors: std::mem::take(&mut self.errors),
+            comments,
+        }
+    }
+
+    /// Collect every `Kind::Comment` token into a sorted, classified comment
+    /// table (KTD1). This is one independent linear pass over the full token
+    /// slice — decoupled from the cursor and the `skip_comments` fast-path, so
+    /// no skip site can leak a dropped comment (origin R3.4). It does **not**
+    /// gate on `has_comments` (KTD2): that flag is `false` for a file whose only
+    /// comments are leading, so gating on it would lose them. The token stream
+    /// is already source-ordered, so the result is sorted by `span.start` with
+    /// no explicit sort, and the `Vec` allocates only when comments exist.
+    fn collect_comments(&self) -> Vec<Comment> {
+        let mut comments = Vec::new();
+        for token in self.tokens {
+            if token.kind != Kind::Comment {
+                continue;
+            }
+            if let Some(kind) = self.classify_comment(token.start) {
+                comments.push(Comment {
+                    span: Span {
+                        start: token.start as u32,
+                        end: token.end as u32,
+                    },
+                    kind,
+                });
+            }
+        }
+        comments
+    }
+
+    /// Classify a `Kind::Comment` token by its leading source byte (KTD3):
+    /// `//` → [`CommentKind::Line`], `/*` → [`CommentKind::Block`], and an
+    /// AppBuilder `&`-directive line → [`CommentKind::Line`]. Any other leading
+    /// byte is excluded and `debug_assert!`-tripped: no current lexer route
+    /// produces one, so hitting it means a lexer change added a `Comment` shape
+    /// the classifier must be taught rather than silently dropping a comment.
+    /// The `{` arm is defensive only — include/preprocessor references never lex
+    /// to `Kind::Comment` today (KTD3) — so it is excluded without tripping the
+    /// assert.
+    fn classify_comment(&self, start: usize) -> Option<CommentKind> {
+        let bytes = self.source.as_bytes();
+        match bytes.get(start) {
+            Some(b'/') => match bytes.get(start + 1) {
+                Some(b'*') => Some(CommentKind::Block),
+                // `//` line comment; also the defensive fall-through for any
+                // lone `/`-led comment, which no lexer route emits.
+                _ => Some(CommentKind::Line),
+            },
+            Some(b'&') => Some(CommentKind::Line),
+            // Defensive: no current lexer route emits a `{`-led `Kind::Comment`
+            // (include/preprocessor refs are AST nodes). Excluded, no assert.
+            Some(b'{') => None,
+            _ => {
+                debug_assert!(
+                    false,
+                    "Kind::Comment token at byte {start} has unexpected leading byte {:?}; \
+                     a lexer change added a comment shape the classifier must be taught",
+                    bytes.get(start).map(|b| *b as char),
+                );
+                None
+            }
         }
     }
 
