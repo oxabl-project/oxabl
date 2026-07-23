@@ -2846,6 +2846,54 @@ fn parse_if_then_do_end_else_do_end() {
 }
 
 #[test]
+fn if_do_branch_spans_are_full_extent_not_dummy() {
+    // Regression: a DO-block IF branch is parsed via `parse_do_statement`
+    // directly, bypassing the `parse_statement` span funnel. Before the fix it
+    // kept `Span::DUMMY` (0..0), which made every span-consuming pass treat the
+    // branch as living at byte 0 (the formatter then mis-indented unrelated
+    // leading content). Both branch spans must cover their real `DO:…END` text.
+    let source = "IF x THEN DO: y = 1. END. ELSE DO: y = 0. END.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::If {
+        then_branch,
+        else_branch,
+        ..
+    } = stmt.kind
+    else {
+        panic!("Expected If statement");
+    };
+
+    // THEN branch: `DO: y = 1. END.`
+    assert!(matches!(then_branch.kind, StatementKind::Do { .. }));
+    assert_ne!(
+        (then_branch.span.start, then_branch.span.end),
+        (0, 0),
+        "THEN branch span must not be the dummy 0..0"
+    );
+    assert_eq!(
+        &source[then_branch.span.start as usize..then_branch.span.end as usize],
+        "DO: y = 1. END.",
+        "THEN branch span must cover its full DO…END extent"
+    );
+
+    // ELSE branch: `DO: y = 0. END.`
+    let else_stmt = else_branch.expect("Should have else");
+    assert!(matches!(else_stmt.kind, StatementKind::Do { .. }));
+    assert_ne!(
+        (else_stmt.span.start, else_stmt.span.end),
+        (0, 0),
+        "ELSE branch span must not be the dummy 0..0"
+    );
+    assert_eq!(
+        &source[else_stmt.span.start as usize..else_stmt.span.end as usize],
+        "DO: y = 0. END.",
+        "ELSE branch span must cover its full DO…END extent"
+    );
+}
+
+#[test]
 fn parse_next_prompt_statement() {
     let source = "NEXT-PROMPT menu-proc.breakpoint WITH FRAME static/menu_prc.";
     let tokens = tokenize(source);

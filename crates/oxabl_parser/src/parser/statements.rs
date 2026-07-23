@@ -2452,11 +2452,26 @@ impl Parser<'_> {
             self.expect_kind(Kind::Then, "Expected THEN after IF condition")?;
         }
 
-        // parse then branch, may be a DO block or single statement
-        let then_branch = if self.check(Kind::Do) {
+        // parse then branch, may be a DO block or single statement.
+        //
+        // A DO-block branch is parsed by calling `parse_do_statement` directly,
+        // which bypasses the `parse_statement` funnel that normally stamps a
+        // statement's real full-extent span — so without the explicit stamp
+        // below it would keep `Span::DUMMY` (0..0). A zero span makes every
+        // span-consuming pass (the formatter's line map, semantic ranges) treat
+        // the branch as living at byte 0 / line 0, which mis-indents unrelated
+        // leading content. Stamp `lo..prev_end` here, mirroring the funnel. The
+        // `parse_statement` arm already carries a correct span; re-stamping it
+        // with the identical `lo`/`hi` is a harmless no-op.
+        let then_lo = self.peek().start as u32;
+        let mut then_branch = if self.check(Kind::Do) {
             self.parse_do_statement()?
         } else {
             self.parse_statement()?
+        };
+        then_branch.span = Span {
+            start: then_lo,
+            end: self.prev_end().max(then_lo),
         };
 
         // Skip any stray bare periods between THEN-branch and ELSE (e.g. double-period `..`
@@ -2493,7 +2508,11 @@ impl Parser<'_> {
         // optional ELSE
         let else_branch = if self.check(Kind::KwElse) {
             self.advance();
-            let else_stmt = if self.check(Kind::Do) {
+            // Same span-stamping rationale as the THEN branch above: the DO and
+            // ELSE-IF arms bypass the `parse_statement` funnel, so stamp their
+            // real span here to avoid a `Span::DUMMY` (0..0) branch.
+            let else_lo = self.peek().start as u32;
+            let mut else_stmt = if self.check(Kind::Do) {
                 self.parse_do_statement()?
             } else if self.check(Kind::KwIf) {
                 self.parse_if_statement()?
@@ -2503,6 +2522,10 @@ impl Parser<'_> {
                 self.stmt(StatementKind::Empty)
             } else {
                 self.parse_statement()?
+            };
+            else_stmt.span = Span {
+                start: else_lo,
+                end: self.prev_end().max(else_lo),
             };
             Some(Box::new(else_stmt))
         } else {
