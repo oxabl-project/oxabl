@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use oxabl_ast::{NodeId, Statement};
-use oxabl_lexer::{Kind, tokenize};
+use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_style::StyleGuide;
 
 use crate::attach::CommentMap;
@@ -192,6 +192,7 @@ pub(crate) fn print(
     program: &oxabl_parser::Program,
     cmap: &CommentMap,
     style: &StyleGuide,
+    toks: &[Token],
 ) -> LineBuf {
     let size = style.indent_size.max(1);
     let lines = split_lines(source, size);
@@ -288,12 +289,11 @@ pub(crate) fn print(
     let content_starts: Vec<usize> = lines.iter().map(|l| l.content_start).collect();
     let mut content: Vec<String> = lines.into_iter().map(|l| l.content).collect();
 
-    // Whole-source tokenization, shared by the protected-line scan below and the
-    // keyword transform. A single pass keeps multi-line tokens (strings,
-    // includes, block comments) intact as one token each. This runs even under a
-    // preserving style (where no keyword transform happens) because the
-    // protected-line scan needs it to locate multi-line tokens.
-    let toks = tokenize(source);
+    // `toks` is the caller's single tokenization of `source`, shared with the
+    // semantic guard so the file is lexed once, not twice (the protected-line
+    // scan below and the keyword transform both consume it). A single pass keeps
+    // multi-line tokens (strings, includes, block comments) intact as one token
+    // each.
 
     // Protected lines: physical lines that *begin inside* a multi-line token
     // whose interior bytes are significant — a string literal or an
@@ -308,12 +308,21 @@ pub(crate) fn print(
     // a multi-line token whose interior newline differs from that dominant ending
     // (e.g. an interior `\r\n` in a mostly-`\n` file) trips the guard and bails —
     // fails safe (file returned unchanged), not corrupted.
+    //
+    // Fast path: only a token that actually spans a newline can protect a line,
+    // and single-line tokens are the overwhelming majority — so gate the two
+    // line-index binary searches behind a cheap newline scan of the token's
+    // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
+    let src_bytes = source.as_bytes();
     let mut protected = vec![false; n];
-    for t in &toks {
+    for t in toks {
         if t.kind == Kind::Eof {
             break;
         }
-        if t.kind == Kind::Comment || t.end == 0 {
+        if t.kind == Kind::Comment || t.end <= t.start {
+            continue;
+        }
+        if !src_bytes[t.start..t.end].contains(&b'\n') {
             continue;
         }
         let sl = line_index(&line_starts, t.start);
@@ -329,7 +338,7 @@ pub(crate) fn print(
     // style. Edits are applied per line, right-to-left, to keep offsets valid.
     if keywords::wants_transform(style) {
         let mut edits: Vec<Vec<(usize, usize, String)>> = vec![Vec::new(); n];
-        for t in &toks {
+        for t in toks {
             if t.kind == Kind::Eof {
                 break;
             }

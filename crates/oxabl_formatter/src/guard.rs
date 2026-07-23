@@ -22,7 +22,7 @@
 //! because comments are trivia. U2's no-loss/no-duplication invariant carries
 //! that guarantee instead.
 
-use oxabl_lexer::{Kind, TokenValue, tokenize};
+use oxabl_lexer::{Kind, Token, TokenValue, tokenize};
 
 struct Tok<'a> {
     kind: Kind,
@@ -74,16 +74,22 @@ fn is_end_type_keyword(kind: Kind) -> bool {
     )
 }
 
-fn stream(src: &str) -> Vec<Tok<'_>> {
-    tokenize(src)
-        .into_iter()
+/// Build the comparison stream from `src` and a pre-computed token slice,
+/// dropping trivia. Borrows the tokens rather than owning them so the caller can
+/// share one tokenization of the input across the printer and this guard.
+fn stream_from<'a>(src: &'a str, toks: &[Token]) -> Vec<Tok<'a>> {
+    toks.iter()
         .filter(|t| t.kind != Kind::Comment && t.kind != Kind::Eof)
         .map(|t| Tok {
             kind: t.kind,
             text: &src[t.start..t.end],
-            value: t.value,
+            value: t.value.clone(),
         })
         .collect()
+}
+
+fn stream(src: &str) -> Vec<Tok<'_>> {
+    stream_from(src, &tokenize(src))
 }
 
 fn tokens_equal(a: &Tok, b: &Tok) -> bool {
@@ -101,10 +107,29 @@ fn tokens_equal(a: &Tok, b: &Tok) -> bool {
 }
 
 /// Return `true` iff `candidate`'s non-trivia token stream is semantically
-/// identical to `input`'s under the KTD4 rules.
+/// identical to `input`'s under the KTD4 rules, lexing both sides.
+///
+/// `format()` uses [`preserves_with_input_tokens`] instead (it already holds the
+/// input tokens); this two-sided variant backs the guard's own unit tests.
+#[cfg(test)]
 pub(crate) fn preserves(input: &str, candidate: &str) -> bool {
-    let a = stream(input);
-    let b = stream(candidate);
+    compare(&stream(input), &stream(candidate))
+}
+
+/// Like [`preserves`], but the input side reuses a token slice already computed
+/// by the caller (the printer tokenizes `input` for its protected-line scan and
+/// keyword transform, so re-lexing it here would be redundant). Only the
+/// candidate is lexed fresh.
+pub(crate) fn preserves_with_input_tokens(
+    input: &str,
+    input_tokens: &[Token],
+    candidate: &str,
+) -> bool {
+    compare(&stream_from(input, input_tokens), &stream(candidate))
+}
+
+/// Kind-aware comparison of two non-trivia token streams under the KTD4 rules.
+fn compare(a: &[Tok], b: &[Tok]) -> bool {
     let (mut i, mut j) = (0, 0);
     let mut prev_end = false;
     while i < a.len() && j < b.len() {
