@@ -112,7 +112,13 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
     }
     let sm = SourceMap::new(source);
     let cmap = attach::attach(program, &sm);
-    let mut buf = printer::print(source, program, &cmap, style);
+    // Lex `source` once and share the tokens: the printer needs them for the
+    // protected-line scan and the keyword transform, and the guard needs them as
+    // the input side of its comparison. A single pass here keeps `format()` at
+    // two tokenizations total (this input pass + the guard's candidate pass)
+    // rather than three.
+    let source_tokens = oxabl_lexer::tokenize(source);
+    let mut buf = printer::print(source, program, &cmap, style, &source_tokens);
     blanks::normalize(&mut buf, style);
     let ending = ir::dominant_line_ending(source);
     let out = buf.flush(style.indent_style, style.indent_size.max(1), ending);
@@ -120,7 +126,8 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
     // Semantic-preservation guard (U7): if re-lexing the candidate shows any
     // non-trivia drift, refuse to emit and bail whole-file (R6.3/R6.5). The
     // caller treats a bail as "file unchanged" — the original `source` bytes.
-    if !guard::preserves(source, &out) {
+    // The input side reuses `source_tokens`; only the candidate is lexed fresh.
+    if !guard::preserves_with_input_tokens(source, &source_tokens, &out) {
         return Err(FormatBail::SemanticGuardTripped);
     }
     Ok(out)
