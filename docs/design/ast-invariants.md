@@ -25,6 +25,7 @@ currently has to code defensively around; they become targets for follow-up hard
 - `crates/oxabl_ast/src/statement.rs` — `Statement`, `PreprocIf<T>`, declaration variants.
 - `crates/oxabl_ast/src/expression.rs` — `Expression`, `Identifier`, precedence comment.
 - `crates/oxabl_ast/src/span.rs` — `Span { start: u32, end: u32 }`.
+- `crates/oxabl_ast/src/comment.rs` — `Comment { span, kind }`, `CommentKind` (see §13).
 - `crates/oxabl_parser/src/parser/mod.rs` — `Program`, `parse_program`, `synchronize`.
 - `crates/oxabl_parser/src/parser/statements.rs` — `Statement::Empty` recovery sites.
 - `crates/oxabl_preprocessor/src/span_tree.rs` — `PreprocessedFile::resolve`.
@@ -238,6 +239,46 @@ identical triple — there is no longer a two-flag odd-one-out.
   `NEW GLOBAL SHARED` into `NEW_SHARED`. This change adds its third flag in lockstep so the
   `GLOBAL` distinction is observable and no dataset form regresses — all four `DEFINE`
   variants now behave identically.
+
+---
+
+## 13. Comment side-table (`Comment` / `CommentKind`)
+
+`Comment { span: Span, kind: CommentKind }` (`Copy`) and `CommentKind { Line, Block }` are the
+trivia vocabulary the future `oxabl_formatter` consumes. The comment *table* itself —
+`Vec<Comment>` — is not an `oxabl_ast` type; it lives on `Program` in `oxabl_parser`, populated
+in a single linear pass over the token slice at the end of `parse_program`. The vocabulary lives
+in `oxabl_ast` (alongside `Span`) so the formatter depends on this crate only for the types.
+
+- **Sorted and source-ordered.** The table is built by filtering the already-source-ordered
+  token slice for `Kind::Comment`, so entries are ascending by `span.start` with no explicit
+  sort.
+- **Non-overlapping spans.** Comment spans are lexer token spans and never overlap each other
+  or the node spans of the statements/expressions they sit between.
+- **Admits only `//` / `/*` / `&`-origin trivia.** No current lexer route emits any other
+  `Kind::Comment` shape: line comments (`//`) and AppBuilder `&`-directive lines classify to
+  `CommentKind::Line`, block comments (`/* */`, nested-aware) classify to `CommentKind::Block`.
+  The classifier `debug_assert!`s on any leading byte outside `/`/`&`/`{`, so a future lexer
+  change that produces a new `Comment` shape trips the assert rather than silently dropping a
+  comment. Include/preprocessor `{...}` references (`IncludeReference`/`IncludeArgReference`,
+  `{&macro}`) are first-class AST nodes and never enter the comment path; unterminated block
+  comments lex to `Kind::Invalid` and are excluded.
+- **Text is not stored.** Only the span is kept; the formatter derives the comment text
+  verbatim from source by span at format time. The type is therefore `Copy`.
+- **Advisory only.** The table is fidelity data for the formatter; semantic, lint, and analyze
+  passes never read it, so populating it changes no downstream behavior.
+
+**Span-end convention (pinned).** The bytes a comment span owns differ by source shape, and
+Slice 3's verbatim-by-span re-emit and blank-line gap math depend on knowing which:
+
+- a `//` line comment span **includes** its trailing `\n` (the lexer's `skip_line_comment`
+  consumes it);
+- a `/* */` block comment span covers the full extent through `*/` and **excludes** any
+  following newline;
+- an AppBuilder `&`-directive line span **excludes** its trailing `\n` (the lexer stops before
+  it).
+
+Both `//` and `&`-directive comments are `CommentKind::Line` despite this tail asymmetry.
 
 ---
 

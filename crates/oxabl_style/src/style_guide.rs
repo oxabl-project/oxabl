@@ -38,6 +38,10 @@ pub struct StyleGuide {
     pub max_line_length: usize,
     pub wrap_long_lines: bool,
     pub blank_lines_between_sections: bool,
+    /// Maximum number of consecutive blank lines the formatter permits before
+    /// collapsing the run (and trimming file edges). This slice adds the field
+    /// and its config plumbing only; enforcement lands with the Slice 3 printer.
+    pub max_consecutive_blank_lines: usize,
 
     // Block & Statement Structure ------------------------------------------
     pub end_with_type: bool,
@@ -118,6 +122,7 @@ impl StyleGuide {
             max_line_length: 120,
             wrap_long_lines: true,
             blank_lines_between_sections: false,
+            max_consecutive_blank_lines: 1,
 
             // Block & Statement Structure
             end_with_type: false,
@@ -280,6 +285,7 @@ impl StyleGuide {
             | "max_line_length"
             | "wrap_long_lines"
             | "blank_lines_between_sections"
+            | "max_consecutive_blank_lines"
             | "end_with_type"
             | "using_sort"
             | "comment_style"
