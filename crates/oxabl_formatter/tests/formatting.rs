@@ -340,6 +340,32 @@ fn comment_style_not_applied_v2_deferral() {
     );
 }
 
+#[test]
+fn leading_comment_above_nested_if_else_do_stays_at_column_zero() {
+    // Regression: a nested `IF … THEN <block> ELSE DO: … END.` used to give its
+    // DO-block branches a dummy 0..0 span (parser bug), which the printer mapped
+    // to line 0. With a file-leading comment on line 0, that pulled the comment's
+    // first line to the branch's depth. The banner must stay at column 0.
+    let src = "\
+/* banner */
+PROCEDURE p:
+IF x THEN
+DO:
+MESSAGE \"t\".
+END.
+ELSE
+DO:
+MESSAGE \"e\".
+END.
+END PROCEDURE.
+";
+    let out = fmt(src, &StyleGuide::default_base());
+    let first = out.lines().next().unwrap();
+    assert_eq!(
+        first, "/* banner */",
+        "leading banner comment must not be indented; got {first:?}\nfull:\n{out}"
+    );
+}
 // ---------------------------------------------------------------------------
 // #95 — lines that begin inside a multi-line token are left verbatim
 // ---------------------------------------------------------------------------
