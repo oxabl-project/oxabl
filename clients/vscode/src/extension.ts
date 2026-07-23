@@ -3,7 +3,6 @@ import {
   LanguageClient,
   type LanguageClientOptions,
   type ServerOptions,
-  TransportKind,
 } from "vscode-languageclient/node";
 
 import { resolveServerBinary, splitPath } from "./server";
@@ -42,10 +41,13 @@ export async function activate(): Promise<void> {
     return;
   }
 
+  // No `transport` field: stdio is the default for an Executable. Setting
+  // `TransportKind.stdio` explicitly makes the client append `--stdio` to argv,
+  // which `oxabl lsp` (no such flag) rejects. `oxabl lsp` already speaks LSP
+  // over stdin/stdout.
   const serverOptions: ServerOptions = {
     command: discovery.command,
     args: ["lsp"],
-    transport: TransportKind.stdio,
   };
 
   const clientOptions: LanguageClientOptions = {
