@@ -80,10 +80,7 @@ pub(crate) fn block_children(kind: &StatementKind) -> Option<Vec<&Statement>> {
         StatementKind::Label { body, .. } => {
             out.push(body);
         }
-        StatementKind::On { kind: on_kind } => match on_action(on_kind) {
-            Some(stmt) => out.push(stmt),
-            None => return None,
-        },
+        StatementKind::On { kind: on_kind } => out.push(on_action(on_kind)?),
         StatementKind::PreprocIf(p) => {
             out.extend(p.then_branch.iter());
             for (_, branch) in &p.elseif_branches {
