@@ -53,6 +53,43 @@ impl From<ParseError> for oxabl_common::Diagnostic {
 /// Alias for parser results.
 pub type ParseResult<T> = Result<T, ParseError>;
 
+/// Debug-only invariant check (R1.3, ast-invariants.md §1): sibling statement
+/// spans must be in source order and non-overlapping.
+///
+/// Zero-width synthetic/recovery nodes (`start == end`, R1.4) are permitted to
+/// abut a neighbour — the `<=` comparison already allows it. Compiled out in
+/// release builds; the whole workspace test suite runs in debug, exercising it.
+#[inline]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+pub(crate) fn debug_assert_stmt_sibling_order(stmts: &[Statement]) {
+    #[cfg(debug_assertions)]
+    for pair in stmts.windows(2) {
+        debug_assert!(
+            pair[0].span.end <= pair[1].span.start,
+            "sibling statement spans out of source order: {:?} then {:?}",
+            pair[0].span,
+            pair[1].span,
+        );
+    }
+}
+
+/// Debug-only invariant check (R1.3): sibling expression spans (e.g. argument
+/// lists) must be in source order and non-overlapping. See
+/// [`debug_assert_stmt_sibling_order`] for the tolerance/gating contract.
+#[inline]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+pub(crate) fn debug_assert_expr_sibling_order(exprs: &[Expression]) {
+    #[cfg(debug_assertions)]
+    for pair in exprs.windows(2) {
+        debug_assert!(
+            pair[0].span.end <= pair[1].span.start,
+            "sibling expression spans out of source order: {:?} then {:?}",
+            pair[0].span,
+            pair[1].span,
+        );
+    }
+}
+
 /// The result of parsing an ABL source file.
 ///
 /// Contains all successfully parsed statements and any errors encountered.
@@ -125,7 +162,9 @@ impl<'a> Parser<'a> {
     /// goes through this helper.
     #[inline]
     pub(crate) fn stmt(&mut self, kind: StatementKind) -> Statement {
-        Statement::with_id(self.node_ids.alloc(), kind)
+        // The span defaults to DUMMY here; the `parse_statement` funnel
+        // overwrites it with the real full-extent span (KTD2).
+        Statement::with_id(self.node_ids.alloc(), Span::DUMMY, kind)
     }
 
     /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap an
@@ -133,7 +172,26 @@ impl<'a> Parser<'a> {
     /// goes through this helper.
     #[inline]
     pub(crate) fn expr(&mut self, kind: ExpressionKind) -> Expression {
-        Expression::with_id(self.node_ids.alloc(), kind)
+        // The span defaults to DUMMY here; the precedence-level funnels in
+        // `expressions.rs` overwrite it with the real full-extent span (KTD2).
+        Expression::with_id(self.node_ids.alloc(), Span::DUMMY, kind)
+    }
+
+    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap an
+    /// [`ExpressionKind`] with an explicit full-extent span `lo..hi` (KTD2/U3).
+    ///
+    /// `hi` is clamped to at least `lo` so a node can never carry an inverted
+    /// span; a genuinely token-less node collapses to zero-width at `lo`.
+    #[inline]
+    pub(crate) fn spanned_expr(&mut self, lo: u32, hi: u32, kind: ExpressionKind) -> Expression {
+        Expression::with_id(
+            self.node_ids.alloc(),
+            Span {
+                start: lo,
+                end: hi.max(lo),
+            },
+            kind,
+        )
     }
 
     /// Parse the entire token stream into a [`Program`] with error recovery.
@@ -176,6 +234,7 @@ impl<'a> Parser<'a> {
         // and any per-statement errors recovered inside block bodies during the
         // parse_statement calls. This preserves the aggregate error-reporting
         // contract even though block bodies now recover instead of bubbling.
+        debug_assert_stmt_sibling_order(&statements);
         Program {
             statements,
             errors: std::mem::take(&mut self.errors),
@@ -210,7 +269,21 @@ impl<'a> Parser<'a> {
     fn parse_block_statement_recovering(&mut self, out: &mut Vec<Statement>) {
         let pos_before = self.current;
         match self.parse_statement() {
-            Ok(stmt) => out.push(stmt),
+            Ok(stmt) => {
+                out.push(stmt);
+                // Incremental R1.3 check: the just-pushed statement must not
+                // start before the previous sibling ends. O(1) per push covers
+                // every block body assembled through this funnel.
+                #[cfg(debug_assertions)]
+                if let [.., prev, last] = out.as_slice() {
+                    debug_assert!(
+                        prev.span.end <= last.span.start,
+                        "sibling statement spans out of source order: {:?} then {:?}",
+                        prev.span,
+                        last.span,
+                    );
+                }
+            }
             Err(err) => {
                 self.record_error(err);
                 self.synchronize();
@@ -1063,6 +1136,24 @@ impl<'a> Parser<'a> {
             start: self.peek().start as u32,
             end: self.peek().end as u32,
         }
+    }
+
+    /// Byte end offset of the most recently consumed non-comment token (KTD3).
+    ///
+    /// Used to compute span `hi`. `advance()` skips trailing comments, so
+    /// `self.current - 1` may point at a comment token between statements;
+    /// this scans backward past any such comments so a statement/expression
+    /// span never absorbs a trailing comment. Returns `0` if nothing has been
+    /// consumed (only reachable before any dispatch token).
+    fn prev_end(&self) -> u32 {
+        let mut i = self.current;
+        while i > 0 {
+            i -= 1;
+            if self.tokens[i].kind != Kind::Comment {
+                return self.tokens[i].end as u32;
+            }
+        }
+        0
     }
 
     /// Parse an optional access modifier (PUBLIC, PRIVATE, PROTECTED, PACKAGE-PRIVATE).

@@ -83,7 +83,25 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
 }
 
 impl Parser<'_> {
+    /// Parse one statement and stamp its full-extent span (`lo..prev_end`,
+    /// including the trailing `.`/`:`) onto the returned wrapper.
+    ///
+    /// This is a thin funnel over [`parse_statement_inner`](Self::parse_statement_inner)
+    /// (KTD2): `lo` is captured from the first token before dispatch, and `hi`
+    /// is the end of the last non-comment token consumed. Because statement
+    /// bodies are parsed by recursive `parse_statement` calls, every statement —
+    /// nested or top-level — is stamped at its own dispatch. Genuinely
+    /// token-less synthetic nodes (nothing consumed) collapse to a zero-width
+    /// span at `lo` (R1.4).
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
+        let lo = self.peek().start as u32;
+        let mut stmt = self.parse_statement_inner()?;
+        let hi = self.prev_end().max(lo);
+        stmt.span = Span { start: lo, end: hi };
+        Ok(stmt)
+    }
+
+    fn parse_statement_inner(&mut self) -> ParseResult<Statement> {
         // Skip empty statements
         if self.check(Kind::Period) {
             self.advance();
@@ -1580,6 +1598,7 @@ impl Parser<'_> {
                                     Kind::RightBracket,
                                     "Expected ']' after initial values",
                                 )?;
+                                crate::parser::debug_assert_expr_sibling_order(&values);
                                 initial_value = Some(values);
                             } else {
                                 // Scalar initial value
@@ -2135,16 +2154,20 @@ impl Parser<'_> {
         // Handle AND
         let mut expr = expr;
         while self.check(Kind::And) {
+            let lo = expr.span.start;
             self.advance();
             let right = self.parse_comparison()?;
-            expr = self.expr(ExpressionKind::And(Box::new(expr), Box::new(right)));
+            let hi = self.prev_end();
+            expr = self.spanned_expr(lo, hi, ExpressionKind::And(Box::new(expr), Box::new(right)));
         }
 
         // Handle OR
         while self.check(Kind::Or) {
+            let lo = expr.span.start;
             self.advance();
             let right = self.parse_and()?;
-            expr = self.expr(ExpressionKind::Or(Box::new(expr), Box::new(right)));
+            let hi = self.prev_end();
+            expr = self.spanned_expr(lo, hi, ExpressionKind::Or(Box::new(expr), Box::new(right)));
         }
 
         Ok(expr)
@@ -2171,6 +2194,7 @@ impl Parser<'_> {
     }
 
     fn make_comparison(&mut self, left: Expression, op: Kind, right: Expression) -> Expression {
+        let lo = left.span.start;
         let kind = match op {
             Kind::Eq => ExpressionKind::Equal(Box::new(left), Box::new(right)),
             Kind::NotEqual | Kind::Ne => ExpressionKind::NotEqual(Box::new(left), Box::new(right)),
@@ -2189,7 +2213,8 @@ impl Parser<'_> {
             Kind::Contains => ExpressionKind::Contains(Box::new(left), Box::new(right)),
             _ => unreachable!(),
         };
-        self.expr(kind)
+        let hi = self.prev_end();
+        self.spanned_expr(lo, hi, kind)
     }
 
     /// Parse multiple statements until we hit a terminator
@@ -3059,7 +3084,13 @@ impl Parser<'_> {
                 let rhs = self.parse_and()?;
                 // Combine into a logical OR expression using the AST Or variant
                 if let Some(last) = values.last_mut() {
-                    *last = self.expr(ExpressionKind::Or(Box::new(last.clone()), Box::new(rhs)));
+                    let lo = last.span.start;
+                    let hi = self.prev_end();
+                    *last = self.spanned_expr(
+                        lo,
+                        hi,
+                        ExpressionKind::Or(Box::new(last.clone()), Box::new(rhs)),
+                    );
                 }
             }
 
@@ -3075,6 +3106,7 @@ impl Parser<'_> {
                 self.parse_block_statement_recovering(&mut body);
             }
 
+            crate::parser::debug_assert_expr_sibling_order(&values);
             when_branches.push(WhenBranch { values, body });
         }
 
@@ -3389,7 +3421,12 @@ impl Parser<'_> {
                 if self.check(Kind::Set) {
                     self.advance();
                     let ident = self.parse_identifier()?;
-                    persistent_handle = Some(self.expr(ExpressionKind::Identifier(ident)));
+                    let sp = ident.span;
+                    persistent_handle = Some(self.spanned_expr(
+                        sp.start,
+                        sp.end,
+                        ExpressionKind::Identifier(ident),
+                    ));
                 }
             } else if self.check(Kind::Asynchronous) {
                 self.advance();
@@ -3542,7 +3579,12 @@ impl Parser<'_> {
     /// The `(` belongs to the RUN argument list.
     fn parse_run_in_handle(&mut self) -> ParseResult<Expression> {
         let identifier = self.parse_identifier()?;
-        let mut expr = self.expr(ExpressionKind::Identifier(identifier));
+        let lo = identifier.span.start;
+        let mut expr = self.spanned_expr(
+            lo,
+            identifier.span.end,
+            ExpressionKind::Identifier(identifier),
+        );
 
         loop {
             if self.check(Kind::Colon) {
@@ -3554,10 +3596,15 @@ impl Parser<'_> {
                 if next_is_member {
                     self.advance(); // consume ':'
                     let member = self.parse_identifier()?;
-                    expr = self.expr(ExpressionKind::MemberAccess {
-                        object: Box::new(expr),
-                        member,
-                    });
+                    let hi = self.prev_end();
+                    expr = self.spanned_expr(
+                        lo,
+                        hi,
+                        ExpressionKind::MemberAccess {
+                            object: Box::new(expr),
+                            member,
+                        },
+                    );
                 } else {
                     break;
                 }
@@ -3565,10 +3612,15 @@ impl Parser<'_> {
                 self.advance(); // consume '['
                 let index = self.parse_expression()?;
                 self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
-                expr = self.expr(ExpressionKind::ArrayAccess {
-                    array: Box::new(expr),
-                    index: Box::new(index),
-                });
+                let hi = self.prev_end();
+                expr = self.spanned_expr(
+                    lo,
+                    hi,
+                    ExpressionKind::ArrayAccess {
+                        array: Box::new(expr),
+                        index: Box::new(index),
+                    },
+                );
             } else {
                 break;
             }
@@ -3837,6 +3889,7 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after MESSAGE statement")?;
 
+        crate::parser::debug_assert_expr_sibling_order(&items);
         Ok(self.stmt(StatementKind::Message { items, set_targets }))
     }
 
@@ -3895,9 +3948,13 @@ impl Parser<'_> {
                 };
                 assignments.push(AssignPair {
                     target,
-                    value: self.expr(ExpressionKind::Literal(oxabl_ast::Literal::Unknown(
-                        oxabl_ast::UnknownLiteral { span },
-                    ))),
+                    value: self.spanned_expr(
+                        span.start,
+                        span.end,
+                        ExpressionKind::Literal(oxabl_ast::Literal::Unknown(
+                            oxabl_ast::UnknownLiteral { span },
+                        )),
+                    ),
                 });
                 continue;
             }
@@ -3986,10 +4043,14 @@ impl Parser<'_> {
         }
         let end = self.tokens[self.current - 1].end as u32;
         let text = self.source[start as usize..end as usize].to_string();
-        self.expr(ExpressionKind::Literal(Literal::String(StringLiteral {
-            span: Span { start, end },
-            value: text,
-        })))
+        self.spanned_expr(
+            start,
+            end,
+            ExpressionKind::Literal(Literal::String(StringLiteral {
+                span: Span { start, end },
+                value: text,
+            })),
+        )
     }
 
     /// Non-allocating lookahead: does the upcoming token stream look like another
@@ -5509,7 +5570,8 @@ impl Parser<'_> {
             // Bare identifier — do NOT use parse_primary() which promotes identifier( to function call.
             // Instead, parse just the identifier and return it as an Expression::Identifier.
             let ident = self.parse_identifier()?;
-            Ok(self.expr(ExpressionKind::Identifier(ident)))
+            let sp = ident.span;
+            Ok(self.spanned_expr(sp.start, sp.end, ExpressionKind::Identifier(ident)))
         } else {
             Err(ParseError {
                 message: "Expected event name (string literal, identifier, or VALUE expression)"
@@ -5876,10 +5938,11 @@ impl Parser<'_> {
                 Err(_) => {
                     self.skip_to_statement_end();
                     let span = self.current_span();
-                    let dummy_expr =
-                        self.expr(ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
-                            span,
-                        })));
+                    let dummy_expr = self.spanned_expr(
+                        span.start,
+                        span.end,
+                        ExpressionKind::Literal(Literal::Unknown(UnknownLiteral { span })),
+                    );
                     return Ok(self.stmt(StatementKind::StreamIo {
                         direction,
                         stream_name,
@@ -5977,6 +6040,7 @@ impl Parser<'_> {
         {
             stmts.push(self.parse_statement()?);
         }
+        crate::parser::debug_assert_stmt_sibling_order(&stmts);
         Ok(stmts)
     }
 

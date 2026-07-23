@@ -46,9 +46,6 @@ pub enum Kind {
     LeftBrace,
     RightBrace,
     Comma,
-    LineComment,
-    BlockCommentStart,
-    BlockCommentEnd,
 
     // Operators
     Begins,

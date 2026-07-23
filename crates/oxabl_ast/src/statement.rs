@@ -16,12 +16,19 @@ pub struct PreprocIf<T> {
 }
 
 // Guard against accidental growth of the AST's central enum. `StatementKind`'s
-// size is dominated by its largest variant (`Class`/`Method`/`DefineDataset`),
-// so the SHARED-flag `bool`s (ast-invariants.md §12) fit existing padding and
-// don't move this. Gated to 64-bit; bump the bound deliberately if a variant
-// legitimately grows.
+// size is dominated by its largest variant (`Class`/`Method`/`DefineDataset`).
+// Adding the `span` field to the `Expression` wrapper (which several variants
+// embed inline, e.g. `Assignment`/`Do`) grew this from 656 to 720. Gated to
+// 64-bit; bump the bound deliberately if a variant legitimately grows.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<StatementKind>() <= 656);
+const _: () = assert!(std::mem::size_of::<StatementKind>() <= 720);
+
+// Lock the `Statement` wrapper size deliberately (KTD4). The wrapper adds a
+// `NodeId` (4 bytes) and a `Span` (8 bytes) on top of `StatementKind`; padding
+// keeps the total at `size_of::<StatementKind>() + 16`. Bump the bound
+// deliberately if the wrapper legitimately grows.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Statement>() <= 720 + 16);
 
 /// A statement in ABL — an executable unit that performs an action.
 /// All statements are terminated by a period.
@@ -621,27 +628,34 @@ pub enum StatementKind {
 pub struct Statement {
     pub id: NodeId,
     pub kind: StatementKind,
+    /// Full byte extent of this statement in source, including its trailing
+    /// `.`/`:`. Defaults to [`Span::DUMMY`] on hand-constructed nodes; the
+    /// parser stamps a real span. Excluded from `PartialEq`
+    /// (`docs/design/ast-invariants.md` §1).
+    pub span: Span,
 }
 
 impl Statement {
-    /// Construct a `Statement` with `id` set to [`NodeId::DUMMY`].
+    /// Construct a `Statement` with `id` set to [`NodeId::DUMMY`] and `span`
+    /// set to [`Span::DUMMY`].
     ///
     /// Intended for hand-constructed AST in tests. The parser always assigns
-    /// a real NodeId via its allocator.
+    /// a real NodeId and span via [`Statement::with_id`].
     #[inline]
     pub fn new(kind: StatementKind) -> Self {
         Statement {
             id: NodeId::DUMMY,
             kind,
+            span: Span::DUMMY,
         }
     }
 
-    /// Construct a `Statement` with an explicit `NodeId`.
+    /// Construct a `Statement` with an explicit `NodeId` and `span`.
     ///
     /// Used by the parser; external callers should prefer [`Statement::new`].
     #[inline]
-    pub fn with_id(id: NodeId, kind: StatementKind) -> Self {
-        Statement { id, kind }
+    pub fn with_id(id: NodeId, span: Span, kind: StatementKind) -> Self {
+        Statement { id, kind, span }
     }
 }
 

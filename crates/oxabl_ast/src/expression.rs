@@ -101,6 +101,14 @@ pub enum ExpressionKind {
     },
 }
 
+// Lock the wrapper sizes deliberately (KTD4). `Expression` adds a `NodeId`
+// (4 bytes) and a `Span` (8 bytes) on top of `ExpressionKind`. Gated to 64-bit;
+// bump the bounds deliberately if a variant or the wrapper legitimately grows.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<ExpressionKind>() <= 64);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Expression>() <= 80);
+
 /// An ABL expression node with parser-assigned identity.
 ///
 /// Wraps an [`ExpressionKind`] with a stable [`NodeId`] for semantic side tables.
@@ -109,27 +117,34 @@ pub enum ExpressionKind {
 pub struct Expression {
     pub id: NodeId,
     pub kind: ExpressionKind,
+    /// Full byte extent of this expression in source (parenthesized groups
+    /// include the enclosing parens). Defaults to [`Span::DUMMY`] on
+    /// hand-constructed nodes; the parser stamps a real span. Excluded from
+    /// `PartialEq` (`docs/design/ast-invariants.md` §1).
+    pub span: Span,
 }
 
 impl Expression {
-    /// Construct an `Expression` with `id` set to [`NodeId::DUMMY`].
+    /// Construct an `Expression` with `id` set to [`NodeId::DUMMY`] and `span`
+    /// set to [`Span::DUMMY`].
     ///
     /// Intended for hand-constructed AST in tests. The parser always assigns
-    /// a real NodeId via its allocator.
+    /// a real NodeId and span via [`Expression::with_id`].
     #[inline]
     pub fn new(kind: ExpressionKind) -> Self {
         Expression {
             id: NodeId::DUMMY,
             kind,
+            span: Span::DUMMY,
         }
     }
 
-    /// Construct an `Expression` with an explicit `NodeId`.
+    /// Construct an `Expression` with an explicit `NodeId` and `span`.
     ///
     /// Used by the parser; external callers should prefer [`Expression::new`].
     #[inline]
-    pub fn with_id(id: NodeId, kind: ExpressionKind) -> Self {
-        Expression { id, kind }
+    pub fn with_id(id: NodeId, span: Span, kind: ExpressionKind) -> Self {
+        Expression { id, kind, span }
     }
 }
 

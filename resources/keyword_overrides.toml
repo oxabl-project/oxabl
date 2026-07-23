@@ -203,27 +203,6 @@ name = "preprop"
 keyword_type = "Preprocessor"
 
 # =============================================================================
-# COMMENT MARKERS
-# These are used for comments but not listed as keywords
-# =============================================================================
-
-[[add]]
-name = "//"
-reserved = true
-keyword_type = "Operator"
-min_abbreviation = ""
-
-[[add]]
-name = "/*"
-reserved = true
-keyword_type = "Operator"
-
-[[add]]
-name = "*/"
-reserved = true
-keyword_type = "Operator"
-
-# =============================================================================
 # LOCK TYPE ALTERNATE FORMS
 # ABL allows both space and hyphen forms for lock types
 # =============================================================================
