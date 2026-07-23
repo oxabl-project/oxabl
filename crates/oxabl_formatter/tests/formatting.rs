@@ -1,0 +1,243 @@
+//! Rule-by-rule layout fixtures (U4/U5/U6): input → expected under a resolved
+//! `StyleGuide`. Drives the printer, keyword transforms, and blank-line
+//! normalization through the public `format()` API.
+
+use oxabl_formatter::format;
+use oxabl_lexer::tokenize;
+use oxabl_parser::{Parser, Program};
+use oxabl_style::{KeywordAbbreviation, KeywordCase, StyleGuide};
+
+fn parse(src: &str) -> Program {
+    let tokens = tokenize(src);
+    Parser::new(&tokens, src).parse_program()
+}
+
+/// Format `src` under `style`, asserting it did not bail.
+fn fmt(src: &str, style: &StyleGuide) -> String {
+    let program = parse(src);
+    assert!(
+        program.is_ok(),
+        "fixture failed to parse: {:?}",
+        program.errors
+    );
+    format(src, &program, style).unwrap_or_else(|e| panic!("unexpected bail: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// U4 — structural indentation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reindents_misindented_do_block() {
+    let src = "DO:\n        MESSAGE \"x\".\n  END.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "DO:\n    MESSAGE \"x\".\nEND.\n");
+}
+
+#[test]
+fn reindents_nested_blocks() {
+    let src = "DO:\nDO:\nMESSAGE \"x\".\nEND.\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "DO:\n    DO:\n        MESSAGE \"x\".\n    END.\nEND.\n"
+    );
+}
+
+#[test]
+fn do_placement_sameline_default_preserves_conforming_block() {
+    // do_placement defaults to SameLine; a conforming `DO:` stays put.
+    let src = "DO:\n    MESSAGE \"x\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, src);
+}
+
+#[test]
+fn period_placement_sameline_keeps_period_on_last_line() {
+    let src = "MESSAGE \"x\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "MESSAGE \"x\".\n");
+}
+
+// ---------------------------------------------------------------------------
+// U4 — end_with_type
+// ---------------------------------------------------------------------------
+
+#[test]
+fn end_with_type_false_preserves_bare_end() {
+    let src = "PROCEDURE foo:\n    MESSAGE \"x\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, src, "default_base must not touch bare END");
+}
+
+#[test]
+fn end_with_type_true_inserts_type_keyword() {
+    let src = "PROCEDURE foo:\n    MESSAGE \"x\".\nEND.\n";
+    let mut style = StyleGuide::default_base();
+    style.end_with_type = true;
+    let out = fmt(src, &style);
+    assert_eq!(out, "PROCEDURE foo:\n    MESSAGE \"x\".\nEND PROCEDURE.\n");
+}
+
+#[test]
+fn end_with_type_true_idempotent_on_already_typed() {
+    let src = "PROCEDURE foo:\n    MESSAGE \"x\".\nEND PROCEDURE.\n";
+    let mut style = StyleGuide::default_base();
+    style.end_with_type = true;
+    let out = fmt(src, &style);
+    assert_eq!(out, src);
+}
+
+// ---------------------------------------------------------------------------
+// U4 — verbatim fidelity (R5.2, the anti-mangle guarantee)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verbatim_identifier_casing_and_tilde_string() {
+    // An unusually-cased identifier and a tilde-escaped string must survive
+    // byte-for-byte under the safe default.
+    let src = "ASSIGN My-Var = \"a~\"b\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, src);
+}
+
+#[test]
+fn reflow_no_op_leaves_long_line_untouched() {
+    // default_base ships wrap_long_lines:true / max_line_length:120, but v1 does
+    // not enforce reflow (R4.4). A 200-column line stays 200 columns.
+    let long = "x".repeat(190);
+    let src = format!("MESSAGE \"{long}\".\n");
+    let out = fmt(&src, &StyleGuide::default_base());
+    assert_eq!(out, src);
+}
+
+#[test]
+fn include_and_preproc_refs_format_as_ordinary_constructs() {
+    // {include}, &SCOPED-DEFINE, and {&macro} are AST nodes and format
+    // unexpanded (R8.1) — here, just structurally reindented.
+    let src = "&SCOPED-DEFINE foo bar\nMESSAGE \"{&foo}\".\n{lib/util.i}\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, src);
+}
+
+// ---------------------------------------------------------------------------
+// U4 — comments land at the right place
+// ---------------------------------------------------------------------------
+
+#[test]
+fn all_four_comment_kinds_round_trip() {
+    let src = "\
+/* lead */
+DO:
+    DEFINE VARIABLE x /* interior */ AS INTEGER.
+    MESSAGE \"x\". /* trailing */
+END.
+";
+    let out = fmt(src, &StyleGuide::default_base());
+    // Leading stays on its own line above DO, interior rides inside the DEFINE
+    // line, trailing rides after MESSAGE, and everything reindents structurally.
+    assert_eq!(out, src);
+}
+
+#[test]
+fn dangling_comment_reindents_to_body_depth() {
+    let src = "DO:\n/* dangle */\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "DO:\n    /* dangle */\nEND.\n");
+}
+
+// ---------------------------------------------------------------------------
+// U5 — keyword recasing / abbreviation (opt-in)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_base_preserves_keyword_spelling() {
+    let src = "def var i as int.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, src, "safe default must not recase or expand keywords");
+}
+
+#[test]
+fn keyword_case_uppercase_recases_keywords_only() {
+    let src = "define variable myVar as integer.\n";
+    let mut style = StyleGuide::default_base();
+    style.keyword_case = KeywordCase::Uppercase;
+    let out = fmt(src, &style);
+    assert_eq!(out, "DEFINE VARIABLE myVar AS INTEGER.\n");
+}
+
+#[test]
+fn keyword_abbreviation_expands_to_full_form() {
+    let src = "def var i as int.\n";
+    let mut style = StyleGuide::default_base();
+    style.keyword_case = KeywordCase::Uppercase;
+    style.keyword_abbreviation = KeywordAbbreviation::AbbreviateNothing;
+    let out = fmt(src, &style);
+    assert_eq!(out, "DEFINE VARIABLE i AS INTEGER.\n");
+}
+
+// ---------------------------------------------------------------------------
+// U6 — blank-line normalization
+// ---------------------------------------------------------------------------
+
+#[test]
+fn collapses_consecutive_blank_lines_to_cap() {
+    let src = "MESSAGE \"a\".\n\n\n\nMESSAGE \"b\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "MESSAGE \"a\".\n\nMESSAGE \"b\".\n");
+}
+
+#[test]
+fn honors_max_consecutive_blank_lines_two() {
+    let src = "MESSAGE \"a\".\n\n\n\nMESSAGE \"b\".\n";
+    let mut style = StyleGuide::default_base();
+    style.max_consecutive_blank_lines = 2;
+    let out = fmt(src, &style);
+    assert_eq!(out, "MESSAGE \"a\".\n\n\nMESSAGE \"b\".\n");
+}
+
+#[test]
+fn drops_blank_after_opener_and_before_end() {
+    let src = "DO:\n\n    MESSAGE \"x\".\n\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "DO:\n    MESSAGE \"x\".\nEND.\n");
+}
+
+#[test]
+fn trims_leading_file_blanks() {
+    let src = "\n\nMESSAGE \"x\".\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "MESSAGE \"x\".\n");
+}
+
+#[test]
+fn normalizes_trailing_newlines_to_one() {
+    let src = "MESSAGE \"x\".\n\n\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "MESSAGE \"x\".\n");
+    let no_trailing = "MESSAGE \"x\".";
+    assert_eq!(
+        fmt(no_trailing, &StyleGuide::default_base()),
+        "MESSAGE \"x\".\n"
+    );
+}
+
+#[test]
+fn crlf_source_stays_crlf() {
+    let src = "MESSAGE \"a\".\r\n\r\n\r\n\r\nMESSAGE \"b\".\r\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "MESSAGE \"a\".\r\n\r\nMESSAGE \"b\".\r\n");
+}
+
+#[test]
+fn comment_style_not_applied_v2_deferral() {
+    // comment_style is a v2 content rewrite; a `//` comment must stay `//`.
+    let src = "// keep me\nMESSAGE \"x\".\n";
+    let mut style = StyleGuide::default_base();
+    style.comment_style = oxabl_style::CommentStyle::BlockComment;
+    let out = fmt(src, &style);
+    assert!(
+        out.contains("// keep me"),
+        "comment style must not be rewritten"
+    );
+}

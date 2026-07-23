@@ -992,6 +992,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_formatter"
+version = "0.1.0"
+dependencies = [
+ "codspeed-criterion-compat",
+ "oxabl_ast",
+ "oxabl_common",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "oxabl_style",
+]
+
+[[package]]
 name = "oxabl_lexer"
 version = "0.4.1"
 dependencies = [
