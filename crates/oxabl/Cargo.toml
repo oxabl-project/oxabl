@@ -20,6 +20,7 @@ oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
+oxabl_lsp = { path = "../oxabl_lsp", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 indicatif = "0.17"
@@ -28,3 +29,8 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
+oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+serde_json = "1"

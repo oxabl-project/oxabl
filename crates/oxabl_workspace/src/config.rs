@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use oxabl_common::{LintSeverityMap, Severity};
+use serde::{Deserialize, Serialize};
 
 /// Top-level configuration deserialized from `oxabl.toml`.
 #[derive(Debug, Clone, Deserialize)]
@@ -21,6 +22,91 @@ pub struct WorkspaceSection {
     /// Optional schema (`.df`) file declarations.
     #[serde(default)]
     pub schema: SchemaConfig,
+
+    /// Per-rule lint severity surface (`[workspace.lint]`).
+    #[serde(default)]
+    pub lint: LintConfig,
+}
+
+/// A user-facing severity level for a lint rule (`[workspace.lint]`).
+///
+/// Five levels: `off` disables the rule; the other four map 1:1 to
+/// [`oxabl_common::Severity`] and hence to LSP `DiagnosticSeverity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LintSeverity {
+    Off,
+    Hint,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LintSeverity {
+    /// Lower to the application form: `None` for `off`, else the mapped
+    /// [`Severity`].
+    pub fn to_severity(self) -> Option<Severity> {
+        match self {
+            LintSeverity::Off => None,
+            LintSeverity::Hint => Some(Severity::Hint),
+            LintSeverity::Info => Some(Severity::Info),
+            LintSeverity::Warn => Some(Severity::Warning),
+            LintSeverity::Error => Some(Severity::Error),
+        }
+    }
+}
+
+/// The `[workspace.lint]` table: one severity per v1 lint rule (kebab keys).
+///
+/// Mirrors [`oxabl_style::StyleGuide`]'s serde idiom — container-level
+/// `#[serde(default)]` so partial tables fall back per-field, plus
+/// `deny_unknown_fields` so a misspelled rule name is a hard error rather than
+/// silently ignored. The safe default (no table) is all-on with
+/// `undefined-symbol = error` and the other three `warn` (R15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct LintConfig {
+    pub undefined_symbol: LintSeverity,
+    pub unused_variable: LintSeverity,
+    pub unknown_table_or_field: LintSeverity,
+    pub type_mismatch_assignment: LintSeverity,
+}
+
+impl Default for LintConfig {
+    fn default() -> Self {
+        LintConfig {
+            undefined_symbol: LintSeverity::Error,
+            unused_variable: LintSeverity::Warn,
+            unknown_table_or_field: LintSeverity::Warn,
+            type_mismatch_assignment: LintSeverity::Warn,
+        }
+    }
+}
+
+impl LintConfig {
+    /// Lower to the pipeline's [`LintSeverityMap`] (code → optional severity),
+    /// the leaf application form consumed by `oxabl_lint::lint_file` (KTD6).
+    pub fn to_severity_map(&self) -> LintSeverityMap {
+        let mut map = LintSeverityMap::new();
+        map.set("LINT0001", self.undefined_symbol.to_severity());
+        map.set("LINT0002", self.unused_variable.to_severity());
+        map.set("LINT0003", self.unknown_table_or_field.to_severity());
+        map.set("LINT0004", self.type_mismatch_assignment.to_severity());
+        map
+    }
+
+    /// Override one rule by its kebab name (used to apply CLI overrides on top
+    /// of the resolved table). Returns `false` for an unknown rule name.
+    pub fn set_by_name(&mut self, rule: &str, severity: LintSeverity) -> bool {
+        match rule {
+            "undefined-symbol" => self.undefined_symbol = severity,
+            "unused-variable" => self.unused_variable = severity,
+            "unknown-table-or-field" => self.unknown_table_or_field = severity,
+            "type-mismatch-assignment" => self.type_mismatch_assignment = severity,
+            _ => return false,
+        }
+        true
+    }
 }
 
 /// The `[workspace.sources]` section.

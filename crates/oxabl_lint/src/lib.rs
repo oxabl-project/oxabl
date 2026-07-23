@@ -30,11 +30,45 @@ pub use rules::{
 /// of diagnostics, in a stable per-rule order (LINT0001 → LINT0004). Each
 /// rule is independent; callers who need finer control can invoke the
 /// individual rule functions directly.
+///
+/// The per-rule severity surface (`ctx.lint_severities`, KTD6) is applied
+/// here without touching the individual rule signatures: a rule whose code is
+/// configured *off* is skipped entirely, and a rule configured with an
+/// explicit severity has every diagnostic it emits remapped to that level.
+/// For LINT0004 — which emits both an error and a warning variant — a single
+/// configured severity overrides *both* (documented, intended behavior).
 pub fn lint_file(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    diags.extend(undefined_symbol::run(program, sem, ctx));
-    diags.extend(unused_variable::run(program, sem, ctx));
-    diags.extend(unknown_table_or_field::run(program, sem, ctx));
-    diags.extend(type_mismatch_assignment::run(program, sem, ctx));
+    run_rule(&mut diags, LINT0001, ctx, || {
+        undefined_symbol::run(program, sem, ctx)
+    });
+    run_rule(&mut diags, LINT0002, ctx, || {
+        unused_variable::run(program, sem, ctx)
+    });
+    run_rule(&mut diags, LINT0003, ctx, || {
+        unknown_table_or_field::run(program, sem, ctx)
+    });
+    run_rule(&mut diags, LINT0004, ctx, || {
+        type_mismatch_assignment::run(program, sem, ctx)
+    });
     diags
+}
+
+/// Run a rule only if it is enabled, then append its diagnostics to `out`,
+/// remapping each to the configured severity when one is set. A rule
+/// configured *off* is not executed at all. The per-rule function signatures
+/// stay untouched — the severity surface is applied entirely here (KTD6).
+fn run_rule(
+    out: &mut Vec<Diagnostic>,
+    code: &'static str,
+    ctx: &AnalysisContext,
+    produce: impl FnOnce() -> Vec<Diagnostic>,
+) {
+    if !ctx.lint_severities.is_enabled(code) {
+        return;
+    }
+    for mut d in produce() {
+        d.severity = ctx.lint_severities.effective(d.code.0, d.severity);
+        out.push(d);
+    }
 }

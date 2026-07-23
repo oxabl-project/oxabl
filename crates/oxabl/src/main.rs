@@ -5,14 +5,16 @@ use std::time::Instant;
 
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
-use oxabl_analyze::{dump_json, dump_text};
-use oxabl_common::{Diagnostic, FileId, Severity, SourceMap};
+use oxabl_analyze::{
+    CollectedDiagnostics, collect_with_model, dump_json_with_diagnostics,
+    dump_text_with_diagnostics,
+};
+use oxabl_common::{Diagnostic, FileId, SourceMap};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
-use oxabl_semantic::{AnalysisContext, analyze_file};
-use oxabl_workspace::{RealFileSystem, resolved_include_paths};
+use oxabl_workspace::{RealFileSystem, resolved_include_paths, resolved_lint_config};
 use serde::Serialize;
 use walkdir::WalkDir;
 
@@ -69,6 +71,8 @@ enum Cli {
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
     },
+    /// Run the language server over stdio (LSP), publishing live diagnostics.
+    Lsp,
 }
 
 enum FileResult {
@@ -151,11 +155,8 @@ fn surface_preproc_diagnostics(
     diagnostics: &[Diagnostic],
 ) -> Vec<JsonDiagnostic> {
     let mut out = Vec::new();
-    let is_loud = |d: &Diagnostic| {
-        matches!(d.severity, Severity::Error)
-            || d.code.0 == "PREPROC007"
-            || d.code.0 == "PREPROC002"
-    };
+    // Share the surfacing rule with the collector so the two never drift (U4).
+    let is_loud = oxabl_analyze::is_loud;
     // Only build a SourceMap if there's actually a loud diagnostic to place.
     if !diagnostics.iter().any(is_loud) {
         return out;
@@ -201,6 +202,44 @@ fn surface_preproc_diagnostics(
     out
 }
 
+/// Surface loud, root-origin preprocessor diagnostics from the shared
+/// collector to stderr, and collect them for the `analyze` JSON channel.
+///
+/// The collector already filtered to the loud set and dropped include-origin
+/// diagnostics (R8), so every entry here is root-relative and gets a concrete
+/// line/col from the root source.
+fn surface_collected_preproc(
+    path: &Path,
+    source: &str,
+    collected: &CollectedDiagnostics,
+) -> Vec<JsonDiagnostic> {
+    let mut out = Vec::new();
+    let mut source_map: Option<SourceMap> = None;
+    for c in collected.by_source(oxabl_analyze::DiagnosticSource::Preproc) {
+        let d = &c.diagnostic;
+        let sm = source_map.get_or_insert_with(|| SourceMap::new(source));
+        let (line, col) = sm.lookup(d.span.span.start as usize);
+        let severity = format!("{:?}", d.severity).to_lowercase();
+        eprintln!(
+            "{}:{}:{} [preprocess {}] {}",
+            path.display(),
+            line,
+            col,
+            d.code.0,
+            d.message
+        );
+        out.push(JsonDiagnostic {
+            file: path.display().to_string(),
+            code: d.code.0.to_string(),
+            severity,
+            line: Some(line),
+            col: Some(col),
+            message: d.message.clone(),
+        });
+    }
+    out
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -227,6 +266,19 @@ fn main() -> ExitCode {
             &include_paths,
             schema.as_deref(),
         ),
+        Cli::Lsp => run_lsp(),
+    }
+}
+
+/// Launch the stdio LSP server. A clean shutdown returns success; any protocol
+/// error or an `exit` without a prior `shutdown` maps to a failing exit code.
+fn run_lsp() -> ExitCode {
+    match oxabl_lsp::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("oxabl lsp: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -246,57 +298,15 @@ fn run_analyze(
         }
     };
 
-    // Run preprocess or take raw source as expanded source. Loud preprocessor
-    // diagnostics (errors + PREPROC007/PREPROC002) are surfaced to
-    // stderr during expansion and collected for the JSON channel below.
-    let mut preproc_diags: Vec<JsonDiagnostic> = Vec::new();
-    let expanded = if preprocess {
-        let fs = RealFileSystem;
+    // Resolve include paths (only meaningful when preprocessing).
+    let paths = if preprocess {
         let (paths, cfg_err) = resolved_include_paths(path, include_paths);
         if let Some(err) = cfg_err {
             eprintln!("warning: {err}");
         }
-        let preprocessor = Preprocessor::new(&fs, &paths);
-        let file_id = FileId::new(1);
-        match preprocessor.process(file_id, &source) {
-            Ok(pf) => {
-                preproc_diags =
-                    surface_preproc_diagnostics(path, &source, file_id, &pf.diagnostics);
-                pf.to_text().to_string()
-            }
-            Err(diags) => {
-                eprintln!(
-                    "error: preprocessing failed: {}",
-                    diags
-                        .first()
-                        .map(|d| d.message.as_str())
-                        .unwrap_or("unknown")
-                );
-                return ExitCode::from(3);
-            }
-        }
+        paths
     } else {
-        source
-    };
-
-    let tokens =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&expanded))) {
-            Ok(t) => t,
-            Err(_) => {
-                eprintln!("error: lexer panicked");
-                return ExitCode::from(4);
-            }
-        };
-
-    let mut parser = Parser::new(&tokens, &expanded);
-    let program = match parser.parse_statements() {
-        Ok(p) => p,
-        Err(e) => {
-            let sm = SourceMap::new(&expanded);
-            let (line, col) = sm.lookup(e.span.start as usize);
-            eprintln!("parse error at {line}:{col}: {}", e.message);
-            return ExitCode::from(5);
-        }
+        Vec::new()
     };
 
     // Load the schema when `--schema` was passed. Load diagnostics are
@@ -315,20 +325,66 @@ fn run_analyze(
         }
         None => (Schema::empty(), false),
     };
-    let ctx = AnalysisContext {
-        file_id: FileId::new(1),
-        source: &expanded,
-        schema: &schema,
+
+    // Diagnostics come from the shared collector so the CLI and the LSP can
+    // never drift (R7). The collector uses `parse_program` error recovery, so
+    // `analyze` now surfaces semantic/lint diagnostics even on a parse error
+    // instead of aborting — a deliberate behavior change (U4).
+    let fs = RealFileSystem;
+    let root = FileId::new(1);
+    // Resolve the `[workspace.lint]` severity surface (CLI has no lint flags yet,
+    // so overrides are empty): CLI > oxabl.toml > default (R15).
+    let (lint_config, lint_err) = resolved_lint_config(path, &[]);
+    if let Some(err) = lint_err {
+        eprintln!("warning: {err}");
+    }
+    let lint_severities = lint_config.to_severity_map();
+    let (sem_opt, collected) = collect_with_model(
+        root,
+        &source,
+        &fs,
+        &paths,
+        &schema,
         schema_loaded,
+        &lint_severities,
+        preprocess,
+    );
+
+    let sem = match sem_opt {
+        Some(sem) => sem,
+        None => {
+            // Fatal preprocessing failure: no model to dump.
+            let msg = collected
+                .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                .next()
+                .map(|c| c.diagnostic.message.as_str())
+                .unwrap_or("unknown");
+            eprintln!("error: preprocessing failed: {msg}");
+            return ExitCode::from(3);
+        }
     };
-    let sem = analyze_file(&program, &ctx);
+
+    // Honor `--no-lint` by dropping the lint-sourced diagnostics.
+    let collected = if no_lint {
+        oxabl_analyze::CollectedDiagnostics {
+            diagnostics: collected
+                .diagnostics
+                .into_iter()
+                .filter(|c| c.source != oxabl_analyze::DiagnosticSource::Lint)
+                .collect(),
+        }
+    } else {
+        collected
+    };
+
+    // CLI-owned channel (not part of the versioned analyze envelope): surface
+    // unresolvable-include / preprocessor diagnostics to stderr so machine and
+    // human consumers see the same "loud, not silent" signal.
+    let preproc_diags = surface_collected_preproc(path, &source, &collected);
 
     match format {
         "json" => {
-            let mut v = dump_json(&program, &sem, &ctx, !no_lint);
-            // CLI-owned channel (not part of the versioned analyze envelope):
-            // surface unresolvable-include / preprocessor diagnostics so machine
-            // consumers see the same "loud, not silent" signal as stderr.
+            let mut v = dump_json_with_diagnostics(&sem, &collected);
             if let serde_json::Value::Object(ref mut map) = v {
                 map.insert(
                     "preproc_diagnostics".to_string(),
@@ -344,7 +400,7 @@ fn run_analyze(
             }
         }
         "text" => {
-            print!("{}", dump_text(&program, &sem, &ctx));
+            print!("{}", dump_text_with_diagnostics(&sem, &collected));
         }
         other => {
             eprintln!("error: unsupported format `{other}` (use `json` or `text`)");

@@ -35,7 +35,7 @@ pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use symbol::{Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable};
 pub use types::{PrimitiveTy, ResolvedType};
 
-use oxabl_common::{Diagnostic, FileId, VirtualSpan};
+use oxabl_common::{Diagnostic, FileId, LintSeverityMap, VirtualSpan};
 use oxabl_schema::{Schema, SchemaRevision};
 
 /// Input to [`analyze_file`] and the per-pass entry points.
@@ -50,6 +50,11 @@ pub struct AnalysisContext<'a> {
     pub source: &'a str,
     pub schema: &'a Schema,
     pub schema_loaded: bool,
+    /// Resolved per-rule lint severity overrides. Empty (the default) means
+    /// every lint rule keeps its built-in severity. `oxabl_lint::lint_file`
+    /// consults this to skip *off* rules and remap emitted severities (KTD6);
+    /// the semantic passes themselves ignore it.
+    pub lint_severities: LintSeverityMap,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -61,7 +66,14 @@ impl<'a> AnalysisContext<'a> {
             source,
             schema,
             schema_loaded: !schema.is_empty(),
+            lint_severities: LintSeverityMap::new(),
         }
+    }
+
+    /// Attach resolved lint severity overrides to this context (builder-style).
+    pub fn with_lint_severities(mut self, severities: LintSeverityMap) -> Self {
+        self.lint_severities = severities;
+        self
     }
 }
 
