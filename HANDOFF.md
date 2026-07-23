@@ -1,68 +1,58 @@
-# Handoff: formatter correctness + perf follow-ups landed (#96, #97) — LSP formatting wiring is the next real step
+# Handoff: LSP `textDocument/formatting` wired to `oxabl_formatter` (#100) — the formatter is now editor-integrated end to end
 
 **Date:** 2026-07-23
 **Branch:** `master` — everything below is **merged**; no open PRs from this session.
-**This session:** Hardened the formatter against real-world ABL. Shipped two merged fixes — the multi-line-token reindent bail (**#96**) and an `IF`/`ELSE` branch span bug (**#97**) — plus a perf fix folded into #96. Filed follow-up bug **#98** (wrapped multi-line branch mis-indent) and **fixed it in PR #99** (open, awaiting merge; verified against the reporter's failure case). All discovered by running `oxabl format` against a large real-world ABL codebase kept outside the repo.
-**Prior context:** Track B Slice 4 (`oxabl format` CLI + `oxabl.toml [workspace.style]` discovery) merged as **#94**. Beneath it: the formatter engine (#93), full-span (#91) and comment side-table (#92) substrate, `oxabl_style` (#87), and the `oxabl lsp` skeleton (#90) — all on `master`.
+**This session:** Wired `textDocument/formatting` into the `oxabl lsp` server (**#100**), turning the formatter from a CLI-only tool into an editor-integrated one. Also merged the previously-open #98 fix (**#99**). The server now advertises `document_formatting_provider`, resolves a `StyleGuide` from the document's `oxabl.toml [workspace.style]`, parses the open buffer **raw** (preprocessor off), calls `oxabl_formatter::format`, and returns a single whole-document `TextEdit` — or no edits on any bail.
+**Prior context:** The formatter engine (#93), CLI + `[workspace.style]` discovery (#94), multi-line-token safety (#96), `IF`/`ELSE` branch spans (#97), and the wrapped-branch indent fix (#98/#99) are all on `master`. Substrate beneath: full-span AST (#91), comment side-table (#92), `oxabl_style` (#87), `oxabl lsp` skeleton (#90).
 
 ---
 
 ## Current state
 
-The formatter is a runnable, real-world-tested CLI tool. With #98 fixed (PR #99), the remaining formatter work is the editor (LSP) surface — not core engine or CLI plumbing.
+The formatter is a runnable, real-world-tested tool available **both** from the CLI and live in an editor. Track A (interactive editor tooling) now has a working `textDocument/formatting` surface on top of the diagnostics skeleton.
 
 | Item | Status |
 |------|--------|
-| Track A — interactive editor tooling | `oxabl lsp` skeleton on `master` (#90); `textDocument/formatting` **still not wired** to `oxabl_formatter` — the main next step |
-| Track B — formatter engine | On `master`; multi-line-token safe (#96) and correct `IF`/`ELSE` branch spans (#97) |
+| Track A — LSP formatting | **Shipped (#100)** — `document_formatting_provider` advertised; whole-document formatting live; range formatting deliberately unadvertised |
+| Track A — LSP diagnostics | Skeleton on `master` (#90) — handshake, incremental sync, push `publishDiagnostics` |
+| Track B — formatter engine | On `master`; multi-line-token safe (#96), correct `IF`/`ELSE` branch spans (#97), wrapped-branch indent fixed (#98/#99) |
 | Track B — formatter CLI | On `master` (#94) — `oxabl format` (write / `--check` / `--stdout`), `--style <preset\|path>`, `oxabl.toml [workspace.style]` discovery |
-| Formatter perf | Single shared tokenization across printer + guard (#96); the Slice-4 protected-line scan no longer double-lexes |
-| Known layout bug | **#98** — wrapped multi-line branch statement (e.g. multi-line `ASSIGN`) mis-indented its last line to the enclosing `IF`/`ELSE` depth. **Fixed** in PR **#99** (open, awaiting merge) |
+| Editor extension (VS Code) | **Not started** — no client yet surfaces the new capability to a real user |
 
 ---
 
 ## What was implemented this session
 
-### #96 — multi-line-token reindent bail + perf fix (merged)
+### #100 — LSP `textDocument/formatting` wiring (merged)
 
-The layout printer reindents line-by-line (strips + rewrites each physical line's leading whitespace). Any physical line that *begins inside* a multi-line token whose interior bytes are significant — a string literal, or an `{include}`/preprocessor reference spanning lines — had its leading whitespace rewritten *inside* the token, so the semantic-preservation guard correctly refused and the whole file bailed unchanged. Common in real ABL (`{include}` `&args` wrap across lines).
+Plan: `docs/plans/2026-07-23-006-feat-lsp-formatting-wiring-plan.md` (gitignored, point-in-time). Four units, all landed in `crates/oxabl_lsp`:
 
-- **Fix:** detect physical lines that begin inside a multi-line non-comment token from the token spans (`t.start < line_start < t.end`) and emit them verbatim. A `protected` flag on the line IR also stops blank-line normalization from dropping/clamping a blank line that lives inside a multi-line string (a significant byte of the string's value). Comments stay on their existing (trivia, guard-ignored) reindent path. Files: `crates/oxabl_formatter/src/{printer,ir,blanks,guard}.rs`.
-- **Perf (folded in):** Slice 4's protected-line scan added an *unconditional* `tokenize(source)` to the printer — under a preserving style the printer previously never tokenized, so `format()` went from two lex passes (the guard's input + candidate) to three, regressing the hot path. Now `format()` lexes the source **once** and shares the token slice with both the printer and the guard's input side (`guard::preserves_with_input_tokens`); only the candidate output is lexed fresh. The protected-line scan's per-token line-index lookups are gated behind a cheap newline check (only a token that spans a newline can protect a line).
-- **Learning captured:** `docs/solutions/logic-errors/formatter-multiline-token-reindent-bail.md`.
-- **Known residual (fails safe):** a multi-line token whose interior newline differs from the file's dominant line ending still trips the guard and bails — unchanged, not corrupted.
+- **Capability (R1):** `document_formatting_provider: Some(OneOf::Left(true))` in `capabilities.rs`. Range formatting stays unset — the engine has no region concept and bails whole-file.
+- **Style resolution (R3):** new `formatting.rs::style_for_uri` reuses `oxabl_workspace::resolved_style` against the document's filesystem path, so the editor applies the *same* `oxabl.toml [workspace.style]` the CLI would. Non-`file` or unresolvable URIs → `StyleGuide::default_base()`. No new LSP config surface. `uri_to_path` in `lib.rs` was promoted to `pub(crate)` and reused rather than hand-rolling a second URI decoder.
+- **Handler (R2/R4/R5/R6/R7):** `formatting.rs::compute_formatting_edits` runs `tokenize → parse_program → format` inside `catch_unwind`, mirroring the CLI's `format_one`. It parses the rope directly and **never** touches the salsa `expanded_text`/`collect_from_expanded` diagnostics query (that path is preprocessor-*on* and would reformat macro output, not the buffer). Wired into the `Message::Request` arm (shutdown → formatting → `MethodNotFound` fallthrough); runs inline on the main loop, no snapshot, no debounce.
+- **Never mangle (KTD3):** every non-success — `FormatBail`, unchanged output, parse-dirty input, a caught panic, or an unopened URI — returns an empty edit list. The editor leaves the buffer untouched.
+- **Tests:** unit (`capabilities`, `style_for_uri`, `compute_formatting_edits`) + `tests/formatting_e2e.rs` through the real message loop (advertisement, reformat round-trip + idempotence, unopened-URI tolerance, bail-survives-thread, `[workspace.style]` discovery).
 
-### #97 — full-extent spans on `IF`/`ELSE` block branches (merged)
+### #99 — wrapped multi-line branch mis-indent (merged; was open last handoff)
 
-`stmt()` assigns `Span::DUMMY` (`0..0`) and relies on the `parse_statement` funnel to overwrite it with the real span. But `parse_if_statement` parses its branches by calling `parse_do_statement`/`parse_if_statement` **directly**, bypassing that funnel — so a `DO:`-block branch (and an `ELSE IF` chain) kept the dummy `0..0` span, violating the full-extent-span invariant.
-
-- **Symptom:** the formatter maps a `0..0` node to line 0. In a file opening with a banner comment, a *nested* `IF` (branch depth ≥ 1) pulled the banner's first physical line to the branch's depth; the indent width equalled the nesting depth.
-- **Fix:** stamp `lo..prev_end` on both branches in `parse_if_statement`, mirroring the funnel. File: `crates/oxabl_parser/src/parser/statements.rs`. Regression tests: parser-level span assertion + an end-to-end formatter test (leading comment above a nested `IF/ELSE DO` stays at column 0).
-
-### #98 — wrapped multi-line branch mis-indent (fixed in PR #99, open)
-
-Wrapped multi-line branch statement mis-indented its last line. The printer's `block_ends` pass snaps a block's last line to the block's own depth (meant for a closing `END`), but `IF`/`ELSE` are prefix wrappers with no `END`; when the branch is a multi-line non-block statement, its wrapped continuation line is the "last line" and got snapped to the `IF` depth. Guard-invisible (whitespace only), so no mangling — cosmetic but wrong.
-
-- **Fix:** gate the `block_ends.push` in `collect()` on `!is_prefix_wrapper(&stmt.kind)` via a new narrow predicate in `tree.rs` (matches `If`/`Label`/`On`). Real `END`-delimited blocks and `PreprocIf` (which owns `&ENDIF`) still snap their closers unchanged; only the multi-line leaf-branch case changes. Layout-only, no parser change. Files: `crates/oxabl_formatter/src/{tree,printer}.rs`. Regression + idempotency fixtures added (`tests/{formatting,idempotency}.rs`). Verified against the reporter's failure case.
+The #98 fix: the printer's `block_ends` closer-snap was narrowed to non-wrapper constructs via an `is_prefix_wrapper` predicate, so a wrapped multi-line `IF`/`ELSE` branch keeps its continuation indent instead of snapping to the enclosing depth. Layout-only, guard-invisible.
 
 **Verification (all merged work):** `cargo test --workspace`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --all -- --check`. All fixtures synthetic ABL (CC-1) — no corpus, no PII.
 
 ---
 
-## Not bugs (assessed and set aside this session)
+## Metrics movement
 
-- **Multi-line `IF` **condition** alignment** — continuation lines retain the author's alignment (v1 delta-preservation), while the `IF` line and the branch opener snap to structural depth. This is the intended v1 layout characteristic; re-aligning multi-line conditions is v2 reflow territory.
-- **A guard trip seen on a partially-formatted working copy** — did not reproduce on clean source (which formats cleanly and idempotently), so it was the guard correctly refusing an intermediate state, not a defect. Nothing filed.
-- **Compiled-`.r` equivalence check** — the OpenEdge compiler lives in a build container not reachable from the dev shell, so it can't be run here. The correct method for the maintainer to verify is `COMPILE … GENERATE-MD5` + compare `RCODE-INFO:MD5-VALUE` (line-number-insensitive), **not** a raw `.r` byte-diff (which always differs because r-code embeds a line-number table). The guard already proves the non-trivia token stream is byte-identical, so r-code semantics are preserved by construction.
+Wiring formatting into the LSP moves two of the four key metrics from **unmeasurable** to **measurable** (per `STRATEGY.md`): *interactive latency* (there is now a real editor round-trip to time) and *daily dogfood adoption* (once a client surfaces it). *Formatter safety* is now enforced end-to-end through the server — the idempotence and no-mangle properties are exercised by `formatting_e2e.rs`, not just the CLI.
 
 ---
 
 ## Next
 
-1. **LSP `textDocument/formatting` wiring (Track A) — the main next step.** Declare `document_formatting_provider` in `crates/oxabl_lsp/src/capabilities.rs` and add a handler that parses the document rope **raw** (preproc off — the existing `collect_from_expanded` path parses *expanded* text and is not reusable, per KTD4) and calls `oxabl_formatter::format`. Small, self-contained; unblocked by the re-entrant library API. Write the plan first (`/ce-plan`).
-2. **Deferred config extension:** a `preset = "..."` key inside `[workspace.style]` (a named-preset base the table overlays). Needs a small wrapper struct around `StyleGuide` because `deny_unknown_fields` rejects the extra key.
+1. **VS Code extension (Track A) — the natural next step.** Nothing surfaces the new `document_formatting_provider` to a real user yet. A thin client that launches `oxabl lsp` and offers "Format Document" (and format-on-save, which is client-side) is what turns the shipped capability into daily dogfood. `README.md` still says "LSP integration pending" for the formatter — flip it once a client ships.
+2. **Deferred config extension:** a `preset = "..."` key inside `[workspace.style]` (a named-preset base the table overlays). Needs a small wrapper struct around `StyleGuide` because `deny_unknown_fields` rejects the extra key. Improves both CLI and LSP at once.
 3. **Deferred engine rules:** the token-*movement* placement variants (`do_placement`/`dot_colon_same_line`/`period_placement` NewLine forms) and `blank_lines_between_sections`, once their semantics are pinned. v1 reads-and-preserves them.
-4. **v2 territory:** reflow / width-driven wrapping (the doc-IR it needs), reordering (`using_sort`, structure-order), and comment-content rewrite (`comment_style`) — all read-but-not-enforced today.
+4. **v2 territory:** reflow / width-driven wrapping (the doc-IR it needs), reordering (`using_sort`, structure-order), comment-content rewrite (`comment_style`), and minimal-diff LSP edits (whole-document replace is correct today given the guard) — all read-but-not-enforced.
 
 ---
 
@@ -70,11 +60,13 @@ Wrapped multi-line branch statement mis-indented its last line. The printer's `b
 
 | Issue/PR | Relation |
 |----------|----------|
-| **#96** | Merged — multi-line-token reindent verbatim + shared-tokenization perf fix |
-| **#97** | Merged — full-extent spans on `IF`/`ELSE` block branches (fixed the banner-indent symptom) |
-| **#98** | Fixed in PR **#99** (open) — wrapped multi-line branch statement mis-indented its last line (`block_ends` closer-snap narrowed to non-wrapper constructs) |
-| **#99** | Open — the #98 fix (`is_prefix_wrapper` gate on the `block_ends` push) |
+| **#100** | Merged — LSP `textDocument/formatting` wired to `oxabl_formatter` (this session) |
+| **#99** | Merged — the #98 fix (`is_prefix_wrapper` gate on the `block_ends` push) |
+| **#98** | Fixed by #99 — wrapped multi-line branch statement mis-indented its last line |
+| #97 | Merged — full-extent spans on `IF`/`ELSE` block branches |
+| #96 | Merged — multi-line-token reindent verbatim + shared-tokenization perf fix |
 | #94 | Merged — `oxabl format` CLI + `[workspace.style]` discovery (Slice 4) |
-| #78 | Formatter tracking issue — substrate (#91/#92) + engine (#93) + CLI (#94) done; multi-line safety (#96) + branch spans (#97) done; LSP formatting wiring remains |
+| #90 | Merged — `oxabl lsp` diagnostics skeleton (the substrate this session built on) |
+| #78 | Formatter tracking issue — substrate + engine + CLI + LSP formatting wiring now all done |
 | `docs/solutions/logic-errors/formatter-multiline-token-reindent-bail.md` | Learning captured from #96 |
-| `STRATEGY.md` | Track definitions and the formatter-safety metric; still accurate (CLI shipped; LSP wiring remaining) |
+| `STRATEGY.md` | Formatter track updated: the LSP `textDocument/formatting` surface has shipped |
