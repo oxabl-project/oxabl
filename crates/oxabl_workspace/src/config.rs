@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use oxabl_common::{LintSeverityMap, Severity};
+use oxabl_style::StyleGuide;
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration deserialized from `oxabl.toml`.
@@ -26,6 +27,16 @@ pub struct WorkspaceSection {
     /// Per-rule lint severity surface (`[workspace.lint]`).
     #[serde(default)]
     pub lint: LintConfig,
+
+    /// Formatter style rules (`[workspace.style]`).
+    ///
+    /// Embeds [`StyleGuide`] directly (no wrapper type): it already derives
+    /// `Deserialize` with `#[serde(default, deny_unknown_fields)]`, so a partial
+    /// table fills unspecified fields from [`StyleGuide::default_base`], an
+    /// absent section yields `default_base()`, and an unknown key is a hard
+    /// parse error.
+    #[serde(default)]
+    pub style: StyleGuide,
 }
 
 /// A user-facing severity level for a lint rule (`[workspace.lint]`).

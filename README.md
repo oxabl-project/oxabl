@@ -24,7 +24,8 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - Status: Experimental, not available
 - Formatter
   - Format ABL code from the CLI or LSP
-  - Status: Not started
+  - `oxabl format <path> [--check|--stdout] [--style <preset|path>]`
+  - Status: CLI available (`oxabl format`); LSP integration pending
 - Try-it-yourself
   - A "try it in 10 seconds" demo in the browser
   - Make WASM a compile target in the release pipeline, past a code block into the browser, lint and format instantly

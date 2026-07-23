@@ -14,7 +14,10 @@ use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
-use oxabl_workspace::{RealFileSystem, resolved_include_paths, resolved_lint_config};
+use oxabl_style::StyleGuide;
+use oxabl_workspace::{
+    RealFileSystem, resolved_include_paths, resolved_lint_config, resolved_style,
+};
 use serde::Serialize;
 use walkdir::WalkDir;
 
@@ -70,6 +73,39 @@ enum Cli {
         /// (field validation, field types, unknown-table/field lint).
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
+    },
+    /// Format ABL source: fix layout (indentation, blank-line runs, comment
+    /// placement) in place, or check/print without writing.
+    ///
+    /// v1 is layout-only and no-movement. It never renames identifiers, reorders
+    /// statements, or rewrites comment bodies. Notably, long lines are left
+    /// exactly as written: the resolved style's `wrap_long_lines` /
+    /// `max_line_length` fields are read but deliberately NOT enforced in v1 — a
+    /// 200-column line stays 200 columns. Reflow is deferred to a future version.
+    ///
+    /// Style resolution precedence: --style <preset|path> > oxabl.toml
+    /// [workspace.style] > the safe non-mangling default. Any file that cannot be
+    /// formatted faithfully (parse errors, or output that would alter the token
+    /// stream) is left byte-for-byte unchanged and the reason is reported.
+    Format {
+        /// Path to a single ABL file or a directory to format
+        /// (`.p`/`.w`/`.cls`/`.v` under a directory).
+        path: PathBuf,
+
+        /// CI mode: exit non-zero if any file would change; write nothing.
+        #[arg(long, conflicts_with = "stdout")]
+        check: bool,
+
+        /// Print the formatted result to stdout; leave the file on disk
+        /// unchanged. Single file only.
+        #[arg(long)]
+        stdout: bool,
+
+        /// Style to format with: a named preset (`oestandards`,
+        /// `consultingwerk`) or a path to a `.toml` style file. Overrides any
+        /// discovered `oxabl.toml [workspace.style]` wholesale.
+        #[arg(long)]
+        style: Option<String>,
     },
     /// Run the language server over stdio (LSP), publishing live diagnostics.
     Lsp,
@@ -266,6 +302,12 @@ fn main() -> ExitCode {
             &include_paths,
             schema.as_deref(),
         ),
+        Cli::Format {
+            path,
+            check,
+            stdout,
+            style,
+        } => run_format(&path, check, stdout, style.as_deref()),
         Cli::Lsp => run_lsp(),
     }
 }
@@ -279,6 +321,149 @@ fn run_lsp() -> ExitCode {
             eprintln!("oxabl lsp: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The pure per-file formatting decision, separated from the write/print/exit
+/// shell so it is trivially testable (KTD6).
+enum FormatOutcome {
+    /// `format()` produced output byte-identical to the input.
+    Unchanged,
+    /// `format()` produced different output (the new bytes).
+    Reformatted(String),
+    /// The file could not be formatted faithfully; leave it unchanged. Carries
+    /// the human-readable reason (a `FormatBail` or a lexer panic).
+    Bailed(String),
+}
+
+/// Parse `source` raw (preprocessing OFF, per KTD4/R8 so spans are real byte
+/// offsets) and run the formatter, classifying the outcome. The raw
+/// `tokenize`/`parse_program` is wrapped in `catch_unwind` — the lexer can panic
+/// on some inputs, and one bad file must not unwind the whole directory walk
+/// after earlier files were already rewritten (R7.1b). A panic is treated as a
+/// bail: the file is reported and left unchanged.
+fn format_one(source: &str, style: &StyleGuide) -> FormatOutcome {
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let tokens = tokenize(source);
+        Parser::new(&tokens, source).parse_program()
+    }));
+    let program = match parsed {
+        Ok(p) => p,
+        Err(_) => return FormatOutcome::Bailed("lexer panicked; left unchanged".to_string()),
+    };
+    match oxabl_formatter::format(source, &program, style) {
+        Ok(formatted) if formatted == source => FormatOutcome::Unchanged,
+        Ok(formatted) => FormatOutcome::Reformatted(formatted),
+        Err(bail) => FormatOutcome::Bailed(bail.to_string()),
+    }
+}
+
+/// Resolve a `--style` value to a [`StyleGuide`] (KTD2): a known preset name
+/// first, otherwise a path to a `.toml` file. Anything that is neither is a
+/// hard usage error — an unresolvable style never silently falls back.
+fn resolve_style_arg(value: &str) -> Result<StyleGuide, String> {
+    if let Some(guide) = StyleGuide::from_preset_name(value) {
+        return Ok(guide);
+    }
+    let content = std::fs::read_to_string(value).map_err(|e| {
+        format!("--style `{value}` is not a known preset (oestandards, consultingwerk) and cannot be read as a file: {e}")
+    })?;
+    StyleGuide::from_toml(&content).map_err(|e| format!("--style `{value}`: invalid style TOML: {e}"))
+}
+
+/// `oxabl format`: resolve a [`StyleGuide`], then format each discovered file
+/// per the selected mode. See KTD5 for the per-mode exit-code contract.
+fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> ExitCode {
+    // Resolve the style once, up front (KTD1/KTD2). An unresolvable --style is a
+    // usage error (exit 2) before any file is touched.
+    let cli_style = match style {
+        Some(s) => match resolve_style_arg(s) {
+            Ok(guide) => Some(guide),
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::from(2);
+            }
+        },
+        None => None,
+    };
+    let (style_guide, cfg_err) = resolved_style(path, cli_style);
+    if let Some(err) = cfg_err {
+        eprintln!("warning: {err}");
+    }
+
+    // Discover files (exit 2 on path-not-found / no ABL files, matching `check`).
+    let files = match discover_files(path) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if files.is_empty() {
+        eprintln!("No ABL files found in {}", path.display());
+        return ExitCode::from(2);
+    }
+
+    // --stdout is single-file only; a directory + --stdout is a usage error.
+    if stdout && path.is_dir() {
+        eprintln!("error: --stdout requires a single file, not a directory");
+        return ExitCode::from(2);
+    }
+
+    let mut any_would_change = false;
+    let mut any_io_error = false;
+
+    for file in &files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {e}", file.display());
+                any_io_error = true;
+                continue;
+            }
+        };
+
+        match format_one(&source, &style_guide) {
+            FormatOutcome::Unchanged => {
+                // In --stdout mode we still emit the (unchanged) content.
+                if stdout {
+                    print!("{source}");
+                }
+            }
+            FormatOutcome::Bailed(reason) => {
+                // R7.1b: file left byte-for-byte unchanged; reason to stderr; not
+                // a failure (write) and counted as "no change" (--check).
+                eprintln!("{}: {reason}", file.display());
+                if stdout {
+                    print!("{source}");
+                }
+            }
+            FormatOutcome::Reformatted(formatted) => {
+                if check {
+                    eprintln!("{}: would reformat", file.display());
+                    any_would_change = true;
+                } else if stdout {
+                    print!("{formatted}");
+                } else if let Err(e) = std::fs::write(file, &formatted) {
+                    eprintln!("error: cannot write {}: {e}", file.display());
+                    any_io_error = true;
+                }
+            }
+        }
+    }
+
+    if check {
+        // Exit 0 iff no file would change and none failed to read.
+        if any_would_change || any_io_error {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        }
+    } else if any_io_error {
+        // Write/stdout: I/O failure is the only non-usage failure.
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
