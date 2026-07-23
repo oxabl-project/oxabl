@@ -1,8 +1,8 @@
 # Handoff: Track B slice 4 (`oxabl format` CLI + `[workspace.style]` discovery) implemented — LSP formatting wiring is next
 
 **Date:** 2026-07-23
-**Branch:** `feat/oxabl-formatter-cli` (off `master`)
-**This session:** Track B **Slice 4** — the delivery surface for the formatter — implemented against `docs/plans/2026-07-23-003-feat-oxabl-format-cli-plan.md`. Adds the `oxabl format` subcommand plus `oxabl.toml [workspace.style]` auto-discovery, giving the Slice 3 engine its first caller.
+**Branch:** `feat/oxabl-formatter-cli` (off `master`) — open as **PR #94**, in final review.
+**This session:** Track B **Slice 4** — the delivery surface for the formatter — implemented against `docs/plans/2026-07-23-003-feat-oxabl-format-cli-plan.md`. Adds the `oxabl format` subcommand plus `oxabl.toml [workspace.style]` auto-discovery, giving the Slice 3 engine its first caller. A Fable review pass plus manual testing against real ABL then turned up four pre-existing formatter-engine indentation/blank-line bugs, all fixed and folded into the same PR (see below).
 **Prior context:** Slice 3 (the `oxabl_formatter` layout engine) merged to `master` as **#93**, bundling the full-span (**#91**) and comment side-table (**#92**) substrate beneath it. `oxabl_style` (#87) and the `oxabl lsp` skeleton (#90) are on `master`.
 
 ---
@@ -16,8 +16,9 @@ The formatter is now a runnable tool, not just a library. The remaining formatte
 | Track A — interactive editor tooling | `oxabl lsp` skeleton on `master` (#90); `textDocument/formatting` still not wired to `oxabl_formatter` |
 | Track B — formatter engine | Complete on `master` (`oxabl_formatter`, #93) |
 | Track B — formatter CLI | **Shipped this session** — `oxabl format` (write / `--check` / `--stdout`), `--style <preset\|path>`, `oxabl.toml [workspace.style]` discovery |
+| Track B — formatter engine fixes | Four indentation/blank-line correctness bugs fixed this session, folded into #94 (see below) |
 | `oxabl_style` | Configurable style guide (#87); now exposes a shared `from_preset_name` resolver |
-| Working tree | On `feat/oxabl-formatter-cli`; Slice 4 implemented |
+| Working tree | On `feat/oxabl-formatter-cli`; open as PR #94, awaiting final review + merge |
 
 ---
 
@@ -36,7 +37,22 @@ The formatter is now a runnable tool, not just a library. The remaining formatte
 
 ---
 
+## Formatter-engine fixes folded into #94 (this session)
+
+Review (a Fable pass on the diff) + manual testing against real ABL surfaced four **pre-existing** correctness bugs in the `oxabl_formatter` printer/blanks passes (all present in #93, none introduced by the CLI slice). Each has a synthetic regression test in `crates/oxabl_formatter/tests/formatting.rs`:
+
+- **Prefix-wrapper double-indent.** `IF … THEN DO:`, `ELSE DO:`, and labeled blocks counted the wrapper *and* the `DO` as separate levels, indenting bodies 8 per level instead of 4 (16 nested). Fixed in `tree.rs`/`printer.rs`: a prefix wrapper (`IF`/`ELSE`/label/`ON`) contributes no level for a branch that is a **self-delimiting block** (or an else-position `IF`, so else-if chains stay flush) — while a leaf branch or a THEN-nested bare `IF` still gets its `+1` (`children_with_deltas`).
+- **Panic guard scope (CLI).** The `format()` call was moved inside `format_one`'s `catch_unwind` (not just `tokenize`/`parse`), so an engine panic can't abort a directory walk mid-way.
+- **Trailing comment reindented its own code line.** `IF … THEN DO: /* x */` could drag the opener to the body's depth (attachment hands the trailing comment back as *leading* of the body's first statement). Fixed in `printer.rs`: the own-line-comment indent override now skips any line a statement actually starts on.
+- **Trailing comment suppressed the after-opener blank drop.** `is_block_opener` used a naive `ends_with(':')`, so `DO: /* x */` (ending in `*/`) wasn't seen as an opener and a spurious blank survived. Fixed in `blanks.rs`: detect the opener by its last *code* token being `:` (tokenized, ignoring trailing comments and `:` inside strings).
+
+**Known gap left in place (out of scope, pre-existing):** a leaf `ELSE` whose statement is on the *same* line (`ELSE MESSAGE "x".` after a leaf `THEN`) still indents one level too deep — it needs the same "anchor the ELSE line" work and has no regression yet.
+
+---
+
 ## Next
+
+0. **Multi-line-token bail — [#95](https://github.com/oxabl-project/oxabl/issues/95) (highest-value formatter follow-up).** The engine whole-file-bails (guard trip, file left unchanged — no corruption) on any file containing a multi-line **string literal** or multi-line **`{include}` reference**, because the line-based reindent would shift bytes inside the token. Common in real ABL (include `&args` across lines). Fix: leave physical lines that *begin inside* a multi-line token verbatim. Its own PR; synthetic repros in the issue.
 
 1. **LSP `textDocument/formatting` wiring (Track A).** Declare `document_formatting_provider` in `crates/oxabl_lsp/src/capabilities.rs` and add a handler that parses the document rope **raw** (preproc off — the existing `collect_from_expanded` path parses *expanded* text and is not reusable, per KTD4) and calls `oxabl_formatter::format`. Small, self-contained; unblocked by the re-entrant library API today. Write the plan first (`/ce-plan`).
 2. **Deferred config extension:** a `preset = "..."` key inside `[workspace.style]` (a named-preset base the table overlays). Needs a small wrapper struct around `StyleGuide` because `deny_unknown_fields` rejects the extra key — a targeted revision, not a rework.
@@ -49,6 +65,8 @@ The formatter is now a runnable tool, not just a library. The remaining formatte
 
 | Issue/PR | Relation |
 |----------|----------|
+| **#94** | This session's PR — `oxabl format` CLI + `[workspace.style]` discovery + the four folded formatter-engine fixes. In final review. |
+| **#95** | Multi-line string / `{include}` reindent bail — the highest-value formatter follow-up; own PR next. |
 | #78 | Formatter tracking issue — substrate (#91/#92) + engine (#93) done; CLI shipped this session; LSP formatting wiring remains |
 | `docs/plans/2026-07-23-003-feat-oxabl-format-cli-plan.md` | Plan implemented this session (Slice 4) |
 | `docs/plans/2026-07-23-002-feat-oxabl-formatter-engine-plan.md` | Slice 3 plan (engine, #93) — the library this slice calls |
