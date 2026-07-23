@@ -111,3 +111,34 @@ fn bail_is_idempotent_on_parse_error() {
     assert!(r1.is_err());
     assert_eq!(r1, r2);
 }
+
+#[test]
+fn multiline_token_shapes_are_idempotent() {
+    // #95 shapes: a multi-line string literal and a multi-line `{include}`
+    // reference, both inside an under-indented block. `format` must succeed
+    // (not bail on the semantic guard) and be a fixpoint on its own output.
+    //
+    // Run under both presets. `oestandards()` turns keyword recasing on: the
+    // protected interior of a multi-line token must survive recasing untouched
+    // (it carries no transformable keyword sub-tokens), so recasing can never
+    // start corrupting a string/include interior without this test failing.
+    let cases = [
+        "PROCEDURE p:\nmsg = \"first line\nsecond line\".\nEND.\n",
+        "PROCEDURE p:\n{shared/report.i &event = \"start\"\n&mode = \"batch\"}\nEND.\n",
+        "DO:\nmsg = \"line one\n\n\nline four\".\nEND.\n",
+    ];
+    for src in cases {
+        for (pname, style) in presets() {
+            let p1 = parse(src);
+            assert!(p1.is_ok(), "fixture must parse: {:?}", p1.errors);
+            let out1 = format(src, &p1, &style)
+                .unwrap_or_else(|e| panic!("{pname}: first format bailed on {src:?}: {e}"));
+            // The interior line (verbatim, no leading whitespace in these
+            // fixtures) survives regardless of preset.
+            let p2 = parse(&out1);
+            let out2 = format(&out1, &p2, &style)
+                .unwrap_or_else(|e| panic!("{pname}: second format bailed on {src:?}: {e}"));
+            assert_eq!(out1, out2, "{pname}: not idempotent for {src:?}");
+        }
+    }
+}

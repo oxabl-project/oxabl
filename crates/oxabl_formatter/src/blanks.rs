@@ -48,6 +48,14 @@ fn is_block_end(content: &str) -> bool {
     first_word(content).eq_ignore_ascii_case("END")
 }
 
+/// A blank line the normalizer may clamp or drop. A `protected` line (one that
+/// begins inside a multi-line token) is never droppable even when its content is
+/// empty: an empty physical line inside a multi-line string literal is a
+/// significant byte of the string's value, so it must survive verbatim (#95).
+fn is_droppable_blank(line: &Line) -> bool {
+    line.is_blank() && !line.protected
+}
+
 /// Normalize blank runs in `buf` per `style`.
 pub(crate) fn normalize(buf: &mut LineBuf, style: &StyleGuide) {
     let max = style.max_consecutive_blank_lines;
@@ -56,14 +64,14 @@ pub(crate) fn normalize(buf: &mut LineBuf, style: &StyleGuide) {
 
     // Trim leading file blanks.
     let mut i = 0;
-    while i < lines.len() && lines[i].is_blank() {
+    while i < lines.len() && is_droppable_blank(&lines[i]) {
         i += 1;
     }
 
     while i < lines.len() {
-        if lines[i].is_blank() {
+        if is_droppable_blank(&lines[i]) {
             let mut j = i;
-            while j < lines.len() && lines[j].is_blank() {
+            while j < lines.len() && is_droppable_blank(&lines[j]) {
                 j += 1;
             }
             // Trailing blanks (nothing follows): drop entirely — flush adds the
@@ -79,6 +87,7 @@ pub(crate) fn normalize(buf: &mut LineBuf, style: &StyleGuide) {
                 out.push(Line {
                     indent: 0,
                     content: String::new(),
+                    protected: false,
                 });
             }
             i = j;

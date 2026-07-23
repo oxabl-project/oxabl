@@ -288,12 +288,46 @@ pub(crate) fn print(
     let content_starts: Vec<usize> = lines.iter().map(|l| l.content_start).collect();
     let mut content: Vec<String> = lines.into_iter().map(|l| l.content).collect();
 
-    // Keyword recasing/abbreviation (U5) — driven by a whole-source
+    // Whole-source tokenization, shared by the protected-line scan below and the
+    // keyword transform. A single pass keeps multi-line tokens (strings,
+    // includes, block comments) intact as one token each. This runs even under a
+    // preserving style (where no keyword transform happens) because the
+    // protected-line scan needs it to locate multi-line tokens.
+    let toks = tokenize(source);
+
+    // Protected lines: physical lines that *begin inside* a multi-line token
+    // whose interior bytes are significant — a string literal or an
+    // `{include}`/preprocessor reference. The line-based reindent would rewrite
+    // their leading whitespace, which lands inside the token and trips the
+    // semantic guard (#95). Leave them verbatim. A line `l` begins inside token
+    // `t` iff `t.start < line_starts[l] < t.end`, i.e. `l` is strictly after the
+    // token's first line and no later than its last. Comments are trivia (the
+    // guard ignores them), so they keep their existing delta-preserving reindent.
+    //
+    // Line endings are still normalized to the file's dominant ending at flush, so
+    // a multi-line token whose interior newline differs from that dominant ending
+    // (e.g. an interior `\r\n` in a mostly-`\n` file) trips the guard and bails —
+    // fails safe (file returned unchanged), not corrupted.
+    let mut protected = vec![false; n];
+    for t in &toks {
+        if t.kind == Kind::Eof {
+            break;
+        }
+        if t.kind == Kind::Comment || t.end == 0 {
+            continue;
+        }
+        let sl = line_index(&line_starts, t.start);
+        let el = line_index(&line_starts, t.end - 1);
+        for slot in protected[(sl + 1).min(n)..(el + 1).min(n)].iter_mut() {
+            *slot = true;
+        }
+    }
+
+    // Keyword recasing/abbreviation (U5) — driven by the whole-source
     // tokenization so multi-line block comments stay a single comment token and
     // their interior is never mistaken for keywords. No-op under a preserving
     // style. Edits are applied per line, right-to-left, to keep offsets valid.
     if keywords::wants_transform(style) {
-        let toks = tokenize(source);
         let mut edits: Vec<Vec<(usize, usize, String)>> = vec![Vec::new(); n];
         for t in &toks {
             if t.kind == Kind::Eof {
@@ -339,7 +373,13 @@ pub(crate) fn print(
     }
 
     for (l, text) in content.into_iter().enumerate() {
-        if text.is_empty() {
+        if protected[l] {
+            // Emit verbatim: prepend the original leading whitespace (the reindent
+            // never applies to a line inside a multi-line token) and mark the line
+            // protected so blank-normalization leaves it untouched.
+            let leading = &source[line_starts[l]..content_starts[l]];
+            buf.push_protected(format!("{leading}{text}"));
+        } else if text.is_empty() {
             buf.push_blank();
         } else {
             buf.push(indent[l], text);

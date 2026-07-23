@@ -16,10 +16,20 @@ use oxabl_style::IndentStyle;
 /// `content` holds the line's text with **no** leading indentation; a blank
 /// line has empty `content` (and its `indent` is irrelevant — flushing never
 /// emits trailing whitespace on a blank line).
+///
+/// `protected` marks a line the printer emitted **verbatim** because it begins
+/// inside a multi-line token (a string literal or `{include}`/preprocessor
+/// reference whose interior bytes are significant). Its `content` already
+/// carries the original leading whitespace and `indent` is 0, so flushing
+/// reproduces the source bytes exactly. The blank-normalization pass (U6) must
+/// treat a protected line as never-blank so a blank physical line living inside
+/// such a token is never dropped or clamped (that blank is a significant byte of
+/// the token's value).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Line {
     pub indent: usize,
     pub content: String,
+    pub protected: bool,
 }
 
 impl Line {
@@ -41,7 +51,22 @@ impl LineBuf {
 
     /// Push a content line at an absolute indent width (columns).
     pub(crate) fn push(&mut self, indent: usize, content: String) {
-        self.lines.push(Line { indent, content });
+        self.lines.push(Line {
+            indent,
+            content,
+            protected: false,
+        });
+    }
+
+    /// Push a **verbatim** line whose `content` already includes its original
+    /// leading whitespace (indent 0). Used for physical lines that begin inside
+    /// a multi-line token, which must not be reindented or normalized.
+    pub(crate) fn push_protected(&mut self, content: String) {
+        self.lines.push(Line {
+            indent: 0,
+            content,
+            protected: true,
+        });
     }
 
     /// Push a blank line.
@@ -49,6 +74,7 @@ impl LineBuf {
         self.lines.push(Line {
             indent: 0,
             content: String::new(),
+            protected: false,
         });
     }
 
