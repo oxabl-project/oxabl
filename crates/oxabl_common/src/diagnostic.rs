@@ -14,7 +14,7 @@ pub enum Severity {
 pub struct DiagnosticCode(pub &'static str);
 
 /// A secondary annotation pointing to a related source location.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Label {
     pub span: FileSpan,
     pub message: String,
@@ -25,7 +25,7 @@ pub struct Label {
 /// Designed to map 1:1 to LSP `Diagnostic` and Rust's `ariadne`/`miette`
 /// rendering. This is the project-wide error vocabulary — all components
 /// (parser, preprocessor, semantic layer, linter) emit these.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: Severity,
     pub code: DiagnosticCode,

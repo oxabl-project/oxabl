@@ -33,6 +33,13 @@
 //! }
 //! ```
 
+mod collect;
+
+pub use collect::{
+    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile, collect_diagnostics,
+    collect_from_expanded, collect_with_model, expand_source, is_loud,
+};
+
 use oxabl_ast::{NodeId, Statement};
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_semantic::{
@@ -81,12 +88,81 @@ pub fn dump_json(
     })
 }
 
+/// Produce the versioned JSON document, sourcing the `diagnostics` section
+/// from a pre-computed [`CollectedDiagnostics`] instead of re-running the lint
+/// pass internally. This is the path the CLI `analyze` command uses so its
+/// diagnostic set is byte-for-byte the collector's (R7): the non-diagnostic
+/// sections (scopes, symbols, references, types) still come from `sem`, but the
+/// `diagnostics` array is built from the collector's parse / semantic / lint
+/// entries. Preprocessor diagnostics are intentionally excluded here — the CLI
+/// surfaces them through its separate `preproc_diagnostics` channel.
+pub fn dump_json_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnostics) -> Value {
+    let mut sections = Map::new();
+    sections.insert("scopes".into(), json!(1));
+    sections.insert("symbols".into(), json!(2));
+    sections.insert("types".into(), json!(1));
+    sections.insert("references".into(), json!(1));
+    sections.insert("diagnostics".into(), json!(1));
+
+    json!({
+        "envelope": ENVELOPE_VERSION,
+        "sections": Value::Object(sections),
+        "schema_revision": sem.schema_revision.raw(),
+        "scopes": scopes_json(sem),
+        "symbols": symbols_json(sem),
+        "references": references_json(sem),
+        "types": types_json(sem),
+        "diagnostics": collected_diagnostics_json(collected),
+    })
+}
+
 /// Human-oriented text rendering. Compact, not stable across versions — if
 /// you need stability, dump to JSON. Used for interactive `oxabl analyze`
 /// runs without `--format json`.
 pub fn dump_text(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> String {
     use std::fmt::Write;
     let mut out = String::new();
+    write_scopes_and_symbols(&mut out, sem);
+
+    let diags = oxabl_lint::lint_file(program, sem, ctx);
+    writeln!(
+        out,
+        "\n=== Diagnostics ({} semantic + {} lint) ===",
+        sem.diagnostics.len(),
+        diags.len()
+    )
+    .ok();
+    for d in sem.diagnostics.iter().chain(diags.iter()) {
+        writeln!(out, "  [{}] {:?} {}", d.code.0, d.severity, d.message).ok();
+    }
+
+    out
+}
+
+/// Text rendering that sources its diagnostics from the shared collector (the
+/// CLI `analyze --format text` path). Scopes and symbols come from `sem`; the
+/// diagnostics list is the collector's parse / semantic / lint entries
+/// (preprocessor diagnostics are surfaced on their own CLI channel).
+pub fn dump_text_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnostics) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    write_scopes_and_symbols(&mut out, sem);
+
+    let diags: Vec<&Diagnostic> = collected
+        .all()
+        .filter(|c| c.source != DiagnosticSource::Preproc)
+        .map(|c| &c.diagnostic)
+        .collect();
+    writeln!(out, "\n=== Diagnostics ({}) ===", diags.len()).ok();
+    for d in diags {
+        writeln!(out, "  [{}] {:?} {}", d.code.0, d.severity, d.message).ok();
+    }
+
+    out
+}
+
+fn write_scopes_and_symbols(out: &mut String, sem: &Semantic) {
+    use std::fmt::Write;
 
     writeln!(out, "=== Scopes ({}) ===", sem.scope_tree.len()).ok();
     for (id, s) in sem.scope_tree.iter() {
@@ -123,20 +199,6 @@ pub fn dump_text(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -
         )
         .ok();
     }
-
-    let diags = oxabl_lint::lint_file(program, sem, ctx);
-    writeln!(
-        out,
-        "\n=== Diagnostics ({} semantic + {} lint) ===",
-        sem.diagnostics.len(),
-        diags.len()
-    )
-    .ok();
-    for d in sem.diagnostics.iter().chain(diags.iter()) {
-        writeln!(out, "  [{}] {:?} {}", d.code.0, d.severity, d.message).ok();
-    }
-
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +363,21 @@ fn diagnostics_json(sem: &Semantic, lint_diags: &[Diagnostic]) -> Value {
         .map(|d| diag_row(d, "semantic"))
         .collect();
     rows.extend(lint_diags.iter().map(|d| diag_row(d, "lint")));
+    serde_json::to_value(rows).unwrap_or(Value::Null)
+}
+
+/// Build the `diagnostics` section from the shared collector's output.
+///
+/// Only the parse / semantic / lint stages feed the envelope section (in that
+/// pipeline order); preprocessor diagnostics are surfaced through the CLI's
+/// separate `preproc_diagnostics` channel and are skipped here. Spans are
+/// already resolved to root-buffer coordinates by the collector.
+fn collected_diagnostics_json(collected: &CollectedDiagnostics) -> Value {
+    let rows: Vec<DiagnosticRow> = collected
+        .all()
+        .filter(|c| c.source != DiagnosticSource::Preproc)
+        .map(|c| diag_row(&c.diagnostic, c.source.as_str()))
+        .collect();
     serde_json::to_value(rows).unwrap_or(Value::Null)
 }
 
