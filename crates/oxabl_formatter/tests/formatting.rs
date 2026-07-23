@@ -118,6 +118,21 @@ fn labeled_block_does_not_double_indent() {
 }
 
 #[test]
+fn trailing_comment_on_block_opener_does_not_reindent_that_line() {
+    // A trailing `/* … */` on a block-opener line must not drag the opener to the
+    // body's depth. Attachment can hand the comment back as a *leading* comment
+    // of the body's first statement; the printer must let the statement that
+    // starts on the line own its indent. Reproduced from a real file where a
+    // preceding leaf-`THEN` IF made the misattachment fire.
+    let src = "IF c EQ \"no\" THEN\nMESSAGE \"n\".\n\n        IF c BEGINS \"hi\" THEN DO: /* check */\nMESSAGE \"x\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF c EQ \"no\" THEN\n    MESSAGE \"n\".\n\nIF c BEGINS \"hi\" THEN DO: /* check */\n    MESSAGE \"x\".\nEND.\n"
+    );
+}
+
+#[test]
 fn do_placement_sameline_default_preserves_conforming_block() {
     // do_placement defaults to SameLine; a conforming `DO:` stays put.
     let src = "DO:\n    MESSAGE \"x\".\nEND.\n";

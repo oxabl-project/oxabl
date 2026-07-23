@@ -249,11 +249,21 @@ pub(crate) fn print(
     // the led node's depth, dangling → the block's body depth. This corrects the
     // one-off where a comment line sits inside a block's span (so `cover` put it
     // at the block's depth, not the body's).
+    //
+    // A line a statement *starts* on already carries that statement's structural
+    // indent, so a comment that merely shares such a line — a trailing comment
+    // like `IF … THEN DO: /* x */`, which attachment may hand back as a *leading*
+    // comment of the block body — must not drag the code line to the comment's
+    // depth. Skip those lines; the code's indent wins (matching the `block_ends`
+    // guard above).
     let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, depth: usize| {
         let cfl = line_index(&line_starts, span_start);
         let cll = line_index(&line_starts, span_end.saturating_sub(1));
         let delta = depth as isize * size as isize - leadings[cfl] as isize;
         for l in cfl..=cll {
+            if starter[l].is_some() {
+                continue;
+            }
             indent[l] = (leadings[l] as isize + delta).max(0) as usize;
         }
     };
