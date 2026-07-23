@@ -190,9 +190,6 @@ impl Keyword {
             "," => return "Comma".to_string(),
             "^" => return "Caret".to_string(),
             "~" => return "Tilde".to_string(),
-            "//" => return "LineComment".to_string(),
-            "/*" => return "BlockCommentStart".to_string(),
-            "*/" => return "BlockCommentEnd".to_string(),
             _ => {}
         }
 
@@ -283,9 +280,6 @@ impl Keyword {
                 | ","
                 | "^"
                 | "~"
-                | "//"
-                | "/*"
-                | "*/"
         )
     }
 

@@ -698,9 +698,11 @@ mod tests {
         // symbol — both must appear in the dump.
         let fa = Expression::with_id(
             NodeId::from_u32(2),
+            oxabl_ast::Span::DUMMY,
             ExpressionKind::FieldAccess {
                 qualifier: Box::new(Expression::with_id(
                     NodeId::from_u32(3),
+                    oxabl_ast::Span::DUMMY,
                     ExpressionKind::Identifier(ident("Customer")),
                 )),
                 field: ident("Name"),
@@ -709,6 +711,7 @@ mod tests {
         let stmts = vec![
             Statement::with_id(
                 NodeId::from_u32(4),
+                oxabl_ast::Span::DUMMY,
                 StatementKind::DefineBuffer {
                     name: ident("bCust"),
                     target: BufferTarget::Table(ident("Customer")),
@@ -720,7 +723,11 @@ mod tests {
                     is_new_global_shared: false,
                 },
             ),
-            Statement::with_id(NodeId::from_u32(5), StatementKind::ExpressionStatement(fa)),
+            Statement::with_id(
+                NodeId::from_u32(5),
+                oxabl_ast::Span::DUMMY,
+                StatementKind::ExpressionStatement(fa),
+            ),
         ];
         let sem = analyze_file(&stmts, &ctx);
         let v = dump_json(&stmts, &sem, &ctx, true);

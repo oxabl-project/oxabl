@@ -363,10 +363,10 @@ mod tests {
         }
     }
     fn stmt_n(k: StatementKind) -> Statement {
-        Statement::with_id(next_nid(), k)
+        Statement::with_id(next_nid(), oxabl_ast::Span::DUMMY, k)
     }
     fn expr_n(k: ExpressionKind) -> Expression {
-        Expression::with_id(next_nid(), k)
+        Expression::with_id(next_nid(), oxabl_ast::Span::DUMMY, k)
     }
     fn id_expr(n: &str) -> Expression {
         expr_n(ExpressionKind::Identifier(id(n)))

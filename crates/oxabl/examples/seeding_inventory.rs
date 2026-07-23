@@ -504,15 +504,7 @@ fn ws_or_eof(src: &[u8], off: usize) -> bool {
 /// Comment / preprocessor-boundary tokens carry no statement structure and are
 /// skipped when looking for a statement's true first token.
 fn is_trivia(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::Comment
-            | Kind::LineComment
-            | Kind::BlockCommentStart
-            | Kind::BlockCommentEnd
-            | Kind::PreprocEnd
-            | Kind::Eof
-    )
+    matches!(kind, Kind::Comment | Kind::PreprocEnd | Kind::Eof)
 }
 
 /// (line, 1) for a byte offset — the two include insertions take a whole line,

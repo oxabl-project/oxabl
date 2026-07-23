@@ -757,11 +757,11 @@ mod tests {
     }
 
     fn stmt_n(kind: StatementKind) -> Statement {
-        Statement::with_id(next_nid(), kind)
+        Statement::with_id(next_nid(), oxabl_ast::Span::DUMMY, kind)
     }
 
     fn expr_n(kind: ExpressionKind) -> Expression {
-        Expression::with_id(next_nid(), kind)
+        Expression::with_id(next_nid(), oxabl_ast::Span::DUMMY, kind)
     }
 
     fn int_lit(v: i64) -> Expression {

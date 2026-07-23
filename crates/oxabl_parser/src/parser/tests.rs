@@ -10295,3 +10295,186 @@ fn nested_block_error_does_not_orphan_outer_block() {
         other => panic!("expected outer Do, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wrapper-span seeding (feat: full-fidelity spans on Statement/Expression).
+// Covers U2 (statement spans incl. trailing `.`/`:`), U3 (expression spans
+// across precedence/postfix/parens/prefix), and U4 (sibling source-order
+// debug_assert). See docs/plans/2026-07-22-001-feat-ast-wrapper-spans-plan.md.
+// ---------------------------------------------------------------------------
+
+fn parse_program_stmts(source: &str) -> Vec<Statement> {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.parse_program().statements
+}
+
+fn parse_one_expr(source: &str) -> Expression {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.parse_expression().expect("expected an expression")
+}
+
+#[test]
+fn stmt_span_covers_leading_keyword_through_trailing_period() {
+    let source = "DEFINE VARIABLE x AS INTEGER.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 1);
+    // Full extent: first token through and including the trailing period.
+    assert_eq!(stmts[0].span.start, 0);
+    assert_eq!(stmts[0].span.end as usize, source.len());
+}
+
+#[test]
+fn stmt_span_do_block_covers_end_period_and_nests() {
+    let source = "DO:\n  DISPLAY x.\nEND.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 1);
+    // Outer DO spans the whole block including the final `END.` period.
+    assert_eq!(stmts[0].span.start, 0);
+    assert_eq!(stmts[0].span.end as usize, source.len());
+    // The nested body statement carries its own correct sub-span.
+    if let StatementKind::Do { body, .. } = &stmts[0].kind {
+        assert_eq!(body.len(), 1);
+        let disp = &body[0];
+        let d_start = source.find("DISPLAY").unwrap();
+        // "DISPLAY x." ends at the period after x.
+        let d_end = source.find("x.").unwrap() + "x.".len();
+        assert_eq!(disp.span.start as usize, d_start);
+        assert_eq!(disp.span.end as usize, d_end);
+    } else {
+        panic!("expected Do, got {:?}", stmts[0].kind);
+    }
+}
+
+#[test]
+fn stmt_span_multiline_assign_ends_at_final_period() {
+    let source = "ASSIGN x = 1\n       y = 2.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 1);
+    assert_eq!(stmts[0].span.start, 0);
+    assert_eq!(stmts[0].span.end as usize, source.len());
+}
+
+#[test]
+fn empty_stmt_from_stray_period_is_period_width_and_non_overlapping() {
+    // Leading stray period → Empty (period-width), then a real statement.
+    let source = ". DISPLAY x.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 2);
+    // First Empty covers just the leading period.
+    assert!(matches!(stmts[0].kind, StatementKind::Empty));
+    assert_eq!(stmts[0].span.start, 0);
+    assert_eq!(stmts[0].span.end, 1);
+    // Non-overlapping with the following statement.
+    assert!(stmts[0].span.end <= stmts[1].span.start);
+    assert_eq!(stmts[1].span.end as usize, source.len());
+}
+
+#[test]
+fn expr_span_precedence_tree_shape() {
+    // a + b * c : outer Add spans a..c; inner Multiply spans b..c; leaves single.
+    let source = "a + b * c";
+    let expr = parse_one_expr(source);
+    assert_eq!(expr.span, Span { start: 0, end: 9 });
+    if let ExpressionKind::Add(lhs, rhs) = &expr.kind {
+        assert_eq!(lhs.span, Span { start: 0, end: 1 }); // a
+        assert_eq!(rhs.span, Span { start: 4, end: 9 }); // b * c
+        if let ExpressionKind::Multiply(m_lhs, m_rhs) = &rhs.kind {
+            assert_eq!(m_lhs.span, Span { start: 4, end: 5 }); // b
+            assert_eq!(m_rhs.span, Span { start: 8, end: 9 }); // c
+        } else {
+            panic!("expected Multiply, got {:?}", rhs.kind);
+        }
+    } else {
+        panic!("expected Add, got {:?}", expr.kind);
+    }
+}
+
+#[test]
+fn expr_span_parenthesized_includes_parens() {
+    let source = "(a + b)";
+    let expr = parse_one_expr(source);
+    // Node span includes the enclosing parens (round-trip fidelity).
+    assert_eq!(expr.span, Span { start: 0, end: 7 });
+    assert!(matches!(expr.kind, ExpressionKind::Add(..)));
+}
+
+#[test]
+fn expr_span_prefix_negate_starts_at_operator() {
+    let source = "-x";
+    let expr = parse_one_expr(source);
+    assert_eq!(expr.span, Span { start: 0, end: 2 });
+    if let ExpressionKind::Negate(inner) = &expr.kind {
+        assert_eq!(inner.span, Span { start: 1, end: 2 });
+    } else {
+        panic!("expected Negate, got {:?}", expr.kind);
+    }
+}
+
+#[test]
+fn expr_span_prefix_not_starts_at_operator() {
+    let source = "NOT x";
+    let expr = parse_one_expr(source);
+    assert_eq!(expr.span, Span { start: 0, end: 5 });
+    assert!(matches!(expr.kind, ExpressionKind::Not(_)));
+}
+
+#[test]
+fn expr_span_ternary_starts_at_if() {
+    let source = "IF c THEN a ELSE b";
+    let expr = parse_one_expr(source);
+    assert_eq!(expr.span.start, 0);
+    assert_eq!(expr.span.end as usize, source.len());
+    assert!(matches!(expr.kind, ExpressionKind::IfThenElse(..)));
+}
+
+#[test]
+fn expr_span_function_call_covers_through_close_paren() {
+    let source = "foo(a, b)";
+    let expr = parse_one_expr(source);
+    assert_eq!(expr.span, Span { start: 0, end: 9 });
+    if let ExpressionKind::FunctionCall { arguments, .. } = &expr.kind {
+        assert_eq!(arguments.len(), 2);
+        assert_eq!(arguments[0].span, Span { start: 4, end: 5 }); // a
+        assert_eq!(arguments[1].span, Span { start: 7, end: 8 }); // b
+    } else {
+        panic!("expected FunctionCall, got {:?}", expr.kind);
+    }
+}
+
+#[test]
+fn expr_span_postfix_method_chain() {
+    // obj:method(arg) — MethodCall spans obj..close-paren; object span is just obj.
+    let source = "obj:method(arg)";
+    let expr = parse_one_expr(source);
+    assert_eq!(expr.span.start, 0);
+    assert_eq!(expr.span.end as usize, source.len());
+    if let ExpressionKind::MethodCall { object, .. } = &expr.kind {
+        assert_eq!(object.span, Span { start: 0, end: 3 }); // obj
+    } else {
+        panic!("expected MethodCall, got {:?}", expr.kind);
+    }
+}
+
+#[test]
+#[should_panic(expected = "out of source order")]
+fn u4_out_of_order_sibling_statements_trip_assert() {
+    let mut a = Statement::new(StatementKind::Empty);
+    a.span = Span { start: 10, end: 20 };
+    let mut b = Statement::new(StatementKind::Empty);
+    b.span = Span { start: 5, end: 8 }; // starts before `a` ends → out of order
+    debug_assert_stmt_sibling_order(&[a, b]);
+}
+
+#[test]
+fn u4_zero_width_empty_between_reals_is_tolerated() {
+    let mut a = Statement::new(StatementKind::Empty);
+    a.span = Span { start: 0, end: 5 };
+    let mut mid = Statement::new(StatementKind::Empty);
+    mid.span = Span { start: 5, end: 5 }; // zero-width synthetic (R1.4)
+    let mut b = Statement::new(StatementKind::Empty);
+    b.span = Span { start: 5, end: 10 };
+    // Must not panic — `<=` tolerates zero-width nodes abutting neighbours.
+    debug_assert_stmt_sibling_order(&[a, mid, b]);
+}

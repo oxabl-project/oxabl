@@ -41,18 +41,21 @@ currently has to code defensively around; they become targets for follow-up hard
   `(FileId, Span)` is `PreprocessedFile::resolve(offset) -> FileSpan`. Consumers must not
   fabricate `FileSpan`s. The semantic layer will formalize this by wrapping expanded-text
   offsets in a `VirtualSpan` newtype; until then, treat raw `u32` offsets as virtual.
-- **Uniform-span coverage is aspirational.** Only `Identifier`, `Statement::IncludeReference`,
-  `Statement::IncludeArgReference`, `Statement::DefineFrame { raw_span }`, and
-  `Statement::DefineEvent { value_span }` carry explicit spans today. Most `Statement` and
-  `Expression` variants do not — a resolver that wants a span for diagnostics must reach into
-  a known sub-node (e.g. the declaration's `Identifier.span`) or accept approximate
-  coordinates. Hardening this is a follow-up (tracked as part of the "every node has a
-  span" promise in the v1 semantic plan, likely resolved together with the Phase 1 NodeId
-  rollout or shortly after).
-- Span source order: where a node *does* carry a span, it covers only its own tokens; sibling
-  spans in a `Vec<Statement>` are expected to be in source order and non-overlapping. This is
-  not currently asserted and should not be relied on as a hard invariant until a
-  `debug_assert!` enforces it.
+- **Uniform-span coverage is guaranteed.** Every `Statement` and `Expression` wrapper carries
+  a `span: Span` covering the node's full byte extent, seeded by the parser. A statement's span
+  includes its trailing `.`/`:`; a parenthesized expression's span includes the enclosing
+  parens (for round-trip fidelity). `Span::DUMMY` (zero-width) is the default on hand-built
+  nodes and is legal on genuinely token-less synthetic recovery nodes (see the `start == end`
+  bullet above). The wrapper `span` is **excluded from `PartialEq`** — structural equality
+  compares `.kind` only, mirroring how `NodeId` is treated (§2). This slice targets
+  no-preprocess mode, where the virtual offset equals the real source offset (the formatter's
+  parse mode); the virtual-offset/`resolve` machinery above is unchanged. Data-type-level
+  spans remain out of scope — a `DataType` is positioned within its owning statement's span.
+- **Span source order is asserted.** Where sibling `Statement`/`Expression` values are
+  assembled (block bodies, the top-level program, argument/item lists), a `debug_assert!`
+  enforces `prev.span.end <= next.span.start`: siblings are in source order and non-overlapping.
+  The `<=` comparison tolerates zero-width (`start == end`) synthetic nodes abutting a
+  neighbour. The check is debug-only, so release builds pay nothing.
 
 ## 2. NodeId invariants
 
