@@ -129,6 +129,23 @@ fn is_self_delimiting_block(kind: &StatementKind) -> bool {
     )
 }
 
+/// Is this a *prefix wrapper* — a statement that prefixes a single branch
+/// statement (`IF … THEN`, `ELSE`, a label, `ON …`) but has **no structural
+/// closing line of its own**?
+///
+/// This is the mirror of [`is_self_delimiting_block`]: a real block owns an
+/// `END` (or equivalent) that must snap to the block's depth, but a prefix
+/// wrapper contributes no closer — its "last line" is just its branch's last
+/// physical line, which must keep its normal continuation indent. `PreprocIf`
+/// is deliberately **not** a prefix wrapper here: it owns `&ENDIF`, whose line
+/// is a genuine closer that must keep snapping (KTD1).
+pub(crate) fn is_prefix_wrapper(kind: &StatementKind) -> bool {
+    matches!(
+        kind,
+        StatementKind::If { .. } | StatementKind::Label { .. } | StatementKind::On { .. }
+    )
+}
+
 /// Depth delta for a prefix-wrapper branch: `0` when the branch borrows an
 /// existing level, `1` when it needs its own.
 ///

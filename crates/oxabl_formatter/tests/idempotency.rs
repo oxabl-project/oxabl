@@ -113,6 +113,25 @@ fn bail_is_idempotent_on_parse_error() {
 }
 
 #[test]
+fn wrapped_multiline_branch_is_idempotent() {
+    // Issue #98: a wrapped multi-line non-block THEN branch (a multi-line
+    // ASSIGN). `format` must be a fixpoint on its own output and never bail on
+    // the semantic-preservation guard.
+    let src =
+        "IF AVAILABLE bar THEN\nASSIGN\nbar.qty = bar.qty + 1\nbar.total =\nbar.total + bar.qty.\n";
+    for (pname, style) in presets() {
+        let p1 = parse(src);
+        assert!(p1.is_ok(), "fixture must parse: {:?}", p1.errors);
+        let out1 = format(src, &p1, &style)
+            .unwrap_or_else(|e| panic!("{pname}: first format bailed: {e}"));
+        let p2 = parse(&out1);
+        let out2 = format(&out1, &p2, &style)
+            .unwrap_or_else(|e| panic!("{pname}: second format bailed: {e}"));
+        assert_eq!(out1, out2, "{pname}: not idempotent");
+    }
+}
+
+#[test]
 fn multiline_token_shapes_are_idempotent() {
     // #95 shapes: a multi-line string literal and a multi-line `{include}`
     // reference, both inside an under-indented block. `format` must succeed
