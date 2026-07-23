@@ -109,6 +109,33 @@ fn if_then_leaf_branch_on_own_line_still_indents_one_level() {
 }
 
 #[test]
+fn wrapped_multiline_then_branch_keeps_continuation_indent() {
+    // Issue #98: a wrapped multi-line non-block THEN branch (a multi-line
+    // ASSIGN) must keep every continuation line at the branch body's depth. The
+    // last physical line used to be snapped to the IF depth (column 0) because
+    // the `IF` prefix wrapper pushed a spurious `block_ends` closer entry.
+    let src =
+        "IF AVAILABLE bar THEN\nASSIGN\nbar.qty = bar.qty + 1\nbar.total =\nbar.total + bar.qty.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF AVAILABLE bar THEN\n    ASSIGN\n    bar.qty = bar.qty + 1\n    bar.total =\n    bar.total + bar.qty.\n"
+    );
+}
+
+#[test]
+fn wrapped_multiline_else_branch_keeps_continuation_indent() {
+    // Parity with the THEN case: a wrapped multi-line non-block ELSE branch keeps
+    // its continuation indent too.
+    let src = "IF AVAILABLE bar THEN MESSAGE \"t\".\nELSE\nASSIGN\nbar.qty = bar.qty + 1\nbar.total =\nbar.total + bar.qty.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "IF AVAILABLE bar THEN MESSAGE \"t\".\nELSE\n    ASSIGN\n    bar.qty = bar.qty + 1\n    bar.total =\n    bar.total + bar.qty.\n"
+    );
+}
+
+#[test]
 fn labeled_block_does_not_double_indent() {
     // A block label is a prefix, not its own level: the labeled `DO:` sits at the
     // label's depth and its body one level deeper.

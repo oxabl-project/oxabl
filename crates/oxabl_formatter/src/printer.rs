@@ -36,7 +36,7 @@ use oxabl_style::StyleGuide;
 use crate::attach::CommentMap;
 use crate::ir::LineBuf;
 use crate::keywords;
-use crate::tree::{children_with_deltas, typed_end_keyword};
+use crate::tree::{children_with_deltas, is_prefix_wrapper, typed_end_keyword};
 
 /// A physical source line with its measured leading indent and content
 /// (leading whitespace and line terminator stripped).
@@ -133,8 +133,14 @@ fn collect(
     if let Some(children) = children_with_deltas(&stmt.kind) {
         // A block's closing `END` line is a structural line that must snap to the
         // block's own depth, not delta-preserve like an intra-statement
-        // continuation.
-        block_ends.push((ll, depth));
+        // continuation. Prefix wrappers (`IF … THEN`, `ELSE`, a label, `ON …`)
+        // are excluded: they have no closer of their own, so their "last line"
+        // is just their branch's last physical line — which, for a wrapped
+        // multi-line non-block branch, must keep its continuation indent rather
+        // than be snapped to the wrapper's depth (issue #98).
+        if !is_prefix_wrapper(&stmt.kind) {
+            block_ends.push((ll, depth));
+        }
         // Each child nests by its own delta: normally +1, but a prefix wrapper
         // (`IF … THEN`, `ELSE`, a label, `ON …`) contributes 0 for a branch that
         // is itself a self-delimiting block or an else-if (the block's own
