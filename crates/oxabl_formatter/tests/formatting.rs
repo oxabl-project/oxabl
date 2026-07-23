@@ -292,6 +292,16 @@ fn drops_blank_after_opener_and_before_end() {
 }
 
 #[test]
+fn drops_blank_after_opener_with_trailing_comment() {
+    // The opener's last *code* token is `:` even when a trailing comment follows
+    // (`DO: /* c */`), so the after-opener blank run is still dropped. Regression:
+    // a naive `ends_with(':')` saw `*/` and kept a spurious blank.
+    let src = "DO: /* c */\n\n\n    MESSAGE \"x\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "DO: /* c */\n    MESSAGE \"x\".\nEND.\n");
+}
+
+#[test]
 fn trims_leading_file_blanks() {
     let src = "\n\nMESSAGE \"x\".\n";
     let out = fmt(src, &StyleGuide::default_base());
