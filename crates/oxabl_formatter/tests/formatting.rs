@@ -366,3 +366,44 @@ END PROCEDURE.
         "leading banner comment must not be indented; got {first:?}\nfull:\n{out}"
     );
 }
+// ---------------------------------------------------------------------------
+// #95 — lines that begin inside a multi-line token are left verbatim
+// ---------------------------------------------------------------------------
+
+#[test]
+fn multiline_string_reindents_opener_but_leaves_interior_verbatim() {
+    // The block body is under-indented, so the reindent path fires. The opener
+    // line snaps to depth 4; the string literal's second physical line begins
+    // inside the token, so its leading whitespace is left untouched and the
+    // string's bytes are preserved (no guard trip). Regression for #95.
+    let src = "PROCEDURE p:\nmsg = \"first line\nsecond line\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "PROCEDURE p:\n    msg = \"first line\nsecond line\".\nEND.\n"
+    );
+}
+
+#[test]
+fn multiline_include_reference_leaves_continuation_verbatim() {
+    // An `{include}` reference whose `&args` wrap across lines: the opener line
+    // reindents, the continuation begins inside the include token and is emitted
+    // verbatim so the reference text is preserved byte-for-byte. Regression #95.
+    let src = "PROCEDURE p:\n{shared/report.i &event = \"start\"\n&mode = \"batch\"}\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "PROCEDURE p:\n    {shared/report.i &event = \"start\"\n&mode = \"batch\"}\nEND.\n"
+    );
+}
+
+#[test]
+fn blank_lines_inside_multiline_string_survive_normalization() {
+    // Two consecutive blank physical lines live inside the string literal. With
+    // max_consecutive_blank_lines = 1, the blank-normalization pass would clamp
+    // them to one — changing the string's value and tripping the guard. They are
+    // protected (interior of a multi-line token), so both survive. Regression #95.
+    let src = "DO:\nmsg = \"line one\n\n\nline four\".\nEND.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(out, "DO:\n    msg = \"line one\n\n\nline four\".\nEND.\n");
+}
