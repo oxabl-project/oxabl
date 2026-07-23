@@ -1,6 +1,6 @@
 ---
 name: Oxabl
-last_updated: 2026-07-22
+last_updated: 2026-07-23
 ---
 
 # Oxabl Strategy
@@ -35,7 +35,7 @@ The resident, incrementally-recomputing engine (coarse salsa substrate + languag
 _Why it serves the approach:_ The editor-first delivery path and the home of the per-keystroke interactivity commitment.
 
 ### Formatter
-A fidelity-ready AST (full spans + comment side-table) and a layout-only formatting engine that is idempotent and non-mangling by construction.
+A fidelity-ready AST (full spans + comment side-table) and a layout-only formatting engine that is idempotent and non-mangling by construction. The engine (`oxabl_formatter`) is now built as a pure library — comment attachment, structural reindent, blank-line normalization, opt-in keyword recasing, and a re-lex semantic-preservation guard that bails whole-file rather than emit altered code. What remains to make it a shippable tool: the `oxabl format` CLI (write / `--check` / `--stdout`), `oxabl.toml` `[style]` discovery, and wiring the library into the language server's formatting request.
 _Why it serves the approach:_ Directly delivers the "never mangle code" safety commitment as a shippable tool.
 
 ### Linting & rules

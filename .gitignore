@@ -1,1 +1,6 @@
 target/
+
+# Point-in-time planning artifacts — kept local, not versioned (they go stale
+# once the work lands; durable decisions live in docs/solutions/ and STRATEGY.md).
+docs/brainstorms/
+docs/plans/

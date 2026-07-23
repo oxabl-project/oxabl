@@ -1,46 +1,50 @@
-# Handoff: Track B slice 2 (comment side-table) implemented — formatter crate is next
+# Handoff: Track B slice 3 (`oxabl_formatter` engine) implemented — CLI + editor wiring is next
 
 **Date:** 2026-07-23
-**Branch:** `master`
-**Last merge (#91):** `2e774b1` — full-fidelity spans on AST wrapper nodes (Track B blocker)
-**This session:** Track B **Slice 2** (comment side-table + blank-line primitive + StyleGuide field) implemented against `docs/plans/2026-07-23-001-feat-comment-side-table-plan.md`. **Uncommitted** in the working tree — not yet committed or PR'd.
-**Also landed since last handoff:** #90 (`d025e3d`, `oxabl lsp` skeleton, Track A), #89 (`9800767`, STRATEGY.md + example-identifier cleanup), #88 (`7172c66`, span-seeding placement fix), #87 (`64570d4`, `oxabl_style` crate)
+**Branch:** `feat/oxabl-formatter-engine` (off `feat/comment-side-table`, which carries the unmerged Slice 2 commit)
+**This session:** Track B **Slice 3** — the `oxabl_formatter` layout engine — implemented against `docs/plans/2026-07-23-002-feat-oxabl-formatter-engine-plan.md`. Committed and PR'd (see below); the PR bundles the still-unmerged Slice 2 commit (`2678bad`) beneath it.
+**Prior context:** Slice 2 (comment side-table + `blank_lines_between` + `max_consecutive_blank_lines`) landed as `2678bad`; #91 (`2e774b1`, full spans); #90 (`d025e3d`, `oxabl lsp` skeleton); #87 (`64570d4`, `oxabl_style`).
 
 ---
 
 ## Current state
 
-Track B's fidelity layer is now complete: the AST carries full spans (#91) **and** a comment side-table (this session). The formatter itself is the only remaining piece before Track B ships a tool.
+Track B now has a working formatting **engine**, not just the fidelity substrate. The remaining work is delivery surface (CLI + editor), not engine internals.
 
 | Item | Status |
 |------|--------|
-| Track A — interactive editor tooling | `oxabl lsp` skeleton shipped (#90) |
-| Track B — formatter | Fidelity substrate complete: full spans (#91) + comment side-table (this session, **uncommitted**). No `oxabl_formatter` crate yet. |
-| `oxabl_style` | Configurable ABL style guide crate (#87); gained `max_consecutive_blank_lines` this session |
-| Working tree | **Dirty** on `master` — Slice 2 changes staged for a commit/PR (see below) |
+| Track A — interactive editor tooling | `oxabl lsp` skeleton shipped (#90); formatting request not yet wired to `oxabl_formatter` |
+| Track B — formatter | **Engine complete** (`oxabl_formatter`, this session). Fidelity substrate: full spans (#91) + comment side-table (Slice 2). |
+| `oxabl_style` | Configurable style guide (#87); `max_consecutive_blank_lines` now consumed by the formatter |
+| Working tree | On `feat/oxabl-formatter-engine`; Slice 3 committed |
 
 ---
 
-## What was implemented this session (Slice 2, uncommitted)
+## What was implemented this session (Slice 3)
 
-Per `docs/plans/2026-07-23-001-feat-comment-side-table-plan.md`. Additive, behavior-preserving — no `oxabl_formatter` crate, no comment attachment, no printer, no enforcement of the new field (all deferred to Slice 3).
+A new `crates/oxabl_formatter/` crate exposing a pure, re-entrant `format(source, &Program, &StyleGuide) -> Result<String, FormatBail>` (comments read via `program.comments`). Layout-only: it fixes indentation, normalizes blank runs, re-places comments, and — only on opt-in — recases/expands keywords. Identifiers, literals, and comment bodies are emitted verbatim.
 
-- **U1 — `Comment`/`CommentKind` in `oxabl_ast`** (`crates/oxabl_ast/src/comment.rs`): `Comment { span, kind }` (`Copy`), `CommentKind { Line, Block }`; text is *not* stored (derived by span later). `docs/design/ast-invariants.md` gained §13 documenting the table's invariants and the **pinned span-end convention** (`//` span includes its trailing `\n`; `&`-directive span excludes it; `/* */` covers through `*/`).
-- **U2 — collection into `Program.comments`** (`crates/oxabl_parser/src/parser/mod.rs`): a single linear `collect_comments()` pass over the full token slice at the end of `parse_program`, decoupled from the cursor/skip path (so no skip site can drop a comment) and **not** gated on `has_comments` (so leading-only comments survive). `classify_comment()` derives kind from leading source bytes and `debug_assert!`s on any unexpected shape; the `{`-led arm is a silent defensive exclusion (include/preproc refs never lex to `Kind::Comment`). Fast-path `advance()` untouched.
-- **U3 — `blank_lines_between`** (`crates/oxabl_common/src/blank_lines.rs`): pure `(source, start, end) -> usize`, newline-count-minus-one clamped at zero, whitespace-only lines count as blank, `\r\n` handled by keying on `\n`.
-- **U4 — `max_consecutive_blank_lines`** (`crates/oxabl_style/src/style_guide.rs`): `usize` field, default `1`, `Scope::Formatting`, TOML round-tripping. Plumbing only — no consumer reads it yet.
+- **Attachment** (`attach.rs`) — single source-order walk with a monotonic cursor over the sorted `Program.comments`, classifying each into a per-run `CommentMap` (leading / trailing / dangling / **interior**), keyed by `NodeId`, never mutating the AST. Handles trailing-period ownership (`END. /* done */`), the `//`-vs-`&` span-end asymmetry, and empty-body dangling. `debug_assert` no-loss/no-duplication invariant.
+- **Printer** (`printer.rs`) — a **whole-file line-reindent** (a generalization of the plan's slice-and-reindent): each line's indent comes from the innermost governing AST node; start-lines snap to block depth, continuation lines delta-preserve the author's intra-statement alignment, block-`END` lines snap, own-line comments take their attached depth. Generic over every `StatementKind`, no per-construct emitter. `end_with_type` inserts the block type after a bare `END`.
+- **IR** (`ir.rs`) — minimal `Vec<Line{indent, content}>`, flushed with the source's dominant line ending (CRLF preserved, KTD7). No doc-IR.
+- **Keywords** (`keywords.rs` + generated `keyword_spelling.rs`) — recasing (full) + abbreviation expansion, driven by a **whole-source** tokenization so multi-line comment interiors are never mis-recased. The `Kind → canonical` table is generated by a new `oxabl_codegen` target (`cargo run -p oxabl_codegen -- formatter-spelling`), restricted to single-word alphabetic keywords so an expansion can never change token structure.
+- **Blanks** (`blanks.rs`) — clamp runs to `max_consecutive_blank_lines`, drop after-opener / before-`END`, trim edges, one trailing newline. Idempotent by construction.
+- **Guard** (`guard.rs`) — re-lex the candidate and compare the non-trivia token stream **kind-aware** (KTD4): `Kind` for keywords/operators, `(Kind, value)` for literals, **source text for identifiers + preprocessor/include refs**, with an `END`⇔`END <type>` equivalence. Any drift → `FormatBail::SemanticGuardTripped`, whole-file bail.
 
-**Verification (all green):** whole-workspace `cargo test`; `cargo clippy --workspace -- -D warnings` (the CI command) clean; `cargo fmt --check` clean; `parser_bench` shows no regression from the one-shot collection pass. New tests: `oxabl_ast` +2, `oxabl_parser` +11, `oxabl_common` +8, `oxabl_style` +4.
+**Verification (all green):** `cargo test --workspace`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --all -- --check`. 59 new formatter tests (attachment, rule-by-rule formatting, idempotency over synthetic fixtures × {`default_base`, `oestandards`}, safe-default fixpoint, guard trip/pass, bail paths). CodSpeed `formatter_bench` added (~252µs / 41 MiB/s on a synthetic fixture). All fixtures are synthetic (CC-1) — no corpus, no PII.
 
-**Pre-existing lint (not from this work, not in CI):** `cargo clippy --all-targets` trips `doc-overindented-list-items` in `crates/oxabl/examples/seeding_inventory.rs`. CI runs `--workspace` (no `--all-targets`), so it's green there — worth a separate housekeeping fix.
+**Known scope note (deliberate v1 partial):** the token-*placement* rules `do_placement`, `dot_colon_same_line`, `period_placement` are implemented as **read + preserve-conforming** — the cross-line token-*movement* variants are **not** implemented. These rules had no prior spec/enforcement, and cross-line movement is the highest idempotency/guard risk; both presets the tests exercise use the preserve-friendly defaults. `end_with_type`, `indent_*`, blank-line, and keyword rules are fully enforced. The movement variants want a spec before implementing — a good Slice 4 (or follow-up) item.
+
+**Pre-existing lint (not from this work, not in CI):** `cargo clippy --all-targets` trips `doc-overindented-list-items` in `crates/oxabl/examples/seeding_inventory.rs`. CI runs `--workspace` (no `--all-targets`), so it's green there — separate housekeeping.
 
 ---
 
 ## Next
 
-1. **Commit + PR this slice.** Conventional-commit `feat(ast): comment side-table on Program + blank-line detection`; open the PR, let CI/CodSpeed confirm no parser regression.
-2. **New `oxabl_formatter` crate (Slice 3).** The layout-only formatting engine on the now-fidelity-ready AST. This is where the deferred pieces land: **comment attachment** (binary-search the sorted `Program.comments` against node spans — leading/trailing/dangling classification), the **printer**, and **enforcement** of `max_consecutive_blank_lines` (collapse runs + edge-trim) via the new `blank_lines_between` primitive. Targets: idempotency (`format(format(x)) == format(x)`) and zero semantic-preservation-guard trips per `STRATEGY.md`. Write the Slice 3 plan first (`/ce-plan`).
-3. Track A follow-ups deferred out of #90 remain open and don't block the formatter: fine-grained salsa, inline disable pragmas, custom-rule registry.
+1. **Merge the PR** (Slice 2 + Slice 3 bundled) once CI/CodSpeed confirm no regression.
+2. **Slice 4 — delivery surface.** The `oxabl format` CLI (write-in-place / `--check` / `--stdout`) in `crates/oxabl/src/main.rs`; `oxabl.toml` `[style]` auto-discovery + precedence (#86); CLI `--help` documenting the reflow no-op. Then wire Track A's `textDocument/formatting` to call `oxabl_formatter::format`. Write the Slice 4 plan first (`/ce-plan`).
+3. **Consider** specifying + implementing the deferred placement-movement rules (`do_placement`/`dot_colon_same_line`/`period_placement` NewLine variants) and `blank_lines_between_sections`, once their semantics are pinned.
+4. Track A follow-ups (fine-grained salsa, inline disable pragmas, custom-rule registry) remain open and don't block.
 
 ---
 
@@ -48,10 +52,8 @@ Per `docs/plans/2026-07-23-001-feat-comment-side-table-plan.md`. Additive, behav
 
 | Issue/PR | Relation |
 |----------|----------|
-| #78 | Formatter tracking issue — item 1 (spans) closed by #91; comment side-table done this session; `oxabl_formatter` crate remains |
-| PR #91 | Merged — full-fidelity AST wrapper spans |
-| PR #90 | Merged — `oxabl lsp` diagnostics skeleton |
-| PR #87 | Merged — `oxabl_style` crate |
-| `docs/plans/2026-07-23-001-feat-comment-side-table-plan.md` | Plan implemented this session (Slice 2) |
-| `docs/plans/2026-07-22-001-feat-ast-wrapper-spans-plan.md` | Slice 1 plan (spans, #91) — the substrate this built on |
-| `STRATEGY.md` | Track definitions and key metrics referenced above |
+| #78 | Formatter tracking issue — spans (#91) + comment side-table (Slice 2) done; `oxabl_formatter` engine done this session; CLI/editor delivery remains |
+| `docs/plans/2026-07-23-002-feat-oxabl-formatter-engine-plan.md` | Plan implemented this session (Slice 3) |
+| `docs/plans/2026-07-23-001-feat-comment-side-table-plan.md` | Slice 2 plan (comment side-table, `2678bad`) — the substrate this built on |
+| `docs/plans/2026-07-22-001-feat-ast-wrapper-spans-plan.md` | Slice 1 plan (spans, #91) |
+| `STRATEGY.md` | Track definitions and the formatter-safety metric this engine delivers |
