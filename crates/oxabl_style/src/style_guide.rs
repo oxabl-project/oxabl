@@ -1,4 +1,5 @@
 use crate::rules::*;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Whether a rule can be mechanically enforced by a formatter.
@@ -17,7 +18,7 @@ pub enum Scope {
 /// [`StyleGuide::default_base`]. It also uses `deny_unknown_fields` so a
 /// misspelled or unrecognized rule key is a hard error rather than being
 /// silently ignored — the config is user-facing, so a typo must fail loudly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct StyleGuide {
     // Keywords & Operators ------------------------------------------------

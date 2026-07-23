@@ -1,0 +1,15 @@
+# Ship only the bundled output and static assets — never source or deps
+# (the extension is a single esbuild bundle; KTD5).
+.vscode/**
+.gitignore
+src/**
+node_modules/**
+esbuild.mjs
+tsconfig.json
+vitest.config.*
+scripts/**
+**/*.test.ts
+**/*.map
+**/tsconfig.json
+pnpm-lock.yaml
+pnpm-workspace.yaml

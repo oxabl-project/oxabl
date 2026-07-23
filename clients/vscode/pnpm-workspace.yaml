@@ -1,0 +1,7 @@
+# pnpm reads build-script approvals here. Only esbuild needs its native binary
+# built; keytar / vsce-sign are publish/signing-only and unused by
+# `vsce package --no-dependencies`.
+allowBuilds:
+  '@vscode/vsce-sign': false
+  esbuild: true
+  keytar: false

@@ -2,16 +2,17 @@ use std::path::{Path, PathBuf};
 
 use oxabl_common::{LintSeverityMap, Severity};
 use oxabl_style::StyleGuide;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration deserialized from `oxabl.toml`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WorkspaceConfig {
     pub workspace: WorkspaceSection,
 }
 
 /// The `[workspace]` section of `oxabl.toml`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WorkspaceSection {
     /// Human-readable project name.
     pub name: String,
@@ -43,7 +44,7 @@ pub struct WorkspaceSection {
 ///
 /// Five levels: `off` disables the rule; the other four map 1:1 to
 /// [`oxabl_common::Severity`] and hence to LSP `DiagnosticSeverity`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LintSeverity {
     Off,
@@ -74,7 +75,7 @@ impl LintSeverity {
 /// `deny_unknown_fields` so a misspelled rule name is a hard error rather than
 /// silently ignored. The safe default (no table) is all-on with
 /// `undefined-symbol = error` and the other three `warn` (R15).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct LintConfig {
     pub undefined_symbol: LintSeverity,
@@ -121,7 +122,7 @@ impl LintConfig {
 }
 
 /// The `[workspace.sources]` section.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SourcesConfig {
     /// Directories containing ABL source files (`.p`, `.w`, `.cls`, `.i`).
     #[serde(default)]
@@ -133,7 +134,7 @@ pub struct SourcesConfig {
 }
 
 /// The `[workspace.schema]` section.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SchemaConfig {
     /// Paths to `.df` schema dump files.
     #[serde(default)]

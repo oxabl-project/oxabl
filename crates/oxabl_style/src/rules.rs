@@ -1,10 +1,11 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
 // Enums defining the possible values for each style guide rule.
 // =============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum KeywordCase {
     #[default]
     Uppercase,
@@ -12,7 +13,7 @@ pub enum KeywordCase {
     Preserve,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum KeywordAbbreviation {
     KeepAbbreviations,
     AbbreviateEverything,
@@ -20,28 +21,28 @@ pub enum KeywordAbbreviation {
     AbbreviateNothing,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum IndentStyle {
     #[default]
     Spaces,
     Tabs,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum Placement {
     #[default]
     SameLine,
     NewLine,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum PeriodPlacement {
     #[default]
     SameLine,
     NewLine,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum SubstitutePolicy {
     Never,
     #[default]
@@ -49,7 +50,7 @@ pub enum SubstitutePolicy {
     Always,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum VariableCase {
     #[default]
     Unspecified,
@@ -58,7 +59,7 @@ pub enum VariableCase {
     SnakeCase,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum MethodCase {
     #[default]
     Unspecified,
@@ -66,7 +67,7 @@ pub enum MethodCase {
     CamelCase,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum ParameterPrefix {
     #[default]
     None,
@@ -74,7 +75,7 @@ pub enum ParameterPrefix {
     PLowercase,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum BufferNaming {
     #[default]
     Unspecified,
@@ -82,7 +83,7 @@ pub enum BufferNaming {
     RoleTable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum TempTablePrefix {
     #[default]
     Unspecified,
@@ -90,14 +91,14 @@ pub enum TempTablePrefix {
     TtE,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum ClassNaming {
     #[default]
     Unspecified,
     SuffixBaseClass,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum StaticMemberRef {
     #[default]
     Unspecified,
@@ -105,7 +106,7 @@ pub enum StaticMemberRef {
     ClassName,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum CommentStyle {
     #[default]
     BlockComment,
@@ -113,21 +114,21 @@ pub enum CommentStyle {
     Either,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum FileNameCasing {
     #[default]
     Unspecified,
     LowerCamelCase,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum AndOrPlacement {
     #[default]
     EndOfLine,
     BeginningOfLine,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub enum VariableDeclAlignment {
     #[default]
     None,
