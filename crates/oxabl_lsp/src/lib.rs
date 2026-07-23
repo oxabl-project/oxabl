@@ -16,6 +16,7 @@ pub mod db;
 pub mod debounce;
 pub mod diagnostics;
 pub mod document;
+pub mod formatting;
 pub mod position;
 
 use std::collections::HashMap;
@@ -27,10 +28,12 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
+use lsp_types::request::{Formatting, Request as _};
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult,
-    PositionEncodingKind, PublishDiagnosticsParams, ServerInfo, Uri,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams, ServerInfo,
+    TextEdit, Uri,
 };
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_workspace::{
@@ -193,6 +196,8 @@ impl<'c> Server<'c> {
                             if req.method == "shutdown" {
                                 shutdown_received = true;
                                 self.respond(Response::new_ok(req.id, serde_json::Value::Null))?;
+                            } else if req.method == Formatting::METHOD {
+                                self.handle_formatting(req)?;
                             } else {
                                 self.respond(Response::new_err(
                                     req.id,
@@ -561,6 +566,28 @@ impl<'c> Server<'c> {
             .send(Message::Notification(notification));
     }
 
+    /// Handle a `textDocument/formatting` request (R2, R4, R6, R7).
+    ///
+    /// Runs inline on the main loop — single-file formatting is sub-millisecond
+    /// and needs no salsa snapshot or debounce round-trip (R7): it reads only
+    /// the rope and the filesystem, never `expanded_text`/`collect_from_expanded`
+    /// (KTD1). A malformed params payload or an unopened URI both resolve to an
+    /// empty edit list (`[]`) rather than a protocol error (R6). The whole
+    /// tokenize→parse→format pipeline is panic-guarded inside
+    /// [`compute_formatting_edits`] (KTD4).
+    fn handle_formatting(&self, req: Request) -> Result<()> {
+        let edits: Vec<TextEdit> = serde_json::from_value::<DocumentFormattingParams>(req.params)
+            .ok()
+            .and_then(|params| {
+                let uri = params.text_document.uri;
+                self.documents.get(&uri).map(|doc| {
+                    crate::formatting::compute_formatting_edits(doc, &uri, &self.encoding)
+                })
+            })
+            .unwrap_or_default();
+        self.respond(Response::new_ok(req.id, edits))
+    }
+
     fn respond(&self, response: Response) -> Result<()> {
         self.connection
             .sender
@@ -571,7 +598,12 @@ impl<'c> Server<'c> {
 
 /// Best-effort conversion of a `file:` URI to a filesystem path. Returns `None`
 /// for non-`file` schemes (the server simply skips workspace config for those).
-fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+///
+/// `pub(crate)` so the formatting handler resolves URIs the same way the
+/// watcher/`didOpen` code does, rather than hand-rolling a second decoder
+/// (KTD2). This is a bare `file://` strip with no percent-decoding: a
+/// `%`-encoded path simply fails to convert and the caller falls back safely.
+pub(crate) fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let s = uri.as_str();
     let rest = s.strip_prefix("file://")?;
     // `file:///abs/path` → the authority is empty, leaving a leading `/abs`.
