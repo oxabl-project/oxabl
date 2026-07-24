@@ -17,6 +17,10 @@ No affiliation with Progress.
 
 These are the current high-priority goals for oxabl tooling. As it stands, oxabl has laid the groundwork for high-performance pre-processing, parsing, and semantic analysis. Next comes tooling on top of that.
 
+- Library / embedding API
+  - Use oxabl as a single Rust dependency — no wiring up the individual `oxabl_*` sub-crates
+  - Curated umbrella surface: `oxabl::parse`, `analyze` + `AnalyzeOptions`, `format_source`, `render_diagnostics`, serde-serializable diagnostics, a streaming `Lexer` iterator, and `Schema::from_df_dir`, plus named modules (`oxabl::ast`, `parser`, `semantic`, `lint`, `schema`, `formatter`, `workspace`, …)
+  - Status: Shipped — the CLI and LSP are the reference consumers; internal recovery helpers are kept off the public surface
 - LSP
   - Work with oxabl to parse, lint, and format code directly in your editor
   - sub-millisecond time for single file operations
@@ -72,14 +76,13 @@ Requirements:
   - Postfix operations, and
   - Has error recovery via synchronization on period boundaries
   - Still getting new features, bug fixes, and improvements.
-- `oxabl check`: A CLI validation tool in `crates/oxabl` for testing parser coverage against real ABL codebases.
-  - Walks a directory (or checks a single file) for ABL files (`.p`, `.w`, `.cls`) and runs each through the preprocessor, lexer and parser.
-  - Reports pass/fail counts, error locations, and top error patterns. Supports `--json` output.
-  - Placeholder only — the parsed AST is discarded; no downstream work is performed.
-  - Usage: `cargo run -p oxabl -- check <path> --preprocessor --include-path <path>`
-  - Will be deprecated soon, as it's mostly a debugging tool.
+- `oxabl check` / `oxabl analyze`: CLI entry points in `crates/oxabl`.
+  - `check` walks a directory (or single file) for ABL files (`.p`, `.w`, `.cls`) and reports parse pass/fail counts, error locations, and top error patterns.
+  - `analyze` runs the full parse → semantic → lint pipeline over a file and dumps the resolved model + diagnostics (text or `--json`, with `--schema <file|dir>` for schema-backed resolution).
+  - Both are transitional scaffolding: the intended direction is a ruff/cargo-shaped `check` that surfaces lint + format issues, built on shared library pipelines every client drives identically (see #120). Their `--json` shapes are not yet a stable contract.
+  - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
 
-Current Work: Semantic analysis, second-pass formatting and linting, the LSP, and VS Code extension.
+Current Work: cross-file/workspace semantic resolution (the ceiling on lint accuracy), continued dogfood-driven trust-hardening, and reshaping the CLI onto shared lint/format pipelines. Shipped: the semantic layer, the layout formatter (CLI + LSP), the language server, the VS Code extension, and the curated `oxabl` public API.
 
 ## Benchmarks
 

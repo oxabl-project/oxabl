@@ -42,6 +42,10 @@ _Why it serves the approach:_ Directly delivers the "never mangle code" safety c
 The lint engine, its per-project configuration surface, and eventually a public API for registering and selecting rules. A rule is only as trustworthy as the resolver beneath it: early dogfood confirmed that false positives — not missed diagnostics — are what make a developer turn the linter off, so trust-hardening the resolver (single-file correctness now; cross-file/workspace resolution next) is the gate on rule value.
 _Why it serves the approach:_ Turns the semantic foundation into actionable, tunable feedback — the payoff developers see.
 
+### Public API & client architecture
+The `oxabl` umbrella crate is now a curated, single-dependency public API: named modules per layer plus a few top-level conveniences (`parse`, `analyze`, `format_source`, `render_diagnostics`, `Diagnostic`), with internal helpers unreachable by construction and serde-serializable diagnostics behind an opt-in feature. The CLI, LSP, and future editor clients consume this one surface instead of reaching into sub-crates or hand-rolling the tokenize→parse→analyze/format pipeline. Near-term direction: today's `check`/`analyze` subcommands (and their `--json`) are transitional scaffolding; the target is shared lint and format *pipelines* in the library that every client drives identically, so a diagnostic reads the same in the CLI, the editor, and any future consumer.
+_Why it serves the approach:_ "Single binary, editor-first, consistent everywhere" only holds if there is one shared surface the clients agree on — this is that surface.
+
 ## Not working on
 
 - Reflow / line-wrapping in the formatter — v1 is layout-only; width-driven wrapping is deferred.

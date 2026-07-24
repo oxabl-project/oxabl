@@ -1,9 +1,9 @@
-# Handoff: analyze-fidelity fix + clippy housekeeping — clearing the pre-102 backlog
+# Handoff: public API (#55) shipped — four waves merged; next is cross-file resolution (#102)
 
 **Date:** 2026-07-24
-**Branch:** `master` is the base. This session's work is on branch `fix/seeding-example-doc-indent`, open as **PR #112** (not yet merged). The Release Please rollup (#46) remains the other open PR.
-**This session:** Confirmed the next strategic thread is **#102 (cross-file resolution)** but agreed to first knock down the older pre-102 backlog and re-dogfood in a fully-wired workspace before committing to that architecture. Started on the backlog: fixed **#60** (synthetic schema field symbols never accumulated read/write counts) and folded in a pre-existing clippy-1.97 housekeeping fix that was blocking the full-workspace lint gate.
-**Prior context:** The VS Code extension (#104) is merged and daily-usable in-editor — the dogfood loop that surfaced this session's and last session's fixes. Last session trust-hardened two semantic false positives (#106/PR #110, #107/PR #111) and shipped `oxabl: Restart Server` (#105/PR #109).
+**Branch:** `master` — all four #55 waves are merged (PRs #113–#116); tree is clean at `f285ca0`. No open work branch from this session.
+**This session:** Implemented **#55 (improve the public API)** end to end as a four-PR wave sequence, each wave validated by refactoring the CLI/LSP onto the new surface. Filed follow-ups #117–#120 for deferred scope.
+**Prior context:** #60 (schema field read/write counts) + clippy housekeeping shipped in #112. The VS Code extension (#104) is merged and daily-usable — the dogfood loop that keeps surfacing trust fixes.
 
 ---
 
@@ -11,35 +11,53 @@
 
 | Item | Status |
 |------|--------|
-| VS Code extension (#104) | **Merged** — daily-usable in-editor. |
-| #60 field read/write counts | **Fixed — PR #112 open** (not yet merged). |
-| clippy doc-overindent in `seeding_inventory` example | **Fixed in PR #112** (was failing `--all-targets` on clippy 1.97). |
-| #108 unresolvable-include-as-argument | Still open — deferred pending a fully-wired re-dogfood. |
-| Held block-scope false positive | Still unfiled — reproduce in a workspace that *has* includes first. |
-| #102 / #103 cross-file resolution | Open — the strategic thread, deliberately sequenced *after* the backlog + re-dogfood. |
+| #55 public API (Waves 1–4) | **Done — PRs #113/#114/#115/#116 all merged.** |
+| Curated `oxabl` umbrella crate | Single-dependency public API; CLI + LSP run on it. |
+| #117–#120 follow-ups | **Filed** (deferred scope from #55). |
+| #102 / #103 cross-file resolution | Open — now the **top strategic thread**. |
 | #57 public lint-rule API | Open — blocked on #102. |
+| #108 unresolvable-include-as-argument | Open — deferred pending a fully-wired re-dogfood. |
+| Held block-scope false positive | Still unfiled — reproduce in a workspace that *has* includes first. |
 
 ---
 
-## What was implemented this session (PR #112, open)
+## What shipped this session — #55 public API (PRs #113–#116, all merged)
 
-### #60 — accumulate read/write counts on schema field symbols
-**Root cause:** schema-resolved fields synthesized a `Field` symbol but never bumped its counts. `resolve_field_access` discarded the access mode (`let _ = mode;`) and `field_resolution` never called `bump_count`, so a field referenced or assigned any number of times dumped as `read_count: 0, write_count: 0` in `oxabl analyze` — misleading data and a latent trap for any rule keyed off field usage (e.g. a future "how often is this field updated" rule). **Fix (Option 1 from the issue):** threaded the real `AccessMode` through `field_resolution` and bumped the resolved field symbol via the existing accumulator; the end-of-pass flush already writes counts back for every symbol in the table, synthetics included. Both qualified paths (`buffer.field` and bare `Table.field`) now count; the bare-block-field path from #111 already did. Touched `crates/oxabl_semantic/src/resolve.rs` only. New regression test `field_access_accumulates_read_and_write_counts` (an `ASSIGN` target + a bare read fold onto one synthesized symbol → read=1, write=1). The `synthetic_schema_symbols_not_reported` lint guard still holds — counts change but synthetics stay out of `unused-variable`.
+The `oxabl` umbrella crate is now a **curated, single-dependency public API**: a consumer depends on one crate with one version line instead of pulling in each `oxabl_*` sub-crate and hand-rolling `tokenize → Parser::new → parse_program` plus its own diagnostic rendering.
 
-### Housekeeping — clippy doc-list overindent (separate commit)
-clippy 1.97's `doc_overindented_list_items` was failing `cargo clippy --all-targets -D warnings` on the `seeding_inventory` example's module doc (pre-existing on clean HEAD, unrelated to #60). Dedented the field-list continuation lines to the 2-space list-item indent so the full-workspace lint gate passes on newer toolchains. Kept as its own `chore(oxabl)` commit so only the `fix:` is release-triggering.
+- **Wave 1 (#113, `feat!`):** curated facade — named modules (`oxabl::ast`, `parser`, `semantic`, `lint`, `schema`, `analyze`, `formatter`, `style`, `workspace`, `lexer`, `common`, `preprocessor`), no whole-crate globs; `oxabl::parse(source) -> Program` + `Program::into_result`/`first_error`/`into_diagnostics(FileId)`; `Program`/`Diagnostic` re-exported top-level; parser recovery internals (`skip_to_*`, the `expressions`/`statements` modules) made `pub(crate)`; `ParseError: Display + std::error::Error`. Breaking only for the umbrella glob removal + parser-internals hiding.
+- **Wave 2 (#114):** `render_diagnostics(&[Diagnostic], &SourceResolver) -> String` + `Display` on `Diagnostic`/`Severity`; opt-in `serde` feature on the diagnostic family (`Span`, `Diagnostic`, `Severity`, `FileSpan`, `FileId`, `DiagnosticCode`, `Label`, `ParseError`), with `Severity` serializing lowercase; CLI text + JSON routed onto these, deleting the hand-mirrored `JsonDiagnostic` struct and the `format!("{:?}", severity)` workaround.
+- **Wave 3 (#115):** `oxabl::analyze(source, &AnalyzeOptions)` + `analyze_with_fs(..., &dyn FileSystem, ...)` wrapping the 8-arg `collect_with_model`; `Schema::from_df_dir(dir)` + `&str` schema getters (`Schema::table`, `Table::field`, `Table::resolve_field_by_name`); CLI `analyze` routed through `oxabl::analyze`, and `--schema` now also accepts a directory.
+- **Wave 4 (#116):** `oxabl::format_source(source, &StyleGuide) -> Result<String, FormatBail>`; a streaming `impl Iterator for Lexer` (lazy tokenization); CLI `format` + LSP `formatting.rs` both format through `format_source`, removing the LSP's last hand-rolled parse site.
 
-**Verification:** `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all -- --check` all green. All fixtures synthetic — no corpus, no PII.
+**Decisions / gotchas future sessions should know:**
+- **`format_source` lives in `oxabl_formatter`, not the umbrella.** The umbrella depends on `oxabl_lsp` (the `oxabl lsp` subcommand), so the LSP cannot depend back on `oxabl` — a cycle. Putting the fold in `oxabl_formatter` gives CLI (via re-export) and LSP (direct) **one** shared entry point. Watch this constraint for any future "umbrella convenience the LSP also needs."
+- **Perf invariant held:** re-expressing `tokenize` as `Lexer::new(src).collect()` regressed the `numeric` lexer bench ~11% (per-token `Option`/EOF-branch overhead). `tokenize` was kept on its tight `read_next_token` loop; the `Iterator` impl is the additive streaming API and a test asserts the two produce identical token streams. CodSpeed guards this.
+- **Two plan items were already done** before work started and were closed as moot/confirmed: #55 item 10 (borrowed-token parsing — `Parser::new` already borrows `&[Token]` + `&str`) and the virtual-span bridge (`From<(FileId, Span)> for FileSpan` already in `oxabl_common`).
+- **`check`/`analyze` + `--json` are scaffolding, not the final CLI.** Owner steer: the real `check` should be ruff/cargo-shaped (surface lint + format issues), built on shared library *pipelines* with thin clients (CLI/LSP/extension). Breaking the current `--json` is acceptable; its diagnostic shape is now aligned on the shared `Diagnostic` type (spans, not pre-resolved line/col). Tracked as **#120**.
+- **`serde` is default-on for the `oxabl` umbrella** so the binary serializes diagnostics; library consumers opt out with `default-features = false`. Sub-crate serde stays opt-in.
+
+**Verification (every wave):** `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all -- --check` green; serde feature-matrix (with/without) green. A standing single-dep integration guard (`crates/oxabl/tests/public_api.rs`) exercises the whole pipeline through `use oxabl::…` only. All fixtures synthetic — no corpus, no PII.
+
+---
+
+## Follow-ups filed this session
+
+| Issue | Scope |
+|-------|-------|
+| #117 | Derive `Serialize`/`Display` on the statement/expression AST (only `Span` derived so far). |
+| #118 | Schema auto-discovery from `oxabl.toml` (pairs with #102). |
+| #119 | Panic-catching parse/format variant, or make the lexer/parser panic-free. |
+| #120 | Rework `check`/`analyze` into shared lint & format pipelines across clients (strategic — STRATEGY pass → plan first). |
 
 ---
 
 ## Next
 
-1. **Merge PR #112**, then continue the pre-102 backlog.
-2. **The next step: #55 — improve the public API.** The umbrella `oxabl` crate is incomplete and consumers face a lot of boilerplate. This is polish that pays off before the API surface grows further, and it's independent of the cross-file work. Highest-value items from the issue: (1, *Critical*) the `oxabl` umbrella re-exports ast/common/lexer/parser/workspace but **not** preprocessor/schema/semantic/lint/analyze — a consumer must pull those in as separate deps with separate version lines; (2/5/3, *High*) no `parse(source) -> Result<Program>` convenience (the CLI itself hand-rolls tokenize→`Parser::new` at `src/main.rs:172-183`), no `Diagnostic` renderer (CLI rolls its own inline), and two confusingly-named parser entry points (`parse_statements` bail-on-first vs `parse_program` error-recovery) with `Program` not re-exported at the top level. Medium/low items (streaming lexer API, virtual-span `From` bridge, schema auto-discovery, `Display`/`Serialize` on core types, leaky `pub` recovery helpers, borrowed-token parsing) can be triaged within the same pass. Take it through `/ce-brainstorm` → `/ce-plan` if the scope proves large; a first slice (umbrella re-exports + `parse()` + diagnostic renderer) may be small enough to `/ce-work` directly.
-3. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and pin down the held "visible-earlier / undefined-later" block-scope false positive. Do this before starting #102 so the brainstorm inherits a clean list of genuinely-cross-file gaps.
-4. **Then the strategic thread: #102 — workspace-wide cross-file semantic resolution** (with #103 as the background-index fast-follow). The engine analyses one file at a time today, so every inherited member from a parent `.cls`, every `USING`-imported type, every `RUN` target, and every cross-file `SHARED` var resolves to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. #102 is the ceiling on lint effectiveness and **blocks #57** (public rule API). It's a genuine architectural piece (cross-file salsa graph, class/inherited-member index, includes-as-tracked-inputs with an expansion cache, invalidation model, AVM-parity-vs-explicit-"unknown" decision) — take it through `/ce-brainstorm` → `/ce-plan` before building.
-5. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish (publisher identity, icon, CI publish).
+1. **#102 — workspace-wide cross-file semantic resolution** is now the top strategic thread (with #103 background index as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets, and cross-file `SHARED` vars all resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. #102 is the ceiling on lint effectiveness and **blocks #57** (public rule API). Genuine architecture (cross-file salsa graph, class/inherited-member index, includes-as-tracked-inputs with an expansion cache, invalidation model, AVM-parity-vs-explicit-"unknown" decision) — take it through `/ce-brainstorm` → `/ce-plan` before building.
+2. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and pin down the held "visible-earlier / undefined-later" block-scope false positive. Do this before #102 so the brainstorm inherits a clean cross-file gap list.
+3. **#120** — when ready to reshape the CLI into a lint/format-first tool, do a `/ce-strategy` pass then a plan.
+4. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish (publisher identity, icon, CI publish).
 
 ---
 
@@ -47,14 +65,13 @@ clippy 1.97's `doc_overindented_list_items` was failing `cargo clippy --all-targ
 
 | Issue/PR | Relation |
 |----------|----------|
-| **#112** | **Open** — #60 field read/write counts + clippy doc-overindent housekeeping (this session) |
-| #109 | Merged — `oxabl: Restart Server` command (#105) |
-| #110 | Merged — temp-table field scoping fix (#106) |
-| #111 | Merged — unqualified `FIRST-OF`/`LAST-OF` field fix (#107) |
-| #104 | Merged — VS Code extension + `oxabl schema` + CI |
-| **#55** | Open — improve the public API (**the recommended next step**) |
+| **#113 / #114 / #115 / #116** | **Merged** — the four #55 public-API waves (this session) |
+| **#55** | Improve the public API — **done** across the four waves; can be closed |
+| #117 / #118 / #119 / #120 | **Filed** — deferred #55 follow-ups (AST serde/Display, schema auto-discovery, panic-catching parse, shared-pipeline CLI redesign) |
+| #112 | Merged — #60 field read/write counts + clippy housekeeping (prior session) |
+| #104 | Merged — VS Code extension + `oxabl schema` + CI (the dogfood loop) |
+| **#102 / #103** | Open — cross-file resolution + background index (**the strategic thread, next**) |
+| #57 | Open — public lint-rule API; blocked on #102 |
 | #108 | Open — unresolvable-include-as-argument → misleading comma error (deferred) |
 | #56 | Open — dependency-extraction fidelity vs AVM (converges with #102) |
-| **#102 / #103** | Open — cross-file resolution + background index (the strategic thread, sequenced after the backlog + re-dogfood) |
-| #57 | Open — public lint-rule API; blocked on #102 |
-| `STRATEGY.md` | Dogfood-adoption metric + Linting track: real dogfood has begun and is driving trust-hardening |
+| `STRATEGY.md` | Public API & client architecture track added; the umbrella is now the shared client surface |
