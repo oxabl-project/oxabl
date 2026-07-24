@@ -34,8 +34,18 @@ jobs:
       - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
+          targets: wasm32-unknown-unknown
       - run: cargo build --workspace --release
       - run: cargo test --workspace --release
+      - name: Build browser package
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.108 --locked
+          ./scripts/build-wasm.sh target/wasm-web
+          tar -C target/wasm-web -czf target/oxabl-wasm-web.tar.gz .
+      - name: Attach browser package to release
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" target/oxabl-wasm-web.tar.gz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   publish:
     name: Publish to crates.io

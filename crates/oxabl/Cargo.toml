@@ -9,6 +9,7 @@ repository = "https://github.com/oxabl-project/oxabl"
 [[bin]]
 name = "oxabl"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
 oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
@@ -21,23 +22,31 @@ oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
 oxabl_lint = { path = "../oxabl_lint", version = "0.1.0" }
-oxabl_lsp = { path = "../oxabl_lsp", version = "0.1.0" }
+oxabl_lsp = { path = "../oxabl_lsp", version = "0.1.0", optional = true }
 oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
-clap = { version = "4", features = ["derive"] }
-walkdir = "2"
-indicatif = "0.17"
+clap = { version = "4", features = ["derive"], optional = true }
+walkdir = { version = "2", optional = true }
+indicatif = { version = "0.17", optional = true }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-schemars = "0.8"
+serde_json = { version = "1", optional = true }
+schemars = { version = "0.8", optional = true }
 
 [features]
 # `serde` propagates the diagnostic-family `Serialize` derives up from the
 # sub-crates. It is on by default so the `oxabl` binary can serialize
 # diagnostics directly; a library consumer that doesn't serialize can opt out
 # with `default-features = false`.
-default = ["serde"]
+default = ["serde", "cli"]
 serde = ["oxabl_ast/serde", "oxabl_common/serde", "oxabl_parser/serde"]
+cli = [
+    "dep:clap",
+    "dep:indicatif",
+    "dep:oxabl_lsp",
+    "dep:schemars",
+    "dep:serde_json",
+    "dep:walkdir",
+]
 
 [dev-dependencies]
 tempfile = "3"

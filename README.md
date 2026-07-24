@@ -32,8 +32,8 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - Status: CLI available (`oxabl format`); LSP integration shipped — format-on-save through the VS Code extension
 - Try-it-yourself
   - A "try it in 10 seconds" demo in the browser
-  - Make WASM a compile target in the release pipeline, past a code block into the browser, lint and format instantly
-  - Status: Unstarted
+  - WASM is a compile target in CI and the release pipeline; paste a code block into the browser, lint and format instantly
+  - Status: MVP implemented — `oxabl_wasm` is a thin JSON adapter over the same `oxabl::analyze_with_fs` and `oxabl::format_source` APIs used by the native clients. The first browser slice is intentionally single-file, without includes or a loaded schema.
 - Conformance harness
   - A real-world test suite to ensure oxabl is conformant with all ABL fragments and the compiler
   - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
@@ -83,6 +83,22 @@ Requirements:
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
 
 Current Work: cross-file/workspace semantic resolution (the ceiling on lint accuracy), continued dogfood-driven trust-hardening, and reshaping the CLI onto shared lint/format pipelines. Shipped: the semantic layer, the layout formatter (CLI + LSP), the language server, the VS Code extension, and the curated `oxabl` public API.
+
+### WebAssembly browser package
+
+The browser package is owned by this repository. It contains no ABL-specific
+implementation: `crates/oxabl_wasm` only converts the shared analysis and
+formatting results into a browser-friendly JSON wire shape.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.108 --locked
+./scripts/build-wasm.sh
+```
+
+The output is written to `target/wasm-web` by default. Pass a directory as the
+first argument to stage it for a static-site consumer. Releases attach the
+packaged browser artifact as `oxabl-wasm-web.tar.gz`.
 
 ## Benchmarks
 
