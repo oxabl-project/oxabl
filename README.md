@@ -36,7 +36,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Linter
   - Lint rule engine
   - Public API for creating new lint rules and submitting them upstream for inclusion in oxabl's default rule set
-  - Status: the `oxabl check` command has been extended for linting real-world code bases and outputting our first LINT0001 rule (unused variables). Still experimental, no public API for extending. Can be used via the VS Code extension.
+  - Status: a first set of rules ships today — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003, live under a loaded `.df` schema), and `type-mismatch-assignment` (LINT0004) — configurable per-project via `oxabl.toml`. Surfaced in-editor through the VS Code extension and as diagnostics from `oxabl check`. Still experimental; no public API for extending yet.
 - Easy one-line installer and VS Code extension for getting started
   - Status: VS Code extension available (experimental, sideload) — build a VSIX with `clients/vscode/scripts/build-vsix.sh`; it launches `oxabl lsp` for format-on-save, live diagnostics, and `oxabl.toml` schema completion. One-line installer: not started.
 - Build system
