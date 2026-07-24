@@ -33,7 +33,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Try-it-yourself
   - A "try it in 10 seconds" demo in the browser
   - WASM is a compile target in CI and the release pipeline; paste a code block into the browser, lint and format instantly
-  - Status: MVP implemented — `oxabl_wasm` is a thin JSON adapter over the same `oxabl::analyze_with_fs` and `oxabl::format_source` APIs used by the native clients. The first browser slice is intentionally single-file, without includes or a loaded schema.
+  - Status: Shipped — the browser playground runs the real thing, entirely client-side. `oxabl_wasm` is a thin JSON adapter over the same `oxabl::analyze_with_fs` and `oxabl::format_source` APIs the CLI, LSP, and VS Code extension use, so a diagnostic and a reformat in the browser match what you get after installing. The first slice is deliberately single-file: no includes, no `.df` schema (so `unknown-table-or-field` is inert), and no `oxabl.toml`, so per-rule severity and style config don't apply. The website serves the released artifact and the UI around it; this repo owns the build.
 - Conformance harness
   - A real-world test suite to ensure oxabl is conformant with all ABL fragments and the compiler
   - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
@@ -81,8 +81,12 @@ Requirements:
   - `analyze` runs the full parse → semantic → lint pipeline over a file and dumps the resolved model + diagnostics (text or `--json`, with `--schema <file|dir>` for schema-backed resolution).
   - Both are transitional scaffolding: the intended direction is a ruff/cargo-shaped `check` that surfaces lint + format issues, built on shared library pipelines every client drives identically (see #120). Their `--json` shapes are not yet a stable contract.
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
+- `oxabl_wasm`: browser bindings in `crates/oxabl_wasm`.
+  - Two `wasm-bindgen` exports — `analyze_source` and `format_source` — each returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the semantic-preservation guard bails (in which case the original source comes back untouched).
+  - Contains no ABL behavior. It is a transport adapter over the umbrella crate, which keeps every client on one implementation.
+  - CLI-only dependencies live behind the `oxabl` crate's default-on `cli` feature so the library compiles for `wasm32`; a CI job builds the wasm target on every push.
 
-Current Work: cross-file/workspace semantic resolution (the ceiling on lint accuracy), continued dogfood-driven trust-hardening, and reshaping the CLI onto shared lint/format pipelines. Shipped: the semantic layer, the layout formatter (CLI + LSP), the language server, the VS Code extension, and the curated `oxabl` public API.
+Current Work: cross-file/workspace semantic resolution (the ceiling on lint accuracy), continued dogfood-driven trust-hardening, and reshaping the CLI onto shared lint/format pipelines. Shipped: the semantic layer, the layout formatter (CLI + LSP), the language server, the VS Code extension, the curated `oxabl` public API, and the browser WASM playground.
 
 ### WebAssembly browser package
 
