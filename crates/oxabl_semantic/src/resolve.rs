@@ -693,11 +693,18 @@ impl<'a> Walker<'a> {
             // Temp-tables are file-local; no backing schema table.
             None,
         );
-        // Fields get their own symbols scoped to the file; namespace
-        // `Values` is a simplification for v1 — Phase 4a will likely
-        // route field lookups through the temp-table symbol instead.
-        let Some(tt_scope) = tt_sym else { return };
-        let _ = tt_scope;
+        // Fields bind in a scope of their own, nested under the enclosing
+        // scope and owned by this temp-table's statement. This keeps each
+        // temp-table's field namespace private: identically-named fields in
+        // different temp-tables (extremely common — many tables share a
+        // `code`/`qty`/`name` field) never collide, while a field declared
+        // twice in the *same* temp-table still raises SEM0001 within this
+        // scope. Namespace `Values` is a simplification for v1 — Phase 4a
+        // will likely route field lookups through the temp-table symbol.
+        if tt_sym.is_none() {
+            return;
+        }
+        let field_scope = self.tree.push(ScopeKind::TempTable, scope, stmt.id);
         for field in fields {
             let data_type = match &field.type_source {
                 TypeSource::Explicit(dt) => {
@@ -707,7 +714,7 @@ impl<'a> Walker<'a> {
             };
             self.declare(
                 stmt,
-                scope,
+                field_scope,
                 &field.name,
                 NamespaceId::Values,
                 SymbolKind::Field,
@@ -2595,8 +2602,102 @@ mod tests {
             is_new_global_shared: false,
         })]);
         assert!(find_symbol(&tree, &symbols, NamespaceId::Buffers, "ttCust").is_some());
-        let cust_num = find_symbol(&tree, &symbols, NamespaceId::Values, "custnum").unwrap();
+        // Fields live in the temp-table's own child scope, not program scope.
+        let (_, cust_num) = symbols
+            .iter()
+            .find(|(_, s)| s.kind == SymbolKind::Field && s.name == fold_atom("custnum"))
+            .expect("field CustNum should be declared");
         assert_eq!(cust_num.kind, SymbolKind::Field);
+        assert_eq!(
+            tree.get(cust_num.declared_in).kind,
+            ScopeKind::TempTable,
+            "temp-table fields must bind in a TempTable scope, not program scope"
+        );
+        assert_ne!(
+            cust_num.declared_in,
+            ScopeId::ROOT,
+            "temp-table fields must not bind in the file/program scope"
+        );
+    }
+
+    #[test]
+    fn same_field_name_in_two_temp_tables_no_sem0001() {
+        // Two temp-tables each with a `line-code` field: identical field
+        // names across different temp-tables must not collide (#106).
+        let field = |n: &str| TempTableField {
+            name: id(n),
+            type_source: TypeSource::Explicit(DataType::Character),
+            validate: false,
+            initial_value: None,
+            extent: None,
+        };
+        let tt = |name: &str, fname: &str| {
+            stmt(StatementKind::DefineTempTable {
+                name: id(name),
+                no_undo: true,
+                like_table: None,
+                validate: false,
+                use_indexes: vec![],
+                fields: vec![field(fname)],
+                indexes: vec![],
+                xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
+            })
+        };
+        let (tree, symbols, diags) = run(vec![
+            tt("tt-order", "line-code"),
+            tt("tt-line", "line-code"),
+        ]);
+        assert!(
+            diags.iter().all(|d| d.code.0 != diagnostics::SEM0001),
+            "same field name in different temp-tables must not SEM0001: {diags:?}"
+        );
+        // Both fields exist, each in its own distinct TempTable scope.
+        let field_scopes: Vec<_> = symbols
+            .iter()
+            .filter(|(_, s)| s.kind == SymbolKind::Field && s.name == fold_atom("line-code"))
+            .map(|(_, s)| {
+                assert_eq!(tree.get(s.declared_in).kind, ScopeKind::TempTable);
+                s.declared_in
+            })
+            .collect();
+        assert_eq!(field_scopes.len(), 2, "both fields should be declared");
+        assert_ne!(
+            field_scopes[0], field_scopes[1],
+            "each temp-table gets its own field scope"
+        );
+    }
+
+    #[test]
+    fn duplicate_field_in_same_temp_table_still_sem0001() {
+        // A field declared twice in the SAME temp-table is a genuine
+        // duplicate and must still raise SEM0001.
+        let field = |n: &str| TempTableField {
+            name: id(n),
+            type_source: TypeSource::Explicit(DataType::Character),
+            validate: false,
+            initial_value: None,
+            extent: None,
+        };
+        let (_, _, diags) = run(vec![stmt(StatementKind::DefineTempTable {
+            name: id("tt-order"),
+            no_undo: true,
+            like_table: None,
+            validate: false,
+            use_indexes: vec![],
+            fields: vec![field("line-code"), field("line-code")],
+            indexes: vec![],
+            xml_options: XmlSerializeOptions::default(),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
+        })]);
+        assert!(
+            diags.iter().any(|d| d.code.0 == diagnostics::SEM0001),
+            "duplicate field in one temp-table must SEM0001: {diags:?}"
+        );
     }
 
     #[test]

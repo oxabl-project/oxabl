@@ -59,6 +59,9 @@ pub enum ScopeKind {
     Trigger,
     /// Implicit scope for a `DEFINE FRAME`.
     Frame,
+    /// Implicit scope for a `DEFINE TEMP-TABLE`; its `FIELD`s bind here so
+    /// identically-named fields in different temp-tables never collide.
+    TempTable,
     /// Implicit scope for a `TRIGGER PROCEDURE` file.
     TriggerProcedure,
 }

@@ -416,6 +416,7 @@ fn scope_kind_str(k: ScopeKind) -> &'static str {
         ScopeKind::Finally => "finally",
         ScopeKind::Trigger => "trigger",
         ScopeKind::Frame => "frame",
+        ScopeKind::TempTable => "temp_table",
         ScopeKind::TriggerProcedure => "trigger_procedure",
     }
 }
