@@ -36,7 +36,7 @@ pub use rules::{
 };
 
 /// Run every lint rule over `program` + `sem` and return a combined list
-/// of diagnostics, in a stable per-rule order (LINT0001 → LINT0004). Each
+/// of diagnostics, in a stable per-rule order (LINT0001 → LINT0006). Each
 /// rule is independent; callers who need finer control can invoke the
 /// individual rule functions directly.
 ///

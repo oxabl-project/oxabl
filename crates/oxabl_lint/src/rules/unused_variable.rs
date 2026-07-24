@@ -28,12 +28,14 @@
 
 use oxabl_common::Diagnostic;
 use oxabl_semantic::{
-    AnalysisContext, NamespaceId, ScopeId, ScopeTree, Semantic, SymbolFlags, SymbolId, SymbolKind,
+    AnalysisContext, NamespaceId, ScopeId, ScopeTree, Semantic, SymbolId, SymbolKind,
 };
 use rustc_hash::FxHashMap;
 
 use super::LINT0002;
-use super::unused_symbol_shared::{declaration_span, display_name, is_candidate, is_skipped};
+use super::unused_symbol_shared::{
+    declaration_span, display_name, is_candidate, is_skipped, is_table_like_param,
+};
 
 /// Entry point.
 pub fn run(
@@ -55,7 +57,7 @@ pub fn run(
         // reference to the name resolves to the backing `DEFINE TEMP-TABLE`,
         // never here — so redirect the question rather than skip the symbol.
         // Skipping would discard the genuine finding this keeps (R3).
-        let was_read = if sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) {
+        let was_read = if is_table_like_param(sym) {
             // Grouped by name atom; keyed inline so the atom type stays an
             // inference detail rather than a dependency of this crate.
             let index = buffers_by_name.get_or_insert_with(|| {
@@ -643,6 +645,41 @@ mod tests {
         assert!(
             diags.iter().all(|d| !d.message.contains("ds")),
             "DATASET FOR parameter must not warn: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn dataset_parameter_stays_silent_even_when_its_dataset_is_unused() {
+        // Deliberate asymmetry with `TABLE FOR`, pinned so it reads as a choice
+        // rather than an accident: `DEFINE DATASET` declares into `Values`, not
+        // `Buffers`, so the redirect's lookup always misses for a dataset and
+        // the rule always takes the silent path. A dataset parameter therefore
+        // never warns, where an unused `TABLE FOR` parameter still does. Silence
+        // is the safe direction; recovering the dataset true positive needs the
+        // dataset modelling this change deliberately does not touch.
+        let ds = stmt(StatementKind::DefineDataset {
+            name: id("ds"),
+            access: None,
+            is_static: false,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
+            serializable: false,
+            non_serializable: false,
+            xml_options: Default::default(),
+            reference_only: false,
+            buffers: vec![id("tt")],
+            data_relations: vec![],
+            parent_id_relations: vec![],
+        });
+        let diags = analyze_and_lint(vec![
+            temp_table("tt"),
+            ds,
+            handle_param("ds", oxabl_ast::HandleParamKind::Dataset),
+        ]);
+        assert!(
+            diags.iter().all(|d| !d.message.contains("ds")),
+            "dataset parameter must stay silent even when unused: {diags:?}"
         );
     }
 

@@ -423,6 +423,10 @@ mod tests {
         let diags = lint(&stmts);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert!(diags[0].message.contains("arr"), "{diags:?}");
+        // Assert the span too: without this the test passes on the
+        // declaration-span fallback, so a regression that stopped the walk
+        // descending into `ArrayAccess` would go unnoticed.
+        assert_eq!(diags[0].span.span.start, 70, "{diags:?}");
     }
 
     #[test]
