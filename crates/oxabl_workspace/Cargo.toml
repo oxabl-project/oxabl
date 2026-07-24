@@ -11,8 +11,10 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
 toml = "0.8"
 walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"

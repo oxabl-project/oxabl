@@ -21,11 +21,11 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - Work with oxabl to parse, lint, and format code directly in your editor
   - sub-millisecond time for single file operations
   - format/lint on save
-  - Status: Experimental, not available
+  - Status: Experimental; usable in-editor via the sideloadable VS Code extension (`clients/vscode/`)
 - Formatter
   - Format ABL code from the CLI or LSP
   - `oxabl format <path> [--check|--stdout] [--style <preset|path>]`
-  - Status: CLI available (`oxabl format`); LSP integration pending
+  - Status: CLI available (`oxabl format`); LSP integration shipped — format-on-save through the VS Code extension
 - Try-it-yourself
   - A "try it in 10 seconds" demo in the browser
   - Make WASM a compile target in the release pipeline, past a code block into the browser, lint and format instantly
@@ -37,7 +37,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - Public API for creating new lint rules and submitting them upstream for inclusion in oxabl's default rule set
   - Status: the `oxabl check` command has been extended for linting real-world code bases and outputting our first LINT0001 rule (unused variables). Still experimental and unavailable.
 - Easy one-line installer and VS Code extension for getting started
-  - Status: Not started
+  - Status: VS Code extension available (experimental, sideload) — build a VSIX with `clients/vscode/scripts/build-vsix.sh`; it launches `oxabl lsp` for format-on-save, live diagnostics, and `oxabl.toml` schema completion. One-line installer: not started.
 - Build system
   - Incremental compiling (via the Progress compiler)
   - Remote cache

@@ -1,0 +1,98 @@
+{
+  "name": "oxabl",
+  "displayName": "oxabl — ABL tooling",
+  "description": "Thin VS Code client for the oxabl language server: format-on-save and live diagnostics for Progress ABL, driven from oxabl.toml.",
+  "version": "0.1.0",
+  "publisher": "oxabl-project",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oxabl-project/oxabl"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters",
+    "Linters"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:abl",
+    "workspaceContains:**/oxabl.toml"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "abl",
+        "aliases": [
+          "ABL",
+          "Progress ABL",
+          "OpenEdge ABL"
+        ],
+        "extensions": [
+          ".p",
+          ".w",
+          ".cls",
+          ".i",
+          ".v"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "oxabl",
+      "properties": {
+        "oxabl.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the oxabl language server (format-on-save and diagnostics). Requires a window reload to take effect."
+        },
+        "oxabl.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the `oxabl` executable. When empty, the extension uses `oxabl` from your PATH."
+        },
+        "oxabl.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the JSON-RPC communication between VS Code and the oxabl language server (for debugging)."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[abl]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "oxabl-project.oxabl"
+      },
+      "evenBetterToml.schema.associations": {
+        "**/oxabl.toml": "./schemas/oxabl.schema.json"
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "schema": "cargo run -p oxabl -- schema > schemas/oxabl.schema.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  }
+}

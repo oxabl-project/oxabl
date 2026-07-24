@@ -22,7 +22,7 @@ Build a correctness-first, blazingly-fast Rust foundation (lexer, parser, semant
 - **Interactive latency** — warm language-server cycle ≤50ms p95 on a representative large, high-churn file; single-file format/lint in sub-millisecond time. The "fast enough to stay on" bet; regresses if the pipeline slows.
 - **Real-world conformance** — >99% of a large, real-world ABL codebase (kept outside this repo) lexes, parses, and formats cleanly. Correctness against actual code, not toy samples.
 - **Formatter safety** — `format(format(x)) == format(x)` (idempotent) with zero semantic-preservation-guard trips. If it mangles code, the churn cost outweighs the tool.
-- **Daily dogfood adoption** — developers running oxabl in-editor every day once the extension ships. The lagging signal that the approach landed.
+- **Daily dogfood adoption** — developers running oxabl in-editor every day. The lagging signal that the approach landed; now unblocked — the first editor client (a sideloadable VS Code extension) has landed, so this signal is finally observable in real use.
 
 ## Tracks
 
@@ -31,7 +31,7 @@ The fast, correct core — lexer, parser, semantic analysis — held to >99% cov
 _Why it serves the approach:_ Every tool above is only as trustworthy and fast as this base; correctness-first starts here.
 
 ### Interactive editor tooling
-The resident, incrementally-recomputing engine (coarse salsa substrate + language server) and the editor clients that surface diagnostics and formatting live.
+The resident, incrementally-recomputing engine (coarse salsa substrate + language server) and the editor clients that surface diagnostics and formatting live. The first client has landed: a thin, sideloadable VS Code extension that launches `oxabl lsp` for format-on-save and push diagnostics, with granular per-rule control driven from `oxabl.toml` — validated in-editor by a JSON Schema generated from the config structs, and live-reloaded when the config changes.
 _Why it serves the approach:_ The editor-first delivery path and the home of the per-keystroke interactivity commitment.
 
 ### Formatter

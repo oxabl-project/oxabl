@@ -52,3 +52,43 @@ jobs:
           channel: stable
           components: clippy
       - run: cargo clippy --workspace -- -D warnings
+
+  schema-drift:
+    name: Schema drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      # The VS Code client's oxabl.toml JSON Schema is generated from the Rust
+      # config structs. Regenerate it and fail if the committed copy has drifted.
+      - name: Regenerate schema
+        run: cargo run -p oxabl -- schema > clients/vscode/schemas/oxabl.schema.json
+      - name: Assert no drift
+        run: git diff --exit-code -- clients/vscode/schemas/oxabl.schema.json
+
+  vscode-client:
+    name: VS Code client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/vscode
+    steps:
+      - uses: actions/checkout@v6
+      # Node must be set up BEFORE pnpm/action-setup: action-setup runs pnpm
+      # under the ambient Node, and pnpm 11 requires Node >= 22.13. This matches
+      # the dev toolchain (Node 22 + pnpm 11).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run check
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm run build

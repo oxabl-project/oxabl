@@ -168,6 +168,58 @@ fn oxabl_toml_change_reresolves_lint_config() {
 }
 
 #[test]
+fn malformed_oxabl_toml_after_edit_degrades_safely() {
+    // Regression guard (U2, scenario 2): a watched `oxabl.toml` edit that leaves
+    // the file syntactically invalid must NOT crash the server loop. The resolve
+    // path (`resolved_lint_config`) degrades to the default lint table, so the
+    // diagnostics simply revert to defaults and the loop keeps serving.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+    let toml = root.join("oxabl.toml");
+    // Start valid, with unused-variable turned OFF (no LINT0002).
+    std::fs::write(
+        &toml,
+        "[workspace]\nname = \"p\"\n[workspace.lint]\nunused-variable = \"off\"\n",
+    )
+    .unwrap();
+    let main = root.join("main.p");
+
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+    handshake(&client);
+
+    let uri = file_uri(&main);
+    open(&client, &uri, "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n");
+    let first = recv_publish(&client, Duration::from_secs(2)).unwrap();
+    assert!(
+        !has_lint(&first, "LINT0002"),
+        "unused-variable = off suppresses LINT0002 initially"
+    );
+
+    // Corrupt the file (invalid TOML) and notify the watcher.
+    std::fs::write(
+        &toml,
+        "[workspace]\nname = \"p\"\nthis is not valid toml {{{",
+    )
+    .unwrap();
+    watched_change(&client, &toml);
+
+    // The malformed config degrades to the default lint table (unused-variable =
+    // warn), so LINT0002 reappears — and, crucially, a publish still arrives:
+    // the loop did not crash on the parse error.
+    let after = recv_publish(&client, Duration::from_secs(2)).unwrap();
+    assert!(
+        has_lint(&after, "LINT0002"),
+        "malformed oxabl.toml must degrade to the default lint table (LINT0002 back on), not crash: {:?}",
+        after.diagnostics
+    );
+
+    // A clean shutdown proves the server loop survived the malformed edit.
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
+}
+
+#[test]
 fn schema_change_hot_reloads_diagnostics() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
