@@ -110,6 +110,26 @@ bitflags! {
         /// becomes a def-site attribute and the standalone flag can be folded
         /// in and removed.
         const PASSED_AS_OUTPUT_ARG = 1 << 19;
+        /// Declaration shape fact: set on a parameter declared as
+        /// `TABLE FOR <tt>` or `DATASET FOR <ds>`. Such a parameter *names* a
+        /// temp-table or dataset rather than holding a handle value, so every
+        /// reference to the name resolves through `NamespaceId::Buffers` (or to
+        /// the `DEFINE DATASET` symbol) and lands on that declaration — never
+        /// on this symbol. This symbol's own `read_count` is therefore
+        /// meaningless by construction: it is permanently zero no matter how
+        /// heavily the table is used.
+        ///
+        /// Not set for `TABLE-HANDLE` / `DATASET-HANDLE`, whose names really
+        /// are handle values that collect their own reads, nor for a plain
+        /// `AS HANDLE` parameter. Consumers must not treat "typed HANDLE" as a
+        /// proxy for this flag, or they lose genuine unused-handle-parameter
+        /// findings. Consumed by `unused-variable` (LINT0002), which redirects
+        /// the read-count question to the backing table symbol.
+        ///
+        /// Intentional stopgap, like [`Self::PASSED_AS_OUTPUT_ARG`]: once CFG
+        /// def-use records land (#126) the redirect becomes a def-use query and
+        /// this flag can be folded in and removed.
+        const PARAM_TABLE_LIKE = 1 << 20;
     }
 }
 

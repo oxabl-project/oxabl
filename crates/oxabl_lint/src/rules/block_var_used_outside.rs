@@ -23,11 +23,19 @@
 //! exactly the "I know about ABL's scoping" case — so the rule stays silent.
 //! This is a set-membership approximation, not flow analysis: it does not
 //! reason about statement ordering or which paths actually reach the read.
+//!
+//! Shares the semantic model's blindness to reads and writes inside statements
+//! the parser skips to `StatementKind::Empty` (`PUT`, `EXPORT`, `UPDATE`, `SET`,
+//! `PROMPT-FOR`, `GET-KEY-VALUE`, …): an assignment that arrives through one of
+//! those is invisible here, so a variable written outside its block only that
+//! way can still look block-written-only. See the fuller note on
+//! `assigned-but-never-read` (LINT0006).
 
-use oxabl_common::{Diagnostic, FileSpan};
+use oxabl_common::Diagnostic;
 use oxabl_semantic::{AnalysisContext, Semantic, Symbol, SymbolFlags, SymbolKind};
 
 use super::LINT0005;
+use super::unused_symbol_shared::declaration_span;
 
 /// Entry point.
 pub fn run(
@@ -41,13 +49,7 @@ pub fn run(
             continue;
         }
         let name = display_name(sym, ctx.source);
-        let span = FileSpan {
-            file: ctx.file_id,
-            span: oxabl_ast::Span {
-                start: sym.name_span.start,
-                end: sym.name_span.end,
-            },
-        };
+        let span = declaration_span(ctx, sym);
         diags.push(Diagnostic::info(
             LINT0005,
             format!(
@@ -86,6 +88,9 @@ fn is_hazard(sym: &Symbol) -> bool {
 /// Display name = original casing sliced from source; falls back to the
 /// case-folded atom when the span maps outside the buffer (synthetic tests)
 /// or lands on a non-char boundary.
+/// Deliberately not the shared `unused_symbol_shared::display_name`: that one
+/// falls back to the case-folded atom for a zero-length span, where this one
+/// yields the empty slice. Consolidating them would change behavior here.
 fn display_name(sym: &Symbol, source: &str) -> String {
     let start = sym.name_span.start as usize;
     let end = sym.name_span.end as usize;

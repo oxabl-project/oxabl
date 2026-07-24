@@ -90,6 +90,41 @@ mod tests {
         assert_eq!(map.get("LINT0003"), Some(Some(Severity::Warning)));
         assert_eq!(map.get("LINT0004"), Some(Some(Severity::Warning)));
         assert_eq!(map.get("LINT0005"), Some(Some(Severity::Info)));
+        assert_eq!(map.get("LINT0006"), Some(Some(Severity::Warning)));
+    }
+
+    #[test]
+    fn assigned_but_never_read_is_configurable_by_kebab_name() {
+        // `deny_unknown_fields` means the kebab key is a hard error until the
+        // field, the default and the map entry all exist — so this also proves
+        // the new rule is wired through all three.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n[workspace.lint]\nassigned-but-never-read = \"off\"\n",
+        );
+        let target = root.join("main.p");
+        write(root, "main.p", "");
+        let (cfg, err) = resolved_lint_config(&target, &[]);
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(cfg.assigned_but_never_read, LintSeverity::Off);
+        let map = cfg.to_severity_map();
+        assert_eq!(map.get("LINT0006"), Some(None), "off");
+        // Turning the new rule off leaves its sibling alone.
+        assert_eq!(map.get("LINT0002"), Some(Some(Severity::Warning)));
+    }
+
+    #[test]
+    fn assigned_but_never_read_accepts_a_cli_override() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "main.p", "");
+        let target = root.join("main.p");
+        let cli = vec![("assigned-but-never-read".to_string(), LintSeverity::Error)];
+        let (cfg, _) = resolved_lint_config(&target, &cli);
+        assert_eq!(cfg.assigned_but_never_read, LintSeverity::Error);
     }
 
     #[test]
