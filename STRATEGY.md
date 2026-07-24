@@ -1,6 +1,6 @@
 ---
 name: Oxabl
-last_updated: 2026-07-23
+last_updated: 2026-07-24
 ---
 
 # Oxabl Strategy
@@ -22,7 +22,7 @@ Build a correctness-first, blazingly-fast Rust foundation (lexer, parser, semant
 - **Interactive latency** — warm language-server cycle ≤50ms p95 on a representative large, high-churn file; single-file format/lint in sub-millisecond time. The "fast enough to stay on" bet; regresses if the pipeline slows.
 - **Real-world conformance** — >99% of a large, real-world ABL codebase (kept outside this repo) lexes, parses, and formats cleanly. Correctness against actual code, not toy samples.
 - **Formatter safety** — `format(format(x)) == format(x)` (idempotent) with zero semantic-preservation-guard trips. If it mangles code, the churn cost outweighs the tool.
-- **Daily dogfood adoption** — developers running oxabl in-editor every day. The lagging signal that the approach landed; now unblocked — the first editor client (a sideloadable VS Code extension) has landed, so this signal is finally observable in real use.
+- **Daily dogfood adoption** — developers running oxabl in-editor every day. The lagging signal that the approach landed; the first editor client (a sideloadable VS Code extension) has landed and real in-editor dogfood has begun — already surfacing (and driving fixes for) the first trust-eroding lint false positives, which is exactly the feedback loop this metric exists to create.
 
 ## Tracks
 
@@ -39,7 +39,7 @@ A fidelity-ready AST (full spans + comment side-table) and a layout-only formatt
 _Why it serves the approach:_ Directly delivers the "never mangle code" safety commitment as a shippable tool.
 
 ### Linting & rules
-The lint engine, its per-project configuration surface, and eventually a public API for registering and selecting rules.
+The lint engine, its per-project configuration surface, and eventually a public API for registering and selecting rules. A rule is only as trustworthy as the resolver beneath it: early dogfood confirmed that false positives — not missed diagnostics — are what make a developer turn the linter off, so trust-hardening the resolver (single-file correctness now; cross-file/workspace resolution next) is the gate on rule value.
 _Why it serves the approach:_ Turns the semantic foundation into actionable, tunable feedback — the payoff developers see.
 
 ## Not working on

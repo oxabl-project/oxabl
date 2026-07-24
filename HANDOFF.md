@@ -1,9 +1,9 @@
-# Handoff: VS Code extension (PR #104) — oxabl's LSP capabilities now reach a real editor
+# Handoff: trust-hardening the in-editor linter — first dogfood false positives fixed
 
-**Date:** 2026-07-23
-**Branch:** `feat/vscode-extension` — **open PR #104, not yet merged.** `master` is unchanged from the previous handoff (tip is #100/#101, the LSP `textDocument/formatting` wiring).
-**This session:** Built and shipped (as an open PR) a thin VS Code LSP client under `clients/vscode/`, turning oxabl's already-built server capabilities — `textDocument/formatting` (#100) and push diagnostics (#90) — into a daily-usable, in-editor tool. Plus the supporting Rust work (`oxabl schema` subcommand + a live-reload regression test), CI to guard the client and the generated schema, and a fix for a transport bug found during dogfood.
-**Prior context:** The formatter is editor-integrated end to end (#100); diagnostics skeleton with live `oxabl.toml`/`.df` reload (#90); formatter engine + CLI (#93/#94/#96/#97/#98/#99); `oxabl_style` (#87); full-span AST + comment side-table (#91/#92).
+**Date:** 2026-07-24
+**Branch:** `master` — all of this session's work is **merged**. Tip is #109; the only open PR is #46 (the Release Please rollup).
+**This session:** With the VS Code extension (#104) now merged and usable in a real editor, we started the trust-hardening thread the strategy points at: fix the confirmed lint/semantic false positives that dogfood surfaced, and add the client UX papercut fix. Three PRs, all merged — the two semantic false positives (#106, #107) and the `oxabl: Restart Server` command (#105).
+**Prior context:** The VS Code client shipped and merged (#104): sideloadable VSIX, `oxabl lsp` for scoped `[abl]` format-on-save + push diagnostics, `oxabl.toml` schema completion, `oxabl schema` subcommand, and CI (e2e stdio handshake, `vscode-client` job, schema-drift guard). The formatter is editor-integrated end to end (#100); diagnostics with live `oxabl.toml`/`.df` reload (#90).
 
 ---
 
@@ -11,62 +11,35 @@
 
 | Item | Status |
 |------|--------|
-| Editor extension (VS Code) | **Shipped as open PR #104** — sideloadable VSIX; launches `oxabl lsp`; scoped `[abl]` format-on-save; push diagnostics; `oxabl.toml` schema completion. Was "Not started". |
-| `oxabl schema` subcommand | **New (PR #104)** — emits the `oxabl.toml` JSON Schema derived from the config structs via `schemars`. |
-| CI coverage | **New (PR #104)** — e2e LSP stdio handshake test, a pnpm `vscode-client` job, and a schema-drift guard. |
-| Track A — LSP formatting / diagnostics | On `master` (#100 / #90); now surfaced to a user by the extension. |
+| VS Code extension (#104) | **Merged** — daily-usable in-editor. |
+| #106 temp-table field scoping | **Fixed + merged (PR #110).** |
+| #107 unqualified `FIRST-OF`/`LAST-OF` field | **Fixed + merged (PR #111).** |
+| #105 `oxabl: Restart Server` command | **Shipped + merged (PR #109).** |
+| #108 unresolvable-include-as-argument | Still open — deferred pending a fully-wired re-dogfood. |
+| Held block-scope false positive | Still unfiled — reproduce in a workspace that *has* includes first. |
 
 ---
 
-## What was implemented this session (all on branch `feat/vscode-extension`, PR #104)
+## What was implemented this session (all merged to `master`)
 
-Plan: `docs/plans/2026-07-23-007-feat-vscode-extension-plan.md` (gitignored, point-in-time). Six units:
+### #106 — temp-table fields scoped to their temp-table (PR #110)
+**Root cause:** the declare pass in `oxabl_semantic` registered every temp-table `FIELD` symbol in the *enclosing program scope*. `SEM0001` keys duplicates on same-scope + same-namespace, so two temp-tables in one file each carrying a same-named field collided in the program scope's `Values` namespace (the analyze dump showed the field at `scope=0`). **Fix:** `declare_temp_table` now opens a dedicated `ScopeKind::TempTable` scope (child of the enclosing scope, owned by the `DEFINE TEMP-TABLE` statement) and binds that temp-table's fields there — so identical field names across different temp-tables no longer collide, while a field declared twice in the *same* temp-table still errors. Downstream field access was unaffected (it resolves via the buffer `table_id` link, not these program-scope symbols). Touched `scope.rs` (new variant), `resolve.rs` (push scope + declare fields into it), `oxabl_analyze/src/lib.rs` (`temp_table` scope label). Regression + true-positive-guard tests added.
 
-### VS Code client — `clients/vscode/`
-Thin `vscode-languageclient` extension. Binary discovery is a vscode-free pure function (`server.ts`): `oxabl.server.path` setting → `oxabl` on `PATH` → an actionable not-found message (no crash loop). `extension.ts` starts the client for language `abl` (`.p .w .cls .i .v`); on spawn failure it shows a clear message. Scoped `configurationDefaults` turn on `editor.formatOnSave` + `editor.defaultFormatter` for `[abl]` only. Settings: `oxabl.enable`, `oxabl.server.path`, `oxabl.trace.server` — lint/style rules are deliberately **not** mirrored as settings (`oxabl.toml` is the single source of truth). Bundled with esbuild, packaged via `vsce package --no-dependencies`, all through pnpm (see `scripts/build-vsix.sh`). 11 vitest discovery/manifest unit tests.
+### #107 — unqualified block field resolves in `FIRST-OF`/`LAST-OF` (PR #111)
+**Root cause (broader than the issue title):** `resolve_expr_ident` in `oxabl_semantic/src/resolve.rs` resolved bare identifiers only against `Values`/`Buffers` plus a schema *table-name* fallback — there was no path to interpret a bare name as an **unqualified field** of a buffer in scope, so idiomatic bare break-field names (and bare fields in DISPLAY/IF/ASSIGN generally) fell through to `NotInScope`, which `undefined-symbol` (LINT0001) reports. Qualifying (`buffer.field`) took the separate field-access path and resolved fine. **Fix:** a final fallback (`resolve_bare_block_field`) that walks every buffer visible from the current scope and, when a schema is loaded, resolves the bare name to the first buffer whose backing table has that field, synthesizing the typed `Field` symbol via the existing `synth_field_symbol` path. It runs only **after** local values, buffers, built-ins, and schema table names (real declarations always win) and is gated on `Buffers` being a candidate namespace (call names never resolve as fields). No `FIRST-OF` special-casing. Three end-to-end tests in `oxabl_analyze` (repro, qualified control, unknown-bare-name true-positive guard).
 
-### `oxabl schema` (U1)
-`#[derive(JsonSchema)]` (schemars 0.8) on `WorkspaceConfig`/`WorkspaceSection`/`SourcesConfig`/`SchemaConfig`/`LintConfig`/`LintSeverity`/`StyleGuide` and every `rules.rs` enum. New `oxabl schema` subcommand serializes the schema for `WorkspaceConfig` to stdout with a `$comment` DO-NOT-EDIT header. The VSIX bundles it (`schemas/oxabl.schema.json`, regenerated at build) and wires `evenBetterToml.schema.associations`. Tests (`oxabl_style/tests/schema.rs`, `oxabl_workspace/tests/schema.rs`) assert the four lint keys + `off|hint|info|warn|error`, representative style keys, `additionalProperties: false`, and a **drift guard**: the schema property set equals the struct's serialized field set, so a new rule auto-appears (D1).
+### #105 — `oxabl: Restart Server` command (PR #109)
+Contributes `oxabl.restartServer` ("oxabl: Restart Server") to the VS Code client: stops the running `LanguageClient` and starts a fresh one, re-running binary discovery (a newly-installed/repathed `oxabl` is picked up without a window reload) and clearing the crash-cap state. Also auto-restarts on `oxabl.enable` / `oxabl.server.path` / `oxabl.trace.server` change via `onDidChangeConfiguration`. No-ops gracefully when disabled or never started. `activate` now takes the `ExtensionContext` and registers command + config listener as disposables; start/stop are factored into shared `startClient`/`stopClient` helpers. The restart-trigger predicate lives in a new vscode-free `config.ts` so it is vitest-testable (matching the `server.ts` pattern); 9 new tests cover the predicate and the command/activation/settings manifest.
 
-### Live-reload regression (U2)
-`#90` already live-reloads `oxabl.toml` edits — the existing `oxabl_toml_change_reresolves_lint_config` test in `watcher_e2e.rs` covers the happy path. Added the missing `malformed_oxabl_toml_after_edit_degrades_safely` regression: a corrupt config edit degrades to the default lint table and the loop keeps serving (no runtime code changed).
-
-### The `--stdio` fix (found during dogfood)
-`transport: TransportKind.stdio` on the `Executable` server options made `vscode-languageclient` append `--stdio` to argv → `oxabl lsp --stdio`, which clap rejects → the server crash-looped. stdio is already the default for an `Executable`, so the field must be omitted. Verified with a real `initialize` handshake against the spawned binary.
-
-### CI (`.github/workflows/ci.yml`)
-- `crates/oxabl/tests/lsp_stdio_smoke.rs` — spawns the **real** built binary (`env!("CARGO_BIN_EXE_oxabl")`), does a framed `initialize` handshake and asserts capabilities, and guards that `oxabl lsp --stdio` is rejected. This is the layer that catches argv/transport regressions.
-- `vscode-client` job — Node 22 + pnpm 11 (matching the dev toolchain), frozen install, typecheck + vitest + esbuild build. (Node must be set up before `pnpm/action-setup`, and pnpm 11 requires Node ≥ 22.13.)
-- `schema-drift` job — regenerates the schema and `git diff --exit-code`s it, so the committed `oxabl.schema.json` can't drift.
-
-**Verification:** `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all -- --check` all green; `pnpm --dir clients/vscode test` green (11); `oxabl schema` emits a valid schema with all lint + style keys. All fixtures synthetic (no corpus, no PII).
-
----
-
-## Dogfood findings → follow-up issues
-
-Running the extension against a large real-world ABL codebase surfaced a batch of diagnostics. Triage separated genuine defects from a **configuration artifact**: a large class of "undefined symbol / unknown table / unknown field" false positives (and one cascading parse error) traced to a workspace that had **no include paths and no `.df` schema configured** — so oxabl couldn't expand `{includes}` (where shared vars, functions, and temp-tables are declared) or resolve tables/fields. Configuring `[workspace.sources].include_paths` + `[workspace.schema].files` clears those; they are not oxabl defects.
-
-The genuine, config-independent bugs (confirmed with synthetic repros):
-
-| Issue | Bug |
-|-------|-----|
-| **#106** | Temp-table fields are declared in the enclosing **program** scope, not the temp-table's scope → false `SEM0001 "already declared in this scope"` when two temp-tables share a field name. |
-| **#107** | An **unqualified** `BREAK BY` field referenced inside `FIRST-OF()` / `LAST-OF()` is flagged `LINT0001` undefined; qualifying it (`buffer.field`) resolves. |
-| **#108** | An **unresolvable** include used as a call argument expands to empty and cascades into a misleading `Unexpected token Comma` (graceful-degradation; include-triggered). |
-| **#105** | UX: add an `oxabl: Restart Server` command (avoid a full window reload after a config change / crash-stop). |
-
-Held (not filed): a variable visible earlier in a program reported undefined much later — possibly a genuine block/scope bug, possibly block nesting corrupted by an upstream broken include expansion. Reproduce in a workspace that **has** includes before chasing it.
+**Verification (each PR):** `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all -- --check` green; client `pnpm run check` + `pnpm test` (20 tests) + esbuild build green. All fixtures synthetic — no corpus, no PII.
 
 ---
 
 ## Next
 
-1. **Merge PR #104** once CI is green. The README status flip is already in the PR.
-2. **Re-run dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close #108 and pin down the held block-scope false positive.
-3. **Fix the confirmed semantic bugs** #106 (temp-table field scoping) and #107 (`FIRST-OF`/`LAST-OF` unqualified field) — both have minimal synthetic repros.
-4. **Deferred from the plan:** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish (publisher identity, icon, CI publish).
-5. **#105** — the restart-server command.
+1. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and pin down the held "visible-earlier / undefined-later" block-scope false positive.
+2. **The strategic thread: #102 — workspace-wide cross-file semantic resolution** (with #103 as the background-index fast-follow). The engine analyses one file at a time today, so every inherited member from a parent `.cls`, every `USING`-imported type, every `RUN` target, and every cross-file `SHARED` var resolves to `Unknown`/`External` → `undefined-symbol` false-positives on real OO ABL. #102 is explicitly the ceiling on lint effectiveness and **blocks #57** (public rule API) and any new rules. It's a genuine architectural piece (cross-file salsa graph, class/inherited-member index, includes-as-tracked-inputs with an expansion cache, invalidation model, AVM-parity-vs-explicit-"unknown" decision) — take it through `/ce-brainstorm` → `/ce-plan` before building.
+3. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish (publisher identity, icon, CI publish).
 
 ---
 
@@ -74,11 +47,11 @@ Held (not filed): a variable visible earlier in a program reported undefined muc
 
 | Issue/PR | Relation |
 |----------|----------|
-| **#104** | Open PR — VS Code extension + `oxabl schema` + CI (this session) |
-| **#105** | Filed — `oxabl: Restart Server` command (client UX follow-up) |
-| **#106** | Filed — temp-table field scoping → false `SEM0001` |
-| **#107** | Filed — unqualified `FIRST-OF`/`LAST-OF` field flagged undefined |
-| **#108** | Filed — unresolvable-include-as-argument → misleading comma parse error |
-| #100 | Merged — LSP `textDocument/formatting` (the capability this extension surfaces) |
-| #90 | Merged — `oxabl lsp` diagnostics + live `oxabl.toml`/`.df` reload (the substrate U2 guards) |
-| `STRATEGY.md` | Interactive-editor-tooling track + dogfood-adoption metric updated: the first editor client has landed |
+| **#109** | Merged — `oxabl: Restart Server` command (#105) |
+| **#110** | Merged — temp-table field scoping fix (#106) |
+| **#111** | Merged — unqualified `FIRST-OF`/`LAST-OF` field fix (#107) |
+| #104 | Merged — VS Code extension + `oxabl schema` + CI |
+| **#108** | Open — unresolvable-include-as-argument → misleading comma error (deferred) |
+| **#102 / #103** | Open — cross-file resolution + background index (the recommended next thread) |
+| **#57** | Open — public lint-rule API; blocked on #102 |
+| `STRATEGY.md` | Dogfood-adoption metric + Linting track updated: real dogfood has begun and is driving trust-hardening |

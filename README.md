@@ -11,11 +11,11 @@ No affiliation with Progress.
 
 ## Project Roadmap
 
-**Goal**: A high performance suite of command line tools and libraries to make ABL development fast and effective.
+**Goal**: A high performance suite of tooling to make ABL development fast and effective, without a dependency on the ABL compiler.
 
 ### Tooling
 
-These are the current high-priority goals for oxabl tooling. As it stands, oxabl has laid the groundwork for high-performance pre-processing, parsing, and semantic analysis. Next comes tooling on top of that. The foundation is still very new, so tooling is either unavailable or unstable.
+These are the current high-priority goals for oxabl tooling. As it stands, oxabl has laid the groundwork for high-performance pre-processing, parsing, and semantic analysis. Next comes tooling on top of that.
 
 - LSP
   - Work with oxabl to parse, lint, and format code directly in your editor
@@ -29,13 +29,14 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Try-it-yourself
   - A "try it in 10 seconds" demo in the browser
   - Make WASM a compile target in the release pipeline, past a code block into the browser, lint and format instantly
+  - Status: Unstarted
 - Conformance harness
   - A real-world test suite to ensure oxabl is conformant with all ABL fragments and the compiler
   - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
 - Linter
   - Lint rule engine
   - Public API for creating new lint rules and submitting them upstream for inclusion in oxabl's default rule set
-  - Status: the `oxabl check` command has been extended for linting real-world code bases and outputting our first LINT0001 rule (unused variables). Still experimental and unavailable.
+  - Status: the `oxabl check` command has been extended for linting real-world code bases and outputting our first LINT0001 rule (unused variables). Still experimental, no public API for extending. Can be used via the VS Code extension.
 - Easy one-line installer and VS Code extension for getting started
   - Status: VS Code extension available (experimental, sideload) — build a VSIX with `clients/vscode/scripts/build-vsix.sh`; it launches `oxabl lsp` for format-on-save, live diagnostics, and `oxabl.toml` schema completion. One-line installer: not started.
 - Build system
@@ -45,19 +46,22 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 
 ## Project Status
 
-The lexer, source map, ast, and parser crates are passing 100% of our test suite against our corpus. Next work is `oxabl check`.
+The lexer, source map, ast, and parser crates are passing 100% of our test suite against our corpus.
 
 Requirements:
-- `oxabl_lexer`: MVP has been completed in `crates/oxabl_lexer`.
+- `oxabl_lexer`: Stable in `crates/oxabl_lexer`.
   - Produces tokens against all known ABL keywords, primitive datatypes, operators, and identifiers.
   - Correctly tokenises our corpus.
   - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl`.
-- `source_map`: MVP has been completed in `crates/oxabl_common`.
+  - No new features planned, the lexer is complete, and will (most likely) only receive bug fixes and performance improvements.
+- `source_map`: Stable in `crates/oxabl_common`.
   - Produces line and column numbers from byte offsets stored in tokens.
   - Used in our token dumps and benchmarks.
   - Souce maps generated from the corpus line up to it's source accurately.
+  - No new features planned, the source_map is complete, and will (most likely) only receive bug fixes and performance improvemnets.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
+  - MVP complete, still getting new features to support better diagnostics and formatting.
 - `oxabl_parser`: MVP has been completed, parses 100% of our corpus code base. Parses:
   - Expressions with proper operator precedence
   - Declarations
@@ -67,13 +71,15 @@ Requirements:
   - Include file references and positional argument references
   - Postfix operations, and
   - Has error recovery via synchronization on period boundaries
+  - Still getting new features, bug fixes, and improvements.
 - `oxabl check`: A CLI validation tool in `crates/oxabl` for testing parser coverage against real ABL codebases.
   - Walks a directory (or checks a single file) for ABL files (`.p`, `.w`, `.cls`) and runs each through the preprocessor, lexer and parser.
   - Reports pass/fail counts, error locations, and top error patterns. Supports `--json` output.
   - Placeholder only — the parsed AST is discarded; no downstream work is performed.
   - Usage: `cargo run -p oxabl -- check <path> --preprocessor --include-path <path>`
+  - Will be deprecated soon, as it's mostly a debugging tool.
 
-Current Work: Semantic analysis.
+Current Work: Semantic analysis, second-pass formatting and linting, the LSP, and VS Code extension.
 
 ## Benchmarks
 
