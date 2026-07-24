@@ -88,9 +88,9 @@ bitflags! {
         /// this symbol (#69).
         const PROTOTYPE        = 1 << 16;
         /// Resolve-computed usage facts (not declaration modifiers): set on a
-        /// block-hoisted variable (`defined_in_block.is_some()`) when it is
-        /// referenced from *outside* its defining block. Consumed by the
-        /// `block-var-used-outside` lint (LINT0005) to distinguish the
+        /// block-hoisted variable (one recorded in `SymbolTable::block_defined`)
+        /// when it is referenced from *outside* its defining block. Consumed by
+        /// the `block-var-used-outside` lint (LINT0005) to distinguish the
         /// "may still hold its default value" hazard (read outside, never
         /// written outside) from a deliberate cross-block assignment.
         const READ_OUTSIDE_BLOCK  = 1 << 17;
@@ -126,13 +126,6 @@ pub struct Symbol {
     /// Incremented by the resolve pass on every resolving write reference.
     pub write_count: u32,
     pub flags: SymbolFlags,
-    /// For a `DEFINE VARIABLE` that ABL hoisted out of a `DO`/`FOR`/`REPEAT`/
-    /// `CATCH`/`FINALLY` block to its routine scope: the original block scope
-    /// the definition textually sat in. `None` for variables defined directly
-    /// at a routine scope and for every non-variable symbol. The
-    /// `block-var-used-outside` lint (LINT0005) uses it to decide whether a
-    /// reference is "inside" or "outside" the defining block.
-    pub defined_in_block: Option<ScopeId>,
     /// Link to the backing schema table for `Buffer` / `TempTable` symbols.
     /// Populated at declare time for `DEFINE BUFFER ... FOR <table>` and
     /// `FOR EACH <table>` (and synthesized default-buffer symbols at resolve
@@ -151,11 +144,13 @@ pub struct SymbolTable {
     /// the symbol, we track the rebinding scopes here — mirrors Ruff's
     /// `rebinding_scopes` side map for Python `global`/`nonlocal`.
     pub rebinding_scopes: FxHashMap<SymbolId, Vec<ScopeId>>,
-    /// Set by the declare pass when it hoists at least one `DEFINE VARIABLE`
-    /// out of a block (some symbol carries `defined_in_block`). Lets the
-    /// resolve pass skip the block-var-used-outside tracking (LINT0005)
-    /// wholesale in the common case, in O(1) rather than a per-file symbol scan.
-    has_block_scoped_var: bool,
+    /// The original block scope of each `DEFINE VARIABLE` the declare pass
+    /// hoisted out of a `DO`/`FOR`/`REPEAT`/`CATCH`/`FINALLY` block to its
+    /// routine scope (see variable hoisting). Kept as a side map rather than a
+    /// `Symbol` field so the common case (no hoisting) neither grows every
+    /// symbol nor allocates. The `block-var-used-outside` analysis (LINT0005)
+    /// uses it to classify a reference as inside/outside the defining block.
+    block_defined: FxHashMap<SymbolId, ScopeId>,
 }
 
 impl SymbolTable {
@@ -200,15 +195,20 @@ impl SymbolTable {
         self.rebinding_scopes.entry(sym).or_default().push(scope);
     }
 
-    /// Note that a `DEFINE VARIABLE` was hoisted out of a block (its symbol
-    /// carries `defined_in_block`). See [`Self::has_block_scoped_var`].
-    pub fn mark_block_scoped_var(&mut self) {
-        self.has_block_scoped_var = true;
+    /// Record that variable `sym` was hoisted out of block scope `block`.
+    pub fn record_block_defined(&mut self, sym: SymbolId, block: ScopeId) {
+        self.block_defined.insert(sym, block);
+    }
+
+    /// The block scope `sym` was hoisted out of, if it is a block-hoisted
+    /// variable; `None` otherwise.
+    pub fn block_defined_scope(&self, sym: SymbolId) -> Option<ScopeId> {
+        self.block_defined.get(&sym).copied()
     }
 
     /// Whether any declared variable was hoisted out of a block. When `false`,
     /// the block-var-used-outside analysis (LINT0005) has nothing to track.
     pub fn has_block_scoped_var(&self) -> bool {
-        self.has_block_scoped_var
+        !self.block_defined.is_empty()
     }
 }

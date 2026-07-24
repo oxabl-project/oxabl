@@ -622,8 +622,7 @@ impl<'a> Walker<'a> {
         if block_scope != scope
             && let Some(id) = sym
         {
-            self.symbols.get_mut(id).defined_in_block = Some(block_scope);
-            self.symbols.mark_block_scoped_var();
+            self.symbols.record_block_defined(id, block_scope);
         }
     }
 
@@ -836,7 +835,6 @@ impl<'a> Walker<'a> {
             read_count: 0,
             write_count: 0,
             flags,
-            defined_in_block: None,
             table_id,
         };
         let id = self.symbols.insert(symbol);
@@ -995,15 +993,15 @@ struct ResolveWalker<'a> {
     /// once at end-of-pass so the pass stays idempotent under Salsa re-run.
     counts: FxHashMap<SymbolId, (u32, u32)>,
     /// Per-symbol `(read_outside, write_outside)` accumulator for block-hoisted
-    /// variables: whether the variable is read / written from *outside* its
-    /// `defined_in_block` scope. Flushed to [`SymbolFlags::READ_OUTSIDE_BLOCK`]
+    /// variables: whether the variable is read / written from *outside* the
+    /// block it was hoisted out of. Flushed to [`SymbolFlags::READ_OUTSIDE_BLOCK`]
     /// / [`SymbolFlags::WRITE_OUTSIDE_BLOCK`] at end-of-pass (same idempotency
     /// contract as `counts`).
     block_var_outside: FxHashMap<SymbolId, (bool, bool)>,
     /// True only when the declare pass hoisted at least one `DEFINE VARIABLE`
-    /// out of a block (some symbol has `defined_in_block`). The vast majority
-    /// of files have none, so this lets [`Self::note_block_var_use`] skip the
-    /// per-reference symbol load entirely on the resolve hot path.
+    /// out of a block (`SymbolTable::has_block_scoped_var`). The vast majority
+    /// of files have none, so callers skip [`Self::note_block_var_use`]
+    /// entirely on the resolve hot path.
     track_block_vars: bool,
     /// Dedup cache for synthesized schema-field symbols: one symbol per
     /// distinct `(table, field)` referenced, no matter how many times the
@@ -2341,7 +2339,6 @@ impl<'a> ResolveWalker<'a> {
             read_count: 0,
             write_count: 0,
             flags: SymbolFlags::empty(),
-            defined_in_block: None,
             table_id: None,
         });
         self.synth_fields.insert((tid, field_atom.clone()), sym);
@@ -2372,7 +2369,6 @@ impl<'a> ResolveWalker<'a> {
             read_count: 0,
             write_count: 0,
             flags: SymbolFlags::empty(),
-            defined_in_block: None,
             table_id: Some(tid),
         });
         self.synth_buffers.insert(tid, sym);
@@ -2403,18 +2399,13 @@ impl<'a> ResolveWalker<'a> {
 
     /// Note a reference to `sym` occurring in `scope`, for the
     /// `block-var-used-outside` analysis (LINT0005). Only block-hoisted
-    /// variables (`defined_in_block.is_some()`) are tracked; a reference whose
-    /// `scope` is not lexically within the defining block is recorded as a
-    /// read and/or write "outside" that block. Cheap no-op for every other
-    /// symbol, so it is safe to call at every value-identifier resolution.
+    /// variables (those recorded in `SymbolTable::block_defined`) are tracked;
+    /// a reference whose `scope` is not lexically within the defining block is
+    /// recorded as a read and/or write "outside" that block.
     fn note_block_var_use(&mut self, sym: SymbolId, scope: ScopeId, mode: AccessMode) {
         // Callers gate on `self.track_block_vars`, so this only runs when the
         // file hoisted at least one variable out of a block.
-        let s = self.symbols.get(sym);
-        if s.kind != SymbolKind::Variable {
-            return;
-        }
-        let Some(block) = s.defined_in_block else {
+        let Some(block) = self.symbols.block_defined_scope(sym) else {
             return;
         };
         // Inside the defining block (or a nested descendant of it) is safe.

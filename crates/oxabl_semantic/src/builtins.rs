@@ -121,7 +121,6 @@ static SEED: LazyLock<SeedData> = LazyLock::new(|| {
             read_count: 0,
             write_count: 0,
             flags: SymbolFlags::empty(),
-            defined_in_block: None,
             table_id: None,
         });
         bindings.insert(atom, SymbolId::new(idx as u32));

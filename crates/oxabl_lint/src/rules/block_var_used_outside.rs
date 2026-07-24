@@ -65,7 +65,9 @@ pub fn run(
 /// compensating assignment outside that block.
 fn is_hazard(sym: &Symbol) -> bool {
     sym.kind == SymbolKind::Variable
-        && sym.defined_in_block.is_some()
+        // READ_OUTSIDE_BLOCK is only ever set by the resolve pass for a
+        // variable that was hoisted out of a block, so it doubles as the
+        // "is block-hoisted" gate here.
         // Assigned somewhere, but only inside the block (no outside write):
         // that is precisely the conditional case where the read may see the
         // default value. A never-assigned variable holds its default
