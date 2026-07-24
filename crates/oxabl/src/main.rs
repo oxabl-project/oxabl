@@ -5,10 +5,7 @@ use std::time::Instant;
 
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
-use oxabl_analyze::{
-    CollectedDiagnostics, collect_with_model, dump_json_with_diagnostics,
-    dump_text_with_diagnostics,
-};
+use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
 use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
@@ -473,15 +470,19 @@ fn run_analyze(
         Vec::new()
     };
 
-    // Load the schema when `--schema` was passed. Load diagnostics are
-    // reported but non-fatal — a partially-loaded schema still drives
-    // resolution. `schema_loaded` is set explicitly (not derived from
-    // `Schema::is_empty`) so an intentionally empty `.df` still reads as
-    // "loaded" to schema-dependent diagnostics.
+    // Load the schema when `--schema` was passed. A directory loads every
+    // `.df` inside it via `Schema::from_df_dir`; a single path loads that one
+    // file. Load diagnostics are reported but non-fatal — a partially-loaded
+    // schema still drives resolution. `schema_loaded` is set explicitly (not
+    // derived from `Schema::is_empty`) so an intentionally empty `.df` still
+    // reads as "loaded" to schema-dependent diagnostics.
     let (schema, schema_loaded) = match schema_path {
         Some(p) => {
-            let fs = RealFileSystem;
-            let (schema, diags) = SchemaLoader::load_files(&[p.to_path_buf()], &fs);
+            let (schema, diags) = if p.is_dir() {
+                Schema::from_df_dir(p)
+            } else {
+                SchemaLoader::load_files(&[p.to_path_buf()], &RealFileSystem)
+            };
             for d in &diags {
                 eprintln!("schema: [{}] {}", d.code.0, d.message);
             }
@@ -490,29 +491,26 @@ fn run_analyze(
         None => (Schema::empty(), false),
     };
 
-    // Diagnostics come from the shared collector so the CLI and the LSP can
-    // never drift (R7). The collector uses `parse_program` error recovery, so
-    // `analyze` now surfaces semantic/lint diagnostics even on a parse error
-    // instead of aborting — a deliberate behavior change (U4).
-    let fs = RealFileSystem;
-    let root = FileId::new(1);
     // Resolve the `[workspace.lint]` severity surface (CLI has no lint flags yet,
     // so overrides are empty): CLI > oxabl.toml > default (R15).
     let (lint_config, lint_err) = resolved_lint_config(path, &[]);
     if let Some(err) = lint_err {
         eprintln!("warning: {err}");
     }
-    let lint_severities = lint_config.to_severity_map();
-    let (sem_opt, collected) = collect_with_model(
-        root,
-        &source,
-        &fs,
-        &paths,
-        &schema,
+
+    // Diagnostics come from the shared `oxabl::analyze` pipeline so the CLI and
+    // the LSP can never drift (R7). It uses `parse_program` error recovery, so
+    // `analyze` surfaces semantic/lint diagnostics even on a parse error instead
+    // of aborting (U4). `analyze` defaults the file system to `RealFileSystem`
+    // and the root file id to the same synthetic id the surfacing helpers use.
+    let opts = oxabl::AnalyzeOptions {
+        schema,
         schema_loaded,
-        &lint_severities,
+        include_paths: paths,
+        lint_severities: lint_config.to_severity_map(),
         preprocess,
-    );
+    };
+    let (sem_opt, collected) = oxabl::analyze(&source, &opts);
 
     let sem = match sem_opt {
         Some(sem) => sem,

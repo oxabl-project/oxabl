@@ -203,6 +203,13 @@ impl Table {
         self.fields.iter().find(|f| f.name == *name)
     }
 
+    /// `&str` convenience for [`get_field`](Self::get_field): folds `name` to an
+    /// atom internally so a consumer can ask `table.field("qty")` without
+    /// reaching for [`fold_atom`](crate::fold_atom).
+    pub fn field(&self, name: &str) -> Option<&Field> {
+        self.get_field(&fold_atom(name))
+    }
+
     /// Resolve a (possibly abbreviated) field reference, ABL-style:
     /// 1. an exact (case-insensitive) match wins — even when the name is also
     ///    a prefix of a longer field;
@@ -224,6 +231,13 @@ impl Table {
             (Some(_), Some(_)) => FieldResolution::Ambiguous,
             _ => FieldResolution::NotFound,
         }
+    }
+
+    /// `&str` convenience for [`resolve_field`](Self::resolve_field): folds
+    /// `name` to an atom internally, applying the same ABL exact-then-prefix
+    /// resolution.
+    pub fn resolve_field_by_name(&self, name: &str) -> FieldResolution<'_> {
+        self.resolve_field(&fold_atom(name))
     }
 
     /// Case-insensitive lookup of an index within this table.
@@ -272,6 +286,13 @@ impl Schema {
     pub fn get(&self, name: &OxablAtom) -> Option<&Table> {
         let id = *self.tables.get(name)?;
         self.arena.get(id.raw() as usize)
+    }
+
+    /// `&str` convenience for [`get`](Self::get): folds `name` to an atom
+    /// internally so a consumer can ask `schema.table("customer")` without
+    /// reaching for [`fold_atom`](crate::fold_atom). Case-insensitive, per ABL.
+    pub fn table(&self, name: &str) -> Option<&Table> {
+        self.get(&fold_atom(name))
     }
 
     /// Lookup by dense id. Returns `None` if `id` was not produced by this

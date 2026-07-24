@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{FileSystem, RealFileSystem};
 
 use crate::diagnostics::{SCHEMA0001, SCHEMA0010, SCHEMA0011, SCHEMA0012, SCHEMA0030, SCHEMA0031};
 use crate::parser::{PendingField, PendingIndex, parse_df};
@@ -283,6 +283,32 @@ fn path_within(root: &Path, candidate: &Path) -> bool {
         }
     }
     normalized.starts_with(root) || depth >= 0
+}
+
+impl Schema {
+    /// Load every `.df` file directly inside `dir` (non-recursive) into a single
+    /// merged schema, using the real filesystem. Files are loaded in sorted path
+    /// order so merge/conflict diagnostics are deterministic. A directory with
+    /// no `.df` files — or one that cannot be read — yields an empty schema and
+    /// no diagnostics.
+    ///
+    /// This is the explicit-path convenience; workspace-config auto-discovery of
+    /// the schema directory is intentionally deferred.
+    pub fn from_df_dir(dir: impl AsRef<Path>) -> (Schema, Vec<Diagnostic>) {
+        let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir.as_ref()) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("df"))
+                })
+                .collect(),
+            Err(_) => return (Schema::empty(), Vec::new()),
+        };
+        paths.sort();
+        SchemaLoader::load_files(&paths, &RealFileSystem)
+    }
 }
 
 #[cfg(test)]

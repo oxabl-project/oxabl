@@ -17,8 +17,15 @@
 //! keeps internal helpers — e.g. the parser's recovery methods — unreachable by
 //! construction and avoids cross-crate name collisions as the workspace grows.
 
+use std::path::PathBuf;
+
+use oxabl_analyze::{CollectedDiagnostics, collect_with_model};
+use oxabl_common::{FileId, LintSeverityMap};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
+use oxabl_schema::Schema;
+use oxabl_semantic::Semantic;
+use oxabl_workspace::{FileSystem, RealFileSystem};
 
 /// Parse ABL `source` into a [`Program`], using the parser's error-recovery
 /// mode: parsing continues past errors, so the returned `Program` carries both
@@ -53,6 +60,86 @@ pub use oxabl_parser::Program;
 /// labels and help. Re-exported at the top level as the common currency of the
 /// analysis layers.
 pub use oxabl_common::Diagnostic;
+
+/// The synthetic root [`FileId`](common::FileId) that [`analyze`] uses for an
+/// in-memory source. It matches the id the CLI and collector use, so rendered
+/// positions line up.
+const ANALYZE_ROOT: FileId = FileId::new(1);
+
+/// Inputs to [`analyze`] / [`analyze_with_fs`], wrapping the five configurable
+/// arguments of the underlying pipeline so callers don't juggle a long
+/// positional list. Every field has a sensible default (empty schema, no
+/// preprocessing, no include paths, built-in lint severities).
+///
+/// ```
+/// let opts = oxabl::AnalyzeOptions { preprocess: true, ..Default::default() };
+/// let (_model, diags) = oxabl::analyze("MESSAGE \"x\".", &opts);
+/// let _ = diags;
+/// ```
+pub struct AnalyzeOptions {
+    /// Schema driving schema-backed resolution (`unknown-table-or-field`, field
+    /// typing). Defaults to [`Schema::empty`].
+    pub schema: Schema,
+    /// Whether a schema was actually loaded. When `false`, schema-dependent
+    /// diagnostics stay silent. Kept explicit (not derived from
+    /// `Schema::is_empty`) so an intentionally empty `.df` still reads as loaded.
+    pub schema_loaded: bool,
+    /// PROPATH-style include search directories (only consulted when
+    /// `preprocess` is `true`).
+    pub include_paths: Vec<PathBuf>,
+    /// Per-rule lint severity overrides. Empty keeps every rule's built-in
+    /// severity.
+    pub lint_severities: LintSeverityMap,
+    /// Whether to run preprocessor expansion (include resolution, `&IF`) before
+    /// analysis.
+    pub preprocess: bool,
+}
+
+impl Default for AnalyzeOptions {
+    fn default() -> Self {
+        AnalyzeOptions {
+            schema: Schema::empty(),
+            schema_loaded: false,
+            include_paths: Vec::new(),
+            lint_severities: LintSeverityMap::new(),
+            preprocess: false,
+        }
+    }
+}
+
+/// Run the full parse → semantic → lint pipeline over an in-memory `source`,
+/// returning the [`Semantic`](semantic::Semantic) model (absent only on a fatal
+/// preprocessing failure) and the collected diagnostics.
+///
+/// This is the one-call convenience over the pipeline's long positional form:
+/// `source` is the argument, five inputs come from `options`, and the file
+/// system defaults to [`RealFileSystem`](workspace::RealFileSystem) (so include
+/// resolution reads from disk). Consumers that must stay off disk — the LSP, or
+/// tests — should use [`analyze_with_fs`] with an in-memory file system.
+pub fn analyze(source: &str, options: &AnalyzeOptions) -> (Option<Semantic>, CollectedDiagnostics) {
+    analyze_with_fs(source, &RealFileSystem, options)
+}
+
+/// Like [`analyze`], but with a caller-provided [`FileSystem`](workspace::FileSystem)
+/// for include resolution — e.g. an
+/// [`InMemoryFileSystem`](workspace::InMemoryFileSystem) so analysis never
+/// touches disk.
+pub fn analyze_with_fs(
+    source: &str,
+    fs: &dyn FileSystem,
+    options: &AnalyzeOptions,
+) -> (Option<Semantic>, CollectedDiagnostics) {
+    collect_with_model(
+        ANALYZE_ROOT,
+        source,
+        fs,
+        &options.include_paths,
+        &options.schema,
+        options.schema_loaded,
+        &options.lint_severities,
+        options.preprocess,
+    )
+}
 
 /// Render a slice of [`Diagnostic`]s to `path:line:col: severity[code]: message`
 /// text with source snippets, using a [`SourceResolver`](common::SourceResolver)

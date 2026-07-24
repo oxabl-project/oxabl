@@ -108,6 +108,65 @@ fn diagnostic_serializes_via_facade() {
     assert_eq!(v["span"]["file"], 1);
 }
 
+#[test]
+fn analyze_default_options_reports_diagnostics() {
+    // Unused variable → LINT0002; proves parse → semantic → lint runs end to end
+    // through the single-call `analyze` with default options.
+    let (sem, collected) = oxabl::analyze(
+        "DEFINE VARIABLE unusedVar AS INTEGER NO-UNDO.",
+        &oxabl::AnalyzeOptions::default(),
+    );
+    assert!(sem.is_some());
+    let codes: Vec<&str> = collected.all().map(|c| c.diagnostic.code.0).collect();
+    assert!(
+        codes.contains(&"LINT0002"),
+        "expected LINT0002, got {codes:?}"
+    );
+}
+
+#[test]
+fn analyze_flows_schema_through_options() {
+    // Load a Customer(CustNum) schema from a temp .df dir via Schema::from_df_dir.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("s.df"),
+        "ADD TABLE \"Customer\"\nADD FIELD \"CustNum\" OF \"Customer\" AS integer\n",
+    )
+    .unwrap();
+    let (schema, sdiags) = oxabl::schema::Schema::from_df_dir(dir.path());
+    assert!(sdiags.is_empty(), "schema should load cleanly: {sdiags:?}");
+
+    // A reference to an unknown field on a known table fires LINT0003 — proving
+    // the schema flowed through AnalyzeOptions into resolution.
+    let source = "FIND FIRST Customer.\nDISPLAY Customer.NoSuchField.\n";
+    let opts = oxabl::AnalyzeOptions {
+        schema,
+        schema_loaded: true,
+        ..Default::default()
+    };
+    let (_sem, collected) = oxabl::analyze(source, &opts);
+    let codes: Vec<&str> = collected.all().map(|c| c.diagnostic.code.0).collect();
+    assert!(
+        codes.contains(&"LINT0003"),
+        "expected LINT0003, got {codes:?}"
+    );
+}
+
+#[test]
+fn analyze_with_fs_runs_preprocess_path() {
+    use oxabl::workspace::InMemoryFileSystem;
+    let fs = InMemoryFileSystem::new();
+    let opts = oxabl::AnalyzeOptions {
+        preprocess: true,
+        ..Default::default()
+    };
+    // A scoped-define expanded before analysis; proves the fs-injection +
+    // preprocess path runs and yields a model.
+    let src = "&SCOPED-DEFINE MSG \"hi\"\nMESSAGE {&MSG}.\n";
+    let (sem, _collected) = oxabl::analyze_with_fs(src, &fs, &opts);
+    assert!(sem.is_some());
+}
+
 /// Every curated module is reachable from a single `oxabl` dependency (U1).
 /// Referencing the items — as values, fn-pointers, or constructors — is the
 /// compile-gate; no sub-crate import is present anywhere in this test file.
