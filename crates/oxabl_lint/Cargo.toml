@@ -15,5 +15,7 @@ oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = ["test-support"] }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
 oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
+oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 rust_decimal = "1.40.0"
 smallvec = { version = "1", features = ["union"] }

@@ -84,6 +84,7 @@ pub struct LintConfig {
     pub unknown_table_or_field: LintSeverity,
     pub type_mismatch_assignment: LintSeverity,
     pub block_var_used_outside: LintSeverity,
+    pub assigned_but_never_read: LintSeverity,
 }
 
 impl Default for LintConfig {
@@ -94,6 +95,7 @@ impl Default for LintConfig {
             unknown_table_or_field: LintSeverity::Warn,
             type_mismatch_assignment: LintSeverity::Warn,
             block_var_used_outside: LintSeverity::Info,
+            assigned_but_never_read: LintSeverity::Warn,
         }
     }
 }
@@ -108,6 +110,7 @@ impl LintConfig {
         map.set("LINT0003", self.unknown_table_or_field.to_severity());
         map.set("LINT0004", self.type_mismatch_assignment.to_severity());
         map.set("LINT0005", self.block_var_used_outside.to_severity());
+        map.set("LINT0006", self.assigned_but_never_read.to_severity());
         map
     }
 
@@ -120,6 +123,7 @@ impl LintConfig {
             "unknown-table-or-field" => self.unknown_table_or_field = severity,
             "type-mismatch-assignment" => self.type_mismatch_assignment = severity,
             "block-var-used-outside" => self.block_var_used_outside = severity,
+            "assigned-but-never-read" => self.assigned_but_never_read = severity,
             _ => return false,
         }
         true

@@ -103,33 +103,56 @@ pub fn run(
     diags
 }
 
-/// `read_count` of the declaration a table-shaped parameter actually names.
+/// Total reads credited to the table a table-shaped parameter names.
 ///
 /// `TABLE FOR tt` puts a `Parameter` in `NamespaceId::Values` while every
-/// reference to `tt` — `FIND FIRST tt`, `tt.field`, `BUFFER-COPY tt TO x` —
-/// resolves through `NamespaceId::Buffers` to the `DEFINE TEMP-TABLE`. Look the
-/// name up there, from the parameter's own declaring scope, and report that
-/// symbol's count.
+/// reference to `tt` resolves through `NamespaceId::Buffers` instead. But those
+/// references do not all land on one symbol, so a single scope-walking lookup is
+/// not enough:
 ///
-/// Returns `None` when no backing declaration is visible, which the caller
-/// treats as "stay silent". `DATASET FOR` lands here too: `DEFINE DATASET`
-/// declares into `Values` rather than `Buffers`, so a dataset parameter takes
-/// the silent path — correct for the false positive this fixes, and the
-/// conservative answer for the rest.
+/// - `tt.field` and `BUFFER-COPY tt TO x` credit the `DEFINE TEMP-TABLE` symbol,
+///   which sits in an *ancestor* scope of the parameter (file scope, typically).
+/// - `FOR EACH tt:` and `FIND FIRST tt` declare a fresh implicit buffer symbol
+///   in the block scope they open and credit *that*, leaving the temp-table's own
+///   `read_count` at zero. Those scopes are *descendants* of the parameter's, so
+///   an upward-only walk cannot see them — and `FOR EACH` is the single most
+///   idiomatic thing to do with a table parameter.
 ///
-/// Folded into a def-use query once CFG def-use records land (#126).
+/// So gather every `Buffers` binding of the name that the routine could be
+/// talking about — one in an ancestor-or-self scope (the declaration) or in a
+/// descendant scope (an implicit buffer opened inside the routine) — and sum
+/// their reads.
+///
+/// Returns `None` when no such binding exists at all, which the caller treats as
+/// "stay silent": the backing table is not visible, typically because it is
+/// declared in an include we could not resolve, and an unprovable claim is not a
+/// diagnostic. `DATASET FOR` lands there too, since `DEFINE DATASET` declares
+/// into `Values` rather than `Buffers`.
+///
+/// Collapses into a def-use query once CFG def-use records land (#126).
 fn backing_read_count(
     sid: SymbolId,
     sym: &Symbol,
     tree: &ScopeTree,
     symbols: &SymbolTable,
 ) -> Option<u32> {
-    let backing = tree.resolve(sym.declared_in, NamespaceId::Buffers, &sym.name)?;
-    // Defensive: never answer with the parameter's own meaningless count.
-    if backing == sid {
-        return None;
+    let param_scope = sym.declared_in;
+    let mut found = false;
+    let mut reads: u32 = 0;
+    for (other_id, other) in symbols.iter() {
+        // Never answer with the parameter's own meaningless count.
+        if other_id == sid || other.namespace != NamespaceId::Buffers || other.name != sym.name {
+            continue;
+        }
+        let visible_to_routine = tree.ancestors(param_scope).any(|s| s == other.declared_in);
+        let opened_inside_routine = tree.ancestors(other.declared_in).any(|s| s == param_scope);
+        if !visible_to_routine && !opened_inside_routine {
+            continue;
+        }
+        found = true;
+        reads = reads.saturating_add(other.read_count);
     }
-    Some(symbols.get(backing).read_count)
+    found.then_some(reads)
 }
 
 #[cfg(test)]
