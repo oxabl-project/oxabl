@@ -943,6 +943,7 @@ dependencies = [
  "oxabl_common",
  "oxabl_formatter",
  "oxabl_lexer",
+ "oxabl_lint",
  "oxabl_lsp",
  "oxabl_parser",
  "oxabl_preprocessor",
