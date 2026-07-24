@@ -7,10 +7,16 @@
 //! | Code     | Name                       | Severity | What it fires on                                        |
 //! |----------|----------------------------|----------|--------------------------------------------------------|
 //! | LINT0001 | `undefined-symbol`         | Error    | [`Resolution::Unresolved { reason: NotInScope }`]      |
-//! | LINT0002 | `unused-variable`          | Warning  | Variables / Parameters with `read_count == 0`          |
+//! | LINT0002 | `unused-variable`          | Warning  | Variables / Parameters never referenced at all          |
 //! | LINT0003 | `unknown-table-or-field`   | Error    | Field references under `schema_loaded == true`         |
 //! | LINT0004 | `type-mismatch-assignment` | Err/Warn | Assignment type mismatches / narrowing conversions     |
 //! | LINT0005 | `block-var-used-outside`   | Info     | Block-defined variable read outside its block, unset   |
+//! | LINT0006 | `assigned-but-never-read`  | Warning  | Dead store: written, never read; at the write site      |
+//!
+//! LINT0002 and LINT0006 divide one population — symbols nothing reads — by
+//! whether anything ever wrote to them, so a symbol yields exactly one
+//! diagnostic. A project that had silenced `unused-variable` therefore needs to
+//! silence `assigned-but-never-read` as well to keep the write-only half quiet.
 //!
 //! Per-rule severity (including *off*) is configured through
 //! `[workspace.lint]` in `oxabl.toml` and applied via
@@ -24,8 +30,9 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 mod rules;
 
 pub use rules::{
-    LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, block_var_used_outside,
-    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
+    LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, assigned_but_never_read,
+    block_var_used_outside, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
+    unused_variable,
 };
 
 /// Run every lint rule over `program` + `sem` and return a combined list
@@ -55,6 +62,9 @@ pub fn lint_file(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -
     });
     run_rule(&mut diags, LINT0005, ctx, || {
         block_var_used_outside::run(program, sem, ctx)
+    });
+    run_rule(&mut diags, LINT0006, ctx, || {
+        assigned_but_never_read::run(program, sem, ctx)
     });
     diags
 }

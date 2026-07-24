@@ -1,7 +1,14 @@
 //! `unused-variable` lint (LINT0002).
 //!
-//! Fires on variables and parameters whose `read_count` is zero.
-//! Skip-list (captured as tests below):
+//! Fires on variables and parameters that are never *referenced at all* —
+//! `read_count == 0` and `write_count == 0`. A symbol that is written and never
+//! read is a dead store rather than a stray declaration, and belongs to
+//! `assigned-but-never-read` (LINT0006), which reports it at the assignment
+//! instead of at the `DEFINE`. The two rules divide one population, so a given
+//! symbol yields exactly one diagnostic.
+//!
+//! Skip-list (shared with LINT0006 via
+//! [`super::unused_symbol_shared`], captured as tests below):
 //! - `OUTPUT` and `INPUT-OUTPUT` parameters (writing is the contract).
 //! - Parameters in `INTERFACE` method declarations (interfaces have no bodies).
 //! - Parameters in `ABSTRACT` methods (body never runs).
@@ -55,6 +62,14 @@ pub fn run(
             sym.read_count > 0
         };
         if was_read {
+            continue;
+        }
+        // Written but never read is a *dead store*, not a stray declaration:
+        // a different finding, wanting a different span. It belongs to
+        // `assigned-but-never-read` (LINT0006), which reports at the
+        // assignment. Narrowing here is what keeps one symbol to exactly one
+        // diagnostic instead of two.
+        if sym.write_count > 0 {
             continue;
         }
         // The remaining exemptions still apply to a table-shaped parameter, so
@@ -339,8 +354,15 @@ mod tests {
     }
 
     #[test]
-    fn assign_counts_as_write_but_not_read_warns() {
-        // Assigning without reading leaves read_count=0; that's still unused.
+    fn assigned_never_read_is_narrowed_away_to_lint0006() {
+        // Deliberate contract change, not a regression: an assigned-never-read
+        // variable used to warn here. It is a *dead store* — something computed
+        // a value nothing consumes — and that finding belongs at the assignment,
+        // so `assigned-but-never-read` (LINT0006) owns it now and this rule
+        // narrows to "declared and never referenced at all". Paired with
+        // `fires_at_the_write_site_for_a_dead_store` in
+        // `assigned_but_never_read.rs`; one symbol must yield exactly one
+        // diagnostic, never two.
         use oxabl_ast::{Expression, ExpressionKind, IntegerLiteral, Literal};
         let stmts = vec![
             var_decl("x", DataType::Integer),
@@ -353,7 +375,10 @@ mod tests {
             }),
         ];
         let diags = analyze_and_lint(stmts);
-        assert_eq!(diags.len(), 1);
+        assert!(
+            diags.is_empty(),
+            "written-then-unread is LINT0006's finding, not LINT0002's: {diags:?}"
+        );
     }
 
     #[test]

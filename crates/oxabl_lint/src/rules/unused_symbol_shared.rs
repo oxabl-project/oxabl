@@ -56,6 +56,23 @@ pub fn is_skipped(sid: SymbolId, sym: &Symbol, tree: &ScopeTree, symbols: &Symbo
     false
 }
 
+/// Whether `sym` is a `TABLE FOR` / `DATASET FOR` parameter, whose own
+/// reference counts are meaningless because every reference to the name lands
+/// on the backing temp-table or dataset declaration instead.
+///
+/// Kept separate from [`is_skipped`] on purpose. LINT0006 skips these outright —
+/// a table-shaped parameter is never a dead store. LINT0002 must *not*, because
+/// it owns a redirect that still reports the genuinely-unused case by asking the
+/// backing declaration. Folding this into the shared skip would leave LINT0002
+/// unable to consult that list at all, and a shared list with a hole in it is
+/// worse than one explicit extra call at the single site that needs it.
+///
+/// Both callers disappear once CFG def-use records land (#126) and the redirect
+/// becomes a def-use query.
+pub fn is_table_like_param(sym: &Symbol) -> bool {
+    sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE)
+}
+
 /// Whether the `Parameter` declared in `scope` lives inside a method scope
 /// whose declaring method is ABSTRACT, or inside an INTERFACE body.
 fn in_skipped_method(scope: ScopeId, tree: &ScopeTree, symbols: &SymbolTable) -> bool {

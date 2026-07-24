@@ -3,6 +3,7 @@
 //! Each rule lives in its own file with inline tests. The top-level
 //! [`crate::lint_file`] dispatcher composes them.
 
+pub mod assigned_but_never_read;
 pub mod block_var_used_outside;
 pub mod type_mismatch_assignment;
 pub mod undefined_symbol;
@@ -20,3 +21,5 @@ pub const LINT0003: &str = "LINT0003";
 pub const LINT0004: &str = "LINT0004";
 /// Diagnostic code for `block-var-used-outside` (LINT0005).
 pub const LINT0005: &str = "LINT0005";
+/// Diagnostic code for `assigned-but-never-read` (LINT0006).
+pub const LINT0006: &str = "LINT0006";

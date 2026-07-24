@@ -8,7 +8,7 @@
 
 use oxabl_common::FileId;
 use oxabl_lexer::tokenize;
-use oxabl_lint::{LINT0002, unused_variable};
+use oxabl_lint::{LINT0002, LINT0006, assigned_but_never_read, unused_variable};
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
 use oxabl_semantic::{AnalysisContext, analyze_file};
@@ -126,17 +126,38 @@ END PROCEDURE.
 }
 
 #[test]
-fn locally_assigned_never_read_variable_still_warns() {
-    // Regression through the full pipeline: `write_count` is not the signal,
-    // so a plain local assignment keeps warning.
+fn locally_assigned_never_read_variable_is_lint0006_not_lint0002() {
+    // Deliberate contract change, not a regression. This used to assert that
+    // LINT0002 warns on a locally-assigned-never-read variable. That finding is
+    // a *dead store* and now belongs to `assigned-but-never-read` (LINT0006),
+    // which reports it at the assignment rather than at the `DEFINE`. Asserting
+    // both halves here is what keeps the split honest end-to-end: exactly one
+    // diagnostic for the symbol, and it comes from the new rule.
     let src = "\
 DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
 v-total = 1.
 ";
-    let diags = lint0002(src);
-    assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {diags:?}");
     assert!(
-        diags[0].contains("v-total"),
-        "assigned-but-never-read variable must still warn: {diags:?}"
+        lint0002(src).is_empty(),
+        "write-only is LINT0006's finding now: {:?}",
+        lint0002(src)
+    );
+
+    let tokens = tokenize(src);
+    let mut parser = Parser::new(&tokens, src);
+    let program = parser.parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema);
+    let sem = analyze_file(&program.statements, &ctx);
+    let dead = assigned_but_never_read::run(&program.statements, &sem, &ctx);
+    assert_eq!(dead.len(), 1, "expected one LINT0006: {dead:?}");
+    assert_eq!(dead[0].code.0, LINT0006);
+    assert!(dead[0].message.contains("v-total"), "{dead:?}");
+    // The span is the write, not the declaration.
+    let write_at = src.find("v-total = 1").unwrap() as u32;
+    assert_eq!(
+        dead[0].span.span.start, write_at,
+        "LINT0006 must point at the assignment: {dead:?}"
     );
 }
