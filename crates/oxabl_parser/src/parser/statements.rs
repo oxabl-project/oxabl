@@ -2217,9 +2217,15 @@ impl Parser<'_> {
         self.spanned_expr(lo, hi, kind)
     }
 
-    /// Parse multiple statements until we hit a terminator
     /// Parse the whole token stream, returning the statements on a clean parse
-    /// or the first error otherwise.
+    /// or the first error otherwise (fail-fast shape).
+    ///
+    /// Prefer the top-level `oxabl::parse` convenience for new code: it returns
+    /// a [`Program`](crate::Program) with full error recovery, and
+    /// [`Program::first_error`](crate::Program::first_error) recovers this
+    /// method's fail-fast view without discarding the rest of the parse. This
+    /// method is retained for the rare caller that genuinely wants a
+    /// `Result`-shaped first-error-only entry point.
     ///
     /// This is the non-`Program` entry point used by the `analyze` CLI path. It
     /// now shares [`parse_program`](Self::parse_program)'s per-statement error

@@ -10,8 +10,6 @@ use oxabl_analyze::{
     dump_text_with_diagnostics,
 };
 use oxabl_common::{Diagnostic, FileId, SourceMap};
-use oxabl_lexer::tokenize;
-use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
@@ -392,8 +390,7 @@ enum FormatOutcome {
 /// leaves a half-written file.
 fn format_one(source: &str, style: &StyleGuide) -> FormatOutcome {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let tokens = tokenize(source);
-        let program = Parser::new(&tokens, source).parse_program();
+        let program = oxabl::parse(source);
         oxabl_formatter::format(source, &program, style)
     }));
     match result {
@@ -797,28 +794,31 @@ fn parse_file(path: &Path) -> FileResult {
         }
     };
 
-    // Tokenize with panic catching
-    let tokens = match std::panic::catch_unwind(|| tokenize(&source)) {
-        Ok(tokens) => tokens,
-        Err(_) => {
-            return FileResult::LexerPanic {
-                path: path.to_path_buf(),
-            };
-        }
-    };
+    // Parse with panic catching. `oxabl::parse` folds tokenize + parser
+    // construction together; a panic anywhere in it is reported as a lexer
+    // panic (the historical failure mode) rather than unwinding the walk.
+    let program =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| oxabl::parse(&source))) {
+            Ok(program) => program,
+            Err(_) => {
+                return FileResult::LexerPanic {
+                    path: path.to_path_buf(),
+                };
+            }
+        };
 
-    // Parse
-    let mut parser = Parser::new(&tokens, &source);
-    match parser.parse_statements() {
-        Ok(_) => FileResult::Success,
-        Err(e) => {
+    // Fail-fast reporting: surface the first recovered error, matching the
+    // previous `parse_statements` contract.
+    match program.first_error() {
+        None => FileResult::Success,
+        Some(e) => {
             let source_map = SourceMap::new(&source);
             let (line, col) = source_map.lookup(e.span.start as usize);
             FileResult::ParseError {
                 path: path.to_path_buf(),
                 line,
                 col,
-                message: e.message,
+                message: e.message.clone(),
             }
         }
     }
@@ -874,10 +874,10 @@ fn parse_file_with_preprocess(
     // Get the expanded source text
     let expanded = preprocessed.to_text();
 
-    // Tokenize with panic catching
-    let tokens =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&expanded))) {
-            Ok(tokens) => tokens,
+    // Parse the preprocessed source with panic catching (see `parse_file`).
+    let program =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| oxabl::parse(&expanded))) {
+            Ok(program) => program,
             Err(_) => {
                 return FileResult::LexerPanic {
                     path: path.to_path_buf(),
@@ -885,11 +885,10 @@ fn parse_file_with_preprocess(
             }
         };
 
-    // Parse the preprocessed token stream
-    let mut parser = Parser::new(&tokens, &expanded);
-    match parser.parse_statements() {
-        Ok(_) => FileResult::Success,
-        Err(e) => {
+    // Fail-fast reporting: surface the first recovered error.
+    match program.first_error() {
+        None => FileResult::Success,
+        Some(e) => {
             // Resolve the virtual offset back to the real source location
             let real_span = preprocessed.resolve(e.span.start);
             let real_file = real_span.file;
@@ -902,7 +901,7 @@ fn parse_file_with_preprocess(
                     path: path.to_path_buf(),
                     line,
                     col,
-                    message: e.message,
+                    message: e.message.clone(),
                 }
             } else {
                 // Error is inside an included file — use expanded source for position
@@ -1154,17 +1153,15 @@ fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_p
         println!();
     }
 
-    let tokens =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&parse_source))) {
-            Ok(tokens) => tokens,
-            Err(_) => {
-                eprintln!("Lexer panic: {}", path.display());
-                return;
-            }
-        };
-
-    let mut parser = Parser::new(&tokens, &parse_source);
-    let program = parser.parse_program();
+    let program = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        oxabl::parse(&parse_source)
+    })) {
+        Ok(program) => program,
+        Err(_) => {
+            eprintln!("Lexer panic: {}", path.display());
+            return;
+        }
+    };
 
     if program.is_ok() {
         println!("OK: {}", path.display());

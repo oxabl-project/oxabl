@@ -7,8 +7,8 @@
 //! Will panic if `peek` or `advance` are called when the cursor is past the
 //! end of the token slice. Callers must check [`Parser::at_end`] first.
 
-pub mod expressions;
-pub mod statements;
+pub(crate) mod expressions;
+pub(crate) mod statements;
 #[cfg(test)]
 mod tests;
 
@@ -41,6 +41,14 @@ impl ParseError {
         )
     }
 }
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ParseError {}
 
 /// Fallback conversion using [`FileId::UNKNOWN`](oxabl_common::FileId::UNKNOWN).
 /// Prefer [`ParseError::into_diagnostic`] when the file id is known.
@@ -112,6 +120,36 @@ impl Program {
     /// Returns true if parsing completed without errors.
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
+    }
+
+    /// Returns the first [`ParseError`] recovered during parsing, or `None` if
+    /// the parse was clean. Consumers that only care whether parsing succeeded
+    /// (the fail-fast shape of [`Parser::parse_statements`]) can read this
+    /// instead of iterating `errors`; error recovery still preserves the first
+    /// error at `errors[0]`.
+    pub fn first_error(&self) -> Option<&ParseError> {
+        self.errors.first()
+    }
+
+    /// Convert this program into a `Result`, yielding `Ok(self)` when the parse
+    /// was clean and `Err(errors)` otherwise. Sugar for consumers that prefer
+    /// `Result`-style flow over inspecting the embedded `errors` vector.
+    pub fn into_result(self) -> Result<Program, Vec<ParseError>> {
+        if self.errors.is_empty() {
+            Ok(self)
+        } else {
+            Err(self.errors)
+        }
+    }
+
+    /// Map every recovered [`ParseError`] to a [`Diagnostic`](oxabl_common::Diagnostic)
+    /// for the given file, using the existing [`ParseError::into_diagnostic`]
+    /// conversion. Consumers no longer need to map `errors` by hand.
+    pub fn into_diagnostics(self, file: oxabl_common::FileId) -> Vec<oxabl_common::Diagnostic> {
+        self.errors
+            .into_iter()
+            .map(|e| e.into_diagnostic(file))
+            .collect()
     }
 }
 
@@ -417,7 +455,7 @@ impl<'a> Parser<'a> {
     /// Unlike `synchronize`, this does NOT stop at statement-starting keywords —
     /// use this when skipping the body of a known statement that may contain
     /// keyword tokens like FOR, DO, etc. as part of its own syntax.
-    pub fn skip_to_period(&mut self) {
+    pub(crate) fn skip_to_period(&mut self) {
         while !self.at_end() {
             if self.check(Kind::Period) {
                 self.advance(); // consume the period
@@ -429,7 +467,7 @@ impl<'a> Parser<'a> {
 
     /// Like skip_to_period but treats `.identifier` on the same line as field access,
     /// only stopping at a period that terminates a statement (not followed by an identifier).
-    pub fn skip_to_statement_end(&mut self) {
+    pub(crate) fn skip_to_statement_end(&mut self) {
         while !self.at_end() {
             if self.check(Kind::Period) {
                 let period_end = self.tokens[self.current].end;
@@ -451,7 +489,7 @@ impl<'a> Parser<'a> {
     /// encountered, the body is parsed as a full block (statements until END.)
     /// so that periods inside the editing block are not mistaken for the
     /// statement terminator.
-    pub fn skip_to_statement_end_editing_aware(&mut self) {
+    pub(crate) fn skip_to_statement_end_editing_aware(&mut self) {
         while !self.at_end() {
             // Detect EDITING: — parse the editing block body.
             if self.check(Kind::Editing) && self.check_at(1, Kind::Colon) {
@@ -480,7 +518,7 @@ impl<'a> Parser<'a> {
     /// that appear as part of a CREATE widget ASSIGN ... construct.  Without this, the
     /// first statement-terminating period *inside* the trigger sub-block would be mistaken
     /// for the end of the CREATE statement, leaving block nesting misaligned.
-    pub fn skip_to_statement_end_triggers_aware(&mut self) {
+    pub(crate) fn skip_to_statement_end_triggers_aware(&mut self) {
         while !self.at_end() {
             // Detect TRIGGERS: — enter trigger-block skip mode.
             // TRIGGERS lexes as Kind::Triggers (dedicated keyword kind, NOT Kind::Identifier).
