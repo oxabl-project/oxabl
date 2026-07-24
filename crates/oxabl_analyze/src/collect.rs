@@ -659,4 +659,62 @@ mod tests {
             "include dependency must be tracked"
         );
     }
+
+    /// Collect diagnostics for a single root buffer against the canonical
+    /// `Customer(CustNum, Name)` schema, preprocessing on.
+    fn collect_with_customer(source: &str) -> CollectedDiagnostics {
+        let fs = InMemoryFileSystem::new();
+        let schema = customer_schema();
+        collect_diagnostics(
+            ROOT,
+            source,
+            &fs,
+            &[],
+            &schema,
+            true,
+            &LintSeverityMap::new(),
+            true,
+        )
+    }
+
+    // #107: a break field named bare inside FIRST-OF must resolve against the
+    // FOR EACH block's implicit buffer, not be flagged undefined.
+    #[test]
+    fn unqualified_first_of_break_field_not_undefined() {
+        let src = "FOR EACH Customer NO-LOCK BREAK BY Customer.Name:\n\
+                   IF FIRST-OF(Name) THEN DISPLAY Customer.CustNum.\nEND.\n";
+        let c = collect_with_customer(src);
+        assert!(
+            !codes(&c).contains(&"LINT0001"),
+            "bare break field in FIRST-OF must resolve, got {:?}",
+            codes(&c)
+        );
+    }
+
+    // Control for #107: the qualified form already resolved; keep it green.
+    #[test]
+    fn qualified_first_of_break_field_not_undefined() {
+        let src = "FOR EACH Customer NO-LOCK BREAK BY Customer.Name:\n\
+                   IF FIRST-OF(Customer.Name) THEN DISPLAY Customer.CustNum.\nEND.\n";
+        let c = collect_with_customer(src);
+        assert!(
+            !codes(&c).contains(&"LINT0001"),
+            "qualified break field in FIRST-OF must resolve, got {:?}",
+            codes(&c)
+        );
+    }
+
+    // True-positive guard for #107: a bare name inside FIRST-OF that is not a
+    // field of any block buffer must still be flagged undefined.
+    #[test]
+    fn unknown_bare_name_in_first_of_still_undefined() {
+        let src = "FOR EACH Customer NO-LOCK BREAK BY Customer.Name:\n\
+                   IF FIRST-OF(NoSuchField) THEN DISPLAY Customer.CustNum.\nEND.\n";
+        let c = collect_with_customer(src);
+        assert!(
+            codes(&c).contains(&"LINT0001"),
+            "unknown bare name in FIRST-OF must still be undefined, got {:?}",
+            codes(&c)
+        );
+    }
 }
