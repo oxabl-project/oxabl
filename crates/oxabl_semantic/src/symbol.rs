@@ -95,6 +95,21 @@ bitflags! {
         /// written outside) from a deliberate cross-block assignment.
         const READ_OUTSIDE_BLOCK  = 1 << 17;
         const WRITE_OUTSIDE_BLOCK = 1 << 18;
+        /// Resolve-computed usage fact (not a declaration modifier): set when
+        /// the symbol is passed as a *write-back* argument (`OUTPUT`,
+        /// `INPUT-OUTPUT`, `RETURN`) to a `RUN` — i.e. a callee writes into
+        /// this variable. Consumed by `unused-variable` (LINT0002) to skip the
+        /// false positive where a call site must supply an out-param it never
+        /// reads, and available to the planned "written via OUTPUT but never
+        /// read" dead-store advisory (#125). `RETURN` is accepted defensively —
+        /// the AST models the direction, but `parse_run_arguments` does not
+        /// currently produce it for a `RUN` argument, so only `OUTPUT` and
+        /// `INPUT-OUTPUT` are reachable from real source today.
+        ///
+        /// Intentional stopgap: once CFG def-use records land (#126) this
+        /// becomes a def-site attribute and the standalone flag can be folded
+        /// in and removed.
+        const PASSED_AS_OUTPUT_ARG = 1 << 19;
     }
 }
 

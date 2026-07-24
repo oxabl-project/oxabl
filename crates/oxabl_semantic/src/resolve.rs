@@ -31,7 +31,7 @@ use oxabl_ast::{
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     AnalysisContext, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree,
@@ -953,6 +953,12 @@ pub fn resolve_pass(
         }
     }
 
+    // Flush the write-back-argument usage fact (LINT0002's OUTPUT-argument
+    // exemption).
+    for sym in &walker.output_args {
+        walker.symbols.get_mut(*sym).flags |= crate::SymbolFlags::PASSED_AS_OUTPUT_ARG;
+    }
+
     // Mirror every symbol's declared type into the `types` side table keyed
     // by the declaration's NodeId. Skips builtins and synthesized
     // schema-field/buffer symbols (declaration = DUMMY).
@@ -998,6 +1004,12 @@ struct ResolveWalker<'a> {
     /// / [`SymbolFlags::WRITE_OUTSIDE_BLOCK`] at end-of-pass (same idempotency
     /// contract as `counts`).
     block_var_outside: FxHashMap<SymbolId, (bool, bool)>,
+    /// Symbols passed as a write-back (`OUTPUT` / `INPUT-OUTPUT` / `RETURN`)
+    /// argument to a `RUN`. Flushed to [`SymbolFlags::PASSED_AS_OUTPUT_ARG`]
+    /// at end-of-pass (same idempotency contract as `counts`). Needs no
+    /// tracking gate: it only fires on write-back RUN arguments, which are
+    /// rare, and costs one O(1) set insert each.
+    output_args: FxHashSet<SymbolId>,
     /// True only when the declare pass hoisted at least one `DEFINE VARIABLE`
     /// out of a block (`SymbolTable::has_block_scoped_var`). The vast majority
     /// of files have none, so callers skip [`Self::note_block_var_use`]
@@ -1027,6 +1039,7 @@ impl<'a> ResolveWalker<'a> {
             diagnostics: Vec::new(),
             counts: FxHashMap::default(),
             block_var_outside: FxHashMap::default(),
+            output_args: FxHashSet::default(),
             track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
@@ -1608,6 +1621,20 @@ impl<'a> ResolveWalker<'a> {
                         }
                     };
                     self.walk_expression(&arg.expression, scope, mode);
+                    // A write-back argument means the callee assigns into the
+                    // caller's variable — a genuine use of the binding even
+                    // when the call site never reads it back. Reuse the
+                    // resolution `walk_expression` just recorded rather than
+                    // resolving again; non-identifier and unresolved arguments
+                    // simply miss and are a no-op.
+                    if mode != AccessMode::Read
+                        && matches!(arg.expression.kind, ExpressionKind::Identifier(_))
+                        && let Some(Resolution::Resolved(sym)) =
+                            self.references.get(arg.expression.id)
+                    {
+                        let sym = *sym;
+                        self.output_args.insert(sym);
+                    }
                 }
                 if let Some(h) = in_handle {
                     self.walk_expression(h, scope, AccessMode::Read);
@@ -5047,6 +5074,116 @@ mod tests {
             .0;
         assert_eq!(symbols.get(x).read_count, 1);
         assert_eq!(symbols.get(x).write_count, 1);
+    }
+
+    // ---- PASSED_AS_OUTPUT_ARG (LINT0002 write-back exemption) -----------
+
+    /// `RUN proc (<direction> <arg>).` preceded by `DEFINE VARIABLE x`.
+    fn run_with_arg(direction: ParameterDirection, arg: Expression) -> Vec<Statement> {
+        vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::Run {
+                target: RunTarget::Literal("proc".into()),
+                arguments: vec![RunArgument {
+                    direction,
+                    expression: arg,
+                }],
+                in_handle: None,
+                persistent: false,
+                persistent_handle: None,
+                asynchronous: false,
+                async_handle: None,
+                event_procedure: None,
+                no_error: false,
+            }),
+        ]
+    }
+
+    fn sym_x(symbols: &SymbolTable) -> SymbolId {
+        symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn resolve_run_output_argument_sets_passed_as_output_arg() {
+        let stmts = run_with_arg(ParameterDirection::Output, id_expr("x"));
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert!(x.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG));
+        assert_eq!(x.read_count, 0);
+        assert_eq!(x.write_count, 1);
+    }
+
+    #[test]
+    fn resolve_run_input_output_argument_sets_passed_as_output_arg() {
+        let stmts = run_with_arg(ParameterDirection::InputOutput, id_expr("x"));
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert!(x.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG));
+        assert_eq!(x.read_count, 1);
+        assert_eq!(x.write_count, 1);
+    }
+
+    #[test]
+    fn resolve_run_return_argument_sets_passed_as_output_arg() {
+        let stmts = run_with_arg(ParameterDirection::Return, id_expr("x"));
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert!(x.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG));
+        assert_eq!(x.read_count, 1);
+        assert_eq!(x.write_count, 1);
+    }
+
+    #[test]
+    fn resolve_run_input_argument_does_not_set_passed_as_output_arg() {
+        // INPUT is an ordinary read; the flag means "a callee writes here".
+        let stmts = run_with_arg(ParameterDirection::Input, id_expr("x"));
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert!(!x.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG));
+        assert_eq!(x.read_count, 1);
+    }
+
+    #[test]
+    fn resolve_local_assignment_does_not_set_passed_as_output_arg() {
+        // Underpins LINT0002's R3: `x = 1` bumps write_count but must not
+        // look like a callee write-back.
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            stmt_n(StatementKind::Assignment {
+                target: id_expr("x"),
+                value: int_lit(1),
+            }),
+        ];
+        let (_t, symbols, _r, _) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert!(!x.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG));
+        assert_eq!(x.write_count, 1);
+    }
+
+    #[test]
+    fn resolve_non_identifier_output_argument_is_a_no_op() {
+        // A non-identifier write-back target (member/field lvalue) and an
+        // unresolved name both miss the reference lookup: no panic, and no
+        // flag lands on an unrelated symbol.
+        let field = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("no-such-table")),
+            field: id("fld"),
+        });
+        for arg in [field, id_expr("no-such-var")] {
+            let stmts = run_with_arg(ParameterDirection::Output, arg);
+            let (_t, symbols, _r, _) = run_full(&stmts);
+            for (_, s) in symbols.iter() {
+                assert!(
+                    !s.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG),
+                    "unexpected flag on {:?}",
+                    s.name
+                );
+            }
+        }
     }
 
     // ---- Idempotence ----------------------------------------------------

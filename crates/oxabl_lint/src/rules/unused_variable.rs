@@ -7,6 +7,9 @@
 //! - Parameters in `ABSTRACT` methods (body never runs).
 //! - `SHARED` / `NEW SHARED` / `NEW GLOBAL SHARED` variables (cross-file
 //!   readers not visible in v1).
+//! - Variables passed as a write-back (`OUTPUT` / `INPUT-OUTPUT` / `RETURN`)
+//!   argument to a `RUN` — the callee writes into them, so they are used even
+//!   when the call site never reads the result back.
 
 use oxabl_common::{Diagnostic, FileSpan};
 use oxabl_semantic::{
@@ -76,6 +79,11 @@ fn is_skipped(sid: SymbolId, sym: &Symbol, tree: &ScopeTree, symbols: &SymbolTab
         .flags
         .intersects(SymbolFlags::SHARED | SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED)
     {
+        return true;
+    }
+    // Passed to a callee as a write-back argument: the callee assigns into
+    // it, which is a use of the binding regardless of `read_count`.
+    if sym.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG) {
         return true;
     }
     // Parameters of an INTERFACE method or an ABSTRACT method never
@@ -392,6 +400,90 @@ mod tests {
             diags.is_empty(),
             "DO-loop counter must not be flagged unused: {diags:?}"
         );
+    }
+
+    /// `DEFINE VARIABLE x` then `RUN proc (<dir> x).`
+    ///
+    /// The argument expression needs a real `NodeId`: the resolve pass keys
+    /// its `references` side table by node id and silently drops
+    /// `NodeId::DUMMY`, so a `Expression::new` argument would never carry the
+    /// resolution `PASSED_AS_OUTPUT_ARG` is derived from.
+    fn var_plus_run_arg(dir: ParameterDirection) -> Vec<Statement> {
+        use oxabl_ast::{Expression, ExpressionKind, NodeId, RunArgument, RunTarget};
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(1);
+        let nid = NodeId::from_u32(COUNTER.fetch_add(1, Ordering::Relaxed));
+        vec![
+            var_decl("x", DataType::Integer),
+            stmt(StatementKind::Run {
+                target: RunTarget::Literal("proc".into()),
+                arguments: vec![RunArgument {
+                    direction: dir,
+                    expression: Expression::with_id(
+                        nid,
+                        Span { start: 0, end: 1 },
+                        ExpressionKind::Identifier(id("x")),
+                    ),
+                }],
+                in_handle: None,
+                persistent: false,
+                persistent_handle: None,
+                asynchronous: false,
+                async_handle: None,
+                event_procedure: None,
+                no_error: false,
+            }),
+        ]
+    }
+
+    #[test]
+    fn no_diagnostic_for_variable_passed_as_output_argument() {
+        // The fix: a callee's required out-param that this call site never
+        // reads back is still a use of the variable.
+        let diags = analyze_and_lint(var_plus_run_arg(ParameterDirection::Output));
+        assert!(
+            diags.is_empty(),
+            "OUTPUT-argument-only variable must be skipped: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_variable_passed_as_input_output_argument() {
+        let diags = analyze_and_lint(var_plus_run_arg(ParameterDirection::InputOutput));
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
+
+    #[test]
+    fn no_diagnostic_for_variable_passed_as_input_argument() {
+        // Already spared via `read_count`; pinned so the INPUT path can't
+        // regress into a false positive if the flag ever moves.
+        let diags = analyze_and_lint(var_plus_run_arg(ParameterDirection::Input));
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
+
+    #[test]
+    fn no_double_handling_when_output_argument_is_also_read() {
+        // Belt-and-braces: two independent skip paths (`read_count > 0` and
+        // the flag) apply to the same symbol. This can't isolate either one —
+        // it only pins that their overlap still yields a single, empty result
+        // rather than a double-emit.
+        use oxabl_ast::{Expression, ExpressionKind};
+        let mut stmts = var_plus_run_arg(ParameterDirection::Output);
+        stmts.push(stmt(StatementKind::ExpressionStatement(Expression::new(
+            ExpressionKind::Identifier(id("x")),
+        ))));
+        let diags = analyze_and_lint(stmts);
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
+
+    #[test]
+    fn unused_variable_alongside_output_argument_still_warns() {
+        // Discrimination: the skip is per-symbol, not per-file.
+        let mut stmts = var_plus_run_arg(ParameterDirection::Output);
+        stmts.insert(1, var_decl("spare", DataType::Integer));
+        let diags = analyze_and_lint(stmts);
+        assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
+        assert!(diags[0].message.contains("spare"), "{diags:?}");
     }
 
     #[test]
