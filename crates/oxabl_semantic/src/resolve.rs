@@ -623,6 +623,7 @@ impl<'a> Walker<'a> {
             && let Some(id) = sym
         {
             self.symbols.get_mut(id).defined_in_block = Some(block_scope);
+            self.symbols.mark_block_scoped_var();
         }
     }
 
@@ -929,13 +930,10 @@ pub fn resolve_pass(
         "resolve_pass must run against the same schema revision declare_pass saw"
     );
     let mut walker = ResolveWalker::new(ctx, tree, symbols);
-    // One-time scan: only the block-var-used-outside analysis (LINT0005) reads
-    // per-reference scope, and only for hoisted variables. Skip that work
-    // wholesale when the file declares none — the common case.
-    walker.track_block_vars = walker
-        .symbols
-        .iter()
-        .any(|(_, s)| s.defined_in_block.is_some());
+    // Only the block-var-used-outside analysis (LINT0005) reads per-reference
+    // scope, and only for hoisted variables. Skip that work wholesale when the
+    // declare pass hoisted none — the common case — in O(1).
+    walker.track_block_vars = walker.symbols.has_block_scoped_var();
     walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
 
@@ -1957,7 +1955,9 @@ impl<'a> ResolveWalker<'a> {
             if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
                 self.references.insert(expr_id, Resolution::Resolved(sym));
                 self.bump_count(sym, mode);
-                self.note_block_var_use(sym, scope, mode);
+                if self.track_block_vars {
+                    self.note_block_var_use(sym, scope, mode);
+                }
                 return;
             }
         }
@@ -2157,7 +2157,9 @@ impl<'a> ResolveWalker<'a> {
         for &ns in namespaces {
             if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
                 self.bump_count(sym, mode);
-                self.note_block_var_use(sym, scope, mode);
+                if self.track_block_vars {
+                    self.note_block_var_use(sym, scope, mode);
+                }
                 return;
             }
         }
@@ -2406,10 +2408,8 @@ impl<'a> ResolveWalker<'a> {
     /// read and/or write "outside" that block. Cheap no-op for every other
     /// symbol, so it is safe to call at every value-identifier resolution.
     fn note_block_var_use(&mut self, sym: SymbolId, scope: ScopeId, mode: AccessMode) {
-        // Fast path: nothing was hoisted, so no symbol load per reference.
-        if !self.track_block_vars {
-            return;
-        }
+        // Callers gate on `self.track_block_vars`, so this only runs when the
+        // file hoisted at least one variable out of a block.
         let s = self.symbols.get(sym);
         if s.kind != SymbolKind::Variable {
             return;

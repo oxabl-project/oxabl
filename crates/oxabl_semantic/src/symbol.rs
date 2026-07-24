@@ -151,6 +151,11 @@ pub struct SymbolTable {
     /// the symbol, we track the rebinding scopes here — mirrors Ruff's
     /// `rebinding_scopes` side map for Python `global`/`nonlocal`.
     pub rebinding_scopes: FxHashMap<SymbolId, Vec<ScopeId>>,
+    /// Set by the declare pass when it hoists at least one `DEFINE VARIABLE`
+    /// out of a block (some symbol carries `defined_in_block`). Lets the
+    /// resolve pass skip the block-var-used-outside tracking (LINT0005)
+    /// wholesale in the common case, in O(1) rather than a per-file symbol scan.
+    has_block_scoped_var: bool,
 }
 
 impl SymbolTable {
@@ -193,5 +198,17 @@ impl SymbolTable {
     /// `SHARED`/`NEW SHARED`/`NEW GLOBAL SHARED`.
     pub fn record_rebinding(&mut self, sym: SymbolId, scope: ScopeId) {
         self.rebinding_scopes.entry(sym).or_default().push(scope);
+    }
+
+    /// Note that a `DEFINE VARIABLE` was hoisted out of a block (its symbol
+    /// carries `defined_in_block`). See [`Self::has_block_scoped_var`].
+    pub fn mark_block_scoped_var(&mut self) {
+        self.has_block_scoped_var = true;
+    }
+
+    /// Whether any declared variable was hoisted out of a block. When `false`,
+    /// the block-var-used-outside analysis (LINT0005) has nothing to track.
+    pub fn has_block_scoped_var(&self) -> bool {
+        self.has_block_scoped_var
     }
 }
