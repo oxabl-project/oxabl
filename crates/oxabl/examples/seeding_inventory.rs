@@ -10,24 +10,23 @@
 //! # What each row carries
 //! - `kind`            Procedure | Function | Method
 //! - `span_name`       KTD-9 span name: bare routine name for procedures and
-//!                     functions; `<Class>:<method>` for methods.
+//!   functions; `<Class>:<method>` for methods.
 //! - `seedable`        false when the routine must not be auto-seeded (abstract
-//!                     method, interface member, empty body, or a placement the
-//!                     parser cannot pin down safely). Non-seedable rows are
-//!                     *emitted flagged*, never dropped, so the report reconciles.
+//!   method, interface member, empty body, or a placement the parser cannot pin
+//!   down safely). Non-seedable rows are *emitted flagged*, never dropped, so the
+//!   report reconciles.
 //! - `flag_reason`     why a row is non-seedable (empty when seedable).
 //! - `is_abstract`     the method's ABSTRACT flag.
 //! - `has_finally`     the routine already has a routine-level FINALLY, so the
-//!                     seeder merges the span close into it (R7) instead of
-//!                     inserting the end-include.
+//!   seeder merges the span close into it (R7) instead of inserting the
+//!   end-include.
 //! - `extent_*`        full routine extent (line/col), for validation.
 //! - `decl_*`          post-declaration-block insertion point — where the
-//!                     start-include goes (line, col 1).
+//!   start-include goes (line, col 1).
 //! - `end_*`           pre-END insertion point, after any trailing CATCH blocks
-//!                     — where the end-include (the FINALLY) goes (empty when
-//!                     has_finally).
+//!   — where the end-include (the FINALLY) goes (empty when has_finally).
 //! - `merge_*`         in-FINALLY merge point — the first line of the existing
-//!                     FINALLY body (empty unless has_finally).
+//!   FINALLY body (empty unless has_finally).
 //!
 //! # Placement method (why it is robust without re-lexing)
 //! Statement/Expression nodes carry no span; only leaf tokens do. We take the
