@@ -1,8 +1,8 @@
-# Handoff: LINT0002 OUTPUT-argument false positive fixed (#127); next is cross-file resolution (#102)
+# Handoff: browser WASM thin-client MVP implemented; next is artifact automation and cross-file resolution (#102)
 
 **Date:** 2026-07-24
-**Branch:** `master` — clean at `a6eabb7`. PR #127 merged; no open work branch from this session.
-**This session:** Fixed the **LINT0002 `OUTPUT`-argument false positive (#127)** — a variable used only as an `OUTPUT` argument to a `RUN` was reported unused. Dogfooded after merge: the false positive is gone and no genuine unused-variable reports were lost.
+**Branch:** `evanbrobertson/WASM-Try-it-out` — uncommitted WASM/client work based on `master`.
+**This session:** Added the first **browser try-it-out MVP**. `crates/oxabl_wasm` is a thin `wasm-bindgen` JSON adapter over `oxabl::analyze_with_fs` and `oxabl::format_source`; it owns no lexer, parser, semantic, lint, or formatting behavior. The real `wasm32-unknown-unknown` artifact builds and was integrated into `/home/evanr/personal/oxabl_web` as a lazy-loaded React editor with Analyze and Format actions.
 **Prior context:** #55 (public API) shipped across PRs #113–#116. Three trust fixes merged after that handoff was last written and are recorded below for the first time: #121, #122, #123.
 
 ---
@@ -11,6 +11,8 @@
 
 | Item | Status |
 |------|--------|
+| Browser WASM MVP | **Implemented locally** — shared single-file diagnostics + safe formatter; website build green. |
+| WASM CI/release artifact | **Implemented locally** — target check in CI and `oxabl-wasm-web.tar.gz` release attachment. |
 | #127 LINT0002 OUTPUT-argument FP | **Done — merged, dogfooded clean.** |
 | #121 / #122 / #123 | **Merged** (recorded here late — see below). |
 | #124 / #125 / #126 | **Open** — the flow-analysis cluster this session's fix leans on. |
@@ -20,6 +22,45 @@
 | #57 public lint-rule API | Open — blocked on #102. |
 | #108 unresolvable-include-as-argument | Open — deferred pending a fully-wired re-dogfood. |
 | Held block-scope false positive | Partly addressed by #122/#123; re-check in a workspace that *has* includes. |
+
+---
+
+## Browser WASM architecture
+
+- `crates/oxabl_wasm` depends on the `oxabl` umbrella crate with native CLI
+  features disabled. Its exported `analyze_source` and `format_source`
+  functions only adapt shared results to JSON.
+- Analysis uses an `InMemoryFileSystem` and default `AnalyzeOptions`. The MVP
+  is therefore intentionally single-file with preprocessing, includes, schema,
+  and project config off. The website says so explicitly.
+- Formatting uses `StyleGuide::default_base`, matching the LSP fallback when no
+  `oxabl.toml` is present. Formatter bails return the original source and the
+  shared bail reason.
+- `scripts/build-wasm.sh [output-dir]` builds the Rust target then runs
+  `wasm-bindgen --target web`. CI proves the raw WASM target compiles; releases
+  build the browser glue and attach `oxabl-wasm-web.tar.gz`.
+- `/home/evanr/personal/oxabl_web/src/wasm` currently contains the generated
+  package. It must live under `src` rather than `public`: Vite rejects
+  source-level imports from `public` in dev, while processing the glue under
+  `src` also rewrites its relative `.wasm` URL correctly. The site remains an
+  Astro static deployment on Railway; no server or Railway configuration
+  changes are needed.
+- Verified the generated JS/WASM in Node against a real LINT0002 diagnostic and
+  a real formatter change. Artifact size is about 810 KiB raw / 241 KiB gzip.
+
+## Follow-ups for the browser demo
+
+1. Replace the manually staged website artifact with a deliberate cross-repo
+   update path (for example a website workflow that downloads a pinned Oxabl
+   release artifact and opens an update PR). Do not download “latest” during a
+   Railway production build.
+2. Add browser-level interaction coverage for artifact loading, Analyze, and
+   Format. The Rust adapter already has native parity tests.
+3. If schema or include support is added, model them as inputs to the existing
+   shared pipeline (`Schema`, `InMemoryFileSystem`, include paths); never
+   recreate resolution or lint behavior in TypeScript.
+4. Consider a Web Worker only if real measurements show analysis blocks the UI.
+   Do not introduce a second protocol preemptively.
 
 ---
 
