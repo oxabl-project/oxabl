@@ -1102,6 +1102,7 @@ dependencies = [
  "oxabl_lexer",
  "oxabl_workspace",
  "rustc-hash",
+ "tempfile",
 ]
 
 [[package]]
