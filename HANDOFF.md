@@ -1,58 +1,72 @@
-# Handoff: LSP `textDocument/formatting` wired to `oxabl_formatter` (#100) — the formatter is now editor-integrated end to end
+# Handoff: VS Code extension (PR #104) — oxabl's LSP capabilities now reach a real editor
 
 **Date:** 2026-07-23
-**Branch:** `master` — everything below is **merged**; no open PRs from this session.
-**This session:** Wired `textDocument/formatting` into the `oxabl lsp` server (**#100**), turning the formatter from a CLI-only tool into an editor-integrated one. Also merged the previously-open #98 fix (**#99**). The server now advertises `document_formatting_provider`, resolves a `StyleGuide` from the document's `oxabl.toml [workspace.style]`, parses the open buffer **raw** (preprocessor off), calls `oxabl_formatter::format`, and returns a single whole-document `TextEdit` — or no edits on any bail.
-**Prior context:** The formatter engine (#93), CLI + `[workspace.style]` discovery (#94), multi-line-token safety (#96), `IF`/`ELSE` branch spans (#97), and the wrapped-branch indent fix (#98/#99) are all on `master`. Substrate beneath: full-span AST (#91), comment side-table (#92), `oxabl_style` (#87), `oxabl lsp` skeleton (#90).
+**Branch:** `feat/vscode-extension` — **open PR #104, not yet merged.** `master` is unchanged from the previous handoff (tip is #100/#101, the LSP `textDocument/formatting` wiring).
+**This session:** Built and shipped (as an open PR) a thin VS Code LSP client under `clients/vscode/`, turning oxabl's already-built server capabilities — `textDocument/formatting` (#100) and push diagnostics (#90) — into a daily-usable, in-editor tool. Plus the supporting Rust work (`oxabl schema` subcommand + a live-reload regression test), CI to guard the client and the generated schema, and a fix for a transport bug found during dogfood.
+**Prior context:** The formatter is editor-integrated end to end (#100); diagnostics skeleton with live `oxabl.toml`/`.df` reload (#90); formatter engine + CLI (#93/#94/#96/#97/#98/#99); `oxabl_style` (#87); full-span AST + comment side-table (#91/#92).
 
 ---
 
 ## Current state
 
-The formatter is a runnable, real-world-tested tool available **both** from the CLI and live in an editor. Track A (interactive editor tooling) now has a working `textDocument/formatting` surface on top of the diagnostics skeleton.
-
 | Item | Status |
 |------|--------|
-| Track A — LSP formatting | **Shipped (#100)** — `document_formatting_provider` advertised; whole-document formatting live; range formatting deliberately unadvertised |
-| Track A — LSP diagnostics | Skeleton on `master` (#90) — handshake, incremental sync, push `publishDiagnostics` |
-| Track B — formatter engine | On `master`; multi-line-token safe (#96), correct `IF`/`ELSE` branch spans (#97), wrapped-branch indent fixed (#98/#99) |
-| Track B — formatter CLI | On `master` (#94) — `oxabl format` (write / `--check` / `--stdout`), `--style <preset\|path>`, `oxabl.toml [workspace.style]` discovery |
-| Editor extension (VS Code) | **Not started** — no client yet surfaces the new capability to a real user |
+| Editor extension (VS Code) | **Shipped as open PR #104** — sideloadable VSIX; launches `oxabl lsp`; scoped `[abl]` format-on-save; push diagnostics; `oxabl.toml` schema completion. Was "Not started". |
+| `oxabl schema` subcommand | **New (PR #104)** — emits the `oxabl.toml` JSON Schema derived from the config structs via `schemars`. |
+| CI coverage | **New (PR #104)** — e2e LSP stdio handshake test, a pnpm `vscode-client` job, and a schema-drift guard. |
+| Track A — LSP formatting / diagnostics | On `master` (#100 / #90); now surfaced to a user by the extension. |
 
 ---
 
-## What was implemented this session
+## What was implemented this session (all on branch `feat/vscode-extension`, PR #104)
 
-### #100 — LSP `textDocument/formatting` wiring (merged)
+Plan: `docs/plans/2026-07-23-007-feat-vscode-extension-plan.md` (gitignored, point-in-time). Six units:
 
-Plan: `docs/plans/2026-07-23-006-feat-lsp-formatting-wiring-plan.md` (gitignored, point-in-time). Four units, all landed in `crates/oxabl_lsp`:
+### VS Code client — `clients/vscode/`
+Thin `vscode-languageclient` extension. Binary discovery is a vscode-free pure function (`server.ts`): `oxabl.server.path` setting → `oxabl` on `PATH` → an actionable not-found message (no crash loop). `extension.ts` starts the client for language `abl` (`.p .w .cls .i .v`); on spawn failure it shows a clear message. Scoped `configurationDefaults` turn on `editor.formatOnSave` + `editor.defaultFormatter` for `[abl]` only. Settings: `oxabl.enable`, `oxabl.server.path`, `oxabl.trace.server` — lint/style rules are deliberately **not** mirrored as settings (`oxabl.toml` is the single source of truth). Bundled with esbuild, packaged via `vsce package --no-dependencies`, all through pnpm (see `scripts/build-vsix.sh`). 11 vitest discovery/manifest unit tests.
 
-- **Capability (R1):** `document_formatting_provider: Some(OneOf::Left(true))` in `capabilities.rs`. Range formatting stays unset — the engine has no region concept and bails whole-file.
-- **Style resolution (R3):** new `formatting.rs::style_for_uri` reuses `oxabl_workspace::resolved_style` against the document's filesystem path, so the editor applies the *same* `oxabl.toml [workspace.style]` the CLI would. Non-`file` or unresolvable URIs → `StyleGuide::default_base()`. No new LSP config surface. `uri_to_path` in `lib.rs` was promoted to `pub(crate)` and reused rather than hand-rolling a second URI decoder.
-- **Handler (R2/R4/R5/R6/R7):** `formatting.rs::compute_formatting_edits` runs `tokenize → parse_program → format` inside `catch_unwind`, mirroring the CLI's `format_one`. It parses the rope directly and **never** touches the salsa `expanded_text`/`collect_from_expanded` diagnostics query (that path is preprocessor-*on* and would reformat macro output, not the buffer). Wired into the `Message::Request` arm (shutdown → formatting → `MethodNotFound` fallthrough); runs inline on the main loop, no snapshot, no debounce.
-- **Never mangle (KTD3):** every non-success — `FormatBail`, unchanged output, parse-dirty input, a caught panic, or an unopened URI — returns an empty edit list. The editor leaves the buffer untouched.
-- **Tests:** unit (`capabilities`, `style_for_uri`, `compute_formatting_edits`) + `tests/formatting_e2e.rs` through the real message loop (advertisement, reformat round-trip + idempotence, unopened-URI tolerance, bail-survives-thread, `[workspace.style]` discovery).
+### `oxabl schema` (U1)
+`#[derive(JsonSchema)]` (schemars 0.8) on `WorkspaceConfig`/`WorkspaceSection`/`SourcesConfig`/`SchemaConfig`/`LintConfig`/`LintSeverity`/`StyleGuide` and every `rules.rs` enum. New `oxabl schema` subcommand serializes the schema for `WorkspaceConfig` to stdout with a `$comment` DO-NOT-EDIT header. The VSIX bundles it (`schemas/oxabl.schema.json`, regenerated at build) and wires `evenBetterToml.schema.associations`. Tests (`oxabl_style/tests/schema.rs`, `oxabl_workspace/tests/schema.rs`) assert the four lint keys + `off|hint|info|warn|error`, representative style keys, `additionalProperties: false`, and a **drift guard**: the schema property set equals the struct's serialized field set, so a new rule auto-appears (D1).
 
-### #99 — wrapped multi-line branch mis-indent (merged; was open last handoff)
+### Live-reload regression (U2)
+`#90` already live-reloads `oxabl.toml` edits — the existing `oxabl_toml_change_reresolves_lint_config` test in `watcher_e2e.rs` covers the happy path. Added the missing `malformed_oxabl_toml_after_edit_degrades_safely` regression: a corrupt config edit degrades to the default lint table and the loop keeps serving (no runtime code changed).
 
-The #98 fix: the printer's `block_ends` closer-snap was narrowed to non-wrapper constructs via an `is_prefix_wrapper` predicate, so a wrapped multi-line `IF`/`ELSE` branch keeps its continuation indent instead of snapping to the enclosing depth. Layout-only, guard-invisible.
+### The `--stdio` fix (found during dogfood)
+`transport: TransportKind.stdio` on the `Executable` server options made `vscode-languageclient` append `--stdio` to argv → `oxabl lsp --stdio`, which clap rejects → the server crash-looped. stdio is already the default for an `Executable`, so the field must be omitted. Verified with a real `initialize` handshake against the spawned binary.
 
-**Verification (all merged work):** `cargo test --workspace`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --all -- --check`. All fixtures synthetic ABL (CC-1) — no corpus, no PII.
+### CI (`.github/workflows/ci.yml`)
+- `crates/oxabl/tests/lsp_stdio_smoke.rs` — spawns the **real** built binary (`env!("CARGO_BIN_EXE_oxabl")`), does a framed `initialize` handshake and asserts capabilities, and guards that `oxabl lsp --stdio` is rejected. This is the layer that catches argv/transport regressions.
+- `vscode-client` job — Node 22 + pnpm 11 (matching the dev toolchain), frozen install, typecheck + vitest + esbuild build. (Node must be set up before `pnpm/action-setup`, and pnpm 11 requires Node ≥ 22.13.)
+- `schema-drift` job — regenerates the schema and `git diff --exit-code`s it, so the committed `oxabl.schema.json` can't drift.
+
+**Verification:** `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all -- --check` all green; `pnpm --dir clients/vscode test` green (11); `oxabl schema` emits a valid schema with all lint + style keys. All fixtures synthetic (no corpus, no PII).
 
 ---
 
-## Metrics movement
+## Dogfood findings → follow-up issues
 
-Wiring formatting into the LSP moves two of the four key metrics from **unmeasurable** to **measurable** (per `STRATEGY.md`): *interactive latency* (there is now a real editor round-trip to time) and *daily dogfood adoption* (once a client surfaces it). *Formatter safety* is now enforced end-to-end through the server — the idempotence and no-mangle properties are exercised by `formatting_e2e.rs`, not just the CLI.
+Running the extension against a large real-world ABL codebase surfaced a batch of diagnostics. Triage separated genuine defects from a **configuration artifact**: a large class of "undefined symbol / unknown table / unknown field" false positives (and one cascading parse error) traced to a workspace that had **no include paths and no `.df` schema configured** — so oxabl couldn't expand `{includes}` (where shared vars, functions, and temp-tables are declared) or resolve tables/fields. Configuring `[workspace.sources].include_paths` + `[workspace.schema].files` clears those; they are not oxabl defects.
+
+The genuine, config-independent bugs (confirmed with synthetic repros):
+
+| Issue | Bug |
+|-------|-----|
+| **#106** | Temp-table fields are declared in the enclosing **program** scope, not the temp-table's scope → false `SEM0001 "already declared in this scope"` when two temp-tables share a field name. |
+| **#107** | An **unqualified** `BREAK BY` field referenced inside `FIRST-OF()` / `LAST-OF()` is flagged `LINT0001` undefined; qualifying it (`buffer.field`) resolves. |
+| **#108** | An **unresolvable** include used as a call argument expands to empty and cascades into a misleading `Unexpected token Comma` (graceful-degradation; include-triggered). |
+| **#105** | UX: add an `oxabl: Restart Server` command (avoid a full window reload after a config change / crash-stop). |
+
+Held (not filed): a variable visible earlier in a program reported undefined much later — possibly a genuine block/scope bug, possibly block nesting corrupted by an upstream broken include expansion. Reproduce in a workspace that **has** includes before chasing it.
 
 ---
 
 ## Next
 
-1. **VS Code extension (Track A) — the natural next step.** Nothing surfaces the new `document_formatting_provider` to a real user yet. A thin client that launches `oxabl lsp` and offers "Format Document" (and format-on-save, which is client-side) is what turns the shipped capability into daily dogfood. `README.md` still says "LSP integration pending" for the formatter — flip it once a client ships.
-2. **Deferred config extension:** a `preset = "..."` key inside `[workspace.style]` (a named-preset base the table overlays). Needs a small wrapper struct around `StyleGuide` because `deny_unknown_fields` rejects the extra key. Improves both CLI and LSP at once.
-3. **Deferred engine rules:** the token-*movement* placement variants (`do_placement`/`dot_colon_same_line`/`period_placement` NewLine forms) and `blank_lines_between_sections`, once their semantics are pinned. v1 reads-and-preserves them.
-4. **v2 territory:** reflow / width-driven wrapping (the doc-IR it needs), reordering (`using_sort`, structure-order), comment-content rewrite (`comment_style`), and minimal-diff LSP edits (whole-document replace is correct today given the guard) — all read-but-not-enforced.
+1. **Merge PR #104** once CI is green. The README status flip is already in the PR.
+2. **Re-run dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close #108 and pin down the held block-scope false positive.
+3. **Fix the confirmed semantic bugs** #106 (temp-table field scoping) and #107 (`FIRST-OF`/`LAST-OF` unqualified field) — both have minimal synthetic repros.
+4. **Deferred from the plan:** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish (publisher identity, icon, CI publish).
+5. **#105** — the restart-server command.
 
 ---
 
@@ -60,13 +74,11 @@ Wiring formatting into the LSP moves two of the four key metrics from **unmeasur
 
 | Issue/PR | Relation |
 |----------|----------|
-| **#100** | Merged — LSP `textDocument/formatting` wired to `oxabl_formatter` (this session) |
-| **#99** | Merged — the #98 fix (`is_prefix_wrapper` gate on the `block_ends` push) |
-| **#98** | Fixed by #99 — wrapped multi-line branch statement mis-indented its last line |
-| #97 | Merged — full-extent spans on `IF`/`ELSE` block branches |
-| #96 | Merged — multi-line-token reindent verbatim + shared-tokenization perf fix |
-| #94 | Merged — `oxabl format` CLI + `[workspace.style]` discovery (Slice 4) |
-| #90 | Merged — `oxabl lsp` diagnostics skeleton (the substrate this session built on) |
-| #78 | Formatter tracking issue — substrate + engine + CLI + LSP formatting wiring now all done |
-| `docs/solutions/logic-errors/formatter-multiline-token-reindent-bail.md` | Learning captured from #96 |
-| `STRATEGY.md` | Formatter track updated: the LSP `textDocument/formatting` surface has shipped |
+| **#104** | Open PR — VS Code extension + `oxabl schema` + CI (this session) |
+| **#105** | Filed — `oxabl: Restart Server` command (client UX follow-up) |
+| **#106** | Filed — temp-table field scoping → false `SEM0001` |
+| **#107** | Filed — unqualified `FIRST-OF`/`LAST-OF` field flagged undefined |
+| **#108** | Filed — unresolvable-include-as-argument → misleading comma parse error |
+| #100 | Merged — LSP `textDocument/formatting` (the capability this extension surfaces) |
+| #90 | Merged — `oxabl lsp` diagnostics + live `oxabl.toml`/`.df` reload (the substrate U2 guards) |
+| `STRATEGY.md` | Interactive-editor-tooling track + dogfood-adoption metric updated: the first editor client has landed |
