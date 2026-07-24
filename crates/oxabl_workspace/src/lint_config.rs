@@ -82,12 +82,14 @@ mod tests {
         let (cfg, err) = resolved_lint_config(&target, &[]);
         assert!(err.is_none());
         assert_eq!(cfg, LintConfig::default());
-        // Default map: undefined-symbol = error, the other three warn.
+        // Default map: undefined-symbol = error, block-var-used-outside = info,
+        // the rest warn.
         let map = cfg.to_severity_map();
         assert_eq!(map.get("LINT0001"), Some(Some(Severity::Error)));
         assert_eq!(map.get("LINT0002"), Some(Some(Severity::Warning)));
         assert_eq!(map.get("LINT0003"), Some(Some(Severity::Warning)));
         assert_eq!(map.get("LINT0004"), Some(Some(Severity::Warning)));
+        assert_eq!(map.get("LINT0005"), Some(Some(Severity::Info)));
     }
 
     #[test]

@@ -87,6 +87,14 @@ bitflags! {
         /// Cleared when a later full definition in the same scope merges into
         /// this symbol (#69).
         const PROTOTYPE        = 1 << 16;
+        /// Resolve-computed usage facts (not declaration modifiers): set on a
+        /// block-hoisted variable (`defined_in_block.is_some()`) when it is
+        /// referenced from *outside* its defining block. Consumed by the
+        /// `block-var-used-outside` lint (LINT0005) to distinguish the
+        /// "may still hold its default value" hazard (read outside, never
+        /// written outside) from a deliberate cross-block assignment.
+        const READ_OUTSIDE_BLOCK  = 1 << 17;
+        const WRITE_OUTSIDE_BLOCK = 1 << 18;
     }
 }
 
@@ -118,6 +126,13 @@ pub struct Symbol {
     /// Incremented by the resolve pass on every resolving write reference.
     pub write_count: u32,
     pub flags: SymbolFlags,
+    /// For a `DEFINE VARIABLE` that ABL hoisted out of a `DO`/`FOR`/`REPEAT`/
+    /// `CATCH`/`FINALLY` block to its routine scope: the original block scope
+    /// the definition textually sat in. `None` for variables defined directly
+    /// at a routine scope and for every non-variable symbol. The
+    /// `block-var-used-outside` lint (LINT0005) uses it to decide whether a
+    /// reference is "inside" or "outside" the defining block.
+    pub defined_in_block: Option<ScopeId>,
     /// Link to the backing schema table for `Buffer` / `TempTable` symbols.
     /// Populated at declare time for `DEFINE BUFFER ... FOR <table>` and
     /// `FOR EACH <table>` (and synthesized default-buffer symbols at resolve
