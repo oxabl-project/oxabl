@@ -24,9 +24,9 @@
 //! - `SEM0003` — BLOB/CLOB used as a local variable type
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, Identifier,
-    NodeId, OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, Statement,
-    StatementKind, StreamOperation, SubscribeTarget, TypeSource,
+    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
+    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
+    RunTarget, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -676,7 +676,15 @@ impl<'a> Walker<'a> {
                     table_id,
                 );
             }
-            ParameterType::Handle { name, .. } => {
+            ParameterType::Handle { kind, name, .. } => {
+                // All four handle-ish forms declare the same way — a `HANDLE`
+                // parameter in `Values`. But the two `FOR` forms *name* a
+                // temp-table / dataset, so their references resolve to that
+                // declaration and never to this symbol; flag them so consumers
+                // can tell them from the `*-HANDLE` forms, whose names really
+                // are handle values. See `SymbolFlags::PARAM_TABLE_LIKE`.
+                let table_like =
+                    matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
                 self.declare(
                     stmt,
                     scope,
@@ -684,7 +692,7 @@ impl<'a> Walker<'a> {
                     NamespaceId::Values,
                     SymbolKind::Parameter,
                     Some(ResolvedType::Primitive(crate::PrimitiveTy::Handle)),
-                    dir_flag,
+                    dir_flag | flag_if(table_like, SymbolFlags::PARAM_TABLE_LIKE),
                     None,
                 );
             }
@@ -3982,6 +3990,103 @@ mod tests {
             h.data_type,
             Some(ResolvedType::Primitive(crate::PrimitiveTy::Handle))
         );
+    }
+
+    /// Declare one handle-shaped parameter named `tt` and hand back its symbol,
+    /// so the `PARAM_TABLE_LIKE` cases below differ only by `HandleParamKind`.
+    fn handle_param_symbol(kind: HandleParamKind) -> Symbol {
+        use oxabl_ast::HandlePassingOptions;
+        let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Handle {
+                kind,
+                name: id("tt"),
+                passing: HandlePassingOptions::default(),
+            },
+        })]);
+        find_symbol(&tree, &symbols, NamespaceId::Values, "tt")
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn table_for_parameter_is_marked_table_like() {
+        let tt = handle_param_symbol(HandleParamKind::Table);
+        assert!(tt.flags.contains(SymbolFlags::PARAM_TABLE_LIKE));
+        // The flag adds a fact; it must not re-model the declaration.
+        assert_eq!(tt.kind, SymbolKind::Parameter);
+        assert_eq!(tt.namespace, NamespaceId::Values);
+        assert_eq!(
+            tt.data_type,
+            Some(ResolvedType::Primitive(crate::PrimitiveTy::Handle))
+        );
+    }
+
+    #[test]
+    fn dataset_for_parameter_is_marked_table_like() {
+        assert!(
+            handle_param_symbol(HandleParamKind::Dataset)
+                .flags
+                .contains(SymbolFlags::PARAM_TABLE_LIKE)
+        );
+    }
+
+    #[test]
+    fn table_handle_parameter_is_not_marked_table_like() {
+        // `TABLE-HANDLE h` names a genuine handle value: reads land on this
+        // symbol, so its own read_count is meaningful and must not be bypassed.
+        assert!(
+            !handle_param_symbol(HandleParamKind::TableHandle)
+                .flags
+                .contains(SymbolFlags::PARAM_TABLE_LIKE)
+        );
+    }
+
+    #[test]
+    fn dataset_handle_parameter_is_not_marked_table_like() {
+        assert!(
+            !handle_param_symbol(HandleParamKind::DatasetHandle)
+                .flags
+                .contains(SymbolFlags::PARAM_TABLE_LIKE)
+        );
+    }
+
+    #[test]
+    fn plain_handle_parameter_is_not_marked_table_like() {
+        // Proves the flag is not a proxy for "typed HANDLE" — blanket-exempting
+        // every HANDLE parameter would discard real unused-parameter findings.
+        let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Variable {
+                name: id("h"),
+                type_source: TypeSource::Explicit(DataType::Handle),
+                no_undo: false,
+            },
+        })]);
+        let h = find_symbol(&tree, &symbols, NamespaceId::Values, "h").unwrap();
+        assert_eq!(
+            h.data_type,
+            Some(ResolvedType::Primitive(crate::PrimitiveTy::Handle))
+        );
+        assert!(!h.flags.contains(SymbolFlags::PARAM_TABLE_LIKE));
+    }
+
+    #[test]
+    fn buffer_parameter_stays_a_buffer_without_the_flag() {
+        // Characterization: `DEFINE PARAMETER BUFFER b FOR t` is already immune
+        // to LINT0002 because it declares `Buffer`, not `Parameter`. Pinned so
+        // the redirect work does not need to touch it.
+        let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Buffer {
+                name: id("b"),
+                target: id("t"),
+            },
+        })]);
+        assert!(find_symbol(&tree, &symbols, NamespaceId::Values, "b").is_none());
+        let b = find_symbol(&tree, &symbols, NamespaceId::Buffers, "b").unwrap();
+        assert_eq!(b.kind, SymbolKind::Buffer);
+        assert!(!b.flags.contains(SymbolFlags::PARAM_TABLE_LIKE));
     }
 
     #[test]
