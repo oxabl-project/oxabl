@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Backed by a `u32` index into a [`FileSet`]. Use [`FileId::UNKNOWN`] as a
 /// sentinel for synthetic or in-memory files that have no disk path.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId(u32);
 

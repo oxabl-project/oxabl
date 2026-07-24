@@ -31,6 +31,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"
 
+[features]
+# `serde` propagates the diagnostic-family `Serialize` derives up from the
+# sub-crates. It is on by default so the `oxabl` binary can serialize
+# diagnostics directly; a library consumer that doesn't serialize can opt out
+# with `default-features = false`.
+default = ["serde"]
+serde = ["oxabl_ast/serde", "oxabl_common/serde", "oxabl_parser/serde"]
+
 [dev-dependencies]
 tempfile = "3"
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }

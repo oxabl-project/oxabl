@@ -67,6 +67,47 @@ fn parse_error_displays_message_and_is_std_error() {
     let _dyn: &dyn std::error::Error = err;
 }
 
+#[test]
+fn render_diagnostics_produces_positioned_snippet() {
+    use oxabl::common::{FileId, SourceResolver};
+    let source = "MESSAGE \"a\".\nDEFINE VARIABLE .";
+    let fid = FileId::new(1);
+    let diags = oxabl::parse(source).into_diagnostics(fid);
+    assert!(!diags.is_empty());
+    let resolver = SourceResolver::new(fid, "t.p", source);
+    let rendered = oxabl::render_diagnostics(&diags, &resolver);
+    assert!(
+        rendered.contains("t.p:2:"),
+        "expected a position: {rendered}"
+    );
+    assert!(
+        rendered.contains("DEFINE VARIABLE ."),
+        "expected a snippet: {rendered}"
+    );
+}
+
+#[test]
+fn diagnostic_display_one_line_form() {
+    use oxabl::common::FileId;
+    let diags = oxabl::parse("DEFINE VARIABLE .").into_diagnostics(FileId::new(1));
+    let shown = format!("{}", diags[0]);
+    // severity[code]: message
+    assert!(shown.starts_with("error[PARSE001]: "), "got: {shown}");
+}
+
+/// The `serde` feature is on by default for the umbrella, so a consumer can
+/// serialize the shared `Diagnostic` directly — no hand-mirrored struct (U7).
+#[test]
+fn diagnostic_serializes_via_facade() {
+    use oxabl::common::FileId;
+    let diags = oxabl::parse("DEFINE VARIABLE .").into_diagnostics(FileId::new(1));
+    let v = serde_json::to_value(&diags[0]).unwrap();
+    assert_eq!(v["code"], "PARSE001");
+    assert_eq!(v["severity"], "error");
+    assert!(v["message"].is_string());
+    assert_eq!(v["span"]["file"], 1);
+}
+
 /// Every curated module is reachable from a single `oxabl` dependency (U1).
 /// Referencing the items — as values, fn-pointers, or constructors — is the
 /// compile-gate; no sub-crate import is present anywhere in this test file.

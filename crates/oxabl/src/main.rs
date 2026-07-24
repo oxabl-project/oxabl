@@ -9,7 +9,7 @@ use oxabl_analyze::{
     CollectedDiagnostics, collect_with_model, dump_json_with_diagnostics,
     dump_text_with_diagnostics,
 };
-use oxabl_common::{Diagnostic, FileId, SourceMap};
+use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
@@ -162,124 +162,57 @@ struct JsonErrorPattern {
     count: usize,
 }
 
-/// A preprocessor diagnostic surfaced to machine-readable output.
-#[derive(Serialize)]
-struct JsonDiagnostic {
-    file: String,
-    code: String,
-    severity: String,
-    /// Absent for diagnostics that originate in a nested include: their offset
-    /// is meaningful only against the include's own source, not the root file,
-    /// so we omit a position rather than emit a misleading `0`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    line: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    col: Option<usize>,
-    message: String,
-}
-
 /// Surface *loud* preprocessor diagnostics — errors plus selected warnings —
-/// to stderr and collect them for machine-readable output.
+/// to stderr via the shared [`render_diagnostics`] renderer, and return them as
+/// [`Diagnostic`]s for machine-readable output.
 ///
 /// Always-loud warning codes:
 /// - `PREPROC007` unresolvable include (symbol loss)
 /// - `PREPROC002` unclosed `&IF` (inline/`skip_to_eol` regressions; #65 gate)
 ///
-/// Line/col is computed against the root source only when the diagnostic
-/// belongs to the root file (`d.span.file == root_file_id`). Diagnostics from a
-/// nested include carry a different `FileId`; resolving their offset against the
-/// root `SourceMap` would print a garbage position, so those are reported
-/// without a (misleading) root-relative line/col.
+/// Rendering is delegated to [`render_diagnostics`] with a [`SourceResolver`]
+/// over the root file: root-file diagnostics get a `path:line:col` position and
+/// a snippet; diagnostics from a nested include (a different `FileId`) render
+/// without a misleading root-relative position.
 fn surface_preproc_diagnostics(
     path: &Path,
     root_source: &str,
     root_file_id: FileId,
     diagnostics: &[Diagnostic],
-) -> Vec<JsonDiagnostic> {
-    let mut out = Vec::new();
+) -> Vec<Diagnostic> {
     // Share the surfacing rule with the collector so the two never drift (U4).
     let is_loud = oxabl_analyze::is_loud;
-    // Only build a SourceMap if there's actually a loud diagnostic to place.
-    if !diagnostics.iter().any(is_loud) {
-        return out;
+    let loud: Vec<Diagnostic> = diagnostics.iter().filter(|d| is_loud(d)).cloned().collect();
+    if loud.is_empty() {
+        return loud;
     }
-    let source_map = SourceMap::new(root_source);
-    for d in diagnostics.iter().filter(|d| is_loud(d)) {
-        let severity = format!("{:?}", d.severity).to_lowercase();
-        if d.span.file == root_file_id {
-            let (line, col) = source_map.lookup(d.span.span.start as usize);
-            eprintln!(
-                "{}:{}:{} [preprocess {}] {}",
-                path.display(),
-                line,
-                col,
-                d.code.0,
-                d.message
-            );
-            out.push(JsonDiagnostic {
-                file: path.display().to_string(),
-                code: d.code.0.to_string(),
-                severity,
-                line: Some(line),
-                col: Some(col),
-                message: d.message.clone(),
-            });
-        } else {
-            eprintln!(
-                "{}: [preprocess {}] in included file: {}",
-                path.display(),
-                d.code.0,
-                d.message
-            );
-            out.push(JsonDiagnostic {
-                file: path.display().to_string(),
-                code: d.code.0.to_string(),
-                severity,
-                line: None,
-                col: None,
-                message: d.message.clone(),
-            });
-        }
-    }
-    out
+    let resolver = SourceResolver::new(root_file_id, path.display().to_string(), root_source);
+    eprint!("{}", render_diagnostics(&loud, &resolver));
+    loud
 }
 
 /// Surface loud, root-origin preprocessor diagnostics from the shared
-/// collector to stderr, and collect them for the `analyze` JSON channel.
+/// collector to stderr via [`render_diagnostics`], and return them for the
+/// `analyze` JSON channel.
 ///
 /// The collector already filtered to the loud set and dropped include-origin
-/// diagnostics (R8), so every entry here is root-relative and gets a concrete
-/// line/col from the root source.
+/// diagnostics (R8), so every entry here is root-relative (root [`FileId`] is
+/// `1`, matching [`collect_with_model`]) and gets a concrete position + snippet.
 fn surface_collected_preproc(
     path: &Path,
     source: &str,
     collected: &CollectedDiagnostics,
-) -> Vec<JsonDiagnostic> {
-    let mut out = Vec::new();
-    let mut source_map: Option<SourceMap> = None;
-    for c in collected.by_source(oxabl_analyze::DiagnosticSource::Preproc) {
-        let d = &c.diagnostic;
-        let sm = source_map.get_or_insert_with(|| SourceMap::new(source));
-        let (line, col) = sm.lookup(d.span.span.start as usize);
-        let severity = format!("{:?}", d.severity).to_lowercase();
-        eprintln!(
-            "{}:{}:{} [preprocess {}] {}",
-            path.display(),
-            line,
-            col,
-            d.code.0,
-            d.message
-        );
-        out.push(JsonDiagnostic {
-            file: path.display().to_string(),
-            code: d.code.0.to_string(),
-            severity,
-            line: Some(line),
-            col: Some(col),
-            message: d.message.clone(),
-        });
+) -> Vec<Diagnostic> {
+    let loud: Vec<Diagnostic> = collected
+        .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+        .map(|c| c.diagnostic.clone())
+        .collect();
+    if loud.is_empty() {
+        return loud;
     }
-    out
+    let resolver = SourceResolver::new(FileId::new(1), path.display().to_string(), source);
+    eprint!("{}", render_diagnostics(&loud, &resolver));
+    loud
 }
 
 fn main() -> ExitCode {

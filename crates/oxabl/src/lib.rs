@@ -54,6 +54,12 @@ pub use oxabl_parser::Program;
 /// analysis layers.
 pub use oxabl_common::Diagnostic;
 
+/// Render a slice of [`Diagnostic`]s to `path:line:col: severity[code]: message`
+/// text with source snippets, using a [`SourceResolver`](common::SourceResolver)
+/// for positions. The reusable renderer consumers (and the CLI) share instead of
+/// reinventing `file:line:col` formatting.
+pub use oxabl_common::render_diagnostics;
+
 /// AST node definitions — statements, expressions, data types, literals, and
 /// source-location types. This module surfaces `oxabl_ast`'s full public model:
 /// the node set is large and deeply interlinked (matching on a [`Statement`]
@@ -88,7 +94,7 @@ pub mod common {
     pub use oxabl_ast::Span;
     pub use oxabl_common::{
         Diagnostic, DiagnosticCode, FileId, FileSet, FileSpan, Label, LintSeverityMap, Severity,
-        SourceMap, VirtualSpan, blank_lines_between,
+        SourceMap, SourceResolver, VirtualSpan, blank_lines_between, render_diagnostics,
     };
 }
 
