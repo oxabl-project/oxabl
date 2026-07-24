@@ -21,7 +21,16 @@ pub use kind::Kind;
 
 /// Tokenize ABL source code into a vector of tokens.
 ///
-/// This is the main public entry point for the lexer.
+/// This is the main batch entry point for the lexer. Its output — every token up
+/// to and including the terminal [`Kind::Eof`] — is identical to iterating a
+/// [`Lexer`] to exhaustion (see the [`Iterator`] impl); memory-constrained
+/// consumers that want lazy tokenization can iterate a `Lexer` directly.
+///
+/// The batch path deliberately drives [`read_next_token`](Lexer::read_next_token)
+/// in a tight loop rather than going through the `Iterator` adaptor: `tokenize`
+/// is a lexer hot path, and the adaptor's per-token `Option`/EOF-state overhead
+/// measurably regressed it. The `Iterator` impl reuses the same
+/// `read_next_token`, and a test asserts the two stay byte-identical.
 pub fn tokenize(source: &str) -> Vec<Token> {
     let mut lexer = Lexer::new(source);
     // Pre-allocate based on source length to avoid repeated realloc/mmap calls.
@@ -80,6 +89,10 @@ pub struct Lexer<'a> {
     /// True while tokenizing a `&SCOPED-DEFINE` or `&GLOBAL-DEFINE` value.
     /// When set, newlines emit `Kind::PreprocEnd` instead of being skipped.
     in_directive: bool,
+
+    /// True once the terminal [`Kind::Eof`] token has been yielded through the
+    /// [`Iterator`] impl, so iteration stops instead of re-reading past EOF.
+    finished: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -88,6 +101,7 @@ impl<'a> Lexer<'a> {
             source,
             chars: source.chars(),
             in_directive: false,
+            finished: false,
         }
     }
 
@@ -828,6 +842,27 @@ impl<'a> Lexer<'a> {
                 _ => continue,
             }
         }
+    }
+}
+
+/// Streaming, lazy tokenization: a [`Lexer`] yields one [`Token`] at a time up
+/// to and including the terminal [`Kind::Eof`], then stops. The token sequence
+/// is identical to [`tokenize`], which is itself `Lexer::new(src).collect()`.
+///
+/// A memory-constrained consumer can drive the lexer without materializing the
+/// whole `Vec<Token>` — e.g. `for tok in Lexer::new(src) { … }`.
+impl Iterator for Lexer<'_> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Token> {
+        if self.finished {
+            return None;
+        }
+        let token = self.read_next_token();
+        if token.kind == Kind::Eof {
+            self.finished = true;
+        }
+        Some(token)
     }
 }
 
@@ -2245,5 +2280,49 @@ end."#;
                 Kind::Eof,
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod iterator_tests {
+    use super::*;
+
+    #[test]
+    fn iterator_matches_tokenize() {
+        for src in [
+            "MESSAGE \"hello\".",
+            "",
+            "DEFINE VARIABLE x AS INTEGER NO-UNDO.\nFOR EACH cust: DISPLAY cust. END.",
+            "&SCOPED-DEFINE FOO 1\nMESSAGE {&FOO}.",
+        ] {
+            let batch = tokenize(src);
+            let streamed: Vec<Token> = Lexer::new(src).collect();
+            assert_eq!(
+                streamed, batch,
+                "iterator diverged from tokenize on {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn iterator_stops_after_eof() {
+        let mut lexer = Lexer::new("MESSAGE \"x\".");
+        let mut saw_eof = false;
+        for tok in lexer.by_ref() {
+            if tok.kind == Kind::Eof {
+                saw_eof = true;
+            }
+        }
+        assert!(saw_eof, "iteration should yield the terminal Eof token");
+        // Exhausted: no tokens past Eof.
+        assert!(lexer.next().is_none());
+    }
+
+    #[test]
+    fn partial_consumption_is_lazy() {
+        // Taking the first two tokens must not require lexing the whole input.
+        let first_two: Vec<Token> = Lexer::new("MESSAGE \"x\". DISPLAY y.").take(2).collect();
+        assert_eq!(first_two.len(), 2);
+        assert_eq!(first_two[0].kind, tokenize("MESSAGE \"x\".")[0].kind);
     }
 }

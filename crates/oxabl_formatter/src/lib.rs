@@ -133,6 +133,25 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
     Ok(out)
 }
 
+/// One-call convenience: tokenize + parse `source` (raw, preprocessing off) and
+/// [`format`] the result, returning the reformatted string or a [`FormatBail`].
+///
+/// This folds the `tokenize → parse_program → format` dance every client
+/// otherwise repeats, so the CLI, LSP, and the `oxabl` umbrella all format
+/// through one shared entry point. On any bail the original bytes are unchanged
+/// (see [`format`]).
+///
+/// # Panics
+///
+/// Like the underlying lexer and parser, this may panic on some malformed
+/// inputs. A consumer that must isolate panics (as the CLI and LSP do) should
+/// wrap the call in [`std::panic::catch_unwind`].
+pub fn format_source(source: &str, style: &StyleGuide) -> Result<String, FormatBail> {
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    format(source, &program, style)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

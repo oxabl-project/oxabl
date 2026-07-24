@@ -141,6 +141,17 @@ pub fn analyze_with_fs(
     )
 }
 
+/// Format ABL `source` with `style`, returning the reformatted string or a
+/// [`FormatBail`](formatter::FormatBail) explaining why the file was left
+/// untouched.
+///
+/// One-call convenience mirroring [`parse`], folding tokenize + parse + the
+/// layout formatter. Defined in `oxabl_formatter` so the CLI, LSP, and this
+/// umbrella all format through one shared entry point; on any bail the original
+/// bytes are returned unchanged. Like [`parse`], it may panic on some malformed
+/// inputs — guard with [`std::panic::catch_unwind`] if isolation is required.
+pub use oxabl_formatter::format_source;
+
 /// Render a slice of [`Diagnostic`]s to `path:line:col: severity[code]: message`
 /// text with source snippets, using a [`SourceResolver`](common::SourceResolver)
 /// for positions. The reusable renderer consumers (and the CLI) share instead of

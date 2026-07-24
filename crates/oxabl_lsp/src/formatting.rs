@@ -18,8 +18,6 @@
 //! and would reformat macro output, not the user's buffer (KTD1, R-risk).
 
 use lsp_types::{Position, PositionEncodingKind, Range, TextEdit, Uri};
-use oxabl_lexer::tokenize;
-use oxabl_parser::Parser;
 use oxabl_style::StyleGuide;
 use oxabl_workspace::resolved_style;
 
@@ -49,8 +47,9 @@ pub fn style_for_uri(uri: &Uri) -> StyleGuide {
 /// Compute the `textDocument/formatting` edits for an already-fetched open
 /// [`Document`] (R2, R4, R5).
 ///
-/// Mirrors the CLI's `format_one`: tokenize → raw `parse_program()` →
-/// [`oxabl_formatter::format`], all inside `catch_unwind` (KTD1, KTD4). On
+/// Mirrors the CLI's `format_one`: both format through the shared
+/// [`oxabl_formatter::format_source`] (raw, preprocessing off), inside
+/// `catch_unwind` (KTD1, KTD4). On
 /// success *with changed output* it returns exactly one whole-document
 /// [`TextEdit`] replacing `(0,0)..end` with the formatted string (KTD5). On a
 /// [`FormatBail`](oxabl_formatter::FormatBail), unchanged output, parse-dirty
@@ -72,9 +71,7 @@ pub fn compute_formatting_edits(
     // panic-guarded so a formatter/lexer panic degrades to "no edits" rather
     // than killing the server's main loop (KTD4).
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let tokens = tokenize(&text);
-        let program = Parser::new(&tokens, &text).parse_program();
-        oxabl_formatter::format(&text, &program, &style)
+        oxabl_formatter::format_source(&text, &style)
     }));
 
     match result {
@@ -195,9 +192,7 @@ mod tests {
         text: &str,
         style: &StyleGuide,
     ) -> Result<String, oxabl_formatter::FormatBail> {
-        let tokens = tokenize(text);
-        let program = Parser::new(&tokens, text).parse_program();
-        oxabl_formatter::format(text, &program, style)
+        oxabl_formatter::format_source(text, style)
     }
 
     #[test]

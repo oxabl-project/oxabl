@@ -167,6 +167,36 @@ fn analyze_with_fs_runs_preprocess_path() {
     assert!(sem.is_some());
 }
 
+#[test]
+fn format_source_formats_and_is_idempotent() {
+    use oxabl::style::StyleGuide;
+    let style = StyleGuide::default_base();
+    let src = "IF TRUE THEN DO:\nMESSAGE \"hi\".\nEND.\n";
+    let once = oxabl::format_source(src, &style).expect("should format");
+    let twice = oxabl::format_source(&once, &style).expect("should format");
+    assert_eq!(once, twice, "formatter must be idempotent");
+}
+
+#[test]
+fn format_source_bails_on_parse_errors_without_mangling() {
+    use oxabl::formatter::FormatBail;
+    use oxabl::style::StyleGuide;
+    // A parse-broken buffer must bail (ParseErrors), never emit altered bytes.
+    let err = oxabl::format_source("DEFINE VARIABLE .", &StyleGuide::default_base())
+        .expect_err("parse-dirty input should bail");
+    assert_eq!(err, FormatBail::ParseErrors);
+}
+
+#[test]
+fn lexer_iterator_matches_tokenize_via_facade() {
+    use oxabl::lexer::{Lexer, tokenize};
+    let src = "DEFINE VARIABLE x AS INTEGER NO-UNDO.";
+    let streamed: Vec<_> = Lexer::new(src).collect();
+    assert_eq!(streamed, tokenize(src));
+    // Laziness: take fewer than the full stream without lexing the rest.
+    assert_eq!(Lexer::new(src).take(2).count(), 2);
+}
+
 /// Every curated module is reachable from a single `oxabl` dependency (U1).
 /// Referencing the items — as values, fn-pointers, or constructors — is the
 /// compile-gate; no sub-crate import is present anywhere in this test file.
