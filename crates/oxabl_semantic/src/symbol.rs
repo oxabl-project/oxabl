@@ -101,7 +101,10 @@ bitflags! {
         /// this variable. Consumed by `unused-variable` (LINT0002) to skip the
         /// false positive where a call site must supply an out-param it never
         /// reads, and available to the planned "written via OUTPUT but never
-        /// read" dead-store advisory (#125).
+        /// read" dead-store advisory (#125). `RETURN` is accepted defensively —
+        /// the AST models the direction, but `parse_run_arguments` does not
+        /// currently produce it for a `RUN` argument, so only `OUTPUT` and
+        /// `INPUT-OUTPUT` are reachable from real source today.
         ///
         /// Intentional stopgap: once CFG def-use records land (#126) this
         /// becomes a def-site attribute and the standalone flag can be folded

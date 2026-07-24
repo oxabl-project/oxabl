@@ -463,8 +463,10 @@ mod tests {
 
     #[test]
     fn no_double_handling_when_output_argument_is_also_read() {
-        // Subsumed by the `read_count > 0` fast path — assert the flag skip
-        // doesn't change the outcome or emit twice.
+        // Belt-and-braces: two independent skip paths (`read_count > 0` and
+        // the flag) apply to the same symbol. This can't isolate either one —
+        // it only pins that their overlap still yields a single, empty result
+        // rather than a double-emit.
         use oxabl_ast::{Expression, ExpressionKind};
         let mut stmts = var_plus_run_arg(ParameterDirection::Output);
         stmts.push(stmt(StatementKind::ExpressionStatement(Expression::new(
