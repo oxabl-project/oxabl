@@ -6,6 +6,7 @@ use crate::FileId;
 ///
 /// Combines a [`FileId`] with a byte-offset [`Span`] so that diagnostics and
 /// the semantic layer can reference locations across multiple files.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileSpan {
     pub file: FileId,

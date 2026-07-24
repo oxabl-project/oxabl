@@ -9,3 +9,9 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_ast"
 [dependencies]
 rust_decimal = "1.40.0"
 smallvec = { version = "1", features = ["union"] }
+serde = { version = "1", optional = true, features = ["derive"] }
+
+[features]
+# Opt-in `Serialize` on the diagnostic-family carve-out (`Span`). The bulk of
+# the AST (statements/expressions) is intentionally left underived.
+serde = ["dep:serde"]

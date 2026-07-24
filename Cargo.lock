@@ -980,6 +980,7 @@ name = "oxabl_ast"
 version = "0.5.0"
 dependencies = [
  "rust_decimal",
+ "serde",
  "smallvec",
 ]
 
@@ -999,6 +1000,8 @@ version = "0.5.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1074,6 +1077,8 @@ dependencies = [
  "oxabl_preprocessor",
  "oxabl_workspace",
  "rust_decimal",
+ "serde",
+ "serde_json",
  "smallvec",
 ]
 

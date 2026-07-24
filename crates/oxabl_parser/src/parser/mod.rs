@@ -20,6 +20,7 @@ use oxabl_ast::{
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug)]
 pub struct ParseError {
     pub message: String,
@@ -1724,5 +1725,23 @@ impl<'a> Parser<'a> {
 
         self.advance();
         Ok(data_type)
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use crate::Parser;
+    use oxabl_lexer::tokenize;
+
+    #[test]
+    fn parse_error_serializes_under_feature() {
+        let src = "DEFINE VARIABLE .";
+        let tokens = tokenize(src);
+        let program = Parser::new(&tokens, src).parse_program();
+        let err = program.first_error().expect("expected a parse error");
+        let v = serde_json::to_value(err).unwrap();
+        assert!(v["message"].is_string());
+        assert!(v["span"]["start"].is_number());
+        assert!(v["span"]["end"].is_number());
     }
 }
