@@ -187,6 +187,9 @@ impl<'fs> ProcessContext<'fs> {
                                     } else {
                                         value.clone()
                                     };
+                                    let expanded = self
+                                        .expand_defined_preproc_vars(&expanded)
+                                        .unwrap_or(expanded);
                                     self.vars.define(name, &expanded);
                                 }
                                 i = directive.end;
@@ -210,6 +213,9 @@ impl<'fs> ProcessContext<'fs> {
                                     } else {
                                         value.clone()
                                     };
+                                    let expanded = self
+                                        .expand_defined_preproc_vars(&expanded)
+                                        .unwrap_or(expanded);
                                     self.vars.define(name, &expanded);
                                     self.global_vars.define(name, &expanded);
                                 }
@@ -822,6 +828,55 @@ impl<'fs> ProcessContext<'fs> {
                 }
                 i = end + 1;
                 changed = true;
+                continue;
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        if changed { Some(out) } else { None }
+    }
+
+    /// Expand `{&name}` references in a `&SCOPED-DEFINE`/`&GLOBAL-DEFINE`
+    /// *value* that resolve to a currently defined preprocessor variable,
+    /// leaving references to undefined variables intact.
+    ///
+    /// This is what makes the pervasive ABL idiom
+    /// `&SCOPED-DEFINE X {&X}` work — capturing an include argument (or an
+    /// outer define) named `X` into a scoped define of the same name. The RHS
+    /// must resolve to `X`'s current value at define time; otherwise the value
+    /// is stored as the literal text `{&X}`, which then (after identifier
+    /// normalization) surfaces as a phantom name like `{&x}` and every real use
+    /// of the captured name is flagged undefined.
+    ///
+    /// Unlike [`Self::expand_preproc_vars`], undefined references are preserved
+    /// verbatim rather than expanded to empty, so genuine forward references
+    /// still resolve lazily when the define is later referenced. Returns
+    /// `Some(expanded)` when any substitution occurred, or `None` otherwise.
+    fn expand_defined_preproc_vars(&self, text: &str) -> Option<String> {
+        if !text.contains("{&") {
+            return None;
+        }
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        let mut changed = false;
+        while i < bytes.len() {
+            if i + 1 < bytes.len()
+                && bytes[i] == b'{'
+                && bytes[i + 1] == b'&'
+                && let Some(close_rel) = text[i..].find('}')
+            {
+                let end = i + close_rel;
+                let name = &text[i + 2..end];
+                if let Some(val) = self.vars.get(name) {
+                    out.push_str(val);
+                    changed = true;
+                } else {
+                    // Undefined: preserve verbatim for lazy resolution at
+                    // reference time.
+                    out.push_str(&text[i..=end]);
+                }
+                i = end + 1;
                 continue;
             }
             out.push(bytes[i] as char);
@@ -3102,6 +3157,81 @@ done.
         assert!(
             !text.contains("{3}"),
             "literal {{3}} must not remain, got: {text}"
+        );
+    }
+
+    // --- named `{&name}` references inside &SCOPED/GLOBAL-DEFINE values ---
+
+    #[test]
+    fn named_ref_expanded_in_scoped_define_value() {
+        // Top-level capture: B must snapshot A's value at define time.
+        let fs = make_fs(&[]);
+        let paths: Vec<PathBuf> = vec![];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp
+            .process(
+                FileId::new(1),
+                "&SCOPED-DEFINE A customer\n&SCOPED-DEFINE B {&A}\nFIND {&B}.",
+            )
+            .unwrap();
+        let text = result.to_text();
+        assert!(text.contains("FIND customer."), "got: {text}");
+    }
+
+    #[test]
+    fn undefined_named_ref_in_define_value_is_preserved_not_emptied() {
+        // `{&A}` is not defined when B is defined. Define-time expansion must
+        // leave the reference verbatim (not expand it to empty), so B's value
+        // stays `{&A}` rather than becoming empty. This preserves the raw text
+        // for reference-time handling instead of silently dropping it.
+        let fs = make_fs(&[]);
+        let paths: Vec<PathBuf> = vec![];
+        let pp = Preprocessor::new(&fs, &paths);
+        let result = pp
+            .process(FileId::new(1), "&SCOPED-DEFINE B {&A}\nhello {&B}.")
+            .unwrap();
+        let text = result.to_text();
+        assert!(
+            text.contains("{&A}"),
+            "undefined ref must be preserved, not emptied, got: {text}"
+        );
+    }
+
+    #[test]
+    fn include_arg_captured_by_same_named_scoped_define() {
+        // The pervasive ABL idiom: an include takes an optional `&NAME`
+        // argument and captures it into a scoped define of the same name via
+        // `&SCOPED-DEFINE NAME {&NAME}`, defaulting when absent. The RHS must
+        // resolve to the include argument, not be stored as literal `{&NAME}`.
+        let line_i = "&if defined(T-LINE) GT 0 &then\n\
+                      &scoped-define T-LINE {&T-LINE}\n\
+                      &else\n\
+                      &scoped-define T-LINE t-line\n\
+                      &endif\n\
+                      def temp-table {&T-LINE} no-undo field x as int.\n";
+        let fs = make_fs(&[("/inc/line.i", line_i)]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+
+        // Caller passes an override name.
+        let overridden = pp
+            .process(FileId::new(1), "{line.i &T-LINE = t-order-line}")
+            .unwrap()
+            .to_text();
+        assert!(
+            overridden.contains("def temp-table t-order-line no-undo"),
+            "include arg must be captured, got: {overridden}"
+        );
+        assert!(
+            !overridden.contains("{&"),
+            "no unexpanded reference must remain, got: {overridden}"
+        );
+
+        // Caller passes nothing: the &ELSE default applies.
+        let defaulted = pp.process(FileId::new(1), "{line.i}").unwrap().to_text();
+        assert!(
+            defaulted.contains("def temp-table t-line no-undo"),
+            "default must apply when no arg, got: {defaulted}"
         );
     }
 
