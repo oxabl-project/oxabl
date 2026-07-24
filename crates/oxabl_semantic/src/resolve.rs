@@ -2155,9 +2155,8 @@ impl<'a> ResolveWalker<'a> {
                     .insert(qualifier.id, Resolution::Resolved(qsym));
                 self.bump_count(qsym, AccessMode::Read);
 
-                let resolution = self.field_resolution(qsym, field);
+                let resolution = self.field_resolution(qsym, field, mode);
                 self.references.insert(expr_id, resolution);
-                let _ = mode;
             }
             None => {
                 // Schema fallback for the bare `Customer.Name` case: the
@@ -2174,7 +2173,7 @@ impl<'a> ResolveWalker<'a> {
                     self.references
                         .insert(qualifier.id, Resolution::Resolved(bsym));
                     self.bump_count(bsym, AccessMode::Read);
-                    let resolution = self.field_resolution(bsym, field);
+                    let resolution = self.field_resolution(bsym, field, mode);
                     self.references.insert(expr_id, resolution);
                     return;
                 }
@@ -2211,7 +2210,16 @@ impl<'a> ResolveWalker<'a> {
     /// symbol typed from the schema; a miss is `NotInScope`. Qualifiers
     /// without a schema link (temp-table buffers, missing tables) keep the
     /// legacy `External` resolution; schema-absent stays `NoSchema`.
-    fn field_resolution(&mut self, qsym: SymbolId, field: &Identifier) -> Resolution {
+    ///
+    /// `mode` is the access mode of the field reference; a resolved field
+    /// symbol has its read/write count bumped accordingly so `oxabl analyze`
+    /// reports real usage counts for schema fields (issue #60).
+    fn field_resolution(
+        &mut self,
+        qsym: SymbolId,
+        field: &Identifier,
+        mode: AccessMode,
+    ) -> Resolution {
         let field_atom = fold_atom(&field.name);
         match self.symbols.get(qsym).table_id {
             Some(tid) if self.ctx.schema_loaded => {
@@ -2227,6 +2235,7 @@ impl<'a> ResolveWalker<'a> {
                     Some(FieldResolution::Unique(f)) => {
                         let resolved_ty = ResolvedType::from_schema_field(f);
                         let fsym = self.synth_field_symbol(tid, &field_atom, resolved_ty, field);
+                        self.bump_count(fsym, mode);
                         Resolution::Resolved(fsym)
                     }
                     // Field not on the table, or an ambiguous abbreviation —
@@ -4578,6 +4587,55 @@ mod tests {
             sem.types.get(fa_id),
             Some(&ResolvedType::Primitive(crate::PrimitiveTy::Integer))
         );
+    }
+
+    #[test]
+    fn field_access_accumulates_read_and_write_counts() {
+        // Regression for #60: a schema-resolved field must accumulate
+        // read/write counts on its synthesized symbol, threading the real
+        // access mode through `field_resolution` instead of discarding it.
+        // `ASSIGN bCust.CustNum = 1` is a write; a bare `bCust.CustNum`
+        // expression is a read. Both fold onto the same (tid, field) synthetic.
+        let schema = test_schema();
+        let write_target = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("bCust")),
+            field: id("CustNum"),
+        });
+        let read_use = expr_n(ExpressionKind::FieldAccess {
+            qualifier: Box::new(id_expr("bCust")),
+            field: id("CustNum"),
+        });
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
+            }),
+            stmt_n(StatementKind::Assign {
+                assignments: {
+                    let mut v: SmallVec<[AssignPair; 4]> = SmallVec::new();
+                    v.push(AssignPair {
+                        target: write_target,
+                        value: int_lit(1),
+                    });
+                    v
+                },
+            }),
+            stmt_n(StatementKind::ExpressionStatement(read_use)),
+        ];
+        let (_t, symbols, _refs, _) = run_full_with_schema(&stmts, &schema);
+        let f = symbols
+            .iter()
+            .find(|(_, s)| s.kind == SymbolKind::Field && s.name == fold_atom("custnum"))
+            .expect("synthesized field symbol")
+            .1;
+        assert_eq!(f.read_count, 1, "one bare field read");
+        assert_eq!(f.write_count, 1, "one assignment-target write");
     }
 
     #[test]
