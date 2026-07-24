@@ -21,17 +21,30 @@ pub use kind::Kind;
 
 /// Tokenize ABL source code into a vector of tokens.
 ///
-/// This is the main batch entry point for the lexer. It is a thin wrapper over
-/// the streaming [`Lexer`] iterator (`Lexer::new(source).collect()`), so its
-/// output — every token up to and including the terminal [`Kind::Eof`] — is
-/// identical to iterating a `Lexer` to exhaustion. Memory-constrained consumers
-/// that want lazy tokenization can iterate the [`Lexer`] directly instead.
+/// This is the main batch entry point for the lexer. Its output — every token up
+/// to and including the terminal [`Kind::Eof`] — is identical to iterating a
+/// [`Lexer`] to exhaustion (see the [`Iterator`] impl); memory-constrained
+/// consumers that want lazy tokenization can iterate a `Lexer` directly.
+///
+/// The batch path deliberately drives [`read_next_token`](Lexer::read_next_token)
+/// in a tight loop rather than going through the `Iterator` adaptor: `tokenize`
+/// is a lexer hot path, and the adaptor's per-token `Option`/EOF-state overhead
+/// measurably regressed it. The `Iterator` impl reuses the same
+/// `read_next_token`, and a test asserts the two stay byte-identical.
 pub fn tokenize(source: &str) -> Vec<Token> {
+    let mut lexer = Lexer::new(source);
     // Pre-allocate based on source length to avoid repeated realloc/mmap calls.
     // ABL source averages ~1 token per 5–8 bytes; dividing by 5 is conservative
     // (slight over-allocation is cheaper than multiple heap growths).
     let mut tokens = Vec::with_capacity(source.len() / 5);
-    tokens.extend(Lexer::new(source));
+    loop {
+        let token = lexer.read_next_token();
+        let is_eof = token.kind == Kind::Eof;
+        tokens.push(token);
+        if is_eof {
+            break;
+        }
+    }
     tokens
 }
 
