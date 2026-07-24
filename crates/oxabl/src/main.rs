@@ -320,8 +320,7 @@ enum FormatOutcome {
 /// leaves a half-written file.
 fn format_one(source: &str, style: &StyleGuide) -> FormatOutcome {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let program = oxabl::parse(source);
-        oxabl_formatter::format(source, &program, style)
+        oxabl::format_source(source, style)
     }));
     match result {
         Ok(Ok(formatted)) if formatted == source => FormatOutcome::Unchanged,
