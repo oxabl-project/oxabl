@@ -20,9 +20,16 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "onLanguage:abl",
-    "workspaceContains:**/oxabl.toml"
+    "workspaceContains:**/oxabl.toml",
+    "onCommand:oxabl.restartServer"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "oxabl.restartServer",
+        "title": "oxabl: Restart Server"
+      }
+    ],
     "languages": [
       {
         "id": "abl",
@@ -47,7 +54,7 @@
         "oxabl.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Enable the oxabl language server (format-on-save and diagnostics). Requires a window reload to take effect."
+          "description": "Enable the oxabl language server (format-on-save and diagnostics). Applied automatically when changed; no window reload needed."
         },
         "oxabl.server.path": {
           "type": "string",
