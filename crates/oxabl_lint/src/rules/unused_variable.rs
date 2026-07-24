@@ -21,11 +21,12 @@
 
 use oxabl_common::{Diagnostic, FileSpan};
 use oxabl_semantic::{
-    AnalysisContext, NamespaceId, ScopeId, ScopeKind, ScopeTree, Semantic, Symbol, SymbolFlags,
-    SymbolId, SymbolKind, SymbolTable,
+    AnalysisContext, NamespaceId, ScopeTree, Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind,
+    SymbolTable,
 };
 
 use super::LINT0002;
+use super::unused_symbol_shared::{display_name, is_candidate, is_skipped};
 
 /// Entry point.
 pub fn run(
@@ -87,10 +88,6 @@ pub fn run(
     diags
 }
 
-fn is_candidate(sym: &Symbol) -> bool {
-    matches!(sym.kind, SymbolKind::Variable | SymbolKind::Parameter)
-}
-
 /// `read_count` of the declaration a table-shaped parameter actually names.
 ///
 /// `TABLE FOR tt` puts a `Parameter` in `NamespaceId::Values` while every
@@ -118,73 +115,6 @@ fn backing_read_count(
         return None;
     }
     Some(symbols.get(backing).read_count)
-}
-
-fn is_skipped(sid: SymbolId, sym: &Symbol, tree: &ScopeTree, symbols: &SymbolTable) -> bool {
-    // OUTPUT / INPUT-OUTPUT parameters: writing is the contract.
-    if sym.kind == SymbolKind::Parameter
-        && sym
-            .flags
-            .intersects(SymbolFlags::PARAM_OUTPUT | SymbolFlags::PARAM_INPUT_OUT)
-    {
-        return true;
-    }
-    // SHARED variables — readers may live in other files.
-    if sym
-        .flags
-        .intersects(SymbolFlags::SHARED | SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED)
-    {
-        return true;
-    }
-    // Passed to a callee as a write-back argument: the callee assigns into
-    // it, which is a use of the binding regardless of `read_count`.
-    if sym.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG) {
-        return true;
-    }
-    // Parameters of an INTERFACE method or an ABSTRACT method never
-    // execute a body; their read-count is meaningless.
-    if sym.kind == SymbolKind::Parameter && in_skipped_method(sym.declared_in, tree, symbols) {
-        return true;
-    }
-    // Don't self-warn on the rule's own books.
-    let _ = sid;
-    false
-}
-
-/// Whether the `Parameter` declared in `scope` lives inside a method scope
-/// whose declaring method is ABSTRACT, or inside an INTERFACE body.
-fn in_skipped_method(scope: ScopeId, tree: &ScopeTree, symbols: &SymbolTable) -> bool {
-    let mut cur = Some(scope);
-    while let Some(id) = cur {
-        let s = tree.get(id);
-        // Parameter declared inside an INTERFACE body — any method there
-        // has no body; skip its parameters.
-        if s.kind == ScopeKind::Interface {
-            return true;
-        }
-        if s.kind == ScopeKind::Method {
-            // Look up the Method symbol whose declaration NodeId matches
-            // this scope's owner, and check its ABSTRACT flag.
-            if let Some((_, msym)) = symbols.iter().find(|(_, sym)| {
-                sym.kind == SymbolKind::Function && sym.declaration == s.owner_node
-            }) && msym.flags.contains(SymbolFlags::ABSTRACT)
-            {
-                return true;
-            }
-        }
-        cur = s.parent;
-    }
-    false
-}
-
-fn display_name(sym: &Symbol, source: &str) -> String {
-    let start = sym.name_span.start as usize;
-    let end = sym.name_span.end as usize;
-    if end > start && end <= source.len() {
-        source[start..end].to_string()
-    } else {
-        sym.name.as_ref().to_string()
-    }
 }
 
 #[cfg(test)]

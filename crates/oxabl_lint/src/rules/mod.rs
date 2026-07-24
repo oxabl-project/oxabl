@@ -7,6 +7,7 @@ pub mod block_var_used_outside;
 pub mod type_mismatch_assignment;
 pub mod undefined_symbol;
 pub mod unknown_table_or_field;
+pub mod unused_symbol_shared;
 pub mod unused_variable;
 
 /// Diagnostic code for `undefined-symbol` (LINT0001).
