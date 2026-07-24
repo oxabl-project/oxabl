@@ -1973,6 +1973,23 @@ impl<'a> ResolveWalker<'a> {
             self.bump_count(bsym, mode);
             return;
         }
+        // Unqualified field fallback: ABL lets a field of a buffer in scope
+        // be referenced by its bare name, without the `buffer.` qualifier —
+        // the buffer is inferred from the enclosing block(s). This is
+        // idiomatic inside a `FOR EACH ... BREAK BY buffer.field` block, where
+        // the break field is named bare inside `FIRST-OF(field)` /
+        // `LAST-OF(field)` (whose argument parses as a plain identifier
+        // expression and lands here). Gated on `Buffers` being a candidate
+        // namespace so call names (Functions/Procedures) never resolve as
+        // fields, and tried only after local values, buffers, built-ins and
+        // schema table names, so a real declaration always wins.
+        if namespaces.contains(&NamespaceId::Buffers)
+            && let Some(fsym) = self.resolve_bare_block_field(&atom, id, scope)
+        {
+            self.references.insert(expr_id, Resolution::Resolved(fsym));
+            self.bump_count(fsym, mode);
+            return;
+        }
         self.references.insert(
             expr_id,
             Resolution::Unresolved {
@@ -1980,6 +1997,46 @@ impl<'a> ResolveWalker<'a> {
                 reason: UnresolvedReason::NotInScope,
             },
         );
+    }
+
+    /// Try to resolve a bare identifier as an unqualified field of a buffer
+    /// visible from `scope`. Walks every buffer bound in `scope` and its
+    /// ancestors (`FOR EACH` implicit buffers, `DEFINE BUFFER`, synthesized
+    /// default buffers) and, for the first whose backing schema table has a
+    /// field matching `atom`, synthesizes (or reuses) the typed `Field`
+    /// symbol. Requires a loaded schema — field validation needs the table's
+    /// column list; without one there is nothing to check the name against.
+    /// A field shared by two in-scope buffers is technically ambiguous in
+    /// ABL, but resolving to the first match is the right call for lint: it
+    /// avoids a false `undefined-symbol`, and this pass does not adjudicate
+    /// ambiguity.
+    fn resolve_bare_block_field(
+        &mut self,
+        atom: &OxablAtom,
+        id: &Identifier,
+        scope: ScopeId,
+    ) -> Option<SymbolId> {
+        if !self.ctx.schema_loaded {
+            return None;
+        }
+        // `ctx.schema` is a shared reference copied out of `self`, keeping the
+        // field lookup independent of the `&mut self` synthesis below.
+        let schema = self.ctx.schema;
+        let mut hit: Option<(TableId, ResolvedType)> = None;
+        'scan: for sid in self.tree.ancestors(scope) {
+            let buffers = &self.tree.get(sid).bindings[NamespaceId::Buffers.index()];
+            for (_name, bsym) in buffers.iter() {
+                if let Some(tid) = self.symbols.get(bsym).table_id
+                    && let Some(table) = schema.get_by_id(tid)
+                    && let FieldResolution::Unique(f) = table.resolve_field(atom)
+                {
+                    hit = Some((tid, ResolvedType::from_schema_field(f)));
+                    break 'scan;
+                }
+            }
+        }
+        let (tid, ty) = hit?;
+        Some(self.synth_field_symbol(tid, atom, ty, id))
     }
 
     /// Walk an expression used as a method/member *receiver*. Unresolved
