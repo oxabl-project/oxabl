@@ -66,6 +66,30 @@ pub enum ScopeKind {
     TriggerProcedure,
 }
 
+impl ScopeKind {
+    /// Whether this scope is *transparent* to `DEFINE VARIABLE` scoping.
+    ///
+    /// ABL scopes a `DEFINE VARIABLE` to its enclosing routine (the main
+    /// procedure body, an internal procedure, a user-defined function, a
+    /// method/constructor/destructor/property accessor), never to the
+    /// `DO`/`FOR`/`REPEAT`/`CATCH`/`FINALLY` block it textually sits in.
+    /// Placing a `DEFINE VARIABLE` inside such a block is purely stylistic —
+    /// the name is visible throughout the routine (after its textual
+    /// definition). These block kinds are therefore "seen through" when
+    /// choosing where a variable binds.
+    ///
+    /// Note this governs only where a `DEFINE VARIABLE` *binds*; block-local
+    /// bindings introduced by the block itself (a `DO` loop counter, a
+    /// `CATCH` error variable) are declared directly against the block scope
+    /// and are unaffected.
+    pub fn is_var_transparent(self) -> bool {
+        matches!(
+            self,
+            ScopeKind::Block | ScopeKind::Catch | ScopeKind::Finally
+        )
+    }
+}
+
 /// Per-namespace bindings for one [`Scope`].
 ///
 /// For ≤ `BINDING_MAP_SMALL_CAP` bindings — the overwhelming majority of ABL
@@ -228,6 +252,18 @@ impl ScopeTree {
             .map(|(i, s)| (ScopeId(i as u32), s))
     }
 
+    /// The scope a `DEFINE VARIABLE` at `scope` actually binds into.
+    ///
+    /// Walks up from `scope` skipping [var-transparent](ScopeKind::is_var_transparent)
+    /// block scopes and returns the first enclosing routine (or class/file)
+    /// scope. When `scope` is not itself a block, it is returned unchanged.
+    /// The root file scope is var-transparent-free, so this always terminates.
+    pub fn var_binding_scope(&self, scope: ScopeId) -> ScopeId {
+        self.ancestors(scope)
+            .find(|id| !self.scopes[id.raw() as usize].kind.is_var_transparent())
+            .unwrap_or(ScopeId::ROOT)
+    }
+
     /// Walk from `scope` up through parents, yielding each id in order.
     pub fn ancestors(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> + '_ {
         std::iter::successors(Some(scope), move |cur| {
@@ -341,6 +377,32 @@ mod tests {
             tree.resolve(ScopeId::ROOT, NamespaceId::Values, &atom("inner")),
             None
         );
+    }
+
+    #[test]
+    fn var_binding_scope_hoists_through_blocks() {
+        let mut tree = ScopeTree::new();
+        let proc = tree.push(ScopeKind::Procedure, ScopeId::ROOT, NodeId::from_u32(1));
+        let outer = tree.push(ScopeKind::Block, proc, NodeId::from_u32(2));
+        let inner = tree.push(ScopeKind::Block, outer, NodeId::from_u32(3));
+        let catch = tree.push(ScopeKind::Catch, inner, NodeId::from_u32(4));
+        // From any depth of blocks/catch, a variable binds at the routine.
+        assert_eq!(tree.var_binding_scope(inner), proc);
+        assert_eq!(tree.var_binding_scope(catch), proc);
+        assert_eq!(tree.var_binding_scope(outer), proc);
+        // A non-block scope is returned unchanged.
+        assert_eq!(tree.var_binding_scope(proc), proc);
+        assert_eq!(tree.var_binding_scope(ScopeId::ROOT), ScopeId::ROOT);
+    }
+
+    #[test]
+    fn var_binding_scope_stops_at_trigger_boundary() {
+        // A trigger block is a genuine boundary — variables do not hoist out.
+        let mut tree = ScopeTree::new();
+        let proc = tree.push(ScopeKind::Procedure, ScopeId::ROOT, NodeId::from_u32(1));
+        let trig = tree.push(ScopeKind::Trigger, proc, NodeId::from_u32(2));
+        let blk = tree.push(ScopeKind::Block, trig, NodeId::from_u32(3));
+        assert_eq!(tree.var_binding_scope(blk), trig);
     }
 
     // Keep a smoke-test that the Schema dep compiles through the crate tree.

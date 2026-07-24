@@ -597,6 +597,13 @@ impl<'a> Walker<'a> {
             TypeSource::Explicit(dt) => Some(wrap_extent(ResolvedType::from_data_type(dt), extent)),
             TypeSource::Like { .. } => None,
         };
+        // ABL scopes a `DEFINE VARIABLE` to its enclosing routine, not to the
+        // `DO`/`FOR`/`REPEAT`/`CATCH`/`FINALLY` block it happens to sit in.
+        // Bind (and duplicate-check) against that routine scope so a variable
+        // defined inside a block is visible throughout the routine — matching
+        // the language and avoiding a false `undefined-symbol` when it is used
+        // after the block closes.
+        let scope = self.tree.var_binding_scope(scope);
         self.declare(
             stmt,
             scope,
@@ -3078,7 +3085,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_block_shadowing() {
+    fn block_variable_is_routine_scoped_not_block_local() {
         let (tree, _symbols, diags) = run(vec![
             var_stmt("x", DataType::Integer),
             stmt(StatementKind::Do {
@@ -3091,24 +3098,69 @@ mod tests {
                 body: vec![var_stmt("x", DataType::Character)],
             }),
         ]);
-        // Declaration in a nested block is not a duplicate of the file-
-        // scope `x` — separate scope.
+        // ABL scopes `DEFINE VARIABLE` to the routine, not the block. The
+        // block-nested `x` therefore hoists to the file scope and collides
+        // with the file-level `x` — a genuine duplicate, matching ABL's
+        // "x already defined" compile error.
         assert!(
-            diags.is_empty(),
-            "shadowing across scopes must not emit SEM0001: {diags:?}"
+            diags.iter().any(|d| d.code.0 == diagnostics::SEM0001),
+            "block-nested DEFINE VARIABLE must duplicate the routine-scope name: {diags:?}"
         );
-        // Root has outer x.
+        // The name binds at the routine (file) scope...
         assert!(
             tree.get(ScopeId::ROOT)
                 .get_in(NamespaceId::Values, &fold_atom("x"))
                 .is_some()
         );
+        // ...and NOT in the block scope itself (it was hoisted out).
         let block = tree
             .iter()
             .find(|(_, s)| s.kind == ScopeKind::Block)
             .unwrap()
             .1;
-        assert!(block.get_in(NamespaceId::Values, &fold_atom("x")).is_some());
+        assert!(
+            block.get_in(NamespaceId::Values, &fold_atom("x")).is_none(),
+            "hoisted variable must not bind in the block scope"
+        );
+    }
+
+    #[test]
+    fn same_name_in_separate_routines_is_not_duplicate() {
+        // A genuine routine boundary (an internal procedure) is a real scope:
+        // the same block-nested name in two different procedures must not
+        // collide.
+        let a_block = stmt(StatementKind::Do {
+            loop_var: None,
+            from: None,
+            to: None,
+            by: None,
+            while_condition: None,
+            transaction: false,
+            body: vec![var_stmt("x", DataType::Integer)],
+        });
+        let b_block = stmt(StatementKind::Do {
+            loop_var: None,
+            from: None,
+            to: None,
+            by: None,
+            while_condition: None,
+            transaction: false,
+            body: vec![var_stmt("x", DataType::Integer)],
+        });
+        let (_tree, _symbols, diags) = run(vec![
+            stmt(StatementKind::Procedure {
+                name: id("a"),
+                body: vec![a_block],
+            }),
+            stmt(StatementKind::Procedure {
+                name: id("b"),
+                body: vec![b_block],
+            }),
+        ]);
+        assert!(
+            !diags.iter().any(|d| d.code.0 == diagnostics::SEM0001),
+            "same name in separate routines must not collide: {diags:?}"
+        );
     }
 
     #[test]
