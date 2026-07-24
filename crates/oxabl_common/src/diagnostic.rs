@@ -94,6 +94,18 @@ impl Diagnostic {
         }
     }
 
+    /// Create an info diagnostic with no secondary labels or help.
+    pub fn info(code: &'static str, message: String, span: FileSpan) -> Self {
+        Diagnostic {
+            severity: Severity::Info,
+            code: DiagnosticCode(code),
+            message,
+            span,
+            labels: Vec::new(),
+            help: None,
+        }
+    }
+
     /// Add a secondary label to this diagnostic.
     pub fn with_label(mut self, span: FileSpan, message: String) -> Self {
         self.labels.push(Label { span, message });

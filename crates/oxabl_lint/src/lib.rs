@@ -1,8 +1,8 @@
 //! Lint rules for Progress ABL, driven by the [`oxabl_semantic::Semantic`]
 //! side-table model.
 //!
-//! v1 ships four rules, each implemented as a standalone function that
-//! walks the program + semantic result and returns a `Vec<Diagnostic>`:
+//! Each rule is implemented as a standalone function that walks the program +
+//! semantic result and returns a `Vec<Diagnostic>`:
 //!
 //! | Code     | Name                       | Severity | What it fires on                                        |
 //! |----------|----------------------------|----------|--------------------------------------------------------|
@@ -10,10 +10,12 @@
 //! | LINT0002 | `unused-variable`          | Warning  | Variables / Parameters with `read_count == 0`          |
 //! | LINT0003 | `unknown-table-or-field`   | Error    | Field references under `schema_loaded == true`         |
 //! | LINT0004 | `type-mismatch-assignment` | Err/Warn | Assignment type mismatches / narrowing conversions     |
+//! | LINT0005 | `block-var-used-outside`   | Info     | Block-defined variable read outside its block, unset   |
 //!
-//! No configuration mechanism exists in v1 (there is no oxabl config file
-//! yet). When rule-toggle configuration lands it'll extend
-//! [`AnalysisContext`] without touching the per-rule function signatures.
+//! Per-rule severity (including *off*) is configured through
+//! `[workspace.lint]` in `oxabl.toml` and applied via
+//! [`AnalysisContext::lint_severities`] without touching the per-rule
+//! function signatures.
 
 use oxabl_ast::Statement;
 use oxabl_common::Diagnostic;
@@ -22,8 +24,8 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 mod rules;
 
 pub use rules::{
-    LINT0001, LINT0002, LINT0003, LINT0004, type_mismatch_assignment, undefined_symbol,
-    unknown_table_or_field, unused_variable,
+    LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, block_var_used_outside,
+    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
 
 /// Run every lint rule over `program` + `sem` and return a combined list
@@ -50,6 +52,9 @@ pub fn lint_file(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -
     });
     run_rule(&mut diags, LINT0004, ctx, || {
         type_mismatch_assignment::run(program, sem, ctx)
+    });
+    run_rule(&mut diags, LINT0005, ctx, || {
+        block_var_used_outside::run(program, sem, ctx)
     });
     diags
 }

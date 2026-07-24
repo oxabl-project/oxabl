@@ -16,7 +16,7 @@ fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
 }
 
 #[test]
-fn lint_schema_has_all_four_rules_with_severity_enum() {
+fn lint_schema_has_all_rules_with_severity_enum() {
     let schema = serde_json::to_value(schemars::schema_for!(LintConfig)).unwrap();
 
     let props = object_keys(&schema["properties"]);
@@ -25,14 +25,12 @@ fn lint_schema_has_all_four_rules_with_severity_enum() {
         "unused-variable",
         "unknown-table-or-field",
         "type-mismatch-assignment",
+        "block-var-used-outside",
     ]
     .into_iter()
     .map(String::from)
     .collect();
-    assert_eq!(
-        props, expected,
-        "lint schema must expose all four kebab keys"
-    );
+    assert_eq!(props, expected, "lint schema must expose every kebab key");
 
     let severities: Vec<&str> = schema["definitions"]["LintSeverity"]["enum"]
         .as_array()

@@ -87,6 +87,14 @@ bitflags! {
         /// Cleared when a later full definition in the same scope merges into
         /// this symbol (#69).
         const PROTOTYPE        = 1 << 16;
+        /// Resolve-computed usage facts (not declaration modifiers): set on a
+        /// block-hoisted variable (one recorded in `SymbolTable::block_defined`)
+        /// when it is referenced from *outside* its defining block. Consumed by
+        /// the `block-var-used-outside` lint (LINT0005) to distinguish the
+        /// "may still hold its default value" hazard (read outside, never
+        /// written outside) from a deliberate cross-block assignment.
+        const READ_OUTSIDE_BLOCK  = 1 << 17;
+        const WRITE_OUTSIDE_BLOCK = 1 << 18;
     }
 }
 
@@ -136,6 +144,13 @@ pub struct SymbolTable {
     /// the symbol, we track the rebinding scopes here — mirrors Ruff's
     /// `rebinding_scopes` side map for Python `global`/`nonlocal`.
     pub rebinding_scopes: FxHashMap<SymbolId, Vec<ScopeId>>,
+    /// The original block scope of each `DEFINE VARIABLE` the declare pass
+    /// hoisted out of a `DO`/`FOR`/`REPEAT`/`CATCH`/`FINALLY` block to its
+    /// routine scope (see variable hoisting). Kept as a side map rather than a
+    /// `Symbol` field so the common case (no hoisting) neither grows every
+    /// symbol nor allocates. The `block-var-used-outside` analysis (LINT0005)
+    /// uses it to classify a reference as inside/outside the defining block.
+    block_defined: FxHashMap<SymbolId, ScopeId>,
 }
 
 impl SymbolTable {
@@ -178,5 +193,22 @@ impl SymbolTable {
     /// `SHARED`/`NEW SHARED`/`NEW GLOBAL SHARED`.
     pub fn record_rebinding(&mut self, sym: SymbolId, scope: ScopeId) {
         self.rebinding_scopes.entry(sym).or_default().push(scope);
+    }
+
+    /// Record that variable `sym` was hoisted out of block scope `block`.
+    pub fn record_block_defined(&mut self, sym: SymbolId, block: ScopeId) {
+        self.block_defined.insert(sym, block);
+    }
+
+    /// The block scope `sym` was hoisted out of, if it is a block-hoisted
+    /// variable; `None` otherwise.
+    pub fn block_defined_scope(&self, sym: SymbolId) -> Option<ScopeId> {
+        self.block_defined.get(&sym).copied()
+    }
+
+    /// Whether any declared variable was hoisted out of a block. When `false`,
+    /// the block-var-used-outside analysis (LINT0005) has nothing to track.
+    pub fn has_block_scoped_var(&self) -> bool {
+        !self.block_defined.is_empty()
     }
 }

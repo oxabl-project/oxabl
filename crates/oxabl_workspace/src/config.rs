@@ -74,7 +74,8 @@ impl LintSeverity {
 /// `#[serde(default)]` so partial tables fall back per-field, plus
 /// `deny_unknown_fields` so a misspelled rule name is a hard error rather than
 /// silently ignored. The safe default (no table) is all-on with
-/// `undefined-symbol = error` and the other three `warn` (R15).
+/// `undefined-symbol = error`, `block-var-used-outside = info`, and the rest
+/// `warn` (R15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct LintConfig {
@@ -82,6 +83,7 @@ pub struct LintConfig {
     pub unused_variable: LintSeverity,
     pub unknown_table_or_field: LintSeverity,
     pub type_mismatch_assignment: LintSeverity,
+    pub block_var_used_outside: LintSeverity,
 }
 
 impl Default for LintConfig {
@@ -91,6 +93,7 @@ impl Default for LintConfig {
             unused_variable: LintSeverity::Warn,
             unknown_table_or_field: LintSeverity::Warn,
             type_mismatch_assignment: LintSeverity::Warn,
+            block_var_used_outside: LintSeverity::Info,
         }
     }
 }
@@ -104,6 +107,7 @@ impl LintConfig {
         map.set("LINT0002", self.unused_variable.to_severity());
         map.set("LINT0003", self.unknown_table_or_field.to_severity());
         map.set("LINT0004", self.type_mismatch_assignment.to_severity());
+        map.set("LINT0005", self.block_var_used_outside.to_severity());
         map
     }
 
@@ -115,6 +119,7 @@ impl LintConfig {
             "unused-variable" => self.unused_variable = severity,
             "unknown-table-or-field" => self.unknown_table_or_field = severity,
             "type-mismatch-assignment" => self.type_mismatch_assignment = severity,
+            "block-var-used-outside" => self.block_var_used_outside = severity,
             _ => return false,
         }
         true

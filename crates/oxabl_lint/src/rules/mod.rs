@@ -3,6 +3,7 @@
 //! Each rule lives in its own file with inline tests. The top-level
 //! [`crate::lint_file`] dispatcher composes them.
 
+pub mod block_var_used_outside;
 pub mod type_mismatch_assignment;
 pub mod undefined_symbol;
 pub mod unknown_table_or_field;
@@ -16,3 +17,5 @@ pub const LINT0002: &str = "LINT0002";
 pub const LINT0003: &str = "LINT0003";
 /// Diagnostic code for `type-mismatch-assignment` (LINT0004).
 pub const LINT0004: &str = "LINT0004";
+/// Diagnostic code for `block-var-used-outside` (LINT0005).
+pub const LINT0005: &str = "LINT0005";

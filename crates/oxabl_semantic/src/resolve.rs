@@ -603,8 +603,9 @@ impl<'a> Walker<'a> {
         // defined inside a block is visible throughout the routine — matching
         // the language and avoiding a false `undefined-symbol` when it is used
         // after the block closes.
+        let block_scope = scope;
         let scope = self.tree.var_binding_scope(scope);
-        self.declare(
+        let sym = self.declare(
             stmt,
             scope,
             name,
@@ -614,6 +615,15 @@ impl<'a> Walker<'a> {
             flags,
             None,
         );
+        // When the definition was hoisted out of a block, remember the block
+        // it sat in so the `block-var-used-outside` lint (LINT0005) can flag
+        // reads from outside that block — where the variable may still hold
+        // its default value because the block never executed.
+        if block_scope != scope
+            && let Some(id) = sym
+        {
+            self.symbols.record_block_defined(id, block_scope);
+        }
     }
 
     fn declare_parameter(
@@ -918,6 +928,10 @@ pub fn resolve_pass(
         "resolve_pass must run against the same schema revision declare_pass saw"
     );
     let mut walker = ResolveWalker::new(ctx, tree, symbols);
+    // Only the block-var-used-outside analysis (LINT0005) reads per-reference
+    // scope, and only for hoisted variables. Skip that work wholesale when the
+    // declare pass hoisted none — the common case — in O(1).
+    walker.track_block_vars = walker.symbols.has_block_scoped_var();
     walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
 
@@ -926,6 +940,17 @@ pub fn resolve_pass(
         let s = walker.symbols.get_mut(*sym);
         s.read_count = *reads;
         s.write_count = *writes;
+    }
+
+    // Flush the outside-defining-block usage facts for block-hoisted variables.
+    for (sym, (read_outside, write_outside)) in &walker.block_var_outside {
+        let s = walker.symbols.get_mut(*sym);
+        if *read_outside {
+            s.flags |= crate::SymbolFlags::READ_OUTSIDE_BLOCK;
+        }
+        if *write_outside {
+            s.flags |= crate::SymbolFlags::WRITE_OUTSIDE_BLOCK;
+        }
     }
 
     // Mirror every symbol's declared type into the `types` side table keyed
@@ -967,6 +992,17 @@ struct ResolveWalker<'a> {
     /// Per-symbol `(reads, writes)` accumulator. Written to `Symbol` exactly
     /// once at end-of-pass so the pass stays idempotent under Salsa re-run.
     counts: FxHashMap<SymbolId, (u32, u32)>,
+    /// Per-symbol `(read_outside, write_outside)` accumulator for block-hoisted
+    /// variables: whether the variable is read / written from *outside* the
+    /// block it was hoisted out of. Flushed to [`SymbolFlags::READ_OUTSIDE_BLOCK`]
+    /// / [`SymbolFlags::WRITE_OUTSIDE_BLOCK`] at end-of-pass (same idempotency
+    /// contract as `counts`).
+    block_var_outside: FxHashMap<SymbolId, (bool, bool)>,
+    /// True only when the declare pass hoisted at least one `DEFINE VARIABLE`
+    /// out of a block (`SymbolTable::has_block_scoped_var`). The vast majority
+    /// of files have none, so callers skip [`Self::note_block_var_use`]
+    /// entirely on the resolve hot path.
+    track_block_vars: bool,
     /// Dedup cache for synthesized schema-field symbols: one symbol per
     /// distinct `(table, field)` referenced, no matter how many times the
     /// field is accessed.
@@ -990,6 +1026,8 @@ impl<'a> ResolveWalker<'a> {
             types: NodeIndexVec::new(),
             diagnostics: Vec::new(),
             counts: FxHashMap::default(),
+            block_var_outside: FxHashMap::default(),
+            track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
         }
@@ -1915,6 +1953,9 @@ impl<'a> ResolveWalker<'a> {
             if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
                 self.references.insert(expr_id, Resolution::Resolved(sym));
                 self.bump_count(sym, mode);
+                if self.track_block_vars {
+                    self.note_block_var_use(sym, scope, mode);
+                }
                 return;
             }
         }
@@ -2114,6 +2155,9 @@ impl<'a> ResolveWalker<'a> {
         for &ns in namespaces {
             if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
                 self.bump_count(sym, mode);
+                if self.track_block_vars {
+                    self.note_block_var_use(sym, scope, mode);
+                }
                 return;
             }
         }
@@ -2349,6 +2393,32 @@ impl<'a> ResolveWalker<'a> {
             AccessMode::ReadWrite => {
                 entry.0 += 1;
                 entry.1 += 1;
+            }
+        }
+    }
+
+    /// Note a reference to `sym` occurring in `scope`, for the
+    /// `block-var-used-outside` analysis (LINT0005). Only block-hoisted
+    /// variables (those recorded in `SymbolTable::block_defined`) are tracked;
+    /// a reference whose `scope` is not lexically within the defining block is
+    /// recorded as a read and/or write "outside" that block.
+    fn note_block_var_use(&mut self, sym: SymbolId, scope: ScopeId, mode: AccessMode) {
+        // Callers gate on `self.track_block_vars`, so this only runs when the
+        // file hoisted at least one variable out of a block.
+        let Some(block) = self.symbols.block_defined_scope(sym) else {
+            return;
+        };
+        // Inside the defining block (or a nested descendant of it) is safe.
+        if self.tree.ancestors(scope).any(|a| a == block) {
+            return;
+        }
+        let entry = self.block_var_outside.entry(sym).or_insert((false, false));
+        match mode {
+            AccessMode::Read => entry.0 = true,
+            AccessMode::Write => entry.1 = true,
+            AccessMode::ReadWrite => {
+                entry.0 = true;
+                entry.1 = true;
             }
         }
     }
