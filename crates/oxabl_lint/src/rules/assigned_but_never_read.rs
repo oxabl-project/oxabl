@@ -33,10 +33,12 @@
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind};
 use oxabl_common::{Diagnostic, FileSpan};
 use oxabl_semantic::{AnalysisContext, Resolution, Semantic, SymbolId, SymbolKind};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::LINT0006;
-use super::unused_symbol_shared::{display_name, is_candidate, is_skipped, is_table_like_param};
+use super::unused_symbol_shared::{
+    declaration_span, display_name, is_candidate, is_skipped, is_table_like_param,
+};
 
 /// Entry point.
 pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
@@ -63,7 +65,7 @@ pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<
         sem,
         file_id: ctx.file_id,
         wanted: candidates.iter().copied().collect(),
-        first_write: HashMap::new(),
+        first_write: FxHashMap::default(),
     };
     v.walk_block(program);
     let first_write = v.first_write;
@@ -84,13 +86,10 @@ pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<
             // and friends). Fall back to the declaration rather than drop the
             // finding: less useful, still true. Widening the walk form-by-form
             // is the per-shape treadmill def-use records (#126) exist to end.
-            let span = first_write.get(sid).copied().unwrap_or(FileSpan {
-                file: ctx.file_id,
-                span: oxabl_ast::Span {
-                    start: sym.name_span.start,
-                    end: sym.name_span.end,
-                },
-            });
+            let span = first_write
+                .get(sid)
+                .copied()
+                .unwrap_or_else(|| declaration_span(ctx, sym));
             Diagnostic::warning(
                 LINT0006,
                 format!("value assigned to {label} `{name}` is never read"),
@@ -107,8 +106,8 @@ struct Visitor<'a> {
     /// analyze boundary. So a dead store whose write lives in an expanded
     /// include reports against the include, which is where the assignment is.
     file_id: oxabl_common::FileId,
-    wanted: HashSet<SymbolId>,
-    first_write: HashMap<SymbolId, FileSpan>,
+    wanted: FxHashSet<SymbolId>,
+    first_write: FxHashMap<SymbolId, FileSpan>,
 }
 
 impl Visitor<'_> {

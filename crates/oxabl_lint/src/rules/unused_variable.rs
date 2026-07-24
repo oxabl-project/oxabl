@@ -26,14 +26,14 @@
 //!   exempting the parameter, which keeps the true positive: a table parameter
 //!   whose table is genuinely never touched still warns.
 
-use oxabl_common::{Diagnostic, FileSpan};
+use oxabl_common::Diagnostic;
 use oxabl_semantic::{
-    AnalysisContext, NamespaceId, ScopeTree, Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind,
-    SymbolTable,
+    AnalysisContext, NamespaceId, ScopeId, ScopeTree, Semantic, SymbolFlags, SymbolId, SymbolKind,
 };
+use rustc_hash::FxHashMap;
 
 use super::LINT0002;
-use super::unused_symbol_shared::{display_name, is_candidate, is_skipped};
+use super::unused_symbol_shared::{declaration_span, display_name, is_candidate, is_skipped};
 
 /// Entry point.
 pub fn run(
@@ -42,6 +42,11 @@ pub fn run(
     ctx: &AnalysisContext,
 ) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
+    // Built on first use and reused across candidates: answering the redirect
+    // needs every `Buffers` binding of a name, and rescanning the symbol table
+    // once per table-shaped parameter would be quadratic on a file that passes
+    // several tables around. A file with no such parameter never builds it.
+    let mut buffers_by_name = None;
     for (sid, sym) in sem.symbols.iter() {
         if !is_candidate(sym) {
             continue;
@@ -51,7 +56,23 @@ pub fn run(
         // never here — so redirect the question rather than skip the symbol.
         // Skipping would discard the genuine finding this keeps (R3).
         let was_read = if sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) {
-            match backing_read_count(sid, sym, &sem.scope_tree, &sem.symbols) {
+            // Grouped by name atom; keyed inline so the atom type stays an
+            // inference detail rather than a dependency of this crate.
+            let index = buffers_by_name.get_or_insert_with(|| {
+                let mut index: FxHashMap<_, Vec<(SymbolId, ScopeId, u32)>> = FxHashMap::default();
+                for (other_id, other) in sem.symbols.iter() {
+                    if other.namespace == NamespaceId::Buffers {
+                        index.entry(other.name.clone()).or_default().push((
+                            other_id,
+                            other.declared_in,
+                            other.read_count,
+                        ));
+                    }
+                }
+                index
+            });
+            let same_name = index.get(&sym.name).map_or(&[][..], Vec::as_slice);
+            match backing_read_count(sid, sym.declared_in, &sem.scope_tree, same_name) {
                 // Backing declaration not visible — typically declared in an
                 // include we could not resolve. An unprovable claim is not a
                 // diagnostic, so stay silent instead of guessing.
@@ -82,13 +103,7 @@ pub fn run(
         // span maps outside the buffer (e.g. synthetic tests) fall back to
         // the case-folded atom.
         let name = display_name(sym, ctx.source);
-        let span = FileSpan {
-            file: ctx.file_id,
-            span: oxabl_ast::Span {
-                start: sym.name_span.start,
-                end: sym.name_span.end,
-            },
-        };
+        let span = declaration_span(ctx, sym);
         let label = match sym.kind {
             SymbolKind::Variable => "variable",
             SymbolKind::Parameter => "parameter",
@@ -130,27 +145,29 @@ pub fn run(
 /// into `Values` rather than `Buffers`.
 ///
 /// Collapses into a def-use query once CFG def-use records land (#126).
+///
+/// `same_name` is the caller's pre-grouped `(symbol, declaring scope, reads)`
+/// list of every `Buffers` binding sharing this parameter's name.
 fn backing_read_count(
     sid: SymbolId,
-    sym: &Symbol,
+    param_scope: ScopeId,
     tree: &ScopeTree,
-    symbols: &SymbolTable,
+    same_name: &[(SymbolId, ScopeId, u32)],
 ) -> Option<u32> {
-    let param_scope = sym.declared_in;
     let mut found = false;
     let mut reads: u32 = 0;
-    for (other_id, other) in symbols.iter() {
+    for &(other_id, other_scope, other_reads) in same_name {
         // Never answer with the parameter's own meaningless count.
-        if other_id == sid || other.namespace != NamespaceId::Buffers || other.name != sym.name {
+        if other_id == sid {
             continue;
         }
-        let visible_to_routine = tree.ancestors(param_scope).any(|s| s == other.declared_in);
-        let opened_inside_routine = tree.ancestors(other.declared_in).any(|s| s == param_scope);
+        let visible_to_routine = tree.ancestors(param_scope).any(|s| s == other_scope);
+        let opened_inside_routine = tree.ancestors(other_scope).any(|s| s == param_scope);
         if !visible_to_routine && !opened_inside_routine {
             continue;
         }
         found = true;
-        reads = reads.saturating_add(other.read_count);
+        reads = reads.saturating_add(other_reads);
     }
     found.then_some(reads)
 }

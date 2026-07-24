@@ -8,8 +8,10 @@
 //! copies. The rationale for each exemption travels with it: that reasoning is
 //! what a future reader needs, and the first thing a drifting copy would lose.
 
+use oxabl_common::FileSpan;
 use oxabl_semantic::{
-    ScopeId, ScopeKind, ScopeTree, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
+    AnalysisContext, ScopeId, ScopeKind, ScopeTree, Symbol, SymbolFlags, SymbolId, SymbolKind,
+    SymbolTable,
 };
 
 /// Whether `sym` is the kind of symbol either rule reasons about.
@@ -97,6 +99,18 @@ fn in_skipped_method(scope: ScopeId, tree: &ScopeTree, symbols: &SymbolTable) ->
         cur = s.parent;
     }
     false
+}
+
+/// The span of `sym`'s own declaring identifier, for a diagnostic that should
+/// point at the declaration rather than at a use.
+pub fn declaration_span(ctx: &AnalysisContext, sym: &Symbol) -> FileSpan {
+    FileSpan {
+        file: ctx.file_id,
+        span: oxabl_ast::Span {
+            start: sym.name_span.start,
+            end: sym.name_span.end,
+        },
+    }
 }
 
 /// Original-casing name for a diagnostic message: slice it out of the source,

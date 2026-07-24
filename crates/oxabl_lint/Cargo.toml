@@ -10,6 +10,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lint"
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
+rustc-hash = "2"
 
 [dev-dependencies]
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = ["test-support"] }
