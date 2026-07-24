@@ -929,6 +929,13 @@ pub fn resolve_pass(
         "resolve_pass must run against the same schema revision declare_pass saw"
     );
     let mut walker = ResolveWalker::new(ctx, tree, symbols);
+    // One-time scan: only the block-var-used-outside analysis (LINT0005) reads
+    // per-reference scope, and only for hoisted variables. Skip that work
+    // wholesale when the file declares none — the common case.
+    walker.track_block_vars = walker
+        .symbols
+        .iter()
+        .any(|(_, s)| s.defined_in_block.is_some());
     walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
 
@@ -995,6 +1002,11 @@ struct ResolveWalker<'a> {
     /// / [`SymbolFlags::WRITE_OUTSIDE_BLOCK`] at end-of-pass (same idempotency
     /// contract as `counts`).
     block_var_outside: FxHashMap<SymbolId, (bool, bool)>,
+    /// True only when the declare pass hoisted at least one `DEFINE VARIABLE`
+    /// out of a block (some symbol has `defined_in_block`). The vast majority
+    /// of files have none, so this lets [`Self::note_block_var_use`] skip the
+    /// per-reference symbol load entirely on the resolve hot path.
+    track_block_vars: bool,
     /// Dedup cache for synthesized schema-field symbols: one symbol per
     /// distinct `(table, field)` referenced, no matter how many times the
     /// field is accessed.
@@ -1019,6 +1031,7 @@ impl<'a> ResolveWalker<'a> {
             diagnostics: Vec::new(),
             counts: FxHashMap::default(),
             block_var_outside: FxHashMap::default(),
+            track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
         }
@@ -2393,6 +2406,10 @@ impl<'a> ResolveWalker<'a> {
     /// read and/or write "outside" that block. Cheap no-op for every other
     /// symbol, so it is safe to call at every value-identifier resolution.
     fn note_block_var_use(&mut self, sym: SymbolId, scope: ScopeId, mode: AccessMode) {
+        // Fast path: nothing was hoisted, so no symbol load per reference.
+        if !self.track_block_vars {
+            return;
+        }
         let s = self.symbols.get(sym);
         if s.kind != SymbolKind::Variable {
             return;

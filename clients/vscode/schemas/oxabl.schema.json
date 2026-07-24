@@ -64,8 +64,16 @@
     },
     "LintConfig": {
       "additionalProperties": false,
-      "description": "The `[workspace.lint]` table: one severity per v1 lint rule (kebab keys).\n\nMirrors [`oxabl_style::StyleGuide`]'s serde idiom — container-level `#[serde(default)]` so partial tables fall back per-field, plus `deny_unknown_fields` so a misspelled rule name is a hard error rather than silently ignored. The safe default (no table) is all-on with `undefined-symbol = error` and the other three `warn` (R15).",
+      "description": "The `[workspace.lint]` table: one severity per v1 lint rule (kebab keys).\n\nMirrors [`oxabl_style::StyleGuide`]'s serde idiom — container-level `#[serde(default)]` so partial tables fall back per-field, plus `deny_unknown_fields` so a misspelled rule name is a hard error rather than silently ignored. The safe default (no table) is all-on with `undefined-symbol = error`, `block-var-used-outside = info`, and the rest `warn` (R15).",
       "properties": {
+        "block-var-used-outside": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/LintSeverity"
+            }
+          ],
+          "default": "info"
+        },
         "type-mismatch-assignment": {
           "allOf": [
             {
@@ -516,6 +524,7 @@
             }
           ],
           "default": {
+            "block-var-used-outside": "info",
             "type-mismatch-assignment": "warn",
             "undefined-symbol": "error",
             "unknown-table-or-field": "warn",
