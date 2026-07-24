@@ -10,11 +10,19 @@
 //! - Variables passed as a write-back (`OUTPUT` / `INPUT-OUTPUT` / `RETURN`)
 //!   argument to a `RUN` — the callee writes into them, so they are used even
 //!   when the call site never reads the result back.
+//!
+//! Redirect (not a skip):
+//! - A `TABLE FOR` / `DATASET FOR` parameter (`SymbolFlags::PARAM_TABLE_LIKE`)
+//!   names a temp-table or dataset, so references to the name land on that
+//!   declaration and this symbol's own `read_count` is permanently zero. The
+//!   rule asks the backing declaration whether it was read instead of
+//!   exempting the parameter, which keeps the true positive: a table parameter
+//!   whose table is genuinely never touched still warns.
 
 use oxabl_common::{Diagnostic, FileSpan};
 use oxabl_semantic::{
-    AnalysisContext, ScopeId, ScopeKind, ScopeTree, Semantic, Symbol, SymbolFlags, SymbolId,
-    SymbolKind, SymbolTable,
+    AnalysisContext, NamespaceId, ScopeId, ScopeKind, ScopeTree, Semantic, Symbol, SymbolFlags,
+    SymbolId, SymbolKind, SymbolTable,
 };
 
 use super::LINT0002;
@@ -30,9 +38,27 @@ pub fn run(
         if !is_candidate(sym) {
             continue;
         }
-        if sym.read_count > 0 {
+        // A table-shaped parameter's own `read_count` is meaningless — every
+        // reference to the name resolves to the backing `DEFINE TEMP-TABLE`,
+        // never here — so redirect the question rather than skip the symbol.
+        // Skipping would discard the genuine finding this keeps (R3).
+        let was_read = if sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) {
+            match backing_read_count(sid, sym, &sem.scope_tree, &sem.symbols) {
+                // Backing declaration not visible — typically declared in an
+                // include we could not resolve. An unprovable claim is not a
+                // diagnostic, so stay silent instead of guessing.
+                None => continue,
+                Some(reads) => reads > 0,
+            }
+        } else {
+            sym.read_count > 0
+        };
+        if was_read {
             continue;
         }
+        // The remaining exemptions still apply to a table-shaped parameter, so
+        // e.g. an `OUTPUT ... TABLE FOR` parameter stays silent exactly as it
+        // does today; the redirect above replaces only the read-count test.
         if is_skipped(sid, sym, &sem.scope_tree, &sem.symbols) {
             continue;
         }
@@ -63,6 +89,35 @@ pub fn run(
 
 fn is_candidate(sym: &Symbol) -> bool {
     matches!(sym.kind, SymbolKind::Variable | SymbolKind::Parameter)
+}
+
+/// `read_count` of the declaration a table-shaped parameter actually names.
+///
+/// `TABLE FOR tt` puts a `Parameter` in `NamespaceId::Values` while every
+/// reference to `tt` — `FIND FIRST tt`, `tt.field`, `BUFFER-COPY tt TO x` —
+/// resolves through `NamespaceId::Buffers` to the `DEFINE TEMP-TABLE`. Look the
+/// name up there, from the parameter's own declaring scope, and report that
+/// symbol's count.
+///
+/// Returns `None` when no backing declaration is visible, which the caller
+/// treats as "stay silent". `DATASET FOR` lands here too: `DEFINE DATASET`
+/// declares into `Values` rather than `Buffers`, so a dataset parameter takes
+/// the silent path — correct for the false positive this fixes, and the
+/// conservative answer for the rest.
+///
+/// Folded into a def-use query once CFG def-use records land (#126).
+fn backing_read_count(
+    sid: SymbolId,
+    sym: &Symbol,
+    tree: &ScopeTree,
+    symbols: &SymbolTable,
+) -> Option<u32> {
+    let backing = tree.resolve(sym.declared_in, NamespaceId::Buffers, &sym.name)?;
+    // Defensive: never answer with the parameter's own meaningless count.
+    if backing == sid {
+        return None;
+    }
+    Some(symbols.get(backing).read_count)
 }
 
 fn is_skipped(sid: SymbolId, sym: &Symbol, tree: &ScopeTree, symbols: &SymbolTable) -> bool {
@@ -482,6 +537,167 @@ mod tests {
         let mut stmts = var_plus_run_arg(ParameterDirection::Output);
         stmts.insert(1, var_decl("spare", DataType::Integer));
         let diags = analyze_and_lint(stmts);
+        assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
+        assert!(diags[0].message.contains("spare"), "{diags:?}");
+    }
+
+    // =======================================================================
+    // Table- and dataset-shaped parameters (`PARAM_TABLE_LIKE` redirect)
+    // =======================================================================
+
+    fn temp_table(n: &str) -> Statement {
+        stmt(StatementKind::DefineTempTable {
+            name: id(n),
+            no_undo: false,
+            like_table: None,
+            validate: false,
+            use_indexes: vec![],
+            fields: vec![],
+            indexes: vec![],
+            xml_options: Default::default(),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
+        })
+    }
+
+    /// `DEFINE INPUT PARAMETER TABLE FOR n.` (or the other handle-ish forms).
+    fn handle_param(n: &str, kind: oxabl_ast::HandleParamKind) -> Statement {
+        stmt(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Handle {
+                kind,
+                name: id(n),
+                passing: Default::default(),
+            },
+        })
+    }
+
+    /// `FIND FIRST n.` — a read of the buffer/temp-table `n`.
+    fn find_stmt(n: &str) -> Statement {
+        stmt(StatementKind::Find {
+            find_type: oxabl_ast::FindType::First,
+            buffer: id(n),
+            key_value: None,
+            where_clause: None,
+            lock_type: oxabl_ast::LockType::NoLock,
+            no_error: false,
+        })
+    }
+
+    #[test]
+    fn no_diagnostic_for_table_parameter_whose_table_is_used() {
+        // The false positive: `tt`'s reads land on the DEFINE TEMP-TABLE, so
+        // the parameter's own read_count stays 0 forever.
+        let diags = analyze_and_lint(vec![
+            temp_table("tt"),
+            handle_param("tt", oxabl_ast::HandleParamKind::Table),
+            find_stmt("tt"),
+        ]);
+        assert!(
+            diags.is_empty(),
+            "used TABLE FOR parameter must not warn: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_table_parameter_used_only_as_field_qualifier() {
+        // Pins the mechanism the redirect leans on: `resolve_field_access`
+        // credits the qualifier as a Read unconditionally. If that ever stops,
+        // this rule starts false-positiving again and this test is the alarm.
+        use oxabl_ast::{Expression, ExpressionKind};
+        let fa = Expression::new(ExpressionKind::FieldAccess {
+            qualifier: Box::new(Expression::new(ExpressionKind::Identifier(id("tt")))),
+            field: id("f"),
+        });
+        let diags = analyze_and_lint(vec![
+            temp_table("tt"),
+            handle_param("tt", oxabl_ast::HandleParamKind::Table),
+            stmt(StatementKind::ExpressionStatement(fa)),
+        ]);
+        assert!(
+            diags.is_empty(),
+            "field-qualifier-only reference must silence the parameter: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_dataset_parameter() {
+        // `DEFINE DATASET` declares into Values, not Buffers, so the lookup
+        // misses and a dataset parameter takes the silent path.
+        let ds = stmt(StatementKind::DefineDataset {
+            name: id("ds"),
+            access: None,
+            is_static: false,
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
+            serializable: false,
+            non_serializable: false,
+            xml_options: Default::default(),
+            reference_only: false,
+            buffers: vec![id("tt")],
+            data_relations: vec![],
+            parent_id_relations: vec![],
+        });
+        let diags = analyze_and_lint(vec![
+            temp_table("tt"),
+            ds,
+            handle_param("ds", oxabl_ast::HandleParamKind::Dataset),
+        ]);
+        assert!(
+            diags.iter().all(|d| !d.message.contains("ds")),
+            "DATASET FOR parameter must not warn: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn fires_on_table_parameter_whose_table_is_never_referenced() {
+        // The preserved true positive (R3): the redirect points the question at
+        // the right symbol, it does not blanket-exempt table parameters.
+        let diags = analyze_and_lint(vec![
+            temp_table("tt"),
+            handle_param("tt", oxabl_ast::HandleParamKind::Table),
+        ]);
+        assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
+        assert_eq!(diags[0].code.0, LINT0002);
+        assert!(diags[0].message.contains("tt"), "{diags:?}");
+    }
+
+    #[test]
+    fn no_diagnostic_when_backing_table_is_not_discoverable() {
+        // No DEFINE TEMP-TABLE in sight — typically declared in an include we
+        // could not resolve. Stay silent rather than guess, and do not panic.
+        let diags = analyze_and_lint(vec![handle_param("tt", oxabl_ast::HandleParamKind::Table)]);
+        assert!(
+            diags.is_empty(),
+            "undiscoverable backing table must stay silent: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn fires_on_unused_table_handle_parameter() {
+        // Discrimination: `TABLE-HANDLE` names a real handle value whose reads
+        // land on the parameter, so it keeps its own read_count and still
+        // warns. Proves the redirect did not widen into the handle forms.
+        let diags = analyze_and_lint(vec![
+            temp_table("tt"),
+            handle_param("h", oxabl_ast::HandleParamKind::TableHandle),
+            find_stmt("tt"),
+        ]);
+        assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
+        assert!(diags[0].message.contains('h'), "{diags:?}");
+    }
+
+    #[test]
+    fn unused_variable_alongside_used_table_parameter_still_warns() {
+        // Discrimination: the redirect is per-symbol, not per-file.
+        let diags = analyze_and_lint(vec![
+            temp_table("tt"),
+            handle_param("tt", oxabl_ast::HandleParamKind::Table),
+            find_stmt("tt"),
+            var_decl("spare", DataType::Integer),
+        ]);
         assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
         assert!(diags[0].message.contains("spare"), "{diags:?}");
     }

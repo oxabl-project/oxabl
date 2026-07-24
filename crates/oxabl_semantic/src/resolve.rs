@@ -683,8 +683,7 @@ impl<'a> Walker<'a> {
                 // declaration and never to this symbol; flag them so consumers
                 // can tell them from the `*-HANDLE` forms, whose names really
                 // are handle values. See `SymbolFlags::PARAM_TABLE_LIKE`.
-                let table_like =
-                    matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
+                let table_like = matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
                 self.declare(
                     stmt,
                     scope,
