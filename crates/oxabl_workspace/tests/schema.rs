@@ -26,6 +26,7 @@ fn lint_schema_has_all_rules_with_severity_enum() {
         "unknown-table-or-field",
         "type-mismatch-assignment",
         "block-var-used-outside",
+        "assigned-but-never-read",
     ]
     .into_iter()
     .map(String::from)

@@ -1035,9 +1035,12 @@ dependencies = [
  "oxabl_common",
  "oxabl_lexer",
  "oxabl_parser",
+ "oxabl_preprocessor",
  "oxabl_schema",
  "oxabl_semantic",
+ "oxabl_workspace",
  "rust_decimal",
+ "rustc-hash",
  "smallvec",
 ]
 
