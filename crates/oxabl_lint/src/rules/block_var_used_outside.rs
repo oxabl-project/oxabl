@@ -23,6 +23,13 @@
 //! exactly the "I know about ABL's scoping" case — so the rule stays silent.
 //! This is a set-membership approximation, not flow analysis: it does not
 //! reason about statement ordering or which paths actually reach the read.
+//!
+//! Shares the semantic model's blindness to reads and writes inside statements
+//! the parser skips to `StatementKind::Empty` (`PUT`, `EXPORT`, `UPDATE`, `SET`,
+//! `PROMPT-FOR`, `GET-KEY-VALUE`, …): an assignment that arrives through one of
+//! those is invisible here, so a variable written outside its block only that
+//! way can still look block-written-only. See the fuller note on
+//! `assigned-but-never-read` (LINT0006).
 
 use oxabl_common::Diagnostic;
 use oxabl_semantic::{AnalysisContext, Semantic, Symbol, SymbolFlags, SymbolKind};

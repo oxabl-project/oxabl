@@ -18,6 +18,16 @@
 //!   argument to a `RUN` — the callee writes into them, so they are used even
 //!   when the call site never reads the result back.
 //!
+//! # Known limitation: reads inside parser-skipped statements
+//!
+//! Statements the parser skips to `StatementKind::Empty` — `PUT`, `EXPORT`,
+//! `UPDATE`, `SET`, `PROMPT-FOR`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`,
+//! `HIDE` and friends — are never walked by the resolve pass and so credit no
+//! reads. A variable whose only read lives in one of them is falsely reported
+//! here. Shared with `assigned-but-never-read` (LINT0006), whose module doc
+//! carries the full note; it is a property of the semantic model rather than of
+//! either rule.
+//!
 //! Redirect (not a skip):
 //! - A `TABLE FOR` / `DATASET FOR` parameter (`SymbolFlags::PARAM_TABLE_LIKE`)
 //!   names a temp-table or dataset, so references to the name land on that

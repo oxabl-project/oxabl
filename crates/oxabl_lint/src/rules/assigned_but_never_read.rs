@@ -29,6 +29,33 @@
 //! Field symbols are not candidates); and `SET` / `UPDATE` / `PROMPT-FOR` /
 //! `GET-KEY-VALUE` / bare `ASSIGN <field>` / `obj:PROP =` / `INITIAL`, none of
 //! which the resolve pass credits as a write at all.
+//!
+//! # Known limitation: reads inside parser-skipped statements
+//!
+//! A number of ABL statements are not modelled by the parser — they are skipped
+//! to `StatementKind::Empty` (see the skip list in
+//! `oxabl_parser::parser::statements`, which is authoritative). The resolve pass
+//! never walks them, so they credit **no reads**. A variable whose only read
+//! lives in one of those statements therefore looks write-only and *is falsely
+//! reported by this rule*:
+//!
+//! ```abl
+//! DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+//! v-total = 42.
+//! PUT v-total.        /* a real read the model cannot see */
+//! ```
+//!
+//! The common variable-reading members of that set are `PUT`, `EXPORT`,
+//! `UPDATE`, `SET`, `PROMPT-FOR`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`,
+//! `HIDE`, `APPLY`, `ENABLE` / `DISABLE`, `CLEAR`, `NEXT-PROMPT`, `WAIT-FOR`
+//! and `ACCUMULATE`.
+//!
+//! This is a property of the semantic model, not of this rule: the same
+//! blindness makes `unused-variable` (LINT0002) fire on a variable whose only
+//! read is a `PUT`, and it is why this limitation is documented rather than
+//! worked around here. Suppress with `assigned-but-never-read = "off"` (or
+//! `"info"`) in `[workspace.lint]` until reads inside skipped statements are
+//! credited.
 
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind};
 use oxabl_common::{Diagnostic, FileSpan};
