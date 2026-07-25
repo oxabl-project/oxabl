@@ -5,15 +5,49 @@
 //! for issue #55's Critical item: a consumer needs a single `oxabl` dependency.
 //! Later waves extend this file with `render_diagnostics`, `analyze`, and
 //! `format_source`.
+//!
+//! The tests reach for the **fallible** entry points (`try_parse`,
+//! `try_analyze`, `try_format_source`), which are the canonical surface; the
+//! panicking originals are kept for compatibility and pinned by
+//! `deprecated_panicking_surface_still_resolves` alone.
 
 // A parse error is unreachable from the top level *by construction*: it lives
 // under `oxabl::parser`. This line documents that internal recovery helpers are
 // NOT part of the surface (U3) — uncommenting it must not compile:
 //   let _ = oxabl::parser::Parser::skip_to_period; // pub(crate), unreachable
 
+/// `try_parse` is the canonical entry point, so every test below parses through
+/// it. `expect` is right here: no input in this repo panics, so a panic would be
+/// a genuine regression rather than an expected outcome.
+fn parse(source: &str) -> oxabl::Program {
+    oxabl::try_parse(source).expect("no internal panic")
+}
+
+/// Same for the analyze pair.
+fn analyze(
+    source: &str,
+    options: &oxabl::AnalyzeOptions,
+) -> (
+    Option<oxabl::semantic::Semantic>,
+    oxabl::analyze::CollectedDiagnostics,
+) {
+    oxabl::try_analyze(source, options).expect("no internal panic")
+}
+
+fn analyze_with_fs(
+    source: &str,
+    fs: &dyn oxabl::workspace::FileSystem,
+    options: &oxabl::AnalyzeOptions,
+) -> (
+    Option<oxabl::semantic::Semantic>,
+    oxabl::analyze::CollectedDiagnostics,
+) {
+    oxabl::try_analyze_with_fs(source, fs, options).expect("no internal panic")
+}
+
 #[test]
 fn parse_happy_path_returns_recovered_program() {
-    let program = oxabl::parse("MESSAGE \"x\".");
+    let program = parse("MESSAGE \"x\".");
     assert!(program.is_ok());
     assert!(program.errors.is_empty());
     assert_eq!(program.statements.len(), 1);
@@ -24,7 +58,7 @@ fn parse_happy_path_returns_recovered_program() {
 fn parse_recovers_all_errors_not_just_first() {
     // Two independent broken statements; error recovery must collect both,
     // proving `parse` uses `parse_program` semantics rather than fail-fast.
-    let program = oxabl::parse("DEFINE VARIABLE .\nDEFINE VARIABLE .");
+    let program = parse("DEFINE VARIABLE .\nDEFINE VARIABLE .");
     assert!(!program.is_ok());
     assert!(
         program.errors.len() >= 2,
@@ -35,11 +69,11 @@ fn parse_recovers_all_errors_not_just_first() {
 
 #[test]
 fn program_into_result_and_first_error() {
-    let clean = oxabl::parse("MESSAGE \"x\".");
+    let clean = parse("MESSAGE \"x\".");
     assert!(clean.first_error().is_none());
     assert!(clean.into_result().is_ok());
 
-    let broken = oxabl::parse("DEFINE VARIABLE .");
+    let broken = parse("DEFINE VARIABLE .");
     assert!(broken.first_error().is_some());
     let err = broken.into_result().unwrap_err();
     assert!(!err.is_empty());
@@ -49,7 +83,7 @@ fn program_into_result_and_first_error() {
 fn program_into_diagnostics_carries_file_id() {
     use oxabl::common::FileId;
     let fid = FileId::new(7);
-    let program = oxabl::parse("DEFINE VARIABLE .");
+    let program = parse("DEFINE VARIABLE .");
     let n_errors = program.errors.len();
     let diags = program.into_diagnostics(fid);
     assert_eq!(diags.len(), n_errors);
@@ -58,7 +92,7 @@ fn program_into_diagnostics_carries_file_id() {
 
 #[test]
 fn parse_error_displays_message_and_is_std_error() {
-    let program = oxabl::parse("DEFINE VARIABLE .");
+    let program = parse("DEFINE VARIABLE .");
     let err = program.first_error().expect("expected a parse error");
     let shown = format!("{err}");
     assert!(!shown.is_empty());
@@ -72,7 +106,7 @@ fn render_diagnostics_produces_positioned_snippet() {
     use oxabl::common::{FileId, SourceResolver};
     let source = "MESSAGE \"a\".\nDEFINE VARIABLE .";
     let fid = FileId::new(1);
-    let diags = oxabl::parse(source).into_diagnostics(fid);
+    let diags = parse(source).into_diagnostics(fid);
     assert!(!diags.is_empty());
     let resolver = SourceResolver::new(fid, "t.p", source);
     let rendered = oxabl::render_diagnostics(&diags, &resolver);
@@ -89,7 +123,7 @@ fn render_diagnostics_produces_positioned_snippet() {
 #[test]
 fn diagnostic_display_one_line_form() {
     use oxabl::common::FileId;
-    let diags = oxabl::parse("DEFINE VARIABLE .").into_diagnostics(FileId::new(1));
+    let diags = parse("DEFINE VARIABLE .").into_diagnostics(FileId::new(1));
     let shown = format!("{}", diags[0]);
     // severity[code]: message
     assert!(shown.starts_with("error[PARSE001]: "), "got: {shown}");
@@ -100,7 +134,7 @@ fn diagnostic_display_one_line_form() {
 #[test]
 fn diagnostic_serializes_via_facade() {
     use oxabl::common::FileId;
-    let diags = oxabl::parse("DEFINE VARIABLE .").into_diagnostics(FileId::new(1));
+    let diags = parse("DEFINE VARIABLE .").into_diagnostics(FileId::new(1));
     let v = serde_json::to_value(&diags[0]).unwrap();
     assert_eq!(v["code"], "PARSE001");
     assert_eq!(v["severity"], "error");
@@ -112,7 +146,7 @@ fn diagnostic_serializes_via_facade() {
 fn analyze_default_options_reports_diagnostics() {
     // Unused variable → LINT0002; proves parse → semantic → lint runs end to end
     // through the single-call `analyze` with default options.
-    let (sem, collected) = oxabl::analyze(
+    let (sem, collected) = analyze(
         "DEFINE VARIABLE unusedVar AS INTEGER NO-UNDO.",
         &oxabl::AnalyzeOptions::default(),
     );
@@ -144,7 +178,7 @@ fn analyze_flows_schema_through_options() {
         schema_loaded: true,
         ..Default::default()
     };
-    let (_sem, collected) = oxabl::analyze(source, &opts);
+    let (_sem, collected) = analyze(source, &opts);
     let codes: Vec<&str> = collected.all().map(|c| c.diagnostic.code.0).collect();
     assert!(
         codes.contains(&"LINT0003"),
@@ -163,7 +197,7 @@ fn analyze_with_fs_runs_preprocess_path() {
     // A scoped-define expanded before analysis; proves the fs-injection +
     // preprocess path runs and yields a model.
     let src = "&SCOPED-DEFINE MSG \"hi\"\nMESSAGE {&MSG}.\n";
-    let (sem, _collected) = oxabl::analyze_with_fs(src, &fs, &opts);
+    let (sem, _collected) = analyze_with_fs(src, &fs, &opts);
     assert!(sem.is_some());
 }
 
@@ -172,19 +206,87 @@ fn format_source_formats_and_is_idempotent() {
     use oxabl::style::StyleGuide;
     let style = StyleGuide::default_base();
     let src = "IF TRUE THEN DO:\nMESSAGE \"hi\".\nEND.\n";
-    let once = oxabl::format_source(src, &style).expect("should format");
-    let twice = oxabl::format_source(&once, &style).expect("should format");
+    let once = oxabl::try_format_source(src, &style).expect("should format");
+    let twice = oxabl::try_format_source(&once, &style).expect("should format");
     assert_eq!(once, twice, "formatter must be idempotent");
 }
 
 #[test]
 fn format_source_bails_on_parse_errors_without_mangling() {
-    use oxabl::formatter::FormatBail;
+    use oxabl::formatter::{FormatBail, FormatFailure};
     use oxabl::style::StyleGuide;
     // A parse-broken buffer must bail (ParseErrors), never emit altered bytes.
-    let err = oxabl::format_source("DEFINE VARIABLE .", &StyleGuide::default_base())
+    // `FormatBail` is still compared by value (R4): the guard adds an arm around
+    // it rather than changing it.
+    let err = oxabl::try_format_source("DEFINE VARIABLE .", &StyleGuide::default_base())
         .expect_err("parse-dirty input should bail");
-    assert_eq!(err, FormatBail::ParseErrors);
+    assert_eq!(err, FormatFailure::Bail(FormatBail::ParseErrors));
+    assert!(
+        !matches!(err, FormatFailure::Panic(_)),
+        "a bail must stay distinguishable from a contained panic"
+    );
+}
+
+/// The panicking originals stay reachable for compatibility, deprecated in favor
+/// of the `try_*` siblings. This is the only place that uses them.
+#[test]
+#[allow(deprecated)]
+fn deprecated_panicking_surface_still_resolves() {
+    use oxabl::style::StyleGuide;
+    use oxabl::workspace::InMemoryFileSystem;
+
+    assert!(oxabl::parse("MESSAGE \"x\".").is_ok());
+    let (sem, _diags) = oxabl::analyze("MESSAGE \"x\".", &oxabl::AnalyzeOptions::default());
+    assert!(sem.is_some());
+    let (sem, _diags) = oxabl::analyze_with_fs(
+        "MESSAGE \"x\".",
+        &InMemoryFileSystem::new(),
+        &oxabl::AnalyzeOptions::default(),
+    );
+    assert!(sem.is_some());
+    assert!(oxabl::format_source("MESSAGE \"x\".", &StyleGuide::default_base()).is_ok());
+}
+
+/// The fallible surface's shapes, pinned as fn-pointers so a later refactor
+/// cannot quietly reshape them while the reachability compile-gate still passes.
+#[test]
+fn fallible_entry_point_signatures_are_pinned() {
+    use oxabl::analyze::CollectedDiagnostics;
+    use oxabl::common::InternalPanic;
+    use oxabl::formatter::FormatFailure;
+    use oxabl::semantic::Semantic;
+    use oxabl::style::StyleGuide;
+    use oxabl::workspace::FileSystem;
+
+    // `try_parse` preserves `Program` whole — recovered errors ride in the `Ok`.
+    let _try_parse: fn(&str) -> Result<oxabl::Program, InternalPanic> = oxabl::try_parse;
+    let recovered = oxabl::try_parse("DEFINE VARIABLE .").expect("a parse error is not a panic");
+    assert!(!recovered.errors.is_empty());
+
+    // The analyze pair preserves the whole tuple, `None` model arm included.
+    type Analyzed = Result<(Option<Semantic>, CollectedDiagnostics), InternalPanic>;
+    let _try_analyze: fn(&str, &oxabl::AnalyzeOptions) -> Analyzed = oxabl::try_analyze;
+    let _try_analyze_with_fs: fn(&str, &dyn FileSystem, &oxabl::AnalyzeOptions) -> Analyzed =
+        oxabl::try_analyze_with_fs;
+
+    // The formatter's failure channel is flat, not a nested `Result`.
+    let _try_format: fn(&str, &StyleGuide) -> Result<String, FormatFailure> =
+        oxabl::try_format_source;
+}
+
+/// `catch_panic` and `InternalPanic` are reachable through the facade, and the
+/// guard's two outcomes behave as documented.
+#[test]
+fn panic_guard_is_reachable_through_the_facade() {
+    use oxabl::common::{InternalPanic, catch_panic};
+
+    assert_eq!(catch_panic(|| 1 + 1), Ok(2));
+
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let err: InternalPanic = catch_panic(|| panic!("boom")).unwrap_err();
+    std::panic::set_hook(previous);
+    assert!(err.to_string().contains("boom"), "got {err}");
 }
 
 #[test]
@@ -219,7 +321,7 @@ fn every_module_is_reachable() {
     let style = StyleGuide::default_base();
 
     // parse → semantic → lint → format, all via the facade.
-    let program = oxabl::parse("MESSAGE \"x\".");
+    let program = parse("MESSAGE \"x\".");
     let ctx = AnalysisContext::new(oxabl::common::FileId::new(1), "MESSAGE \"x\".", &schema);
     let sem: Semantic = analyze_file(&program.statements, &ctx);
     let _lints = oxabl::lint::lint_file(&program.statements, &sem, &ctx);
@@ -236,4 +338,15 @@ fn every_module_is_reachable() {
     let _pp = Preprocessor::new;
     let _cd: Option<oxabl::analyze::CollectedDiagnostics> = None;
     let _ws: Option<oxabl::workspace::RealFileSystem> = None;
+
+    // The fallible surface and its shared guard, reached only through `oxabl::`.
+    type Guarded = Result<u8, oxabl::common::InternalPanic>;
+    let _guard: fn(fn() -> u8) -> Guarded = oxabl::common::catch_panic;
+    let _ip = oxabl::common::InternalPanic::new("x");
+    let _tp = oxabl::try_parse;
+    let _tpm = oxabl::parser::try_parse;
+    let _ta = oxabl::try_analyze;
+    let _tawf = oxabl::try_analyze_with_fs;
+    let _tf = oxabl::try_format_source;
+    let _ff: Option<oxabl::formatter::FormatFailure> = None;
 }

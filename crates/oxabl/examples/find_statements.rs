@@ -36,8 +36,6 @@ use std::path::{Path, PathBuf};
 
 use oxabl_ast::{Statement, StatementKind as SK};
 use oxabl_common::SourceMap;
-use oxabl_lexer::tokenize;
-use oxabl_parser::Parser;
 use walkdir::WalkDir;
 
 /// Default file extensions scanned (lowercase, no dot).
@@ -98,21 +96,19 @@ fn main() {
             }
         };
 
-        // Tokenize with panic isolation, mirroring the main CLI: a lexer panic
-        // on one pathological file must not abort the whole scan.
-        let tokens =
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&source))) {
-                Ok(t) => t,
-                Err(_) => {
-                    parse_failures += 1;
-                    continue;
-                }
-            };
-
-        // Error-recovering parse: we want every matched statement we *can*
-        // reach, even in files with syntax the parser doesn't yet handle.
-        let mut parser = Parser::new(&tokens, &source);
-        let program = parser.parse_program();
+        // Tokenize and parse through the shared guard, mirroring the main CLI: a
+        // panic on one pathological file must not abort the whole scan. The
+        // guard spans the parse too, not just the tokenize — the parser is as
+        // much of the panic surface as the lexer. The parse is error-recovering,
+        // so we get every matched statement we *can* reach even in files with
+        // syntax the parser doesn't yet handle.
+        let program = match oxabl::try_parse(&source) {
+            Ok(program) => program,
+            Err(_) => {
+                parse_failures += 1;
+                continue;
+            }
+        };
         if !program.errors.is_empty() {
             parse_failures += 1; // partial AST still walked below
         }

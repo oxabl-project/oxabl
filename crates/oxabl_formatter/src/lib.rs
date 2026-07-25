@@ -47,7 +47,7 @@ mod tree;
 
 pub use attach::{CommentMap, NodeComments, attach};
 
-use oxabl_common::SourceMap;
+use oxabl_common::{InternalPanic, SourceMap, catch_panic, panic_if_injected, panic_sites};
 use oxabl_parser::Program;
 use oxabl_style::StyleGuide;
 use std::fmt;
@@ -90,6 +90,57 @@ impl fmt::Display for FormatBail {
 }
 
 impl std::error::Error for FormatBail {}
+
+/// The failure channel for [`try_format_source`]: a deliberate [`FormatBail`],
+/// or an [`InternalPanic`] contained by the guard.
+///
+/// This exists rather than an extra `FormatBail` variant because `FormatBail`
+/// is a `PartialEq`, non-`#[non_exhaustive]` public enum that consumers compare
+/// by value, so growing it is a semver-visible break. Keeping the panic arm in
+/// a separate type also keeps a nested `Result` out of the public surface.
+///
+/// Unlike `FormatBail`, this type **is** `#[non_exhaustive]`, so it can grow a
+/// variant later without repeating that mistake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FormatFailure {
+    /// The formatter deliberately declined to rewrite the file. The original
+    /// source bytes stand unchanged — the same contract as [`format`].
+    Bail(FormatBail),
+    /// The formatter panicked. This is an oxabl bug, not a property of the
+    /// input, and the caller should leave the file untouched and report it.
+    Panic(InternalPanic),
+}
+
+impl fmt::Display for FormatFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FormatFailure::Bail(bail) => bail.fmt(f),
+            FormatFailure::Panic(panic) => panic.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for FormatFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FormatFailure::Bail(bail) => Some(bail),
+            FormatFailure::Panic(panic) => Some(panic),
+        }
+    }
+}
+
+impl From<FormatBail> for FormatFailure {
+    fn from(bail: FormatBail) -> Self {
+        FormatFailure::Bail(bail)
+    }
+}
+
+impl From<InternalPanic> for FormatFailure {
+    fn from(panic: InternalPanic) -> Self {
+        FormatFailure::Panic(panic)
+    }
+}
 
 /// Format ABL source, returning the reformatted string or a [`FormatBail`].
 ///
@@ -144,9 +195,43 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
 /// # Panics
 ///
 /// Like the underlying lexer and parser, this may panic on some malformed
-/// inputs. A consumer that must isolate panics (as the CLI and LSP do) should
-/// wrap the call in [`std::panic::catch_unwind`].
+/// inputs, which is why it is deprecated in favor of [`try_format_source`].
+#[deprecated(
+    note = "may panic on malformed input; use `try_format_source`, which contains the panic"
+)]
 pub fn format_source(source: &str, style: &StyleGuide) -> Result<String, FormatBail> {
+    format_source_inner(source, style)
+}
+
+/// Tokenize + parse + [`format`] `source`, containing any internal panic.
+///
+/// The fallible sibling of `format_source` and the entry point new code should
+/// reach for. Every outcome of the panicking twin is preserved exactly and the
+/// guard only adds an arm:
+///
+/// - `Ok(String)` — the reformatted source.
+/// - `Err(`[`FormatFailure::Bail`]`)` — the formatter declined; the caller
+///   keeps the original bytes. Identical to the twin's `Err(FormatBail)`.
+/// - `Err(`[`FormatFailure::Panic`]`)` — the formatter panicked. The caller
+///   also keeps the original bytes, but this is an oxabl bug worth reporting,
+///   not a property of the input.
+///
+/// # Platform caveat
+///
+/// The guard is a documented pass-through on `wasm32-unknown-unknown`; see
+/// [`catch_panic`].
+pub fn try_format_source(source: &str, style: &StyleGuide) -> Result<String, FormatFailure> {
+    match catch_panic(|| format_source_inner(source, style)) {
+        Ok(Ok(formatted)) => Ok(formatted),
+        Ok(Err(bail)) => Err(FormatFailure::Bail(bail)),
+        Err(panic) => Err(FormatFailure::Panic(panic)),
+    }
+}
+
+/// The shared body, so `try_format_source` does not have to call its own
+/// deprecated twin.
+fn format_source_inner(source: &str, style: &StyleGuide) -> Result<String, FormatBail> {
+    panic_if_injected(panic_sites::FORMAT, source);
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     format(source, &program, style)
@@ -163,6 +248,30 @@ mod tests {
     fn parse(src: &str) -> Program {
         let tokens = tokenize(src);
         Parser::new(&tokens, src).parse_program()
+    }
+
+    #[test]
+    fn try_format_source_formats_a_clean_buffer() {
+        let out = try_format_source(
+            "IF TRUE THEN DO:\nMESSAGE \"hi\".\nEND.\n",
+            &StyleGuide::default_base(),
+        )
+        .expect("a clean buffer formats");
+        assert!(out.contains("    MESSAGE"));
+    }
+
+    #[test]
+    fn try_format_source_reports_a_bail_distinctly_from_a_panic() {
+        // The existing bail fixture: parse-dirty input the formatter refuses.
+        let err = try_format_source("IF THEN.", &StyleGuide::default_base())
+            .expect_err("parse-dirty input bails");
+        assert_eq!(err, FormatFailure::Bail(FormatBail::ParseErrors));
+        assert!(
+            !matches!(err, FormatFailure::Panic(_)),
+            "a bail must never read as an internal panic"
+        );
+        // The bail's own message survives the extra wrapper.
+        assert_eq!(err.to_string(), FormatBail::ParseErrors.to_string());
     }
 
     #[test]

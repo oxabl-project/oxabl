@@ -9,18 +9,43 @@
 //! of top-level conveniences ([`parse`], [`Program`], [`Diagnostic`]).
 //!
 //! ```
-//! let program = oxabl::parse("MESSAGE \"hello\".");
+//! let program = oxabl::try_parse("MESSAGE \"hello\".").expect("no internal panic");
 //! assert!(program.is_ok());
 //! ```
 //!
 //! Curating the surface (rather than globbing each sub-crate at the crate root)
 //! keeps internal helpers — e.g. the parser's recovery methods — unreachable by
 //! construction and avoids cross-crate name collisions as the workspace grows.
+//!
+//! # Panics are contained, not documented away
+//!
+//! The lexer and parser can panic on some malformed input, so the three entry
+//! points that run them come in guarded form: [`try_parse`], [`try_analyze`] /
+//! [`try_analyze_with_fs`], and [`try_format_source`]. Each returns the panic as
+//! an [`InternalPanic`](common::InternalPanic) carrying its message rather than
+//! unwinding into the caller. These are the canonical entry points; the
+//! panicking originals ([`parse`], [`analyze`], [`analyze_with_fs`],
+//! [`format_source`]) remain for compatibility and are deprecated.
+//!
+//! The guard adds exactly one arm and changes nothing else: a **recovered parse
+//! error is not a panic** (it still arrives in `Program::errors`), and a
+//! **formatter bail is not a panic** (it still arrives as a
+//! [`FormatBail`](formatter::FormatBail), now inside
+//! [`FormatFailure`](formatter::FormatFailure)).
+//!
+//! Two conditions on the guarantee, both documented on
+//! [`catch_panic`](common::catch_panic): it requires the **unwinding** panic
+//! strategy, so a `panic = "abort"` profile anywhere in the build silently
+//! reduces every guard to a pass-through; and it is an explicit pass-through on
+//! `wasm32-unknown-unknown`, where stable Rust builds with `-Cpanic=abort` and a
+//! panic traps instead of unwinding. It does not cover hangs.
 
 use std::path::PathBuf;
 
 use oxabl_analyze::{CollectedDiagnostics, collect_with_model};
-use oxabl_common::{FileId, LintSeverityMap};
+use oxabl_common::{
+    FileId, InternalPanic, LintSeverityMap, catch_panic, panic_if_injected, panic_sites,
+};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
@@ -43,13 +68,27 @@ use oxabl_workspace::{FileSystem, RealFileSystem};
 /// # Panics
 ///
 /// Like the underlying lexer and parser, `parse` may panic on some malformed
-/// inputs. A consumer that must isolate such panics (as the CLI and LSP do)
-/// should wrap the call in [`std::panic::catch_unwind`]. A panic-catching
-/// variant is not part of v1.
+/// inputs, which is why it is deprecated in favor of [`try_parse`] — the
+/// fallible sibling that contains the panic and reports its message.
+#[deprecated(note = "may panic on malformed input; use `try_parse`, which contains the panic")]
 pub fn parse(source: &str) -> Program {
     let tokens = tokenize(source);
     Parser::new(&tokens, source).parse_program()
 }
+
+/// Parse ABL `source` into a [`Program`], containing any internal panic instead
+/// of letting it kill the caller — the fallible sibling of [`parse`] and the
+/// entry point new code should reach for.
+///
+/// Recovered parse errors are **not** a failure here: they arrive in the `Ok`
+/// value's `errors` field exactly as they do from [`parse`]. An
+/// `Err(`[`InternalPanic`](common::InternalPanic)`)` means an oxabl bug.
+///
+/// ```
+/// let program = oxabl::try_parse("MESSAGE \"x\".").expect("no internal panic");
+/// assert!(program.is_ok());
+/// ```
+pub use oxabl_parser::try_parse;
 
 /// The result of parsing an ABL source file — recovered statements plus any
 /// [`ParseError`](parser::ParseError)s. Re-exported at the top level as the
@@ -73,7 +112,7 @@ const ANALYZE_ROOT: FileId = FileId::new(1);
 ///
 /// ```
 /// let opts = oxabl::AnalyzeOptions { preprocess: true, ..Default::default() };
-/// let (_model, diags) = oxabl::analyze("MESSAGE \"x\".", &opts);
+/// let (_model, diags) = oxabl::try_analyze("MESSAGE \"x\".", &opts).expect("no internal panic");
 /// let _ = diags;
 /// ```
 pub struct AnalyzeOptions {
@@ -116,19 +155,74 @@ impl Default for AnalyzeOptions {
 /// system defaults to [`RealFileSystem`](workspace::RealFileSystem) (so include
 /// resolution reads from disk). Consumers that must stay off disk — the LSP, or
 /// tests — should use [`analyze_with_fs`] with an in-memory file system.
+///
+/// # Panics
+///
+/// The pipeline parses `source`, so like [`parse`] it may panic on some
+/// malformed inputs. That is why this function is deprecated in favor of
+/// [`try_analyze`], the fallible sibling that contains the panic.
+#[deprecated(note = "may panic on malformed input; use `try_analyze`, which contains the panic")]
 pub fn analyze(source: &str, options: &AnalyzeOptions) -> (Option<Semantic>, CollectedDiagnostics) {
-    analyze_with_fs(source, &RealFileSystem, options)
+    analyze_inner(source, &RealFileSystem, options)
 }
 
 /// Like [`analyze`], but with a caller-provided [`FileSystem`](workspace::FileSystem)
 /// for include resolution — e.g. an
 /// [`InMemoryFileSystem`](workspace::InMemoryFileSystem) so analysis never
 /// touches disk.
+///
+/// # Panics
+///
+/// Same transitive panic surface as [`analyze`]; use [`try_analyze_with_fs`].
+#[deprecated(
+    note = "may panic on malformed input; use `try_analyze_with_fs`, which contains the panic"
+)]
 pub fn analyze_with_fs(
     source: &str,
     fs: &dyn FileSystem,
     options: &AnalyzeOptions,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    analyze_inner(source, fs, options)
+}
+
+/// Run the full parse → semantic → lint pipeline over `source`, containing any
+/// internal panic — the fallible sibling of [`analyze`] and the entry point new
+/// code should reach for.
+///
+/// The success shape is preserved whole, including the `None` model arm that
+/// signals a fatal preprocessing failure: the guard adds a panic arm and
+/// changes nothing else.
+pub fn try_analyze(
+    source: &str,
+    options: &AnalyzeOptions,
+) -> Result<(Option<Semantic>, CollectedDiagnostics), InternalPanic> {
+    try_analyze_with_fs(source, &RealFileSystem, options)
+}
+
+/// Like [`try_analyze`], but with a caller-provided
+/// [`FileSystem`](workspace::FileSystem) — the fallible sibling of
+/// [`analyze_with_fs`].
+///
+/// # Platform caveat
+///
+/// The guard is a documented pass-through on `wasm32-unknown-unknown`; see
+/// [`catch_panic`](common::catch_panic).
+pub fn try_analyze_with_fs(
+    source: &str,
+    fs: &dyn FileSystem,
+    options: &AnalyzeOptions,
+) -> Result<(Option<Semantic>, CollectedDiagnostics), InternalPanic> {
+    catch_panic(|| analyze_inner(source, fs, options))
+}
+
+/// The shared body, so the fallible entry points do not have to call their own
+/// deprecated twins.
+fn analyze_inner(
+    source: &str,
+    fs: &dyn FileSystem,
+    options: &AnalyzeOptions,
+) -> (Option<Semantic>, CollectedDiagnostics) {
+    panic_if_injected(panic_sites::ANALYZE, source);
     collect_with_model(
         ANALYZE_ROOT,
         source,
@@ -149,8 +243,18 @@ pub fn analyze_with_fs(
 /// layout formatter. Defined in `oxabl_formatter` so the CLI, LSP, and this
 /// umbrella all format through one shared entry point; on any bail the original
 /// bytes are returned unchanged. Like [`parse`], it may panic on some malformed
-/// inputs — guard with [`std::panic::catch_unwind`] if isolation is required.
+/// inputs, so it is deprecated in favor of [`try_format_source`].
+#[allow(deprecated)]
 pub use oxabl_formatter::format_source;
+
+/// Format ABL `source` with `style`, containing any internal panic — the
+/// fallible sibling of [`format_source`] and the entry point new code should
+/// reach for.
+///
+/// Its [`FormatFailure`](formatter::FormatFailure) distinguishes a deliberate
+/// bail (leave the file alone; the input was not formattable) from a contained
+/// panic (leave the file alone; oxabl has a bug), without nesting `Result`s.
+pub use oxabl_formatter::try_format_source;
 
 /// Render a slice of [`Diagnostic`]s to `path:line:col: severity[code]: message`
 /// text with source snippets, using a [`SourceResolver`](common::SourceResolver)
@@ -183,7 +287,7 @@ pub mod lexer {
 /// recovery, `parse_statements` for fail-fast) remain available for finer
 /// control.
 pub mod parser {
-    pub use oxabl_parser::{ParseError, ParseResult, Parser, Program};
+    pub use oxabl_parser::{ParseError, ParseResult, Parser, Program, try_parse};
 }
 
 /// Shared primitives — source maps, file identity, spans, and the diagnostic
@@ -191,8 +295,9 @@ pub mod parser {
 pub mod common {
     pub use oxabl_ast::Span;
     pub use oxabl_common::{
-        Diagnostic, DiagnosticCode, FileId, FileSet, FileSpan, Label, LintSeverityMap, Severity,
-        SourceMap, SourceResolver, VirtualSpan, blank_lines_between, render_diagnostics,
+        Diagnostic, DiagnosticCode, FileId, FileSet, FileSpan, InternalPanic, Label,
+        LintSeverityMap, Severity, SourceMap, SourceResolver, VirtualSpan, blank_lines_between,
+        catch_panic, render_diagnostics,
     };
 }
 
@@ -237,9 +342,11 @@ pub mod analyze {
 }
 
 /// Layout formatter — the pure [`format`](formatter::format) entry point and
-/// its [`FormatBail`](formatter::FormatBail) failure channel.
+/// its [`FormatBail`](formatter::FormatBail) failure channel, plus the
+/// [`FormatFailure`](formatter::FormatFailure) channel that
+/// [`try_format_source`] adds a contained-panic arm to.
 pub mod formatter {
-    pub use oxabl_formatter::{FormatBail, format};
+    pub use oxabl_formatter::{FormatBail, FormatFailure, format};
 }
 
 /// Style guide — typed, configurable formatting/diagnostic rules and the two

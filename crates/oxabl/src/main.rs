@@ -7,6 +7,7 @@ use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
 use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
+use oxabl_formatter::FormatFailure;
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
@@ -338,23 +339,21 @@ enum FormatOutcome {
 
 /// Parse `source` raw (preprocessing OFF, per KTD4/R8 so spans are real byte
 /// offsets) and run the formatter, classifying the outcome. The whole
-/// tokenize → parse → format pipeline is wrapped in `catch_unwind`: a panic
-/// anywhere in it (the lexer on some inputs, or the formatter engine itself)
-/// must not unwind the whole directory walk after earlier files were already
-/// rewritten (R7.1b). A panic is treated as a bail — the file is reported and
-/// left unchanged. The write happens only on `Reformatted`, so a panic never
-/// leaves a half-written file.
+/// tokenize → parse → format pipeline goes through the shared guard
+/// [`oxabl::try_format_source`]: a panic anywhere in it (the lexer on some
+/// inputs, or the formatter engine itself) must not unwind the whole directory
+/// walk after earlier files were already rewritten (R7.1b). A panic is treated
+/// as a bail — the file is reported and left unchanged. The write happens only
+/// on `Reformatted`, so a panic never leaves a half-written file.
 fn format_one(source: &str, style: &StyleGuide) -> FormatOutcome {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        oxabl::format_source(source, style)
-    }));
-    match result {
-        Ok(Ok(formatted)) if formatted == source => FormatOutcome::Unchanged,
-        Ok(Ok(formatted)) => FormatOutcome::Reformatted(formatted),
-        Ok(Err(bail)) => FormatOutcome::Bailed(bail.to_string()),
-        Err(_) => {
-            FormatOutcome::Bailed("internal panic while formatting; left unchanged".to_string())
-        }
+    match oxabl::try_format_source(source, style) {
+        Ok(formatted) if formatted == source => FormatOutcome::Unchanged,
+        Ok(formatted) => FormatOutcome::Reformatted(formatted),
+        Err(FormatFailure::Panic(panic)) => FormatOutcome::Bailed(format!(
+            "internal panic while formatting; left unchanged: {}",
+            panic.message()
+        )),
+        Err(failure) => FormatOutcome::Bailed(failure.to_string()),
     }
 }
 
@@ -535,7 +534,15 @@ fn run_analyze(
         lint_severities: lint_config.to_severity_map(),
         preprocess,
     };
-    let (sem_opt, collected) = oxabl::analyze(&source, &opts);
+    // Guarded (R7): a panic in the shared pipeline must be reported as a failure
+    // for this file, not unwind the subcommand with a raw backtrace.
+    let (sem_opt, collected) = match oxabl::try_analyze(&source, &opts) {
+        Ok(result) => result,
+        Err(panic) => {
+            eprintln!("error: analysis failed on {}: {panic}", path.display());
+            return ExitCode::from(4);
+        }
+    };
 
     let sem = match sem_opt {
         Some(sem) => sem,
@@ -760,18 +767,17 @@ fn parse_file(path: &Path) -> FileResult {
         }
     };
 
-    // Parse with panic catching. `oxabl::parse` folds tokenize + parser
+    // Parse through the shared guard. `oxabl::try_parse` folds tokenize + parser
     // construction together; a panic anywhere in it is reported as a lexer
     // panic (the historical failure mode) rather than unwinding the walk.
-    let program =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| oxabl::parse(&source))) {
-            Ok(program) => program,
-            Err(_) => {
-                return FileResult::LexerPanic {
-                    path: path.to_path_buf(),
-                };
-            }
-        };
+    let program = match oxabl::try_parse(&source) {
+        Ok(program) => program,
+        Err(_) => {
+            return FileResult::LexerPanic {
+                path: path.to_path_buf(),
+            };
+        }
+    };
 
     // Fail-fast reporting: surface the first recovered error, matching the
     // previous `parse_statements` contract.
@@ -840,16 +846,15 @@ fn parse_file_with_preprocess(
     // Get the expanded source text
     let expanded = preprocessed.to_text();
 
-    // Parse the preprocessed source with panic catching (see `parse_file`).
-    let program =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| oxabl::parse(&expanded))) {
-            Ok(program) => program,
-            Err(_) => {
-                return FileResult::LexerPanic {
-                    path: path.to_path_buf(),
-                };
-            }
-        };
+    // Parse the preprocessed source through the shared guard (see `parse_file`).
+    let program = match oxabl::try_parse(&expanded) {
+        Ok(program) => program,
+        Err(_) => {
+            return FileResult::LexerPanic {
+                path: path.to_path_buf(),
+            };
+        }
+    };
 
     // Fail-fast reporting: surface the first recovered error.
     match program.first_error() {
@@ -1119,12 +1124,10 @@ fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_p
         println!();
     }
 
-    let program = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        oxabl::parse(&parse_source)
-    })) {
+    let program = match oxabl::try_parse(&parse_source) {
         Ok(program) => program,
-        Err(_) => {
-            eprintln!("Lexer panic: {}", path.display());
+        Err(panic) => {
+            eprintln!("Lexer panic: {}: {panic}", path.display());
             return;
         }
     };

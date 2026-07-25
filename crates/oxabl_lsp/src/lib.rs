@@ -35,6 +35,7 @@ use lsp_types::{
     InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams, ServerInfo,
     TextEdit, Uri,
 };
+use oxabl_common::catch_panic;
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_workspace::{
     RealFileSystem, WorkspaceConfig, find_workspace_root, resolved_include_paths,
@@ -243,9 +244,11 @@ impl<'c> Server<'c> {
             let schema = self.schema;
             let tx = result_tx.clone();
             std::thread::spawn(move || {
-                let diagnostics = compute_diagnostics(&snapshot, buffer, schema);
-                // Dependency paths come from the (now-warm) expansion memo.
-                let dependencies = buffer_dependencies(&snapshot, buffer);
+                // The guard is inside `analyze_guarded`, so the send below is
+                // reached on every path — a panic must not leave this buffer
+                // waiting forever on a result that never arrives (R8).
+                let (diagnostics, dependencies) =
+                    analyze_guarded(&snapshot, buffer, schema, uri.as_str());
                 let _ = tx.send(ComputeResult {
                     uri,
                     version,
@@ -419,9 +422,11 @@ impl<'c> Server<'c> {
             return;
         };
         let snapshot = self.db.clone();
-        let collected = compute_diagnostics(&snapshot, buffer, self.schema);
-        self.dependencies
-            .insert(uri.clone(), buffer_dependencies(&snapshot, buffer));
+        // Guarded (R8): this runs on the main loop, so an unguarded panic here
+        // takes the whole server down.
+        let (collected, dependencies) =
+            analyze_guarded(&snapshot, buffer, self.schema, uri.as_str());
+        self.dependencies.insert(uri.clone(), dependencies);
         let Some(collected) = collected else {
             return;
         };
@@ -593,6 +598,45 @@ impl<'c> Server<'c> {
             .sender
             .send(Message::Response(response))
             .context("sending LSP response")
+    }
+}
+
+/// Compute a buffer's diagnostics **and** its include dependencies under one
+/// shared panic guard (R8), degrading both together to `(None, vec![])` on a
+/// panic.
+///
+/// Both diagnostics paths — the main loop's `compute_and_publish` and the
+/// debounced worker — call this rather than the two queries directly, so neither
+/// can drift into a narrower guard.
+///
+/// **The guard must span both calls.** `buffer_dependencies` runs the same
+/// buffer through salsa one line later and has no `Cancelled::catch` of its own,
+/// so a panic in expansion just past a diagnostics-only guard would still kill
+/// the worker or the main loop.
+///
+/// Returning normally on a panic is the contract the worker relies on: its
+/// `send` sits after this call, so a contained panic still produces a result and
+/// that buffer never stalls waiting on one that never arrives.
+///
+/// `label` names the buffer in the report; it is only ever the URI string.
+pub(crate) fn analyze_guarded(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+    label: &str,
+) -> (Option<oxabl_analyze::CollectedDiagnostics>, Vec<PathBuf>) {
+    let computed = catch_panic(|| {
+        let diagnostics = compute_diagnostics(snapshot, buffer, schema);
+        // Dependency paths come from the (now-warm) expansion memo.
+        let dependencies = buffer_dependencies(snapshot, buffer);
+        (diagnostics, dependencies)
+    });
+    match computed {
+        Ok(pair) => pair,
+        Err(panic) => {
+            eprintln!("oxabl-lsp: analysis panicked for {label}: {panic}");
+            (None, Vec::new())
+        }
     }
 }
 

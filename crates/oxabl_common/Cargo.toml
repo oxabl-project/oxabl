@@ -15,6 +15,12 @@ serde = { version = "1", optional = true, features = ["derive"] }
 # `FileSpan`, `FileId`, `DiagnosticCode`, `Label`). Pulls `oxabl_ast/serde`
 # because `FileSpan` embeds a `Span`.
 serde = ["dep:serde", "oxabl_ast/serde"]
+# Test-only: arms the `panic_if_injected` seam so a source carrying an
+# `OXABL-TEST-PANIC:<site>` marker panics at that guarded call site. Enabled
+# only through dev-dependencies (see `oxabl` and `oxabl_lsp`), so it is never on
+# in a real build. No ABL input panics today, so this is the only way to test
+# that the guards contain a panic.
+test-panics = []
 
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
