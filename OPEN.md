@@ -4,75 +4,95 @@
 **Branch:** `evanbrobertson/119-panic-safe-parse-format`
 **Status:** planned, not implemented. No code written.
 
+**Nothing is blocking.** All three of the original open questions are resolved, and the review gap flagged in the first pass has been closed. What remains below is the record of what was decided and why.
+
 ---
 
 ## Where the plan is
 
-`docs/plans/2026-07-24-001-fix-panic-safe-parse-format-plan.md`
+`docs/plans/2026-07-24-001-fix-panic-safe-parse-format-plan.md` — 16 requirements, 9 units, two repos.
 
-**It is not in this branch.** `docs/plans/` is gitignored (`.gitignore:6`) by the repo's artifact policy — plans are point-in-time and go stale, so only durable artifacts get committed. The file exists locally in this worktree only. If you want it shared, either commit it deliberately with `git add -f` or move the durable parts into `docs/solutions/` after the work lands.
-
-The plan is `implementation-ready`: 8 units (U1, U1b, U2-U7), 15 requirements, spanning **two repos**.
+**Not in this branch, by decision.** `docs/plans/` is gitignored (`.gitignore:6`) under the repo's artifact policy; plans are point-in-time and go stale. Confirmed to leave it local rather than force-add. Durable decisions migrate to `docs/solutions/` after the work lands.
 
 ---
 
-## Decisions I made without you
+## The plan changed shape twice during review
 
-Flagging these because they were judgement calls, not mechanical steps.
+Both changes came from review, not from the original research, and both are worth knowing before reading the plan.
 
-1. **Kept the plan out of the commit.** Per the artifact git policy above. Say the word and I'll force-add it.
-2. **Skipped ce-doc-review's cross-model peer pass.** It egresses document content to external model providers. With you away I had no authorization for outward-facing data movement, and the pass is explicitly additive and non-blocking. Not run.
-3. **Trimmed the review team.** The skill's criteria selected six personas; I ran three (feasibility, coherence, scope-guardian) and skipped product-lens, design-lens, and adversarial. Reasoning: the premise was already affirmed at the scoping gate — which is exactly what adversarial re-litigates — and the UI surface is small and derivative of an existing pattern. This is reduced coverage, not full coverage.
-4. **Applied all 18 review findings rather than deferring any.** Every one had a decisive fix. Two were reclassified rather than taken at face value — see below.
+### 1. The recovery mechanism flipped
 
----
+The plan originally used `--force-enable-abort-handler` + `set_on_abort` → `schedule_reinit()`. **It now uses `--experimental-reset-state-function` and calls `__wbg_reset_state()` from the playground's existing `catch` block.**
 
-## What the research changed
+Why: the abort-handler flag injects `try_table`/exnref instructions and two `WebAssembly.Tag` imports, which raises the browser floor to roughly Chrome 128 / Firefox 131 / Safari 18.4 — below which the module fails to *instantiate*. The plan was accepting a deterministic demo loss for some visitors in order to recover from a panic no known input produces.
 
-Worth knowing before reading the plan, because it contradicts #119's issue body.
+Verified in the 0.2.126 generator source that the cost is avoidable:
+- `transforms/mod.rs:66-74` — `detect_exception_handling_version` matches `(has_try_table, has_try, enable_abort_handler)`. Only the abort-handler arm injects anything.
+- `js/mod.rs:352` — `generate_reinit` is `aux.uses_reinit || config.generate_reset_state`, independent of the abort handler.
 
-- **`catch_unwind` is confirmed inert on `wasm32-unknown-unknown`** (default `-Cpanic=abort`; unwinding needs nightly `-Zbuild-std`). So #119's option (a) — a `try_*` wrapper — fixes the CLI and LSP and does **nothing** for the browser. The issue body offers only that or full parser hardening; both are incomplete. The browser needs a third mechanism.
-- **The browser mechanism exists and is stable.** `wasm-bindgen` 0.2.125 added `--force-enable-abort-handler`, which makes `set_on_abort` fire on `panic=abort`; `schedule_reinit()` then gives the next call a fresh instance. Requires bumping 0.2.108 → 0.2.126.
-- **The native gap is wider than #119 or HANDOFF.md said.** HANDOFF claimed "three hand-rolled guards"; it is **seven**, plus **three unguarded call sites** — `crates/oxabl/src/main.rs:512` (`oxabl::analyze` in the `analyze` subcommand) and `crates/oxabl_lsp/src/lib.rs:246`/`:422`. The `:422` site is on the LSP main loop, so a parser panic there kills the server. All three verified directly, not taken on a subagent's word.
-- **The website already try/catches everything**, so the playground's real defect is narrower and worse than "unguarded": it shows the raw string `unreachable executed` beside a **green** health dot, above **stale diagnostics from the last good run**, and stays dead until reload.
+So reset-state gives the identical reinit machinery with **no** injection and **no** floor change. It's also simpler: recovery becomes one explicit call in a `catch` that already exists, and the plan no longer depends on the `#[doc(hidden)]` `handler` module.
 
----
+Two independent reviewers raised this separately and the source confirmed it.
 
-## Genuinely open
+### 2. The Definition of Done split into two increments
 
-Neither blocks starting work.
-
-1. **Does `#[wasm_bindgen(start)]` re-run on the instance `schedule_reinit()` creates?** Decides whether the panic hook and `set_on_abort` need explicit re-registration after each recovery, since the reinit resets Rust statics and the hook *is* a static. U5 covers both arms and its crash-recover-crash scenario proves whichever landed. **If this is wrong, the playground heals from its first crash and bricks on the second** — the exact defect #119 exists to close. Do not skip that second-crash test.
-2. **Should `version()` carry a wire-shape revision as well as a build SHA?** A build ID answers "which artifact," not "which contract." Matters once #120 freezes the shapes. Deferred.
-
-## Resolved, for the record
-
-Both of the plan's original open questions are closed, so don't re-litigate them:
-
-- **Does the abort handler fire on stable `panic=abort`?** Yes, ~90% confidence. The contradicting claim in wasm-bindgen's `src/handler.rs` module doc is **stale** — it predates the 0.2.125 flag. The code path was traced end to end in upstream sources; the guide and `rt/mod.rs` agree.
-- **Does the panic hook's JS call complete before the trap?** Yes, guaranteed. On `panic=abort` std runs the hook to completion before aborting; a synchronous wasm→JS call inside it returns first by program order, engine-independent.
+The native track (U3, U4) now ships **alone**, without waiting on the browser track. The most concretely damaging gap in the whole plan is an unguarded panic on the LSP main loop — it kills the language server for the primary user, the in-editor daily dogfooder. That fix needs no dependency bump, no second repo, and no manual browser check, and gating it behind them would stall editor protection on browser-track risk.
 
 ---
 
-## Two findings I reclassified rather than accepting
+## Resolved questions — do not re-litigate
 
-Recording these so the reasoning survives.
+- **Does the abort handler fire on stable `panic=abort`?** Yes, at 0.2.125+. The contradicting claim in wasm-bindgen's `src/handler.rs` module doc is stale — it predates the flag. **But the mechanism was rejected anyway** on the browser-floor cost above.
+- **Does `--experimental-reset-state-function` avoid the exception-handling injection?** Yes — see the source citations above. This is why the mechanism flipped.
+- **Does the panic hook's JS call complete before the trap?** Yes, guaranteed by program order on every engine. Std runs the hook to completion before aborting.
+- **Does `#[wasm_bindgen(start)]` re-run after `__wbg_reset_state()`?** Yes, unconditionally — `js/mod.rs:4444` calls `wasm.__wbindgen_start()` as the reset's last step. The panic hook is a static, so it resets with the instance and is re-armed before anything else touches the module. No `reinstall()` export needed. Corroborating: `set_on_reinit` was *removed* in 0.2.118 because the start re-run subsumes it.
 
-- **Scope review flagged the `wasmPromise` rejection-caching fix as scope creep** (correctly — it served no requirement). I kept it and added **R14** instead of dropping it, because U6 rewrites the exact function that caches the rejection; shipping a rewritten loader that still poisons itself would be knowingly leaving it broken. The objection was about traceability, and a requirement fixes that.
-- **Feasibility flagged the proposed `AnalyzeResponse.error` field as having no producer.** That one I accepted and **dropped the field** — on wasm a panic aborts before the function returns, so it could never be non-null. Net effect: this plan does not change the wire shape at all, which is the opposite of what I originally wrote.
+  Caveat that survived: **upstream has no regression test for this property** (its `termination_reinit` tests register from an explicit export, not a start function). That's why U5 keeps the manual crash-recover-crash check.
+
+- **Should `version()` carry a wire-shape revision?** No. A build identifier answers "which artifact," which is what R13 needs. A wire-shape revision presupposes a versioning scheme for a contract this plan leaves explicitly unfrozen; adding one now would pre-commit. Revisit under #120.
+
+---
+
+## Review coverage — now complete
+
+Six personas plus an independent cross-model pass. **31 findings applied in total.**
+
+| Pass | Findings | Notable |
+|---|---|---|
+| feasibility | 11 | `try_analyze` can't live in `oxabl_analyze`; the proposed `AnalyzeResponse.error` field could never be non-null |
+| coherence | 5 | U3/U4 sequencing contradiction; R9 owned by two units |
+| scope-guardian | 2 | rejection-caching fix had no requirement trace |
+| adversarial | 8 | the mechanism flip; premise rests on an unreachable defect; browser tests had no panic trigger |
+| product-lens | 4 | the mechanism flip (independently); DoD coupling the native fix to the browser bet |
+| design-lens | 3 | clearing `diagnostics` surfaces the *cheerful green* empty state next to the red crash dot |
+| cross-model (GPT-5.6-luna, xhigh, via codex) | 13 | `independence_verified: true` on all three legs |
+
+The cross-model legs corroborated three in-process findings — the objective/hang overclaim reached triple agreement — and added four of their own that survived: U1b depended on a module U6 creates, U4's tests had no panic-injection seam, only one of the three fallible signatures was specified, and the panicking APIs needed a deprecation policy or a future consumer just recreates the defect.
+
+Note the trio peers reviewed the Product Contract slice as it stood *before* the mechanism flip, so their browser-floor findings were already resolved by it.
+
+---
+
+## Things the review surfaced that are worth carrying forward regardless
+
+- **The panic surface is not five sites.** Five `unreachable!()` macros are the only explicit panic *macros* in non-test parser code, which is narrower than "the only way it can panic" — indexing, `unwrap`, debug overflow, and dependency panics all bypass that count. U0 exists to settle reachability, but a verdict of "all five unreachable" means the guard's value is containment of an unenumerated surface, not protection against a known input. That's a legitimate justification; it's just a different one, and the plan now says so.
+- **`catch_unwind` assumes unwinding, natively too.** No `[profile]` sets `panic = "abort"` today, but one added later — here or downstream — silently reduces every native guard to a pass-through. U7 documents the guarantee as conditional.
+- **A hang is not covered and never was.** The original objective claimed malformed input never leaves a client dead; a parser infinite loop still freezes the browser's main thread. Notably this is the one failure class the repo has actually *reproduced* (`docs/solutions/logic-errors/recursive-descent-skip-to-sync-infinite-loop.md`), unlike the panic class. Objective narrowed; hang deferred with the Worker work.
 
 ---
 
 ## The other repo
 
-The website work (U1b, U6) is **unstarted**. `~/personal/oxabl_web` is clean on branch `agent/wasm-playground` at `21c2d7e`. Nothing committed there.
+Website work (U1b, U6) is **unstarted**. `~/personal/oxabl_web` is clean on `agent/wasm-playground` at `21c2d7e`.
 
-Note the two repos are coupled by a **manual copy** — a human runs `scripts/build-wasm.sh` pointed at `[web] src/wasm/` and commits the result. Nothing records which oxabl commit produced the vendored artifact, and nothing enforces that the wire shapes match. U5's `version()` export improves diagnosis but not the coupling.
+The repos are coupled by a **manual copy** — a human runs `scripts/build-wasm.sh` into `[web] src/wasm/` and commits. Nothing records provenance and nothing enforces wire-shape lockstep. U6 now adds a load-time guard that detects a stale artifact and says so, rather than rendering a confident crash state that can never heal. That detects a mismatch; it does not prevent one.
 
 ---
 
 ## Sequencing when you pick this up
 
-`U2` (bump) → `U1` (glue assertion) → `U1b` (engine floor) → `U5` (wasm) → `U6` (website), with `U3` (fallible API) → `U4` (migrate guards) running as an independent concurrent track, and `U7` (docs) last.
+**U0 first** — an hour of reading that can reframe the browser track's entire justification.
 
-The cheapest genuinely-useful starting point is **U3 + U4**: they need no browser, no dependency bump, and they close the LSP main-loop hole, which is the highest-severity item in the whole plan.
+Then: `U2` → `U1` → `U5` → `U6` → `U1b` on the browser track, with `U3` → `U4` as an independent concurrent track, and `U7` last.
+
+**The cheapest genuinely-useful start is still U3 + U4.** No browser, no dependency bump, no second repo — and it closes the LSP main-loop hole, the highest-severity item in the plan. It is increment one and ships on its own.
