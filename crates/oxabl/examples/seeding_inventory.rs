@@ -59,7 +59,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use oxabl_ast::{Statement, StatementKind as SK};
-use oxabl_common::SourceMap;
+use oxabl_common::{SourceMap, catch_panic};
 use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_parser::Parser;
 use walkdir::WalkDir;
@@ -119,14 +119,21 @@ fn main() {
             }
         };
 
-        let tokens =
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokenize(&source))) {
-                Ok(t) => t,
-                Err(_) => {
-                    parse_failures += 1;
-                    continue;
-                }
-            };
+        // One guard spanning tokenize *and* parse: the parser is as much of the
+        // panic surface as the lexer, so a panic in either must only cost this
+        // file. `try_parse` is not usable here because the token stream is
+        // needed downstream for the `End`-token closer index.
+        let (tokens, program) = match catch_panic(|| {
+            let tokens = tokenize(&source);
+            let program = Parser::new(&tokens, &source).parse_program();
+            (tokens, program)
+        }) {
+            Ok(pair) => pair,
+            Err(_) => {
+                parse_failures += 1;
+                continue;
+            }
+        };
         // Byte offsets of every `End` token, ascending — the closer index.
         let end_offsets: Vec<usize> = tokens
             .iter()
@@ -134,8 +141,6 @@ fn main() {
             .map(|t| t.start)
             .collect();
 
-        let mut parser = Parser::new(&tokens, &source);
-        let program = parser.parse_program();
         if !program.errors.is_empty() {
             parse_failures += 1; // partial AST still walked below
         }

@@ -1,4 +1,4 @@
-# Handoff: the browser WASM playground shipped (#133); next is cross-file resolution (#102)
+# Handoff: the browser WASM playground shipped (#133); next is panic-safety (#119), then uncredited reads (#128/#130)
 
 **Date:** 2026-07-24
 **Branch:** `master` — clean at `6614f10`. PR #133 merged; no open work branch from this session.
@@ -13,13 +13,14 @@
 |------|--------|
 | #133 browser WASM adapter | **Done — merged, playground working end to end.** |
 | #129 table-parameter FP + LINT0006 split | Done — merged, dogfooded (FP count down). |
-| #128 / #130 | Open — uncredited *reads*; between them they own the one remaining known FP class. |
+| #119 panic-safe parse/format | **Open — planned, not built.** Plan at `docs/plans/2026-07-24-001-fix-panic-safe-parse-format-plan.md` (gitignored, local only); decisions and open items in `OPEN.md`. #133 made the documented panic contract a live defect: `oxabl_wasm` has no guard and a panic traps the wasm module. |
+| #128 / #130 | Open — uncredited *reads*; between them they own the one remaining known FP class. Now also the playground's visible FP surface. |
 | #131 / #132 | Open — LINT0006 write-site span breadth; `oxabl_lint` benchmark coverage. |
 | #125 | Open and **unblocked** — small, template is fresh. |
 | #124 / #126 | Open — the rest of the flow-analysis cluster. |
-| #102 / #103 cross-file resolution | Open — still the **top strategic thread**. |
+| #102 / #103 cross-file resolution | Open — still the **top strategic thread**, but it does nothing for the playground. |
 | #57 public lint-rule API | Open — blocked on #102. |
-| #120 CLI reshape onto shared pipelines | Open — the WASM crate is now a third consumer arguing for it. |
+| #120 CLI reshape onto shared pipelines | Open — the WASM crate is a third consumer, but see the ranking note under **Next**. |
 | #108 unresolvable-include-as-argument | Open — deferred pending a fully-wired re-dogfood. |
 
 ---
@@ -37,7 +38,7 @@ Both delegate straight to the umbrella crate — `oxabl::analyze_with_fs` with `
 
 - **The umbrella crate now has a `cli` feature, on by default.** `clap`, `walkdir`, `indicatif`, `schemars`, `serde_json`, and `oxabl_lsp` are optional dependencies gated behind it, and the `oxabl` binary carries `required-features = ["cli"]`. `oxabl_wasm` depends on `oxabl` with `default-features = false, features = ["serde"]`. **Any new native-only dependency added to `crates/oxabl` must go behind `cli` or the wasm build breaks.** The new CI job is what catches this, so don't ignore it.
 - **CI gained a `WebAssembly client` job** that runs `cargo build -p oxabl_wasm --target wasm32-unknown-unknown --release`. It builds only — no tests execute on the wasm target. The crate's three unit tests run natively under `cargo test --workspace`, which is enough because the crate is pure translation.
-- **The release workflow now packages the browser artifact**: `./scripts/build-wasm.sh target/wasm-web`, tarred and uploaded to the GitHub Release as `oxabl-wasm-web.tar.gz`. `wasm-bindgen-cli` is pinned to **0.2.108** and must match the `wasm-bindgen` crate version — a mismatch fails at bindgen time, not build time.
+- **The release workflow now packages the browser artifact**: `./scripts/build-wasm.sh target/wasm-web`, tarred and uploaded to the GitHub Release as `oxabl-wasm-web.tar.gz`. `wasm-bindgen-cli` is pinned to **0.2.126** and must match the `wasm-bindgen` crate version — a mismatch fails at bindgen time, not build time. The crate is pinned **exactly** (`=0.2.126`, not a caret range) because browser crash recovery rides on `__wbg_reset_state`, which is generated glue rather than a semver-stable API: an exact pin stops a routine `cargo update` inside 0.2.x from moving that machinery underneath the exact-pinned CLI. Three pin sites move together — the crate, `scripts/build-wasm.sh`, and `.github/workflows/release.yml`.
 - **`--no-typescript`** is passed to `wasm-bindgen`, so consumers get no `.d.ts`. Deliberate for the MVP (the wire shape is JSON strings, not typed objects), but it is the obvious next ergonomic step if the website grows.
 - **The MVP's absent capabilities are absent on purpose, not stubbed.** No include resolution (empty in-memory FS), no `.df` schema (so LINT0003 is inert), no `oxabl.toml` (so per-rule severity config and `[workspace.style]` do not apply). The rule is: a project capability the browser can't honestly provide stays *unavailable* rather than getting a second, divergent implementation in the wasm layer.
 - **A formatter bail is a first-class result, not an error path.** On any `Err`, the response returns the *original* source with `changed: false` and the message in `error` — the same never-mangle contract the LSP honors by returning no edits. A test pins this.
@@ -83,15 +84,18 @@ Other #129 facts worth keeping:
 
 ## Next
 
-1. **#102 — workspace-wide cross-file semantic resolution** remains the top strategic thread (with #103 background index as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets, and cross-file `SHARED` vars all resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. It is the ceiling on lint effectiveness and **blocks #57**. Genuine architecture — take it through `/ce-brainstorm` → `/ce-plan` before building.
-2. **#128 + #130 — uncredited reads.** The highest-value *lint-accuracy* work and cheap relative to payoff: between them they close the last known FP class, and #128 alone improves LINT0002, LINT0005 and LINT0006 at once. Do #128 via the lexical fallback first.
+**The playground shipping reordered this list.** #133 put the single-file engine in front of strangers with `AnalyzeOptions::default()`, no schema, and no includes (`crates/oxabl_wasm/src/lib.rs:82-86`), so two threads that were ordinary follow-ups became first-contact quality issues, and the top strategic thread now helps everything *except* the newest surface. Correctness before ergonomics: fix what the demo gets wrong before reshaping how it is delivered.
+
+1. **#119 — panic-safe parse/format entry points.** The most urgent item, and not previously on this list. `oxabl::parse` and `oxabl::format_source` ship a documented panic contract; the CLI and LSP each wrap calls in `catch_unwind`, but **`oxabl_wasm` does not — and on `wasm32-unknown-unknown` it cannot meaningfully, because a panic traps the module.** So one malformed paste doesn't render an error in the playground, it **bricks the demo until the visitor reloads the page**, with no explanation. Note the asymmetry this session already created: a formatter *bail* is handled as a first-class result (original source, `changed: false`, message in `error`), but the *panic* path is unguarded — the right instinct applied to one of the two failure modes. A `try_parse`/`try_format` variant also retires **seven** hand-rolled `catch_unwind` guards — not three, as this list originally said — and closes **three** call sites that had no guard at all, including `run_analyze` in the CLI and both of the LSP's diagnostics paths, one of which runs on the main loop where a panic kills the server. Hardening the lexer/parser to be panic-free remains the better long-term end state. Small, contained, and it protects what was just shipped.
+2. **#128 + #130 — uncredited reads.** The highest-value *lint-accuracy* work and cheap relative to payoff: between them they close the last known FP class, and #128 alone improves LINT0002, LINT0005 and LINT0006 at once. Do #128 via the lexical fallback first. #133 raised the stakes — `v-total = 42. PUT v-total.` is exactly the shape a first-time visitor pastes, and the false LINT0006 is now the first impression rather than a dogfood annoyance.
 3. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
-4. **#120 — reshape `check`/`analyze` onto shared pipelines.** #133 makes this more pressing, not less: there are now three clients (CLI, LSP, browser) each mapping the same collected diagnostics into a slightly different wire shape by hand. Do a `/ce-strategy` pass, then a plan.
-5. **#126 — CFG + dataflow scaffolding** still absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`, and #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
-6. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed can't catch a regression in any of them.
-7. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI so the demo's load cost can't silently balloon; and deciding whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file.
-8. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and re-check the held block-scope false positive.
-9. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish.
+4. **#102 — workspace-wide cross-file semantic resolution** remains the top *strategic* thread (with #103 as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets, and cross-file `SHARED` vars all resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. It is the ceiling on lint effectiveness and **blocks #57**. It sits below the items above only on sequencing, not importance: it is weeks of architecture, and it does nothing for the playground, whose MVP has no workspace, includes, or PROPATH by design. Take it through `/ce-brainstorm` → `/ce-plan` before building.
+5. **#120 — reshape `check`/`analyze` onto shared pipelines.** Worth doing, but the "three clients hand-map the same diagnostics" framing is the weakest part of its case: those mappings differ because the transports genuinely differ (`lsp_types::Diagnostic`, a JSON wire shape with `SourceMap`-resolved positions, rendered text), so a shared pipeline hoists the *collection* while each client still needs its final hop — that deletes some code, not a class of bugs. #120's real value has always been the **ruff-shaped `check`**, a product change #133 didn't make more urgent. Two further reasons it sits here: sequencing it before #119/#128 reshapes delivery while the diagnostics are still wrong, forcing a re-verify across all three clients afterward; and it is a `/ce-strategy`-then-plan thread in the same weight class as #102, competing for the same design attention. **The one argument that does carry weight:** the wire shape is not a stable contract, and every week the playground is live the website hardens around today's shape — a real closing window, but one this repo controls. Consider folding it into #102's strategy pass, since both want one.
+6. **#126 — CFG + dataflow scaffolding** still absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`, and #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
+7. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed can't catch a regression in any of them.
+8. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI so the demo's load cost can't silently balloon; and deciding whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file. Panic safety belonged on this list and is now item 1 as #119.
+9. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and re-check the held block-scope false positive.
+10. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish.
 
 ---
 
@@ -100,19 +104,20 @@ Other #129 facts worth keeping:
 | Issue/PR | Relation |
 |----------|----------|
 | **#133** | **Merged** — browser WASM adapter + playground (this session) |
-| **#102 / #103** | Open — cross-file resolution + background index (**the strategic thread, next**) |
-| **#128 / #130** | Open — uncredited reads (parser-skipped statements / table-use forms); the last known FP class |
+| **#119** | Open — **panic-safe parse/format; now the most urgent item.** A panic traps the wasm module, so it bricks the playground until reload |
+| **#128 / #130** | Open — uncredited reads (parser-skipped statements / table-use forms); the last known FP class, and the playground's visible FP surface |
+| **#102 / #103** | Open — cross-file resolution + background index (**the top strategic thread**; sequenced after the two above, and no help to the playground) |
 | #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
 | #132 | Open — `oxabl_lint` has no benchmark coverage at all |
 | #125 | Open — **unblocked**; callee-written dead-store advisory |
 | #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires both stopgap flags |
-| #120 | Open — reshape `check`/`analyze` onto shared lint/format pipelines; now has three client consumers |
+| #120 | Open — reshape `check`/`analyze` onto shared lint/format pipelines; three client consumers, but the dedup argument is weaker than the ruff-shaped-`check` one (see **Next** item 5) |
 | #129 | Merged — table-parameter FP + LINT0006 dead-store split |
 | #127 | Merged — LINT0002 OUTPUT-argument FP; #129 builds on its flag and supersedes its `write_count` note |
 | #121 / #122 / #123 | Merged — preprocessor define-time refs, routine-scoped `DEFINE VARIABLE`, LINT0005 |
 | #113 / #114 / #115 / #116 | Merged — the four #55 public-API waves |
 | #55 | Improve the public API — done across the four waves; can be closed |
-| #117 / #118 / #119 | Filed — deferred #55 follow-ups |
+| #117 / #118 | Filed — deferred #55 follow-ups (#119 was one of these; #133 promoted it, see above) |
 | #104 | Merged — VS Code extension + `oxabl schema` + CI (the dogfood loop) |
 | #57 | Open — public lint-rule API; blocked on #102 |
 | #108 | Open — unresolvable-include-as-argument → misleading comma error (deferred) |

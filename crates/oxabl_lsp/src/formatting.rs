@@ -47,9 +47,9 @@ pub fn style_for_uri(uri: &Uri) -> StyleGuide {
 /// Compute the `textDocument/formatting` edits for an already-fetched open
 /// [`Document`] (R2, R4, R5).
 ///
-/// Mirrors the CLI's `format_one`: both format through the shared
-/// [`oxabl_formatter::format_source`] (raw, preprocessing off), inside
-/// `catch_unwind` (KTD1, KTD4). On
+/// Mirrors the CLI's `format_one`: both format through the shared, panic-guarded
+/// [`oxabl_formatter::try_format_source`] (raw, preprocessing off) (KTD1,
+/// KTD4). On
 /// success *with changed output* it returns exactly one whole-document
 /// [`TextEdit`] replacing `(0,0)..end` with the formatted string (KTD5). On a
 /// [`FormatBail`](oxabl_formatter::FormatBail), unchanged output, parse-dirty
@@ -67,18 +67,16 @@ pub fn compute_formatting_edits(
     let style = style_for_uri(uri);
 
     // Parse RAW (preprocessing off) — the formatter must see the user's actual
-    // buffer, not preprocessor-expanded text (KTD1). The whole pipeline is
-    // panic-guarded so a formatter/lexer panic degrades to "no edits" rather
-    // than killing the server's main loop (KTD4).
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        oxabl_formatter::format_source(&text, &style)
-    }));
+    // buffer, not preprocessor-expanded text (KTD1). The whole pipeline goes
+    // through the shared guard so a formatter/lexer panic degrades to "no edits"
+    // rather than killing the server's main loop (KTD4).
+    let result = oxabl_formatter::try_format_source(&text, &style);
 
     match result {
         // Changed output → one whole-document replace (KTD5). The returned text
         // is exactly what the formatter produced, whose re-lex guard already
         // proved the token stream is preserved (R5).
-        Ok(Ok(formatted)) if formatted != text => {
+        Ok(formatted) if formatted != text => {
             let end = byte_to_position(&doc.rope, doc.rope.len_bytes(), encoding);
             vec![TextEdit {
                 range: Range {
@@ -191,8 +189,8 @@ mod tests {
     fn direct_format(
         text: &str,
         style: &StyleGuide,
-    ) -> Result<String, oxabl_formatter::FormatBail> {
-        oxabl_formatter::format_source(text, style)
+    ) -> Result<String, oxabl_formatter::FormatFailure> {
+        oxabl_formatter::try_format_source(text, style)
     }
 
     #[test]

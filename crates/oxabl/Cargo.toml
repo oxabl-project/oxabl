@@ -51,7 +51,9 @@ cli = [
 [dev-dependencies]
 tempfile = "3"
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
-oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0", features = [
+    "test-panics",
+] }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 serde_json = "1"

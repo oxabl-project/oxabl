@@ -211,6 +211,10 @@ pub fn compute_diagnostics(
     // The snapshot holds an `Arc<dyn FileSystem>`, which is not `RefUnwindSafe`;
     // salsa's own snapshots are designed to cross the `catch_unwind` boundary of
     // `Cancelled::catch`, so asserting unwind-safety here is sound.
+    oxabl_common::panic_if_injected(
+        oxabl_common::panic_sites::LSP_DIAGNOSTICS,
+        buffer.text(snapshot),
+    );
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
         diagnostics(snapshot, buffer, schema)
     }))
@@ -221,6 +225,10 @@ pub fn compute_diagnostics(
 /// `*.i` → buffer matching (R17). Computed via the memoized expansion query, so
 /// this is cheap on an unchanged buffer. Empty on a fatal preprocessing error.
 pub fn buffer_dependencies(snapshot: &AnalysisDatabase, buffer: Buffer) -> Vec<PathBuf> {
+    oxabl_common::panic_if_injected(
+        oxabl_common::panic_sites::LSP_DEPENDENCIES,
+        buffer.text(snapshot),
+    );
     match expanded_text(snapshot, buffer) {
         Ok(expanded) => expanded.dependency_paths().to_vec(),
         Err(_) => Vec::new(),
@@ -248,6 +256,55 @@ mod tests {
             ..Default::default()
         };
         AnalysisDatabase::new(config)
+    }
+
+    /// The shared guard both diagnostics paths go through (R8). Client-observable
+    /// behavior cannot tell a contained panic from a dead worker thread, so the
+    /// guard's real contract — *return normally* with both halves degraded, so
+    /// the worker's later `send` is reached — is pinned here rather than e2e.
+    ///
+    /// Injected panics via `oxabl_common`'s test-only `test-panics` feature; no
+    /// ABL input panics.
+    #[test]
+    fn analyze_guarded_contains_a_panic_in_either_query() {
+        for site in [
+            oxabl_common::panic_sites::LSP_DIAGNOSTICS,
+            oxabl_common::panic_sites::LSP_DEPENDENCIES,
+        ] {
+            let db = db_with(oxabl_workspace::InMemoryFileSystem::new());
+            let text =
+                format!("/* OXABL-TEST-PANIC:{site} */\nDEFINE VARIABLE x AS INTEGER NO-UNDO.\n");
+            let buffer = Buffer::new(&db, text);
+            let schema = SchemaHandle::new(&db, 0);
+
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let (diagnostics, dependencies) =
+                crate::analyze_guarded(&db, buffer, schema, "file:///injected.p");
+            std::panic::set_hook(previous);
+
+            assert!(
+                diagnostics.is_none(),
+                "a panic at {site} must degrade to no diagnostics"
+            );
+            assert!(
+                dependencies.is_empty(),
+                "a panic at {site} must degrade dependencies together with diagnostics"
+            );
+        }
+    }
+
+    /// The same helper on a healthy buffer still returns real results, so the
+    /// guard has not swallowed the normal path.
+    #[test]
+    fn analyze_guarded_passes_through_a_healthy_buffer() {
+        let db = db_with(oxabl_workspace::InMemoryFileSystem::new());
+        let buffer = Buffer::new(&db, "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n".to_string());
+        let schema = SchemaHandle::new(&db, 0);
+
+        let (diagnostics, _deps) = crate::analyze_guarded(&db, buffer, schema, "file:///healthy.p");
+        let diagnostics = diagnostics.expect("a healthy buffer yields diagnostics");
+        assert!(diagnostics.all().any(|c| c.diagnostic.code.0 == "LINT0002"));
     }
 
     #[test]
