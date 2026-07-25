@@ -212,6 +212,32 @@ fn surface_collected_preproc(
     loud
 }
 
+/// Report how many symbols the count-gated lint rules could not fully judge,
+/// and return the count for the machine-readable channel.
+///
+/// A file where `unused-variable`, `assigned-but-never-read` and
+/// `block-var-used-outside` went partly blind should say so rather than looking
+/// clean. This follows the `PREPROC007` precedent: one honest line at the true
+/// cause, printed to stderr, rather than a per-site flood or a silent gap.
+///
+/// Deliberately *not* a diagnostic with a code — it is not a finding about the
+/// source, it is a statement about coverage. And deliberately silent at zero: a
+/// line that always appears is a line users learn to skip.
+fn surface_unjudged_symbols(sem: &oxabl_semantic::Semantic) -> usize {
+    let n = oxabl_analyze::unjudged_symbol_count(sem);
+    if n > 0 {
+        let plural = if n == 1 { "symbol" } else { "symbols" };
+        eprintln!(
+            "note: {n} {plural} could not be fully checked — {} named inside statement forms \
+             oxabl recognizes but does not model, so the unused-variable, dead-store and \
+             block-variable rules stayed silent for {}.",
+            if n == 1 { "it is" } else { "they are" },
+            if n == 1 { "it" } else { "them" },
+        );
+    }
+    n
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -543,6 +569,10 @@ fn run_analyze(
     // human consumers see the same "loud, not silent" signal.
     let preproc_diags = surface_collected_preproc(path, &source, &collected);
 
+    // Coverage, not findings: say how much of the file the count-gated rules
+    // could not judge. Same channel as the preprocessor coverage warning above.
+    let unjudged = surface_unjudged_symbols(&sem);
+
     match format {
         "json" => {
             let mut v = dump_json_with_diagnostics(&sem, &collected);
@@ -550,6 +580,12 @@ fn run_analyze(
                 map.insert(
                     "preproc_diagnostics".to_string(),
                     serde_json::to_value(&preproc_diags).unwrap_or(serde_json::Value::Null),
+                );
+                // A count, not prose — machine consumers should not have to
+                // parse the stderr line.
+                map.insert(
+                    "unjudged_symbols".to_string(),
+                    serde_json::Value::from(unjudged),
                 );
             }
             match serde_json::to_string_pretty(&v) {

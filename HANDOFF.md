@@ -13,7 +13,9 @@
 |------|--------|
 | #133 browser WASM adapter | **Done — merged, playground working end to end.** |
 | #129 table-parameter FP + LINT0006 split | Done — merged, dogfooded (FP count down). |
-| #128 / #130 | Open — uncredited *reads*; between them they own the one remaining known FP class. |
+| #128 | **Done — standalone unmodelled forms credited** (`StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT`). Bounded triage; #136 is the scheduled drain. |
+| #130 / #134 | Open — the two remaining halves: table-use forms (#130) and skipped *tails* inside modelled statements (#134). |
+| #136 | Open and **scheduled** (`hermes`) — head-parse the unmodelled forms; retires #128's flag. |
 | #131 / #132 | Open — LINT0006 write-site span breadth; `oxabl_lint` benchmark coverage. |
 | #125 | Open and **unblocked** — small, template is fresh. |
 | #124 / #126 | Open — the rest of the flow-analysis cluster. |
@@ -52,22 +54,26 @@ Both delegate straight to the umbrella crate — `oxabl::analyze_with_fs` with `
 
 Untouched by this session; read this before triaging any "LINT0006 is wrong" report.
 
-**A large set of ABL statements is invisible to the resolve pass**, so they credit no reads: the parser skips them to `StatementKind::Empty`. `PUT`, `EXPORT`, `UPDATE`, `SET`, `PROMPT-FOR`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`, `HIDE` and more (the skip list in `oxabl_parser/src/parser/statements.rs` is authoritative). A variable whose only read lives in one of them looks write-only:
+**Standalone unmodelled forms are now credited (#128, done).** Around thirty ABL statement forms are recognized by the parser and then discarded — `PUT`, `EXPORT`, `UPDATE`, `SET`, `PROMPT-FOR`, `ENABLE`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`, `HIDE`, embedded SQL and more (the skip list in `oxabl_parser/src/parser/statements.rs` is authoritative). They used to reach `StatementKind::Empty` and credit nothing, so a variable whose only read lives in one of them looked write-only:
 
 ```abl
 v-total = 42.
-PUT v-total.        /* real read the model cannot see → false LINT0006 */
+PUT v-total.        /* real read the model could not see → false LINT0006 */
 ```
 
-This is a property of the semantic model, not of the rule, and it **predates** #129 — the same variable already warned as unused on the prior master. Severity stayed `warn` deliberately: demoting LINT0006 would not fix the class (the identical FP stays loud under LINT0002) and would quietly demote every genuine dead store.
+Those forms now emit `StatementKind::Skipped { names }` carrying the identifier tokens the skip passed over. The resolve pass best-effort-resolves them in `NamespaceId::Values` through `lookup_statement_ident`, a lookup that writes no side table, and records hits as `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`. All three count-gated rules — LINT0002, LINT0005, LINT0006 — consult that flag through the one shared `is_skipped` predicate. `read_count` and `write_count` stay exact; the flag says the counts are *incomplete*, it does not fabricate an access.
 
-**#128** covers crediting reads in the parser-skipped forms; prefer the cheap avenue — have `skip_to_statement_end` record the identifier tokens it skips and best-effort-resolve them as `AccessMode::Read`. Over-crediting reads yields only false *negatives* for these rules, which is the safe direction, and keeps the parser change small. Do not let that issue default to full per-form statement parsing. **#130** is the sibling: `DEFINE BUFFER b FOR tt`, `EMPTY TEMP-TABLE tt` and `DEFINE QUERY q FOR tt` *are* parsed but credit no read to the table.
+**Know what this cost.** The mark is per-symbol and file-wide, so a genuine dead store on line 40 becomes unjudgeable because of an `ENABLE` mention on line 900. That is real evidence destruction, not just caution, and it is why `oxabl analyze` now prints a count of symbols it could not fully judge (stderr, plus an `unjudged_symbols` JSON field) rather than letting a partly-checked file look clean. It is also why the retirement path is **scheduled**, not wished for.
+
+**#136 is the actual fix, and it is filed and labelled.** Variable traffic lives in each statement's *head*; the awkwardness lives in its *tail*. One shared parse-head/skip-tail combinator covers the large majority, and head-parsing a form buys exact lint crediting, formatter coverage (`tree.rs` routes these through pass-through arms today) and future LSP fidelity from one piece of work — where the flag buys only the first, once. `StatementKind::Skipped` doubles as the instrument for prioritizing: count which dispatch keywords actually produce `Skipped` nodes on real code and work the list in frequency order.
+
+**Two siblings remain.** **#134** — skipped *tails* inside modelled statements (`DISPLAY … WITH FRAME` options, `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing content, and ten more): same root cause, but the statement node is already occupied so #128's payload shape does not transfer. Pinned by a deliberately-failing-later test in `crates/oxabl_lint/tests/issue128_skipped_statement_reads.rs`. **#130** — `DEFINE BUFFER b FOR tt`, `EMPTY TEMP-TABLE tt` and `DEFINE QUERY q FOR tt` *are* parsed but credit no read to the table.
 
 Other #129 facts worth keeping:
 
 - **`FOR EACH tt:` declares a fresh block-scoped buffer symbol and credits its reads there**, not to the `DEFINE TEMP-TABLE`. Those block scopes are *descendants* of a parameter's scope and invisible to an ancestor walk, so `backing_read_count` sums reads across ancestor-or-self **and** descendant `Buffers` bindings. Any change here must keep the descendant half.
 - The backing-table matching is **name-keyed, not identity-keyed, deliberately**. The imprecision only ever produces silence, never a false claim. The shadowing case still has no test.
-- **`is_table_like_param` is deliberately outside the shared `is_skipped` predicate** in `rules/unused_symbol_shared.rs` — LINT0006 skips those symbols, LINT0002 must still report a genuinely-unused one. A future third rule in this family must call both.
+- **`is_table_like_param` is deliberately outside the shared `is_skipped` predicate** in `rules/unused_symbol_shared.rs` — LINT0006 skips those symbols, LINT0002 must still report a genuinely-unused one. A future rule in this family must call both. `is_skipped` now has three callers: #128 wired LINT0005's `is_hazard` through it rather than giving that rule a parallel clause, so there is exactly one suppression path to keep correct.
 - **`NodeId::DUMMY`**: `Expression::new` carries `DUMMY`, which the `references` side table silently drops. Any test asserting a write-site span must use the `ident_expr` helper that allocates real ids.
 - **Process lesson (recorded in #128):** for any count-gated rule, audit **both** sides of the predicate. #129's audit covered the write side it incremented; the false positives came from the unaudited read side.
 
@@ -84,10 +90,10 @@ Other #129 facts worth keeping:
 ## Next
 
 1. **#102 — workspace-wide cross-file semantic resolution** remains the top strategic thread (with #103 background index as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets, and cross-file `SHARED` vars all resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. It is the ceiling on lint effectiveness and **blocks #57**. Genuine architecture — take it through `/ce-brainstorm` → `/ce-plan` before building.
-2. **#128 + #130 — uncredited reads.** The highest-value *lint-accuracy* work and cheap relative to payoff: between them they close the last known FP class, and #128 alone improves LINT0002, LINT0005 and LINT0006 at once. Do #128 via the lexical fallback first.
+2. **#136 — head-parse the unmodelled forms.** #128 shipped the lexical fallback and it works, but it is triage: the suppression is file-wide per symbol, so it buys silence at the cost of evidence. #136 replaces it form by form with real crediting and picks up formatter and LSP coverage on the way. Scheduled (`hermes`). **#130** and **#134** are the two remaining uncredited-read halves and are independent of it.
 3. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
 4. **#120 — reshape `check`/`analyze` onto shared pipelines.** #133 makes this more pressing, not less: there are now three clients (CLI, LSP, browser) each mapping the same collected diagnostics into a slightly different wire shape by hand. Do a `/ce-strategy` pass, then a plan.
-5. **#126 — CFG + dataflow scaffolding** still absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`, and #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
+5. **#126 — CFG + dataflow scaffolding** still absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`, and #124 waits on it. Note it does *not* own `TOUCHED_BY_UNMODELLED_STATEMENT` — that one drains incrementally through #136, which is why its doc comment points there instead. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
 6. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed can't catch a regression in any of them.
 7. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI so the demo's load cost can't silently balloon; and deciding whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file.
 8. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and re-check the held block-scope false positive.
@@ -101,11 +107,14 @@ Other #129 facts worth keeping:
 |----------|----------|
 | **#133** | **Merged** — browser WASM adapter + playground (this session) |
 | **#102 / #103** | Open — cross-file resolution + background index (**the strategic thread, next**) |
-| **#128 / #130** | Open — uncredited reads (parser-skipped statements / table-use forms); the last known FP class |
+| **#128** | **Merged** — standalone unmodelled forms credited; `StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT` |
+| **#136** | Open, **scheduled** — head-parse the unmodelled forms; the drain that retires #128's flag |
+| **#134** | Open — skipped tails inside *modelled* statements; same root cause, different carrier |
+| **#130** | Open — table-use forms (`DEFINE BUFFER` / `EMPTY TEMP-TABLE` / `DEFINE QUERY`) credit no table read |
 | #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
 | #132 | Open — `oxabl_lint` has no benchmark coverage at all |
 | #125 | Open — **unblocked**; callee-written dead-store advisory |
-| #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires both stopgap flags |
+| #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires the two older stopgap flags (#128's third flag drains via #136 instead) |
 | #120 | Open — reshape `check`/`analyze` onto shared lint/format pipelines; now has three client consumers |
 | #129 | Merged — table-parameter FP + LINT0006 dead-store split |
 | #127 | Merged — LINT0002 OUTPUT-argument FP; #129 builds on its flag and supersedes its `write_count` note |

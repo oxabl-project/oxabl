@@ -43,6 +43,43 @@ END.
 MESSAGE total count.
 "#;
 
+/// Recognized-but-unmodelled statement forms (`StatementKind::Skipped`). The
+/// resolve pass pays one scope-chain lookup per harvested token here, which is
+/// the expensive half of the #128 lexical harvest — the parser only pays a
+/// filter over tokens it was already walking. Nothing else in this file
+/// exercises the `Skipped` arm at all.
+const SKIPPED: &str = r#"
+DEFINE VARIABLE lv-total AS INTEGER NO-UNDO.
+DEFINE VARIABLE lv-count AS INTEGER NO-UNDO.
+DEFINE VARIABLE lv-name AS CHARACTER NO-UNDO.
+DEFINE VARIABLE lv-city AS CHARACTER NO-UNDO.
+DEFINE VARIABLE lv-line AS CHARACTER NO-UNDO.
+DEFINE VARIABLE lv-flag AS LOGICAL NO-UNDO.
+DEFINE VARIABLE lv-key AS CHARACTER NO-UNDO.
+
+PUT lv-total.
+PUT UNFORMATTED lv-name SKIP.
+PUT lv-total FORMAT ">>>,>>9" SKIP.
+EXPORT lv-name lv-city lv-total.
+EXPORT DELIMITER "," lv-line lv-flag.
+ENABLE lv-name lv-city WITH FRAME f-detail.
+DISABLE lv-name WITH FRAME f-detail.
+UPDATE lv-name lv-city WITH FRAME f-detail.
+SET lv-name lv-city WITH FRAME f-detail.
+PROMPT-FOR lv-key WITH FRAME f-prompt.
+APPLY "CHOOSE" TO btn-ok IN FRAME f-detail.
+WAIT-FOR "CHOOSE" OF btn-ok.
+GET-KEY-VALUE SECTION "app" KEY "path" VALUE lv-key.
+IMPORT DELIMITER "," lv-name lv-city lv-total.
+ACCUMULATE lv-total (TOTAL).
+NEXT-PROMPT lv-name WITH FRAME f-detail.
+CLEAR FRAME f-detail.
+PUT lv-total lv-count lv-name lv-city.
+EXPORT lv-name lv-city lv-total lv-count lv-line lv-flag lv-key.
+ENABLE lv-name lv-city WITH FRAME f-detail.
+UPDATE lv-name lv-city WITH FRAME f-detail.
+"#;
+
 fn parse_program(source: &str) -> Vec<oxabl_ast::Statement> {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
@@ -123,6 +160,7 @@ fn semantic_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("semantic");
     bench_fixture(&mut group, "tiny", TINY);
     bench_fixture(&mut group, "medium", MEDIUM);
+    bench_fixture(&mut group, "skipped", SKIPPED);
     group.finish();
 
     // Schema-loaded resolve bench: exercises the field-lookup hot path

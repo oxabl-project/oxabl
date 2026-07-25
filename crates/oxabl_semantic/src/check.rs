@@ -417,7 +417,11 @@ impl<'a> CheckWalker<'a> {
             | StatementKind::Next(_)
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
-            | StatementKind::Empty => {}
+            | StatementKind::Empty
+            // Recognized-but-unmodelled: the harvested names are lexical
+            // candidates, not typed expressions, so there is nothing here to
+            // type-check.
+            | StatementKind::Skipped { .. } => {}
         }
     }
 

@@ -82,6 +82,11 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
 - Recovery-generated `Statement { kind: StatementKind::Empty, .. }` nodes still get a NodeId
   like any other. Side tables (the future `references` / `types` in `oxabl_semantic`) are
   allowed to be absent at those NodeIds — consumers treat "no entry" as "not analyzed."
+- The same holds for `StatementKind::Skipped`, but "not analyzed" is *all* it means there.
+  A `Skipped` node's harvested names never produce a `references` entry even when they
+  resolve — the resolve pass credits them through a lookup that writes no side table (§8).
+  So absence of an entry at a `Skipped` NodeId does not imply the names were unresolvable,
+  and a rule that reads `references` must not conclude anything from the silence.
 
 ## 3. Identifier casing
 
@@ -148,7 +153,11 @@ should bottom out on the innermost non-postfix expression.
   error and emits `Statement::Empty` on recovery (see §8); the partial declaration is not
   committed to the tree.
 
-## 8. Error recovery uses `Statement::Empty`
+## 8. `Statement::Empty` is recovery; `Statement::Skipped` is unmodelled
+
+Two distinct "the parser produced no structure here" cases, kept apart on purpose.
+
+**`Empty` — nothing was recognized.**
 
 - When `Parser::parse_statement` fails, `parse_program` records the error in `Program.errors`
   and calls `synchronize()` to advance to the next statement boundary
@@ -157,12 +166,37 @@ should bottom out on the innermost non-postfix expression.
   uses `return Ok(Statement::Empty)` at roughly a dozen recovery points — emit
   `Statement::Empty` in lieu of the construct that failed to parse. The parser never emits a
   partially constructed declaration or a "truncated" node.
-- **Invariant:** any `Statement::Empty` in the tree was produced by recovery or by the bare
-  period at end-of-file. Consumers may rely on this: an `Empty` node carries no user-facing
-  declaration, reference, or expression.
-- When Phase 1 lands, recovery-generated `Empty` nodes still get a NodeId. The semantic
-  side tables (`references`, `types`) are allowed to be `None` at those NodeIds. See Flow-gap
-  F5 in the v1 plan addendum.
+- **Invariant:** any `Statement::Empty` in the tree was produced by recovery, by a genuinely
+  empty statement (a bare period, an empty `ELSE` branch), or by a form the parser consumes
+  token-by-token without a skip helper (`QUIT`, a bare `END`, a stray `&ENDIF`, `EMPTY
+  TEMP-TABLE`, an `ENUM` body). Consumers may rely on this: an `Empty` node carries no
+  user-facing declaration, reference, or expression.
+- Recovery-generated `Empty` nodes still get a NodeId. The semantic side tables
+  (`references`, `types`) are allowed to be `None` at those NodeIds. See Flow-gap F5 in the
+  v1 plan addendum.
+
+**`Skipped { names }` — a form was recognized and then discarded.**
+
+- Around thirty statement forms are matched by their leading keyword and then skipped
+  wholesale by one of the four skip helpers (`skip_to_period`, `skip_to_statement_end`,
+  `skip_to_statement_end_editing_aware`, `skip_to_statement_end_triggers_aware`): `PUT`,
+  `EXPORT`, `UPDATE`, `SET`, `ENABLE`, `DISABLE`, `APPLY`, embedded SQL, and the rest.
+- **Invariant:** these emit `Statement::Skipped`, never `Empty`. The distinction is
+  load-bearing — these forms carry real variable traffic in both directions, so a consumer
+  that reasons about whether a variable was touched must not read them as "nothing happened".
+  Until this variant existed, §8 asserted `Empty` meant recovery, and roughly thirty forms
+  quietly falsified it.
+- `names` holds the identifier-shaped tokens the skip passed over, filtered lexically: the
+  dispatch keyword is dropped, as is any token byte-adjacent to a preceding `.`, `:` or `/`.
+  The filter is deliberately broad and admits unreserved option keywords as candidate names —
+  ABL lexes a user variable named `value` as `Kind::Value`, so the parser cannot tell them
+  apart inside a statement whose grammar it does not model. `names` may be empty.
+- `names` is a **best-effort lexical harvest, not a reference list.** Consumers must resolve
+  it through a path that records nothing (see `lookup_statement_ident` in
+  `oxabl_semantic::resolve`) and must not emit a diagnostic for a name that fails to resolve.
+- The statement's full extent is `Statement.span`; there is no companion `raw_span`.
+- The variant is scaffolding with a scheduled successor (#136): each form that gets
+  head-parsed stops emitting `Skipped`.
 
 ## 9. Property body distinguishes absence from emptiness
 

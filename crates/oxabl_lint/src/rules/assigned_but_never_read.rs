@@ -30,32 +30,56 @@
 //! `GET-KEY-VALUE` / bare `ASSIGN <field>` / `obj:PROP =` / `INITIAL`, none of
 //! which the resolve pass credits as a write at all.
 //!
-//! # Known limitation: reads inside parser-skipped statements
+//! # Unmodelled statements: what is credited, and what still is not
 //!
-//! A number of ABL statements are not modelled by the parser — they are skipped
-//! to `StatementKind::Empty` (see the skip list in
-//! `oxabl_parser::parser::statements`, which is authoritative). The resolve pass
-//! never walks them, so they credit **no reads**. A variable whose only read
-//! lives in one of those statements therefore looks write-only and *is falsely
-//! reported by this rule*:
+//! Around thirty ABL statement forms are recognized by the parser and then
+//! discarded — the dispatch site matches a leading keyword and skips the
+//! statement's tokens wholesale (`PUT`, `EXPORT`, `UPDATE`, `SET`,
+//! `PROMPT-FOR`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`, `HIDE`, `APPLY`,
+//! `ENABLE` / `DISABLE`, `CLEAR`, `NEXT-PROMPT`, `WAIT-FOR`, `ACCUMULATE`,
+//! embedded SQL, …). They credit no reads and no writes, which used to make this
+//! rule report a variable whose only read is a `PUT`:
 //!
 //! ```abl
 //! DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
 //! v-total = 42.
-//! PUT v-total.        /* a real read the model cannot see */
+//! PUT v-total.        /* a real read the model could not see */
 //! ```
 //!
-//! The common variable-reading members of that set are `PUT`, `EXPORT`,
-//! `UPDATE`, `SET`, `PROMPT-FOR`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`,
-//! `HIDE`, `APPLY`, `ENABLE` / `DISABLE`, `CLEAR`, `NEXT-PROMPT`, `WAIT-FOR`
-//! and `ACCUMULATE`.
+//! The parser now emits `StatementKind::Skipped` for those forms, carrying the
+//! identifier-shaped tokens it passed over. The resolve pass resolves them
+//! best-effort against the enclosing scope — through a lookup that records
+//! nothing, so an unresolvable name produces neither a diagnostic nor a
+//! `references` entry — and marks each hit with
+//! `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`. This rule declines to fire
+//! for any symbol so marked, via
+//! [`is_skipped`](super::unused_symbol_shared::is_skipped). The read and write
+//! counts stay exact: the flag says "these counts are incomplete", it does not
+//! fabricate an access.
 //!
-//! This is a property of the semantic model, not of this rule: the same
-//! blindness makes `unused-variable` (LINT0002) fire on a variable whose only
-//! read is a `PUT`, and it is why this limitation is documented rather than
-//! worked around here. Suppress with `assigned-but-never-read = "off"` (or
-//! `"info"`) in `[workspace.lint]` until reads inside skipped statements are
-//! credited.
+//! Two gaps remain, and one property of the fix is worth knowing:
+//!
+//! - **Skipped tails inside *modelled* statements.** Around a dozen sites parse
+//!   a real statement and then discard a trailing region that can contain
+//!   genuine reads — `DISPLAY … WITH FRAME f` options (which routinely hold
+//!   `title "x" + table.field`), `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing
+//!   content, `ASSIGN FRAME f`, `FUNCTION … IN super`, and the stream-I/O option
+//!   tails. Same root cause, but the statement node is already occupied, so the
+//!   payload shape used here does not transfer. Tracked by #134.
+//! - **Keyword collisions.** The harvest keeps unreserved option keywords
+//!   (`VALUE`, `FORMAT`, `LABEL`, `FRAME`, `TITLE`, …) as candidate names,
+//!   because ABL lexes a user's variable named `value` as `Kind::Value` and the
+//!   parser cannot distinguish the two inside a statement whose grammar it does
+//!   not model. A variable named after an option keyword used by a skipped
+//!   statement may therefore be exempted when it should not be. Narrowing the
+//!   filter would reintroduce the false-positive class above for every variable
+//!   named after an unreserved keyword.
+//! - **The suppression is coarse.** It is per-symbol and file-wide: one mention
+//!   in a skipped statement silences this rule for that variable everywhere in
+//!   the file, so a genuine dead store on line 40 can go unreported because of
+//!   an `ENABLE` mention on line 900. That is the real cost of a lexical
+//!   fallback, and it is why #136 — head-parsing the forms so they credit
+//!   exactly — is scheduled rather than hoped for.
 
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind};
 use oxabl_common::{Diagnostic, FileSpan};
