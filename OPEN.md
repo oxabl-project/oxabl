@@ -89,10 +89,28 @@ The repos are coupled by a **manual copy** — a human runs `scripts/build-wasm.
 
 ---
 
+## What the reachability check found
+
+I ran U0's analysis rather than leaving it for the implementer. **All five `unreachable!()` sites look unreachable from any input** — each is a guarded dispatch arm whose guard and match arms are in sync:
+
+| Site | Guard | Verdict |
+|---|---|---|
+| `expressions.rs:143` | `is_comparison_operator()` at `:79-98`, 15 kinds | match lists the same 15 |
+| `expressions.rs:175` | `check(Add) \|\| check(Minus)` | match is `Add \| Minus \| _`, same token |
+| `expressions.rs:231` | `check(Star) \|\| check(Slash) \|\| check(Modulo)` | match is those three |
+| `statements.rs:1260` | single caller at `:895` checks the four directions | match is the same four |
+| `statements.rs:2214` | `is_non_equals_comparison_operator()` at `:2176`, 14 kinds | match covers all 14 |
+
+The wider surface also looks clean: the parser has **no** production `unwrap`/`expect`/`panic!` (all 13 hits are under `#[cfg(test)]`), and although token indexing is unguarded (`peek_at` is `&self.tokens[self.current + n]`), it holds — one terminal `Eof` sentinel, `check_at` returns `Option` via `.get()`, `&&` short-circuits before the one `peek_at(2)` at `statements.rs:864`, and `peek_nth_non_comment` returns early on `Eof` by design (`mod.rs:660-662`).
+
+**So the browser track's justification is containment of an unenumerated surface, not repair of an observed defect.** State it that way in the PR. Caveats: absence of a found reproducer is not proof, and this sweep covered `oxabl_parser` only — the lexer, preprocessor, and formatter also run inside `oxabl::parse` and `format_source` and were not swept. Debug-build arithmetic overflow is also unchecked.
+
+The native increment is unaffected: any *future* panic on the LSP main loop still kills the server, which is reason enough on its own.
+
 ## Sequencing when you pick this up
 
-**U0 first** — an hour of reading that can reframe the browser track's entire justification.
+**U0 is largely answered above** — confirm the table if you want, but it gates nothing and U2 can start immediately.
 
-Then: `U2` → `U1` → `U5` → `U6` → `U1b` on the browser track, with `U3` → `U4` as an independent concurrent track, and `U7` last.
+Browser track: `U2` → `U1` → `U5` → `U6` → **`U1b` last** (it classifies failures inside the module U6 creates). Native track: `U3` → `U4`, concurrent and shipping alone. `U7` last.
 
 **The cheapest genuinely-useful start is still U3 + U4.** No browser, no dependency bump, no second repo — and it closes the LSP main-loop hole, the highest-severity item in the plan. It is increment one and ships on its own.

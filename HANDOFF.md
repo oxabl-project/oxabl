@@ -13,7 +13,7 @@
 |------|--------|
 | #133 browser WASM adapter | **Done — merged, playground working end to end.** |
 | #129 table-parameter FP + LINT0006 split | Done — merged, dogfooded (FP count down). |
-| #119 panic-safe parse/format | **Open — now the most urgent item.** #133 made the documented panic contract a live defect: `oxabl_wasm` has no guard and a panic traps the wasm module. |
+| #119 panic-safe parse/format | **Open — planned, not built.** Plan at `docs/plans/2026-07-24-001-fix-panic-safe-parse-format-plan.md` (gitignored, local only); decisions and open items in `OPEN.md`. #133 made the documented panic contract a live defect: `oxabl_wasm` has no guard and a panic traps the wasm module. |
 | #128 / #130 | Open — uncredited *reads*; between them they own the one remaining known FP class. Now also the playground's visible FP surface. |
 | #131 / #132 | Open — LINT0006 write-site span breadth; `oxabl_lint` benchmark coverage. |
 | #125 | Open and **unblocked** — small, template is fresh. |
