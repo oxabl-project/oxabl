@@ -39,7 +39,7 @@ jobs:
       - run: cargo test --workspace --release
       - name: Build browser package
         run: |
-          cargo install wasm-bindgen-cli --version 0.2.108 --locked
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked
           ./scripts/build-wasm.sh target/wasm-web
           tar -C target/wasm-web -czf target/oxabl-wasm-web.tar.gz .
       - name: Attach browser package to release

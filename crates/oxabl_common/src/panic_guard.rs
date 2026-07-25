@@ -48,7 +48,10 @@ impl fmt::Display for InternalPanic {
 
 impl std::error::Error for InternalPanic {}
 
-/// The message used when a panic payload is neither `&str` nor `String`.
+/// The message used when a panic payload is neither `&str` nor `String`. Only
+/// reachable where the guard can actually catch, so `cfg`-gated to keep a wasm
+/// build free of dead-code warnings.
+#[cfg(not(target_arch = "wasm32"))]
 const OPAQUE_PAYLOAD: &str = "panicked with a non-string payload";
 
 /// Run `f`, converting a panic into `Err(`[`InternalPanic`]`)`.
