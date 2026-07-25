@@ -1,0 +1,79 @@
+/* Benchmark fixture: recognized-but-unmodelled statement forms.
+   These dispatch to a skip helper and produce StatementKind::Skipped with a
+   lexical identifier harvest. The parser cost is the skip loop plus the filter;
+   the real cost lands on the resolve pass, one scope-chain lookup per harvested
+   token, so the matching semantic fixture is the one that matters most.
+   No existing bench_parser_* fixture contains any of these forms. */
+
+define variable lv-total as integer no-undo.
+define variable lv-count as integer no-undo.
+define variable lv-name as character no-undo.
+define variable lv-city as character no-undo.
+define variable lv-line as character no-undo.
+define variable lv-flag as logical no-undo.
+define variable lv-key as character no-undo.
+define variable lv-choice as character no-undo.
+
+put lv-total.
+put unformatted lv-name skip.
+put lv-total format ">>>,>>9" skip.
+put lv-total / lv-count.
+put stream str-out unformatted lv-line skip(1).
+put lv-name at 1 lv-city at 40 skip.
+put unformatted "total: " lv-total " count: " lv-count skip.
+
+export lv-name lv-city lv-total.
+export delimiter "," lv-line lv-flag.
+export stream str-out lv-total lv-count lv-name.
+
+enable lv-name lv-city with frame f-detail.
+enable all with frame f-detail.
+disable lv-name with frame f-detail.
+disable all except lv-city with frame f-detail.
+
+update lv-name lv-city with frame f-detail.
+update lv-choice with frame f-prompt.
+set lv-name lv-city with frame f-detail.
+set lv-flag with frame f-prompt.
+prompt-for lv-key with frame f-prompt.
+
+apply "choose" to btn-ok in frame f-detail.
+apply "entry" to lv-name in frame f-detail.
+apply "value-changed" to cmb-city in frame f-detail.
+
+wait-for "choose" of btn-ok.
+wait-for close of this-procedure.
+
+clear frame f-detail.
+clear frame f-detail no-pause.
+
+accumulate lv-total (total).
+accumulate lv-count (average count).
+
+next-prompt lv-name with frame f-detail.
+next-prompt lv-city with frame f-detail.
+
+get-key-value section "app" key "install-path" value lv-key.
+get-key-value section "app" key "last-user" value lv-name.
+
+import unformatted lv-line.
+import delimiter "," lv-name lv-city lv-total.
+
+copy-lob from lv-line to lv-name.
+
+hide frame f-detail no-pause.
+view frame f-detail.
+pause 0.
+pause 1 no-message.
+readkey pause 5.
+
+put lv-total.
+export lv-name lv-city.
+enable lv-name lv-city with frame f-detail.
+update lv-name lv-city with frame f-detail.
+apply "choose" to btn-ok in frame f-detail.
+set lv-flag with frame f-prompt.
+wait-for "choose" of btn-ok.
+put unformatted lv-name skip.
+export lv-total lv-count.
+disable lv-name with frame f-detail.

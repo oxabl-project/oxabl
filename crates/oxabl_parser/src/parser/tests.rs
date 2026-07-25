@@ -11,6 +11,31 @@ use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
 use std::str::FromStr;
 
+/// The harvested names on a [`StatementKind::Skipped`] node, as plain strings.
+///
+/// `Identifier` derives `PartialEq` *including* `span`, so asserting on whole
+/// statements would mean hand-building exact byte offsets for every name. Tests
+/// assert on the contents instead.
+#[track_caller]
+fn skipped_names(stmt: &Statement) -> Vec<&str> {
+    match &stmt.kind {
+        StatementKind::Skipped { names } => names.iter().map(|n| n.name.as_str()).collect(),
+        other => panic!("expected StatementKind::Skipped, got {other:?}"),
+    }
+}
+
+/// Parse `source` as one statement and return its harvested names.
+#[track_caller]
+fn harvest(source: &str) -> Vec<String> {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("statement should parse");
+    skipped_names(&stmt)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 #[test]
 fn parse_simple_add_expression() {
     let source = "1 + 2";
@@ -2895,13 +2920,17 @@ fn if_do_branch_spans_are_full_extent_not_dummy() {
 
 #[test]
 fn parse_next_prompt_statement() {
-    let source = "NEXT-PROMPT menu-proc.breakpoint WITH FRAME static/menu_prc.";
+    let source = "NEXT-PROMPT ord-proc.hold-flag WITH FRAME shared/order-entry.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser
         .parse_statement()
         .expect("NEXT-PROMPT should parse as a skipped legacy UI statement");
-    assert!(matches!(stmt.kind, StatementKind::Empty));
+    // Recognized-but-unmodelled, so `Skipped` rather than a recovery `Empty`.
+    // Both halves of the adjacency filter are exercised here: the field half of
+    // `ord-proc.hold-flag` and the tail of the `shared/order-entry` path drop
+    // out, their qualifiers survive.
+    assert_eq!(skipped_names(&stmt), vec!["ord-proc", "FRAME", "shared"]);
 }
 
 #[test]
@@ -10683,4 +10712,129 @@ fn classify_comment_defensive_brace_branch_is_excluded() {
     let at = tokenize(amp_src);
     let ap = Parser::new(&at, amp_src);
     assert_eq!(ap.classify_comment(0), Some(CommentKind::Line));
+}
+
+// ---------------------------------------------------------------------------
+// Recognized-but-unmodelled statement forms → StatementKind::Skipped (#128)
+// ---------------------------------------------------------------------------
+
+/// The dispatch keyword is the range's first token and is dropped
+/// unconditionally, so `PUT` does not harvest itself.
+#[test]
+fn skipped_put_harvests_the_variable_not_the_keyword() {
+    assert_eq!(harvest("PUT v-total."), vec!["v-total"]);
+}
+
+/// `EXPORT` consumes its own keyword before skipping, where `PUT` does not.
+/// Anchoring the range on the statement's first token normalizes both shapes,
+/// so the harvest looks the same from the outside.
+#[test]
+fn skipped_export_drops_the_field_half_of_a_qualified_name() {
+    assert_eq!(harvest("EXPORT vendor.vend-number."), vec!["vendor"]);
+}
+
+/// The broad `can_be_identifier` classifier admits unreserved option keywords
+/// as candidate names. Accepted, not accidental (KTD5): ABL lexes a user's
+/// variable named `format` as `Kind::Format`, so inside a statement whose
+/// grammar we do not model the two cannot be told apart. The cost is a possible
+/// false negative on a variable named after an option keyword; the alternative
+/// costs a false positive on every such variable.
+#[test]
+fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
+    assert_eq!(
+        harvest(r#"PUT v-total FORMAT ">>9"."#),
+        vec!["v-total", "FORMAT"]
+    );
+}
+
+/// Adjacency, not mere precedence: a spaced `/` is a division operator, and its
+/// right operand is a real read.
+#[test]
+fn skipped_harvest_keeps_spaced_division_operands() {
+    assert_eq!(
+        harvest("PUT v-total / v-count."),
+        vec!["v-total", "v-count"]
+    );
+}
+
+/// String literals are not identifier-shaped, so the event name drops out while
+/// the widget and frame names survive.
+#[test]
+fn skipped_apply_harvests_widget_and_frame_not_the_event_string() {
+    let names = harvest(r#"APPLY "CHOOSE" TO btn-ok IN FRAME f-main."#);
+    assert!(names.contains(&"btn-ok".to_string()), "got {names:?}");
+    assert!(names.contains(&"f-main".to_string()), "got {names:?}");
+    assert!(!names.iter().any(|n| n.contains("CHOOSE")), "got {names:?}");
+}
+
+/// Every component of an absolute path is byte-adjacent to a preceding `/` or
+/// `.`, so a redirect to a file harvests nothing at all — and allocates nothing.
+#[test]
+fn skipped_output_to_path_harvests_nothing() {
+    assert!(harvest("OUTPUT TO /usr/tmp/log.txt.").is_empty());
+}
+
+/// Forms with no plausible identifier content are converted anyway: a uniform
+/// rule cannot drift, and the filter yields little or nothing there regardless.
+#[test]
+fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
+    assert!(harvest("PAUSE 1.").is_empty());
+    // `ERROR` is identifier-capable and survives; `ON`, `UNDO` and `THROW` are
+    // not. The residue is the accepted keyword-collision case from KTD5 in its
+    // most harmless form: it can only exempt a variable literally named
+    // `error`, and only from a rule that would otherwise call it unused.
+    assert_eq!(harvest("BLOCK-LEVEL ON ERROR UNDO, THROW."), vec!["ERROR"]);
+}
+
+/// `skip_to_statement_end_editing_aware` parses the `EDITING:` body and throws
+/// it away, but the cursor still advances past it, so the harvest reaches those
+/// tokens. A statement-leading name inside the block follows a terminating
+/// period *and a space*, so the adjacency filter does not eat it.
+#[test]
+fn skipped_editing_block_names_survive_the_harvest() {
+    let names = harvest("UPDATE v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
+    assert!(names.contains(&"v-name".to_string()), "got {names:?}");
+    assert!(names.contains(&"v-x".to_string()), "got {names:?}");
+    assert!(names.contains(&"v-y".to_string()), "got {names:?}");
+}
+
+/// The nested-statement save/restore in the `parse_statement` funnel: an
+/// `EDITING:` body recurses through `parse_statement`, and without restoring the
+/// anchor the outer harvest range would start at the last inner statement.
+#[test]
+fn skipped_editing_block_does_not_clobber_the_outer_harvest_anchor() {
+    let names = harvest("UPDATE v-first WITH FRAME f-main EDITING: v-x = 1. END.");
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("v-first"),
+        "outer anchor lost — got {names:?}"
+    );
+}
+
+/// The thirteen non-dispatch skip-helper callers keep their real statement node
+/// and discard the range. `DISPLAY ... WITH FRAME` is one of them: it must not
+/// have been swept up in the conversion.
+#[test]
+fn display_with_frame_is_still_a_display_not_a_skipped() {
+    let source = "DISPLAY v-name WITH FRAME f-main.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("statement should parse");
+    assert!(
+        matches!(stmt.kind, StatementKind::Display { .. }),
+        "got {:?}",
+        stmt.kind
+    );
+}
+
+/// A `Skipped` node's span still covers the statement's full extent, so no
+/// companion `raw_span` field is needed (ast-invariants §8).
+#[test]
+fn skipped_span_covers_the_whole_statement() {
+    let source = "PUT UNFORMATTED v-total SKIP.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("statement should parse");
+    assert_eq!(stmt.span.start, 0);
+    assert_eq!(stmt.span.end as usize, source.len());
 }

@@ -116,6 +116,29 @@ pub fn dump_json_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnosti
     })
 }
 
+/// How many symbols the count-gated lint rules could not fully judge.
+///
+/// A symbol carrying `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT` appears
+/// inside a statement form the parser recognizes but does not model, so its
+/// read/write counts describe only part of what the code does and
+/// `unused-variable`, `assigned-but-never-read` and `block-var-used-outside`
+/// all decline to fire for it.
+///
+/// Exposed so a CLI or editor can tell the user that a file went *partly* blind
+/// rather than letting it look clean. Nobody reaches for the analyze dump to
+/// find a diagnostic they never saw, so listing the flag per-symbol (which the
+/// dump does) is not a substitute for a count at the surface where diagnostics
+/// are read.
+pub fn unjudged_symbol_count(sem: &Semantic) -> usize {
+    sem.symbols
+        .iter()
+        .filter(|(_, s)| {
+            s.flags
+                .contains(oxabl_semantic::SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+        })
+        .count()
+}
+
 /// Human-oriented text rendering. Compact, not stable across versions — if
 /// you need stability, dump to JSON. Used for interactive `oxabl analyze`
 /// runs without `--format json`.
@@ -515,6 +538,13 @@ fn symbol_flags_list(f: oxabl_semantic::SymbolFlags) -> Vec<&'static str> {
     if f.contains(F::PROTOTYPE) {
         out.push("prototype");
     }
+    // Resolve-computed, and the one flag a user is most likely to be hunting
+    // for: it is why a count-gated lint rule stayed silent about this symbol.
+    // Without it the dump reports every flag except the one that explains the
+    // missing diagnostic.
+    if f.contains(F::TOUCHED_BY_UNMODELLED_STATEMENT) {
+        out.push("touched_by_unmodelled_statement");
+    }
     out
 }
 
@@ -606,6 +636,39 @@ mod tests {
         assert!(v["references"].is_array());
         assert!(v["types"].is_array());
         assert!(v["diagnostics"].is_array());
+    }
+
+    /// R15: the flag that explains a *missing* lint diagnostic has to be
+    /// visible somewhere. `symbol_flags_list` is hand-maintained and would not
+    /// fail to compile if the entry were omitted — it would just silently ship a
+    /// dump reporting every flag except the useful one.
+    #[test]
+    fn unmodelled_touch_flag_appears_in_the_symbol_dump() {
+        let v = run_dump(vec![
+            var_decl("x", DataType::Integer),
+            Statement::new(StatementKind::Skipped {
+                names: vec![ident("x")],
+            }),
+        ]);
+        let x = v["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s.get("name").and_then(Value::as_str) == Some("x"))
+            .expect("x in symbols");
+        let flags: Vec<&str> = x["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap())
+            .collect();
+        assert!(
+            flags.contains(&"touched_by_unmodelled_statement"),
+            "got {flags:?}"
+        );
+        // The counts stay exact — the flag is the only signal.
+        assert_eq!(x["read_count"], 0);
+        assert_eq!(x["write_count"], 0);
     }
 
     #[test]

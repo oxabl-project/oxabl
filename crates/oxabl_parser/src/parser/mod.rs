@@ -178,6 +178,17 @@ pub struct Parser<'a> {
     /// Drained by `parse_program` into [`Program::errors`]. Capped at
     /// [`MAX_ERRORS`](Self::MAX_ERRORS) to bound memory on pathological input.
     errors: Vec<ParseError>,
+    /// Token index of the first token of the statement currently being parsed,
+    /// maintained by the [`parse_statement`](Self::parse_statement) funnel
+    /// (saved and restored around nested statements).
+    ///
+    /// Exists so [`skipped_stmt`](Self::skipped_stmt) can take its harvest range
+    /// from the statement's *first* token no matter where the skip started.
+    /// Dispatch sites disagree about whether they `advance()` past their own
+    /// keyword before skipping — `PUT` and `UPDATE` do not, `EXPORT` and
+    /// `COMPILE` do — so anchoring on the statement start is what lets one
+    /// uniform "drop index 0" rule strip the dispatch keyword in both shapes.
+    stmt_start_token: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -198,6 +209,7 @@ impl<'a> Parser<'a> {
             has_comments,
             node_ids: NodeIdAllocator::new(),
             errors: Vec::new(),
+            stmt_start_token: current,
         }
     }
 
@@ -456,19 +468,34 @@ impl<'a> Parser<'a> {
     /// Unlike `synchronize`, this does NOT stop at statement-starting keywords —
     /// use this when skipping the body of a known statement that may contain
     /// keyword tokens like FOR, DO, etc. as part of its own syntax.
-    pub(crate) fn skip_to_period(&mut self) {
+    ///
+    /// Returns the half-open token range `[start, end)` it consumed. See
+    /// [`skipped_stmt`](Self::skipped_stmt) for why the range is `#[must_use]`.
+    #[must_use = "a dispatch site that skips a statement must harvest its identifiers — \
+                  see Parser::skipped_stmt; a caller that keeps a real statement node \
+                  discards the range with `let _ =`"]
+    pub(crate) fn skip_to_period(&mut self) -> (usize, usize) {
+        let start = self.current;
         while !self.at_end() {
             if self.check(Kind::Period) {
                 self.advance(); // consume the period
-                return;
+                return self.skip_range(start);
             }
             self.advance();
         }
+        self.skip_range(start)
     }
 
     /// Like skip_to_period but treats `.identifier` on the same line as field access,
     /// only stopping at a period that terminates a statement (not followed by an identifier).
-    pub(crate) fn skip_to_statement_end(&mut self) {
+    ///
+    /// Returns the half-open token range `[start, end)` it consumed. See
+    /// [`skipped_stmt`](Self::skipped_stmt) for why the range is `#[must_use]`.
+    #[must_use = "a dispatch site that skips a statement must harvest its identifiers — \
+                  see Parser::skipped_stmt; a caller that keeps a real statement node \
+                  discards the range with `let _ =`"]
+    pub(crate) fn skip_to_statement_end(&mut self) -> (usize, usize) {
+        let start = self.current;
         while !self.at_end() {
             if self.check(Kind::Period) {
                 let period_end = self.tokens[self.current].end;
@@ -478,11 +505,12 @@ impl<'a> Parser<'a> {
                 });
                 if !is_field_access {
                     self.advance(); // consume the terminating period
-                    return;
+                    return self.skip_range(start);
                 }
             }
             self.advance();
         }
+        self.skip_range(start)
     }
 
     /// Like skip_to_statement_end, but also handles EDITING: ... END. sub-blocks
@@ -490,14 +518,32 @@ impl<'a> Parser<'a> {
     /// encountered, the body is parsed as a full block (statements until END.)
     /// so that periods inside the editing block are not mistaken for the
     /// statement terminator.
-    pub(crate) fn skip_to_statement_end_editing_aware(&mut self) {
+    ///
+    /// Returns the half-open token range `[start, end)` it consumed. See
+    /// [`skipped_stmt`](Self::skipped_stmt) for why the range is `#[must_use]`.
+    /// The `EDITING:` body is fully parsed and then thrown away, but
+    /// `parse_block_body` advances the cursor past it, so the returned range
+    /// still covers those tokens and the lexical harvest reaches them.
+    #[must_use = "a dispatch site that skips a statement must harvest its identifiers — \
+                  see Parser::skipped_stmt; a caller that keeps a real statement node \
+                  discards the range with `let _ =`"]
+    pub(crate) fn skip_to_statement_end_editing_aware(&mut self) -> (usize, usize) {
+        let start = self.current;
         while !self.at_end() {
             // Detect EDITING: — parse the editing block body.
             if self.check(Kind::Editing) && self.check_at(1, Kind::Colon) {
                 self.advance(); // consume EDITING
                 self.advance(); // consume ':'
+                // The editing body recurses through `parse_statement`, which
+                // overwrites the enclosing statement's harvest anchor. This is
+                // the only path between a `parse_statement` anchor store and the
+                // matching `skipped_stmt` read that recurses, so the save and
+                // restore live here — on a cold path — rather than in the
+                // funnel, which every statement pays for.
+                let outer_anchor = self.stmt_start_token;
                 let _ = self.parse_block_body();
-                return;
+                self.stmt_start_token = outer_anchor;
+                return self.skip_range(start);
             }
             // Normal statement-end detection.
             if self.check(Kind::Period) {
@@ -508,18 +554,26 @@ impl<'a> Parser<'a> {
                 });
                 if !is_field_access {
                     self.advance(); // consume the terminating period
-                    return;
+                    return self.skip_range(start);
                 }
             }
             self.advance();
         }
+        self.skip_range(start)
     }
 
     /// Like skip_to_statement_end, but also skips over TRIGGERS: ... END TRIGGERS. blocks
     /// that appear as part of a CREATE widget ASSIGN ... construct.  Without this, the
     /// first statement-terminating period *inside* the trigger sub-block would be mistaken
     /// for the end of the CREATE statement, leaving block nesting misaligned.
-    pub(crate) fn skip_to_statement_end_triggers_aware(&mut self) {
+    ///
+    /// Returns the half-open token range `[start, end)` it consumed. See
+    /// [`skipped_stmt`](Self::skipped_stmt) for why the range is `#[must_use]`.
+    #[must_use = "a dispatch site that skips a statement must harvest its identifiers — \
+                  see Parser::skipped_stmt; a caller that keeps a real statement node \
+                  discards the range with `let _ =`"]
+    pub(crate) fn skip_to_statement_end_triggers_aware(&mut self) -> (usize, usize) {
+        let start = self.current;
         while !self.at_end() {
             // Detect TRIGGERS: — enter trigger-block skip mode.
             // TRIGGERS lexes as Kind::Triggers (dedicated keyword kind, NOT Kind::Identifier).
@@ -549,12 +603,12 @@ impl<'a> Parser<'a> {
                             if self.check(Kind::Period) {
                                 self.advance(); // consume '.'
                             }
-                            return;
+                            return self.skip_range(start);
                         }
                     }
                     self.advance();
                 }
-                return;
+                return self.skip_range(start);
             }
             // Normal statement-end detection.
             if self.check(Kind::Period) {
@@ -565,12 +619,107 @@ impl<'a> Parser<'a> {
                 });
                 if !is_field_access {
                     self.advance(); // consume the terminating period
-                    return;
+                    return self.skip_range(start);
                 }
             }
             self.advance();
         }
+        self.skip_range(start)
     }
+
+    /// The half-open token range a skip helper consumed, `[start, self.current)`.
+    ///
+    /// The `debug_assert!` is the skip-loop hazard guard from
+    /// `docs/solutions/logic-errors/recursive-descent-skip-to-sync-infinite-loop.md`:
+    /// a helper that returned without advancing would produce an empty range
+    /// here, and the same non-advancing path is the one that hangs the parser.
+    #[inline]
+    fn skip_range(&self, start: usize) -> (usize, usize) {
+        debug_assert!(
+            self.current >= start,
+            "a skip helper must never move the cursor backwards"
+        );
+        (start, self.current)
+    }
+
+    /// Build a [`StatementKind::Skipped`] node for a recognized-but-unmodelled
+    /// statement form, harvesting candidate identifiers out of the tokens the
+    /// skip helper passed over.
+    ///
+    /// `hi` is the exclusive end of the range the helper returned; the range
+    /// *start* is deliberately not the helper's — it is
+    /// [`stmt_start_token`](Self::stmt_start_token), the statement's own first
+    /// token, so that dropping index 0 strips the dispatch keyword whether or not
+    /// the dispatch site consumed it before skipping.
+    ///
+    /// The skip helpers return their range as `#[must_use]` so that adding a new
+    /// unmodelled form the old way — skip, then `StatementKind::Empty` — is a
+    /// clippy failure under CI's `-D warnings` rather than a silently
+    /// reintroduced false-positive class.
+    ///
+    /// `#[inline(never)]`: there are ~29 call sites inside `parse_statement_inner`,
+    /// already the parser's largest function. Inlining a `Vec`-building loop at
+    /// every one of them bloats the dispatch chain that *every* statement walks,
+    /// which measured as a broad regression on fixtures containing no unmodelled
+    /// forms at all. Out-of-lining costs one call on a cold path.
+    #[inline(never)]
+    pub(crate) fn skipped_stmt(&mut self, hi: usize) -> Statement {
+        let names = self.harvest_skipped_names(self.stmt_start_token, hi);
+        self.stmt(StatementKind::Skipped { names })
+    }
+
+    /// Filter the tokens in `[lo, hi)` down to the names worth offering the
+    /// semantic pass (KTD5).
+    ///
+    /// Three rules, in order:
+    ///
+    /// 1. **Drop index `lo`** — always the keyword that selected the dispatch
+    ///    arm. Without this, `PUT v-total.` would harvest `put`.
+    /// 2. **Keep only `can_be_identifier` kinds** — deliberately the same broad
+    ///    classifier the skip helpers use for their period-vs-field-access test.
+    ///    It admits unreserved option keywords (`VALUE`, `FORMAT`, `LABEL`,
+    ///    `FRAME`, …) as candidate names. That is accepted, not accidental: ABL
+    ///    lexes a user's variable named `value` as `Kind::Value` everywhere, so
+    ///    inside a statement whose grammar we do not model the two are genuinely
+    ///    indistinguishable. The resolve pass's non-diagnostic lookup is the real
+    ///    filter — a harvested keyword suppresses nothing unless a same-named
+    ///    variable is actually in scope.
+    /// 3. **Drop tokens byte-adjacent to a preceding `.`, `:` or `/`** —
+    ///    adjacency, not mere precedence, mirroring `consume_widget_name`'s
+    ///    `next.start != name_end` test. That reduces `table.field` to `table`,
+    ///    `obj:attr` to `obj`, and `/usr/tmp/log.txt` to nothing, while keeping
+    ///    spaced division operands (`PUT v-total / v-count.`) and the
+    ///    statement-leading names inside an `EDITING:` block, which follow a
+    ///    terminating period and a space.
+    ///
+    /// Allocates nothing when the filter keeps nothing, which is the common case
+    /// for `PAUSE 1.`-shaped forms.
+    #[inline(never)]
+    fn harvest_skipped_names(&self, lo: usize, hi: usize) -> Vec<Identifier> {
+        let mut names: Vec<Identifier> = Vec::new();
+        let hi = hi.min(self.tokens.len());
+        for i in (lo + 1)..hi {
+            let tok = &self.tokens[i];
+            if !Self::can_be_identifier(tok.kind) {
+                continue;
+            }
+            let prev = &self.tokens[i - 1];
+            if matches!(prev.kind, Kind::Period | Kind::Colon | Kind::Slash)
+                && prev.end == tok.start
+            {
+                continue;
+            }
+            names.push(Identifier {
+                name: self.source[tok.start..tok.end].to_string(),
+                span: Span {
+                    start: tok.start as u32,
+                    end: tok.end as u32,
+                },
+            });
+        }
+        names
+    }
+
     /// Consume a widget/frame/browse name token.
     ///
     /// A name may be a compound preprop+identifier token pair written adjacent

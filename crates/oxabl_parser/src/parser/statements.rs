@@ -95,6 +95,14 @@ impl Parser<'_> {
     /// span at `lo` (R1.4).
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         let lo = self.peek().start as u32;
+        // Anchor the unmodelled-form harvest range on this statement's first
+        // token. A bare store, deliberately: this is the parser's hottest
+        // funnel, and save/restore around the call measured ~1.5% on the
+        // existing fixtures. Correctness does not need it — between this store
+        // and the matching `skipped_stmt` read, the only path that recurses into
+        // `parse_statement` is the `EDITING:` body, which saves and restores the
+        // anchor itself (`skip_to_statement_end_editing_aware`).
+        self.stmt_start_token = self.current;
         let mut stmt = self.parse_statement_inner()?;
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
@@ -122,8 +130,8 @@ impl Parser<'_> {
         // A bare colon at position 0 indicates a method call on the currently focused
         // widget (set by a prior CHOOSE or selection-list interaction).
         if self.check(Kind::Colon) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // Block label: `LABEL: DO: ...` or `LABEL: REPEAT: ...`
@@ -361,8 +369,8 @@ impl Parser<'_> {
             self.advance(); // consume EXPORT
             // Use skip_to_statement_end so field-access dots (e.g. vendor.vend-number) are not
             // mistaken for the statement-terminating period.
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // DOS / UNIX / VMS statements: launch the OS command interpreter.
@@ -371,43 +379,43 @@ impl Parser<'_> {
         // VMS is not a reserved keyword so it lexes as Kind::Identifier.
         if self.check(Kind::Dos) || self.check(Kind::Unix) {
             self.advance();
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
         if self.check(Kind::Identifier) {
             let tok = self.peek();
             if self.source[tok.start..tok.end].eq_ignore_ascii_case("vms") {
                 self.advance();
-                self.skip_to_statement_end();
-                return Ok(self.stmt(StatementKind::Empty));
+                let (_, hi) = self.skip_to_statement_end();
+                return Ok(self.skipped_stmt(hi));
             }
         }
 
         // COMPILE VALUE(path) [OPTIONS ...] [SAVE] [NO-ERROR]. — compile an ABL program.
         if self.check(Kind::Compile) {
             self.advance(); // consume COMPILE
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // PROCESS EVENTS. — flush the ABL event queue.
         if self.check(Kind::Process) {
             self.advance(); // consume PROCESS
-            self.skip_to_period();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_period();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // SYSTEM-DIALOG PRINTER-SETUP [UPDATE var]. — OS print-setup dialog.
         if self.check(Kind::SystemDialog) {
             self.advance(); // consume SYSTEM-DIALOG
-            self.skip_to_period();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_period();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // BLOCK-LEVEL / ROUTINE-LEVEL ON ERROR UNDO, THROW. — error propagation directives.
         if self.check(Kind::BlockLevel) || self.check(Kind::RoutineLevel) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // THROW expr. — raise an exception.
@@ -547,41 +555,41 @@ impl Parser<'_> {
         // Uses skip_to_statement_end() (not skip_to_period()) to avoid stopping at
         // '.' field-access separators inside expressions like clob_data.datawad.
         if self.check(Kind::CopyLob) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // PUT [STREAM s] UNFORMATTED expr. — stream output statement, skip to statement end.
         if self.check(Kind::Put) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // FORM ... — legacy UI form definition, skip to statement end.
         // Uses skip_to_statement_end() to skip over .field-access in form items.
         if self.check(Kind::Form) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // VIEW [STREAM s] FRAME f — UI frame display statement, skip to statement end.
         if self.check(Kind::View) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // HIDE [STREAM s] FRAME f [NO-PAUSE] — UI hide statement, skip to statement end.
         if self.check(Kind::Hide) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // UPDATE / SET / PROMPT-FOR — may contain an EDITING: ... END. sub-block.
         // Skip tokens until a statement-ending period, but if we encounter EDITING:
         // along the way, parse the editing block body before consuming the outer END.
         if self.check(Kind::Update) || self.check(Kind::Set) || self.check(Kind::PromptFor) {
-            self.skip_to_statement_end_editing_aware();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end_editing_aware();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
@@ -632,14 +640,14 @@ impl Parser<'_> {
             // NEXT-PROMPT field [WITH FRAME name]. — legacy UI cursor hint.
             || self.check(Kind::NextPrompt)
         {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // Embedded SQL: SELECT ... FROM ... / INSERT INTO ... — embedded SQL in ABL.
         if self.check(Kind::Select) || self.check(Kind::Insert) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // LOAD "key" [BASE-KEY "root"]. / UNLOAD "key". / USE "key". — Windows registry access.
@@ -648,16 +656,16 @@ impl Parser<'_> {
             let tok = self.peek().clone();
             let text = self.source[tok.start..tok.end].to_ascii_lowercase();
             if matches!(text.as_str(), "load" | "unload" | "use") {
-                self.skip_to_period();
-                return Ok(self.stmt(StatementKind::Empty));
+                let (_, hi) = self.skip_to_period();
+                return Ok(self.skipped_stmt(hi));
             }
         }
 
         // REPOSITION query-name TO ... — query cursor repositioning, skip to statement end.
         // Uses skip_to_statement_end() to skip over ROWID(...) and NO-ERROR properly.
         if self.check(Kind::Reposition) && Self::can_be_identifier(self.peek_at(1).kind) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
@@ -864,7 +872,7 @@ impl Parser<'_> {
                 && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor);
 
             if !next_is_new_statement && !next_is_block_label {
-                self.skip_to_statement_end();
+                let _ = self.skip_to_statement_end();
                 return Ok(self.stmt(StatementKind::ExpressionStatement(expr)));
             }
             // Next token is a new statement — treat current expression as
@@ -1022,22 +1030,22 @@ impl Parser<'_> {
 
         // DEFINE QUERY — skip to statement end (may contain table.field references)
         if self.check(Kind::Query) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to statement end.
         // Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
         if self.check(Kind::Workfile) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
         // etc. that are not separately handled. Skip the whole DEFINE statement.
         if self.check(Kind::Browse) || self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
 
         // DEFINE VARIABLE / DEFINE VAR
@@ -1151,7 +1159,7 @@ impl Parser<'_> {
                 // end using the field-access-aware helper so that dots inside numeric
                 // size specs (e.g. 24.4 or .62) are not mistaken for the terminator.
                 Kind::ViewAs | Kind::Size => {
-                    self.skip_to_statement_end();
+                    let _ = self.skip_to_statement_end();
                     return Ok(self.stmt(StatementKind::VariableDeclaration {
                         name,
                         type_source,
@@ -2713,7 +2721,7 @@ impl Parser<'_> {
         if Self::can_be_identifier(self.peek().kind)
             && self.source[self.peek().start..self.peek().end].eq_ignore_ascii_case("error")
         {
-            self.skip_to_statement_end();
+            let _ = self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Return(None)));
         }
 
@@ -3584,7 +3592,7 @@ impl Parser<'_> {
         // Skip any trailing content before the period (e.g. hold-code.hold-logic or extra ')')
         // and consume the terminating period.
         if !self.check(Kind::Period) && !self.at_end() {
-            self.skip_to_statement_end();
+            let _ = self.skip_to_statement_end();
         } else {
             self.expect_period("Expected '.' after RUN statement")?;
         }
@@ -3801,7 +3809,7 @@ impl Parser<'_> {
             frame = Some(self.parse_identifier()?);
             // Use skip_to_statement_end() to avoid stopping at field-access dots
             // inside expressions (e.g. title "..." + table.field + "...").
-            self.skip_to_statement_end();
+            let _ = self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Display {
                 stream_name,
                 items,
@@ -3819,7 +3827,7 @@ impl Parser<'_> {
             }
             // Skip all WITH options to statement end (handles field-access dots in
             // expressions like `title "prefix" + table.field + "suffix"`).
-            self.skip_to_statement_end();
+            let _ = self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Display {
                 stream_name,
                 items,
@@ -3928,7 +3936,7 @@ impl Parser<'_> {
         // ASSIGN FRAME framename [field...] -- frame-field assignment form (no = pairs)
         // skip_to_period() already consumes the terminating period
         if self.check(Kind::Frame) {
-            self.skip_to_period();
+            let _ = self.skip_to_period();
             return Ok(self.stmt(StatementKind::Assign {
                 assignments: SmallVec::new(),
             }));
@@ -3963,7 +3971,7 @@ impl Parser<'_> {
             // (e.g. MENU widget-name:HANDLE where MENU is an identifier prefix).
             // Skip to statement end and return accumulated pairs rather than erroring.
             if !self.check(Kind::Equals) {
-                self.skip_to_statement_end();
+                let _ = self.skip_to_statement_end();
                 return Ok(assignments);
             }
             self.advance(); // consume '='
@@ -4218,7 +4226,7 @@ impl Parser<'_> {
         // e.g. "function name returns type (params) in super."
         if self.check(Kind::KwIn) {
             let _ = signature_params; // discard — prototype has empty body
-            self.skip_to_statement_end();
+            let _ = self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Function {
                 name,
                 return_type,
@@ -5322,13 +5330,13 @@ impl Parser<'_> {
         } else if !Self::can_be_identifier(self.peek().kind) {
             // CREATE WINDOW / CREATE SERVER / CREATE X-DOCUMENT etc. — complex UI/handle
             // creation forms with ASSIGN clauses we don't fully model.  Skip to end.
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         } else if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
             // CREATE VALUE(class-expr) handle NO-ERROR. — dynamic COM/OO object creation.
             // Skip the VALUE(expr) part and consume the handle name.
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         } else {
             let name = self.parse_identifier()?;
             // If a second identifier follows (e.g. CREATE SERVER hService or CREATE X-document hXML),
@@ -5347,8 +5355,8 @@ impl Parser<'_> {
             // CREATE ALIAS name FOR DATABASE value(expr). — database alias creation;
             // skip the FOR DATABASE ... clause entirely.
             if self.check(Kind::Assign) || self.check(Kind::KwFor) {
-                self.skip_to_statement_end_triggers_aware();
-                return Ok(self.stmt(StatementKind::Empty));
+                let (_, hi) = self.skip_to_statement_end_triggers_aware();
+                return Ok(self.skipped_stmt(hi));
             }
             CreateTarget::Name(name)
         };
@@ -5404,16 +5412,16 @@ impl Parser<'_> {
         // e.g., DELETE PROCEDURE hproc., DELETE SERVER hService., DELETE ALIAS dictdb.
         if self.check(Kind::Alias) {
             // DELETE ALIAS name. — delete a database alias; skip to period.
-            self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
         }
         if Self::can_be_identifier(self.peek().kind) {
             let token = &self.tokens[self.current];
             let text = self.source[token.start..token.end].to_ascii_lowercase();
             if matches!(text.as_str(), "object") {
                 self.advance(); // consume OBJECT
-                self.skip_to_statement_end();
-                return Ok(self.stmt(StatementKind::Empty));
+                let (_, hi) = self.skip_to_statement_end();
+                return Ok(self.skipped_stmt(hi));
             }
             if matches!(text.as_str(), "procedure" | "widget" | "server")
                 && Self::can_be_identifier(self.peek_at(1).kind)
@@ -5451,14 +5459,14 @@ impl Parser<'_> {
             let text = self.source[tok.start..tok.end].to_ascii_lowercase();
             if text == "object" {
                 self.advance(); // consume OBJECT
-                self.skip_to_statement_end();
-                return Ok(self.stmt(StatementKind::Empty));
+                let (_, hi) = self.skip_to_statement_end();
+                return Ok(self.skipped_stmt(hi));
             }
         }
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
-            self.skip_to_period();
-            return Ok(self.stmt(StatementKind::Empty));
+            let (_, hi) = self.skip_to_period();
+            return Ok(self.skipped_stmt(hi));
         }
 
         let buffer = self.parse_identifier()?;
@@ -5843,7 +5851,7 @@ impl Parser<'_> {
         self.advance(); // consume STREAM
         let name = self.parse_identifier()?;
         // Skip any options or include files before the terminating period
-        self.skip_to_statement_end();
+        let _ = self.skip_to_statement_end();
         Ok(self.stmt(StatementKind::DefineStream { name }))
     }
 
@@ -5859,10 +5867,12 @@ impl Parser<'_> {
         // Skip frame phrase content.  Use skip_to_statement_end() so that field-access dots
         // inside VALIDATE expressions (e.g. t-pc-center.company) are not mistaken for
         // the terminating period.
-        let pre_skip = self.current;
-        self.skip_to_statement_end();
+        // The harvest range is discarded here: this site keeps a real
+        // `DefineFrame` node, so there is no `Skipped` payload to hang the names
+        // on. The frame-phrase reads it drops are the deferred modelled-tail
+        // class tracked by #134.
+        let _ = self.skip_to_statement_end();
         let raw_end = self.tokens[self.current - 1].start as u32;
-        let _ = pre_skip; // consumed by skip_to_statement_end
         let raw_span = Span {
             start: raw_start,
             end: raw_end,
@@ -5945,8 +5955,8 @@ impl Parser<'_> {
             // Unix/absolute paths start with '/' (e.g. /usr/tmp/log.txt) — not parseable
             // as an expression. Consume greedily until period and return an empty IO statement.
             if self.check(Kind::Slash) {
-                self.skip_to_statement_end();
-                return Ok(self.stmt(StatementKind::Empty));
+                let (_, hi) = self.skip_to_statement_end();
+                return Ok(self.skipped_stmt(hi));
             }
             let target = self.parse_expression()?;
             let append = if self.check(Kind::Append) {
@@ -5965,7 +5975,7 @@ impl Parser<'_> {
             let target = match self.parse_expression() {
                 Ok(expr) => expr,
                 Err(_) => {
-                    self.skip_to_statement_end();
+                    let _ = self.skip_to_statement_end();
                     let span = self.current_span();
                     let dummy_expr = self.spanned_expr(
                         span.start,
@@ -5996,7 +6006,7 @@ impl Parser<'_> {
         // Skip optional trailing clauses: NO-ECHO, CONVERT TARGET "...", PAGE-SIZE n, etc.
         // Use skip_to_statement_end to avoid stopping at field-access dots
         // inside VALUE() arguments (e.g. VALUE(warehouse.remote-host-name)).
-        self.skip_to_statement_end();
+        let _ = self.skip_to_statement_end();
 
         Ok(self.stmt(StatementKind::StreamIo {
             direction,

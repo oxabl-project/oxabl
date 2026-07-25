@@ -24,18 +24,44 @@
 //! This is a set-membership approximation, not flow analysis: it does not
 //! reason about statement ordering or which paths actually reach the read.
 //!
-//! Shares the semantic model's blindness to reads and writes inside statements
-//! the parser skips to `StatementKind::Empty` (`PUT`, `EXPORT`, `UPDATE`, `SET`,
-//! `PROMPT-FOR`, `GET-KEY-VALUE`, …): an assignment that arrives through one of
-//! those is invisible here, so a variable written outside its block only that
-//! way can still look block-written-only. See the fuller note on
-//! `assigned-but-never-read` (LINT0006).
+//! **What is credited, and what still is not.** Statement forms the parser
+//! recognizes but does not model (`PUT`, `EXPORT`, `UPDATE`, `SET`,
+//! `PROMPT-FOR`, `GET-KEY-VALUE`, `ENABLE`, embedded SQL, …) credit no reads and
+//! no writes, so an assignment arriving through one of them used to leave a
+//! variable looking block-written-only. The parser now records those statements
+//! as `StatementKind::Skipped` carrying the identifiers it passed over, the
+//! resolve pass best-effort-resolves them, and this rule declines to fire for
+//! any symbol so marked — through the shared
+//! [`is_skipped`](super::unused_symbol_shared::is_skipped) predicate, the same
+//! one LINT0002 and LINT0006 use.
+//!
+//! Two gaps remain, and both are quiet rather than loud — they cost findings,
+//! not correctness:
+//!
+//! - **Skipped tails inside *modelled* statements.** Around a dozen sites parse
+//!   a real statement and then discard a trailing region that can contain
+//!   genuine reads (`DISPLAY … WITH FRAME f (title "x" + v-name)`, `DEFINE
+//!   VARIABLE … VIEW-AS`, `RUN` trailing content). The statement node is already
+//!   occupied, so the harvest payload used here does not transfer. Tracked by
+//!   #134.
+//! - **Keyword collisions.** The harvest keeps unreserved option keywords as
+//!   candidate names, because ABL lexes a user's variable named `value` as
+//!   `Kind::Value` and the parser cannot tell them apart inside a statement
+//!   whose grammar it does not model. A variable named after an option keyword
+//!   used by a skipped statement may therefore be exempted when it should not
+//!   be.
+//!
+//! The suppression is also coarse: it is per-symbol and file-wide, so one
+//! mention in a skipped statement silences this rule for that variable
+//! everywhere. #136 drains that by head-parsing the forms.
 
 use oxabl_common::Diagnostic;
-use oxabl_semantic::{AnalysisContext, Semantic, Symbol, SymbolFlags, SymbolKind};
+use oxabl_semantic::{
+    AnalysisContext, ScopeTree, Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
+};
 
 use super::LINT0005;
-use super::unused_symbol_shared::declaration_span;
+use super::unused_symbol_shared::{declaration_span, is_skipped};
 
 /// Entry point.
 pub fn run(
@@ -44,8 +70,8 @@ pub fn run(
     ctx: &AnalysisContext,
 ) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for (_sid, sym) in sem.symbols.iter() {
-        if !is_hazard(sym) {
+    for (sid, sym) in sem.symbols.iter() {
+        if !is_hazard(sid, sym, &sem.scope_tree, &sem.symbols) {
             continue;
         }
         let name = display_name(sym, ctx.source);
@@ -65,7 +91,13 @@ pub fn run(
 
 /// A block-hoisted variable read outside its defining block, with no
 /// compensating assignment outside that block.
-fn is_hazard(sym: &Symbol) -> bool {
+///
+/// Delegates its exemptions to [`is_skipped`], rather than restating them: this
+/// rule gates on `write_count` and the outside-block flags, so every fact that
+/// makes those counts untrustworthy for LINT0002 and LINT0006 makes them
+/// untrustworthy here too. A parallel clause would be one more copy to keep in
+/// step, which is the failure mode `unused_symbol_shared` exists to prevent.
+fn is_hazard(sid: SymbolId, sym: &Symbol, tree: &ScopeTree, symbols: &SymbolTable) -> bool {
     sym.kind == SymbolKind::Variable
         // READ_OUTSIDE_BLOCK is only ever set by the resolve pass for a
         // variable that was hoisted out of a block, so it doubles as the
@@ -78,11 +110,11 @@ fn is_hazard(sym: &Symbol) -> bool {
         && sym.write_count > 0
         && sym.flags.contains(SymbolFlags::READ_OUTSIDE_BLOCK)
         && !sym.flags.contains(SymbolFlags::WRITE_OUTSIDE_BLOCK)
-        // A SHARED variable takes its value from the sharing procedure, not
-        // from the block's assignments, so the hazard reasoning does not apply.
-        && !sym.flags.intersects(
-            SymbolFlags::SHARED | SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED,
-        )
+        // Shared exemptions. Covers the SHARED family (a SHARED variable takes
+        // its value from the sharing procedure, not from the block's
+        // assignments, so the hazard reasoning does not apply), write-back RUN
+        // arguments, and symbols touched by an unmodelled statement.
+        && !is_skipped(sid, sym, tree, symbols)
 }
 
 /// Display name = original casing sliced from source; falls back to the

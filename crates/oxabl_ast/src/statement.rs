@@ -610,6 +610,29 @@ pub enum StatementKind {
     /// Empty (just a period)
     Empty,
 
+    /// A statement form the parser *recognizes* but does not model: the
+    /// dispatch site matched a leading keyword and then skipped the statement's
+    /// tokens wholesale (`PUT`, `UPDATE`, `ENABLE`, `EXPORT`, embedded SQL, …).
+    ///
+    /// Distinct from [`Self::Empty`], which means error recovery or a genuinely
+    /// empty statement. The distinction matters because these forms carry real
+    /// variable traffic in both directions, and consumers that reason about
+    /// whether a variable was touched must not read a `Skipped` node as "nothing
+    /// happened here".
+    ///
+    /// `names` holds the identifier-shaped tokens the skip passed over, filtered
+    /// lexically: the dispatch keyword itself is dropped, as is any token
+    /// byte-adjacent to a preceding `.`, `:`, or `/` (so `table.field` keeps only
+    /// `table`, and a path like `/usr/tmp/log.txt` keeps nothing). The filter is
+    /// deliberately broad — ABL lexes a variable named `value` as a keyword kind,
+    /// so option keywords are kept as candidate names and the semantic pass's
+    /// non-diagnostic lookup is the real filter. Over-inclusion can only silence
+    /// a diagnostic, never invent one.
+    ///
+    /// The statement's full extent is [`Statement::span`]; no companion
+    /// `raw_span` is needed.
+    Skipped { names: Vec<Identifier> },
+
     /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
     /// The label can be referenced by LEAVE and NEXT statements.
     Label { name: String, body: Box<Statement> },
@@ -1166,4 +1189,65 @@ pub enum WidgetQualifier {
 pub struct TriggerAssignParam {
     pub name: Identifier,
     pub data_type: DataType,
+}
+
+#[cfg(test)]
+mod skipped_tests {
+    use super::{Statement, StatementKind};
+    use crate::node_id::NodeId;
+    use crate::span::Span;
+
+    fn skipped(names: Vec<&str>, span_start: u32) -> Statement {
+        let mut s = Statement::new(StatementKind::Skipped {
+            names: names
+                .into_iter()
+                .map(|n| crate::Identifier {
+                    name: n.to_string(),
+                    span: Span {
+                        start: span_start,
+                        end: span_start + n.len() as u32,
+                    },
+                })
+                .collect(),
+        });
+        s.span = Span {
+            start: span_start,
+            end: span_start + 10,
+        };
+        s
+    }
+
+    /// `PartialEq` ignores `id` and `span`, as it does for every other variant
+    /// (§2 of `docs/design/ast-invariants.md`).
+    #[test]
+    fn skipped_equality_ignores_id_and_span() {
+        let mut a = Statement::new(StatementKind::Skipped { names: Vec::new() });
+        let mut b = Statement::new(StatementKind::Skipped { names: Vec::new() });
+        a.id = NodeId::from_u32(7);
+        a.span = Span { start: 0, end: 4 };
+        b.id = NodeId::from_u32(99);
+        b.span = Span { start: 40, end: 90 };
+        assert_eq!(a, b);
+    }
+
+    /// The whole point of the variant: a recognized-but-unmodelled statement is
+    /// not an error-recovery `Empty`. A consumer that folded them together would
+    /// read "the parser skipped a `PUT` that reads v-total" as "nothing here".
+    #[test]
+    fn skipped_is_not_empty() {
+        let a = Statement::new(StatementKind::Skipped { names: Vec::new() });
+        let b = Statement::new(StatementKind::Empty);
+        assert_ne!(a, b);
+        assert_ne!(a, StatementKind::Empty);
+    }
+
+    /// Harvested names participate in equality — two skips over different
+    /// content are different statements. `Identifier` equality includes `span`,
+    /// so tests that care about names should assert on the vec's contents rather
+    /// than hand-building whole statements.
+    #[test]
+    fn skipped_equality_discriminates_on_names() {
+        assert_ne!(skipped(vec!["v-total"], 0), skipped(vec!["v-count"], 0));
+        assert_eq!(skipped(vec!["v-total"], 0), skipped(vec!["v-total"], 0));
+    }
 }

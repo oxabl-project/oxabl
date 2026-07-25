@@ -76,6 +76,14 @@ fn parser_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "temp_tables", "bench_parser_temp_tables.abl");
     bench_fixture(&mut group, "procs_funcs", "bench_parser_procs_funcs.abl");
     bench_fixture(&mut group, "datasets", "bench_parser_datasets.abl");
+    // Recognized-but-unmodelled forms (PUT / EXPORT / ENABLE / UPDATE / SET /
+    // APPLY / WAIT-FOR …). No other bench_parser_* fixture contains any of
+    // them, so without this target the skip + harvest path scores zero.
+    bench_fixture(
+        &mut group,
+        "skipped_forms",
+        "bench_parser_skipped_forms.abl",
+    );
 
     bench_pipeline_with_includes(
         &mut group,

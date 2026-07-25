@@ -966,6 +966,12 @@ pub fn resolve_pass(
         walker.symbols.get_mut(*sym).flags |= crate::SymbolFlags::PASSED_AS_OUTPUT_ARG;
     }
 
+    // Flush the unmodelled-statement usage fact (the three count-gated rules'
+    // "these counts are not trustworthy" marker).
+    for sym in &walker.unmodelled_touch {
+        walker.symbols.get_mut(*sym).flags |= crate::SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT;
+    }
+
     // Mirror every symbol's declared type into the `types` side table keyed
     // by the declaration's NodeId. Skips builtins and synthesized
     // schema-field/buffer symbols (declaration = DUMMY).
@@ -1017,6 +1023,13 @@ struct ResolveWalker<'a> {
     /// tracking gate: it only fires on write-back RUN arguments, which are
     /// rare, and costs one O(1) set insert each.
     output_args: FxHashSet<SymbolId>,
+    /// Symbols named by a [`StatementKind::Skipped`] node — a statement form
+    /// the parser recognized but did not model. Flushed to
+    /// [`SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`] at end-of-pass (same
+    /// idempotency contract as `counts`). Deliberately *not* fed into `counts`:
+    /// the harvest is lexical, so crediting it as a read or a write would make
+    /// the counts lie about what the code does.
+    unmodelled_touch: FxHashSet<SymbolId>,
     /// True only when the declare pass hoisted at least one `DEFINE VARIABLE`
     /// out of a block (`SymbolTable::has_block_scoped_var`). The vast majority
     /// of files have none, so callers skip [`Self::note_block_var_use`]
@@ -1047,6 +1060,7 @@ impl<'a> ResolveWalker<'a> {
             counts: FxHashMap::default(),
             block_var_outside: FxHashMap::default(),
             output_args: FxHashSet::default(),
+            unmodelled_touch: FxHashSet::default(),
             track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
@@ -1816,6 +1830,7 @@ impl<'a> ResolveWalker<'a> {
             StatementKind::Leave(_) | StatementKind::Next(_) => {}
             StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => {}
             StatementKind::Empty => {}
+            StatementKind::Skipped { names } => self.credit_unmodelled_names(names, scope),
         }
     }
 
@@ -2185,14 +2200,50 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) {
+        if let Some(sym) = self.lookup_statement_ident(id, scope, namespaces) {
+            self.bump_count(sym, mode);
+            if self.track_block_vars {
+                self.note_block_var_use(sym, scope, mode);
+            }
+        }
+    }
+
+    /// The namespace lookup half of [`Self::resolve_statement_ident`], with no
+    /// side effects at all: no count bump, no block-var note, and — critically —
+    /// no write to the `references` side table.
+    ///
+    /// That last property is what makes it safe for the best-effort harvest in
+    /// [`Self::credit_unmodelled_names`]. Contrast `resolve_expr_ident` and
+    /// `resolve_field_access`, which both record `Resolution::Unresolved` on a
+    /// miss and thereby feed LINT0001 / LINT0003.
+    fn lookup_statement_ident(
+        &self,
+        id: &Identifier,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+    ) -> Option<SymbolId> {
         let atom = fold_atom(&id.name);
-        for &ns in namespaces {
-            if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
-                self.bump_count(sym, mode);
-                if self.track_block_vars {
-                    self.note_block_var_use(sym, scope, mode);
-                }
-                return;
+        namespaces
+            .iter()
+            .find_map(|&ns| self.tree.resolve(scope, ns, &atom))
+    }
+
+    /// Best-effort-credit the names harvested from a recognized-but-unmodelled
+    /// statement ([`StatementKind::Skipped`]).
+    ///
+    /// Only [`NamespaceId::Values`] is consulted: the three count-gated rules
+    /// restrict themselves to `Variable` and `Parameter` symbols, so a flag set
+    /// on a field, buffer or table could never suppress anything, and each extra
+    /// namespace would cost a full scope-chain walk per harvested miss on a path
+    /// that is already the expensive half of this feature.
+    ///
+    /// A name that resolves to nothing is dropped in silence — no diagnostic, no
+    /// `references` entry. Over-crediting can only lose a diagnostic; it can
+    /// never invent one.
+    fn credit_unmodelled_names(&mut self, names: &[Identifier], scope: ScopeId) {
+        for id in names {
+            if let Some(sym) = self.lookup_statement_ident(id, scope, &[NamespaceId::Values]) {
+                self.unmodelled_touch.insert(sym);
             }
         }
     }
@@ -5288,6 +5339,134 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- Unmodelled-statement crediting (#128) ---------------------------
+
+    /// Build a `Skipped` node harvesting the given names, as the parser would
+    /// for e.g. `PUT v-total.`.
+    fn skipped_stmt_n(names: &[&str]) -> Statement {
+        stmt_n(StatementKind::Skipped {
+            names: names.iter().copied().map(id).collect(),
+        })
+    }
+
+    fn touched(symbols: &SymbolTable, sid: SymbolId) -> bool {
+        symbols
+            .get(sid)
+            .flags
+            .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+    }
+
+    #[test]
+    fn unmodelled_statement_flags_the_variable_it_names() {
+        let stmts = vec![var_stmt_n("x", DataType::Integer), skipped_stmt_n(&["x"])];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        assert!(touched(&symbols, sym_x(&symbols)));
+    }
+
+    /// R4: the flag is the *only* signal this adds. Inflating the counts would
+    /// suppress every rule for free, but it would make a shared signal lie about
+    /// what the code does — and #126's def-use work reads that signal.
+    #[test]
+    fn unmodelled_statement_leaves_the_counts_exact() {
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            skipped_stmt_n(&["x", "x", "x"]),
+        ];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert_eq!(x.read_count, 0);
+        assert_eq!(x.write_count, 0);
+    }
+
+    /// R3 / R8, and the property the whole design rests on: the harvest resolves
+    /// through `lookup_statement_ident`, which cannot write `references`. If it
+    /// ever routed through `resolve_expr_ident` instead, every garbage name in a
+    /// skipped statement would land in the table as `Unresolved` and LINT0001
+    /// would report it.
+    #[test]
+    fn unresolvable_harvested_names_touch_neither_references_nor_diagnostics() {
+        let baseline = vec![var_stmt_n("x", DataType::Integer)];
+        let with_skip = vec![
+            var_stmt_n("x", DataType::Integer),
+            skipped_stmt_n(&["no-such-name", "another-ghost"]),
+        ];
+
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree_a, mut sym_a, _d, rev_a) = declare_pass(&baseline, &ctx);
+        let (refs_a, _t, diags_a) = resolve_pass(&baseline, &ctx, &tree_a, &mut sym_a, rev_a);
+        let (tree_b, mut sym_b, _d, rev_b) = declare_pass(&with_skip, &ctx);
+        let (refs_b, _t, diags_b) = resolve_pass(&with_skip, &ctx, &tree_b, &mut sym_b, rev_b);
+
+        assert_eq!(refs_a.iter().count(), refs_b.iter().count());
+        assert_eq!(refs_b.iter().count(), 0);
+        assert!(diags_a.is_empty());
+        assert!(diags_b.is_empty(), "unexpected diagnostics: {diags_b:?}");
+    }
+
+    /// KTD8: only `NamespaceId::Values` is credited. A flag on a buffer or table
+    /// could never suppress anything — the three rules restrict themselves to
+    /// `Variable` and `Parameter` — and each extra namespace would cost a full
+    /// scope-chain walk per harvested miss.
+    #[test]
+    fn unmodelled_statement_credits_only_the_values_namespace() {
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("b-cust"),
+                target: BufferTarget::Table(id("customer")),
+                preselect: false,
+                label: None,
+                xml_options: Default::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
+            }),
+            skipped_stmt_n(&["b-cust"]),
+        ];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        for (_, s) in symbols.iter() {
+            assert!(
+                !s.flags
+                    .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT),
+                "buffer symbol {:?} should not be credited",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn unmodelled_statement_with_no_names_flags_nothing() {
+        let stmts = vec![var_stmt_n("x", DataType::Integer), skipped_stmt_n(&[])];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        for (_, s) in symbols.iter() {
+            assert!(
+                !s.flags
+                    .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+            );
+        }
+    }
+
+    /// The accumulate-then-flush-once contract (the Salsa-ready invariant): a
+    /// second run over the same AST must produce identical flags and counts.
+    #[test]
+    fn unmodelled_touch_flush_is_idempotent() {
+        let stmts = vec![var_stmt_n("x", DataType::Integer), skipped_stmt_n(&["x"])];
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        let first: Vec<_> = symbols
+            .iter()
+            .map(|(_, s)| (s.flags, s.read_count, s.write_count))
+            .collect();
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        let second: Vec<_> = symbols
+            .iter()
+            .map(|(_, s)| (s.flags, s.read_count, s.write_count))
+            .collect();
+        assert_eq!(first, second);
     }
 
     // ---- Idempotence ----------------------------------------------------
