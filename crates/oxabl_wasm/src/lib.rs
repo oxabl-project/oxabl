@@ -10,7 +10,7 @@ use oxabl::analyze::{CollectedDiagnostic, DiagnosticSource};
 use oxabl::common::SourceMap;
 use oxabl::style::StyleGuide;
 use oxabl::workspace::InMemoryFileSystem;
-use oxabl::{AnalyzeOptions, analyze_with_fs};
+use oxabl::{AnalyzeOptions, try_analyze_with_fs, try_format_source};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -83,7 +83,21 @@ fn diagnostic_source(source: DiagnosticSource) -> &'static str {
 pub fn analyze_source(source: &str) -> String {
     let options = AnalyzeOptions::default();
     let fs = InMemoryFileSystem::new();
-    let (_, collected) = analyze_with_fs(source, &fs, &options);
+    // The canonical fallible entry point, though its guard is a documented
+    // pass-through on wasm32 — under `panic=abort` a panic traps instead of
+    // arriving here, so the browser's protection is the panic hook plus instance
+    // reinitialization, not this `Err` arm. The arm exists because this crate
+    // also compiles natively for its unit tests, where the guard does catch. The
+    // wire shape deliberately gains no `error` field for it.
+    let (_, collected) = match try_analyze_with_fs(source, &fs, &options) {
+        Ok(result) => result,
+        Err(_) => {
+            return serde_json::to_string(&AnalyzeResponse {
+                diagnostics: Vec::new(),
+            })
+            .expect("the browser diagnostic wire shape is always serializable");
+        }
+    };
     let source_map = SourceMap::new(source);
     let diagnostics = collected
         .diagnostics
@@ -99,7 +113,7 @@ pub fn analyze_source(source: &str) -> String {
 /// same safe default style as the LSP when no `oxabl.toml` is present.
 #[wasm_bindgen]
 pub fn format_source(source: &str) -> String {
-    let result = match oxabl::format_source(source, &StyleGuide::default_base()) {
+    let result = match try_format_source(source, &StyleGuide::default_base()) {
         Ok(formatted) => FormatResponse {
             changed: formatted != source,
             source: formatted,
