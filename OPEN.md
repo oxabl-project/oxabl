@@ -4,6 +4,8 @@ Planning for [issue #128](https://github.com/oxabl-project/oxabl/issues/128) is 
 
 The plan lives at `docs/plans/2026-07-24-001-fix-credit-reads-in-skipped-statements-plan.md`. That directory is gitignored by design, so the plan is local to this worktree only — this file carries what a reader needs without it.
 
+**Since first draft:** a second review challenged whether this fix serves the project's direction — a tool whose authority comes from understanding ABL, rather than from staying quiet when unsure. Verdict: right triage, wrong ending. The plan now ships bounded, and questions 2, 5, and 6 below are closed as a result. The mechanism is unchanged; what changed is that the flag now has an owned, incremental retirement path instead of waiting on unscheduled work.
+
 ## What was decided, for context
 
 The parser recognizes ~30 ABL statement forms it does not model, skips them, and returns `StatementKind::Empty`. The resolve pass has a no-op arm for `Empty`, so they credit no reads and no writes, and three count-gated lint rules false-positive as a result (LINT0002, LINT0005, LINT0006).
@@ -20,17 +22,17 @@ The suppression is per-symbol and file-wide. If a variable has a real dead store
 
 Should LINT0006 keep firing when a modelled write exists and the skipped mention is only a keyword-shaped match (see question 2), or is blanket suppression correct until #126's CFG def-use records land? Planning chose blanket suppression as the conservative default.
 
-### 2. No signal tells us if the flag goes net-negative before #126 lands
+### 2. ~~No signal tells us if the flag goes net-negative~~ — CLOSED
 
-R14 adds a coverage-retention gate on a synthetic UI-heavy fixture — the three rules must still report seeded defects on variables that appear in no skipped statement, and at least one declared variable must carry no flag. That catches a grossly over-greedy harvest.
+Closed by the second review, which pointed out the signal was sitting there unused: run the rules over the out-of-repo ABL corpus on both builds, diff the diagnostics, and classify a sample of what disappeared as killed-false-positive versus lost-true-positive. That is now R17/U10, and it gates the merge. If lost true positives win the sample, that inverts the plan's premise and stops the work.
 
-It does not tell us whether, on real ABL, the flag suppresses more true positives than false ones. What observable signal would? Nothing in the plan answers this, and the honest position is that we will not know.
-
-Related: this is the **third** stopgap suppression bit (`PASSED_AS_OUTPUT_ARG`, `PARAM_TABLE_LIKE`, now `TOUCHED_BY_UNMODELLED_STATEMENT`) whose retirement is gated on the single unscheduled issue #126. Each bit widens the silently-suppressed population and nothing signals when one has outlived its cause. Worth deciding whether #126 gets scheduled before a fourth bit is added.
+The related worry — that this is the third stopgap bit waiting on unscheduled #126 — is also closed, but by a distinction rather than a measurement. The two existing bits need one monolithic piece of work to retire. This one drains incrementally: head-parse a form, its dispatch site stops emitting `Skipped`, and the flag's population drops with no change to the semantic pass or the rules. R18/U11 files and schedules that head-parsing work, and the flag's doc comment points at it rather than at #126.
 
 ### 3. Should suppression be opt-out?
 
 A user who would rather accept the false positives in exchange for coverage currently has only one control: turn the whole rule off via `[workspace.lint]`. Is a finer control warranted — and if so, is it per-rule or global?
+
+Leaning no, and the plan now says so explicitly: a knob for a mechanism we intend to drain is a knob we then have to keep. Left open because it is a product call, not a technical one.
 
 ### 4. Keyword-collision channel is accepted; confirm that is right
 
@@ -40,13 +42,13 @@ This was examined and accepted. The reasoning: the resolve lookup is the real ga
 
 Flagged here because it is the decision most likely to be revisited, and because `value` / `format` / `frame` are genuinely common ABL variable names.
 
-### 5. Should `is_hazard` consult the shared `is_skipped` predicate?
+### 5. ~~Should `is_hazard` consult the shared `is_skipped` predicate?~~ — CLOSED
 
-LINT0002 and LINT0006 get their exemption from `unused_symbol_shared::is_skipped`, which exists specifically so an exemption cannot be lost to a drifting copy. LINT0005 does not call it, so the plan adds a separate clause to `is_hazard`. Two suppression paths can now drift as future exemptions are added. Refactoring `is_hazard` to consult `is_skipped` is small; it was left out to keep the diff scoped.
+Yes. Keeping the diff narrow was too timid: two suppression paths that can drift apart as future exemptions are added is exactly the bug class the shared predicate exists to prevent. U4 now refactors `is_hazard` to go through `is_skipped` rather than adding a parallel clause, and "all three rules reach the exemption through one shared predicate" is a done-criterion.
 
-### 6. Does the analyze symbols section need a version bump for a new flag string?
+### 6. ~~Does the analyze symbols section need a version bump for a new flag string?~~ — SUPERSEDED
 
-`symbol_flags_list` in `crates/oxabl_analyze/src/lib.rs` is a hand-maintained flag-to-string table that will not fail to compile when a bit is added. The plan adds the entry (R15) but does not settle whether flag-list growth is additive or needs a section version bump. Whoever owns the analyze section-versioning contract should call it.
+Still unsettled as a versioning question, but no longer load-bearing. The reason it mattered was that the analyze dump was the only way a user could discover the flag — and R16/U9 now reports the count of unjudged symbols in `check` output directly, which is where someone would actually notice. Whoever owns the analyze section-versioning contract can still make the call, but nothing waits on it.
 
 ### 7. Should the harvest credit the `Streams` namespace?
 
