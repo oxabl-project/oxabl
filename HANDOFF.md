@@ -20,7 +20,7 @@
 | #136 | Open and **scheduled** (`hermes`) — head-parse the unmodelled forms; retires #128's flag and #130's query approximation. |
 | #108 unresolvable-include-as-argument | Open — the fully-wired re-dogfood it was waiting on **has now run**; still unconfirmed. See **Next** item 4. |
 | #131 / #132 | Open — LINT0006 write-site span breadth; `oxabl_lint` benchmark coverage. |
-| #125 | Open and **unblocked** — small, template is fresh. |
+| #125 | Open — **planned and ready to build**; six units, one PR. Decisions and the gaps it surfaced are in the lint-accuracy map below. |
 | #124 / #126 | Open — the rest of the flow-analysis cluster. |
 | #102 / #103 cross-file resolution | Open — the **top strategic thread**, and now the clear next move: #120 built the seam it needs. |
 | #57 public lint-rule API | Open — blocked on #102. |
@@ -109,6 +109,22 @@ Other facts worth keeping:
 - **`ParameterType::Buffer` records the wrong target in an inline procedure signature.** `crates/oxabl_parser/src/parser/mod.rs:1567` — the `PROCEDURE p (BUFFER b FOR tt)` path parses the table name then discards it with `.ok()`, setting `target` to the *buffer's own name*. So that shape never links its schema table, and #130's credit is skipped by the same-name guard. Filed, pre-existing, not fixed.
 - **Process lesson:** for any count-gated rule, audit **both** sides of the predicate. #129's audit covered the write side it incremented; the false positives came from the unaudited read side.
 
+### Gaps found while planning #125 — known, deliberately not filed
+
+Recorded here rather than as issues, by choice. Each is real; none blocks #125.
+
+- **The mixed-write dead store is reported by nothing.** For `x = 1. RUN p (OUTPUT x).` with no read, all three never-read rules stay silent: LINT0002 bails on `write_count > 0`, LINT0006 bails because `is_skipped` returns true for any symbol carrying `PASSED_AS_OUTPUT_ARG` *regardless of its other writes*, and #125's rule bails on its own all-writes-were-output predicate. Closing it means narrowing LINT0006's exemption, which changes an on-by-default warning rule. Do not assume LINT0006 owns this population — it looks like it should and it doesn't.
+- **Write-back arguments are tracked for `RUN` only.** `PASSED_AS_OUTPUT_ARG` is populated solely from the `StatementKind::Run` arm, so LINT0002, LINT0006 and #125's rule all see one statement form. Write-back parameters on user-defined function and method calls contribute nothing. Widening the model helps all three at once, and matters more as #102 lands OO resolution.
+- **An unexpanded include hides readers from every never-read rule.** `PREPROC007` already fires loudly at the true cause, so the rules firing downstream is accepted rather than suppressed. A shared "skip never-read rules on a file that emitted `PREPROC007`" gate covering LINT0002/LINT0006/#125 is defensible if the false positives ever bite.
+- **`INPUT-OUTPUT` cannot satisfy "never read" by construction.** `resolve.rs` maps `Output` to `AccessMode::Write` but `InputOutput | Return` to `ReadWrite`, and `bump_count` bumps both counters for `ReadWrite`. Any rule keyed on `read_count == 0` is therefore dead code for those directions. Reaching them means tracking output-argument *reads* symmetrically — a deliberate widening of what counts as a read, not a bug fix.
+
+### #125 decisions worth keeping after the plan is deleted
+
+- Scope is `OUTPUT` on `RUN` only, and the diagnostic's help text says so — a class-heavy codebase seeing zero hits should read as scoped, not broken.
+- It ships **off unless explicitly enabled**, which is a new concept: `LintSeverityMap::is_enabled` treats absent-from-map as *enabled*, and real callers pass an empty map (`AnalyzeOptions::default()`, the WASM playground, the LSP db default). A defaulted-`Off` config field alone is not sufficient; the gate belongs in `oxabl_lint`. `is_enabled` is consequently **not authoritative** for opt-in rules — #57's registry must consult the gate.
+- The new `Symbol::output_arg_write_count` counter is **stopgap bookkeeping in the same family as `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`** — #126 retires all three. It is not a precedent for a counter per write shape.
+- Sequenced ahead of #128/#130 deliberately: the rule ships dormant, and LINT0006 already ships *on* with the identical parser-skipped-read blindness, so waiting removes no false positive anyone currently sees.
+
 ### Cheap test additions still worth picking up
 
 | Test | Why it matters |
@@ -116,6 +132,7 @@ Other facts worth keeping:
 | A same-named `DEFINE BUFFER tt FOR <other-table>` shadowing the parameter's name | Pins the name-keyed imprecision as a deliberate choice; currently unpinned either way. |
 | `unused-variable = "off"` with `assigned-but-never-read` left at default | The exact config that regressed when LINT0006 landed, and the one combination with no test. |
 | A dead store inside an `ON` trigger or `TRIGGER PROCEDURE` body | LINT0006's walk doesn't descend those bodies, so the span falls back to the declaration. Span quality only. Related to #131. |
+| `x = 1. RUN p (OUTPUT x).` never read, asserting **no** diagnostic from any rule | Pins the mixed-write hole above. Currently unpinned, so a later change to LINT0006's exemption would close it silently instead of deliberately. |
 
 ---
 
@@ -162,7 +179,7 @@ Other facts worth keeping:
 | #133 | Merged — browser WASM adapter + playground; now a renderer of `oxabl_pipeline` |
 | #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
 | #132 | Open — `oxabl_lint` has no benchmark coverage at all |
-| #125 | Open — **unblocked**; callee-written dead-store advisory |
+| #125 | Open — **planned**; callee-written dead-store advisory, `LINT0007`, off by default |
 | #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires the two older stopgap flags |
 | #129 | Merged — table-parameter FP + LINT0006 dead-store split |
 | #127 | Merged — LINT0002 OUTPUT-argument FP |
