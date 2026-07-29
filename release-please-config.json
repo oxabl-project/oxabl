@@ -13,6 +13,7 @@
     "crates/oxabl_schema": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_semantic": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_lint": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
-    "crates/oxabl_analyze": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
+    "crates/oxabl_analyze": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_pipeline": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
   }
 }

@@ -10,5 +10,6 @@
   "crates/oxabl_schema": "0.1.0",
   "crates/oxabl_semantic": "0.1.0",
   "crates/oxabl_lint": "0.1.0",
-  "crates/oxabl_analyze": "0.1.0"
+  "crates/oxabl_analyze": "0.1.0",
+  "crates/oxabl_pipeline": "0.1.0"
 }

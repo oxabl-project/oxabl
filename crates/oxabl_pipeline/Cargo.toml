@@ -1,0 +1,24 @@
+[package]
+name = "oxabl_pipeline"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Shared lint and format pipelines over one resolved oxabl configuration"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_pipeline"
+
+# NOTE (KTD1/KTD6): this crate sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the
+# `oxabl` umbrella, so it must depend on none of them. It must also never gain a
+# `salsa` dependency: the umbrella re-exports this crate unconditionally, and the
+# browser bundle goes through the umbrella, so a `salsa` edge here would land in
+# the WASM payload.
+[dependencies]
+oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
+oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+
+[dev-dependencies]
+tempfile = "3"

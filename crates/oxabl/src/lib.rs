@@ -360,6 +360,26 @@ pub mod style {
     };
 }
 
+/// Shared lint/format pipelines — one resolution of `oxabl.toml` into everything
+/// a run needs, and the run itself, so the CLI, the LSP, and the browser client
+/// are renderers of one shared result rather than three parallel orchestrations
+/// (R1).
+///
+/// [`PipelineConfig::resolve`](pipeline::PipelineConfig::resolve) reads
+/// `oxabl.toml` once and returns its non-fatal problems as
+/// [`ConfigWarning`](pipeline::ConfigWarning) data, leaving *how* to surface them
+/// to the client (R6, R7). [`ROOT_FILE_ID`](pipeline::ROOT_FILE_ID) is the one
+/// synthetic root file id every client shares.
+///
+/// This module is **not** gated on the `cli` feature, and must not become gated:
+/// `oxabl_wasm` depends on this crate with `default-features = false`, so a gated
+/// re-export would be invisible to the browser client.
+pub mod pipeline {
+    pub use oxabl_pipeline::{
+        ConfigOverrides, ConfigWarning, PipelineConfig, ROOT_FILE_ID, resolve_from_config,
+    };
+}
+
 /// Workspace — the file-system abstraction and `oxabl.toml` config resolution.
 pub mod workspace {
     pub use oxabl_workspace::{
