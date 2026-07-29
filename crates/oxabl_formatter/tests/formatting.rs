@@ -473,3 +473,35 @@ fn unmodelled_forms_format_unchanged() {
         )
     );
 }
+
+/// The three #130 forms carry a table-candidate marker and, in `EMPTY
+/// TEMP-TABLE`'s case, changed node kind entirely — it used to emit a recovery
+/// `Empty`. Neither is a formatting concern: all three still pass through
+/// byte-for-byte, at top level and indented inside a block.
+#[test]
+fn table_candidate_forms_format_unchanged() {
+    let src = concat!(
+        "DEFINE QUERY q-item FOR ttItem.\n",
+        "EMPTY TEMP-TABLE ttItem NO-ERROR.\n",
+        "\n",
+        "DO:\n",
+        "DEFINE QUERY q-inner FOR ttItem.\n",
+        "OPEN QUERY q-inner FOR EACH ttItem WHERE ttItem.qty > 0.\n",
+        "EMPTY TEMP-TABLE ttItem.\n",
+        "END.\n",
+    );
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        concat!(
+            "DEFINE QUERY q-item FOR ttItem.\n",
+            "EMPTY TEMP-TABLE ttItem NO-ERROR.\n",
+            "\n",
+            "DO:\n",
+            "    DEFINE QUERY q-inner FOR ttItem.\n",
+            "    OPEN QUERY q-inner FOR EACH ttItem WHERE ttItem.qty > 0.\n",
+            "    EMPTY TEMP-TABLE ttItem.\n",
+            "END.\n",
+        )
+    );
+}

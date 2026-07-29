@@ -36,6 +36,21 @@ fn harvest(source: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse `source` as one statement and return its table-candidate marker (#130).
+#[track_caller]
+fn marks_tables(source: &str) -> bool {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("statement should parse");
+    match &stmt.kind {
+        StatementKind::Skipped {
+            may_reference_tables,
+            ..
+        } => *may_reference_tables,
+        other => panic!("expected StatementKind::Skipped, got {other:?}"),
+    }
+}
+
 #[test]
 fn parse_simple_add_expression() {
     let source = "1 + 2";
@@ -10832,6 +10847,76 @@ fn display_with_frame_is_still_a_display_not_a_skipped() {
 #[test]
 fn skipped_span_covers_the_whole_statement() {
     let source = "PUT UNFORMATTED v-total SKIP.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("statement should parse");
+    assert_eq!(stmt.span.start, 0);
+    assert_eq!(stmt.span.end as usize, source.len());
+}
+
+// ---------------------------------------------------------------------------
+// Table-candidate marking on the three #130 forms
+// ---------------------------------------------------------------------------
+
+/// The marker is opt-in. An ordinary unmodelled form pays no table lookup, so
+/// the roughly thirty #128 dispatch sites are unchanged in behavior and cost.
+#[test]
+fn skipped_ordinary_form_is_not_a_table_candidate() {
+    assert!(!marks_tables("PUT v-total."));
+    assert!(!marks_tables("EXPORT vendor.vend-number."));
+}
+
+/// `DEFINE QUERY q FOR tt.` names its backing table, so its harvest is offered
+/// to the table namespaces. `q` rides along as a candidate — the grammar is not
+/// modelled until #136, so the harvest cannot tell the query's own name from the
+/// tables it is defined over. A candidate that resolves to nothing is silent.
+#[test]
+fn skipped_define_query_is_a_table_candidate() {
+    assert!(marks_tables("DEFINE QUERY q FOR ttItem."));
+    let names = harvest("DEFINE QUERY q FOR ttItem.");
+    assert!(names.iter().any(|n| n == "q"), "got {names:?}");
+    assert!(names.iter().any(|n| n == "ttItem"), "got {names:?}");
+}
+
+#[test]
+fn skipped_open_query_is_a_table_candidate() {
+    assert!(marks_tables("OPEN QUERY q FOR EACH ttItem."));
+    let names = harvest("OPEN QUERY q FOR EACH ttItem.");
+    assert!(names.iter().any(|n| n == "ttItem"), "got {names:?}");
+}
+
+/// Only `OPEN QUERY` marks. The bulk dispatch arm matches a bare `Kind::Open`,
+/// and the other shapes routed through it name no table — marking them would
+/// widen table lookup past the three forms #130 owns.
+#[test]
+fn skipped_non_query_open_stays_unmarked() {
+    assert!(!marks_tables("OPEN foo."));
+}
+
+/// `EMPTY TEMP-TABLE` is the one #130 form whose table name the parser knows
+/// exactly, so it contributes precisely that one identifier rather than a
+/// lexical sweep: no `NO-ERROR`, no `TEMP-TABLE` keyword.
+#[test]
+fn skipped_empty_temp_table_harvests_exactly_the_table() {
+    assert!(marks_tables("EMPTY TEMP-TABLE ttItem NO-ERROR."));
+    assert_eq!(harvest("EMPTY TEMP-TABLE ttItem NO-ERROR."), vec!["ttItem"]);
+    // The `TEMP-TABLE` keyword is optional in the same statement.
+    assert_eq!(harvest("EMPTY ttItem."), vec!["ttItem"]);
+}
+
+/// A form with no table name must not panic and must harvest nothing — there is
+/// no candidate to offer, and inventing one would credit an unrelated symbol.
+#[test]
+fn skipped_empty_temp_table_without_a_name_harvests_nothing() {
+    assert!(harvest("EMPTY TEMP-TABLE.").is_empty());
+}
+
+/// The span rule holds for the newly-`Skipped` form too (ast-invariants §8):
+/// `EMPTY TEMP-TABLE` used to return a recovery `Empty`, and its replacement
+/// must still cover the statement's full extent including the trailing period.
+#[test]
+fn skipped_empty_temp_table_span_covers_the_whole_statement() {
+    let source = "EMPTY TEMP-TABLE ttItem NO-ERROR.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("statement should parse");

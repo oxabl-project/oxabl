@@ -168,8 +168,8 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   partially constructed declaration or a "truncated" node.
 - **Invariant:** any `Statement::Empty` in the tree was produced by recovery, by a genuinely
   empty statement (a bare period, an empty `ELSE` branch), or by a form the parser consumes
-  token-by-token without a skip helper (`QUIT`, a bare `END`, a stray `&ENDIF`, `EMPTY
-  TEMP-TABLE`, an `ENUM` body). Consumers may rely on this: an `Empty` node carries no
+  token-by-token without a skip helper (`QUIT`, a bare `END`, a stray `&ENDIF`, an `ENUM`
+  body). Consumers may rely on this: an `Empty` node carries no
   user-facing declaration, reference, or expression.
 - Recovery-generated `Empty` nodes still get a NodeId. The semantic side tables
   (`references`, `types`) are allowed to be `None` at those NodeIds. See Flow-gap F5 in the
@@ -196,6 +196,10 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   `oxabl_semantic::resolve`) and must not emit a diagnostic for a name that fails to resolve.
 - `may_reference_tables` is `false` on every ordinary unmodelled form. Only the three forms
   whose grammar names a table set it: `DEFINE QUERY`, `OPEN QUERY`, and `EMPTY TEMP-TABLE`.
+  `EMPTY TEMP-TABLE` is the exception to the lexical-harvest rule above: the parser walks its
+  grammar token by token, so it contributes exactly the one identifier it knows to be the
+  table — never the `TEMP-TABLE` keyword or a trailing `NO-ERROR`. It emitted a recovery
+  `Empty` before #130, which is why the `Empty` list above no longer names it.
   **Invariant:** it selects an *additional* lookup, never a replacement — a marked node still
   gets the value-namespace treatment every `Skipped` node gets, and the two paths are
   independent, so a name that resolves in both namespaces is credited on both sides.
