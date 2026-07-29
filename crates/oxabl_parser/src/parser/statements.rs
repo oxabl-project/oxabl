@@ -533,6 +533,12 @@ impl Parser<'_> {
         }
 
         // EMPTY TEMP-TABLE tt-name [NO-ERROR].
+        //
+        // Still unmodelled, but the table name is preserved as the statement's
+        // single table candidate (#130). This is the one #130 form whose grammar
+        // the parser walks token by token, so it names the table exactly instead
+        // of harvesting the statement lexically — `NO-ERROR` and the `TEMP-TABLE`
+        // keyword are roles it already knows, not candidates.
         if self.check(Kind::Empty) {
             self.advance(); // consume EMPTY
             // Optionally consume TEMP-TABLE or the table name directly
@@ -540,15 +546,26 @@ impl Parser<'_> {
                 self.advance();
             }
             // Consume the table name
+            let mut names = Vec::new();
             if Self::can_be_identifier(self.peek().kind) {
-                self.advance();
+                let (start, end) = {
+                    let tok = self.advance();
+                    (tok.start, tok.end)
+                };
+                names.push(Identifier {
+                    name: self.source[start..end].to_string(),
+                    span: Span {
+                        start: start as u32,
+                        end: end as u32,
+                    },
+                });
             }
             // Optional NO-ERROR
             if self.check(Kind::NoError) {
                 self.advance();
             }
             self.expect_period("Expected '.' after EMPTY TEMP-TABLE")?;
-            return Ok(self.stmt(StatementKind::Empty));
+            return Ok(self.skipped_table_stmt_with(names));
         }
 
         // COPY-LOB: complex LOB manipulation statement — skip to next statement period.
@@ -593,6 +610,18 @@ impl Parser<'_> {
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
+        // OPEN QUERY q FOR EACH tt ... — split out of the bulk arm below so that
+        // only the query shape is marked as a table candidate (#130). The bulk arm
+        // matches a bare OPEN, and marking every shape routed through it would
+        // widen table lookup past the three forms this issue owns.
+        // `peek_nth_non_comment(2)` rather than a raw offset: a comment between
+        // OPEN and QUERY is legal ABL, and missing the marker there would put the
+        // false positive this issue removes straight back.
+        if self.check(Kind::Open) && self.peek_nth_non_comment(2).kind == Kind::Query {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_table_stmt(hi));
+        }
+
         // PAGE / DISABLE / ENABLE / ACCUMULATE / DOWN / OPEN / APPLY / STATUS /
         // CLEAR / HIDE — skip to end.
         // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
@@ -903,6 +932,30 @@ impl Parser<'_> {
             return self.parse_define_parameter();
         }
 
+        // DEFINE PARAMETER BUFFER b FOR [TEMP-TABLE] tt.
+        //
+        // Buffer parameters carry no direction in ABL — the buffer binds to the
+        // caller's, so INPUT/OUTPUT would be meaningless — which is why this
+        // spelling never reaches the direction-led dispatch above. Recorded as
+        // `Input`, matching what the `DEFINE INPUT PARAMETER BUFFER` path
+        // already produces; nothing downstream distinguishes them.
+        if self.check(Kind::Parameter) && self.peek_at(1).kind == Kind::Buffer {
+            self.advance(); // consume PARAMETER
+            self.advance(); // consume BUFFER
+            let name = self.parse_identifier()?;
+            self.expect_kind(Kind::KwFor, "Expected FOR after buffer parameter name")?;
+            // FOR TEMP-TABLE tt is the explicit spelling of FOR tt.
+            if self.check(Kind::TempTable) {
+                self.advance();
+            }
+            let target = self.parse_identifier()?;
+            self.expect_period("Expected '.' after parameter definition")?;
+            return Ok(self.stmt(StatementKind::DefineParameter {
+                direction: ParameterDirection::Input,
+                param_type: ParameterType::Buffer { name, target },
+            }));
+        }
+
         // Parse optional NEW [GLOBAL] SHARED / SHARED. These three modes are
         // mutually exclusive by construction (see ast-invariants.md §12): the
         // GLOBAL form sets `is_new_global_shared`, plain NEW sets
@@ -1028,10 +1081,13 @@ impl Parser<'_> {
             return self.parse_define_frame();
         }
 
-        // DEFINE QUERY — skip to statement end (may contain table.field references)
+        // DEFINE QUERY — skip to statement end (may contain table.field references).
+        // Marked as a table candidate (#130): the FOR clause names the temp-tables
+        // or tables the query is defined over, and a table used only here would
+        // otherwise look unread.
         if self.check(Kind::Query) {
             let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return Ok(self.skipped_table_stmt(hi));
         }
 
         // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to statement end.

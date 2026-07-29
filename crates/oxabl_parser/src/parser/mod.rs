@@ -665,7 +665,46 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     pub(crate) fn skipped_stmt(&mut self, hi: usize) -> Statement {
         let names = self.harvest_skipped_names(self.stmt_start_token, hi);
-        self.stmt(StatementKind::Skipped { names })
+        self.stmt(StatementKind::Skipped {
+            names,
+            may_reference_tables: false,
+        })
+    }
+
+    /// [`skipped_stmt`](Self::skipped_stmt) for a form whose grammar names a
+    /// table or temp-table: `DEFINE QUERY` and `OPEN QUERY` (#130).
+    ///
+    /// Identical harvest, `may_reference_tables: true`. The marker is what earns
+    /// the harvest a second, buffer/table-namespace lookup in the semantic pass;
+    /// without it a temp-table used only by a query looks untouched. These forms
+    /// are unmodelled, so every harvested token is a table candidate, including
+    /// the query's own name — the resolve-side lookup is silent on a miss, so an
+    /// over-inclusive candidate costs nothing.
+    ///
+    /// Deliberately a separate entry point rather than a boolean parameter on
+    /// `skipped_stmt`: the marked forms number three against roughly thirty
+    /// unmarked ones, and a defaulted-`false` constructor keeps every existing
+    /// call site correct by construction.
+    #[inline(never)]
+    pub(crate) fn skipped_table_stmt(&mut self, hi: usize) -> Statement {
+        let names = self.harvest_skipped_names(self.stmt_start_token, hi);
+        self.stmt(StatementKind::Skipped {
+            names,
+            may_reference_tables: true,
+        })
+    }
+
+    /// A marked [`StatementKind::Skipped`] node carrying names the parser
+    /// identified *exactly*, rather than by lexical harvest.
+    ///
+    /// `EMPTY TEMP-TABLE tt` is the one #130 form whose grammar the parser walks
+    /// token by token, so it knows precisely which identifier is the table and
+    /// must not sweep in `NO-ERROR` or the `TEMP-TABLE` keyword alongside it.
+    pub(crate) fn skipped_table_stmt_with(&mut self, names: Vec<Identifier>) -> Statement {
+        self.stmt(StatementKind::Skipped {
+            names,
+            may_reference_tables: true,
+        })
     }
 
     /// Filter the tokens in `[lo, hi)` down to the names worth offering the

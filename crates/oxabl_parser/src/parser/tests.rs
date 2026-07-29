@@ -19,7 +19,7 @@ use std::str::FromStr;
 #[track_caller]
 fn skipped_names(stmt: &Statement) -> Vec<&str> {
     match &stmt.kind {
-        StatementKind::Skipped { names } => names.iter().map(|n| n.name.as_str()).collect(),
+        StatementKind::Skipped { names, .. } => names.iter().map(|n| n.name.as_str()).collect(),
         other => panic!("expected StatementKind::Skipped, got {other:?}"),
     }
 }
@@ -34,6 +34,21 @@ fn harvest(source: &str) -> Vec<String> {
         .into_iter()
         .map(str::to_string)
         .collect()
+}
+
+/// Parse `source` as one statement and return its table-candidate marker (#130).
+#[track_caller]
+fn marks_tables(source: &str) -> bool {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("statement should parse");
+    match &stmt.kind {
+        StatementKind::Skipped {
+            may_reference_tables,
+            ..
+        } => *may_reference_tables,
+        other => panic!("expected StatementKind::Skipped, got {other:?}"),
+    }
 }
 
 #[test]
@@ -8749,6 +8764,32 @@ fn parse_define_parameter_buffer() {
     }
 }
 
+/// The directionless spelling is the one real ABL uses: a buffer parameter binds
+/// to the caller's buffer, so INPUT/OUTPUT would be meaningless and the language
+/// does not accept them. Until #130 only the direction-led form parsed, so the
+/// valid statement was a parse error and the invalid one was not.
+#[test]
+fn parse_define_parameter_buffer_without_direction() {
+    for (source, expected_target) in [
+        ("DEFINE PARAMETER BUFFER bCust FOR Customer.", "Customer"),
+        (
+            "DEFINE PARAMETER BUFFER bItem FOR TEMP-TABLE ttItem.",
+            "ttItem",
+        ),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt.kind {
+            StatementKind::DefineParameter {
+                param_type: ParameterType::Buffer { target, .. },
+                ..
+            } => assert_eq!(target.name, expected_target),
+            other => panic!("Expected DefineParameter Buffer, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn parse_define_parameter_bind_append() {
     let source = "DEFINE INPUT PARAMETER DATASET FOR dsName BIND APPEND.";
@@ -10832,6 +10873,84 @@ fn display_with_frame_is_still_a_display_not_a_skipped() {
 #[test]
 fn skipped_span_covers_the_whole_statement() {
     let source = "PUT UNFORMATTED v-total SKIP.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("statement should parse");
+    assert_eq!(stmt.span.start, 0);
+    assert_eq!(stmt.span.end as usize, source.len());
+}
+
+// ---------------------------------------------------------------------------
+// Table-candidate marking on the three #130 forms
+// ---------------------------------------------------------------------------
+
+/// The marker is opt-in. An ordinary unmodelled form pays no table lookup, so
+/// the roughly thirty #128 dispatch sites are unchanged in behavior and cost.
+#[test]
+fn skipped_ordinary_form_is_not_a_table_candidate() {
+    assert!(!marks_tables("PUT v-total."));
+    assert!(!marks_tables("EXPORT vendor.vend-number."));
+}
+
+/// `DEFINE QUERY q FOR tt.` names its backing table, so its harvest is offered
+/// to the table namespaces. `q` rides along as a candidate — the grammar is not
+/// modelled until #136, so the harvest cannot tell the query's own name from the
+/// tables it is defined over. A candidate that resolves to nothing is silent.
+#[test]
+fn skipped_define_query_is_a_table_candidate() {
+    assert!(marks_tables("DEFINE QUERY q FOR ttItem."));
+    let names = harvest("DEFINE QUERY q FOR ttItem.");
+    assert!(names.iter().any(|n| n == "q"), "got {names:?}");
+    assert!(names.iter().any(|n| n == "ttItem"), "got {names:?}");
+}
+
+#[test]
+fn skipped_open_query_is_a_table_candidate() {
+    assert!(marks_tables("OPEN QUERY q FOR EACH ttItem."));
+    let names = harvest("OPEN QUERY q FOR EACH ttItem.");
+    assert!(names.iter().any(|n| n == "ttItem"), "got {names:?}");
+}
+
+/// Only `OPEN QUERY` marks. The bulk dispatch arm matches a bare `Kind::Open`,
+/// and the other shapes routed through it name no table — marking them would
+/// widen table lookup past the three forms #130 owns.
+#[test]
+fn skipped_non_query_open_stays_unmarked() {
+    assert!(!marks_tables("OPEN foo."));
+}
+
+/// A comment between OPEN and QUERY is legal ABL and the rest of the parser
+/// tolerates one at every keyword boundary. A raw one-token lookahead here would
+/// see the comment, skip the marker, and hand the table back its false positive.
+#[test]
+fn skipped_open_query_is_marked_across_an_interleaved_comment() {
+    assert!(marks_tables("OPEN /* which */ QUERY q FOR EACH ttItem."));
+}
+
+/// `EMPTY TEMP-TABLE` is the one #130 form whose table name the parser knows
+/// exactly, so it contributes precisely that one identifier rather than a
+/// lexical sweep: no `NO-ERROR`, no `TEMP-TABLE` keyword.
+#[test]
+fn skipped_empty_temp_table_harvests_exactly_the_table() {
+    assert!(marks_tables("EMPTY TEMP-TABLE ttItem NO-ERROR."));
+    assert_eq!(harvest("EMPTY TEMP-TABLE ttItem NO-ERROR."), vec!["ttItem"]);
+    // The `TEMP-TABLE` keyword is optional in the same statement.
+    assert_eq!(harvest("EMPTY ttItem."), vec!["ttItem"]);
+}
+
+/// A form with no table name must not panic and must harvest nothing — there is
+/// no candidate to offer, and inventing one would credit an unrelated symbol.
+#[test]
+fn skipped_empty_temp_table_without_a_name_harvests_nothing() {
+    assert!(harvest("EMPTY TEMP-TABLE.").is_empty());
+}
+
+/// The span rule holds for the newly-`Skipped` form too (ast-invariants §8):
+/// `EMPTY TEMP-TABLE` used to return a recovery `Empty`, and its replacement
+/// must still cover the statement's full extent including the trailing period.
+#[test]
+fn skipped_empty_temp_table_span_covers_the_whole_statement() {
+    let source = "EMPTY TEMP-TABLE ttItem NO-ERROR.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("statement should parse");

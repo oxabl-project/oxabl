@@ -629,9 +629,21 @@ pub enum StatementKind {
     /// non-diagnostic lookup is the real filter. Over-inclusion can only silence
     /// a diagnostic, never invent one.
     ///
+    /// `may_reference_tables` is a narrow marker, `false` for every ordinary
+    /// unmodelled form. `true` means the form is one whose grammar names a table
+    /// or temp-table (`DEFINE QUERY`, `OPEN QUERY`, `EMPTY TEMP-TABLE`), so the
+    /// semantic pass should additionally offer `names` to the buffer/table
+    /// namespaces as read candidates. It is a request for a conservative extra
+    /// lookup, not an assertion that any particular name *is* a table — the same
+    /// silent-on-miss resolution applies, so an over-inclusive candidate can only
+    /// silence a diagnostic, never invent one.
+    ///
     /// The statement's full extent is [`Statement::span`]; no companion
     /// `raw_span` is needed.
-    Skipped { names: Vec<Identifier> },
+    Skipped {
+        names: Vec<Identifier>,
+        may_reference_tables: bool,
+    },
 
     /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
     /// The label can be referenced by LEAVE and NEXT statements.
@@ -1209,6 +1221,7 @@ mod skipped_tests {
                     },
                 })
                 .collect(),
+            may_reference_tables: false,
         });
         s.span = Span {
             start: span_start,
@@ -1221,8 +1234,14 @@ mod skipped_tests {
     /// (§2 of `docs/design/ast-invariants.md`).
     #[test]
     fn skipped_equality_ignores_id_and_span() {
-        let mut a = Statement::new(StatementKind::Skipped { names: Vec::new() });
-        let mut b = Statement::new(StatementKind::Skipped { names: Vec::new() });
+        let mut a = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
+        let mut b = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
         a.id = NodeId::from_u32(7);
         a.span = Span { start: 0, end: 4 };
         b.id = NodeId::from_u32(99);
@@ -1235,7 +1254,10 @@ mod skipped_tests {
     /// read "the parser skipped a `PUT` that reads v-total" as "nothing here".
     #[test]
     fn skipped_is_not_empty() {
-        let a = Statement::new(StatementKind::Skipped { names: Vec::new() });
+        let a = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
         let b = Statement::new(StatementKind::Empty);
         assert_ne!(a, b);
         assert_ne!(a, StatementKind::Empty);
@@ -1249,5 +1271,22 @@ mod skipped_tests {
     fn skipped_equality_discriminates_on_names() {
         assert_ne!(skipped(vec!["v-total"], 0), skipped(vec!["v-count"], 0));
         assert_eq!(skipped(vec!["v-total"], 0), skipped(vec!["v-total"], 0));
+    }
+
+    /// The table-candidate marker participates in structural equality. It is a
+    /// semantic difference, not an annotation: the marked node asks the resolve
+    /// pass for a buffer/table lookup the unmarked one does not get, so two nodes
+    /// over identical tokens are not interchangeable.
+    #[test]
+    fn skipped_equality_discriminates_on_table_marker() {
+        let unmarked = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
+        let marked = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: true,
+        });
+        assert_ne!(unmarked, marked);
     }
 }

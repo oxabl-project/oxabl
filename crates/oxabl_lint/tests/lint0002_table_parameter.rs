@@ -112,3 +112,113 @@ END PROCEDURE.
     assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {diags:?}");
     assert!(diags[0].contains("ttItem"), "{diags:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Table used only through a form that names it without reading a field (#130)
+// ---------------------------------------------------------------------------
+//
+// Each of these five forms names its table and nothing else: no FOR EACH, no
+// field access, nothing the expression walk can see. Before #130 the backing
+// temp-table's `read_count` stayed at zero, so the redirect above asked the
+// right symbol and still got the wrong answer.
+
+/// Wrap `body` in a procedure that takes `ttItem` as a table parameter, so the
+/// only thing that can credit the table is the statement under test.
+fn only_use_of_the_table(body: &str) -> String {
+    format!(
+        "\
+DEFINE TEMP-TABLE ttItem NO-UNDO
+  FIELD ItemCode AS CHARACTER.
+
+PROCEDURE handle-items:
+  DEFINE INPUT PARAMETER TABLE FOR ttItem.
+{body}
+END PROCEDURE.
+"
+    )
+}
+
+#[track_caller]
+fn assert_silent(body: &str) {
+    let src = only_use_of_the_table(body);
+    let diags = lint0002(&src);
+    assert!(
+        diags.is_empty(),
+        "unexpected diagnostics for {body:?}: {diags:?}"
+    );
+}
+
+#[test]
+fn table_used_only_by_a_buffer_definition_is_silent() {
+    assert_silent("  DEFINE BUFFER bItem FOR ttItem.");
+}
+
+/// R2: the explicit `FOR TEMP-TABLE` spelling is a different `BufferTarget`
+/// variant and would be an easy one to fix only halfway.
+#[test]
+fn table_used_only_by_a_temp_table_buffer_definition_is_silent() {
+    assert_silent("  DEFINE BUFFER bItem FOR TEMP-TABLE ttItem.");
+}
+
+#[test]
+fn table_used_only_by_a_buffer_parameter_is_silent() {
+    assert_silent("  DEFINE PARAMETER BUFFER bItem FOR ttItem.");
+}
+
+#[test]
+fn table_used_only_by_empty_temp_table_is_silent() {
+    assert_silent("  EMPTY TEMP-TABLE ttItem NO-ERROR.");
+}
+
+#[test]
+fn table_used_only_by_a_query_definition_is_silent() {
+    assert_silent("  DEFINE QUERY q-item FOR ttItem.");
+}
+
+#[test]
+fn table_used_only_by_an_open_query_is_silent() {
+    assert_silent("  OPEN QUERY q-item FOR EACH ttItem.");
+}
+
+/// Every backing table a query names is credited, not just the first — a join
+/// over two temp-tables reads both.
+#[test]
+fn every_table_a_query_names_is_credited() {
+    let src = "\
+DEFINE TEMP-TABLE ttItem NO-UNDO
+  FIELD ItemCode AS CHARACTER.
+DEFINE TEMP-TABLE ttOrder NO-UNDO
+  FIELD OrderNum AS INTEGER.
+
+PROCEDURE join-items:
+  DEFINE INPUT PARAMETER TABLE FOR ttItem.
+  DEFINE INPUT PARAMETER TABLE FOR ttOrder.
+  OPEN QUERY q-join FOR EACH ttItem, EACH ttOrder.
+END PROCEDURE.
+";
+    let diags = lint0002(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+}
+
+/// Discrimination, one per implementation shape: crediting the table must not
+/// turn into a procedure-wide amnesty. The buffer forms resolve their target
+/// directly; the query and empty-table forms go through the marked-skipped
+/// harvest, which is the broader of the two paths and the one where an
+/// over-eager suppression would hide.
+#[test]
+fn unused_scalar_beside_a_credited_table_still_warns() {
+    for body in [
+        "  DEFINE BUFFER bItem FOR ttItem.\n  DEFINE VARIABLE v-spare AS INTEGER NO-UNDO.",
+        "  EMPTY TEMP-TABLE ttItem.\n  DEFINE VARIABLE v-spare AS INTEGER NO-UNDO.",
+        "  OPEN QUERY q-item FOR EACH ttItem.\n  DEFINE VARIABLE v-spare AS INTEGER NO-UNDO.",
+    ] {
+        let src = only_use_of_the_table(body);
+        let diags = lint0002(&src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic for {body:?}: {diags:?}"
+        );
+        assert!(diags[0].contains("v-spare"), "{diags:?}");
+    }
+}

@@ -648,6 +648,7 @@ mod tests {
             var_decl("x", DataType::Integer),
             Statement::new(StatementKind::Skipped {
                 names: vec![ident("x")],
+                may_reference_tables: false,
             }),
         ]);
         let x = v["symbols"]
