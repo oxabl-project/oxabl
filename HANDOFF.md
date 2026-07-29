@@ -28,7 +28,41 @@
 
 ---
 
-## What shipped this session — #133
+## What shipped this session — #130
+
+Five statement forms name a table without reading a field of it, so nothing in the expression walk ever saw them and the backing symbol's `read_count` stayed at zero. That is what made LINT0002's table-parameter redirect ask the right symbol and still get the wrong answer: a `TABLE FOR tt` parameter whose temp-table was used only that way got reported as unused.
+
+| Form | How it credits now |
+|---|---|
+| `DEFINE BUFFER b FOR tt.` | Direct AST resolution of the target |
+| `DEFINE PARAMETER BUFFER b FOR tt.` | Same, via `ParameterType::Buffer` |
+| `EMPTY TEMP-TABLE tt.` | Marked `Skipped` carrying its exactly-parsed table name |
+| `DEFINE QUERY q FOR tt.` | Marked `Skipped`, lexical harvest |
+| `OPEN QUERY q FOR EACH tt.` | Marked `Skipped`, lexical harvest |
+
+**Decisions / gotchas future sessions should know:**
+
+- **`StatementKind::Skipped` gained `may_reference_tables`.** A marked node keeps #128's value-namespace treatment *unchanged* and additionally resolves the same names in `[Buffers, Tables]` as `AccessMode::Read`. The two paths are independent on purpose: a token can resolve in both namespaces under shadowing, and they record different facts — the value side records that counts cannot be judged, the table side records a real read. Only three forms set the marker, so ordinary #128 forms pay no extra namespace walk.
+- **The same-name guard is load-bearing.** `DEFINE BUFFER Customer FOR Customer.` is the standard ABL block-scoping idiom, and the declare pass has already bound the new buffer under that folded name. An unguarded lookup resolves the target to the buffer being declared and credits it a read *for existing*, which would silence every count-gated rule for that symbol.
+- **Both credit paths go through `resolve_statement_ident`**, which is silent on a miss. That is what lets the deliberately over-inclusive query harvest run without creating a `references` entry or an `undefined-symbol` diagnostic for every stray token.
+- **The query forms stay lexically harvested until #136 head-parses them**, so every identifier inside a `DEFINE QUERY` / `OPEN QUERY` is a table candidate. Over-crediting can silence a diagnostic but cannot invent one — the same conservative direction #128 chose, but bounded to two forms.
+- **A bare *schema* table is still credited by nobody.** `synth_table_buffer_symbol` inserts into the `SymbolTable` without binding into the `ScopeTree`, and nothing declares into `NamespaceId::Tables` at all — so `DEFINE BUFFER bCust FOR Customer.` under a loaded schema credits nothing, exactly as `FIND` and `FOR EACH` leave it today. Deliberately out of scope; that boundary now has a test (`schema_only_targets_retain_current_no_credit_behavior`) rather than being folklore.
+- **The parser accepted only the *invalid* spelling of a buffer parameter.** Buffer parameters carry no direction in ABL — the buffer binds to the caller's — but only `DEFINE INPUT PARAMETER BUFFER b FOR tt` parsed, and the valid directionless `DEFINE PARAMETER BUFFER b FOR tt` was a parse error. Fixed here: an end-to-end pin against a source form real code never contains proves nothing. Both spellings now produce the same node.
+- **A comment between `OPEN` and `QUERY` defeated the marker** in the first cut, because the split used a raw one-token lookahead while every other keyword boundary in the parser tolerates an interleaved comment. Caught in review; it now uses `peek_nth_non_comment`. Worth remembering as a class: a new lookahead in this parser should assume a comment can sit in the gap.
+
+**Follow-ups this deliberately did not do:**
+
+1. **Whether an unused buffer symbol deserves its own diagnostic.** Crediting a buffer definition's target removes a table-parameter false positive, but a buffer that is bound and never used stays silent under the current rule set — `is_candidate` excludes `Buffer`/`TempTable`, so nothing can pick it back up.
+2. **Binding synthesized schema default buffers into the scope model**, so statement-position table references can credit schema tables consistently. Broader than #130 because it also changes `FIND` and `FOR EACH`, with visible `oxabl analyze` consequences.
+3. **#136 retires the query approximation** by head-parsing those forms, at which point `may_reference_tables` narrows to whatever is left.
+
+**Found and filed, not fixed:** `ParameterType::Buffer` records the wrong target in a procedure signature. `crates/oxabl_parser/src/parser/mod.rs:1567` — the inline parameter-list path (`PROCEDURE p (BUFFER b FOR tt)`) parses the table name and then discards it with `.ok()`, setting `target` to the *buffer's own name*. Two consequences: the declare pass calls `schema_table_id` on the buffer name, so that shape never links its schema table; and #130's new credit is skipped by the same-name guard, so it credits nothing. Pre-existing and distinct from #130.
+
+**Verification:** `cargo test --workspace` green — **1581 tests, 0 failures** — plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All fixtures synthetic.
+
+---
+
+## Carried forward: the browser WASM adapter (#133)
 
 `crates/oxabl_wasm` exposes exactly two `#[wasm_bindgen]` functions, each returning a JSON string:
 
@@ -71,9 +105,7 @@ Those forms now emit `StatementKind::Skipped { names }` carrying the identifier 
 
 **One sibling remains.** **#134** — skipped *tails* inside modelled statements (`DISPLAY … WITH FRAME` options, `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing content, and ten more): same root cause, but the statement node is already occupied so neither #128's nor #130's payload shape transfers. Pinned by a deliberately-failing-later test in `crates/oxabl_lint/tests/issue128_skipped_statement_reads.rs`.
 
-**#130 shipped (this session).** The five forms that name a table without reading a field of it — `DEFINE BUFFER b FOR tt`, `DEFINE PARAMETER BUFFER b FOR tt`, `EMPTY TEMP-TABLE tt`, `DEFINE QUERY q FOR tt`, `OPEN QUERY q FOR EACH tt` — now credit a read on the table. Two shapes, deliberately: the buffer forms resolve their target directly from the AST, guarded so the `DEFINE BUFFER Customer FOR Customer` idiom can't self-credit; the other three carry a new `may_reference_tables` marker on `StatementKind::Skipped` that earns their existing #128 harvest a second lookup in `[Buffers, Tables]`. The two lookups are independent and record different facts — the value side records that counts are unjudgeable, the table side records a real read — because a token can resolve in both namespaces under shadowing.
-
-**What #130 deliberately did not do.** The query forms stay lexically harvested until #136 head-parses them, so every identifier in a `DEFINE QUERY` / `OPEN QUERY` is a table candidate; that can silence a diagnostic but cannot invent one. A bare *schema* table is still credited by nobody — `synth_table_buffer_symbol` never binds into the `ScopeTree` and nothing declares into `NamespaceId::Tables` — exactly as `FIND` and `FOR EACH` leave it today. That boundary now has a test rather than being folklore.
+**#130 shipped (this session)** and closes the table half: the five forms that name a table without reading a field of it now credit a read on it. Mechanics, the deliberate limits, and the follow-ups are in **What shipped this session** above — read that before touching `may_reference_tables` or the buffer-target guard.
 
 Other #129 facts worth keeping:
 
@@ -95,15 +127,16 @@ Other #129 facts worth keeping:
 
 ## Next
 
+The two items that headed this list — **#119** (panic safety) and **#128 + #130** (uncredited reads) — have all shipped, as #135, #137, and this session. Between them they closed the FP class this list called the last known one. What remains:
 
-1. ~~**#119 — panic-safe parse/format entry points.**~~ **Shipped as #135**, with browser crash recovery on top. Original framing kept for context: it was the most urgent item, and not previously on this list. `oxabl::parse` and `oxabl::format_source` ship a documented panic contract; the CLI and LSP each wrap calls in `catch_unwind`, but **`oxabl_wasm` does not — and on `wasm32-unknown-unknown` it cannot meaningfully, because a panic traps the module.** So one malformed paste doesn't render an error in the playground, it **bricks the demo until the visitor reloads the page**, with no explanation. Note the asymmetry this session already created: a formatter *bail* is handled as a first-class result (original source, `changed: false`, message in `error`), but the *panic* path is unguarded — the right instinct applied to one of the two failure modes. A `try_parse`/`try_format` variant also retires **seven** hand-rolled `catch_unwind` guards — not three, as this list originally said — and closes **three** call sites that had no guard at all, including `run_analyze` in the CLI and both of the LSP's diagnostics paths, one of which runs on the main loop where a panic kills the server. Hardening the lexer/parser to be panic-free remains the better long-term end state. Small, contained, and it protects what was just shipped.
-2. ~~**#128 + #130 — uncredited reads.**~~ **Both shipped** (#137 and this session). Between them they closed the FP class this list called the last known one; **#134** is the remaining half — skipped *tails* inside modelled statements, where the statement node is already occupied so neither carrier transfers.
+1. **#134 — skipped tails inside modelled statements.** The one uncredited-read half left. Same root cause as #128/#130, but the statement node is already occupied so neither carrier transfers. Pinned by a deliberately-failing-later test in `crates/oxabl_lint/tests/issue128_skipped_statement_reads.rs`.
+2. **#136 — head-parse the unmodelled forms.** Scheduled (`hermes`). The real drain: it retires #128's file-wide flag *and* #130's query approximation, and picks up formatter and LSP coverage on the way.
 3. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
 4. **#102 — workspace-wide cross-file semantic resolution** remains the top *strategic* thread (with #103 as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets, and cross-file `SHARED` vars all resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. It is the ceiling on lint effectiveness and **blocks #57**. It sits below the items above only on sequencing, not importance: it is weeks of architecture, and it does nothing for the playground, whose MVP has no workspace, includes, or PROPATH by design. Take it through `/ce-brainstorm` → `/ce-plan` before building.
 5. **#120 — reshape `check`/`analyze` onto shared pipelines.** Worth doing, but the "three clients hand-map the same diagnostics" framing is the weakest part of its case: those mappings differ because the transports genuinely differ (`lsp_types::Diagnostic`, a JSON wire shape with `SourceMap`-resolved positions, rendered text), so a shared pipeline hoists the *collection* while each client still needs its final hop — that deletes some code, not a class of bugs. #120's real value has always been the **ruff-shaped `check`**, a product change #133 didn't make more urgent. Two further reasons it sits here: sequencing it before #119/#128 reshapes delivery while the diagnostics are still wrong, forcing a re-verify across all three clients afterward; and it is a `/ce-strategy`-then-plan thread in the same weight class as #102, competing for the same design attention. **The one argument that does carry weight:** the wire shape is not a stable contract, and every week the playground is live the website hardens around today's shape — a real closing window, but one this repo controls. Consider folding it into #102's strategy pass, since both want one.
 6. **#126 — CFG + dataflow scaffolding** still absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`, and #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
 7. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed can't catch a regression in any of them.
-8. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI so the demo's load cost can't silently balloon; and deciding whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file. Panic safety belonged on this list and is now item 1 as #119.
+8. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI so the demo's load cost can't silently balloon; and deciding whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file. Panic safety belonged on this list and shipped as #135.
 9. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and re-check the held block-scope false positive.
 10. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish.
 
@@ -113,24 +146,17 @@ Other #129 facts worth keeping:
 
 | Issue/PR | Relation |
 |----------|----------|
-| **#133** | **Merged** — browser WASM adapter + playground (this session) |
-| **#102 / #103** | Open — cross-file resolution + background index (**the strategic thread, next**) |
+| **#130** | **This session** — table-use forms credit a read on the table they name; `Skipped` gained `may_reference_tables` |
 | **#128** | **Merged** — standalone unmodelled forms credited; `StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT` |
-| **#136** | Open, **scheduled** — head-parse the unmodelled forms; the drain that retires #128's flag |
-| **#134** | Open — skipped tails inside *modelled* statements; same root cause, different carrier |
-| **#130** | **Merged** — table-use forms credit a read on the table they name; `Skipped` gained `may_reference_tables` |
-| #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
-| #132 | Open — `oxabl_lint` has no benchmark coverage at all |
-| #125 | Open — **unblocked**; callee-written dead-store advisory |
-| #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires the two older stopgap flags (#128's third flag drains via #136 instead) |
-| #120 | Open — reshape `check`/`analyze` onto shared lint/format pipelines; now has three client consumers |
+| **#134** | Open — the one remaining uncredited-read half now that #128 and #130 have both shipped; skipped tails inside *modelled* statements, same root cause but the statement node is already occupied |
+| **#136** | Open, **scheduled** — head-parse the unmodelled forms; the drain that retires #128's flag and #130's query approximation |
 | **#119** | **Merged as #135** — panic-safe parse/analyze/format plus browser crash recovery |
-| **#134** | Open — the one remaining uncredited-read half now that #128 and #130 have both shipped |
+| **#133** | **Merged** — browser WASM adapter + playground |
 | **#102 / #103** | Open — cross-file resolution + background index (**the top strategic thread**; sequenced after the above, and no help to the playground) |
 | #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
 | #132 | Open — `oxabl_lint` has no benchmark coverage at all |
 | #125 | Open — **unblocked**; callee-written dead-store advisory |
-| #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires both stopgap flags |
+| #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires the two older stopgap flags (#128's third flag drains via #136 instead) |
 | #120 | Open — reshape `check`/`analyze` onto shared lint/format pipelines; three client consumers, but the dedup argument is weaker than the ruff-shaped-`check` one (see **Next** item 5) |
 | #129 | Merged — table-parameter FP + LINT0006 dead-store split |
 | #127 | Merged — LINT0002 OUTPUT-argument FP; #129 builds on its flag and supersedes its `write_count` note |
