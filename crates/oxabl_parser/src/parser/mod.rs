@@ -665,7 +665,10 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     pub(crate) fn skipped_stmt(&mut self, hi: usize) -> Statement {
         let names = self.harvest_skipped_names(self.stmt_start_token, hi);
-        self.stmt(StatementKind::Skipped { names })
+        self.stmt(StatementKind::Skipped {
+            names,
+            may_reference_tables: false,
+        })
     }
 
     /// Filter the tokens in `[lo, hi)` down to the names worth offering the

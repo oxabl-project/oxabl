@@ -19,7 +19,7 @@ use std::str::FromStr;
 #[track_caller]
 fn skipped_names(stmt: &Statement) -> Vec<&str> {
     match &stmt.kind {
-        StatementKind::Skipped { names } => names.iter().map(|n| n.name.as_str()).collect(),
+        StatementKind::Skipped { names, .. } => names.iter().map(|n| n.name.as_str()).collect(),
         other => panic!("expected StatementKind::Skipped, got {other:?}"),
     }
 }

@@ -175,7 +175,7 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   (`references`, `types`) are allowed to be `None` at those NodeIds. See Flow-gap F5 in the
   v1 plan addendum.
 
-**`Skipped { names }` — a form was recognized and then discarded.**
+**`Skipped { names, may_reference_tables }` — a form was recognized and then discarded.**
 
 - Around thirty statement forms are matched by their leading keyword and then skipped
   wholesale by one of the four skip helpers (`skip_to_period`, `skip_to_statement_end`,
@@ -194,6 +194,18 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 - `names` is a **best-effort lexical harvest, not a reference list.** Consumers must resolve
   it through a path that records nothing (see `lookup_statement_ident` in
   `oxabl_semantic::resolve`) and must not emit a diagnostic for a name that fails to resolve.
+- `may_reference_tables` is `false` on every ordinary unmodelled form. Only the three forms
+  whose grammar names a table set it: `DEFINE QUERY`, `OPEN QUERY`, and `EMPTY TEMP-TABLE`.
+  **Invariant:** it selects an *additional* lookup, never a replacement — a marked node still
+  gets the value-namespace treatment every `Skipped` node gets, and the two paths are
+  independent, so a name that resolves in both namespaces is credited on both sides.
+- The two lookups record different things, and that asymmetry is deliberate. The value side
+  records uncertainty only (`TOUCHED_BY_UNMODELLED_STATEMENT`) and leaves counts exact,
+  because the parser cannot tell a read from a write inside a grammar it does not model. The
+  table side increments a real `read_count`, because every form carrying the marker reads its
+  table in every spelling the grammar admits. **Invariant:** neither path writes a
+  `references` entry, and neither emits a diagnostic on a miss — the harvest is too broad to
+  be evidence of a defect in either direction.
 - The statement's full extent is `Statement.span`; there is no companion `raw_span`.
 - The variant is scaffolding with a scheduled successor (#136): each form that gets
   head-parsed stops emitting `Skipped`.

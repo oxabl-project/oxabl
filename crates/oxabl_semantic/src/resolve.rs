@@ -1830,7 +1830,10 @@ impl<'a> ResolveWalker<'a> {
             StatementKind::Leave(_) | StatementKind::Next(_) => {}
             StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => {}
             StatementKind::Empty => {}
-            StatementKind::Skipped { names } => self.credit_unmodelled_names(names, scope),
+            StatementKind::Skipped {
+                names,
+                may_reference_tables: _,
+            } => self.credit_unmodelled_names(names, scope),
         }
     }
 
@@ -5348,6 +5351,7 @@ mod tests {
     fn skipped_stmt_n(names: &[&str]) -> Statement {
         stmt_n(StatementKind::Skipped {
             names: names.iter().copied().map(id).collect(),
+            may_reference_tables: false,
         })
     }
 
