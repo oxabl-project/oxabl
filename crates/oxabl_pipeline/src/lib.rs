@@ -40,13 +40,27 @@
 //! cutoff needs) plus a guarded [`run`](LintPipeline::run) convenience, all
 //! producing one [`LintResult`] (R2, R3, KTD2, KTD6).
 //!
-//! The format pipeline handle lands on top of the same foundation.
+//! [`FormatPipeline`] — the format run, built from a resolved style guide and
+//! *nothing else*, so "the formatter never sees expanded macros" is a property
+//! of the type rather than a caller's discipline (R4, KTD4). Every client
+//! renders the one [`FormatOutcome`], whose refusal arm keeps the
+//! bail-versus-internal-panic distinction structural (R5, R20).
+//!
+//! [`resolve_diagnostic`] and its siblings — the single derivation of line and
+//! column from a byte span, for the byte-offset clients. The language server
+//! deliberately does not use it (R13, KTD5); see [`position`].
 
 mod config;
+mod format;
 mod lint;
+pub mod position;
 
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
+pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult};
+pub use position::{
+    Position, ResolvedSpan, resolve_diagnostic, resolve_file_span, resolve_offset, resolve_offsets,
+};
 
 use oxabl_common::FileId;
 
