@@ -929,6 +929,30 @@ impl Parser<'_> {
             return self.parse_define_parameter();
         }
 
+        // DEFINE PARAMETER BUFFER b FOR [TEMP-TABLE] tt.
+        //
+        // Buffer parameters carry no direction in ABL — the buffer binds to the
+        // caller's, so INPUT/OUTPUT would be meaningless — which is why this
+        // spelling never reaches the direction-led dispatch above. Recorded as
+        // `Input`, matching what the `DEFINE INPUT PARAMETER BUFFER` path
+        // already produces; nothing downstream distinguishes them.
+        if self.check(Kind::Parameter) && self.peek_at(1).kind == Kind::Buffer {
+            self.advance(); // consume PARAMETER
+            self.advance(); // consume BUFFER
+            let name = self.parse_identifier()?;
+            self.expect_kind(Kind::KwFor, "Expected FOR after buffer parameter name")?;
+            // FOR TEMP-TABLE tt is the explicit spelling of FOR tt.
+            if self.check(Kind::TempTable) {
+                self.advance();
+            }
+            let target = self.parse_identifier()?;
+            self.expect_period("Expected '.' after parameter definition")?;
+            return Ok(self.stmt(StatementKind::DefineParameter {
+                direction: ParameterDirection::Input,
+                param_type: ParameterType::Buffer { name, target },
+            }));
+        }
+
         // Parse optional NEW [GLOBAL] SHARED / SHARED. These three modes are
         // mutually exclusive by construction (see ast-invariants.md §12): the
         // GLOBAL form sets `is_new_global_shared`, plain NEW sets

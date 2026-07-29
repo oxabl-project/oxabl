@@ -8764,6 +8764,32 @@ fn parse_define_parameter_buffer() {
     }
 }
 
+/// The directionless spelling is the one real ABL uses: a buffer parameter binds
+/// to the caller's buffer, so INPUT/OUTPUT would be meaningless and the language
+/// does not accept them. Until #130 only the direction-led form parsed, so the
+/// valid statement was a parse error and the invalid one was not.
+#[test]
+fn parse_define_parameter_buffer_without_direction() {
+    for (source, expected_target) in [
+        ("DEFINE PARAMETER BUFFER bCust FOR Customer.", "Customer"),
+        (
+            "DEFINE PARAMETER BUFFER bItem FOR TEMP-TABLE ttItem.",
+            "ttItem",
+        ),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt.kind {
+            StatementKind::DefineParameter {
+                param_type: ParameterType::Buffer { target, .. },
+                ..
+            } => assert_eq!(target.name, expected_target),
+            other => panic!("Expected DefineParameter Buffer, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn parse_define_parameter_bind_append() {
     let source = "DEFINE INPUT PARAMETER DATASET FOR dsName BIND APPEND.";
