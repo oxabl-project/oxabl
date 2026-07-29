@@ -27,6 +27,7 @@ use std::time::Instant;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use oxabl_lsp::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics};
+use oxabl_pipeline::PipelineConfig;
 use oxabl_workspace::RealFileSystem;
 use salsa::Setter;
 
@@ -44,11 +45,15 @@ fn fixture_source() -> String {
 }
 
 fn bench_config() -> AnalysisConfig {
+    // Configuration is resolved once and held behind an `Arc`, exactly as the
+    // live server holds it: the measured cycle must contain no config resolution.
     AnalysisConfig {
         fs: Arc::new(RealFileSystem),
-        include_paths: Arc::new(vec![resources_dir()]),
+        pipeline: Arc::new(PipelineConfig {
+            include_paths: vec![resources_dir()],
+            ..PipelineConfig::default()
+        }),
         preprocess: true,
-        ..Default::default()
     }
 }
 

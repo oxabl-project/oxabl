@@ -1,11 +1,17 @@
 //! `oxabl lsp` — a stdio LSP server that surfaces oxabl's parse + lint +
 //! loud-preprocessor diagnostics live in an editor (Track A).
 //!
-//! v1 is a diagnostics-only skeleton: it completes the LSP handshake, syncs
-//! open buffers incrementally, and pushes `publishDiagnostics`. It advertises
-//! nothing else (R2). The heavy lifting — the actual analysis — reuses the
-//! existing pure pipeline through the shared collector
-//! ([`oxabl_analyze::collect_diagnostics`]); this crate is server plumbing.
+//! v1 is a diagnostics-and-formatting server: it completes the LSP handshake,
+//! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
+//! `textDocument/formatting`. It advertises nothing else (R2).
+//!
+//! **This crate orchestrates nothing.** Both the analysis and the formatting are
+//! [`oxabl_pipeline`]'s, driven through handles this server holds: the lint
+//! pipeline's two phases run inside the salsa queries in [`db`], the format
+//! pipeline runs inline in [`formatting`], and one [`PipelineConfig`] resolved
+//! from a single read of `oxabl.toml` feeds both. What is left here is genuinely
+//! server plumbing: *when* to run, *which* buffers to invalidate, and how to
+//! render a byte span as a `Range` under the negotiated encoding.
 //!
 //! Threading discipline (KTD7): input mutations run on the main loop; each
 //! debounced diagnostics computation runs on a cloned salsa snapshot on a
@@ -36,11 +42,8 @@ use lsp_types::{
     TextEdit, Uri,
 };
 use oxabl_common::catch_panic;
-use oxabl_schema::{Schema, SchemaLoader};
-use oxabl_workspace::{
-    RealFileSystem, WorkspaceConfig, find_workspace_root, resolved_include_paths,
-    resolved_lint_config,
-};
+use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
+use oxabl_workspace::RealFileSystem;
 use salsa::Setter;
 
 use crate::capabilities::{negotiate_position_encoding, server_capabilities};
@@ -127,8 +130,9 @@ struct Server<'c> {
     /// The path the workspace configuration was resolved from (first opened
     /// document), used to re-resolve on `oxabl.toml` / `.df` changes (R16/R17).
     workspace_anchor: Option<PathBuf>,
-    /// Resolved `.df` schema file paths (for watcher matching, R16).
-    schema_files: Vec<PathBuf>,
+    /// The format pipeline, rebuilt whenever configuration is resolved so a
+    /// formatting request costs no style resolution and no `StyleGuide` clone.
+    formatter: FormatPipeline,
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     /// Per-URI debounce timers (R13).
@@ -151,7 +155,9 @@ impl<'c> Server<'c> {
         encoding: PositionEncodingKind,
         debounce_window: std::time::Duration,
     ) -> Self {
-        let db = AnalysisDatabase::new(AnalysisConfig::default());
+        let config = AnalysisConfig::default();
+        let formatter = FormatPipeline::new(config.pipeline.style.clone());
+        let db = AnalysisDatabase::new(config);
         let schema = SchemaHandle::new(&db, 0);
         Server {
             connection,
@@ -162,7 +168,7 @@ impl<'c> Server<'c> {
             schema,
             config_resolved: false,
             workspace_anchor: None,
-            schema_files: Vec::new(),
+            formatter,
             dependencies: HashMap::new(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
         }
@@ -350,10 +356,14 @@ impl<'c> Server<'c> {
         }
     }
 
-    /// Resolve the db configuration from the first opened document's workspace
-    /// (once), establishing include paths, the `[lint]` severity surface, and
+    /// Resolve configuration from the first opened document's workspace (once),
+    /// establishing include paths, the `[lint]` severity surface, the style, and
     /// the schema so include-resident symbols resolve (R9) and schema-gated
     /// rules go live (R10).
+    ///
+    /// One resolution feeds every surface: diagnostics *and* formatting read the
+    /// same [`PipelineConfig`], so the server no longer has a second config path
+    /// that could disagree with the first (KTD3).
     fn ensure_config(&mut self, uri: &Uri) {
         if self.config_resolved {
             return;
@@ -361,8 +371,7 @@ impl<'c> Server<'c> {
         self.config_resolved = true;
         if let Some(path) = uri_to_path(uri) {
             self.workspace_anchor = Some(path.clone());
-            let config = self.resolve_workspace_config(&path);
-            self.db.set_config(config);
+            self.resolve_config_from(&path);
         }
         self.register_file_watchers();
     }
@@ -393,22 +402,63 @@ impl<'c> Server<'c> {
         let _ = self.connection.sender.send(Message::Request(request));
     }
 
-    /// Resolve the full [`AnalysisConfig`] for a document `path`: include paths,
-    /// lint severities, and the loaded schema. Also records the resolved `.df`
-    /// paths for watcher matching.
-    fn resolve_workspace_config(&mut self, path: &Path) -> AnalysisConfig {
-        let (include_paths, _err) = resolved_include_paths(path, &[]);
-        let (lint_config, _lint_err) = resolved_lint_config(path, &[]);
-        let (schema, schema_loaded, schema_files) = load_workspace_schema(path);
-        self.schema_files = schema_files;
-        AnalysisConfig {
+    /// Resolve the one [`PipelineConfig`] for a document `path` and install it in
+    /// both places it is read: the db (for the two query phases) and the format
+    /// pipeline (for `textDocument/formatting`).
+    ///
+    /// The server has no CLI flags, so there are no overrides — but the whole
+    /// resolution still goes through the shared entry point, which is what makes
+    /// "the editor and `oxabl check` agree" a property of one code path rather
+    /// than of two implementations kept in step by hand (KTD3).
+    ///
+    /// Non-fatal problems come back as data and are logged to the client (R7).
+    /// Before this, the server called three `resolved_*` helpers and dropped
+    /// every error slot on the floor, so a malformed `oxabl.toml` degraded the
+    /// editor's diagnostics *silently* while the CLI printed a `warning:` line
+    /// for the same file.
+    fn resolve_config_from(&mut self, path: &Path) {
+        let (resolved, warnings) = PipelineConfig::resolve(path, &ConfigOverrides::default());
+        self.report_config_warnings(&warnings);
+        self.install_config(resolved);
+    }
+
+    /// Install a freshly resolved configuration in the db and rebuild the format
+    /// pipeline from its style. Callers must re-trigger affected buffers
+    /// afterwards (the db configuration is not a salsa input, R17).
+    fn install_config(&mut self, resolved: PipelineConfig) {
+        self.formatter = FormatPipeline::new(resolved.style.clone());
+        self.db.set_config(AnalysisConfig {
             fs: std::sync::Arc::new(RealFileSystem),
-            schema: std::sync::Arc::new(schema),
-            schema_loaded,
-            include_paths: std::sync::Arc::new(include_paths),
-            lint_severities: std::sync::Arc::new(lint_config.to_severity_map()),
+            pipeline: std::sync::Arc::new(resolved),
             preprocess: true,
+        });
+    }
+
+    /// Surface configuration warnings on the client's log (R7).
+    ///
+    /// `window/logMessage` rather than a published diagnostic: these problems
+    /// belong to `oxabl.toml` or a `.df`, not to the open buffer, so attaching
+    /// them to a span in the ABL file the user happens to have focused would put
+    /// a squiggle on innocent code.
+    fn report_config_warnings(&self, warnings: &[ConfigWarning]) {
+        for warning in warnings {
+            self.log_warning(&format!("oxabl-lsp: {warning}"));
         }
+    }
+
+    /// Send a `window/logMessage` at warning level.
+    fn log_warning(&self, message: &str) {
+        let notification = lsp_server::Notification {
+            method: lsp_types::notification::LogMessage::METHOD.to_string(),
+            params: serde_json::json!({
+                "type": lsp_types::MessageType::WARNING,
+                "message": message,
+            }),
+        };
+        let _ = self
+            .connection
+            .sender
+            .send(Message::Notification(notification));
     }
 
     /// Compute diagnostics for `uri` on a salsa snapshot and publish them
@@ -462,24 +512,32 @@ impl<'c> Server<'c> {
             }
         }
 
-        // Re-resolve include paths + lint config from the anchor (R17). This
-        // also reloads the schema, so it subsumes a `.df` change too.
-        if config_changed {
+        // Both events re-resolve the one configuration from the anchor, because
+        // there is only one resolution to re-run: a `.df` change reloads the
+        // schema by re-reading the config that names it (R16), and an
+        // `oxabl.toml` change re-reads include paths, lint severities, style, and
+        // the schema together (R17). Re-resolving on a `.df` change costs one
+        // extra `oxabl.toml` read on a save-rate event, and buys the server a
+        // single config path instead of a second schema-only loader.
+        if config_changed || schema_changed {
             if let Some(anchor) = self.workspace_anchor.clone() {
-                let config = self.resolve_workspace_config(&anchor);
-                self.db.set_config(config);
+                self.resolve_config_from(&anchor);
             }
             // Bump the config revision so the diagnostics query recomputes with
-            // the new lint severities (config is db state, not a salsa input, so
-            // it would not otherwise invalidate — and re-triggering the buffer
-            // alone backdates through the unchanged expansion). The re-trigger
-            // (set_text) additionally re-reads includes for a changed PROPATH.
+            // the new configuration (it is db state, not a salsa input, so it
+            // would not otherwise invalidate — and re-triggering the buffer alone
+            // backdates through the unchanged expansion).
             self.bump_config_revision();
+        }
+
+        if config_changed {
+            // The re-trigger (set_text) additionally re-reads includes for a
+            // changed PROPATH.
             self.retrigger_all(now);
         } else if schema_changed {
-            self.reload_schema();
-            // Bumping the schema handle invalidates the diagnostics query for
-            // every buffer (R16); schedule them all to republish.
+            // A changed schema cannot change any expansion, so re-reading
+            // includes would be waste: the revision bump already invalidated the
+            // collect phase for every buffer (R16). Just schedule the republish.
             for uri in self.open_uris() {
                 self.debouncer.schedule(uri, now);
             }
@@ -493,19 +551,6 @@ impl<'c> Server<'c> {
                 }
             }
         }
-    }
-
-    /// Reload the schema from the resolved `.df` files and bump the schema
-    /// handle so dependent diagnostics recompute live (R16).
-    fn reload_schema(&mut self) {
-        let fs = RealFileSystem;
-        let (schema, _diags) = SchemaLoader::load_files(&self.schema_files, &fs);
-        let loaded = !self.schema_files.is_empty();
-        let mut config = self.db.config().clone();
-        config.schema = std::sync::Arc::new(schema);
-        config.schema_loaded = loaded;
-        self.db.set_config(config);
-        self.bump_config_revision();
     }
 
     /// Bump the shared config/schema revision input so the diagnostics query is
@@ -574,20 +619,20 @@ impl<'c> Server<'c> {
     /// Handle a `textDocument/formatting` request (R2, R4, R6, R7).
     ///
     /// Runs inline on the main loop — single-file formatting is sub-millisecond
-    /// and needs no salsa snapshot or debounce round-trip (R7): it reads only
-    /// the rope and the filesystem, never `expanded_text`/`collect_from_expanded`
-    /// (KTD1). A malformed params payload or an unopened URI both resolve to an
-    /// empty edit list (`[]`) rather than a protocol error (R6). The whole
-    /// tokenize→parse→format pipeline is panic-guarded inside
-    /// [`compute_formatting_edits`] (KTD4).
+    /// and needs no salsa snapshot or debounce round-trip (R7): it reads only the
+    /// rope, never the lint pipeline's expansion (KTD1/KTD4 — the formatter must
+    /// see raw bytes, and `FormatPipeline` has no way to see anything else). It
+    /// also reads no configuration: the style was resolved once, with everything
+    /// else, and the handle was built then. A malformed params payload or an
+    /// unopened URI both resolve to an empty edit list (`[]`) rather than a
+    /// protocol error (R6). The tokenize→parse→format pipeline is panic-guarded
+    /// inside the shared `FormatPipeline`.
     fn handle_formatting(&self, req: Request) -> Result<()> {
         let edits: Vec<TextEdit> = serde_json::from_value::<DocumentFormattingParams>(req.params)
             .ok()
-            .and_then(|params| {
-                let uri = params.text_document.uri;
-                self.documents.get(&uri).map(|doc| {
-                    crate::formatting::compute_formatting_edits(doc, &uri, &self.encoding)
-                })
+            .and_then(|params| self.documents.get(&params.text_document.uri))
+            .map(|doc| {
+                crate::formatting::compute_formatting_edits(doc, &self.formatter, &self.encoding)
             })
             .unwrap_or_default();
         self.respond(Response::new_ok(req.id, edits))
@@ -652,43 +697,4 @@ pub(crate) fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let rest = s.strip_prefix("file://")?;
     // `file:///abs/path` → the authority is empty, leaving a leading `/abs`.
     Some(PathBuf::from(rest))
-}
-
-/// Discover `oxabl.toml` from `path` and load the schema declared in its
-/// `[workspace.schema].files`. Returns the schema, whether a `.df` was actually
-/// loaded (gates schema-dependent rules, R10), and the resolved `.df` paths
-/// (for watcher matching, R16).
-fn load_workspace_schema(path: &Path) -> (Schema, bool, Vec<PathBuf>) {
-    let start_dir = if path.is_dir() {
-        path.to_path_buf()
-    } else {
-        path.parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| path.to_path_buf())
-    };
-    let Some(root) = find_workspace_root(&start_dir) else {
-        return (Schema::empty(), false, Vec::new());
-    };
-    let Ok(cfg) = WorkspaceConfig::from_path(&root) else {
-        return (Schema::empty(), false, Vec::new());
-    };
-    let files: Vec<PathBuf> = cfg
-        .workspace
-        .schema
-        .files
-        .iter()
-        .map(|f| {
-            if f.is_absolute() {
-                f.clone()
-            } else {
-                root.join(f)
-            }
-        })
-        .collect();
-    if files.is_empty() {
-        return (Schema::empty(), false, Vec::new());
-    }
-    let fs = RealFileSystem;
-    let (schema, _diags) = SchemaLoader::load_files(&files, &fs);
-    (schema, true, files)
 }

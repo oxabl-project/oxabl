@@ -275,6 +275,21 @@ impl LintResult {
         }
     }
 
+    /// Take the diagnostics, for a client that needs to own them without
+    /// cloning the set.
+    ///
+    /// The language server memoizes exactly this value per buffer and recomputes
+    /// it per keystroke, so the difference between this and
+    /// `diagnostics().clone()` is a whole diagnostic vector's worth of
+    /// allocation on the hottest path in the product. Empty on a failed run,
+    /// with the same caveat as [`diagnostics`](Self::diagnostics).
+    pub fn into_diagnostics(self) -> CollectedDiagnostics {
+        match self.outcome {
+            Outcome::Computed { diagnostics, .. } => diagnostics,
+            Outcome::Failed(_) => CollectedDiagnostics::default(),
+        }
+    }
+
     /// Whether the run produced any diagnostic. `false` on a failed run too, so
     /// pair it with [`failure`](Self::failure) when the question is "is this file
     /// clean?".
@@ -812,6 +827,25 @@ mod tests {
             failed.failed_run(),
             "the two must be distinguishable despite both being diagnostic-free"
         );
+    }
+
+    // The owned accessor must agree with the borrowing one on both a completed
+    // and a failed run — it is the language server's per-keystroke path, so a
+    // divergence there would be invisible in the CLI and wrong in the editor.
+    #[test]
+    fn into_diagnostics_matches_the_borrowed_set_and_is_empty_on_failure() {
+        let fs = InMemoryFileSystem::new();
+        let config = PipelineConfig::default();
+        let pipeline = LintPipeline::new(&config, &fs);
+
+        let result = pipeline.run("DEFINE VARIABLE x AS INTEGER NO-UNDO.\n");
+        let borrowed = result.diagnostics().clone();
+        assert!(!borrowed.diagnostics.is_empty());
+        assert_eq!(result.into_diagnostics(), borrowed);
+
+        let failed = quietly(|| pipeline.run("/* OXABL-TEST-PANIC:analyze */\nMESSAGE \"hi\".\n"));
+        assert!(failed.failed_run());
+        assert!(failed.into_diagnostics().diagnostics.is_empty());
     }
 
     #[test]

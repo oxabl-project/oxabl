@@ -12,6 +12,7 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
 oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
 oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
