@@ -1,50 +1,81 @@
-# Open questions — #130 planning
+# Open questions — #130 post-#128 plan
 
-Planning artifact: `docs/plans/2026-07-24-001-fix-credit-table-read-in-define-buffer-plan.md`
+Planning artifact:
+`docs/plans/2026-07-24-001-fix-credit-table-read-in-define-buffer-plan.md`
 
-That path is gitignored (`.gitignore:6`, the point-in-time artifact policy), so it is **local to this worktree only**. Everything below is the durable summary. If the worktree is discarded before the work lands, this file is what survives.
+That plan is gitignored by the repository's point-in-time artifact policy.
+This tracked file is its durable summary.
 
-## What changed about the issue's premise
+## What issue #128 changed
 
-#130 lists four ABL forms and asserts all of them "are parsed and do have AST nodes." Only one is:
+#128 shipped through PR #137. Recognized-but-unmodelled statements now produce:
 
-| Form | Reality |
+```rust
+StatementKind::Skipped { names }
+```
+
+The resolve pass best-effort-resolves those names only in
+`NamespaceId::Values` and applies
+`TOUCHED_BY_UNMODELLED_STATEMENT`. It deliberately does not increment read or
+write counts and does not consult `Buffers` or `Tables`.
+
+That is the right contract for #128, but it leaves every table-specific #130
+case open:
+
+| Form | Post-#128 state |
 |---|---|
-| `DEFINE BUFFER b FOR tt.` | Real AST node; `crates/oxabl_semantic/src/resolve.rs:1281` is a genuine no-op arm. **Fixable here.** |
-| `EMPTY TEMP-TABLE tt.` | `crates/oxabl_parser/src/parser/statements.rs:528-544` hand-walks the tokens and **discards the table name** → `StatementKind::Empty`. |
-| `DEFINE QUERY q FOR tt.` | `skip_to_statement_end()` → `Empty`. |
-| `OPEN QUERY q FOR EACH tt` | `Kind::Open` bulk arm at `statements.rs:608,641` → `skip_to_statement_end()` → `Empty`. |
+| `DEFINE BUFFER b FOR tt.` | Real AST node; resolve use-walk is still a no-op |
+| `DEFINE PARAMETER BUFFER b FOR tt.` | Real AST node; resolve use-walk is still a no-op |
+| `EMPTY TEMP-TABLE tt.` | Still hand-walked to `StatementKind::Empty`; table name discarded |
+| `DEFINE QUERY q FOR tt.` | Now `Skipped`; names harvested, but never offered to table namespaces |
+| `OPEN QUERY q FOR EACH tt.` | Now `Skipped`; names harvested, but never offered to table namespaces |
 
-The bottom three carry no table name past parsing, so there is no resolve arm to fix — they are #128's territory by #128's own definition. Scope was narrowed accordingly (user-directed, in session).
+The old decision to leave the bottom three to #128 is retired.
 
-## Decisions already settled — do not re-litigate
+## Rescoped implementation
 
-1. **Scope: `DEFINE BUFFER` only in this plan.** Rejected: holding #130 until #128 lands; planning all four forms sequenced behind #128. Rationale: the `DEFINE BUFFER` half has zero dependency on #128, while `DEFINE QUERY`/`OPEN QUERY` both route through `skip_to_statement_end()` and will be fixed free by #128's lexical fallback. Planning them here would duplicate parser work and put two branches in the same skip list.
+1. Keep direct AST-backed resolution for `DEFINE BUFFER` and
+   `DEFINE PARAMETER BUFFER`, including the same-name guard for
+   `DEFINE BUFFER Customer FOR Customer`.
+2. Extend `StatementKind::Skipped` with a narrow
+   `may_reference_tables: bool` marker.
+3. Keep ordinary #128 forms unmarked. Only `DEFINE QUERY`, `OPEN QUERY`, and
+   `EMPTY TEMP-TABLE` opt into table lookup.
+4. Preserve `EMPTY TEMP-TABLE`'s exactly parsed table identifier instead of
+   returning `Empty`.
+5. For marked nodes, retain #128's `Values` flagging and additionally resolve
+   the same candidates in `[Buffers, Tables]` as `AccessMode::Read`.
+6. Leave full query head parsing to #136 and skipped modelled-statement tails to
+   #134.
 
-2. **`DEFINE PARAMETER BUFFER b FOR tt.` is folded in as R6** — a fifth form neither issue mentions, found in review. It has a real AST node (`crates/oxabl_ast/src/statement.rs:1011-1014`), the same no-op defect at `resolve.rs:1271`, and the same one-line fix. It is **structurally unreachable by #128** (never routes through `skip_to_statement_end`), so no issue would own it. Verified independently, then confirmed decisive by a Fable pass. Strike R6 + its U1 bullet if you disagree — it is labeled as a post-settlement addition in the plan.
+This gets #128 and #130 to complement one another: #128 says ordinary value
+counts are unjudgeable inside skipped forms; #130 supplies the concrete backing
+table read count needed by the table-parameter redirect.
 
-3. **`AccessMode::Read`, not `Write`.** `backing_read_count` (`crates/oxabl_lint/src/rules/unused_variable.rs:163-185`) sums `read_count` only, so `Write` would leave the false positive in place.
+## Settled decisions
 
-4. **Fix in `resolve.rs`, not in the lint rule.** Widening `backing_read_count`'s `Some(0)` case into the silent path would delete the true positive that `fires_on_table_parameter_whose_table_is_never_referenced` pins.
+- Fix the semantic fact at its source; do not weaken LINT0002's
+  `backing_read_count`.
+- `AccessMode::Read` is required because the redirect sums `read_count`.
+- Do not globally search table namespaces for every skipped statement. The
+  marker bounds both behavior and cost to the three #130 forms.
+- Keep query candidates lexical until #136. Conservative over-credit can lose a
+  diagnostic but cannot invent one.
+- Do not add temporary partial query AST variants that #136 would immediately
+  replace.
+- Do not comment on closed #128; update #130 with the corrected representation
+  and completion evidence when the implementation lands.
+- Schema-table/default-buffer synthesis remains out of scope.
+- `DEFINE PARAMETER BUFFER` remains included: it is the same defect, the same
+  direct fix, and no other issue owns it.
 
-## Genuinely open — needs your call
+## Remaining product follow-ups
 
-1. **Should the plan doc be durable?** It is gitignored by policy, so it exists only in this worktree. If you want it to survive, the natural home is a comment on #130. I did not post it — that is outward-facing and you only authorized a branch push.
+1. Decide whether unused buffer symbols deserve their own diagnostic. Crediting
+   a buffer definition's target removes a table-parameter false positive, but a
+   buffer that is bound and never used remains silent under the current rule set.
+2. Bind synthesized schema default buffers into the scope model so statement
+   table references can credit schema tables consistently. That is broader than
+   #130 because it also changes `FIND` and `FOR EACH`.
 
-2. **The buffer-warning follow-up needs an issue.** This change trades a false positive for a false negative: after it lands, a procedure that takes `TABLE FOR ttItem`, binds `DEFINE BUFFER bItem FOR ttItem.`, and touches neither is silent in **every** rule (today LINT0002 reports it). `is_candidate` (`crates/oxabl_lint/src/rules/unused_symbol_shared.rs:22-24`) excludes `Buffer`/`TempTable`, so nothing can pick it back up. The trade is right — that shape is rare, the false positive fires on ordinary code — but "should an unused buffer warn?" is now the only recovery path, not a nice-to-have. Worth its own issue.
-
-3. **Schema-table targets are still never credited, and that is pre-existing.** `synth_table_buffer_symbol` (`resolve.rs:2386-2412`) inserts into the `SymbolTable` but never binds into the `ScopeTree`, and nothing anywhere declares into `NamespaceId::Tables`. So `DEFINE BUFFER bCust FOR Customer.` under a loaded schema credits nothing — exactly as `FIND Customer` does today. Fixing it means giving statement-position table references the same default-buffer synthesis the expression path has: a semantic-model change with visible `oxabl analyze` consequences, and it would fix `FIND`/`FOR EACH` too. Out of scope here; worth an issue.
-
-## Things to tell #128 (scheduled as U3 in the plan)
-
-- **`EMPTY TEMP-TABLE` will be missed by avenue 2.** It does not call `skip_to_statement_end()` — `statements.rs:528-544` hand-walks with `self.advance()`. A lexical read-crediting fallback hung off `skip_to_statement_end` will silently skip it. `DEFINE QUERY` and `OPEN QUERY` *do* route through it and are covered.
-- **Double-credit boundary.** Keep the fallback confined to statements that actually reach `StatementKind::Empty`. If it ends up token-scoped instead, `DEFINE BUFFER` targets get credited twice once both changes land.
-
-## Review state
-
-Four reviewers ran (coherence, feasibility, scope-guardian, adversarial). Coherence: clean. The other three produced 12 findings; all were applied. The load-bearing ones — each verified against source before applying:
-
-- The original plan claimed a schema-table target would be credited. It cannot be. Corrected to assert the opposite.
-- `KTD3`'s justification for including `NamespaceId::Tables` was invented — nothing declares into it, and `TABLE FOR` params land in `NamespaceId::Values` as `SymbolKind::Parameter` (`resolve.rs:679-696`). Rewritten to the honest reason (sibling-arm consistency).
-- `run_full` (`resolve.rs:4167-4178`) discards both diagnostic vectors, so the R5 no-diagnostics test must call `declare_pass`/`resolve_pass` directly.
-- **`DEFINE BUFFER Customer FOR Customer.`** — the standard ABL block-scoping idiom — would self-credit without a guard, since the declare pass already put the buffer in `Buffers` under that folded name. The plan now requires a folded-name-equality guard. This is the one finding where two reviewers proposed different remedies (accept-and-document vs. guard); the guard won because this idiom is common and is the only database-table shape that resolves to anything at all.
+Neither follow-up blocks #130.
