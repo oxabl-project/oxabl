@@ -610,6 +610,41 @@ pub enum StatementKind {
     /// Empty (just a period)
     Empty,
 
+    /// A statement form the parser *recognizes* but does not model: the
+    /// dispatch site matched a leading keyword and then skipped the statement's
+    /// tokens wholesale (`PUT`, `UPDATE`, `ENABLE`, `EXPORT`, embedded SQL, …).
+    ///
+    /// Distinct from [`Self::Empty`], which means error recovery or a genuinely
+    /// empty statement. The distinction matters because these forms carry real
+    /// variable traffic in both directions, and consumers that reason about
+    /// whether a variable was touched must not read a `Skipped` node as "nothing
+    /// happened here".
+    ///
+    /// `names` holds the identifier-shaped tokens the skip passed over, filtered
+    /// lexically: the dispatch keyword itself is dropped, as is any token
+    /// byte-adjacent to a preceding `.`, `:`, or `/` (so `table.field` keeps only
+    /// `table`, and a path like `/usr/tmp/log.txt` keeps nothing). The filter is
+    /// deliberately broad — ABL lexes a variable named `value` as a keyword kind,
+    /// so option keywords are kept as candidate names and the semantic pass's
+    /// non-diagnostic lookup is the real filter. Over-inclusion can only silence
+    /// a diagnostic, never invent one.
+    ///
+    /// `may_reference_tables` is a narrow marker, `false` for every ordinary
+    /// unmodelled form. `true` means the form is one whose grammar names a table
+    /// or temp-table (`DEFINE QUERY`, `OPEN QUERY`, `EMPTY TEMP-TABLE`), so the
+    /// semantic pass should additionally offer `names` to the buffer/table
+    /// namespaces as read candidates. It is a request for a conservative extra
+    /// lookup, not an assertion that any particular name *is* a table — the same
+    /// silent-on-miss resolution applies, so an over-inclusive candidate can only
+    /// silence a diagnostic, never invent one.
+    ///
+    /// The statement's full extent is [`Statement::span`]; no companion
+    /// `raw_span` is needed.
+    Skipped {
+        names: Vec<Identifier>,
+        may_reference_tables: bool,
+    },
+
     /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
     /// The label can be referenced by LEAVE and NEXT statements.
     Label { name: String, body: Box<Statement> },
@@ -1166,4 +1201,92 @@ pub enum WidgetQualifier {
 pub struct TriggerAssignParam {
     pub name: Identifier,
     pub data_type: DataType,
+}
+
+#[cfg(test)]
+mod skipped_tests {
+    use super::{Statement, StatementKind};
+    use crate::node_id::NodeId;
+    use crate::span::Span;
+
+    fn skipped(names: Vec<&str>, span_start: u32) -> Statement {
+        let mut s = Statement::new(StatementKind::Skipped {
+            names: names
+                .into_iter()
+                .map(|n| crate::Identifier {
+                    name: n.to_string(),
+                    span: Span {
+                        start: span_start,
+                        end: span_start + n.len() as u32,
+                    },
+                })
+                .collect(),
+            may_reference_tables: false,
+        });
+        s.span = Span {
+            start: span_start,
+            end: span_start + 10,
+        };
+        s
+    }
+
+    /// `PartialEq` ignores `id` and `span`, as it does for every other variant
+    /// (§2 of `docs/design/ast-invariants.md`).
+    #[test]
+    fn skipped_equality_ignores_id_and_span() {
+        let mut a = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
+        let mut b = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
+        a.id = NodeId::from_u32(7);
+        a.span = Span { start: 0, end: 4 };
+        b.id = NodeId::from_u32(99);
+        b.span = Span { start: 40, end: 90 };
+        assert_eq!(a, b);
+    }
+
+    /// The whole point of the variant: a recognized-but-unmodelled statement is
+    /// not an error-recovery `Empty`. A consumer that folded them together would
+    /// read "the parser skipped a `PUT` that reads v-total" as "nothing here".
+    #[test]
+    fn skipped_is_not_empty() {
+        let a = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
+        let b = Statement::new(StatementKind::Empty);
+        assert_ne!(a, b);
+        assert_ne!(a, StatementKind::Empty);
+    }
+
+    /// Harvested names participate in equality — two skips over different
+    /// content are different statements. `Identifier` equality includes `span`,
+    /// so tests that care about names should assert on the vec's contents rather
+    /// than hand-building whole statements.
+    #[test]
+    fn skipped_equality_discriminates_on_names() {
+        assert_ne!(skipped(vec!["v-total"], 0), skipped(vec!["v-count"], 0));
+        assert_eq!(skipped(vec!["v-total"], 0), skipped(vec!["v-total"], 0));
+    }
+
+    /// The table-candidate marker participates in structural equality. It is a
+    /// semantic difference, not an annotation: the marked node asks the resolve
+    /// pass for a buffer/table lookup the unmarked one does not get, so two nodes
+    /// over identical tokens are not interchangeable.
+    #[test]
+    fn skipped_equality_discriminates_on_table_marker() {
+        let unmarked = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        });
+        let marked = Statement::new(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: true,
+        });
+        assert_ne!(unmarked, marked);
+    }
 }

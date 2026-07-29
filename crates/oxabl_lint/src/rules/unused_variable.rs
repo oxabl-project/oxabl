@@ -18,15 +18,24 @@
 //!   argument to a `RUN` — the callee writes into them, so they are used even
 //!   when the call site never reads the result back.
 //!
-//! # Known limitation: reads inside parser-skipped statements
+//! # Unmodelled statements
 //!
-//! Statements the parser skips to `StatementKind::Empty` — `PUT`, `EXPORT`,
+//! Statement forms the parser recognizes but does not model — `PUT`, `EXPORT`,
 //! `UPDATE`, `SET`, `PROMPT-FOR`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`,
-//! `HIDE` and friends — are never walked by the resolve pass and so credit no
-//! reads. A variable whose only read lives in one of them is falsely reported
-//! here. Shared with `assigned-but-never-read` (LINT0006), whose module doc
-//! carries the full note; it is a property of the semantic model rather than of
-//! either rule.
+//! `ENABLE`, `HIDE` and friends — credit no reads. A variable whose only read
+//! lives in one of them used to be falsely reported here. The parser now emits
+//! `StatementKind::Skipped` carrying the identifiers it passed over, the resolve
+//! pass best-effort-resolves them into
+//! `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`, and this rule declines to
+//! fire for a symbol so marked.
+//!
+//! Two gaps remain: skipped *tails* inside modelled statements (#134), and
+//! keyword collisions — the harvest keeps unreserved option keywords as
+//! candidate names, so a variable named after one may be exempted when it should
+//! not be. The suppression is also per-symbol and file-wide rather than
+//! per-site. `assigned-but-never-read` (LINT0006) carries the full note; it is a
+//! property of the semantic model rather than of either rule, and #136 drains it
+//! by head-parsing the forms.
 //!
 //! Redirect (not a skip):
 //! - A `TABLE FOR` / `DATASET FOR` parameter (`SymbolFlags::PARAM_TABLE_LIKE`)

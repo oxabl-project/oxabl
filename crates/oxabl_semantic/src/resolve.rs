@@ -966,6 +966,12 @@ pub fn resolve_pass(
         walker.symbols.get_mut(*sym).flags |= crate::SymbolFlags::PASSED_AS_OUTPUT_ARG;
     }
 
+    // Flush the unmodelled-statement usage fact (the three count-gated rules'
+    // "these counts are not trustworthy" marker).
+    for sym in &walker.unmodelled_touch {
+        walker.symbols.get_mut(*sym).flags |= crate::SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT;
+    }
+
     // Mirror every symbol's declared type into the `types` side table keyed
     // by the declaration's NodeId. Skips builtins and synthesized
     // schema-field/buffer symbols (declaration = DUMMY).
@@ -1017,6 +1023,13 @@ struct ResolveWalker<'a> {
     /// tracking gate: it only fires on write-back RUN arguments, which are
     /// rare, and costs one O(1) set insert each.
     output_args: FxHashSet<SymbolId>,
+    /// Symbols named by a [`StatementKind::Skipped`] node — a statement form
+    /// the parser recognized but did not model. Flushed to
+    /// [`SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`] at end-of-pass (same
+    /// idempotency contract as `counts`). Deliberately *not* fed into `counts`:
+    /// the harvest is lexical, so crediting it as a read or a write would make
+    /// the counts lie about what the code does.
+    unmodelled_touch: FxHashSet<SymbolId>,
     /// True only when the declare pass hoisted at least one `DEFINE VARIABLE`
     /// out of a block (`SymbolTable::has_block_scoped_var`). The vast majority
     /// of files have none, so callers skip [`Self::note_block_var_use`]
@@ -1047,6 +1060,7 @@ impl<'a> ResolveWalker<'a> {
             counts: FxHashMap::default(),
             block_var_outside: FxHashMap::default(),
             output_args: FxHashSet::default(),
+            unmodelled_touch: FxHashSet::default(),
             track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
@@ -1268,7 +1282,13 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
-            StatementKind::DefineParameter { .. } => {}
+            StatementKind::DefineParameter { param_type, .. } => {
+                // Only the buffer shape names a table; every other parameter
+                // shape declares and reads nothing here.
+                if let ParameterType::Buffer { name, target } = param_type {
+                    self.credit_buffer_target(name, target, scope);
+                }
+            }
             StatementKind::DefineTempTable { fields, .. } => {
                 for f in fields {
                     if let Some(init) = &f.initial_value {
@@ -1278,7 +1298,10 @@ impl<'a> ResolveWalker<'a> {
                     }
                 }
             }
-            StatementKind::DefineBuffer { .. } => {}
+            StatementKind::DefineBuffer { name, target, .. } => {
+                let (BufferTarget::Table(t) | BufferTarget::TempTable(t)) = target;
+                self.credit_buffer_target(name, t, scope);
+            }
             StatementKind::DefineDataset { .. } => {}
             StatementKind::DefineDataSource { .. } => {}
             StatementKind::DefineStream { .. } => {}
@@ -1816,6 +1839,15 @@ impl<'a> ResolveWalker<'a> {
             StatementKind::Leave(_) | StatementKind::Next(_) => {}
             StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => {}
             StatementKind::Empty => {}
+            StatementKind::Skipped {
+                names,
+                may_reference_tables,
+            } => {
+                self.credit_unmodelled_names(names, scope);
+                if *may_reference_tables {
+                    self.credit_unmodelled_table_names(names, scope);
+                }
+            }
         }
     }
 
@@ -2185,16 +2217,98 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) {
-        let atom = fold_atom(&id.name);
-        for &ns in namespaces {
-            if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
-                self.bump_count(sym, mode);
-                if self.track_block_vars {
-                    self.note_block_var_use(sym, scope, mode);
-                }
-                return;
+        if let Some(sym) = self.lookup_statement_ident(id, scope, namespaces) {
+            self.bump_count(sym, mode);
+            if self.track_block_vars {
+                self.note_block_var_use(sym, scope, mode);
             }
         }
+    }
+
+    /// The namespace lookup half of [`Self::resolve_statement_ident`], with no
+    /// side effects at all: no count bump, no block-var note, and — critically —
+    /// no write to the `references` side table.
+    ///
+    /// That last property is what makes it safe for the best-effort harvest in
+    /// [`Self::credit_unmodelled_names`]. Contrast `resolve_expr_ident` and
+    /// `resolve_field_access`, which both record `Resolution::Unresolved` on a
+    /// miss and thereby feed LINT0001 / LINT0003.
+    fn lookup_statement_ident(
+        &self,
+        id: &Identifier,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+    ) -> Option<SymbolId> {
+        let atom = fold_atom(&id.name);
+        namespaces
+            .iter()
+            .find_map(|&ns| self.tree.resolve(scope, ns, &atom))
+    }
+
+    /// Best-effort-credit the names harvested from a recognized-but-unmodelled
+    /// statement ([`StatementKind::Skipped`]).
+    ///
+    /// Only [`NamespaceId::Values`] is consulted: the three count-gated rules
+    /// restrict themselves to `Variable` and `Parameter` symbols, so a flag set
+    /// on a field, buffer or table could never suppress anything, and each extra
+    /// namespace would cost a full scope-chain walk per harvested miss on a path
+    /// that is already the expensive half of this feature.
+    ///
+    /// A name that resolves to nothing is dropped in silence — no diagnostic, no
+    /// `references` entry. Over-crediting can only lose a diagnostic; it can
+    /// never invent one.
+    fn credit_unmodelled_names(&mut self, names: &[Identifier], scope: ScopeId) {
+        for id in names {
+            if let Some(sym) = self.lookup_statement_ident(id, scope, &[NamespaceId::Values]) {
+                self.unmodelled_touch.insert(sym);
+            }
+        }
+    }
+
+    /// The table half of the same harvest, for a `Skipped` node the parser marked
+    /// as naming a table (`DEFINE QUERY`, `OPEN QUERY`, `EMPTY TEMP-TABLE` — #130).
+    ///
+    /// Runs *in addition to* [`Self::credit_unmodelled_names`], never instead of
+    /// it: a token can resolve in both namespaces when the program shadows names,
+    /// and the two sides record different facts. The value side records that the
+    /// symbol's counts cannot be judged; this side records a real read, because
+    /// every form carrying the marker reads its table in every spelling its
+    /// grammar admits.
+    ///
+    /// [`Self::resolve_statement_ident`] rather than hand-mutating the symbol: it
+    /// owns folded lookup, count bumping, and block-use bookkeeping, and it stays
+    /// silent on a miss — which the deliberately over-inclusive harvest requires,
+    /// since most candidates in a query statement are not tables at all.
+    fn credit_unmodelled_table_names(&mut self, names: &[Identifier], scope: ScopeId) {
+        for id in names {
+            self.resolve_statement_ident(
+                id,
+                scope,
+                &[NamespaceId::Buffers, NamespaceId::Tables],
+                AccessMode::Read,
+            );
+        }
+    }
+
+    /// Credit one read on the table or temp-table a buffer definition names
+    /// (#130): `DEFINE BUFFER b FOR tt.` and `DEFINE PARAMETER BUFFER b FOR tt.`
+    ///
+    /// The guard is load-bearing. `DEFINE BUFFER Customer FOR Customer.` is the
+    /// standard ABL block-scoping idiom, and by the time the use-walk runs, the
+    /// declare pass has already bound the new buffer under that same folded name
+    /// in the very namespace this lookup searches first. Without the guard the
+    /// target resolves to the buffer being declared and credits it a read for
+    /// existing — which would silence every count-gated rule for that symbol.
+    fn credit_buffer_target(&mut self, buffer: &Identifier, target: &Identifier, scope: ScopeId) {
+        if fold_atom(&buffer.name) == fold_atom(&target.name) {
+            return;
+        }
+        self.resolve_statement_ident(
+            target,
+            scope,
+            &[NamespaceId::Buffers, NamespaceId::Tables],
+            AccessMode::Read,
+        );
     }
 
     /// Resolve `qualifier.field`. When the qualifier is a bare identifier,
@@ -5290,6 +5404,135 @@ mod tests {
         }
     }
 
+    // ---- Unmodelled-statement crediting (#128) ---------------------------
+
+    /// Build a `Skipped` node harvesting the given names, as the parser would
+    /// for e.g. `PUT v-total.`.
+    fn skipped_stmt_n(names: &[&str]) -> Statement {
+        stmt_n(StatementKind::Skipped {
+            names: names.iter().copied().map(id).collect(),
+            may_reference_tables: false,
+        })
+    }
+
+    fn touched(symbols: &SymbolTable, sid: SymbolId) -> bool {
+        symbols
+            .get(sid)
+            .flags
+            .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+    }
+
+    #[test]
+    fn unmodelled_statement_flags_the_variable_it_names() {
+        let stmts = vec![var_stmt_n("x", DataType::Integer), skipped_stmt_n(&["x"])];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        assert!(touched(&symbols, sym_x(&symbols)));
+    }
+
+    /// R4: the flag is the *only* signal this adds. Inflating the counts would
+    /// suppress every rule for free, but it would make a shared signal lie about
+    /// what the code does — and #126's def-use work reads that signal.
+    #[test]
+    fn unmodelled_statement_leaves_the_counts_exact() {
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            skipped_stmt_n(&["x", "x", "x"]),
+        ];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert_eq!(x.read_count, 0);
+        assert_eq!(x.write_count, 0);
+    }
+
+    /// R3 / R8, and the property the whole design rests on: the harvest resolves
+    /// through `lookup_statement_ident`, which cannot write `references`. If it
+    /// ever routed through `resolve_expr_ident` instead, every garbage name in a
+    /// skipped statement would land in the table as `Unresolved` and LINT0001
+    /// would report it.
+    #[test]
+    fn unresolvable_harvested_names_touch_neither_references_nor_diagnostics() {
+        let baseline = vec![var_stmt_n("x", DataType::Integer)];
+        let with_skip = vec![
+            var_stmt_n("x", DataType::Integer),
+            skipped_stmt_n(&["no-such-name", "another-ghost"]),
+        ];
+
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree_a, mut sym_a, _d, rev_a) = declare_pass(&baseline, &ctx);
+        let (refs_a, _t, diags_a) = resolve_pass(&baseline, &ctx, &tree_a, &mut sym_a, rev_a);
+        let (tree_b, mut sym_b, _d, rev_b) = declare_pass(&with_skip, &ctx);
+        let (refs_b, _t, diags_b) = resolve_pass(&with_skip, &ctx, &tree_b, &mut sym_b, rev_b);
+
+        assert_eq!(refs_a.iter().count(), refs_b.iter().count());
+        assert_eq!(refs_b.iter().count(), 0);
+        assert!(diags_a.is_empty());
+        assert!(diags_b.is_empty(), "unexpected diagnostics: {diags_b:?}");
+    }
+
+    /// KTD8: only `NamespaceId::Values` is credited. A flag on a buffer or table
+    /// could never suppress anything — the three rules restrict themselves to
+    /// `Variable` and `Parameter` — and each extra namespace would cost a full
+    /// scope-chain walk per harvested miss.
+    #[test]
+    fn unmodelled_statement_credits_only_the_values_namespace() {
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("b-cust"),
+                target: BufferTarget::Table(id("customer")),
+                preselect: false,
+                label: None,
+                xml_options: Default::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
+            }),
+            skipped_stmt_n(&["b-cust"]),
+        ];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        for (_, s) in symbols.iter() {
+            assert!(
+                !s.flags
+                    .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT),
+                "buffer symbol {:?} should not be credited",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn unmodelled_statement_with_no_names_flags_nothing() {
+        let stmts = vec![var_stmt_n("x", DataType::Integer), skipped_stmt_n(&[])];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        for (_, s) in symbols.iter() {
+            assert!(
+                !s.flags
+                    .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+            );
+        }
+    }
+
+    /// The accumulate-then-flush-once contract (the Salsa-ready invariant): a
+    /// second run over the same AST must produce identical flags and counts.
+    #[test]
+    fn unmodelled_touch_flush_is_idempotent() {
+        let stmts = vec![var_stmt_n("x", DataType::Integer), skipped_stmt_n(&["x"])];
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        let first: Vec<_> = symbols
+            .iter()
+            .map(|(_, s)| (s.flags, s.read_count, s.write_count))
+            .collect();
+        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        let second: Vec<_> = symbols
+            .iter()
+            .map(|(_, s)| (s.flags, s.read_count, s.write_count))
+            .collect();
+        assert_eq!(first, second);
+    }
+
     // ---- Idempotence ----------------------------------------------------
 
     #[test]
@@ -5903,5 +6146,254 @@ mod tests {
             panic!("expected resolved");
         };
         assert_eq!(symbols.get(*sym).kind, SymbolKind::BuiltIn);
+    }
+
+    // ---- Table reads in buffer, empty-table, and query forms (#130) ------
+    //
+    // These forms name a table without reading a field of it, so nothing in the
+    // expression walk ever sees them. Until #130 they left the backing symbol at
+    // `read_count == 0`, which made LINT0002's table-parameter redirect report a
+    // `TABLE FOR tt` parameter whose temp-table was used only this way.
+
+    /// A marked `Skipped` node, as the parser builds for `DEFINE QUERY`,
+    /// `OPEN QUERY`, and `EMPTY TEMP-TABLE`.
+    fn skipped_table_stmt_n(names: &[&str]) -> Statement {
+        stmt_n(StatementKind::Skipped {
+            names: names.iter().copied().map(id).collect(),
+            may_reference_tables: true,
+        })
+    }
+
+    fn tt_stmt_n(name: &str) -> Statement {
+        stmt_n(StatementKind::DefineTempTable {
+            name: id(name),
+            no_undo: false,
+            like_table: None,
+            validate: false,
+            use_indexes: vec![],
+            indexes: vec![],
+            xml_options: XmlSerializeOptions::default(),
+            fields: vec![],
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
+        })
+    }
+
+    fn buffer_stmt_n(name: &str, target: BufferTarget) -> Statement {
+        stmt_n(StatementKind::DefineBuffer {
+            name: id(name),
+            target,
+            preselect: false,
+            label: None,
+            xml_options: XmlSerializeOptions::default(),
+            is_new_shared: false,
+            is_shared: false,
+            is_new_global_shared: false,
+        })
+    }
+
+    /// Reads recorded on the `Buffers`-namespace symbol called `name` — the
+    /// namespace both temp-tables and buffers declare into.
+    #[track_caller]
+    fn buffer_reads(tree: &ScopeTree, symbols: &SymbolTable, name: &str) -> u32 {
+        find_symbol(tree, symbols, NamespaceId::Buffers, name)
+            .unwrap_or_else(|| panic!("no Buffers symbol named {name}"))
+            .read_count
+    }
+
+    /// R1 + R2: both `BufferTarget` spellings credit the temp-table they name.
+    /// The buffer being *declared* is not itself read by its own definition, so
+    /// it stays at zero — crediting it would resurrect the false positive one
+    /// level up.
+    #[test]
+    fn define_buffer_credits_its_target_in_both_spellings() {
+        for target in [
+            BufferTarget::Table(id("ttItem")),
+            BufferTarget::TempTable(id("ttItem")),
+        ] {
+            let stmts = vec![tt_stmt_n("ttItem"), buffer_stmt_n("bItem", target)];
+            let (tree, symbols, _r, _ty) = run_full(&stmts);
+            assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 1);
+            assert_eq!(buffer_reads(&tree, &symbols, "bItem"), 0);
+        }
+    }
+
+    #[test]
+    fn two_buffer_definitions_credit_two_reads() {
+        let stmts = vec![
+            tt_stmt_n("ttItem"),
+            buffer_stmt_n("bItem", BufferTarget::Table(id("ttItem"))),
+            buffer_stmt_n("bItem2", BufferTarget::TempTable(id("ttItem"))),
+        ];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 2);
+    }
+
+    /// R3: `DEFINE PARAMETER BUFFER b FOR tt.` has the same defect and the same
+    /// fix. No issue owns it but this one — it never routes through a skip
+    /// helper, so #128's carrier could never have reached it.
+    #[test]
+    fn define_parameter_buffer_credits_its_target() {
+        let stmts = vec![
+            tt_stmt_n("ttItem"),
+            stmt_n(StatementKind::DefineParameter {
+                direction: ParameterDirection::Input,
+                param_type: ParameterType::Buffer {
+                    name: id("bItem"),
+                    target: id("ttItem"),
+                },
+            }),
+        ];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 1);
+    }
+
+    /// Other parameter shapes are untouched: a scalar parameter names no table,
+    /// and must not acquire a read on anything.
+    #[test]
+    fn scalar_parameter_credits_no_table() {
+        let stmts = vec![
+            tt_stmt_n("ttItem"),
+            stmt_n(StatementKind::DefineParameter {
+                direction: ParameterDirection::Input,
+                param_type: ParameterType::Variable {
+                    name: id("ttItem"),
+                    type_source: TypeSource::Explicit(DataType::Integer),
+                    no_undo: false,
+                },
+            }),
+        ];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 0);
+    }
+
+    /// KTD6's guard. `DEFINE BUFFER Customer FOR Customer.` is the standard ABL
+    /// block-scoping idiom, and the declare pass has already bound the new buffer
+    /// under that same folded name — so an unguarded lookup resolves the target
+    /// to the buffer being declared and self-credits it. A buffer that reads
+    /// itself into existence would silence every count-gated rule for free.
+    #[test]
+    fn same_name_buffer_idiom_does_not_self_credit() {
+        let stmts = vec![buffer_stmt_n(
+            "Customer",
+            BufferTarget::Table(id("Customer")),
+        )];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "Customer"), 0);
+    }
+
+    /// R10: an unresolvable target is silent — no diagnostic, no `references`
+    /// entry. A raw `{&macro}` target that survived to the AST is the same case:
+    /// it names nothing resolvable and must not be reported.
+    #[test]
+    fn unknown_and_preprocessor_buffer_targets_stay_silent() {
+        let stmts = vec![
+            buffer_stmt_n("bGhost", BufferTarget::Table(id("no-such-table"))),
+            buffer_stmt_n("bMacro", BufferTarget::TempTable(id("{&tt-name}"))),
+        ];
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
+        let (refs, _t, diags) = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        assert_eq!(refs.iter().count(), 0);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    }
+
+    /// R5: the marker is what earns the harvest a table-namespace lookup.
+    #[test]
+    fn marked_skipped_names_credit_an_in_scope_temp_table() {
+        let stmts = vec![tt_stmt_n("ttItem"), skipped_table_stmt_n(&["q", "ttItem"])];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 1);
+    }
+
+    /// R6: and an unmarked one does not. This is the whole reason the marker
+    /// exists rather than crediting every skipped statement's harvest — an
+    /// ordinary `PUT` naming a token that happens to match a temp-table must not
+    /// silence the rules for that table.
+    #[test]
+    fn unmarked_skipped_names_credit_no_table() {
+        let stmts = vec![tt_stmt_n("ttItem"), skipped_stmt_n(&["ttItem"])];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 0);
+    }
+
+    /// R7: the two lookups are independent, not alternatives. A marked node
+    /// still gives an in-scope scalar #128's uncertainty flag, and still leaves
+    /// its counts exact — the parser cannot tell a read from a write inside a
+    /// grammar it does not model, and that was never the table side's claim.
+    #[test]
+    fn marked_skipped_still_flags_values_and_leaves_their_counts_exact() {
+        let stmts = vec![
+            var_stmt_n("x", DataType::Integer),
+            skipped_table_stmt_n(&["x"]),
+        ];
+        let (_t, symbols, _r, _ty) = run_full(&stmts);
+        let x = symbols.get(sym_x(&symbols));
+        assert!(
+            x.flags
+                .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+        );
+        assert_eq!(x.read_count, 0);
+        assert_eq!(x.write_count, 0);
+    }
+
+    /// R10 for the skipped half: the harvest is deliberately over-inclusive, so
+    /// a candidate that resolves nowhere must produce nothing at all. Routing it
+    /// through anything that records `Unresolved` would turn every stray token in
+    /// a query into a LINT0001 report.
+    #[test]
+    fn unknown_marked_candidates_create_no_reference_and_no_diagnostic() {
+        let stmts = vec![
+            tt_stmt_n("ttItem"),
+            skipped_table_stmt_n(&["no-such-name", "another-ghost"]),
+        ];
+        let schema = Schema::empty();
+        let ctx = ctx("", &schema);
+        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
+        let (refs, _t, diags) = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        assert_eq!(refs.iter().count(), 0);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    }
+
+    /// KTD5's shadowing case, stated as a test because it looks like a bug
+    /// otherwise: one token can resolve in both namespaces, and both sides fire.
+    /// That ambiguity is precisely why the statement is still marked skipped —
+    /// the value side records "we cannot judge this", the table side supplies the
+    /// count the redirect needs, and neither can be inferred from the other.
+    #[test]
+    fn a_marked_candidate_may_credit_both_namespaces_under_shadowing() {
+        let stmts = vec![
+            tt_stmt_n("item"),
+            var_stmt_n("item", DataType::Integer),
+            skipped_table_stmt_n(&["item"]),
+        ];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "item"), 1);
+        let v = symbols
+            .iter()
+            .find(|(_, s)| s.name == fold_atom("item") && s.kind == SymbolKind::Variable)
+            .expect("variable `item`")
+            .1;
+        assert!(
+            v.flags
+                .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+        );
+        assert_eq!(v.read_count, 0);
+    }
+
+    /// KTD8: a bare schema table is still credited by nobody. `FIND` and `FOR
+    /// EACH` behave the same way today — `synth_table_buffer_symbol` inserts into
+    /// the `SymbolTable` without binding into the `ScopeTree`, and nothing
+    /// declares into `NamespaceId::Tables` at all. Fixing that is a semantic-model
+    /// change with visible `oxabl analyze` consequences, deliberately out of
+    /// scope here. This test pins the boundary so the follow-up has a starting
+    /// point rather than a surprise.
+    #[test]
+    fn schema_only_targets_retain_current_no_credit_behavior() {
+        let stmts = vec![buffer_stmt_n("bCust", BufferTarget::Table(id("Customer")))];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert!(find_symbol(&tree, &symbols, NamespaceId::Tables, "Customer").is_none());
     }
 }

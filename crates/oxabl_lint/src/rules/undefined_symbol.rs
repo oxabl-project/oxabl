@@ -326,7 +326,13 @@ impl Visitor<'_> {
             | StatementKind::Next(_)
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
-            | StatementKind::Empty => {}
+            | StatementKind::Empty
+            // Recognized-but-unmodelled. Harvested names are resolved
+            // best-effort by the resolve pass and never recorded as
+            // references, so this rule must stay silent about them —
+            // reporting them would resurrect the false-positive flood the
+            // lexical harvest exists to avoid.
+            | StatementKind::Skipped { .. } => {}
         }
     }
 

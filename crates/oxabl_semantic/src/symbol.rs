@@ -130,6 +130,33 @@ bitflags! {
         /// def-use records land (#126) the redirect becomes a def-use query and
         /// this flag can be folded in and removed.
         const PARAM_TABLE_LIKE = 1 << 20;
+        /// Resolve-computed usage fact: the symbol's name appeared inside a
+        /// statement form the parser recognizes but does not model
+        /// (`StatementKind::Skipped` — `PUT`, `UPDATE`, `ENABLE`, `EXPORT`,
+        /// embedded SQL, …). Those statements credit no reads and no writes, so
+        /// this symbol's `read_count` / `write_count` describe only part of what
+        /// the code does.
+        ///
+        /// This is a *distrust* marker, not an access record: the counts are
+        /// left exact on purpose, so consumers can tell "provably unused" from
+        /// "not fully judged". Consumed by `unused-variable` (LINT0002),
+        /// `assigned-but-never-read` (LINT0006) and `block-var-used-outside`
+        /// (LINT0005), all three through the one shared `is_skipped` predicate,
+        /// as a reason not to fire.
+        ///
+        /// Coarse by construction: the mark is per-symbol and file-wide, so a
+        /// genuine dead store early in a file becomes unjudgeable because of an
+        /// `ENABLE` mention nine hundred lines later. That is the real cost of
+        /// the lexical fallback, and it is why the retirement path matters.
+        ///
+        /// Unlike [`Self::PASSED_AS_OUTPUT_ARG`] and [`Self::PARAM_TABLE_LIKE`],
+        /// this bit is **not** waiting on #126's CFG def-use records. It drains
+        /// incrementally: head-parsing an unmodelled form makes its dispatch site
+        /// stop emitting `Skipped`, and this flag's population shrinks with no
+        /// change to the resolve pass or to any rule. That work is tracked by
+        /// the head-parsing issue (#136); the flag retires when only `FORM`,
+        /// embedded SQL, `EDITING:` bodies and option tails still reach it.
+        const TOUCHED_BY_UNMODELLED_STATEMENT = 1 << 21;
     }
 }
 

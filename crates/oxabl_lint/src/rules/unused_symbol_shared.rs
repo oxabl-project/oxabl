@@ -7,6 +7,14 @@
 //! commits eliminating, so the exemptions live here once rather than in two
 //! copies. The rationale for each exemption travels with it: that reasoning is
 //! what a future reader needs, and the first thing a drifting copy would lose.
+//!
+//! [`is_skipped`] has a third caller: `block-var-used-outside` (LINT0005), whose
+//! `is_hazard` gate consults it rather than carrying a parallel clause. LINT0005
+//! reasons about a different question — *where* a variable was written, not
+//! whether it was read — but it gates on the same counts, so the same facts that
+//! make those counts untrustworthy exempt it too. Two suppression paths that can
+//! drift apart as exemptions are added is exactly the bug class this module
+//! exists to prevent.
 
 use oxabl_common::FileSpan;
 use oxabl_semantic::{
@@ -46,6 +54,21 @@ pub fn is_skipped(sid: SymbolId, sym: &Symbol, tree: &ScopeTree, symbols: &Symbo
     // separate opt-in advisory (#125) instead of annexing it at warning
     // severity.
     if sym.flags.contains(SymbolFlags::PASSED_AS_OUTPUT_ARG) {
+        return true;
+    }
+    // Named inside a statement form the parser recognizes but does not model
+    // (`PUT`, `UPDATE`, `ENABLE`, embedded SQL, …). Those statements credit no
+    // reads and no writes, so this symbol's counts describe only part of what
+    // the code does and neither rule can honestly conclude anything from them.
+    // Coarse on purpose: the mark is per-symbol and file-wide, so this does cost
+    // real findings — a genuine dead store early in a file goes unreported
+    // because of an `ENABLE` mention much later. Over-suppressing loses a
+    // diagnostic; the alternative reports one that is simply wrong. #136 drains
+    // the population form by form.
+    if sym
+        .flags
+        .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+    {
         return true;
     }
     // Parameters of an INTERFACE method or an ABSTRACT method never

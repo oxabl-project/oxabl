@@ -434,3 +434,74 @@ fn blank_lines_inside_multiline_string_survive_normalization() {
     let out = fmt(src, &StyleGuide::default_base());
     assert_eq!(out, "DO:\n    msg = \"line one\n\n\nline four\".\nEND.\n");
 }
+
+// ---------------------------------------------------------------------------
+// Unmodelled statement forms (#128)
+// ---------------------------------------------------------------------------
+
+/// `PUT` / `UPDATE` / `ENABLE` are recognized-but-unmodelled forms: the parser
+/// skips their tokens and emits `StatementKind::Skipped`. `tree.rs` never named
+/// `StatementKind::Empty` explicitly, so those nodes have always fallen through
+/// its `_` arms as ordinary non-block statements — and `Skipped` inherits that
+/// treatment by construction, not by luck. This pins it: introducing the variant
+/// must not move a byte of formatter output, including inside a block where the
+/// child-indentation arm is the one doing the work.
+#[test]
+fn unmodelled_forms_format_unchanged() {
+    let src = concat!(
+        "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n",
+        "DEFINE VARIABLE v-name AS CHARACTER NO-UNDO.\n",
+        "\n",
+        "DO:\n",
+        "PUT UNFORMATTED v-total SKIP.\n",
+        "ENABLE v-name WITH FRAME f-main.\n",
+        "UPDATE v-name WITH FRAME f-main.\n",
+        "END.\n",
+    );
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        concat!(
+            "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n",
+            "DEFINE VARIABLE v-name AS CHARACTER NO-UNDO.\n",
+            "\n",
+            "DO:\n",
+            "    PUT UNFORMATTED v-total SKIP.\n",
+            "    ENABLE v-name WITH FRAME f-main.\n",
+            "    UPDATE v-name WITH FRAME f-main.\n",
+            "END.\n",
+        )
+    );
+}
+
+/// The three #130 forms carry a table-candidate marker and, in `EMPTY
+/// TEMP-TABLE`'s case, changed node kind entirely — it used to emit a recovery
+/// `Empty`. Neither is a formatting concern: all three still pass through
+/// byte-for-byte, at top level and indented inside a block.
+#[test]
+fn table_candidate_forms_format_unchanged() {
+    let src = concat!(
+        "DEFINE QUERY q-item FOR ttItem.\n",
+        "EMPTY TEMP-TABLE ttItem NO-ERROR.\n",
+        "\n",
+        "DO:\n",
+        "DEFINE QUERY q-inner FOR ttItem.\n",
+        "OPEN QUERY q-inner FOR EACH ttItem WHERE ttItem.qty > 0.\n",
+        "EMPTY TEMP-TABLE ttItem.\n",
+        "END.\n",
+    );
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        concat!(
+            "DEFINE QUERY q-item FOR ttItem.\n",
+            "EMPTY TEMP-TABLE ttItem NO-ERROR.\n",
+            "\n",
+            "DO:\n",
+            "    DEFINE QUERY q-inner FOR ttItem.\n",
+            "    OPEN QUERY q-inner FOR EACH ttItem WHERE ttItem.qty > 0.\n",
+            "    EMPTY TEMP-TABLE ttItem.\n",
+            "END.\n",
+        )
+    );
+}

@@ -7,6 +7,7 @@ use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
 use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
+use oxabl_formatter::FormatFailure;
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
@@ -212,6 +213,32 @@ fn surface_collected_preproc(
     loud
 }
 
+/// Report how many symbols the count-gated lint rules could not fully judge,
+/// and return the count for the machine-readable channel.
+///
+/// A file where `unused-variable`, `assigned-but-never-read` and
+/// `block-var-used-outside` went partly blind should say so rather than looking
+/// clean. This follows the `PREPROC007` precedent: one honest line at the true
+/// cause, printed to stderr, rather than a per-site flood or a silent gap.
+///
+/// Deliberately *not* a diagnostic with a code — it is not a finding about the
+/// source, it is a statement about coverage. And deliberately silent at zero: a
+/// line that always appears is a line users learn to skip.
+fn surface_unjudged_symbols(sem: &oxabl_semantic::Semantic) -> usize {
+    let n = oxabl_analyze::unjudged_symbol_count(sem);
+    if n > 0 {
+        let plural = if n == 1 { "symbol" } else { "symbols" };
+        eprintln!(
+            "note: {n} {plural} could not be fully checked — {} named inside statement forms \
+             oxabl recognizes but does not model, so the unused-variable, dead-store and \
+             block-variable rules stayed silent for {}.",
+            if n == 1 { "it is" } else { "they are" },
+            if n == 1 { "it" } else { "them" },
+        );
+    }
+    n
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -312,23 +339,21 @@ enum FormatOutcome {
 
 /// Parse `source` raw (preprocessing OFF, per KTD4/R8 so spans are real byte
 /// offsets) and run the formatter, classifying the outcome. The whole
-/// tokenize → parse → format pipeline is wrapped in `catch_unwind`: a panic
-/// anywhere in it (the lexer on some inputs, or the formatter engine itself)
-/// must not unwind the whole directory walk after earlier files were already
-/// rewritten (R7.1b). A panic is treated as a bail — the file is reported and
-/// left unchanged. The write happens only on `Reformatted`, so a panic never
-/// leaves a half-written file.
+/// tokenize → parse → format pipeline goes through the shared guard
+/// [`oxabl::try_format_source`]: a panic anywhere in it (the lexer on some
+/// inputs, or the formatter engine itself) must not unwind the whole directory
+/// walk after earlier files were already rewritten (R7.1b). A panic is treated
+/// as a bail — the file is reported and left unchanged. The write happens only
+/// on `Reformatted`, so a panic never leaves a half-written file.
 fn format_one(source: &str, style: &StyleGuide) -> FormatOutcome {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        oxabl::format_source(source, style)
-    }));
-    match result {
-        Ok(Ok(formatted)) if formatted == source => FormatOutcome::Unchanged,
-        Ok(Ok(formatted)) => FormatOutcome::Reformatted(formatted),
-        Ok(Err(bail)) => FormatOutcome::Bailed(bail.to_string()),
-        Err(_) => {
-            FormatOutcome::Bailed("internal panic while formatting; left unchanged".to_string())
-        }
+    match oxabl::try_format_source(source, style) {
+        Ok(formatted) if formatted == source => FormatOutcome::Unchanged,
+        Ok(formatted) => FormatOutcome::Reformatted(formatted),
+        Err(FormatFailure::Panic(panic)) => FormatOutcome::Bailed(format!(
+            "internal panic while formatting; left unchanged: {}",
+            panic.message()
+        )),
+        Err(failure) => FormatOutcome::Bailed(failure.to_string()),
     }
 }
 
@@ -509,7 +534,15 @@ fn run_analyze(
         lint_severities: lint_config.to_severity_map(),
         preprocess,
     };
-    let (sem_opt, collected) = oxabl::analyze(&source, &opts);
+    // Guarded (R7): a panic in the shared pipeline must be reported as a failure
+    // for this file, not unwind the subcommand with a raw backtrace.
+    let (sem_opt, collected) = match oxabl::try_analyze(&source, &opts) {
+        Ok(result) => result,
+        Err(panic) => {
+            eprintln!("error: analysis failed on {}: {panic}", path.display());
+            return ExitCode::from(4);
+        }
+    };
 
     let sem = match sem_opt {
         Some(sem) => sem,
@@ -543,6 +576,10 @@ fn run_analyze(
     // human consumers see the same "loud, not silent" signal.
     let preproc_diags = surface_collected_preproc(path, &source, &collected);
 
+    // Coverage, not findings: say how much of the file the count-gated rules
+    // could not judge. Same channel as the preprocessor coverage warning above.
+    let unjudged = surface_unjudged_symbols(&sem);
+
     match format {
         "json" => {
             let mut v = dump_json_with_diagnostics(&sem, &collected);
@@ -550,6 +587,12 @@ fn run_analyze(
                 map.insert(
                     "preproc_diagnostics".to_string(),
                     serde_json::to_value(&preproc_diags).unwrap_or(serde_json::Value::Null),
+                );
+                // A count, not prose — machine consumers should not have to
+                // parse the stderr line.
+                map.insert(
+                    "unjudged_symbols".to_string(),
+                    serde_json::Value::from(unjudged),
                 );
             }
             match serde_json::to_string_pretty(&v) {
@@ -724,18 +767,17 @@ fn parse_file(path: &Path) -> FileResult {
         }
     };
 
-    // Parse with panic catching. `oxabl::parse` folds tokenize + parser
+    // Parse through the shared guard. `oxabl::try_parse` folds tokenize + parser
     // construction together; a panic anywhere in it is reported as a lexer
     // panic (the historical failure mode) rather than unwinding the walk.
-    let program =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| oxabl::parse(&source))) {
-            Ok(program) => program,
-            Err(_) => {
-                return FileResult::LexerPanic {
-                    path: path.to_path_buf(),
-                };
-            }
-        };
+    let program = match oxabl::try_parse(&source) {
+        Ok(program) => program,
+        Err(_) => {
+            return FileResult::LexerPanic {
+                path: path.to_path_buf(),
+            };
+        }
+    };
 
     // Fail-fast reporting: surface the first recovered error, matching the
     // previous `parse_statements` contract.
@@ -804,16 +846,15 @@ fn parse_file_with_preprocess(
     // Get the expanded source text
     let expanded = preprocessed.to_text();
 
-    // Parse the preprocessed source with panic catching (see `parse_file`).
-    let program =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| oxabl::parse(&expanded))) {
-            Ok(program) => program,
-            Err(_) => {
-                return FileResult::LexerPanic {
-                    path: path.to_path_buf(),
-                };
-            }
-        };
+    // Parse the preprocessed source through the shared guard (see `parse_file`).
+    let program = match oxabl::try_parse(&expanded) {
+        Ok(program) => program,
+        Err(_) => {
+            return FileResult::LexerPanic {
+                path: path.to_path_buf(),
+            };
+        }
+    };
 
     // Fail-fast reporting: surface the first recovered error.
     match program.first_error() {
@@ -1083,12 +1124,10 @@ fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_p
         println!();
     }
 
-    let program = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        oxabl::parse(&parse_source)
-    })) {
+    let program = match oxabl::try_parse(&parse_source) {
         Ok(program) => program,
-        Err(_) => {
-            eprintln!("Lexer panic: {}", path.display());
+        Err(panic) => {
+            eprintln!("Lexer panic: {}: {panic}", path.display());
             return;
         }
     };

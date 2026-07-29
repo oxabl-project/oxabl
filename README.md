@@ -19,7 +19,8 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 
 - Library / embedding API
   - Use oxabl as a single Rust dependency — no wiring up the individual `oxabl_*` sub-crates
-  - Curated umbrella surface: `oxabl::parse`, `analyze` + `AnalyzeOptions`, `format_source`, `render_diagnostics`, serde-serializable diagnostics, a streaming `Lexer` iterator, and `Schema::from_df_dir`, plus named modules (`oxabl::ast`, `parser`, `semantic`, `lint`, `schema`, `formatter`, `workspace`, …)
+  - Curated umbrella surface: `oxabl::try_parse`, `try_analyze` + `AnalyzeOptions`, `try_format_source`, `render_diagnostics`, serde-serializable diagnostics, a streaming `Lexer` iterator, and `Schema::from_df_dir`, plus named modules (`oxabl::ast`, `parser`, `semantic`, `lint`, `schema`, `formatter`, `workspace`, …)
+  - **Fallible by default.** The lexer and parser can panic on some malformed input, so the entry points that matter come in guarded form: `try_parse`, `try_analyze` / `try_analyze_with_fs`, and `try_format_source` return the panic as an `InternalPanic` carrying its message instead of unwinding into your process. The panicking originals (`parse`, `analyze`, `format_source`) remain for compatibility but are deprecated. A recovered *parse error* is not a panic — it still arrives in `Program.errors`, and a formatter *bail* still arrives as a `FormatBail` — so the guard adds one arm and changes nothing else. The guarantee depends on the unwinding panic strategy; a `panic = "abort"` profile silently reduces every guard to a pass-through, and the guard is a documented pass-through on `wasm32-unknown-unknown` (see below).
   - Status: Shipped — the CLI and LSP are the reference consumers; internal recovery helpers are kept off the public surface
 - LSP
   - Work with oxabl to parse, lint, and format code directly in your editor
@@ -40,7 +41,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Linter
   - Lint rule engine
   - Public API for creating new lint rules and submitting them upstream for inclusion in oxabl's default rule set
-  - Status: a first set of rules ships today — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003, live under a loaded `.df` schema), `type-mismatch-assignment` (LINT0004), `block-var-used-outside` (LINT0005), and `assigned-but-never-read` (LINT0006) — configurable per-project via `oxabl.toml`. LINT0002 and LINT0006 divide one population between them: a variable never referenced at all is LINT0002's, while one that is written and never read is a dead store reported by LINT0006 at the assignment, so silencing `unused-variable` alone no longer silences the write-only half. Surfaced in-editor through the VS Code extension and as diagnostics from `oxabl check`. Still experimental; no public API for extending yet.
+  - Status: a first set of rules ships today — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003, live under a loaded `.df` schema), `type-mismatch-assignment` (LINT0004), `block-var-used-outside` (LINT0005), and `assigned-but-never-read` (LINT0006) — configurable per-project via `oxabl.toml`. LINT0002 and LINT0006 divide one population between them: a variable never referenced at all is LINT0002's, while one that is written and never read is a dead store reported by LINT0006 at the assignment, so silencing `unused-variable` alone no longer silences the write-only half. Around thirty ABL statement forms are recognized by the parser but not modelled (`PUT`, `EXPORT`, `UPDATE`, `ENABLE`, embedded SQL, …); their identifiers are now harvested lexically and best-effort-resolved, so all three count-gated rules stay quiet about a variable one of them touches rather than reporting it wrongly. That suppression is coarse — per-symbol and file-wide — so `oxabl analyze` reports how many symbols it could not fully judge. The handful of forms that name a *table* without reading a field of it (`DEFINE BUFFER`, `DEFINE PARAMETER BUFFER`, `EMPTY TEMP-TABLE`, `DEFINE QUERY`, `OPEN QUERY`) are treated more precisely: they credit a real read on the table, so a temp-table used only that way no longer looks untouched. Surfaced in-editor through the VS Code extension and as diagnostics from `oxabl check`. Still experimental; no public API for extending yet.
 - Easy one-line installer and VS Code extension for getting started
   - Status: VS Code extension available (experimental, sideload) — build a VSIX with `clients/vscode/scripts/build-vsix.sh`; it launches `oxabl lsp` for format-on-save, live diagnostics, and `oxabl.toml` schema completion. One-line installer: not started.
 - Build system
@@ -82,7 +83,7 @@ Requirements:
   - Both are transitional scaffolding: the intended direction is a ruff/cargo-shaped `check` that surfaces lint + format issues, built on shared library pipelines every client drives identically (see #120). Their `--json` shapes are not yet a stable contract.
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
 - `oxabl_wasm`: browser bindings in `crates/oxabl_wasm`.
-  - Two `wasm-bindgen` exports — `analyze_source` and `format_source` — each returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the semantic-preservation guard bails (in which case the original source comes back untouched).
+  - Three `wasm-bindgen` exports — `analyze_source`, `format_source`, and `version()` (a crate version plus a build identifier, so a crash report names the exact artifact a hand-vendored copy is running) — the first two returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the semantic-preservation guard bails (in which case the original source comes back untouched).
   - Contains no ABL behavior. It is a transport adapter over the umbrella crate, which keeps every client on one implementation.
   - CLI-only dependencies live behind the `oxabl` crate's default-on `cli` feature so the library compiles for `wasm32`; a CI job builds the wasm target on every push.
 
@@ -96,13 +97,60 @@ formatting results into a browser-friendly JSON wire shape.
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.108 --locked
+cargo install wasm-bindgen-cli --version 0.2.126 --locked
 ./scripts/build-wasm.sh
 ```
 
 The output is written to `target/wasm-web` by default. Pass a directory as the
 first argument to stage it for a static-site consumer. Releases attach the
 packaged browser artifact as `oxabl-wasm-web.tar.gz`.
+
+The CLI version must match the `wasm-bindgen` crate version, which is pinned
+exactly (`=0.2.126`) rather than as a caret range — see the recovery notes below.
+A mismatch fails at bindgen time, which is *after* `cargo build` succeeds, so the
+CI wasm job will not catch it; only this script or a release will.
+
+#### Crash recovery in the browser
+
+`wasm32-unknown-unknown` builds with `-Cpanic=abort` on stable Rust, so a Rust
+panic there cannot be caught inside wasm: it lowers to an `unreachable` trap that
+reaches JS as a `WebAssembly.RuntimeError`. `catch_panic` is therefore a
+documented pass-through on this target, and the browser gets a different
+mechanism with two halves:
+
+1. A panic hook stashes the formatted panic message on
+   `globalThis.__oxablPanicMessage` before the abort. std runs the hook to
+   completion before the panic runtime aborts, so the write lands before the trap.
+2. The consumer's `catch` reads that message and calls `__wbg_reset_state()`,
+   generated by `--experimental-reset-state-function`. That builds a fresh
+   instance from the already-compiled module with Rust statics reset and re-runs
+   the start function — which re-arms the hook, so a second crash is reported and
+   recovered just like the first.
+
+So a visitor sees a readable message naming the failure and an engine that keeps
+working, instead of a raw trap string and a demo bricked until page reload.
+
+Two build-time assertions in `scripts/build-wasm.sh` protect this, because **no
+CI job runs `wasm-bindgen` at all** — the `wasm` job stops at `cargo build`:
+
+- `__wbg_reset_state` is exported. Drop the flag and the artifact still builds
+  perfectly; the consumer just calls a function that is not there and recovery
+  silently stops working. This assertion is the only thing that turns that into a
+  failure.
+- No exception-handling instructions were injected. `--force-enable-abort-handler`
+  would reach the same reinit machinery, but it injects `try_table`/exnref
+  instructions and two `WebAssembly.Tag` imports, raising the browser floor to
+  roughly Chrome 128 / Firefox 131 / Safari 18.4 — where the module fails to
+  *instantiate* rather than degrading. That is a bad trade on a first-contact
+  surface, so the assertion pins the decision.
+
+`./scripts/build-wasm.sh <dir> --verify` additionally enables the `debug-panic`
+feature, adding a `debug_panic()` export. No ABL input reaches a parser panic, so
+that export is the only way to exercise the crash path by hand. It must never be
+used for a release build, and the release workflow does not.
+
+Hangs are **not** covered: an infinite loop freezes the main thread, is
+indistinguishable from a trap to a visitor, and needs a Web Worker with a timeout.
 
 ## Benchmarks
 
