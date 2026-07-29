@@ -10919,6 +10919,14 @@ fn skipped_non_query_open_stays_unmarked() {
     assert!(!marks_tables("OPEN foo."));
 }
 
+/// A comment between OPEN and QUERY is legal ABL and the rest of the parser
+/// tolerates one at every keyword boundary. A raw one-token lookahead here would
+/// see the comment, skip the marker, and hand the table back its false positive.
+#[test]
+fn skipped_open_query_is_marked_across_an_interleaved_comment() {
+    assert!(marks_tables("OPEN /* which */ QUERY q FOR EACH ttItem."));
+}
+
 /// `EMPTY TEMP-TABLE` is the one #130 form whose table name the parser knows
 /// exactly, so it contributes precisely that one identifier rather than a
 /// lexical sweep: no `NO-ERROR`, no `TEMP-TABLE` keyword.

@@ -614,7 +614,10 @@ impl Parser<'_> {
         // only the query shape is marked as a table candidate (#130). The bulk arm
         // matches a bare OPEN, and marking every shape routed through it would
         // widen table lookup past the three forms this issue owns.
-        if self.check(Kind::Open) && self.peek_at(1).kind == Kind::Query {
+        // `peek_nth_non_comment(2)` rather than a raw offset: a comment between
+        // OPEN and QUERY is legal ABL, and missing the marker there would put the
+        // false positive this issue removes straight back.
+        if self.check(Kind::Open) && self.peek_nth_non_comment(2).kind == Kind::Query {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_table_stmt(hi));
         }
