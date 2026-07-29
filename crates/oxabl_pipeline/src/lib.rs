@@ -30,15 +30,23 @@
 //!
 //! # What lives here
 //!
-//! Today: [`PipelineConfig`] — one resolution of `oxabl.toml` into include
-//! paths, lint severities, a style guide, and a schema, with non-fatal problems
-//! returned as [`ConfigWarning`] data (R6, R7, KTD3) — plus the shared
-//! [`ROOT_FILE_ID`]. The lint and format pipeline handles land on top of this
-//! foundation.
+//! [`PipelineConfig`] — one resolution of `oxabl.toml` into include paths, lint
+//! severities, a style guide, and a schema, with non-fatal problems returned as
+//! [`ConfigWarning`] data (R6, R7, KTD3) — plus the shared [`ROOT_FILE_ID`].
+//!
+//! [`LintPipeline`] — the lint run itself, built on that configuration: two
+//! phases ([`expand`](LintPipeline::expand) then
+//! [`collect`](LintPipeline::collect), the split the language server's early
+//! cutoff needs) plus a guarded [`run`](LintPipeline::run) convenience, all
+//! producing one [`LintResult`] (R2, R3, KTD2, KTD6).
+//!
+//! The format pipeline handle lands on top of the same foundation.
 
 mod config;
+mod lint;
 
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
+pub use lint::{Expansion, LintPipeline, LintResult};
 
 use oxabl_common::FileId;
 

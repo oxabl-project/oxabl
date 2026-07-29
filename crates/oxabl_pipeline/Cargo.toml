@@ -22,3 +22,18 @@ oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 
 [dev-dependencies]
 tempfile = "3"
+# Only for `Span` inside a fabricated `FileSpan` — see the fatal-expansion test.
+oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
+# Arms `panic_if_injected` so a source carrying an `OXABL-TEST-PANIC:<site>`
+# marker panics at the guarded site. No ABL input panics today, so this is the
+# only way to test that `LintPipeline::run` contains a panic while `expand` and
+# `collect` deliberately do not (KTD6, R20). Dev-only, so it is never armed in a
+# real build.
+oxabl_common = { path = "../oxabl_common", version = "0.5.0", features = [
+    "test-panics",
+] }
+# The shared `Customer(CustNum, Name)` fixture, so the schema-gated lint tests
+# assert against the same schema every other crate's tests use.
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = [
+    "test-support",
+] }

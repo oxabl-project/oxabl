@@ -1116,6 +1116,7 @@ name = "oxabl_pipeline"
 version = "0.1.0"
 dependencies = [
  "oxabl_analyze",
+ "oxabl_ast",
  "oxabl_common",
  "oxabl_formatter",
  "oxabl_schema",
