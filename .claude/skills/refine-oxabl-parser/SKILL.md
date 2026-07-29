@@ -27,12 +27,12 @@ Repeat until no further progress can be made or you are told to stop.
 
 **Without preprocessing** (default — tests parser against raw source):
 ```bash
-cargo run --bin oxabl check $ABL_CORPUS/<directory>
+cargo run --bin oxabl conformance $ABL_CORPUS/<directory>
 ```
 
 **With preprocessing** (tests parser against preprocessor-expanded source):
 ```bash
-cargo run --bin oxabl check $ABL_CORPUS/<directory> --preprocess -I $ABL_CORPUS
+cargo run --bin oxabl conformance $ABL_CORPUS/<directory> --preprocess -I $ABL_CORPUS
 ```
 
 The `-I` flag sets the include search path (PROPATH equivalent). Use `$ABL_CORPUS` as the root since include references in the corpus are relative to it (e.g. `{gl/global-input.i}`).

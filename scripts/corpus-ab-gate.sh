@@ -3,7 +3,7 @@
 #
 # Same role as the 9-module private-corpus A/B used for #58: micro-tests cannot prove
 # that a global change to &IF / &ELSE / &ENDIF end-offsets is net-safe on a
-# real tree. This script runs `oxabl check --preprocess --json` over a module
+# real tree. This script runs `oxabl conformance --preprocess --json` over a module
 # list and diffs pass/fail + error-pattern counts between baseline and candidate.
 #
 # Usage:
@@ -106,11 +106,11 @@ run_check_modules() {
   local stderr_log="$tmp_dir/stderr.txt"
   : >"$stderr_log"
 
-  echo "=== $label: oxabl check --preprocess over ${#paths[@]} path(s) ===" >&2
+  echo "=== $label: oxabl conformance --preprocess over ${#paths[@]} path(s) ===" >&2
   echo "    bin=$OXABL_BIN" >&2
   echo "    corpus=$CORPUS_ROOT" >&2
 
-  # Aggregate per-path JSON into one summary. oxabl check --json is one path
+  # Aggregate per-path JSON into one summary. oxabl conformance --json is one path
   # at a time; we merge.
   python3 - "$out_json" <<'PY' &
 import json, sys, os
@@ -127,7 +127,7 @@ PY
     local raw="$tmp_dir/$(echo "$p" | tr '/' '_').json"
     # Capture stdout JSON and stderr (PREPROC007 / other loud preproc lines).
     set +e
-    "$OXABL_BIN" check --preprocess --json "${inc[@]}" "$p" \
+    "$OXABL_BIN" conformance --preprocess --json "${inc[@]}" "$p" \
       >"$raw" 2>>"$stderr_log"
     local rc=$?
     set -e
@@ -155,14 +155,14 @@ if Path(reports_path).exists():
         entry = json.loads(line)
         reports.append(entry)
         r = entry.get("report") or {}
-        # Support both flat and nested shapes from oxabl check --json.
+        # Support both flat and nested shapes from oxabl conformance --json.
         p = int(r.get("passed", 0) or 0)
         f = int(r.get("failed", 0) or 0)
         t = int(r.get("total", p + f) or 0)
         passed += p
         failed += f
         files += t
-        # oxabl check --json: error_patterns is [{pattern, count}, ...]
+        # oxabl conformance --json: error_patterns is [{pattern, count}, ...]
         pats = r.get("error_patterns") or []
         if isinstance(pats, dict):
             for k, v in pats.items():

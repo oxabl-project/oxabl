@@ -39,6 +39,33 @@ enum Cli {
         /// Include search paths (can be specified multiple times)
         #[arg(long = "include-path", short = 'I')]
         include_paths: Vec<PathBuf>,
+    },
+    /// Walk a tree and report the parser's conformance: how many files parse,
+    /// which ones fail and where, and the ranked error patterns behind the
+    /// failures.
+    ///
+    /// This is the parser-refinement instrument, not a user-facing check — it
+    /// answers "how much ABL can oxabl parse today?", which is a question about
+    /// oxabl rather than about the caller's source. It is deliberately
+    /// **hidden** from `--help` (R17/R23): it stays reachable and documented for
+    /// the corpus loop and the A/B gate without growing the advertised CLI
+    /// surface.
+    #[command(hide = true)]
+    Conformance {
+        /// Path to a directory or single file to walk
+        path: PathBuf,
+
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Enable preprocessing (include expansion, &IF evaluation)
+        #[arg(long)]
+        preprocess: bool,
+
+        /// Include search paths (can be specified multiple times)
+        #[arg(long = "include-path", short = 'I')]
+        include_paths: Vec<PathBuf>,
 
         /// Show AST context on parse failure (single-file mode only)
         #[arg(long)]
@@ -243,13 +270,23 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli {
+        // `check` still runs the conformance walk verbatim (minus `--debug`,
+        // which moved to `conformance` with the rest of the instrument). U11 is
+        // a pure relocation: reshaping `check` into a linting front end is U8's
+        // job, which is what keeps this unit independently revertible.
         Cli::Check {
             path,
             json,
             preprocess,
             include_paths,
+        } => run_conformance(&path, json, preprocess, &include_paths, false),
+        Cli::Conformance {
+            path,
+            json,
+            preprocess,
+            include_paths,
             debug,
-        } => run_check(&path, json, preprocess, &include_paths, debug),
+        } => run_conformance(&path, json, preprocess, &include_paths, debug),
         Cli::Analyze {
             path,
             format,
@@ -615,7 +652,14 @@ fn run_analyze(
     ExitCode::SUCCESS
 }
 
-fn run_check(
+/// The parse-conformance walk: discover ABL roots under `path`, parse each one
+/// (optionally through the preprocessor), and render the pass/fail report.
+///
+/// Exit codes: `0` when every file parsed, `1` when any file failed (parse
+/// error, I/O error, or a contained lexer panic), `2` for a usage problem — a
+/// path that does not exist or a directory with no ABL roots in it. `--json`
+/// adds `6` for a serialization failure, matching `analyze`'s contract.
+fn run_conformance(
     path: &Path,
     json_output: bool,
     preprocess: bool,
@@ -700,7 +744,11 @@ fn run_check(
 
     // Render report
     if json_output {
-        render_json_report(&results, elapsed.as_secs_f64());
+        // A serialization failure is reported and propagated, not panicked on —
+        // same exit code (6) `analyze` uses for the same failure.
+        if let Err(code) = render_json_report(&results, elapsed.as_secs_f64()) {
+            return code;
+        }
     } else {
         render_human_report(&results, elapsed.as_secs_f64());
     }
@@ -1005,7 +1053,12 @@ fn render_human_report(results: &[FileResult], elapsed_secs: f64) {
     );
 }
 
-fn render_json_report(results: &[FileResult], elapsed_secs: f64) {
+/// Render the conformance report as JSON on stdout.
+///
+/// Returns `Err(ExitCode)` rather than panicking when the report will not
+/// serialize: the caller propagates it so a serialize failure is an exit code
+/// (6, as in `analyze`) instead of a backtrace.
+fn render_json_report(results: &[FileResult], elapsed_secs: f64) -> Result<(), ExitCode> {
     let total = results.len();
     let mut passed = 0usize;
     let mut failed = 0usize;
@@ -1067,10 +1120,16 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) {
             .collect(),
     };
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).expect("JSON serialization failed")
-    );
+    match serde_json::to_string_pretty(&report) {
+        Ok(s) => {
+            println!("{s}");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("error: json serialize: {e}");
+            Err(ExitCode::from(6))
+        }
+    }
 }
 
 fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_paths: &[PathBuf]) {
