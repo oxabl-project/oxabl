@@ -4,10 +4,8 @@ use std::sync::Arc;
 use oxabl_common::FileSet;
 
 use crate::config::WorkspaceConfig;
+use crate::discovery::{is_root_file, walk_directory};
 use crate::file_system::{FileSystem, InMemoryFileSystem, RealFileSystem};
-
-/// ABL file extensions that the workspace scanner collects.
-const ABL_EXTENSIONS: &[&str] = &["p", "w", "cls", "i"];
 
 /// Top-level handle combining configuration, file identity, and file I/O.
 ///
@@ -32,8 +30,10 @@ impl Workspace {
     /// Discover a workspace rooted at `root`.
     ///
     /// Reads `oxabl.toml` from `root`, then walks all declared source
-    /// directories to discover `.p`, `.w`, `.cls`, and `.i` files, assigning
-    /// each a [`FileId`](oxabl_common::FileId).
+    /// directories under the shared root policy
+    /// ([`crate::discovery`]: `.p`, `.w`, `.cls`, `.v`, case-insensitive, `.i`
+    /// excluded), assigning each discovered file a
+    /// [`FileId`](oxabl_common::FileId).
     pub fn from_path(root: &Path) -> Result<Self, String> {
         let config = WorkspaceConfig::from_path(root)?;
         let fs = Arc::new(RealFileSystem);
@@ -48,14 +48,17 @@ impl Workspace {
     /// Create a workspace from an in-memory file system.
     ///
     /// The caller provides the config and the pre-populated
-    /// [`InMemoryFileSystem`]. All paths present in the file system that
-    /// match ABL extensions are registered in the [`FileSet`].
+    /// [`InMemoryFileSystem`]. Paths that are ABL roots under the shared
+    /// policy are registered in the [`FileSet`].
+    ///
+    /// This deliberately uses the same predicate as the on-disk walk (R8): an
+    /// in-memory workspace must register the same root set a walked one would,
+    /// or tests and the LSP would be reasoning about a file set the CLI never
+    /// produces.
     pub fn in_memory(config: WorkspaceConfig, mem_fs: InMemoryFileSystem) -> Self {
         let mut file_set = FileSet::new();
-        // Register all files in the in-memory FS that have ABL extensions.
-        // We need to iterate the keys — expose them via a helper.
         for path in mem_fs.paths() {
-            if is_abl_file(path) {
+            if is_root_file(path) {
                 file_set.insert(path.to_path_buf());
             }
         }
@@ -72,7 +75,14 @@ impl Workspace {
     }
 }
 
-/// Walk declared source directories and collect ABL files into a [`FileSet`].
+/// Walk declared source directories and collect ABL roots into a [`FileSet`].
+///
+/// Keeps its own per-declared-directory loop rather than calling
+/// [`crate::discover_path`] (KTD10): this shape resolves each configured
+/// directory against `root`, silently skips ones that are absent, and folds
+/// every walk into one `FileSet` — a different job from resolving a single
+/// user-supplied path. The shared piece is the walk primitive and the extension
+/// policy, not the top-level signature.
 fn discover_files(root: &Path, config: &WorkspaceConfig) -> FileSet {
     let mut file_set = FileSet::new();
 
@@ -83,30 +93,19 @@ fn discover_files(root: &Path, config: &WorkspaceConfig) -> FileSet {
             root.join(dir)
         };
 
+        // A configured-but-absent directory is not an error; the walk of a
+        // missing path would return empty anyway, but checking keeps the intent
+        // explicit.
         if !abs_dir.is_dir() {
             continue;
         }
 
-        for entry in walkdir::WalkDir::new(&abs_dir)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            if path.is_file() && is_abl_file(path) {
-                file_set.insert(path.to_path_buf());
-            }
+        for path in walk_directory(&abs_dir) {
+            file_set.insert(path);
         }
     }
 
     file_set
-}
-
-/// Check if a path has an ABL source file extension.
-fn is_abl_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ABL_EXTENSIONS.contains(&ext))
 }
 
 #[cfg(test)]
@@ -144,12 +143,31 @@ include_paths = [{}]
         let mut mem_fs = InMemoryFileSystem::new();
         mem_fs.insert(PathBuf::from("/src/main.p"), "");
         mem_fs.insert(PathBuf::from("/src/window.w"), "");
-        mem_fs.insert(PathBuf::from("/src/Customer.cls"), "");
-        mem_fs.insert(PathBuf::from("/src/shared.i"), "");
+        mem_fs.insert(PathBuf::from("/src/Report.cls"), "");
+        mem_fs.insert(PathBuf::from("/src/legacy.v"), "");
+        mem_fs.insert(PathBuf::from("/src/shared.i"), ""); // R9: not a root
         mem_fs.insert(PathBuf::from("/src/readme.txt"), ""); // not ABL
 
         let ws = Workspace::in_memory(config, mem_fs);
         assert_eq!(ws.file_set.len(), 4);
+        assert!(ws.file_set.id(Path::new("/src/shared.i")).is_none());
+    }
+
+    /// R8: `in_memory` must register exactly the roots a disk walk would —
+    /// same extension set, same case-insensitivity, `.i` excluded.
+    #[test]
+    fn in_memory_matches_the_shared_root_policy() {
+        let config = test_config(&[], &[]);
+        let mut mem_fs = InMemoryFileSystem::new();
+        mem_fs.insert(PathBuf::from("/src/lower.p"), "");
+        mem_fs.insert(PathBuf::from("/src/UPPER.P"), "");
+        mem_fs.insert(PathBuf::from("/src/fragment.i"), "");
+
+        let ws = Workspace::in_memory(config, mem_fs);
+        assert_eq!(ws.file_set.len(), 2);
+        assert!(ws.file_set.id(Path::new("/src/lower.p")).is_some());
+        assert!(ws.file_set.id(Path::new("/src/UPPER.P")).is_some());
+        assert!(ws.file_set.id(Path::new("/src/fragment.i")).is_none());
     }
 
     #[test]
@@ -160,16 +178,10 @@ include_paths = [{}]
         assert!(ws.file_set.is_empty());
     }
 
-    #[test]
-    fn is_abl_file_checks() {
-        assert!(is_abl_file(Path::new("main.p")));
-        assert!(is_abl_file(Path::new("window.w")));
-        assert!(is_abl_file(Path::new("Customer.cls")));
-        assert!(is_abl_file(Path::new("shared.i")));
-        assert!(!is_abl_file(Path::new("readme.txt")));
-        assert!(!is_abl_file(Path::new("Makefile")));
-        assert!(!is_abl_file(Path::new("no_extension")));
-    }
+    // The old `is_abl_file_checks` test lived here and asserted `.i` IS an ABL
+    // file — the pre-R9 policy written down. The predicate now lives in
+    // `crate::discovery` and is tested there; `in_memory_matches_the_shared_root_policy`
+    // above covers this module's use of it.
 
     #[test]
     fn resolve_include_through_workspace() {
@@ -229,7 +241,9 @@ include_paths = [{}]
         std::fs::write(tmp.join("src/sub/nested.w"), "").unwrap();
         std::fs::write(tmp.join("procs/run.p"), "").unwrap();
         std::fs::write(tmp.join("procs/include.i"), "").unwrap();
-        std::fs::write(tmp.join("procs/Customer.cls"), "").unwrap();
+        std::fs::write(tmp.join("procs/Report.cls"), "").unwrap();
+        // Uppercase extension: a root under the shared case-insensitive policy.
+        std::fs::write(tmp.join("procs/LEGACY.V"), "").unwrap();
         // Non-ABL file
         std::fs::write(tmp.join("src/readme.md"), "").unwrap();
 
@@ -248,7 +262,11 @@ directories = ["src/", "procs/"]
 
         let ws = Workspace::from_path(&tmp).unwrap();
         assert_eq!(ws.config.workspace.name, "disk-test");
-        assert_eq!(ws.file_set.len(), 5); // main.p, nested.w, run.p, include.i, Customer.cls
+        // main.p, nested.w, run.p, Report.cls, LEGACY.V — the `.i` fragment is
+        // not a root (R9) and readme.md is not ABL.
+        assert_eq!(ws.file_set.len(), 5);
+        assert!(ws.file_set.id(&tmp.join("procs/include.i")).is_none());
+        assert!(ws.file_set.id(&tmp.join("procs/LEGACY.V")).is_some());
 
         // Clean up
         let _ = std::fs::remove_dir_all(&tmp);
