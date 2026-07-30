@@ -1120,6 +1120,7 @@ dependencies = [
  "oxabl_ast",
  "oxabl_common",
  "oxabl_formatter",
+ "oxabl_pipeline",
  "oxabl_schema",
  "oxabl_semantic",
  "oxabl_style",

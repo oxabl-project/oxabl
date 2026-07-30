@@ -20,8 +20,21 @@ oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 
+[features]
+# The cross-client parity fixture table (`src/fixtures.rs`), shared by the four
+# R19 parity legs. Off by default and enabled only from a leg's
+# `[dev-dependencies]`: `#[cfg(test)]` is unreachable from another crate, so the
+# table has to live in `src/`, and ungated it would become part of this crate's
+# public API *and* be compiled into the `oxabl_wasm` payload — the umbrella
+# re-exports this crate unconditionally so the browser can reach it. Mirrors
+# `oxabl_schema`'s `test-support`, which four crates already take this way.
+test-support = ["oxabl_schema/test-support"]
+
 [dev-dependencies]
 tempfile = "3"
+# The parity legs in this crate consume the fixture table like any downstream
+# leg does, through the feature rather than through a `#[cfg(test)]` back door.
+oxabl_pipeline = { path = ".", features = ["test-support"] }
 # Only for `Span` inside a fabricated `FileSpan` — see the fatal-expansion test.
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 # Arms `panic_if_injected` so a source carrying an `OXABL-TEST-PANIC:<site>`

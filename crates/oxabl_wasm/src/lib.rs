@@ -414,4 +414,255 @@ mod tests {
         let json = serde_json::to_value(&wire).expect("serializable");
         assert_eq!(json["help"], "do something about it");
     }
+
+    // -----------------------------------------------------------------------
+    // Leg 4 of 4: the browser, against the shared parity table (R19)
+    // -----------------------------------------------------------------------
+    //
+    // The `#[wasm_bindgen]` exports are reachable only from inside this crate
+    // without a dev-dependency back-edge and host-target shims, which is why
+    // this leg lives here rather than in `oxabl_pipeline`. It compares the same
+    // `oxabl_pipeline::fixtures` table the pipeline, CLI, and LSP legs use.
+    //
+    // Byte spans are what is compared: the wire shape carries `start.byte` /
+    // `end.byte` beside the derived line/column, and only the bytes are the
+    // pipeline's own answer (KTD5).
+    //
+    // Where the browser is deliberately *less capable* — no schema upload, no
+    // include resolution, no `oxabl.toml` — the tests assert the **capability
+    // gap** rather than a different diagnostic set. One genuine *defect* is also
+    // pinned by name; see `browser_default_severities_diverge_for_two_rules`.
+    mod parity {
+        use oxabl_pipeline::fixtures::{
+            self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
+        };
+
+        use super::super::{analyze_source, format_source};
+
+        /// Every diagnostic `analyze_source` reported, in the shared comparison
+        /// form.
+        fn observed(source: &str) -> Vec<ObservedDiagnostic> {
+            let response: serde_json::Value = serde_json::from_str(&analyze_source(source))
+                .expect("the browser wire shape is JSON");
+            response["diagnostics"]
+                .as_array()
+                .expect("diagnostics array")
+                .iter()
+                .map(|d| {
+                    ObservedDiagnostic::from_wire(
+                        d["code"].as_str().unwrap(),
+                        d["severity"].as_str().unwrap(),
+                        d["source"].as_str().unwrap(),
+                        d["start"]["byte"].as_u64().unwrap() as u32,
+                        d["end"]["byte"].as_u64().unwrap() as u32,
+                    )
+                })
+                .collect()
+        }
+
+        fn formatted(source: &str) -> serde_json::Value {
+            serde_json::from_str(&format_source(source)).expect("the browser wire shape is JSON")
+        }
+
+        /// Fixtures the browser has the capabilities to answer at all.
+        fn comparable() -> impl Iterator<Item = &'static ParityFixture> {
+            FIXTURES.iter().filter(|f| f.browser_comparable())
+        }
+
+        /// Every capability-free fixture yields the shared table's codes, byte
+        /// spans, and sources through the `#[wasm_bindgen]` entry point.
+        ///
+        /// Severity is compared through
+        /// [`fixtures::browser_expected`](oxabl_pipeline::fixtures::browser_expected),
+        /// which applies the one recorded divergence rather than pretending it
+        /// away.
+        #[test]
+        fn every_browser_capable_fixture_matches_the_shared_table() {
+            for fixture in comparable() {
+                let observed = fixtures::normalize(observed(fixture.source));
+                assert_eq!(
+                    observed,
+                    fixtures::browser_expected(fixture),
+                    "the browser diverged on fixture `{}`",
+                    fixture.name
+                );
+            }
+        }
+
+        /// A clean source is clean in the browser too.
+        #[test]
+        fn the_clean_fixture_yields_no_diagnostics() {
+            assert!(observed(fixtures::fixture("clean").source).is_empty());
+        }
+
+        /// The recovered set survives: a parse error does not cost the browser
+        /// its lint findings either.
+        #[test]
+        fn a_parse_error_yields_the_same_recovered_set() {
+            let fixture = fixtures::fixture("parse_error");
+            let observed = fixtures::normalize(observed(fixture.source));
+            assert_eq!(observed, fixtures::browser_expected(fixture));
+            assert!(
+                observed.iter().any(|d| d.code == "PARSE001")
+                    && observed.iter().any(|d| d.code.starts_with("LINT")),
+                "recovery must yield both: {observed:?}"
+            );
+        }
+
+        /// Format outcomes agree across the reformat, unchanged, and refusal
+        /// arms — the wire shape's three-field rendering of the one
+        /// [`FormatOutcome`](oxabl_pipeline::FormatOutcome).
+        #[test]
+        fn format_outcomes_agree_with_the_shared_table() {
+            for fixture in FIXTURES {
+                // Formatting takes raw source and a style guide only, so *every*
+                // fixture is comparable here — the capability gaps are inputs to
+                // the lint pipeline, not the format one.
+                let response = formatted(fixture.source);
+                match fixture.format {
+                    ExpectedFormat::Unchanged => {
+                        assert_eq!(response["changed"], false, "{}", fixture.name);
+                        assert_eq!(
+                            response["error"],
+                            serde_json::Value::Null,
+                            "{}",
+                            fixture.name
+                        );
+                        assert_eq!(response["source"], fixture.source, "{}", fixture.name);
+                    }
+                    ExpectedFormat::Reformatted(expected) => {
+                        assert_eq!(response["changed"], true, "{}", fixture.name);
+                        assert_eq!(
+                            response["error"],
+                            serde_json::Value::Null,
+                            "{}",
+                            fixture.name
+                        );
+                        assert_eq!(response["source"], expected, "{}", fixture.name);
+                    }
+                    ExpectedFormat::Refused => {
+                        assert_eq!(response["changed"], false, "{}", fixture.name);
+                        assert!(
+                            response["error"].is_string(),
+                            "a refusal states a reason: {}",
+                            fixture.name
+                        );
+                        // No arm ever returns partially formatted bytes.
+                        assert_eq!(response["source"], fixture.source, "{}", fixture.name);
+                    }
+                }
+            }
+        }
+
+        // --- Capability gaps, asserted as gaps ------------------------------
+
+        /// Includes are an **unavailable capability**, not a different answer:
+        /// the entry point takes source only, so there is nowhere to put a search
+        /// path and the preprocessor is off. The include fixture therefore
+        /// produces nothing — and the table says so, which is why it is excluded
+        /// from the comparison above rather than expected to be clean there.
+        #[test]
+        fn include_resolution_is_an_unavailable_capability() {
+            let fixture = fixtures::fixture("unresolvable_include");
+            assert!(
+                fixture.needs_capability(Capability::IncludeResolution),
+                "the table must record this fixture's capability requirement"
+            );
+            assert!(
+                !fixture.browser_comparable(),
+                "a fixture needing a capability the browser lacks is not comparable"
+            );
+            // The capability is absent, so the loud warning the other three legs
+            // assert cannot be produced here at all.
+            assert!(
+                !observed(fixture.source)
+                    .iter()
+                    .any(|d| d.code == "PREPROC007"),
+                "with no include resolution there is no include to fail to resolve"
+            );
+        }
+
+        /// A schema is an unavailable capability for the same reason, so
+        /// `unknown-table-or-field` is inert in the browser.
+        #[test]
+        fn a_loaded_schema_is_an_unavailable_capability() {
+            let fixture = fixtures::fixture("unknown_field");
+            assert!(fixture.needs_capability(Capability::Schema));
+            assert!(!fixture.browser_comparable());
+            assert!(
+                !observed(fixture.source)
+                    .iter()
+                    .any(|d| d.code == "LINT0003"),
+                "the rule is schema-gated and the browser has no schema"
+            );
+        }
+
+        /// Per-rule severity is also an unavailable capability: there is no
+        /// `oxabl.toml` and no second parameter on the entry point, so the
+        /// override the other three legs apply has nowhere to enter.
+        ///
+        /// Asserted as a gap: the browser reports the rule at its *un-overridden*
+        /// severity, and no call form exists that would change it.
+        #[test]
+        fn per_rule_severity_is_an_unavailable_capability() {
+            let fixture = fixtures::fixture(fixtures::OVERRIDE_FIXTURE);
+            let target = observed(fixture.source)
+                .into_iter()
+                .find(|d| d.code == fixtures::OVERRIDE_CODE)
+                .unwrap_or_else(|| panic!("expected {}", fixtures::OVERRIDE_CODE));
+
+            let un_overridden = fixtures::browser_expected(fixture)
+                .into_iter()
+                .find(|d| d.code == fixtures::OVERRIDE_CODE)
+                .expect("the table carries this code");
+            assert_eq!(target.severity, un_overridden.severity);
+            assert_ne!(
+                target.severity,
+                fixtures::OVERRIDE_SEVERITY,
+                "if the override's severity were already the default, this would assert nothing"
+            );
+        }
+
+        // --- The regression this suite already caught once -------------------
+
+        /// The browser reports the **same severity** as every filesystem-backed
+        /// client for a rule whose built-in severity differs from its configured
+        /// default (R19).
+        ///
+        /// This is the assertion the parity suite earned. On its first run the
+        /// browser returned `error` for `type-mismatch-assignment` and
+        /// `unknown-table-or-field` where the CLI and the LSP returned `warning`,
+        /// under the same empty environment — two default severity tables, one
+        /// materialized by `PipelineConfig::resolve` and one left empty by
+        /// `PipelineConfig::default`, disagreeing on exactly those two rules.
+        ///
+        /// The tables are now one table. This test is narrower than the
+        /// full-table comparison above on purpose: it names the specific rule
+        /// whose two severities disagree, so re-introducing a second default
+        /// table fails here with an obvious message rather than somewhere in a
+        /// diff of whole diagnostic sets.
+        #[test]
+        fn browser_severity_matches_every_other_client() {
+            let fixture = fixtures::fixture("type_mismatch");
+            let observed = observed(fixture.source);
+            let browser = observed
+                .iter()
+                .find(|d| d.code == "LINT0004")
+                .unwrap_or_else(|| panic!("expected LINT0004, got {observed:?}"));
+            let shared = fixture
+                .expected()
+                .into_iter()
+                .find(|d| d.code == "LINT0004")
+                .expect("the table carries LINT0004");
+
+            assert_eq!(
+                browser.severity, shared.severity,
+                "the browser must not be a variable in the answer: a second \
+                 default severity table has been reintroduced"
+            );
+            assert_eq!((browser.start, browser.end), (shared.start, shared.end));
+            assert_eq!(browser.code, shared.code);
+            assert_eq!(browser.source, shared.source);
+        }
+    }
 }

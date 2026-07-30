@@ -50,6 +50,9 @@
 //! column from a byte span, for the byte-offset clients. The language server
 //! deliberately does not use it (R13, KTD5); see [`position`].
 
+#[cfg(feature = "test-support")]
+pub mod fixtures;
+
 mod config;
 mod format;
 mod lint;

@@ -1,0 +1,211 @@
+//! Leg 3 of 4: the language server (R19).
+//!
+//! Drives the salsa queries — `compute_diagnostics` over a [`Buffer`] whose text
+//! comes from a [`Rope`], which is the server's own text representation and the
+//! reason this leg cannot live in `oxabl_pipeline`. Comparison is against
+//! `oxabl_pipeline::fixtures`, the same table the other three legs use.
+//!
+//! **Byte spans only.** The server's client-facing ranges are derived from the
+//! rope under a negotiated position encoding, and that conversion has its own
+//! tests. Comparing rendered positions here would let a UTF-16 column bug
+//! masquerade as a pipeline divergence, so what is compared is the byte-spanned
+//! [`CollectedDiagnostics`](oxabl_analyze::CollectedDiagnostics) the query
+//! returns (KTD5).
+//!
+//! Every fixture is synthetic ABL from the shared table.
+
+use std::sync::Arc;
+
+use lsp_types::PositionEncodingKind;
+use oxabl_lsp::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics};
+use oxabl_lsp::document::Document;
+use oxabl_lsp::formatting::compute_formatting_edits;
+use oxabl_pipeline::fixtures::{self, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture};
+use oxabl_pipeline::{FormatPipeline, PipelineConfig};
+use oxabl_workspace::InMemoryFileSystem;
+use ropey::Rope;
+
+/// A database configured exactly as the live server is for a project with no
+/// `oxabl.toml`: the resolved all-defaults configuration, preprocessing on, and
+/// a filesystem for include reads.
+///
+/// The filesystem is empty because the include fixture is *unresolvable* on
+/// purpose — the loud `PREPROC007` is the point, not a successful expansion.
+fn db_with(config: PipelineConfig) -> AnalysisDatabase {
+    AnalysisDatabase::new(AnalysisConfig {
+        fs: Arc::new(InMemoryFileSystem::new()),
+        pipeline: Arc::new(config),
+        preprocess: true,
+    })
+}
+
+/// The server's text pipeline: source → `Rope` → buffer input. Going through the
+/// rope rather than handing the `&str` straight to the buffer is deliberate — it
+/// is what the server does on `didOpen`, and a rope round-trip that lost bytes
+/// would shift every span this leg compares.
+fn buffer(db: &AnalysisDatabase, source: &str) -> Buffer {
+    let rope = Rope::from_str(source);
+    assert_eq!(
+        rope.to_string(),
+        source,
+        "the rope must round-trip the source"
+    );
+    Buffer::new(db, rope.to_string())
+}
+
+fn observed(fixture: &ParityFixture, config: PipelineConfig) -> Vec<ObservedDiagnostic> {
+    let db = db_with(config);
+    let buffer = buffer(&db, fixture.source);
+    let schema = SchemaHandle::new(&db, 0);
+    let diagnostics = compute_diagnostics(&db, buffer, schema)
+        .expect("an uncontended snapshot read is never cancelled");
+    fixtures::observed(&diagnostics)
+}
+
+fn document(source: &str) -> Document {
+    Document {
+        rope: Rope::from_str(source),
+        version: 1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/// Every fixture yields exactly the shared table's diagnostic set through the
+/// salsa queries — codes, severities, byte spans, sources.
+#[test]
+fn every_fixture_matches_the_shared_table_through_the_queries() {
+    for fixture in FIXTURES {
+        fixture.assert_diagnostics("lsp queries", observed(fixture, fixture.config()));
+    }
+}
+
+/// A clean buffer publishes nothing.
+#[test]
+fn the_clean_fixture_yields_no_diagnostics() {
+    let fixture = fixtures::fixture("clean");
+    assert!(
+        observed(fixture, fixture.config()).is_empty(),
+        "a clean buffer must produce nothing"
+    );
+}
+
+/// The recovered set survives the query path: a parse error does not cost the
+/// buffer its lint findings.
+#[test]
+fn a_parse_error_yields_the_same_recovered_set() {
+    let fixture = fixtures::fixture("parse_error");
+    let observed = observed(fixture, fixture.config());
+    fixture.assert_diagnostics("lsp queries", observed.clone());
+    assert!(
+        observed.iter().any(|d| d.code == "PARSE001")
+            && observed.iter().any(|d| d.code.starts_with("LINT")),
+        "recovery must yield both: {observed:?}"
+    );
+}
+
+/// The loud unresolvable-include warning is published like any other diagnostic
+/// — the server has the include capability, so the gap the browser asserts does
+/// not apply here.
+#[test]
+fn the_loud_include_warning_is_published() {
+    let fixture = fixtures::fixture("unresolvable_include");
+    let observed = observed(fixture, fixture.config());
+    fixture.assert_diagnostics("lsp queries", observed.clone());
+    assert!(observed.iter().any(|d| d.code == "PREPROC007"));
+}
+
+/// Schema is a capability here too: supplied, the rule fires; withheld, the
+/// buffer is silent rather than differently diagnosed.
+#[test]
+fn the_schema_gated_fixture_needs_a_loaded_schema() {
+    let fixture = fixtures::fixture("unknown_field");
+    fixture.assert_diagnostics("lsp queries", observed(fixture, fixture.config()));
+    assert!(
+        observed(fixture, fixtures::canonical_config()).is_empty(),
+        "with no schema loaded the rule must be inert"
+    );
+}
+
+/// Recomputing an unchanged buffer returns the same set, so nothing in this leg
+/// depends on a cold query graph.
+#[test]
+fn a_memoized_recompute_returns_the_same_set() {
+    for fixture in FIXTURES {
+        let db = db_with(fixture.config());
+        let buffer = buffer(&db, fixture.source);
+        let schema = SchemaHandle::new(&db, 0);
+        let first = compute_diagnostics(&db, buffer, schema).unwrap();
+        let second = compute_diagnostics(&db, buffer, schema).unwrap();
+        assert_eq!(first, second, "fixture `{}`", fixture.name);
+        fixture.assert_diagnostics("lsp queries (memoized)", fixtures::observed(&second));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Format
+// ---------------------------------------------------------------------------
+
+/// The server's formatting decision agrees with the table on all three arms: one
+/// whole-document edit for drift, and an empty edit list for both leave-it-alone
+/// arms.
+#[test]
+fn formatting_edits_agree_with_the_shared_table() {
+    let encoding = PositionEncodingKind::UTF8;
+    for fixture in FIXTURES {
+        let pipeline = FormatPipeline::new(fixture.config().style.clone());
+        fixture.assert_format("lsp formatting", &pipeline.format(fixture.source));
+
+        let edits = compute_formatting_edits(&document(fixture.source), &pipeline, &encoding);
+        match fixture.format {
+            ExpectedFormat::Reformatted(expected) => {
+                assert_eq!(
+                    edits.len(),
+                    1,
+                    "fixture `{}`: drift is one whole-document edit",
+                    fixture.name
+                );
+                assert_eq!(edits[0].new_text, expected, "fixture `{}`", fixture.name);
+            }
+            // A refusal and an already-conforming buffer are both "send no
+            // edits" — the editor leaves the buffer as the user typed it.
+            ExpectedFormat::Unchanged | ExpectedFormat::Refused => {
+                assert!(
+                    edits.is_empty(),
+                    "fixture `{}`: expected no edits, got {edits:?}",
+                    fixture.name
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-rule severity
+// ---------------------------------------------------------------------------
+
+/// The override moves the severity and nothing else, identically to the pipeline
+/// and CLI legs.
+#[test]
+fn a_per_rule_severity_override_changes_only_the_severity() {
+    let fixture = fixtures::fixture(fixtures::OVERRIDE_FIXTURE);
+    let baseline = observed(fixture, fixture.config());
+    let overridden = observed(fixture, fixtures::config_with_override());
+
+    let target = overridden
+        .iter()
+        .find(|d| d.code == fixtures::OVERRIDE_CODE)
+        .unwrap_or_else(|| panic!("expected {} after the override", fixtures::OVERRIDE_CODE));
+    let before = baseline
+        .iter()
+        .find(|d| d.code == fixtures::OVERRIDE_CODE)
+        .expect("the baseline carries the same code");
+
+    assert_eq!(target.severity, fixtures::OVERRIDE_SEVERITY);
+    assert_ne!(before.severity, target.severity);
+    assert_eq!((target.start, target.end), (before.start, before.end));
+    assert_eq!(target.source, before.source);
+    assert_eq!(overridden.len(), baseline.len());
+}

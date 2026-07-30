@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{RealFileSystem, WorkspaceConfig, find_workspace_root};
+use oxabl_workspace::{LintConfig, RealFileSystem, WorkspaceConfig, find_workspace_root};
 
 /// A non-fatal problem hit while resolving configuration.
 ///
@@ -126,13 +126,33 @@ pub struct PipelineConfig {
 }
 
 impl Default for PipelineConfig {
-    /// The configuration of a project with no `oxabl.toml`: no include paths,
-    /// built-in lint severities, the safe non-mangling base style, and no
-    /// schema.
+    /// The configuration of a project with no `oxabl.toml`: no include paths, the
+    /// **documented default** lint severities, the safe non-mangling base style,
+    /// and no schema.
+    ///
+    /// # Why the severity map is not simply empty (R19)
+    ///
+    /// An empty [`LintSeverityMap`] is not "the defaults" — it means *no rule has
+    /// a configured severity*, so each diagnostic keeps whatever severity
+    /// `oxabl_lint` happens to construct it with. For two rules
+    /// (`unknown-table-or-field` and `type-mismatch-assignment`) that built-in
+    /// value is `Error`, while `[workspace.lint]`'s documented default is `Warn`.
+    ///
+    /// [`resolve`](PipelineConfig::resolve) materializes the documented defaults
+    /// even when no config file exists, so leaving this map empty gave the two
+    /// clients that build a config directly — the browser, and any embedding
+    /// caller — a *different answer for the same input* than every
+    /// filesystem-backed client. That is precisely what R19 forbids: the client
+    /// is not allowed to be a variable in the answer. The cross-client parity
+    /// suite caught it, and the fix is that both paths now read one table.
+    ///
+    /// Deriving from [`LintConfig::default`] rather than restating the severities
+    /// here is deliberate: a restatement is a second table that can drift, which
+    /// is the bug this doc comment exists to explain.
     fn default() -> Self {
         PipelineConfig {
             include_paths: Vec::new(),
-            lint_severities: LintSeverityMap::new(),
+            lint_severities: LintConfig::default().to_severity_map(),
             style: StyleGuide::default_base(),
             schema: Schema::empty(),
             schema_loaded: false,

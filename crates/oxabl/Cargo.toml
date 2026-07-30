@@ -57,6 +57,11 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0", features = [
 ] }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+# The shared cross-client parity fixture table (R19). A dev-dependency feature
+# only: the shipped binary and the library both take `oxabl_pipeline` without it.
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0", features = [
+    "test-support",
+] }
 serde_json = "1"
 # Examples only. The CLI walks trees through `oxabl_workspace::discover_path`
 # now, so nothing in the shipped binary needs a directory walker of its own.
