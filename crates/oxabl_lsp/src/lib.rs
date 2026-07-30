@@ -145,8 +145,10 @@ struct ComputeResult {
     uri: Uri,
     version: i32,
     diagnostics: Option<oxabl_analyze::CollectedDiagnostics>,
-    /// Include dependency paths observed during this computation (R17).
-    dependencies: Vec<PathBuf>,
+    /// Include dependency paths observed during this computation (R17), or
+    /// `None` when the computation produced no trustworthy set (cancelled, or a
+    /// contained panic) — see [`analyze_guarded`].
+    dependencies: Option<Vec<PathBuf>>,
 }
 
 impl<'c> Server<'c> {
@@ -268,16 +270,17 @@ impl<'c> Server<'c> {
     /// Publish a completed computation, unless it was cancelled (`None`) or its
     /// buffer version has since been superseded by a newer edit (KTD7).
     fn handle_result(&mut self, res: ComputeResult) {
-        let Some(doc) = self.documents.get(&res.uri) else {
-            return; // buffer closed
-        };
-        if doc.version != res.version {
-            return; // superseded by a newer edit
+        match self.documents.get(&res.uri) {
+            None => return,                                    // buffer closed
+            Some(doc) if doc.version != res.version => return, // superseded by a newer edit
+            Some(_) => {}
         }
-        self.dependencies
-            .insert(res.uri.clone(), res.dependencies.clone());
+        self.record_dependencies(&res.uri, res.dependencies);
         let Some(collected) = res.diagnostics else {
             return; // cancelled snapshot read
+        };
+        let Some(doc) = self.documents.get(&res.uri) else {
+            return;
         };
         let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
         self.publish(res.uri.clone(), lsp_diags, Some(res.version));
@@ -476,7 +479,7 @@ impl<'c> Server<'c> {
         // takes the whole server down.
         let (collected, dependencies) =
             analyze_guarded(&snapshot, buffer, self.schema, uri.as_str());
-        self.dependencies.insert(uri.clone(), dependencies);
+        self.record_dependencies(uri, dependencies);
         let Some(collected) = collected else {
             return;
         };
@@ -558,6 +561,22 @@ impl<'c> Server<'c> {
     fn bump_config_revision(&mut self) {
         let next = self.schema.revision(&self.db).wrapping_add(1);
         self.schema.set_revision(&mut self.db).to(next);
+    }
+
+    /// Record a buffer's include dependency set, **keeping the previous one when
+    /// the computation had no trustworthy answer** (R17).
+    ///
+    /// `None` arrives from a cancelled snapshot read or a contained panic, and
+    /// neither says anything about what the buffer includes. Overwriting with an
+    /// empty set would be worse than doing nothing: `buffers_depending_on` would
+    /// stop matching this buffer, so editing an `.i` it includes would never
+    /// re-trigger it and the file would quietly go stale until edited directly.
+    /// The last successful computation's set is still the best information
+    /// available, and the next successful one replaces it.
+    fn record_dependencies(&mut self, uri: &Uri, dependencies: Option<Vec<PathBuf>>) {
+        if let Some(dependencies) = dependencies {
+            self.dependencies.insert(uri.clone(), dependencies);
+        }
     }
 
     /// URIs of every buffer whose recorded include dependency set contains
@@ -647,7 +666,7 @@ impl<'c> Server<'c> {
 }
 
 /// Compute a buffer's diagnostics **and** its include dependencies under one
-/// shared panic guard (R8), degrading both together to `(None, vec![])` on a
+/// shared panic guard (R8), degrading both together to `(None, None)` on a
 /// panic.
 ///
 /// Both diagnostics paths — the main loop's `compute_and_publish` and the
@@ -655,9 +674,18 @@ impl<'c> Server<'c> {
 /// can drift into a narrower guard.
 ///
 /// **The guard must span both calls.** `buffer_dependencies` runs the same
-/// buffer through salsa one line later and has no `Cancelled::catch` of its own,
-/// so a panic in expansion just past a diagnostics-only guard would still kill
-/// the worker or the main loop.
+/// buffer through salsa one line later, so a genuine panic in expansion just
+/// past a diagnostics-only guard would still kill the worker or the main loop.
+/// The two queries each carry their own `Cancelled::catch` *inside* this guard
+/// (KTD6): a cancellation is a race to abandon, not a bug to contain, and
+/// letting it reach `catch_panic` would report every concurrent edit as a panic.
+///
+/// Both halves are `Option`, and `None` means the same thing on each: **no
+/// trustworthy answer** — cancelled, or panicked and contained. Neither may be
+/// committed as an empty result, which is why the dependency half is not a bare
+/// `Vec`: an empty dependency set is a real answer (a file with no includes),
+/// and recording it for a buffer that does have includes stops the watcher from
+/// ever re-triggering that buffer again.
 ///
 /// Returning normally on a panic is the contract the worker relies on: its
 /// `send` sits after this call, so a contained panic still produces a result and
@@ -669,7 +697,10 @@ pub(crate) fn analyze_guarded(
     buffer: Buffer,
     schema: SchemaHandle,
     label: &str,
-) -> (Option<oxabl_analyze::CollectedDiagnostics>, Vec<PathBuf>) {
+) -> (
+    Option<oxabl_analyze::CollectedDiagnostics>,
+    Option<Vec<PathBuf>>,
+) {
     let computed = catch_panic(|| {
         let diagnostics = compute_diagnostics(snapshot, buffer, schema);
         // Dependency paths come from the (now-warm) expansion memo.
@@ -680,7 +711,7 @@ pub(crate) fn analyze_guarded(
         Ok(pair) => pair,
         Err(panic) => {
             eprintln!("oxabl-lsp: analysis panicked for {label}: {panic}");
-            (None, Vec::new())
+            (None, None)
         }
     }
 }
@@ -697,4 +728,78 @@ pub(crate) fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let rest = s.strip_prefix("file://")?;
     // `file:///abs/path` → the authority is empty, leaving a leading `/abs`.
     Some(PathBuf::from(rest))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    fn server(connection: &Connection) -> Server<'_> {
+        Server::new(
+            connection,
+            PositionEncodingKind::UTF8,
+            std::time::Duration::from_millis(10),
+        )
+    }
+
+    /// The regression a cancellation used to cause (R17): `buffer_dependencies`
+    /// had no `Cancelled::catch`, so a concurrent write turned into a contained
+    /// panic, the result carried an *empty* dependency set, and the buffer was
+    /// recorded as depending on nothing. From then on `buffers_depending_on`
+    /// never matched it, so editing an `.i` it includes stopped re-triggering it
+    /// and the file went stale until edited directly.
+    ///
+    /// A cancelled computation now reports `None`, and the previously-recorded
+    /// set must survive it.
+    #[test]
+    fn a_cancelled_computation_keeps_the_recorded_dependency_set() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+        let include = PathBuf::from("/w/decls.i");
+        server.record_dependencies(&uri, Some(vec![include.clone()]));
+
+        // What a cancelled run delivers: no diagnostics, no dependency set.
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+        });
+
+        assert_eq!(
+            server.dependencies.get(&uri),
+            Some(&vec![include.clone()]),
+            "a cancellation must not erase the buffer's watcher registration"
+        );
+        assert_eq!(
+            server.buffers_depending_on(&include),
+            vec![uri],
+            "and the include must still match the buffer"
+        );
+    }
+
+    /// The other half of the contract: a *successful* computation still replaces
+    /// the recorded set, including with an empty one — a file that no longer
+    /// includes anything must stop matching its old includes.
+    #[test]
+    fn a_successful_computation_replaces_the_recorded_dependency_set() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+        let include = PathBuf::from("/w/decls.i");
+        server.record_dependencies(&uri, Some(vec![include.clone()]));
+
+        server.record_dependencies(&uri, Some(Vec::new()));
+
+        assert_eq!(server.dependencies.get(&uri), Some(&Vec::new()));
+        assert!(
+            server.buffers_depending_on(&include).is_empty(),
+            "an empty set is a real answer and must take effect"
+        );
+    }
 }

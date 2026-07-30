@@ -55,19 +55,20 @@ fn case(fixture: &ParityFixture) -> Case {
     }
 }
 
-/// `oxabl check --json --preprocess`, with `--schema` when the fixture needs it.
+/// `oxabl check --json`, with `--schema` when the fixture needs it — and with no
+/// preprocessing flag at all.
 ///
-/// `--preprocess` is what makes this leg's configuration *equivalent* to the
-/// pipeline and LSP legs: the flag is off by default in the CLI and on by
-/// default everywhere else, and comparing across that difference would be
-/// comparing two environments rather than two clients.
+/// That omission is deliberate (R19). This leg runs `check` in its **default**
+/// configuration precisely so a default-only divergence cannot hide: the whole
+/// point of the parity suite is that the CLI, the pipeline, and the language
+/// server answer the same question, and a leg that hand-tunes its flags until
+/// the answers line up compensates for a divergence instead of reporting it.
+/// This suite previously passed `--preprocess` here to make the leg
+/// "equivalent", and that flag is exactly why it stayed green while `check`
+/// defaulted preprocessing off and the language server defaulted it on.
 fn check_json(case: &Case, extra: &[&str]) -> (Value, Option<i32>, String) {
     let mut command = oxabl();
-    command
-        .arg("check")
-        .arg("--json")
-        .arg("--preprocess")
-        .arg(&case.source);
+    command.arg("check").arg("--json").arg(&case.source);
     if let Some(schema) = &case.schema {
         command.arg("--schema").arg(schema);
     }

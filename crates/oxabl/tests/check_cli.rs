@@ -408,6 +408,110 @@ fn schema_flag_drives_schema_backed_diagnostics() {
 }
 
 // ---------------------------------------------------------------------------
+// Preprocessing is on by default (R19)
+// ---------------------------------------------------------------------------
+
+/// The default configuration expands includes. Pinned on its own because the
+/// default is the only configuration most users ever run, and getting it wrong
+/// is not a subtle failure: a gate that cannot see what an include declares
+/// reports every reference to it as `undefined-symbol`, so the whole file
+/// becomes noise about the caller's own correct code. It is also the
+/// configuration the language server always runs (R19), so a divergence here
+/// makes the gate and the editor disagree on any project that uses an include.
+///
+/// No preprocessing flag is passed — that is the point of the test.
+#[test]
+fn preprocessing_is_on_by_default_so_include_declared_symbols_resolve() {
+    let tmp = TempDir::new().unwrap();
+    let includes = tmp.path().join("inc");
+    // The include declares the variable; the root file writes and reads it, so
+    // nothing but a missing expansion could produce a finding here.
+    write(
+        &includes.join("decls.i"),
+        "DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n",
+    );
+    let file = tmp.path().join("main.p");
+    write(&file, "{decls.i}\nASSIGN v-count = 1.\nMESSAGE v-count.\n");
+
+    let run = check([
+        Path::new("-I").as_os_str(),
+        includes.as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the default must expand includes. stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        !run.stdout.contains("LINT0001"),
+        "an include-declared symbol must not read as undefined, got:\n{}",
+        run.stdout
+    );
+}
+
+/// The escape hatch still works, and shows what the default is protecting
+/// against: with expansion skipped, the same file reports its include-declared
+/// symbol as undefined at every reference.
+#[test]
+fn no_preprocess_skips_expansion_and_the_symbol_goes_undefined() {
+    let tmp = TempDir::new().unwrap();
+    let includes = tmp.path().join("inc");
+    write(
+        &includes.join("decls.i"),
+        "DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n",
+    );
+    let file = tmp.path().join("main.p");
+    write(&file, "{decls.i}\nASSIGN v-count = 1.\nMESSAGE v-count.\n");
+
+    let run = check([
+        Path::new("--no-preprocess").as_os_str(),
+        Path::new("-I").as_os_str(),
+        includes.as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    assert_eq!(run.code, Some(1), "stdout:\n{}", run.stdout);
+    assert!(
+        run.stdout.contains("LINT0001"),
+        "expected undefined-symbol without expansion, got:\n{}",
+        run.stdout
+    );
+}
+
+/// `--preprocess` is accepted and ignored: an invocation written against the
+/// flag's earlier opt-in form keeps working and keeps meaning the same thing.
+#[test]
+fn the_legacy_preprocess_flag_is_accepted_and_changes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let includes = tmp.path().join("inc");
+    write(
+        &includes.join("decls.i"),
+        "DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n",
+    );
+    let file = tmp.path().join("main.p");
+    write(&file, "{decls.i}\nASSIGN v-count = 1.\nMESSAGE v-count.\n");
+
+    let run = check([
+        Path::new("--preprocess").as_os_str(),
+        Path::new("-I").as_os_str(),
+        includes.as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    assert_eq!(
+        run.code,
+        Some(0),
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Coverage channels: loud, but never a gate (R26)
 // ---------------------------------------------------------------------------
 

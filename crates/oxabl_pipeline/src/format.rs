@@ -58,6 +58,22 @@ use oxabl_style::StyleGuide;
 /// original source bytes: `Unchanged` because there is nothing to write, and
 /// `DidNotFormat` because the formatter declined to produce output at all. No
 /// arm ever carries partially formatted bytes.
+///
+/// # Why this is *not* `#[non_exhaustive]`, unlike [`NotFormattedKind`]
+///
+/// The asymmetry is deliberate, and a reader must not "fix" it. This is the
+/// primary result type, and all three clients match it exhaustively. Marking it
+/// `#[non_exhaustive]` would force each of them to carry a wildcard arm that is
+/// unreachable today — and that wildcard is precisely what would swallow a
+/// future variant: adding one would compile everywhere, silently taking the
+/// fallback path in every client instead of failing the build. The compile-time
+/// gap is the feature. It is the same property the crate reasons about in
+/// [`NotFormatted::kind`], where the two named [`FormatFailure`] arms stay
+/// spelled out above the wildcard that type's `#[non_exhaustive]` requires.
+///
+/// [`NotFormattedKind`] is the opposite case: a classification label, not a
+/// result, whose set could plausibly grow, and which no client needs to match
+/// exhaustively — so it is `#[non_exhaustive]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatOutcome {
     /// The formatter ran and produced output byte-identical to the input. This
@@ -167,7 +183,14 @@ impl From<FormatFailure> for NotFormatted {
 
 /// Whether a file was left unformatted by the formatter's own choice or by a
 /// contained panic.
+///
+/// `#[non_exhaustive]`: this is a classification label whose set could plausibly
+/// grow with the formatter's failure modes, and no client needs to match it
+/// exhaustively — [`NotFormatted::is_internal_panic`] answers the one question
+/// clients actually ask. See [`FormatOutcome`] for why the result type it rides
+/// on deliberately is *not* marked the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NotFormattedKind {
     /// The formatter deliberately declined — parse errors, a tripped
     /// semantic-preservation guard, or a file that only parses after expansion.

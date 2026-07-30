@@ -40,8 +40,29 @@ enum Cli {
         #[arg(long)]
         json: bool,
 
-        /// Enable preprocessing (include expansion, &IF evaluation)
-        #[arg(long)]
+        /// Skip preprocessing: do not expand includes or evaluate `&IF`.
+        ///
+        /// Preprocessing is **on by default** here, unlike `conformance` and
+        /// `analyze` (R19). A lint gate that does not expand includes cannot see
+        /// the symbols an include declares, so it reports every one of them as
+        /// `undefined-symbol` — a flood of findings about the caller's own
+        /// correct code. The language server always preprocesses, so leaving it
+        /// off by default would make the gate and the editor disagree on any
+        /// project that uses an include, which is exactly what the shared
+        /// pipeline exists to prevent.
+        ///
+        /// Skipping it is still useful for a fast structural pass over a tree
+        /// whose include paths are not configured; expect undefined-symbol noise
+        /// if the source relies on includes.
+        #[arg(long = "no-preprocess")]
+        no_preprocess: bool,
+
+        /// Accepted and ignored: preprocessing is the default for `check`.
+        ///
+        /// Kept so an invocation written against the flag's earlier opt-in form
+        /// keeps working and keeps meaning the same thing. Hidden because it is
+        /// now a no-op.
+        #[arg(long, hide = true)]
         preprocess: bool,
 
         /// Include search paths (can be specified multiple times)
@@ -323,7 +344,9 @@ fn main() -> ExitCode {
         Cli::Check {
             path,
             json,
-            preprocess,
+            no_preprocess,
+            // Accepted and ignored — preprocessing is the default now.
+            preprocess: _,
             include_paths,
             schema,
             no_lint,
@@ -331,7 +354,10 @@ fn main() -> ExitCode {
         } => run_check(
             &path,
             json,
-            preprocess,
+            // On by default (R19): the language server always preprocesses, and a
+            // gate that does not would report every include-declared symbol as
+            // undefined.
+            !no_preprocess,
             &include_paths,
             schema.as_deref(),
             no_lint,

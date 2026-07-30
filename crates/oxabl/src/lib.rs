@@ -131,12 +131,26 @@ pub struct AnalyzeOptions {
 }
 
 impl Default for AnalyzeOptions {
+    /// # Why the severity map is not empty (R19)
+    ///
+    /// An empty [`LintSeverityMap`] does not mean "the defaults" — it means *no
+    /// rule has a configured severity*, so each diagnostic keeps whatever
+    /// severity `oxabl_lint` constructs it with. For `unknown-table-or-field` and
+    /// `type-mismatch-assignment` that built-in value is `Error`, while
+    /// `[workspace.lint]`'s documented default is `Warn`.
+    ///
+    /// Leaving it empty here gave an embedding caller a *different answer for the
+    /// same input* than the CLI or the editor, both of which resolve
+    /// configuration and therefore materialize the documented defaults even with
+    /// no `oxabl.toml` present. The client is not allowed to be a variable in the
+    /// answer, so this reads from the same [`LintConfig::default`] table
+    /// [`PipelineConfig`](pipeline::PipelineConfig)'s own `Default` does.
     fn default() -> Self {
         AnalyzeOptions {
             schema: Schema::empty(),
             schema_loaded: false,
             include_paths: Vec::new(),
-            lint_severities: LintSeverityMap::new(),
+            lint_severities: workspace::LintConfig::default().to_severity_map(),
             preprocess: false,
         }
     }

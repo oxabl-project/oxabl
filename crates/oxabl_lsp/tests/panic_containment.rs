@@ -3,7 +3,9 @@
 //! The two diagnostics paths — `compute_and_publish` on the **main loop** and
 //! the debounced **worker** thread — each wrap `compute_diagnostics` *and*
 //! `buffer_dependencies` in one `catch_panic`, so a panic in either query
-//! degrades to "no diagnostics, no dependencies" while the server keeps serving.
+//! degrades to "no diagnostics, no trustworthy dependency set" while the server
+//! keeps serving — and the buffer's previously recorded dependencies stand,
+//! since a panic says nothing about what the file includes.
 //! The formatting path degrades to zero edits, never a partial rewrite.
 //!
 //! No ABL input panics, so every panic here is injected: `oxabl_common`'s
@@ -215,8 +217,10 @@ fn main_loop_survives_a_panic_during_diagnostics() {
 }
 
 /// The same containment for `buffer_dependencies`, which runs one line past
-/// `compute_diagnostics` and has no `Cancelled::catch` of its own. A guard that
-/// only spanned the first call would let this panic through.
+/// `compute_diagnostics`. A guard that only spanned the first call would let
+/// this panic through. Its own `Cancelled::catch` is not a substitute: that
+/// catch resumes any non-`Cancelled` unwind, so a genuine panic there is still a
+/// panic and still needs this guard.
 #[test]
 fn main_loop_survives_a_panic_in_buffer_dependencies() {
     let (server, client) = Connection::memory();

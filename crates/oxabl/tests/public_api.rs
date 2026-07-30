@@ -321,6 +321,82 @@ fn fallible_entry_point_signatures_are_pinned() {
         oxabl::try_format_source;
 }
 
+/// Every item the `oxabl::pipeline` re-export carries, pinned individually.
+///
+/// The module was widened from the two config items to the whole shared-run
+/// surface, and reachability alone was under-tested: `LintPipeline` and
+/// `PipelineConfig` had call sites, so the other ten rode along untested and
+/// could have been dropped from the re-export list — or reshaped — without a
+/// single test noticing. This file's charter is every item reachable through
+/// `oxabl::…`, so each one is named here, as a value, a type binding, or a
+/// fn-pointer, in the same style the rest of the file uses.
+#[test]
+fn every_pipeline_re_export_is_pinned_item_by_item() {
+    use std::path::Path;
+
+    use oxabl::common::{FileId, SourceMap};
+    use oxabl::pipeline::{
+        ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, LintPipeline,
+        LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID, position,
+        resolve_from_config,
+    };
+    use oxabl::style::StyleGuide;
+    use oxabl::workspace::{InMemoryFileSystem, WorkspaceConfig};
+
+    // The one root file id every client must agree on (KTD12) — a value, so a
+    // change of type is a compile error here.
+    let _root: FileId = ROOT_FILE_ID;
+
+    // Configuration: the overrides struct, the no-I/O resolution entry point,
+    // and the warning channel. `resolve_from_config` is a fn-pointer rather than
+    // a call because `WorkspaceConfig` has no `Default` — the shape is what
+    // matters, and the pointer pins all four of its types at once.
+    let _overrides = ConfigOverrides {
+        include_paths: Vec::new(),
+        schema_path: None,
+        style: None,
+    };
+    let _resolve: fn(
+        &WorkspaceConfig,
+        &Path,
+        &ConfigOverrides,
+    ) -> (PipelineConfig, Vec<ConfigWarning>) = resolve_from_config;
+    // `ConfigWarning` is `#[non_exhaustive]`, so its data-carrying arm is
+    // constructed rather than matched exhaustively.
+    let warning = ConfigWarning::Config("unreadable oxabl.toml".to_string());
+    assert!(!warning.to_string().is_empty(), "a warning states itself");
+
+    // The lint run: the handle, the intermediate `Expansion` the language server
+    // memoizes for its early cutoff, and the `LintResult` every client renders.
+    let config = PipelineConfig::default();
+    let fs = InMemoryFileSystem::new();
+    let pipeline: LintPipeline<'_> = LintPipeline::new(&config, &fs).with_preprocess(false);
+    let expansion: Expansion = pipeline.expand("DEFINE VARIABLE neverUsed AS INTEGER NO-UNDO.\n");
+    let result: LintResult = pipeline.collect(&expansion);
+    assert!(
+        result.all().any(|d| d.diagnostic.code.0 == "LINT0002"),
+        "the pinned run must actually produce findings"
+    );
+
+    // `position`: the module, its span resolution, and the shape it yields. The
+    // byte-offset clients derive line/column here and nowhere else (KTD5).
+    let map = SourceMap::new("MESSAGE \"x\".\n");
+    let resolved: position::ResolvedSpan = position::resolve_offsets(&map, 0, 7);
+    let start: position::Position = resolved.start;
+    assert_eq!((start.line, start.column, start.byte), (1, 1, 0));
+
+    // The format run: the handle, the outcome, and both refusal types. A bail is
+    // the reachable arm; `NotFormattedKind` is `#[non_exhaustive]`, so it is
+    // compared rather than matched.
+    let formatter: FormatPipeline = FormatPipeline::new(StyleGuide::default_base());
+    let outcome: FormatOutcome = formatter.format("@ @ @\n");
+    let refusal: &NotFormatted = outcome
+        .not_formatted()
+        .unwrap_or_else(|| panic!("a parse-dirty buffer must refuse, got {outcome:?}"));
+    assert_eq!(refusal.kind(), NotFormattedKind::Bail);
+    assert!(!refusal.is_internal_panic());
+}
+
 /// `catch_panic` and `InternalPanic` are reachable through the facade, and the
 /// guard's two outcomes behave as documented.
 #[test]

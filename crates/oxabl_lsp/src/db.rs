@@ -49,7 +49,9 @@
 //! computation runs on a **cloned snapshot** (`db.clone()`) on a worker thread
 //! and is wrapped in [`salsa::Cancelled::catch`]: a concurrent write on the
 //! main thread cancels in-flight snapshot reads via a `Cancelled` unwind, which
-//! [`compute_diagnostics`] swallows. Version tag-and-discard in the debounce
+//! [`compute_diagnostics`] swallows. [`buffer_dependencies`] carries its own
+//! catch for the same reason — every entry point that reads a snapshot needs
+//! one, or a cancellation escapes as a panic. Version tag-and-discard in the debounce
 //! layer (U6) is the primary correctness mechanism; cancellation is an
 //! optimization on top.
 
@@ -262,12 +264,30 @@ pub fn compute_diagnostics(
 /// The include file paths a buffer transitively depends on, for the watcher's
 /// `*.i` → buffer matching (R17). Computed via the memoized expansion query, so
 /// this is cheap on an unchanged buffer. Empty on a fatal preprocessing error.
-pub fn buffer_dependencies(snapshot: &AnalysisDatabase, buffer: Buffer) -> Vec<PathBuf> {
+///
+/// `None` means the snapshot read was **cancelled** by a concurrent main-thread
+/// write, exactly as in [`compute_diagnostics`] — and for the same reason it
+/// needs its own [`salsa::Cancelled::catch`] rather than borrowing the caller's
+/// panic guard. Salsa unwinds at the top of every fetch once the cancellation
+/// flag is set, so without this catch a cancellation here surfaces as a
+/// contained *panic*: the server logs an ordinary race as a bug, and the caller
+/// — which cannot tell the two apart — would commit the empty dependency set
+/// that a panic degrades to. A buffer with no recorded dependencies is never
+/// re-triggered by an edit to an `.i` it includes, so it silently stops being
+/// re-analyzed until it is edited directly. An absent answer is the honest one:
+/// the previous dependency set is still the best information available.
+pub fn buffer_dependencies(snapshot: &AnalysisDatabase, buffer: Buffer) -> Option<Vec<PathBuf>> {
     oxabl_common::panic_if_injected(
         oxabl_common::panic_sites::LSP_DEPENDENCIES,
         buffer.text(snapshot),
     );
-    expanded_text(snapshot, buffer).dependency_paths().to_vec()
+    // Unwind-safety is asserted for the same reason as in `compute_diagnostics`:
+    // the snapshot's `Arc<dyn FileSystem>` is not `RefUnwindSafe`, but salsa's
+    // snapshots are designed to cross `Cancelled::catch`'s boundary.
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        expanded_text(snapshot, buffer).dependency_paths().to_vec()
+    }))
+    .ok()
 }
 
 /// The tracked expansion query, exposed for tests that exercise early cutoff.
@@ -323,10 +343,26 @@ mod tests {
                 "a panic at {site} must degrade to no diagnostics"
             );
             assert!(
-                dependencies.is_empty(),
+                dependencies.is_none(),
                 "a panic at {site} must degrade dependencies together with diagnostics"
             );
         }
+    }
+
+    /// The healthy shape of the dependency half: `Some`, so "no trustworthy
+    /// answer" (`None`) stays distinguishable from "this file includes nothing"
+    /// (`Some(vec![])`). The distinction is what keeps a cancelled run from
+    /// erasing a buffer's watcher registration.
+    #[test]
+    fn dependencies_are_present_on_a_healthy_buffer() {
+        let db = db_with(oxabl_workspace::InMemoryFileSystem::new());
+        let buffer = Buffer::new(&db, "MESSAGE \"hi\".\n".to_string());
+
+        assert_eq!(
+            buffer_dependencies(&db, buffer),
+            Some(Vec::new()),
+            "a file with no includes has an empty set, not an absent one"
+        );
     }
 
     /// The same helper on a healthy buffer still returns real results, so the
