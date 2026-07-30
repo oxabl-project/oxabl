@@ -33,7 +33,6 @@
 
 use oxabl::analyze::{CollectedDiagnostic, DiagnosticSource};
 use oxabl::common::SourceMap;
-use oxabl::style::StyleGuide;
 use oxabl::workspace::InMemoryFileSystem;
 use oxabl_pipeline::{FormatOutcome, FormatPipeline, LintPipeline, PipelineConfig, position};
 use serde::Serialize;
@@ -215,6 +214,14 @@ pub fn analyze_source(source: &str) -> String {
 /// Format one ABL file through the shared [`FormatPipeline`], using the same safe
 /// default style as the language server when no `oxabl.toml` is present.
 ///
+/// The style comes out of [`PipelineConfig::default`], the same value
+/// [`analyze_source`] configures itself from, rather than being fetched from
+/// `StyleGuide` directly. Reaching for the style guide's own default here would
+/// agree only *coincidentally*: two entry points of one client would be deriving
+/// their configuration from two places, and a change to what a default
+/// `PipelineConfig` means would move analysis and leave formatting behind. One
+/// derivation, so there is nothing to drift.
+///
 /// The wire shape has a single `error` field, so a refusal's bail-versus-panic
 /// distinction — which [`FormatOutcome`] keeps structural — collapses to its
 /// reason text *here*, at the transport boundary, not in the pipeline. On either
@@ -222,7 +229,7 @@ pub fn analyze_source(source: &str) -> String {
 /// `changed: false`; no arm ever returns partially formatted source.
 #[wasm_bindgen]
 pub fn format_source(source: &str) -> String {
-    let pipeline = FormatPipeline::new(StyleGuide::default_base());
+    let pipeline = FormatPipeline::new(PipelineConfig::default().style);
     let result = match pipeline.format(source) {
         FormatOutcome::Reformatted(formatted) => FormatResponse {
             source: formatted,
@@ -437,6 +444,8 @@ mod tests {
             self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
         };
 
+        use oxabl_pipeline::{FormatOutcome, FormatPipeline, PipelineConfig};
+
         use super::super::{analyze_source, format_source};
 
         /// Every diagnostic `analyze_source` reported, in the shared comparison
@@ -551,6 +560,35 @@ mod tests {
                         assert_eq!(response["source"], fixture.source, "{}", fixture.name);
                     }
                 }
+            }
+        }
+
+        /// The browser's format style is the shared default configuration's,
+        /// derived the same way rather than fetched from `StyleGuide` directly.
+        ///
+        /// The full-table comparison above already fails on any style difference
+        /// the drift fixture can *see*. This one is narrower on purpose: it runs
+        /// the same source through a `FormatPipeline` built from
+        /// `PipelineConfig::default().style` — a second, independent derivation —
+        /// and demands byte equality, so a browser that starts configuring
+        /// formatting from its own source of truth fails here by name instead of
+        /// waiting for a fixture whose bytes happen to disagree.
+        #[test]
+        fn the_format_style_comes_from_the_shared_default_config() {
+            let shared = FormatPipeline::new(PipelineConfig::default().style);
+            for fixture in FIXTURES {
+                let response = formatted(fixture.source);
+                let expected = match shared.format(fixture.source) {
+                    FormatOutcome::Reformatted(bytes) => bytes,
+                    FormatOutcome::Unchanged | FormatOutcome::DidNotFormat(_) => {
+                        fixture.source.to_string()
+                    }
+                };
+                assert_eq!(
+                    response["source"], expected,
+                    "the browser must format through the shared default style: {}",
+                    fixture.name
+                );
             }
         }
 
