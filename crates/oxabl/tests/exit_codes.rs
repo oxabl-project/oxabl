@@ -188,7 +188,7 @@ fn a_panicking_file_does_not_abort_the_rest_of_the_walk() {
 /// A formatter panic is an oxabl bug rather than a property of the input, so it
 /// counts as a failure in `check` — unlike a deliberate bail, which stays neutral.
 #[test]
-fn check_exits_1_when_formatting_panics_and_0_when_it_merely_bails() {
+fn a_format_panic_is_a_check_failure_and_a_bail_is_neither_drift_nor_failure() {
     let (_dir, panics) = one_file("panics.p", &panicking(panic_sites::FORMAT));
     let (exit, _stdout, stderr) = run(&[s("check"), s("--no-lint"), panics.as_os_str()]);
     assert_eq!(exit, Some(1), "a contained format panic is a failure");

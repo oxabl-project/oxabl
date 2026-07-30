@@ -594,8 +594,10 @@ pub const FIXTURES: &[ParityFixture] = &[
     // finding's own line. Every other fixture is pure ASCII, which made byte
     // offsets and character offsets numerically identical and so left the suite's
     // stated fear — byte-versus-UTF-16 confusion — never actually exercised. Here
-    // the two disagree: line 2 begins at byte 23 but character 19, and the span
-    // starts at byte column 33 where a character column would say 31. A client
+    // the two disagree: line 2 begins at byte offset 23 but character offset 19,
+    // and the span starts at 1-based byte column 33 where a 1-based character
+    // column would say 31 (that is `NON_ASCII_CHARACTER_COLUMN`, which is 0-based,
+    // plus one — the two constants keep the conventions their clients use). A client
     // that counted characters where it should count bytes now produces a wrong
     // *byte span* and fails the shared comparison, and the per-client rendered
     // positions are checked where they are each derived.
