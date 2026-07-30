@@ -107,11 +107,19 @@ fn a_lint_finding_exits_1_and_is_reported_with_path_line_and_column() {
     );
 }
 
+/// A passing run says how many files it checked (D5).
+///
+/// Silence on success is indistinguishable from silence on a mistyped path that
+/// happened to resolve to one clean file — and a gate whose green light might mean
+/// "I checked nothing you cared about" is not one you can trust in CI. The count
+/// is the cheapest thing that separates the two.
 #[test]
-fn a_clean_already_formatted_file_exits_0_with_no_findings() {
-    let (_tmp, file) = project("clean.p", CLEAN);
+fn a_clean_already_formatted_file_exits_0_with_a_summary_naming_the_count() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("a-clean.p"), CLEAN);
+    write(&tmp.path().join("z-clean.p"), CLEAN);
 
-    let run = check([file.as_os_str()]);
+    let run = check([tmp.path().as_os_str()]);
 
     assert_eq!(
         run.code,
@@ -121,8 +129,41 @@ fn a_clean_already_formatted_file_exits_0_with_no_findings() {
         run.stderr
     );
     assert!(
-        run.stdout.trim().is_empty(),
-        "a clean file should print nothing, got:\n{}",
+        run.stdout.contains("checked 2 files"),
+        "expected the file count, got:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("no findings") && run.stdout.contains("no drift"),
+        "expected both channels reported clean, got:\n{}",
+        run.stdout
+    );
+    // A finding of any kind replaces the summary — the summary is the *pass*
+    // message, so it must never appear alongside a failure.
+    let (_tmp2, unused) = project("unused.p", UNUSED);
+    let failing = check([unused.as_os_str()]);
+    assert!(
+        !failing.stdout.contains("no findings"),
+        "a failing run must not claim to be clean, got:\n{}",
+        failing.stdout
+    );
+}
+
+/// The summary is a text-mode nicety: `--json` already carries `files_checked`,
+/// and a prose line printed alongside the document would make stdout unparseable.
+#[test]
+fn the_success_summary_stays_out_of_the_json_document() {
+    let (_tmp, file) = project("clean.p", CLEAN);
+
+    let run = check([Path::new("--json").as_os_str(), file.as_os_str()]);
+
+    assert_eq!(run.code, Some(0));
+    // Parses at all, which a prepended prose line would prevent.
+    let v = run.json();
+    assert_eq!(v["files_checked"], 1);
+    assert!(
+        !run.stdout.contains("no findings"),
+        "the count belongs to the document in JSON mode, got:\n{}",
         run.stdout
     );
 }

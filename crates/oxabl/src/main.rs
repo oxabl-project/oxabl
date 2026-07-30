@@ -743,6 +743,11 @@ struct CheckJsonFailure {
 /// to **stderr** in both modes, which is exactly how `analyze` splits them: they
 /// qualify the run rather than being results of it.
 ///
+/// A run with nothing to report prints a one-line summary naming the file count
+/// instead of nothing at all (D5), so a pass is distinguishable from a path that
+/// silently matched almost nothing. Text mode only — `--json` carries the same
+/// count as `files_checked`.
+///
 /// # A per-file failure never aborts the walk (R24)
 ///
 /// A file that cannot be read, or whose analysis hits a contained panic, is
@@ -975,6 +980,32 @@ fn run_check(
         println!(
             "{} {plural} would be reformatted — run `oxabl format` to fix.",
             drifted.len()
+        );
+    }
+
+    // A passing run says what it checked (D5). Silence on success reads the same
+    // as silence on a mistyped path that happened to resolve to one clean file,
+    // and a green light that might mean "I checked nothing you cared about" is not
+    // one CI can trust. Printed only when the gate actually passed, so it is
+    // unambiguously the pass message rather than a header over a list of problems.
+    //
+    // Text mode only: `--json` already carries `files_checked`, and a prose line
+    // beside the document would make stdout unparseable.
+    if diagnostics.is_empty() && drifted.is_empty() && failures.is_empty() {
+        let plural = if files.len() == 1 { "file" } else { "files" };
+        let lint_channel = if no_lint {
+            "lint suppressed"
+        } else {
+            "no findings"
+        };
+        let format_channel = if no_format {
+            "format suppressed"
+        } else {
+            "no drift"
+        };
+        println!(
+            "checked {} {plural}: {lint_channel}, {format_channel}",
+            files.len()
         );
     }
 
