@@ -213,6 +213,55 @@ fn check_exits_1_when_formatting_panics_and_0_when_it_merely_bails() {
     );
 }
 
+/// An `oxabl.toml` the resolver cannot use is **fatal for the gate** — exit 2,
+/// with the parse error on stderr (A3).
+///
+/// Every other command degrades to defaults with a warning, and `check` used to
+/// as well. But defaults are not the configuration the user wrote: a discarded
+/// `[workspace.lint]` table takes every `off` with it, so the gate reports
+/// findings for rules the project has switched off and — worse — a green exit
+/// code for a run whose configuration it silently ignored. A gate that answers
+/// the wrong question must not answer it successfully.
+#[test]
+fn check_exits_2_on_a_config_it_cannot_parse() {
+    let (dir, file) = one_file("a.p", CLEAN);
+    write(&dir.path().join("oxabl.toml"), "this is not valid toml {{{");
+
+    let (exit, _stdout, stderr) = run(&[s("check"), file.as_os_str()]);
+
+    assert_eq!(exit, Some(2), "stderr: {stderr}");
+    assert!(
+        stderr.contains("oxabl.toml"),
+        "the parse error must name the file: {stderr}"
+    );
+}
+
+/// …and the commands that are not gates keep degrading: a warning, then their
+/// ordinary exit code. `analyze` is an introspection dump and `format` rewrites
+/// layout — neither is answering a pass/fail question, so neither should refuse
+/// to run over a config it could not read.
+#[test]
+fn analyze_and_format_degrade_on_the_same_unusable_config() {
+    let (dir, file) = one_file("a.p", CLEAN);
+    write(&dir.path().join("oxabl.toml"), "this is not valid toml {{{");
+
+    let (exit, _stdout, stderr) = run(&[s("analyze"), file.as_os_str()]);
+    assert_eq!(exit, Some(0), "analyze dumps whatever it found: {stderr}");
+    assert!(
+        stderr.contains("warning:") && stderr.contains("oxabl.toml"),
+        "and says the config was unusable: {stderr}"
+    );
+
+    // `--check` so the run cannot depend on writing: CLEAN is already formatted,
+    // so there is no drift and the code is the no-drift 0.
+    let (exit, _stdout, stderr) = run(&[s("format"), s("--check"), file.as_os_str()]);
+    assert_eq!(exit, Some(0), "stderr: {stderr}");
+    assert!(
+        stderr.contains("warning:") && stderr.contains("oxabl.toml"),
+        "format degrades with a warning too: {stderr}"
+    );
+}
+
 // ===========================================================================
 // conformance — 0 / 1 / 2 (R17)
 // ===========================================================================
