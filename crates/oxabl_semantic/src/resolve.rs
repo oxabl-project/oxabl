@@ -59,10 +59,26 @@ pub enum Resolution {
 pub enum UnresolvedReason {
     NotInScope,
     /// USING import, `RUN "x"`, `DYNAMIC-FUNCTION`, dynamic buffer op — any
-    /// reference outside the single-file unit.
+    /// reference outside the single-file unit that no workspace index was
+    /// present to answer. Every lint rule skip-lists this reason, so it is
+    /// the *suppression* state: "we did not look", not "we looked and
+    /// failed".
     External,
     /// Field / table reference that needs a schema we don't have loaded.
     NoSchema,
+    /// A cross-file name searched for on the configured paths and genuinely
+    /// absent — the index was present and answered "no such file / no such
+    /// member". Distinct from [`Self::External`] because the answer is a
+    /// fact about the workspace rather than a missing capability. A parent
+    /// that *was* located but could not be parsed folds in here too: a
+    /// broken file is knowably not usable, and the only distinction any
+    /// consumer branches on is knowable-versus-unknowable.
+    NotFoundInWorkspace,
+    /// A cross-file name that cannot be known statically — a runtime-computed
+    /// target, so no amount of indexing would resolve it. Separated from
+    /// [`Self::NotFoundInWorkspace`] so a future rule can report the absent
+    /// name without ever reporting the unknowable one.
+    Unknowable,
 }
 
 // ---------------------------------------------------------------------------

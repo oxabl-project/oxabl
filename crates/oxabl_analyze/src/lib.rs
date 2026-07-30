@@ -649,6 +649,8 @@ fn unresolved_reason_str(r: UnresolvedReason) -> &'static str {
         UnresolvedReason::NotInScope => "not_in_scope",
         UnresolvedReason::External => "external",
         UnresolvedReason::NoSchema => "no_schema",
+        UnresolvedReason::NotFoundInWorkspace => "not_found_in_workspace",
+        UnresolvedReason::Unknowable => "unknowable",
     }
 }
 
@@ -909,5 +911,30 @@ mod tests {
             .expect("synthesized field in dump");
         assert_eq!(synth_field["declaration"], u32::MAX);
         assert_eq!(synth_field["data_type"], "character");
+    }
+
+    #[test]
+    fn every_unresolved_reason_serializes_to_a_distinct_snake_case_string() {
+        // The dump's `reason` key is a consumer-visible contract: the two
+        // pre-existing strings must not shift, and each new reason needs its
+        // own name rather than collapsing into `external`.
+        let all = [
+            (UnresolvedReason::NotInScope, "not_in_scope"),
+            (UnresolvedReason::External, "external"),
+            (UnresolvedReason::NoSchema, "no_schema"),
+            (
+                UnresolvedReason::NotFoundInWorkspace,
+                "not_found_in_workspace",
+            ),
+            (UnresolvedReason::Unknowable, "unknowable"),
+        ];
+        for (reason, expected) in all {
+            assert_eq!(unresolved_reason_str(reason), expected);
+        }
+        let mut names: Vec<&str> = all.iter().map(|(_, s)| *s).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "reason strings must be distinct");
     }
 }

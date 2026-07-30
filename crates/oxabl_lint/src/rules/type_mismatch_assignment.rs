@@ -10,8 +10,9 @@
 //! Skips (captured as tests below):
 //! - Either side `Unknown` or `Error` (suppresses cascades; `?` is ABL's
 //!   universal bottom).
-//! - Either side bound to an `External` reference (cross-file typing
-//!   incomplete in v1).
+//! - The value side bound to a cross-file reference (`External`,
+//!   `NotFoundInWorkspace`, `Unknowable`) — cross-file typing is not
+//!   available, so no verdict is possible.
 
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind, TypeSource};
 use oxabl_common::{Diagnostic, FileSpan, Severity};
@@ -172,15 +173,18 @@ impl Visitor<'_> {
         {
             return;
         }
-        // Skip if the value expression is an External reference — cross-
-        // file typing is incomplete in v1; suppressing keeps false-positive
-        // rate low.
-        if let Some(Resolution::Unresolved {
-            reason: UnresolvedReason::External,
-            ..
-        }) = self.sem.references.get(value_node)
-        {
-            return;
+        // Skip if the value expression is a cross-file reference — its type
+        // is not known here, so any verdict would be guesswork. Named
+        // exhaustively rather than with a wildcard: this early return is the
+        // one place the compiler cannot flag a new reason for us, so an added
+        // reason must be a compile error here too.
+        if let Some(Resolution::Unresolved { reason, .. }) = self.sem.references.get(value_node) {
+            match reason {
+                UnresolvedReason::External
+                | UnresolvedReason::NotFoundInWorkspace
+                | UnresolvedReason::Unknowable => return,
+                UnresolvedReason::NotInScope | UnresolvedReason::NoSchema => {}
+            }
         }
 
         if !assignable(from, to) {
