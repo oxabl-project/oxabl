@@ -17,8 +17,8 @@
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind, TypeSource};
 use oxabl_common::{Diagnostic, FileSpan, Severity};
 use oxabl_semantic::{
-    AnalysisContext, Resolution, ResolvedType, Semantic, UnresolvedReason, assignable,
-    is_narrowing_warning,
+    AnalysisContext, ClassLattice, Resolution, ResolvedType, Semantic, UnresolvedReason,
+    assignable, is_narrowing_warning,
 };
 
 use super::LINT0004;
@@ -187,7 +187,12 @@ impl Visitor<'_> {
             }
         }
 
-        if !assignable(from, to) {
+        // The lattice is the file's own symbol table: assignability between two
+        // class types is a question about the inheritance graph recorded there,
+        // not about the two types. Constructed here rather than held on the
+        // visitor because it is a one-pointer `Copy` view — there is nothing to
+        // amortize, and a stored copy would only add a lifetime.
+        if !assignable(from, to, ClassLattice::new(&self.sem.symbols)) {
             self.diags.push(Diagnostic::error(
                 LINT0004,
                 format!("type mismatch: cannot assign `{:?}` to `{:?}`", from, to),

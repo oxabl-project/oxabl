@@ -26,7 +26,9 @@ mod types;
 
 pub use builtins::SYSTEM_HANDLES;
 pub use check::check_pass;
-pub use coercion::{assignable, assignable_strict, is_narrowing_warning, widen_primitive};
+pub use coercion::{
+    ClassLattice, assignable, assignable_strict, is_narrowing_warning, widen_primitive,
+};
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
 pub use index::{
     ClassDescriptor, ClassKind, IndexAnswer, IndexName, IndexRevision, IndexedFileId,

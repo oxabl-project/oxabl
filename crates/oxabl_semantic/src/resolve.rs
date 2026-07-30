@@ -1165,13 +1165,18 @@ struct ResolveWalker<'a> {
     /// find: the declared symbol, mapped to the synthesized class symbol.
     ///
     /// Deliberately **not** written into `Symbol::data_type`. A real
-    /// `ResolvedType::Class` there would widen the type lattice, and
-    /// `assignable` compares class symbols by identity — so `DEFINE VARIABLE v
-    /// AS CLASS MyApp.Cache. v = 5.` would start reporting
-    /// `type-mismatch-assignment` the moment an index was attached. Widening
-    /// assignability is a separate, deliberately-judged unit; this map carries
-    /// exactly the fact member resolution needs and nothing the type checker
-    /// can see.
+    /// `ResolvedType::Class` there would widen the type lattice, so `DEFINE
+    /// VARIABLE v AS CLASS MyApp.Cache. v = 5.` would start reporting
+    /// `type-mismatch-assignment` the moment an index was attached — a *correct*
+    /// finding that nonetheless does not exist today, which is exactly what R11
+    /// forbids this phase from adding.
+    ///
+    /// Inheritance widening (`coercion::ClassLattice`) does not change that: it
+    /// removes the subclass-to-parent false positive, and says nothing about a
+    /// class assigned to a primitive. This map and the matching `check.rs` arm
+    /// therefore both stand until the follow-up unit turns the rules onto the
+    /// cross-file population and judges the drift; the map carries exactly the
+    /// fact member resolution needs and nothing the type checker can see.
     indexed_receiver_class: FxHashMap<SymbolId, SymbolId>,
     /// One synthesized `Procedures` symbol per external program a literal `RUN`
     /// resolved to, so two `RUN post-order.p` sites in one file point at the

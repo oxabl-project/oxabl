@@ -562,16 +562,33 @@ impl<'a> CheckWalker<'a> {
                     // (`declaration == NodeId::DUMMY`, per KTD6's conventions)
                     // deliberately does not produce a `Class` type yet. It could:
                     // the symbol is real and shared by every reference to that
-                    // class. But `assignable` compares class symbols by identity
-                    // and knows nothing about inheritance, so typing `NEW
-                    // MyApp.Foo()` as `Class(foo)` starts reporting
-                    // `type-mismatch-assignment` on `i = NEW MyApp.Foo()` and on
-                    // every assignment of a subclass to a parent-typed variable —
-                    // findings that do not exist today. Widening assignability is
-                    // a separate, deliberately-judged step; until it lands, a
-                    // cross-file class stays at the lattice bottom, which is
-                    // exactly where a class-typed declaration whose class lives
-                    // in another file already sits.
+                    // class.
+                    //
+                    // **Assignability now understands inheritance** —
+                    // `coercion::assignable` takes a `ClassLattice` and widens a
+                    // subclass to a parent or an implemented interface — so the
+                    // one shape this firewall was originally written to hold back
+                    // is fixed. It stays anyway, and the reason is arithmetic:
+                    // lifting it re-enables *three* assignment shapes, and
+                    // widening fixes exactly one of them. The other two are
+                    // genuinely type-mismatched code that would become **new
+                    // true-positive findings**:
+                    //
+                    //   * `DEFINE VARIABLE v-count AS INTEGER.
+                    //      v-count = NEW myapp.cache().` — a class into an
+                    //     integer;
+                    //   * a class-typed variable assigned a primitive.
+                    //
+                    // New findings, even correct ones, break R11: the A/B over a
+                    // real codebase must come back identical, and the single
+                    // admissible delta is the removed in-file subclass-to-parent
+                    // false positive. Turning cross-file types into diagnostics
+                    // is the *follow-up* unit's job — the one that flips the
+                    // rules onto the newly-resolvable population, where drift is
+                    // expected and judged deliberately. **That unit owns removing
+                    // this arm, not U8.** Until then a cross-file class stays at
+                    // the lattice bottom, exactly where a class-typed declaration
+                    // whose class lives in another file already sits.
                     SymbolKind::Class | SymbolKind::Interface
                         if symbol.declaration == NodeId::DUMMY =>
                     {
