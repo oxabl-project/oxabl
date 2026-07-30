@@ -18,17 +18,38 @@
 //! answer derived from it. So this search checks **every** entry and declines
 //! ([`IndexAnswer::Unknowable`]) rather than guessing.
 //!
-//! # Case folding
+//! # Case folding: two spellings, tried in order
 //!
-//! An [`IndexName`] is case-folded by construction, so the candidate path is
-//! spelled in lower case. On a case-insensitive filesystem (where ABL
-//! development overwhelmingly happens) that is exactly right. On a
-//! case-sensitive one it means a class file must be named as the folded name
-//! spells it — `myapp/cache.cls`, not `MyApp/Cache.cls`. The seam hands
-//! implementations a folded name and nothing else, and the
-//! [`FileSystem`](oxabl_workspace::FileSystem) trait offers no directory
-//! listing, so there is no unfolded spelling available here to try. Recovering
-//! the original casing is a seam-level change, not a search-level one.
+//! An [`IndexName`] is case-folded for *identity* but carries the spelling the
+//! source used ([`IndexName::as_written`]), and a path must be derived from the
+//! latter: on a case-sensitive filesystem `USING MyApp.Cache` lives in
+//! `MyApp/Cache.cls`, and the folded `myapp/cache.cls` simply is not there.
+//! Deriving from the folded name alone is why cross-file resolution used to
+//! fail on Linux.
+//!
+//! So [`find_name`] tries the as-written path first and the folded path second.
+//! The second attempt is not redundant: an all-lower-case checkout is common
+//! (that is what a case-insensitive filesystem's users produce), and a source
+//! file is free to spell the same class `MyApp.Cache`. When the two spellings
+//! coincide — the source already wrote the name in lower case — the fallback is
+//! skipped, so the extra attempt costs nothing in the ordinary case. There is
+//! still no directory listing on the
+//! [`FileSystem`](oxabl_workspace::FileSystem) trait, so these two candidates
+//! are the whole search space; a third casing nobody wrote is not guessed at.
+//!
+//! # How that composes with exactly-one-match
+//!
+//! Ambiguity means **two path entries matching the same candidate spelling** —
+//! that is the case where the workspace genuinely cannot say which file is
+//! meant. If the as-written spelling matches one entry and the folded spelling
+//! would match a *different* one, that is not treated as ambiguous: the
+//! as-written match wins. The reading is that those are one logical ABL name
+//! that two checkouts happen to spell differently on disk, and the spelling the
+//! source actually used is the better evidence of which was meant — declining
+//! there would make a correct, unambiguous lookup fail because some other
+//! directory holds a lower-cased copy. That is also why an `Unknowable` from
+//! the first attempt short-circuits rather than falling through: it already
+//! found the ambiguity worth declining over.
 
 use std::path::{Path, PathBuf};
 
@@ -40,11 +61,21 @@ use oxabl_workspace::{FileSystem, is_root_file};
 /// convention, and the reason no separate class-path setting is needed.
 const CLASS_EXTENSION: &str = "cls";
 
-/// The relative path a qualified class name maps onto.
+/// The relative path a qualified class name maps onto, in the casing the source
+/// spelled the name in.
 pub fn class_path(name: &IndexName) -> PathBuf {
-    let folded = name.as_str();
-    let mut relative = String::with_capacity(folded.len() + CLASS_EXTENSION.len() + 1);
-    for (i, part) in folded.split('.').enumerate() {
+    class_path_from(name.as_written())
+}
+
+/// The same path in the folded casing — the fallback candidate, for a checkout
+/// whose files are all lower case.
+pub fn folded_class_path(name: &IndexName) -> PathBuf {
+    class_path_from(name.as_str())
+}
+
+fn class_path_from(qualified: &str) -> PathBuf {
+    let mut relative = String::with_capacity(qualified.len() + CLASS_EXTENSION.len() + 1);
+    for (i, part) in qualified.split('.').enumerate() {
         if i > 0 {
             relative.push(std::path::MAIN_SEPARATOR);
         }
@@ -55,13 +86,68 @@ pub fn class_path(name: &IndexName) -> PathBuf {
     PathBuf::from(relative)
 }
 
-/// The relative path a literal `RUN` target maps onto.
+/// The relative path a literal `RUN` target maps onto, in the casing the source
+/// spelled it in.
 ///
 /// A `RUN` target is written as a path already (`post-order.p`,
 /// `orders/calc-total.p`), so it is taken verbatim; [`find_unique`] is what
 /// rejects a spelling that is not a root file.
 pub fn program_path(target: &IndexName) -> PathBuf {
+    PathBuf::from(target.as_written())
+}
+
+/// The same path in the folded casing — the fallback candidate.
+pub fn folded_program_path(target: &IndexName) -> PathBuf {
     PathBuf::from(target.as_str())
+}
+
+/// Which of the two name-to-path conventions a lookup uses.
+///
+/// An enum rather than two near-identical search functions so the
+/// two-spellings-in-order policy lives in exactly one place and cannot drift
+/// between the class path and the `RUN` path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameKind {
+    /// Dots become separators and `.cls` is appended.
+    Class,
+    /// The name is already a path; taken verbatim.
+    Program,
+}
+
+/// Locate the file `name` names: the as-written spelling first, the folded
+/// spelling second when the two differ.
+///
+/// This is the entry point an index should call. See the module docs for why
+/// two spellings are tried, and for what happens when they match different path
+/// entries (the as-written match wins; that is not an ambiguity).
+pub fn find_name(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    name: &IndexName,
+    kind: NameKind,
+) -> IndexAnswer<PathBuf> {
+    let written = match kind {
+        NameKind::Class => class_path(name),
+        NameKind::Program => program_path(name),
+    };
+    match find_unique(fs, include_paths, &written) {
+        IndexAnswer::Found(path) => return IndexAnswer::Found(path),
+        // Already ambiguous under the spelling the source used; a second
+        // candidate cannot un-ambiguate it.
+        IndexAnswer::Unknowable => return IndexAnswer::Unknowable,
+        IndexAnswer::NotFound => {}
+    }
+
+    let folded = match kind {
+        NameKind::Class => folded_class_path(name),
+        NameKind::Program => folded_program_path(name),
+    };
+    if folded == written {
+        // The source already wrote the name folded, so the fallback would
+        // re-run the identical search.
+        return IndexAnswer::NotFound;
+    }
+    find_unique(fs, include_paths, &folded)
 }
 
 /// Search every entry of `include_paths` for `relative`, insisting on exactly
@@ -124,13 +210,111 @@ mod tests {
 
     #[test]
     fn a_qualified_class_name_maps_onto_a_cls_path() {
+        // The primary candidate keeps the source casing — that is what makes the
+        // lookup work on a case-sensitive filesystem — and the fallback folds it.
         assert_eq!(
             class_path(&IndexName::new("Orders.Total-Calc")),
+            PathBuf::from("Orders").join("Total-Calc.cls")
+        );
+        assert_eq!(
+            folded_class_path(&IndexName::new("Orders.Total-Calc")),
             PathBuf::from("orders").join("total-calc.cls")
         );
         assert_eq!(
             class_path(&IndexName::new("standalone")),
             PathBuf::from("standalone.cls")
+        );
+    }
+
+    #[test]
+    fn a_name_already_written_folded_yields_one_candidate() {
+        // Both derivations coincide, which is the case `find_name` detects to
+        // skip the redundant second search.
+        let name = IndexName::new("orders.total-calc");
+        assert_eq!(class_path(&name), folded_class_path(&name));
+        assert_eq!(program_path(&name), folded_program_path(&name));
+    }
+
+    #[test]
+    fn the_as_written_spelling_is_searched_before_the_folded_one() {
+        let fs = fs_with(&["/src/MyApp/Cache.cls"]);
+        assert_eq!(
+            find_name(
+                &fs,
+                &dirs(&["/src"]),
+                &IndexName::new("MyApp.Cache"),
+                NameKind::Class
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/MyApp/Cache.cls"))
+        );
+    }
+
+    #[test]
+    fn a_folded_checkout_resolves_a_mixed_case_source_spelling() {
+        // The fallback: the files are all lower case (what a case-insensitive
+        // filesystem's users produce) while the source writes mixed case.
+        let fs = fs_with(&["/src/myapp/cache.cls", "/src/calc-total.p"]);
+        let paths = dirs(&["/src"]);
+        assert_eq!(
+            find_name(&fs, &paths, &IndexName::new("MyApp.Cache"), NameKind::Class),
+            IndexAnswer::Found(PathBuf::from("/src/myapp/cache.cls"))
+        );
+        assert_eq!(
+            find_name(
+                &fs,
+                &paths,
+                &IndexName::new("Calc-Total.p"),
+                NameKind::Program
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/calc-total.p"))
+        );
+    }
+
+    #[test]
+    fn neither_spelling_present_is_not_found() {
+        let fs = fs_with(&["/src/myapp/other.cls"]);
+        assert_eq!(
+            find_name(
+                &fs,
+                &dirs(&["/src"]),
+                &IndexName::new("MyApp.Cache"),
+                NameKind::Class
+            ),
+            IndexAnswer::NotFound
+        );
+    }
+
+    #[test]
+    fn ambiguity_under_the_as_written_spelling_still_declines() {
+        // Two entries matching the *same* candidate: the case the one-match rule
+        // exists for, and the fallback must not paper over it.
+        let fs = fs_with(&["/first/Calc-Total.p", "/second/Calc-Total.p"]);
+        assert_eq!(
+            find_name(
+                &fs,
+                &dirs(&["/first", "/second"]),
+                &IndexName::new("Calc-Total.p"),
+                NameKind::Program
+            ),
+            IndexAnswer::Unknowable
+        );
+    }
+
+    #[test]
+    fn a_split_across_spellings_resolves_to_the_as_written_match() {
+        // The as-written spelling is on one entry and the folded spelling on
+        // another. Documented decision: one logical name spelled two ways on
+        // disk, so the spelling the source used wins and this is not ambiguous.
+        // Ambiguity means two entries matching the same candidate.
+        let fs = fs_with(&["/first/MyApp/Cache.cls", "/second/myapp/cache.cls"]);
+        assert_eq!(
+            find_name(
+                &fs,
+                &dirs(&["/first", "/second"]),
+                &IndexName::new("MyApp.Cache"),
+                NameKind::Class
+            ),
+            IndexAnswer::Found(PathBuf::from("/first/MyApp/Cache.cls"))
         );
     }
 

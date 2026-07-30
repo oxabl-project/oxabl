@@ -30,11 +30,14 @@
 //!    any other class's file, so an incremental implementation gets early
 //!    cutoff per key: editing one file's method body cannot invalidate an
 //!    unrelated class's member list.
-//! 3. **Keys are cheap.** [`IndexName`] wraps an interned, case-folded atom —
-//!    hashable, `Clone`-by-refcount-bump, and constructible without touching
-//!    the AST it came from. An index lookup lands on the language server's
-//!    per-keystroke path, so a key that allocated per call would be paid for
-//!    on every character typed.
+//! 3. **Keys are cheap.** [`IndexName`] wraps two interned atoms — the
+//!    case-folded name, which is its whole identity for `Eq`/`Hash`, and the
+//!    spelling the source used, which is what a file path must be derived from.
+//!    Both are hashable and `Clone`-by-refcount-bump, and construction touches
+//!    neither the AST the name came from nor the heap: it is a stack-buffer
+//!    fold plus two interning hash lookups. An index lookup lands on the
+//!    language server's per-keystroke path, so a key that allocated per call
+//!    would be paid for on every character typed.
 //!
 //! Absence is a separate question from a miss. [`AnalysisContext::index`]
 //! always holds a handle — [`NullIndex`] when no index was supplied — so
@@ -68,29 +71,91 @@ use crate::{ResolvedType, SymbolKind};
 /// other name in the symbol table is folded the same way. Dots, hyphens, and
 /// path separators are preserved verbatim — the index, not this type, decides
 /// how a qualified name maps onto a file.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct IndexName(OxablAtom);
+///
+/// **Both spellings are kept.** The folded one is the identity: `PartialEq`,
+/// `Eq`, and `Hash` consider *only* it, so this stays a case-insensitive key
+/// and two spellings of one ABL name are the same map entry. Equality
+/// deliberately ignores [`as_written`](Self::as_written) — do not reach for
+/// this type to tell two spellings apart.
+///
+/// The raw spelling is kept because a folded name cannot derive a file path on
+/// a case-sensitive filesystem: `MyApp.Cache` lives in `MyApp/Cache.cls`, and
+/// the folded `myapp/cache.cls` does not exist on Linux. Path derivation is
+/// therefore [`as_written`](Self::as_written)'s job, with the folded spelling
+/// only a fallback — see `oxabl_index::search`.
+#[derive(Debug, Clone)]
+pub struct IndexName {
+    folded: OxablAtom,
+    /// The spelling the source used. Interned rather than a `String` so `Clone`
+    /// stays a refcount bump and this type keeps costing nothing to pass
+    /// around on the language server's per-keystroke path.
+    written: OxablAtom,
+}
+
+// Hand-written rather than derived: a derive would make the raw spelling part
+// of the identity, and `MyApp.Cache` must remain the same key as `myapp.cache`
+// everywhere this type is used as one. Written together so the `Hash`/`Eq`
+// agreement is visible in one place.
+impl PartialEq for IndexName {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.folded == other.folded
+    }
+}
+
+impl Eq for IndexName {}
+
+impl std::hash::Hash for IndexName {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.folded.hash(state);
+    }
+}
 
 impl IndexName {
-    /// Fold `raw` and intern it. Cheap enough for a per-reference call: the
-    /// fold is a stack-buffer byte pass and interning a repeated name is a
-    /// hash lookup.
+    /// Fold `raw`, and intern both spellings. Cheap enough for a per-reference
+    /// call: the fold is a stack-buffer byte pass and interning a repeated name
+    /// is a hash lookup, so carrying the raw spelling costs one extra lookup
+    /// and no allocation.
     pub fn new(raw: &str) -> Self {
-        IndexName(fold_atom(raw))
+        IndexName {
+            folded: fold_atom(raw),
+            written: OxablAtom::from(raw),
+        }
     }
 
-    /// The folded name as a string. Implementations use this to derive a file
-    /// path from a qualified class name.
+    /// The **folded** name as a string — the identity, and what to install
+    /// wherever a symbol-table name is expected.
+    ///
+    /// Must **not** be used to derive a file path: it has lost the source
+    /// casing, so the path it yields misses on a case-sensitive filesystem.
+    /// Use [`as_written`](Self::as_written) for that.
     #[inline]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.folded
     }
 
     /// The folded name as an atom, ready to install as
     /// [`Symbol::name`](crate::Symbol::name) on a synthesized symbol.
     #[inline]
     pub fn as_atom(&self) -> &OxablAtom {
-        &self.0
+        &self.folded
+    }
+
+    /// The name **as the source spelled it**, casing intact. This is what a
+    /// file path must be derived from; [`as_str`](Self::as_str) is the folded
+    /// identity and is not interchangeable with it.
+    #[inline]
+    pub fn as_written(&self) -> &str {
+        &self.written
+    }
+
+    /// The as-written spelling as an atom, for use as a *case-sensitive* map
+    /// key. An `IndexName` cannot serve as one — its `Hash`/`Eq` ignore casing
+    /// by design.
+    #[inline]
+    pub fn as_written_atom(&self) -> &OxablAtom {
+        &self.written
     }
 }
 
@@ -424,6 +489,29 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.as_str(), "myapp.services.cache");
         assert_eq!(a.as_atom(), b.as_atom());
+    }
+
+    #[test]
+    fn index_name_equality_ignores_case_while_the_raw_spelling_survives() {
+        use std::hash::{BuildHasher, RandomState};
+
+        let written = IndexName::new("MyApp.Cache");
+        let folded = IndexName::new("myapp.cache");
+
+        // Identity is the folded spelling: same key, same hash. Every map keyed
+        // by `IndexName` depends on this.
+        assert_eq!(written, folded);
+        let hasher = RandomState::new();
+        assert_eq!(hasher.hash_one(&written), hasher.hash_one(&folded));
+        assert_eq!(written.as_str(), folded.as_str());
+
+        // The raw spelling is still there for path derivation, and it is *not*
+        // part of the identity — the two lines above are the reason a
+        // case-sensitive cache key has to be `as_written_atom`, not the name.
+        assert_eq!(written.as_written(), "MyApp.Cache");
+        assert_eq!(folded.as_written(), "myapp.cache");
+        assert_ne!(written.as_written(), folded.as_written());
+        assert_ne!(written.as_written_atom(), folded.as_written_atom());
     }
 
     #[test]

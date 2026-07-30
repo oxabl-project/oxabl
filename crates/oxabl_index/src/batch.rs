@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
+use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, MemberDescriptor,
     WorkspaceIndex,
@@ -67,9 +68,21 @@ struct Memo {
     /// resolve to *no* file at all, and remembering that miss is what stops a
     /// repeated reference to an external class from re-searching every path
     /// entry on every lookup.
-    classes: FxHashMap<IndexName, IndexAnswer<ClassFacts>>,
-    /// Answers per `RUN` target key, for the same reason.
-    programs: FxHashMap<IndexName, IndexAnswer<IndexedFileId>>,
+    ///
+    /// Keyed by the **as-written** spelling ([`IndexName::as_written_atom`]),
+    /// not by the `IndexName` itself. An `IndexName`'s `Hash`/`Eq` ignore
+    /// casing, but the search now depends on the casing: two spellings of one
+    /// name are the same `IndexName` key while being able to produce *different*
+    /// search outcomes, so a memoized miss under `myapp.cache` would be served
+    /// to `MyApp.Cache`, which would have found the file. A case-sensitive key
+    /// costs at most one extra search per distinct spelling and cannot poison.
+    ///
+    /// It does not cost an extra *parse*: both spellings resolve to the same
+    /// path, and `facts` is keyed by path, so the second search finds the file
+    /// already indexed.
+    classes: FxHashMap<OxablAtom, IndexAnswer<ClassFacts>>,
+    /// Answers per `RUN` target key, for the same reasons.
+    programs: FxHashMap<OxablAtom, IndexAnswer<IndexedFileId>>,
     /// Next id to mint. Ids are assigned in first-index order and mean nothing
     /// outside this index, exactly as [`IndexedFileId`] documents. Starts at 1
     /// so a zero id never reads as a real file in a dump.
@@ -115,17 +128,19 @@ impl<'a> BatchIndex<'a> {
     /// Resolve `name` to the facts of the class it names, memoized per key.
     fn class_facts(&self, name: &IndexName) -> IndexAnswer<ClassFacts> {
         let mut memo = self.memo();
-        if let Some(hit) = memo.classes.get(name) {
+        if let Some(hit) = memo.classes.get(name.as_written_atom()) {
             return hit.clone();
         }
 
         let answer =
-            match search::find_unique(self.fs, self.include_paths, &search::class_path(name)) {
+            match search::find_name(self.fs, self.include_paths, name, search::NameKind::Class) {
                 IndexAnswer::Found(path) => {
                     let facts = memo.facts_for(self.fs, &path);
                     // The file exists but may not declare the class the path
                     // promised — a mis-namespaced file, or one whose parse failed.
-                    // Both are knowably unusable, so both are `NotFound`.
+                    // Both are knowably unusable, so both are `NotFound`. The
+                    // comparison here is the case-insensitive one: the declaring
+                    // file is free to spell the class differently from the reference.
                     facts
                         .class(name)
                         .cloned()
@@ -134,7 +149,8 @@ impl<'a> BatchIndex<'a> {
                 IndexAnswer::NotFound => IndexAnswer::NotFound,
                 IndexAnswer::Unknowable => IndexAnswer::Unknowable,
             };
-        memo.classes.insert(name.clone(), answer.clone());
+        memo.classes
+            .insert(name.as_written_atom().clone(), answer.clone());
         answer
     }
 }
@@ -185,30 +201,35 @@ impl WorkspaceIndex for BatchIndex<'_> {
 
     fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
         let mut memo = self.memo();
-        if let Some(hit) = memo.programs.get(target) {
+        if let Some(hit) = memo.programs.get(target.as_written_atom()) {
             return hit.clone();
         }
 
-        let answer =
-            match search::find_unique(self.fs, self.include_paths, &search::program_path(target)) {
-                IndexAnswer::Found(path) => {
-                    // The target is indexed rather than merely existence-checked,
-                    // for two reasons: an unusable file must answer `NotFound`
-                    // per the seam's totality rule, and a program a file `RUN`s
-                    // is the realistic producer of the `SHARED` names that file
-                    // consumes — indexing it here is what gives
-                    // `shared_producer` something true to say.
-                    let facts = memo.facts_for(self.fs, &path);
-                    if facts.parsed {
-                        IndexAnswer::Found(facts.file)
-                    } else {
-                        IndexAnswer::NotFound
-                    }
+        let answer = match search::find_name(
+            self.fs,
+            self.include_paths,
+            target,
+            search::NameKind::Program,
+        ) {
+            IndexAnswer::Found(path) => {
+                // The target is indexed rather than merely existence-checked,
+                // for two reasons: an unusable file must answer `NotFound`
+                // per the seam's totality rule, and a program a file `RUN`s
+                // is the realistic producer of the `SHARED` names that file
+                // consumes — indexing it here is what gives
+                // `shared_producer` something true to say.
+                let facts = memo.facts_for(self.fs, &path);
+                if facts.parsed {
+                    IndexAnswer::Found(facts.file)
+                } else {
+                    IndexAnswer::NotFound
                 }
-                IndexAnswer::NotFound => IndexAnswer::NotFound,
-                IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-            };
-        memo.programs.insert(target.clone(), answer.clone());
+            }
+            IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
+        };
+        memo.programs
+            .insert(target.as_written_atom().clone(), answer.clone());
         answer
     }
 
@@ -387,11 +408,22 @@ mod tests {
         // Twenty distinct child classes, each naming the same parent. The parent
         // must be read once, which is the property that makes one batch index per
         // run pay for itself.
+        //
+        // The children deliberately spell the parent three different ways. Each
+        // spelling is its own answer-cache key and so does its own *search*
+        // (cheap, and required — the caches are case-sensitive so a miss cannot
+        // poison another spelling), but all three land on the same path, and the
+        // facts cache is keyed by path. So "indexed once" must still hold across
+        // spellings, which is the property a case-sensitive answer key could
+        // plausibly have broken.
+        const PARENT_SPELLINGS: [&str; 3] =
+            ["orders.calc-base", "Orders.Calc-Base", "ORDERS.CALC-BASE"];
         let mut files = vec![("/src/orders/calc-base.cls".to_string(), PARENT.to_string())];
         for i in 0..20 {
+            let parent = PARENT_SPELLINGS[i % PARENT_SPELLINGS.len()];
             files.push((
                 format!("/src/orders/child-{i:02}.cls"),
-                format!("CLASS orders.child-{i:02} INHERITS orders.calc-base: END CLASS."),
+                format!("CLASS orders.child-{i:02} INHERITS {parent}: END CLASS."),
             ));
         }
         let borrowed: Vec<(&str, &str)> = files
@@ -424,6 +456,79 @@ mod tests {
             "the shared parent is indexed once, not once per child"
         );
         assert_eq!(fs.reads_of("/src/orders/child-00.cls"), 1);
+    }
+
+    #[test]
+    fn a_mixed_case_class_file_resolves_from_the_mixed_case_source_spelling() {
+        // The case-sensitive-filesystem case: the file on disk is `MyApp/Cache.cls`
+        // and the source writes `USING MyApp.Cache`. Deriving the path from the
+        // folded key alone would look for `myapp/cache.cls` and miss.
+        let fs = CountingFs::new(&[("/src/MyApp/Cache.cls", "CLASS MyApp.Cache: END CLASS.")]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+
+        assert!(
+            matches!(
+                index.class(&IndexName::new("MyApp.Cache")),
+                IndexAnswer::Found(_)
+            ),
+            "a mixed-case file must resolve from the mixed-case spelling"
+        );
+    }
+
+    #[test]
+    fn a_folded_checkout_resolves_a_mixed_case_source_spelling() {
+        // The fallback half, end to end: the file is lower case on disk and the
+        // source spells the class in mixed case.
+        let fs = CountingFs::new(&[("/src/myapp/cache.cls", "CLASS myapp.cache: END CLASS.")]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+
+        assert!(matches!(
+            index.class(&IndexName::new("MyApp.Cache")),
+            IndexAnswer::Found(_)
+        ));
+    }
+
+    #[test]
+    fn a_mixed_case_run_target_resolves_against_a_mixed_case_file() {
+        let fs = CountingFs::new(&[("/src/Orders/Post-Order.p", "MESSAGE \"posted\".")]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+
+        let IndexAnswer::Found(file) = index.program(&IndexName::new("Orders/Post-Order.p")) else {
+            panic!("a RUN target keeps its casing, so the mixed-case file is found");
+        };
+        assert_ne!(file.raw(), 0, "ids are minted from 1");
+    }
+
+    #[test]
+    fn a_miss_under_one_spelling_does_not_poison_another() {
+        // The memo-poisoning case. `myapp.cache` misses (no lower-case file), and
+        // that miss must not be handed to `MyApp.Cache`, whose own search finds
+        // the file. The answer caches are keyed case-sensitively for exactly this.
+        let fs = CountingFs::new(&[("/src/MyApp/Cache.cls", "CLASS MyApp.Cache: END CLASS.")]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+
+        assert_eq!(
+            index.class(&IndexName::new("myapp.cache")),
+            IndexAnswer::NotFound,
+            "no lower-case file on the paths, and the folded fallback is the same search"
+        );
+        assert!(
+            matches!(
+                index.class(&IndexName::new("MyApp.Cache")),
+                IndexAnswer::Found(_)
+            ),
+            "the memoized miss must not be served to a different spelling"
+        );
+        // And the reverse direction: the recorded hit is likewise not handed to
+        // the spelling that genuinely misses.
+        assert_eq!(
+            index.class(&IndexName::new("myapp.cache")),
+            IndexAnswer::NotFound
+        );
     }
 
     #[test]
