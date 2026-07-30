@@ -285,6 +285,29 @@ fn path_within(root: &Path, candidate: &Path) -> bool {
     normalized.starts_with(root) || depth >= 0
 }
 
+/// The `.df` files directly inside `dir` (non-recursive), in sorted path order so
+/// any merge/conflict diagnostic downstream is deterministic.
+///
+/// Returns the read error rather than an empty list, because "this directory
+/// holds no `.df`" and "this directory could not be read" are different facts a
+/// caller may need to report differently: the pipeline resolver turns each into
+/// its own configuration warning, where a single empty `Vec` would have made both
+/// silent (A2).
+///
+/// The extension match is case-insensitive, matching the rest of the loader.
+pub fn df_files_in_dir(dir: impl AsRef<Path>) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir.as_ref())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("df"))
+        })
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
 impl Schema {
     /// Load every `.df` file directly inside `dir` (non-recursive) into a single
     /// merged schema, using the real filesystem. Files are loaded in sorted path
@@ -292,21 +315,15 @@ impl Schema {
     /// no `.df` files — or one that cannot be read — yields an empty schema and
     /// no diagnostics.
     ///
+    /// A caller that needs to *distinguish* those two silent cases should use
+    /// [`df_files_in_dir`] and load the result itself.
+    ///
     /// This is the explicit-path convenience; workspace-config auto-discovery of
     /// the schema directory is intentionally deferred.
     pub fn from_df_dir(dir: impl AsRef<Path>) -> (Schema, Vec<Diagnostic>) {
-        let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir.as_ref()) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("df"))
-                })
-                .collect(),
-            Err(_) => return (Schema::empty(), Vec::new()),
+        let Ok(paths) = df_files_in_dir(dir) else {
+            return (Schema::empty(), Vec::new());
         };
-        paths.sort();
         SchemaLoader::load_files(&paths, &RealFileSystem)
     }
 }

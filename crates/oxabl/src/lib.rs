@@ -463,15 +463,21 @@ pub mod pipeline {
 ///
 /// For resolved *configuration*, reach for [`pipeline::PipelineConfig`] rather
 /// than assembling surfaces here: it reads `oxabl.toml` once and derives include
-/// paths, lint severities, style, and schema together. The per-surface
-/// `resolved_lint_config` and `resolved_style` helpers this module used to
-/// re-export are gone, because each re-parsed the file and they could disagree.
-/// `resolved_include_paths` remains for the one caller that wants that single
-/// surface without a full resolution.
+/// paths, lint severities, style, and schema together. All three per-surface
+/// helpers this module used to re-export — `resolved_lint_config`,
+/// `resolved_style`, and finally `resolved_include_paths` — are gone, because each
+/// re-parsed the file and each was a second copy of a derivation that could drift
+/// from the shared one. A client that wants configuration without schema I/O has
+/// [`PipelineConfig::resolve_style_only`](pipeline::PipelineConfig::resolve_style_only)
+/// instead of a fourth helper.
+///
+/// What is left here is genuinely the workspace layer: the filesystem
+/// abstraction, `oxabl.toml` *parsing*, root discovery, and the one root-file
+/// policy.
 pub mod workspace {
     pub use oxabl_workspace::{
         FileSystem, InMemoryFileSystem, LintConfig, LintSeverity, ROOT_EXTENSIONS, RealFileSystem,
         Workspace, WorkspaceConfig, discover_path, find_workspace_root, is_root_file,
-        resolved_include_paths, walk_directory,
+        walk_directory,
     };
 }

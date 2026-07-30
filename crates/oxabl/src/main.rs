@@ -8,11 +8,12 @@ use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
 use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
 use oxabl_pipeline::{
-    ConfigOverrides, FormatPipeline, LintPipeline, PipelineConfig, ROOT_FILE_ID, position,
+    ConfigOverrides, ConfigWarning, FormatPipeline, LintPipeline, PipelineConfig, ROOT_FILE_ID,
+    position,
 };
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{RealFileSystem, discover_path, resolved_include_paths};
+use oxabl_workspace::{RealFileSystem, discover_path};
 use serde::Serialize;
 
 #[derive(ClapParser)]
@@ -29,6 +30,19 @@ enum Cli {
     /// either is present (or a file could not be read or analyzed), `2` on a
     /// usage or config error. `--json` adds `6` for a serialization failure,
     /// matching `analyze`.
+    ///
+    /// A config error means an `oxabl.toml` this run could not **use** — which is
+    /// broader than malformed TOML. Parsing is strict (unknown fields are
+    /// rejected), so a syntactically valid file naming a key oxabl does not know —
+    /// a misspelled or not-yet-released `[workspace.lint]` rule, say — is a config
+    /// error too. Alone among the subcommands, `check` refuses to run on one rather
+    /// than degrading to defaults: those defaults would drop the project's
+    /// `[workspace.lint]` severities, `off` included, so the gate would report
+    /// findings for switched-off rules and could still exit 0 — a wrong answer
+    /// under a green light.
+    /// Non-fatal problems (a schema file that would not load, a `--schema`
+    /// directory that matched nothing) stay `warning:` lines and do not move the
+    /// exit code.
     ///
     /// `oxabl format --check` remains the format pipeline's granular dry-run —
     /// the *same* pipeline this command calls, so the two cannot diverge.
@@ -75,12 +89,13 @@ enum Cli {
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
 
-        /// Suppress the lint channel: report format drift only (R16).
+        /// Suppress lint findings; parse/semantic errors still gate (R16).
         ///
-        /// Here this **skips the lint run entirely** — there is nothing else in
-        /// the report that needs it, so the work is not done. `analyze --no-lint`
-        /// deliberately differs: it still needs the semantic model for its dump,
-        /// so it runs the pipeline and filters the lint findings out afterwards.
+        /// A **filter on the reported set**, not a skipped run — the same meaning
+        /// `analyze --no-lint` has always had. The pipeline that produces lint
+        /// findings is also the only source of `PARSE001` and the semantic
+        /// diagnostics, so skipping it would let a file oxabl cannot even parse
+        /// pass the gate with a green exit code.
         #[arg(long)]
         no_lint: bool,
 
@@ -151,7 +166,7 @@ enum Cli {
         /// A **filter on the result**, not a skipped pass: the envelope still
         /// wants the semantic model, so the pipeline runs either way and the
         /// lint-sourced diagnostics are removed from the reported set. `check
-        /// --no-lint` differs — it has no model to dump, so it skips the run.
+        /// --no-lint` means the same thing, for the same reason.
         #[arg(long)]
         no_lint: bool,
 
@@ -287,28 +302,27 @@ fn surface_preproc_diagnostics(
     loud
 }
 
-/// Surface loud, root-origin preprocessor diagnostics from the shared
-/// collector to stderr via [`render_diagnostics`], and return them for the
-/// `analyze` JSON channel.
+/// Surface loud, root-origin preprocessor diagnostics from the shared collector
+/// to stderr via [`render_diagnostics`].
 ///
 /// The collector already filtered to the loud set and dropped include-origin
 /// diagnostics (R8), so every entry here is root-relative (root [`FileId`] is
-/// `1`, matching [`collect_with_model`]) and gets a concrete position + snippet.
-fn surface_collected_preproc(
-    path: &Path,
-    source: &str,
-    collected: &CollectedDiagnostics,
-) -> Vec<Diagnostic> {
+/// [`ROOT_FILE_ID`]) and gets a concrete position + snippet.
+///
+/// The machine-readable side is built separately by each caller from the same
+/// `collected` set, because the two clients wrap the rows differently: `check`
+/// walks a tree and must attribute each row to its file, while `analyze` is
+/// single-file and its envelope names the path once.
+fn surface_collected_preproc(path: &Path, source: &str, collected: &CollectedDiagnostics) {
     let loud: Vec<Diagnostic> = collected
         .by_source(oxabl_analyze::DiagnosticSource::Preproc)
         .map(|c| c.diagnostic.clone())
         .collect();
     if loud.is_empty() {
-        return loud;
+        return;
     }
-    let resolver = SourceResolver::new(FileId::new(1), path.display().to_string(), source);
+    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), source);
     eprint!("{}", render_diagnostics(&loud, &resolver));
-    loud
 }
 
 /// Report how many symbols the count-gated lint rules could not fully judge,
@@ -500,15 +514,28 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
         None => None,
     };
 
-    // One config resolution for every surface: `--style` outranks
-    // `[workspace.style]` wholesale, and a malformed `oxabl.toml` degrades to
-    // defaults with one `warning:` line (R7).
-    let overrides = ConfigOverrides {
-        include_paths: Vec::new(),
-        schema_path: None,
-        style: cli_style,
+    // Style is the *only* surface this command has (D2), so the resolution is the
+    // schema-free one: a `.df` that would not load is a problem `format` cannot
+    // act on, and printing a `warning: schema:` line about it — on the command
+    // most likely to be wired to save-on-write — is noise, not information.
+    //
+    // `--style` names a whole guide, so it leaves nothing in `oxabl.toml` for the
+    // run to need: it short-circuits discovery entirely rather than resolving a
+    // config only to override it. That is what makes `--style` work in a tree
+    // whose `oxabl.toml` cannot be parsed. Without it, a malformed config still
+    // degrades to defaults with one `warning:` line (R7) — `format` rewrites
+    // layout rather than answering a pass/fail question, so unlike `check` (A3) it
+    // has nothing to report wrongly.
+    let (config, warnings) = match cli_style {
+        Some(style) => (
+            PipelineConfig {
+                style,
+                ..PipelineConfig::default()
+            },
+            Vec::new(),
+        ),
+        None => PipelineConfig::resolve_style_only(path, &ConfigOverrides::default()),
     };
-    let (config, warnings) = PipelineConfig::resolve(path, &overrides);
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
@@ -611,9 +638,11 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 /// `version` is bumped when a key's meaning changes, so a consumer can pin. The
 /// remaining keys are deliberately *not* findings:
 ///
-/// * `preproc_diagnostics` — the loud `PREPROC007`-family coverage warnings,
-///   same channel and same shape `analyze` gives them. They never move the exit
-///   code.
+/// * `preproc` — the loud `PREPROC007`-family coverage warnings, same channel
+///   and same key name `analyze`'s envelope gives them. They never move the exit
+///   code. Rows carry a `path` like the findings do (D1): `check` walks a tree,
+///   and without one, N files missing the same include produced N entries a
+///   consumer could not tell apart.
 /// * `unjudged_symbols` — the count-gated rules' coverage note (R26). Also never
 ///   moves the exit code.
 /// * `failures` — per-file internal failures (an unreadable file, or a contained
@@ -625,14 +654,15 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 struct CheckJsonReport {
     version: u32,
     files_checked: usize,
-    /// Whether the lint channel ran at all (`false` under `--no-lint`), so an
-    /// empty `diagnostics` cannot be misread as "clean".
+    /// Whether lint findings are reported (`false` under `--no-lint`), so an
+    /// empty `diagnostics` cannot be misread as "clean". The pipeline itself runs
+    /// either way — parse and semantic diagnostics are never suppressed (A1).
     lint_enabled: bool,
     diagnostics: Vec<CheckJsonDiagnostic>,
     /// Whether the format channel ran at all (`false` under `--no-format`).
     format_enabled: bool,
     format: CheckJsonFormat,
-    preproc_diagnostics: Vec<Diagnostic>,
+    preproc: Vec<CheckJsonDiagnostic>,
     unjudged_symbols: usize,
     failures: Vec<CheckJsonFailure>,
 }
@@ -717,6 +747,11 @@ struct CheckJsonFailure {
 /// to **stderr** in both modes, which is exactly how `analyze` splits them: they
 /// qualify the run rather than being results of it.
 ///
+/// A run with nothing to report prints a one-line summary naming the file count
+/// instead of nothing at all (D5), so a pass is distinguishable from a path that
+/// silently matched almost nothing. Text mode only — `--json` carries the same
+/// count as `files_checked`.
+///
 /// # A per-file failure never aborts the walk (R24)
 ///
 /// A file that cannot be read, or whose analysis hits a contained panic, is
@@ -757,14 +792,41 @@ fn run_check(
 
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
     // `.df` it names, so doing it inside the loop would re-parse the schema for
-    // every file in the tree. Warnings are non-fatal data (R7) — a malformed
-    // config degrades to defaults and says so.
+    // every file in the tree.
     let overrides = ConfigOverrides {
         include_paths: include_paths.to_vec(),
         schema_path: schema_path.map(Path::to_path_buf),
         style: None,
     };
     let (config, warnings) = PipelineConfig::resolve(path, &overrides);
+
+    // The one place the gate hardens where every other command degrades (A3): an
+    // `oxabl.toml` the resolver could not use is a **config error**, exit 2.
+    //
+    // `ConfigWarning::Config` means the whole file was discarded, so the run would
+    // proceed on defaults — and defaults are not what the user wrote. A dropped
+    // `[workspace.lint]` table takes every `off` with it, so the gate reports
+    // findings for rules the project switched off, and reports them under a green
+    // exit code if nothing else fires. `format`, `analyze`, `conformance` and the
+    // LSP keep degrading with a warning: none of them answers a pass/fail
+    // question, so none of them can answer it wrongly.
+    //
+    // "Could not use" is broader than "malformed TOML": `LintConfig` and
+    // `StyleGuide` deny unknown fields, so a syntactically valid file naming a key
+    // oxabl does not know — a typo'd or not-yet-released rule name — lands here
+    // too. That is the intended answer, for the same reason: the gate would
+    // otherwise run on a configuration the user never wrote.
+    //
+    // Every other warning stays a warning. A `.df` that would not load, or a
+    // `--schema` directory that matched nothing (A2), leaves the rest of the
+    // configuration intact, so the run still means what it says.
+    if let Some(msg) = warnings.iter().find_map(|w| match w {
+        ConfigWarning::Config(msg) => Some(msg),
+        _ => None,
+    }) {
+        eprintln!("error: {msg}");
+        return ExitCode::from(2);
+    }
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
@@ -776,7 +838,7 @@ fn run_check(
     let format = FormatPipeline::new(config.style.clone());
 
     let mut diagnostics: Vec<CheckJsonDiagnostic> = Vec::new();
-    let mut preproc_diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut preproc: Vec<CheckJsonDiagnostic> = Vec::new();
     let mut failures: Vec<CheckJsonFailure> = Vec::new();
     let mut drifted: Vec<String> = Vec::new();
     let mut unjudged = 0usize;
@@ -797,43 +859,68 @@ fn run_check(
             }
         };
 
-        if !no_lint {
-            let result = lint.run(&source);
-            if let Some(panic) = result.failure() {
-                eprintln!("error: analysis failed on {display}: {panic}");
-                failures.push(CheckJsonFailure {
-                    path: display.clone(),
-                    reason: panic.to_string(),
-                });
-            } else {
-                // Preprocessor diagnostics keep their own channel — surfaced by
-                // the same helper `analyze` uses, so the two cannot drift. They
-                // are coverage warnings, not findings, and never move the exit
-                // code: an elided include still parses.
-                preproc_diagnostics.extend(surface_collected_preproc(
-                    file,
-                    &source,
-                    result.diagnostics(),
-                ));
-
-                let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
-                if !reported.diagnostics.is_empty() {
-                    if !json_output {
-                        let resolver =
-                            SourceResolver::new(ROOT_FILE_ID, display.clone(), source.as_str());
-                        let rendered: Vec<Diagnostic> =
-                            reported.all().map(|c| c.diagnostic.clone()).collect();
-                        print!("{}", render_diagnostics(&rendered, &resolver));
-                    }
+        // The pipeline runs whatever `--no-lint` says (A1): it is the only source
+        // of parse and semantic diagnostics too, and those gate regardless.
+        let result = lint.run(&source);
+        if let Some(panic) = result.failure() {
+            eprintln!("error: analysis failed on {display}: {panic}");
+            failures.push(CheckJsonFailure {
+                path: display.clone(),
+                reason: panic.to_string(),
+            });
+        } else {
+            // Preprocessor diagnostics keep their own channel — surfaced by the
+            // same helper `analyze` uses, so the two cannot drift. They are
+            // coverage warnings, not findings, and never move the exit code: an
+            // elided include still parses.
+            surface_collected_preproc(file, &source, result.diagnostics());
+            // Machine-readable, through the *same* row builder the findings use
+            // (D1): an entry names its file, so two files losing coverage on
+            // different includes are two distinguishable entries.
+            //
+            // Only `--json` reads these rows, and most files have no preproc
+            // diagnostic at all — so the `SourceMap` (a scan of the whole file) is
+            // built behind both conditions, the way the findings rows below build
+            // theirs only once there is a finding.
+            if json_output {
+                let mut collected = result
+                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                    .peekable();
+                if collected.peek().is_some() {
                     let map = SourceMap::new(&source);
-                    for collected in reported.all() {
-                        diagnostics.push(check_json_diagnostic(&display, &map, collected));
-                    }
+                    preproc.extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
                 }
+            }
 
-                if let Some(sem) = result.semantic() {
-                    unjudged += surface_unjudged_symbols(sem);
+            // `--no-lint` is a **filter on the reported set**, exactly as it is
+            // for `analyze`: the lint-sourced entries go, the parse and semantic
+            // ones stay. Two chained calls to the one shared filter rather than a
+            // second hand-rolled predicate.
+            let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
+            let reported = if no_lint {
+                reported.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
+            } else {
+                reported
+            };
+            if !reported.diagnostics.is_empty() {
+                if !json_output {
+                    let resolver =
+                        SourceResolver::new(ROOT_FILE_ID, display.clone(), source.as_str());
+                    let rendered: Vec<Diagnostic> =
+                        reported.all().map(|c| c.diagnostic.clone()).collect();
+                    print!("{}", render_diagnostics(&rendered, &resolver));
                 }
+                let map = SourceMap::new(&source);
+                for collected in reported.all() {
+                    diagnostics.push(check_json_diagnostic(&display, &map, collected));
+                }
+            }
+
+            // The unjudged-symbol note is a statement about the *count-gated lint
+            // rules'* coverage, so it has nothing to qualify when those findings
+            // are suppressed.
+            if !no_lint && let Some(sem) = result.semantic() {
+                unjudged += surface_unjudged_symbols(sem);
             }
         }
 
@@ -867,7 +954,9 @@ fn run_check(
 
     if json_output {
         let report = CheckJsonReport {
-            version: 1,
+            // 2: `preproc_diagnostics` became `preproc`, matching `analyze`'s
+            // envelope, and its rows gained a `path` (D1).
+            version: 2,
             files_checked: files.len(),
             lint_enabled: !no_lint,
             diagnostics,
@@ -876,7 +965,7 @@ fn run_check(
                 drifted_count: drifted.len(),
                 drifted,
             },
-            preproc_diagnostics,
+            preproc,
             unjudged_symbols: unjudged,
             failures,
         };
@@ -907,6 +996,32 @@ fn run_check(
         println!(
             "{} {plural} would be reformatted — run `oxabl format` to fix.",
             drifted.len()
+        );
+    }
+
+    // A passing run says what it checked (D5). Silence on success reads the same
+    // as silence on a mistyped path that happened to resolve to one clean file,
+    // and a green light that might mean "I checked nothing you cared about" is not
+    // one CI can trust. Printed only when the gate actually passed, so it is
+    // unambiguously the pass message rather than a header over a list of problems.
+    //
+    // Text mode only: `--json` already carries `files_checked`, and a prose line
+    // beside the document would make stdout unparseable.
+    if diagnostics.is_empty() && drifted.is_empty() && failures.is_empty() {
+        let plural = if files.len() == 1 { "file" } else { "files" };
+        let lint_channel = if no_lint {
+            "lint suppressed"
+        } else {
+            "no findings"
+        };
+        let format_channel = if no_format {
+            "format suppressed"
+        } else {
+            "no drift"
+        };
+        println!(
+            "checked {} {plural}: {lint_channel}, {format_channel}",
+            files.len()
         );
     }
 
@@ -1020,7 +1135,9 @@ fn run_analyze(
     // `--no-lint` is a **filter on the result**, not a skipped run: the envelope
     // still wants the model, so the shared `excluding_source` drops the
     // lint-sourced entries and leaves parse, semantic, and preprocessor ones
-    // alone. (`check --no-lint` skips the run outright — it has no model to dump.)
+    // alone. `check --no-lint` means the same thing by the same mechanism (A1): it
+    // also runs the pipeline — the only source of the parse and semantic
+    // diagnostics that gate regardless — and filters the reported set.
     let collected = if no_lint {
         result.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
     } else {
@@ -1106,13 +1223,26 @@ fn run_conformance(
         return ExitCode::from(2);
     }
 
-    // Merge CLI `-I` flags with any auto-discovered `oxabl.toml` include paths.
+    // Merge CLI `-I` flags with any auto-discovered `oxabl.toml` include paths —
+    // through the shared resolution (D3), which is where that derivation now lives
+    // for every client. `oxabl_workspace::resolved_include_paths` reimplemented it
+    // line-for-line, so the two could disagree about PROPATH order or anchoring
+    // while looking identical; it is gone, and this was its last caller.
+    //
+    // The schema-free resolution because a parse-conformance walk has no use for a
+    // `.df`, and a malformed config degrades to flags-only with one warning, as
+    // before: this command reports what oxabl can parse, not whether the caller's
+    // configuration is right.
     let effective_paths: Vec<PathBuf> = if preprocess {
-        let (merged, cfg_err) = resolved_include_paths(path, include_paths);
-        if let Some(err) = cfg_err {
-            eprintln!("warning: {err}");
+        let overrides = ConfigOverrides {
+            include_paths: include_paths.to_vec(),
+            ..Default::default()
+        };
+        let (config, warnings) = PipelineConfig::resolve_style_only(path, &overrides);
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
         }
-        merged
+        config.include_paths
     } else {
         Vec::new()
     };
@@ -1247,7 +1377,7 @@ fn parse_file_with_preprocess(
 
     // Preprocess
     let preprocessor = Preprocessor::new(fs, include_paths);
-    let file_id = FileId::new(1);
+    let file_id = ROOT_FILE_ID;
     let preprocessed = match preprocessor.process(file_id, &source) {
         Ok(pf) => pf,
         Err(diags) => {
@@ -1528,7 +1658,7 @@ fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_p
 
     let parse_source: String = if preprocess {
         let preprocessor = Preprocessor::new(fs, include_paths);
-        let file_id = FileId::new(1);
+        let file_id = ROOT_FILE_ID;
         match preprocessor.process(file_id, &source) {
             Ok(pf) => {
                 if !pf.diagnostics.is_empty() {

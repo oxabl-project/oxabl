@@ -188,19 +188,104 @@ fn a_panicking_file_does_not_abort_the_rest_of_the_walk() {
 /// A formatter panic is an oxabl bug rather than a property of the input, so it
 /// counts as a failure in `check` — unlike a deliberate bail, which stays neutral.
 #[test]
-fn check_exits_1_when_formatting_panics_and_0_when_it_merely_bails() {
+fn a_format_panic_is_a_check_failure_and_a_bail_is_neither_drift_nor_failure() {
     let (_dir, panics) = one_file("panics.p", &panicking(panic_sites::FORMAT));
     let (exit, _stdout, stderr) = run(&[s("check"), s("--no-lint"), panics.as_os_str()]);
     assert_eq!(exit, Some(1), "a contained format panic is a failure");
     assert!(stderr.contains("formatting failed"), "got: {stderr}");
 
     // A refusal on unparseable input is expected behavior, not drift and not a
-    // failure: with the lint channel off there is nothing left to fail on.
+    // failure. The exit code cannot show that on its own — the only input the
+    // formatter reliably bails on is unparseable, and `PARSE001` gates on its own
+    // now that `--no-lint` no longer skips the run (A1) — so the assertion is on
+    // the two format-channel keys: neither drift nor a failure entry.
     let (_dir2, bails) = one_file("bails.p", UNPARSEABLE);
+    let (_exit, stdout, _stderr) = run(&[s("check"), s("--json"), bails.as_os_str()]);
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(
-        code(&[s("check"), s("--no-lint"), bails.as_os_str()]),
+        report["format"]["drifted_count"], 0,
+        "a deliberate bail is not drift: {report}"
+    );
+    assert_eq!(
+        report["failures"].as_array().map(Vec::len),
         Some(0),
-        "a deliberate bail is neutral in the format channel"
+        "and not a per-file failure either: {report}"
+    );
+}
+
+/// An `oxabl.toml` the resolver cannot use is **fatal for the gate** — exit 2,
+/// with the parse error on stderr (A3).
+///
+/// Every other command degrades to defaults with a warning, and `check` used to
+/// as well. But defaults are not the configuration the user wrote: a discarded
+/// `[workspace.lint]` table takes every `off` with it, so the gate reports
+/// findings for rules the project has switched off and — worse — a green exit
+/// code for a run whose configuration it silently ignored. A gate that answers
+/// the wrong question must not answer it successfully.
+///
+/// "Cannot use" is broader than "malformed": `LintConfig` and `StyleGuide` deny
+/// unknown fields, so syntactically valid TOML naming a key oxabl does not know —
+/// a typo'd or not-yet-released rule — is discarded the same way and gets the same
+/// exit 2. Asserted here so nobody reads the exit-2 contract as a TOML-syntax
+/// check.
+#[test]
+fn check_exits_2_on_a_config_it_cannot_use() {
+    // Malformed TOML.
+    let (dir, file) = one_file("a.p", CLEAN);
+    write(&dir.path().join("oxabl.toml"), "this is not valid toml {{{");
+
+    let (exit, _stdout, stderr) = run(&[s("check"), file.as_os_str()]);
+
+    assert_eq!(exit, Some(2), "stderr: {stderr}");
+    assert!(
+        stderr.contains("oxabl.toml"),
+        "the parse error must name the file: {stderr}"
+    );
+
+    // Valid TOML, unknown key: strict parsing rejects it, so the whole file is
+    // discarded and the gate must refuse for the same reason.
+    let (dir, file) = one_file("a.p", CLEAN);
+    write(
+        &dir.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n[workspace.lint]\nfuture-rule = \"off\"\n",
+    );
+
+    let (exit, _stdout, stderr) = run(&[s("check"), file.as_os_str()]);
+
+    assert_eq!(
+        exit,
+        Some(2),
+        "an unknown config key is a config it cannot use: {stderr}"
+    );
+    assert!(
+        stderr.contains("oxabl.toml"),
+        "and the error must still name the file: {stderr}"
+    );
+}
+
+/// …and the commands that are not gates keep degrading: a warning, then their
+/// ordinary exit code. `analyze` is an introspection dump and `format` rewrites
+/// layout — neither is answering a pass/fail question, so neither should refuse
+/// to run over a config it could not read.
+#[test]
+fn analyze_and_format_degrade_on_the_same_unusable_config() {
+    let (dir, file) = one_file("a.p", CLEAN);
+    write(&dir.path().join("oxabl.toml"), "this is not valid toml {{{");
+
+    let (exit, _stdout, stderr) = run(&[s("analyze"), file.as_os_str()]);
+    assert_eq!(exit, Some(0), "analyze dumps whatever it found: {stderr}");
+    assert!(
+        stderr.contains("warning:") && stderr.contains("oxabl.toml"),
+        "and says the config was unusable: {stderr}"
+    );
+
+    // `--check` so the run cannot depend on writing: CLEAN is already formatted,
+    // so there is no drift and the code is the no-drift 0.
+    let (exit, _stdout, stderr) = run(&[s("format"), s("--check"), file.as_os_str()]);
+    assert_eq!(exit, Some(0), "stderr: {stderr}");
+    assert!(
+        stderr.contains("warning:") && stderr.contains("oxabl.toml"),
+        "format degrades with a warning too: {stderr}"
     );
 }
 

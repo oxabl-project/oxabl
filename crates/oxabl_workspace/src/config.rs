@@ -133,7 +133,10 @@ impl LintConfig {
 /// The `[workspace.sources]` section.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SourcesConfig {
-    /// Directories containing ABL source files (`.p`, `.w`, `.cls`, `.i`).
+    /// Directories to walk for ABL *root* files — `.p`, `.w`, `.cls`, and `.v`,
+    /// matched case-insensitively. `.i` is deliberately not among them: an
+    /// include fragment is never a root, and `is_root_file` is the one policy
+    /// that decides.
     #[serde(default)]
     pub directories: Vec<PathBuf>,
 

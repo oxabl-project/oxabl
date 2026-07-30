@@ -41,6 +41,9 @@ const BOTH: &str = "DO:\nDEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nEND.\n";
 /// `PUT` is recognized but unmodelled, so the count-gated rules go blind on
 /// `v-total` — a coverage note, not a finding.
 const UNJUDGED: &str = "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\nPUT v-total.\n";
+/// A hard `PARSE001` *and* a lint finding, so a run can be asked which channel
+/// a suppression flag actually silenced.
+const PARSE_ERROR_AND_UNUSED: &str = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n@ @ @\n";
 
 /// A one-file project holding `source`, returned with the file's path.
 fn project(name: &str, source: &str) -> (TempDir, std::path::PathBuf) {
@@ -104,11 +107,19 @@ fn a_lint_finding_exits_1_and_is_reported_with_path_line_and_column() {
     );
 }
 
+/// A passing run says how many files it checked (D5).
+///
+/// Silence on success is indistinguishable from silence on a mistyped path that
+/// happened to resolve to one clean file — and a gate whose green light might mean
+/// "I checked nothing you cared about" is not one you can trust in CI. The count
+/// is the cheapest thing that separates the two.
 #[test]
-fn a_clean_already_formatted_file_exits_0_with_no_findings() {
-    let (_tmp, file) = project("clean.p", CLEAN);
+fn a_clean_already_formatted_file_exits_0_with_a_summary_naming_the_count() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("a-clean.p"), CLEAN);
+    write(&tmp.path().join("z-clean.p"), CLEAN);
 
-    let run = check([file.as_os_str()]);
+    let run = check([tmp.path().as_os_str()]);
 
     assert_eq!(
         run.code,
@@ -118,8 +129,41 @@ fn a_clean_already_formatted_file_exits_0_with_no_findings() {
         run.stderr
     );
     assert!(
-        run.stdout.trim().is_empty(),
-        "a clean file should print nothing, got:\n{}",
+        run.stdout.contains("checked 2 files"),
+        "expected the file count, got:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("no findings") && run.stdout.contains("no drift"),
+        "expected both channels reported clean, got:\n{}",
+        run.stdout
+    );
+    // A finding of any kind replaces the summary — the summary is the *pass*
+    // message, so it must never appear alongside a failure.
+    let (_tmp2, unused) = project("unused.p", UNUSED);
+    let failing = check([unused.as_os_str()]);
+    assert!(
+        !failing.stdout.contains("no findings"),
+        "a failing run must not claim to be clean, got:\n{}",
+        failing.stdout
+    );
+}
+
+/// The summary is a text-mode nicety: `--json` already carries `files_checked`,
+/// and a prose line printed alongside the document would make stdout unparseable.
+#[test]
+fn the_success_summary_stays_out_of_the_json_document() {
+    let (_tmp, file) = project("clean.p", CLEAN);
+
+    let run = check([Path::new("--json").as_os_str(), file.as_os_str()]);
+
+    assert_eq!(run.code, Some(0));
+    // Parses at all, which a prepended prose line would prevent.
+    let v = run.json();
+    assert_eq!(v["files_checked"], 1);
+    assert!(
+        !run.stdout.contains("no findings"),
+        "the count belongs to the document in JSON mode, got:\n{}",
         run.stdout
     );
 }
@@ -203,6 +247,61 @@ fn no_lint_exits_0_on_a_file_whose_only_problem_is_a_lint_finding() {
     assert!(!run.stdout.contains("LINT0002"));
 }
 
+/// `--no-lint` suppresses the **lint** findings, not the parse and semantic
+/// errors that share the same pipeline run (A1).
+///
+/// The flag is named for the channel it silences, and `analyze --no-lint` has
+/// always meant exactly this: filter the lint-sourced diagnostics out of the
+/// reported set. `check`'s used to skip the run outright, which also threw away
+/// the only source of `PARSE001` — so a file oxabl could not even parse passed
+/// the gate with a green exit code. A gate that reports success on unparseable
+/// source is worse than no gate.
+#[test]
+fn no_lint_still_gates_on_parse_errors() {
+    let (_tmp, file) = project("bad.p", PARSE_ERROR_AND_UNUSED);
+
+    let run = check([Path::new("--no-lint").as_os_str(), file.as_os_str()]);
+
+    assert_eq!(
+        run.code,
+        Some(1),
+        "a parse error must still fail the gate under --no-lint. stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout.contains("PARSE001"),
+        "the parse error must still be reported, got:\n{}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains("LINT0002"),
+        "the lint channel is what --no-lint silences, got:\n{}",
+        run.stdout
+    );
+
+    let json = check([
+        Path::new("--json").as_os_str(),
+        Path::new("--no-lint").as_os_str(),
+        file.as_os_str(),
+    ])
+    .json();
+    let sources: Vec<&str> = json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["source"].as_str().unwrap())
+        .collect();
+    assert!(
+        sources.contains(&"parse"),
+        "expected a parse-sourced entry, got {sources:?} in:\n{json}"
+    );
+    assert!(
+        !sources.contains(&"lint"),
+        "expected no lint-sourced entry, got {sources:?} in:\n{json}"
+    );
+}
+
 #[test]
 fn both_channels_suppressed_exits_0_on_a_file_with_findings_in_each() {
     let (_tmp, file) = project("both.p", BOTH);
@@ -250,7 +349,7 @@ fn json_carries_two_findings_keys_and_span_anchored_lint_entries() {
     assert_eq!(run.code, Some(1));
 
     let v = run.json();
-    assert_eq!(v["version"], 1);
+    assert_eq!(v["version"], 2, "bumped when a key's meaning changes (D1)");
     assert_eq!(v["files_checked"], 2);
     assert_eq!(v["lint_enabled"], true);
     assert_eq!(v["format_enabled"], true);
@@ -407,6 +506,52 @@ fn schema_flag_drives_schema_backed_diagnostics() {
     );
 }
 
+/// A `--schema` directory that matches no `.df` file is a misconfiguration, and
+/// the gate says so instead of turning every table reference into a finding (A2).
+///
+/// Loading it as an empty-but-present schema made the whole tree light up:
+/// `undefined-symbol` on each table plus `unknown-table-or-field` on each field,
+/// with nothing explaining why. The most likely cause is a typo in the flag, so
+/// the useful answer is one warning naming it — not a hundred findings about
+/// correct code.
+#[test]
+fn a_schema_dir_with_no_df_files_warns_instead_of_flooding_findings() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("src").join("cust.p");
+    write(&file, "FIND FIRST Customer.\nDISPLAY Customer.CustNum.\n");
+    let empty_dir = tmp.path().join("schema");
+    fs::create_dir_all(&empty_dir).unwrap();
+
+    let run = check([
+        Path::new("--schema").as_os_str(),
+        empty_dir.as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    assert!(
+        run.stderr.contains("no .df files"),
+        "expected a warning naming the empty schema directory, got:\n{}",
+        run.stderr
+    );
+    assert!(
+        !run.stdout.contains("LINT0001"),
+        "a schema that did not load must not make every table undefined, got:\n{}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains("LINT0003"),
+        "nor every field unknown, got:\n{}",
+        run.stdout
+    );
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the file itself is clean. stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Preprocessing is on by default (R19)
 // ---------------------------------------------------------------------------
@@ -546,7 +691,7 @@ fn an_unresolvable_include_surfaces_preproc007_without_failing_the_gate() {
     ])
     .json();
     assert!(
-        json["preproc_diagnostics"]
+        json["preproc"]
             .as_array()
             .unwrap()
             .iter()
@@ -557,6 +702,46 @@ fn an_unresolvable_include_surfaces_preproc007_without_failing_the_gate() {
         json["diagnostics"].as_array().unwrap().is_empty(),
         "and stay out of the findings channel, got:\n{json}"
     );
+}
+
+/// Each `preproc` entry names the file it came from (D1).
+///
+/// Without a path, N files failing to resolve an include produced N entries a
+/// machine consumer could not tell apart — and the whole value of the channel is
+/// knowing *where* coverage was lost. The entries use the same shape as
+/// `diagnostics`, built by the same helper, so one deserializer serves both keys.
+#[test]
+fn preproc_entries_are_attributed_to_the_file_they_came_from() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("a-one.p"),
+        "{missing-one.i}\nMESSAGE \"a\".\n",
+    );
+    write(
+        &tmp.path().join("z-two.p"),
+        "{missing-two.i}\nMESSAGE \"z\".\n",
+    );
+
+    let json = check([Path::new("--json").as_os_str(), tmp.path().as_os_str()]).json();
+
+    let entries = json["preproc"].as_array().expect("preproc array");
+    assert_eq!(entries.len(), 2, "one per file, got:\n{json}");
+    let mut paths: Vec<&str> = entries
+        .iter()
+        .map(|d| d["path"].as_str().expect("each entry carries its path"))
+        .collect();
+    paths.sort_unstable();
+    assert!(
+        paths[0].ends_with("a-one.p") && paths[1].ends_with("z-two.p"),
+        "the two entries must be distinguishable, got {paths:?} in:\n{json}"
+    );
+    for entry in entries {
+        assert_eq!(entry["code"], "PREPROC007");
+        assert_eq!(
+            entry["source"], "preproc",
+            "same shape as a diagnostics entry, got:\n{json}"
+        );
+    }
 }
 
 #[test]

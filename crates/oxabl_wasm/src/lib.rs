@@ -33,7 +33,6 @@
 
 use oxabl::analyze::{CollectedDiagnostic, DiagnosticSource};
 use oxabl::common::SourceMap;
-use oxabl::style::StyleGuide;
 use oxabl::workspace::InMemoryFileSystem;
 use oxabl_pipeline::{FormatOutcome, FormatPipeline, LintPipeline, PipelineConfig, position};
 use serde::Serialize;
@@ -215,6 +214,14 @@ pub fn analyze_source(source: &str) -> String {
 /// Format one ABL file through the shared [`FormatPipeline`], using the same safe
 /// default style as the language server when no `oxabl.toml` is present.
 ///
+/// The style comes out of [`PipelineConfig::default`], the same value
+/// [`analyze_source`] configures itself from, rather than being fetched from
+/// `StyleGuide` directly. Reaching for the style guide's own default here would
+/// agree only *coincidentally*: two entry points of one client would be deriving
+/// their configuration from two places, and a change to what a default
+/// `PipelineConfig` means would move analysis and leave formatting behind. One
+/// derivation, so there is nothing to drift.
+///
 /// The wire shape has a single `error` field, so a refusal's bail-versus-panic
 /// distinction — which [`FormatOutcome`] keeps structural — collapses to its
 /// reason text *here*, at the transport boundary, not in the pipeline. On either
@@ -222,7 +229,7 @@ pub fn analyze_source(source: &str) -> String {
 /// `changed: false`; no arm ever returns partially formatted source.
 #[wasm_bindgen]
 pub fn format_source(source: &str) -> String {
-    let pipeline = FormatPipeline::new(StyleGuide::default_base());
+    let pipeline = FormatPipeline::new(PipelineConfig::default().style);
     let result = match pipeline.format(source) {
         FormatOutcome::Reformatted(formatted) => FormatResponse {
             source: formatted,
@@ -437,6 +444,8 @@ mod tests {
             self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
         };
 
+        use oxabl_pipeline::{FormatOutcome, FormatPipeline, PipelineConfig};
+
         use super::super::{analyze_source, format_source};
 
         /// Every diagnostic `analyze_source` reported, in the shared comparison
@@ -540,7 +549,13 @@ mod tests {
                         );
                         assert_eq!(response["source"], expected, "{}", fixture.name);
                     }
-                    ExpectedFormat::Refused => {
+                    // The browser wire shape collapses the refusal to its reason
+                    // text — a genuine capability gap, not a divergence: there
+                    // is no discriminant field to compare. What the table's kind
+                    // buys here is that the *reason* is the one the shared
+                    // pipeline produced for that kind, checked below against an
+                    // independent derivation.
+                    ExpectedFormat::Refused(_) => {
                         assert_eq!(response["changed"], false, "{}", fixture.name);
                         assert!(
                             response["error"].is_string(),
@@ -551,6 +566,89 @@ mod tests {
                         assert_eq!(response["source"], fixture.source, "{}", fixture.name);
                     }
                 }
+            }
+        }
+
+        /// The non-ASCII fixture's byte span reaches the wire, and the
+        /// line/column beside it is the **byte** column the shared helper derives.
+        ///
+        /// Only the bytes enter the full-table comparison, so the wire's derived
+        /// pair — the number the playground actually shows a user — is only
+        /// covered by a test like this one, on a source where counting characters
+        /// instead of bytes gives a different answer.
+        #[test]
+        fn the_non_ascii_fixture_reaches_the_wire_with_byte_positions() {
+            let fixture = fixtures::fixture(fixtures::NON_ASCII_FIXTURE);
+            assert!(fixture.browser_comparable());
+            let response: serde_json::Value =
+                serde_json::from_str(&analyze_source(fixture.source)).unwrap();
+            let rendered = &response["diagnostics"][0];
+
+            assert_eq!(rendered["start"]["byte"], fixture.diagnostics[0].start);
+            assert_eq!(rendered["end"]["byte"], fixture.diagnostics[0].end);
+            assert_eq!(rendered["start"]["line"], fixtures::NON_ASCII_LINE);
+            assert_eq!(
+                rendered["start"]["column"],
+                fixtures::NON_ASCII_BYTE_COLUMN,
+                "the browser reports SourceMap's byte column, got {rendered}"
+            );
+        }
+
+        /// A refusal's `error` text is the shared pipeline's own
+        /// [`NotFormatted::reason`](oxabl_pipeline::NotFormatted::reason), not a
+        /// message this client assembled.
+        ///
+        /// The wire shape has one `error` field, so the browser cannot carry the
+        /// [`NotFormattedKind`](oxabl_pipeline::NotFormattedKind) the table now
+        /// pins — that discriminant is genuinely unavailable here. Comparing the
+        /// text against the pipeline's own rendering is what recovers the claim:
+        /// a bail that regressed into a contained panic reports a different
+        /// reason, and this fails.
+        #[test]
+        fn a_refusal_reports_the_shared_pipelines_reason() {
+            let shared = FormatPipeline::new(PipelineConfig::default().style);
+            let mut refusals = 0;
+            for fixture in FIXTURES {
+                let Some(refusal) = shared.format(fixture.source).not_formatted().cloned() else {
+                    continue;
+                };
+                refusals += 1;
+                assert_eq!(
+                    formatted(fixture.source)["error"],
+                    serde_json::Value::String(refusal.reason()),
+                    "{}",
+                    fixture.name
+                );
+            }
+            assert!(refusals > 0, "the table must carry a refusal fixture");
+        }
+
+        /// The browser's format style is the shared default configuration's,
+        /// derived the same way rather than fetched from `StyleGuide` directly.
+        ///
+        /// The full-table comparison above already fails on any style difference
+        /// the drift fixture can *see*. This one is narrower on purpose: it runs
+        /// the same source through a `FormatPipeline` built from
+        /// `PipelineConfig::default().style` — a second, independent derivation —
+        /// and demands byte equality, so a browser that starts configuring
+        /// formatting from its own source of truth fails here by name instead of
+        /// waiting for a fixture whose bytes happen to disagree.
+        #[test]
+        fn the_format_style_comes_from_the_shared_default_config() {
+            let shared = FormatPipeline::new(PipelineConfig::default().style);
+            for fixture in FIXTURES {
+                let response = formatted(fixture.source);
+                let expected = match shared.format(fixture.source) {
+                    FormatOutcome::Reformatted(bytes) => bytes,
+                    FormatOutcome::Unchanged | FormatOutcome::DidNotFormat(_) => {
+                        fixture.source.to_string()
+                    }
+                };
+                assert_eq!(
+                    response["source"], expected,
+                    "the browser must format through the shared default style: {}",
+                    fixture.name
+                );
             }
         }
 

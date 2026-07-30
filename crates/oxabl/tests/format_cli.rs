@@ -347,6 +347,74 @@ fn workspace_style_discovered_and_cli_overrides_it() {
     );
 }
 
+/// `format` reads no schema and reports no schema problem (D2).
+///
+/// The formatter takes a style and nothing else, so a `.df` it cannot use is a
+/// fact it cannot act on: parsing every configured schema file per invocation
+/// bought nothing but a `warning: schema:` line the caller can do nothing about,
+/// on the command most likely to be run on save.
+#[test]
+fn format_does_no_schema_io_and_prints_no_schema_warning() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("oxabl.toml"),
+        "[workspace]\nname = \"t\"\n[workspace.schema]\nfiles = [\"absent.df\"]\n\
+         [workspace.style]\nindent_size = 2\n",
+    );
+    let file = root.join("a.p");
+    write(&file, MIS_INDENTED);
+
+    let out = oxabl()
+        .arg("format")
+        .arg(&file)
+        .arg("--stdout")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !stderr.contains("schema"),
+        "format must not report a schema problem it cannot act on, got:\n{stderr}"
+    );
+    // …and the style half of the same config still applies, so the schema-free
+    // path is a narrower resolution rather than no resolution.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "DO:\n  MESSAGE \"x\".\nEND.\n",
+        "[workspace.style] must still be honored. stderr:\n{stderr}"
+    );
+}
+
+/// `--style` short-circuits config discovery entirely (D2), so it works in a tree
+/// whose `oxabl.toml` cannot be parsed: the flag names a whole guide, which
+/// leaves nothing in the file for the run to need.
+#[test]
+fn style_flag_works_with_an_unparseable_config_present() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(&root.join("oxabl.toml"), "this is not valid toml {{{");
+    let file = root.join("a.p");
+    write(&file, MIS_INDENTED);
+
+    let out = oxabl()
+        .arg("format")
+        .arg(&file)
+        .arg("--stdout")
+        .arg("--style")
+        .arg("oestandards")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "stderr:\n{stderr}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), FORMATTED_4);
+    assert!(
+        !stderr.contains("oxabl.toml"),
+        "a config that is never read cannot be complained about, got:\n{stderr}"
+    );
+}
+
 #[test]
 fn check_and_stdout_conflict_is_usage_error() {
     let tmp = TempDir::new().unwrap();

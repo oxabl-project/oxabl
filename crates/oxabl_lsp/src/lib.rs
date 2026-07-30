@@ -137,6 +137,10 @@ struct Server<'c> {
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
+    /// Bumped every time a configuration is installed. Workers carry the
+    /// generation they read so a result computed under a configuration the user
+    /// has since replaced is not published (see [`Server::handle_result`]).
+    config_generation: u64,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -149,6 +153,17 @@ struct ComputeResult {
     /// `None` when the computation produced no trustworthy set (cancelled, or a
     /// contained panic) — see [`analyze_guarded`].
     dependencies: Option<Vec<PathBuf>>,
+    /// Whether the absent halves above come from a **contained panic** rather
+    /// than a cancellation. The two are otherwise indistinguishable at the
+    /// receiving end, and they want opposite handling: a cancellation is a race
+    /// worth retrying, a panic is deterministic in the buffer's text and
+    /// retrying it would spin forever (see [`Server::handle_result`]).
+    panicked: bool,
+    /// The [`Server::config_generation`] the worker read. A result whose
+    /// generation has since moved was computed under a configuration the user has
+    /// replaced, and publishing it would show one round of diagnostics under the
+    /// old severities.
+    config_generation: u64,
 }
 
 impl<'c> Server<'c> {
@@ -173,6 +188,7 @@ impl<'c> Server<'c> {
             formatter,
             dependencies: HashMap::new(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
+            config_generation: 0,
         }
     }
 
@@ -250,18 +266,20 @@ impl<'c> Server<'c> {
             let version = doc.version;
             let snapshot = self.db.clone();
             let schema = self.schema;
+            let config_generation = self.config_generation;
             let tx = result_tx.clone();
             std::thread::spawn(move || {
                 // The guard is inside `analyze_guarded`, so the send below is
                 // reached on every path — a panic must not leave this buffer
                 // waiting forever on a result that never arrives (R8).
-                let (diagnostics, dependencies) =
-                    analyze_guarded(&snapshot, buffer, schema, uri.as_str());
+                let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
                 let _ = tx.send(ComputeResult {
                     uri,
                     version,
-                    diagnostics,
-                    dependencies,
+                    diagnostics: analysis.diagnostics,
+                    dependencies: analysis.dependencies,
+                    panicked: analysis.panicked,
+                    config_generation,
                 });
             });
         }
@@ -269,15 +287,56 @@ impl<'c> Server<'c> {
 
     /// Publish a completed computation, unless it was cancelled (`None`) or its
     /// buffer version has since been superseded by a newer edit (KTD7).
+    ///
+    /// A **cancelled** result for a buffer that is still open at the version the
+    /// worker read is the one case that must not simply be dropped.
+    /// [`salsa::Cancelled`] is global — a write to *any* buffer's input flags
+    /// every live snapshot — so editing file A cancels file B's in-flight
+    /// computation even though B never changed. B's timer was consumed when its
+    /// worker was spawned and B's own version is unchanged, so nothing would ever
+    /// re-fire it: B would keep displaying pre-edit diagnostics until the user
+    /// touched it again. Re-arming the debounce here is what makes cancellation
+    /// the optimization it is documented to be rather than lost work.
+    ///
+    /// A *contained panic* arrives in the same shape (absent diagnostics) and
+    /// must **not** be retried: it is deterministic in the buffer's text, so a
+    /// reschedule would spin the file at the debounce interval forever.
+    ///
+    /// A result computed under a **superseded configuration** is dropped the same
+    /// way and retried: a worker that finished microseconds before an
+    /// `oxabl.toml` change would otherwise publish one round of diagnostics under
+    /// the severities the user just replaced. The buffer version cannot catch this
+    /// — the text did not change, only the configuration did. The
+    /// never-retry-a-panic rule applies to that reschedule too, since the
+    /// generation gate is reached before the absent-diagnostics one.
     fn handle_result(&mut self, res: ComputeResult) {
         match self.documents.get(&res.uri) {
             None => return,                                    // buffer closed
             Some(doc) if doc.version != res.version => return, // superseded by a newer edit
             Some(_) => {}
         }
+        if res.config_generation != self.config_generation {
+            // Computed under a configuration that is no longer current. The
+            // watcher path already re-triggers every buffer, but this arrives on
+            // the `ensure_config` path too (a first anchor resolved while an
+            // earlier buffer's worker was in flight), where nothing else would.
+            //
+            // A panic is never rescheduled, here as below: this gate runs first, so
+            // without the check a contained panic that happened to land under a
+            // superseded generation would get the one retry `panicked` exists to
+            // prevent.
+            if !res.panicked {
+                self.debouncer.schedule(res.uri, std::time::Instant::now());
+            }
+            return;
+        }
         self.record_dependencies(&res.uri, res.dependencies);
         let Some(collected) = res.diagnostics else {
-            return; // cancelled snapshot read
+            // Cancelled snapshot read: recompute, or this buffer goes stale.
+            if !res.panicked {
+                self.debouncer.schedule(res.uri, std::time::Instant::now());
+            }
+            return;
         };
         let Some(doc) = self.documents.get(&res.uri) else {
             return;
@@ -359,23 +418,35 @@ impl<'c> Server<'c> {
         }
     }
 
-    /// Resolve configuration from the first opened document's workspace (once),
-    /// establishing include paths, the `[lint]` severity surface, the style, and
-    /// the schema so include-resident symbols resolve (R9) and schema-gated
-    /// rules go live (R10).
+    /// Resolve configuration from the first opened document **that has a
+    /// filesystem path** (once), establishing include paths, the `[lint]`
+    /// severity surface, the style, and the schema so include-resident symbols
+    /// resolve (R9) and schema-gated rules go live (R10).
     ///
     /// One resolution feeds every surface: diagnostics *and* formatting read the
     /// same [`PipelineConfig`], so the server no longer has a second config path
     /// that could disagree with the first (KTD3).
+    ///
+    /// **The one-shot is spent only when an anchor is actually derived.** A
+    /// document with no path — a scratch `untitled:` buffer, a VS Code `git:`
+    /// diff view — is not a workspace, and marking the resolution done for one
+    /// used to leave the whole session on defaults: no severities, no include
+    /// paths, and no configured formatter style, with nothing able to recover it
+    /// (`handle_watched_files` needs the anchor this would never set). Leaving the
+    /// flag unset costs one `uri_to_path` per subsequent open until a real file
+    /// arrives, and that file then anchors the session normally.
     fn ensure_config(&mut self, uri: &Uri) {
         if self.config_resolved {
             return;
         }
+        let Some(path) = uri_to_path(uri) else {
+            return;
+        };
         self.config_resolved = true;
-        if let Some(path) = uri_to_path(uri) {
-            self.workspace_anchor = Some(path.clone());
-            self.resolve_config_from(&path);
-        }
+        self.workspace_anchor = Some(path.clone());
+        // Installs both halves of the resolution: the db config the queries read
+        // and the rebuilt format pipeline (`install_config`).
+        self.resolve_config_from(&path);
         self.register_file_watchers();
     }
 
@@ -429,6 +500,9 @@ impl<'c> Server<'c> {
     /// pipeline from its style. Callers must re-trigger affected buffers
     /// afterwards (the db configuration is not a salsa input, R17).
     fn install_config(&mut self, resolved: PipelineConfig) {
+        // Every install moves the generation, so any worker still running against
+        // the previous configuration is identifiable when its result lands.
+        self.config_generation = self.config_generation.wrapping_add(1);
         self.formatter = FormatPipeline::new(resolved.style.clone());
         self.db.set_config(AnalysisConfig {
             fs: std::sync::Arc::new(RealFileSystem),
@@ -477,10 +551,17 @@ impl<'c> Server<'c> {
         let snapshot = self.db.clone();
         // Guarded (R8): this runs on the main loop, so an unguarded panic here
         // takes the whole server down.
-        let (collected, dependencies) =
-            analyze_guarded(&snapshot, buffer, self.schema, uri.as_str());
-        self.record_dependencies(uri, dependencies);
-        let Some(collected) = collected else {
+        let analysis = analyze_guarded(&snapshot, buffer, self.schema, uri.as_str());
+        self.record_dependencies(uri, analysis.dependencies);
+        let Some(collected) = analysis.diagnostics else {
+            // A cancellation is not expected on this path (nothing writes to the
+            // db while the main loop is inside this call), but if one ever does
+            // arrive the open would otherwise publish nothing at all and no timer
+            // would remain — the same stale-forever shape as in `handle_result`.
+            if !analysis.panicked {
+                self.debouncer
+                    .schedule(uri.clone(), std::time::Instant::now());
+            }
             return;
         };
         if let Some(doc) = self.documents.get(uri) {
@@ -697,10 +778,7 @@ pub(crate) fn analyze_guarded(
     buffer: Buffer,
     schema: SchemaHandle,
     label: &str,
-) -> (
-    Option<oxabl_analyze::CollectedDiagnostics>,
-    Option<Vec<PathBuf>>,
-) {
+) -> Analysis {
     let computed = catch_panic(|| {
         let diagnostics = compute_diagnostics(snapshot, buffer, schema);
         // Dependency paths come from the (now-warm) expansion memo.
@@ -708,12 +786,32 @@ pub(crate) fn analyze_guarded(
         (diagnostics, dependencies)
     });
     match computed {
-        Ok(pair) => pair,
+        Ok((diagnostics, dependencies)) => Analysis {
+            diagnostics,
+            dependencies,
+            panicked: false,
+        },
         Err(panic) => {
             eprintln!("oxabl-lsp: analysis panicked for {label}: {panic}");
-            (None, None)
+            Analysis {
+                diagnostics: None,
+                dependencies: None,
+                panicked: true,
+            }
         }
     }
+}
+
+/// The outcome of one [`analyze_guarded`] call.
+///
+/// The two `Option`s carry the "no trustworthy answer" contract described above;
+/// `panicked` is what separates the two ways of having no answer. Client-visible
+/// behavior does not distinguish them, but the server's *scheduling* must: a
+/// cancelled computation is worth re-running, a panicked one is not.
+pub(crate) struct Analysis {
+    pub(crate) diagnostics: Option<oxabl_analyze::CollectedDiagnostics>,
+    pub(crate) dependencies: Option<Vec<PathBuf>>,
+    pub(crate) panicked: bool,
 }
 
 /// Best-effort conversion of a `file:` URI to a filesystem path. Returns `None`
@@ -721,13 +819,51 @@ pub(crate) fn analyze_guarded(
 ///
 /// `pub(crate)` so the formatting handler resolves URIs the same way the
 /// watcher/`didOpen` code does, rather than hand-rolling a second decoder
-/// (KTD2). This is a bare `file://` strip with no percent-decoding: a
-/// `%`-encoded path simply fails to convert and the caller falls back safely.
+/// (KTD2).
+///
+/// The path component is percent-**decoded**: every real client escapes a space
+/// as `%20`, and a path with a space in it is ordinary. Leaving it encoded made
+/// such a document fail to convert, which cost the whole session its
+/// configuration anchor (see [`Server::ensure_config`]) and made
+/// `buffers_depending_on` unable to match a watched include under such a
+/// directory.
 pub(crate) fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let s = uri.as_str();
     let rest = s.strip_prefix("file://")?;
     // `file:///abs/path` → the authority is empty, leaving a leading `/abs`.
-    Some(PathBuf::from(rest))
+    Some(PathBuf::from(percent_decode(rest)?))
+}
+
+/// Percent-decode a URI path component.
+///
+/// A `%` not followed by two hex digits is kept literally rather than rejected:
+/// the caller wants a best-effort path, and a lone `%` is a legal character in a
+/// filename. `None` only when the decoded bytes are not valid UTF-8 — there is no
+/// path to hand back in that case, and the callers all treat an unconvertible URI
+/// as "no workspace here".
+fn percent_decode(s: &str) -> Option<String> {
+    if !s.contains('%') {
+        // The overwhelmingly common case: no allocation beyond the copy.
+        return Some(s.to_string());
+    }
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16)),
+                bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16)),
+            )
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -768,6 +904,8 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            panicked: false,
+            config_generation: 0, // no configuration is resolved in this test
         });
 
         assert_eq!(
@@ -801,5 +939,220 @@ mod tests {
             server.buffers_depending_on(&include).is_empty(),
             "an empty set is a real answer and must take effect"
         );
+    }
+
+    /// Salsa cancellation is **global**: a write to buffer A's input flags every
+    /// live snapshot, so an edit in A cancels B's in-flight computation even
+    /// though B did not change. B's timer was consumed when its worker was
+    /// spawned, so without an explicit reschedule the cancelled result is simply
+    /// dropped and B keeps showing pre-edit diagnostics until it is touched
+    /// again. The cancelled arm must re-arm the timer.
+    #[test]
+    fn a_cancelled_computation_reschedules_the_recompute() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+        assert!(server.debouncer.next_deadline().is_none());
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: false,
+            config_generation: 0, // no configuration is resolved in this test
+        });
+
+        assert!(
+            server.debouncer.next_deadline().is_some(),
+            "a cancelled computation must re-arm the buffer's debounce timer"
+        );
+    }
+
+    /// The other side of that arm: a *contained panic* also arrives as absent
+    /// diagnostics, and rescheduling it would spin the file forever — a panic is
+    /// deterministic in the buffer's text, so every retry panics again. Only a
+    /// cancellation is retried.
+    #[test]
+    fn a_contained_panic_does_not_reschedule() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: true,
+            config_generation: 0, // no configuration is resolved in this test
+        });
+
+        assert!(
+            server.debouncer.next_deadline().is_none(),
+            "a contained panic must not be retried in a loop"
+        );
+    }
+
+    /// A worker that finished just *before* an `oxabl.toml` change would
+    /// otherwise publish one set of diagnostics computed under the old
+    /// configuration — severities from the file the user just rewrote. The result
+    /// carries the generation it was computed under and is dropped when that has
+    /// moved, then recomputed under the current one.
+    #[test]
+    fn a_result_from_a_superseded_config_is_dropped_and_retried() {
+        let (connection, client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        let stale = server.config_generation;
+        server.install_config(PipelineConfig::default());
+        assert_ne!(
+            stale, server.config_generation,
+            "installing a configuration must move the generation"
+        );
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
+            dependencies: None,
+            panicked: false,
+            config_generation: stale,
+        });
+
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "a result from the old configuration must not be published"
+        );
+        assert!(
+            server.debouncer.next_deadline().is_some(),
+            "and the buffer must be recomputed under the new configuration"
+        );
+    }
+
+    /// The two rules meet here: the generation gate is reached *before* the
+    /// absent-diagnostics arm, so a contained panic that happened to land under a
+    /// superseded generation was rescheduled by the gate — the one retry `panicked`
+    /// exists to prevent, since the panic is deterministic in the buffer's text and
+    /// the retry panics again. Dropped, not retried.
+    #[test]
+    fn a_panic_from_a_superseded_config_is_dropped_and_not_retried() {
+        let (connection, client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        let stale = server.config_generation;
+        server.install_config(PipelineConfig::default());
+        assert_ne!(stale, server.config_generation);
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: true,
+            config_generation: stale,
+        });
+
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "there is nothing to publish"
+        );
+        assert!(
+            server.debouncer.next_deadline().is_none(),
+            "and a panic must not be retried, whichever gate drops it"
+        );
+    }
+
+    /// The gate must not swallow the ordinary case: a result computed under the
+    /// current generation publishes.
+    #[test]
+    fn a_current_generation_result_publishes() {
+        let (connection, client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
+            dependencies: None,
+            panicked: false,
+            config_generation: server.config_generation,
+        });
+
+        let message = client.receiver.try_recv().expect("a publish was sent");
+        match message {
+            Message::Notification(n) => assert_eq!(n.method, "textDocument/publishDiagnostics"),
+            other => panic!("expected a publish, got {other:?}"),
+        }
+    }
+
+    /// Percent-escapes are how every real client spells a path with a space, and
+    /// the decoded path is the one that exists on disk. An undecoded one anchored
+    /// nothing: no `oxabl.toml` discovery, and no watcher match for an include
+    /// under such a directory.
+    #[test]
+    fn uri_to_path_decodes_percent_escapes() {
+        let uri = Uri::from_str("file:///home/dev/my%20project/main.p").unwrap();
+        assert_eq!(
+            uri_to_path(&uri),
+            Some(PathBuf::from("/home/dev/my project/main.p"))
+        );
+
+        // A literal `%` in a filename round-trips through its own escape.
+        let uri = Uri::from_str("file:///w/100%25.p").unwrap();
+        assert_eq!(uri_to_path(&uri), Some(PathBuf::from("/w/100%.p")));
+
+        // A `%` that is not an escape is kept, not rejected: best-effort, and a
+        // bare `%` is a legal filename character. (Asserted on the decoder
+        // directly — `Uri` will not parse an invalid octet in the first place.)
+        assert_eq!(percent_decode("/w/a%zz.p").as_deref(), Some("/w/a%zz.p"));
+        assert_eq!(
+            percent_decode("/w/trailing%").as_deref(),
+            Some("/w/trailing%")
+        );
+
+        // Unescaped paths are unaffected.
+        let uri = Uri::from_str("file:///w/plain.p").unwrap();
+        assert_eq!(uri_to_path(&uri), Some(PathBuf::from("/w/plain.p")));
+    }
+
+    /// A document with no filesystem path yields no anchor, which is what makes
+    /// leaving `config_resolved` unset the right behavior for it.
+    #[test]
+    fn uri_to_path_rejects_non_file_schemes() {
+        for s in ["untitled:Untitled-1", "git:/w/main.p?ref%3Dhead"] {
+            let uri = Uri::from_str(s).unwrap();
+            assert_eq!(uri_to_path(&uri), None, "{s} must not yield a path");
+        }
+    }
+
+    /// A superseded result must not reschedule either: the edit that superseded
+    /// it already scheduled its own recompute, and re-arming here would only
+    /// duplicate that timer.
+    #[test]
+    fn a_superseded_result_does_not_reschedule() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 2, "MESSAGE \"hi\".\n");
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: false,
+            config_generation: 0, // no configuration is resolved in this test
+        });
+
+        assert!(server.debouncer.next_deadline().is_none());
     }
 }

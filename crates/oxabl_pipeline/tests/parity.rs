@@ -17,10 +17,14 @@
 //! All fixtures are synthetic ABL and live in the shared table, behind
 //! `oxabl_pipeline`'s `test-support` feature.
 
+use oxabl_common::SourceMap;
 use oxabl_pipeline::fixtures::{
     self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
 };
-use oxabl_pipeline::{FormatPipeline, LintPipeline, LintResult, PipelineConfig};
+use oxabl_pipeline::{
+    FormatPipeline, LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig,
+    position,
+};
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
 /// A filesystem with nothing in it — the include fixture is *unresolvable* on
@@ -74,6 +78,16 @@ fn the_shared_table_matches_the_format_pipeline() {
         assert_eq!(
             outcome.not_formatted().is_some(),
             refused,
+            "{}",
+            fixture.name
+        );
+
+        // The *kind* of refusal, not merely that one happened: a bail that
+        // regressed into a contained panic is a defect the table must not
+        // accept as parity.
+        assert_eq!(
+            outcome.not_formatted().map(NotFormatted::kind),
+            fixture.expected_refusal_kind(),
             "{}",
             fixture.name
         );
@@ -293,8 +307,14 @@ fn the_table_covers_every_rule_a_parse_error_a_clean_file_and_format_drift() {
     assert!(
         FIXTURES
             .iter()
-            .any(|f| matches!(f.format, ExpectedFormat::Refused)),
-        "no format-refusal fixture"
+            .any(|f| f.expected_refusal_kind() == Some(NotFormattedKind::Bail)),
+        "no format-refusal fixture the formatter declines on purpose"
+    );
+
+    assert!(
+        FIXTURES.iter().any(|f| !f.source.is_ascii()),
+        "no fixture exercises non-ASCII source, so byte-versus-character \
+         confusion would be invisible to every leg"
     );
 
     let mut names: Vec<&str> = FIXTURES.iter().map(|f| f.name).collect();
@@ -302,6 +322,77 @@ fn the_table_covers_every_rule_a_parse_error_a_clean_file_and_format_drift() {
     let unique = names.len();
     names.dedup();
     assert_eq!(unique, names.len(), "fixture names must be unique");
+}
+
+/// The two ways a client can arrive at "no `oxabl.toml`" are the same value.
+///
+/// [`fixtures::canonical_config`] resolves — which is what the CLI and the
+/// language server do — while the browser constructs [`PipelineConfig::default`]
+/// in-process. The parity table is written against the first, so if the second
+/// drifted from it, every browser-leg comparison would be asserting a different
+/// question and the table would still look right. That drift is exactly the
+/// defect the suite caught on its first run, and this is the assertion that keeps
+/// the two derivations pinned to each other rather than only to prose.
+#[test]
+fn the_resolved_and_in_process_defaults_are_one_configuration() {
+    let resolved = fixtures::canonical_config();
+    let in_process = PipelineConfig::default();
+
+    assert_eq!(
+        resolved.lint_severities, in_process.lint_severities,
+        "two default severity tables have been reintroduced"
+    );
+    assert_eq!(
+        resolved.style.to_toml().unwrap(),
+        in_process.style.to_toml().unwrap(),
+        "the default style must not depend on how the config was built"
+    );
+    assert_eq!(resolved.include_paths, in_process.include_paths);
+    assert_eq!(resolved.schema_loaded, in_process.schema_loaded);
+    assert!(!in_process.schema_loaded);
+}
+
+// ---------------------------------------------------------------------------
+// The non-ASCII case
+// ---------------------------------------------------------------------------
+
+/// The non-ASCII fixture's byte offsets and character offsets really do disagree,
+/// and the shared position helper derives the *byte* column.
+///
+/// Two claims, both needed. The first is about the fixture: if the source were
+/// quietly edited back to ASCII, or the constants drifted onto each other, the
+/// row would still pass every other test in the suite while testing nothing —
+/// which is the state the table was in before this fixture existed. The second is
+/// about [`position`](oxabl_pipeline::position), the one derivation the
+/// byte-offset clients share: its convention is `SourceMap`'s 1-based byte
+/// column, and each client asserts that same number through its own surface.
+#[test]
+fn the_non_ascii_fixture_distinguishes_bytes_from_characters() {
+    let fixture = fixtures::fixture(fixtures::NON_ASCII_FIXTURE);
+    let source = fixture.source;
+    assert!(
+        !source.is_ascii(),
+        "the fixture that exercises encoding must not be ASCII"
+    );
+    assert_ne!(
+        fixtures::NON_ASCII_BYTE_COLUMN,
+        fixtures::NON_ASCII_CHARACTER_COLUMN + 1,
+        "a byte column and a 0-based character column that differ only by the \
+         indexing base would make every leg's assertion vacuous"
+    );
+
+    let expected = fixture.diagnostics[0];
+    let map = SourceMap::new(source);
+    let resolved = position::resolve_offsets(&map, expected.start, expected.end);
+    assert_eq!(resolved.start.line, fixtures::NON_ASCII_LINE);
+    assert_eq!(resolved.start.column, fixtures::NON_ASCII_BYTE_COLUMN);
+
+    // And the span really does cover the identifier, not a neighbouring slice
+    // shifted by the multi-byte characters ahead of it.
+    assert_eq!(
+        &source[expected.start as usize..expected.end as usize],
+        "unusedTwo"
+    );
 }
 
 /// The expected byte spans really do point at the substring they claim to, so a
@@ -315,6 +406,16 @@ fn expected_spans_are_inside_their_source_and_land_on_real_text() {
             assert!(
                 end <= fixture.source.len() && start < end,
                 "fixture `{}`: {} has an impossible span {start}..{end}",
+                fixture.name,
+                expected.code
+            );
+            // Byte offsets, so a span may not land mid-character. On the
+            // non-ASCII fixture this is the difference between a real offset and
+            // one a character count produced; stated explicitly because the slice
+            // below would otherwise report it as an unexplained panic.
+            assert!(
+                fixture.source.is_char_boundary(start) && fixture.source.is_char_boundary(end),
+                "fixture `{}`: {}'s span {start}..{end} splits a character",
                 fixture.name,
                 expected.code
             );
