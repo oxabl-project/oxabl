@@ -298,28 +298,27 @@ fn surface_preproc_diagnostics(
     loud
 }
 
-/// Surface loud, root-origin preprocessor diagnostics from the shared
-/// collector to stderr via [`render_diagnostics`], and return them for the
-/// `analyze` JSON channel.
+/// Surface loud, root-origin preprocessor diagnostics from the shared collector
+/// to stderr via [`render_diagnostics`].
 ///
 /// The collector already filtered to the loud set and dropped include-origin
 /// diagnostics (R8), so every entry here is root-relative (root [`FileId`] is
-/// `1`, matching [`collect_with_model`]) and gets a concrete position + snippet.
-fn surface_collected_preproc(
-    path: &Path,
-    source: &str,
-    collected: &CollectedDiagnostics,
-) -> Vec<Diagnostic> {
+/// [`ROOT_FILE_ID`]) and gets a concrete position + snippet.
+///
+/// The machine-readable side is built separately by each caller from the same
+/// `collected` set, because the two clients wrap the rows differently: `check`
+/// walks a tree and must attribute each row to its file, while `analyze` is
+/// single-file and its envelope names the path once.
+fn surface_collected_preproc(path: &Path, source: &str, collected: &CollectedDiagnostics) {
     let loud: Vec<Diagnostic> = collected
         .by_source(oxabl_analyze::DiagnosticSource::Preproc)
         .map(|c| c.diagnostic.clone())
         .collect();
     if loud.is_empty() {
-        return loud;
+        return;
     }
-    let resolver = SourceResolver::new(FileId::new(1), path.display().to_string(), source);
+    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), source);
     eprint!("{}", render_diagnostics(&loud, &resolver));
-    loud
 }
 
 /// Report how many symbols the count-gated lint rules could not fully judge,
@@ -622,9 +621,11 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 /// `version` is bumped when a key's meaning changes, so a consumer can pin. The
 /// remaining keys are deliberately *not* findings:
 ///
-/// * `preproc_diagnostics` — the loud `PREPROC007`-family coverage warnings,
-///   same channel and same shape `analyze` gives them. They never move the exit
-///   code.
+/// * `preproc` — the loud `PREPROC007`-family coverage warnings, same channel
+///   and same key name `analyze`'s envelope gives them. They never move the exit
+///   code. Rows carry a `path` like the findings do (D1): `check` walks a tree,
+///   and without one, N files missing the same include produced N entries a
+///   consumer could not tell apart.
 /// * `unjudged_symbols` — the count-gated rules' coverage note (R26). Also never
 ///   moves the exit code.
 /// * `failures` — per-file internal failures (an unreadable file, or a contained
@@ -644,7 +645,7 @@ struct CheckJsonReport {
     /// Whether the format channel ran at all (`false` under `--no-format`).
     format_enabled: bool,
     format: CheckJsonFormat,
-    preproc_diagnostics: Vec<Diagnostic>,
+    preproc: Vec<CheckJsonDiagnostic>,
     unjudged_symbols: usize,
     failures: Vec<CheckJsonFailure>,
 }
@@ -809,7 +810,7 @@ fn run_check(
     let format = FormatPipeline::new(config.style.clone());
 
     let mut diagnostics: Vec<CheckJsonDiagnostic> = Vec::new();
-    let mut preproc_diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut preproc: Vec<CheckJsonDiagnostic> = Vec::new();
     let mut failures: Vec<CheckJsonFailure> = Vec::new();
     let mut drifted: Vec<String> = Vec::new();
     let mut unjudged = 0usize;
@@ -844,11 +845,18 @@ fn run_check(
             // same helper `analyze` uses, so the two cannot drift. They are
             // coverage warnings, not findings, and never move the exit code: an
             // elided include still parses.
-            preproc_diagnostics.extend(surface_collected_preproc(
-                file,
-                &source,
-                result.diagnostics(),
-            ));
+            surface_collected_preproc(file, &source, result.diagnostics());
+            // Machine-readable, through the *same* row builder the findings use
+            // (D1): an entry names its file, so two files losing coverage on
+            // different includes are two distinguishable entries.
+            {
+                let map = SourceMap::new(&source);
+                preproc.extend(
+                    result
+                        .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                        .map(|c| check_json_diagnostic(&display, &map, c)),
+                );
+            }
 
             // `--no-lint` is a **filter on the reported set**, exactly as it is
             // for `analyze`: the lint-sourced entries go, the parse and semantic
@@ -914,7 +922,9 @@ fn run_check(
 
     if json_output {
         let report = CheckJsonReport {
-            version: 1,
+            // 2: `preproc_diagnostics` became `preproc`, matching `analyze`'s
+            // envelope, and its rows gained a `path` (D1).
+            version: 2,
             files_checked: files.len(),
             lint_enabled: !no_lint,
             diagnostics,
@@ -923,7 +933,7 @@ fn run_check(
                 drifted_count: drifted.len(),
                 drifted,
             },
-            preproc_diagnostics,
+            preproc,
             unjudged_symbols: unjudged,
             failures,
         };

@@ -308,7 +308,7 @@ fn json_carries_two_findings_keys_and_span_anchored_lint_entries() {
     assert_eq!(run.code, Some(1));
 
     let v = run.json();
-    assert_eq!(v["version"], 1);
+    assert_eq!(v["version"], 2, "bumped when a key's meaning changes (D1)");
     assert_eq!(v["files_checked"], 2);
     assert_eq!(v["lint_enabled"], true);
     assert_eq!(v["format_enabled"], true);
@@ -650,7 +650,7 @@ fn an_unresolvable_include_surfaces_preproc007_without_failing_the_gate() {
     ])
     .json();
     assert!(
-        json["preproc_diagnostics"]
+        json["preproc"]
             .as_array()
             .unwrap()
             .iter()
@@ -661,6 +661,46 @@ fn an_unresolvable_include_surfaces_preproc007_without_failing_the_gate() {
         json["diagnostics"].as_array().unwrap().is_empty(),
         "and stay out of the findings channel, got:\n{json}"
     );
+}
+
+/// Each `preproc` entry names the file it came from (D1).
+///
+/// Without a path, N files failing to resolve an include produced N entries a
+/// machine consumer could not tell apart — and the whole value of the channel is
+/// knowing *where* coverage was lost. The entries use the same shape as
+/// `diagnostics`, built by the same helper, so one deserializer serves both keys.
+#[test]
+fn preproc_entries_are_attributed_to_the_file_they_came_from() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("a-one.p"),
+        "{missing-one.i}\nMESSAGE \"a\".\n",
+    );
+    write(
+        &tmp.path().join("z-two.p"),
+        "{missing-two.i}\nMESSAGE \"z\".\n",
+    );
+
+    let json = check([Path::new("--json").as_os_str(), tmp.path().as_os_str()]).json();
+
+    let entries = json["preproc"].as_array().expect("preproc array");
+    assert_eq!(entries.len(), 2, "one per file, got:\n{json}");
+    let mut paths: Vec<&str> = entries
+        .iter()
+        .map(|d| d["path"].as_str().expect("each entry carries its path"))
+        .collect();
+    paths.sort_unstable();
+    assert!(
+        paths[0].ends_with("a-one.p") && paths[1].ends_with("z-two.p"),
+        "the two entries must be distinguishable, got {paths:?} in:\n{json}"
+    );
+    for entry in entries {
+        assert_eq!(entry["code"], "PREPROC007");
+        assert_eq!(
+            entry["source"], "preproc",
+            "same shape as a diagnostics entry, got:\n{json}"
+        );
+    }
 }
 
 #[test]
