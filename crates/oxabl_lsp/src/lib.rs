@@ -383,23 +383,35 @@ impl<'c> Server<'c> {
         }
     }
 
-    /// Resolve configuration from the first opened document's workspace (once),
-    /// establishing include paths, the `[lint]` severity surface, the style, and
-    /// the schema so include-resident symbols resolve (R9) and schema-gated
-    /// rules go live (R10).
+    /// Resolve configuration from the first opened document **that has a
+    /// filesystem path** (once), establishing include paths, the `[lint]`
+    /// severity surface, the style, and the schema so include-resident symbols
+    /// resolve (R9) and schema-gated rules go live (R10).
     ///
     /// One resolution feeds every surface: diagnostics *and* formatting read the
     /// same [`PipelineConfig`], so the server no longer has a second config path
     /// that could disagree with the first (KTD3).
+    ///
+    /// **The one-shot is spent only when an anchor is actually derived.** A
+    /// document with no path — a scratch `untitled:` buffer, a VS Code `git:`
+    /// diff view — is not a workspace, and marking the resolution done for one
+    /// used to leave the whole session on defaults: no severities, no include
+    /// paths, and no configured formatter style, with nothing able to recover it
+    /// (`handle_watched_files` needs the anchor this would never set). Leaving the
+    /// flag unset costs one `uri_to_path` per subsequent open until a real file
+    /// arrives, and that file then anchors the session normally.
     fn ensure_config(&mut self, uri: &Uri) {
         if self.config_resolved {
             return;
         }
+        let Some(path) = uri_to_path(uri) else {
+            return;
+        };
         self.config_resolved = true;
-        if let Some(path) = uri_to_path(uri) {
-            self.workspace_anchor = Some(path.clone());
-            self.resolve_config_from(&path);
-        }
+        self.workspace_anchor = Some(path.clone());
+        // Installs both halves of the resolution: the db config the queries read
+        // and the rebuilt format pipeline (`install_config`).
+        self.resolve_config_from(&path);
         self.register_file_watchers();
     }
 
@@ -769,13 +781,51 @@ pub(crate) struct Analysis {
 ///
 /// `pub(crate)` so the formatting handler resolves URIs the same way the
 /// watcher/`didOpen` code does, rather than hand-rolling a second decoder
-/// (KTD2). This is a bare `file://` strip with no percent-decoding: a
-/// `%`-encoded path simply fails to convert and the caller falls back safely.
+/// (KTD2).
+///
+/// The path component is percent-**decoded**: every real client escapes a space
+/// as `%20`, and a path with a space in it is ordinary. Leaving it encoded made
+/// such a document fail to convert, which cost the whole session its
+/// configuration anchor (see [`Server::ensure_config`]) and made
+/// `buffers_depending_on` unable to match a watched include under such a
+/// directory.
 pub(crate) fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let s = uri.as_str();
     let rest = s.strip_prefix("file://")?;
     // `file:///abs/path` → the authority is empty, leaving a leading `/abs`.
-    Some(PathBuf::from(rest))
+    Some(PathBuf::from(percent_decode(rest)?))
+}
+
+/// Percent-decode a URI path component.
+///
+/// A `%` not followed by two hex digits is kept literally rather than rejected:
+/// the caller wants a best-effort path, and a lone `%` is a legal character in a
+/// filename. `None` only when the decoded bytes are not valid UTF-8 — there is no
+/// path to hand back in that case, and the callers all treat an unconvertible URI
+/// as "no workspace here".
+fn percent_decode(s: &str) -> Option<String> {
+    if !s.contains('%') {
+        // The overwhelmingly common case: no allocation beyond the copy.
+        return Some(s.to_string());
+    }
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16)),
+                bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16)),
+            )
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -903,6 +953,46 @@ mod tests {
             server.debouncer.next_deadline().is_none(),
             "a contained panic must not be retried in a loop"
         );
+    }
+
+    /// Percent-escapes are how every real client spells a path with a space, and
+    /// the decoded path is the one that exists on disk. An undecoded one anchored
+    /// nothing: no `oxabl.toml` discovery, and no watcher match for an include
+    /// under such a directory.
+    #[test]
+    fn uri_to_path_decodes_percent_escapes() {
+        let uri = Uri::from_str("file:///home/dev/my%20project/main.p").unwrap();
+        assert_eq!(
+            uri_to_path(&uri),
+            Some(PathBuf::from("/home/dev/my project/main.p"))
+        );
+
+        // A literal `%` in a filename round-trips through its own escape.
+        let uri = Uri::from_str("file:///w/100%25.p").unwrap();
+        assert_eq!(uri_to_path(&uri), Some(PathBuf::from("/w/100%.p")));
+
+        // A `%` that is not an escape is kept, not rejected: best-effort, and a
+        // bare `%` is a legal filename character. (Asserted on the decoder
+        // directly — `Uri` will not parse an invalid octet in the first place.)
+        assert_eq!(percent_decode("/w/a%zz.p").as_deref(), Some("/w/a%zz.p"));
+        assert_eq!(
+            percent_decode("/w/trailing%").as_deref(),
+            Some("/w/trailing%")
+        );
+
+        // Unescaped paths are unaffected.
+        let uri = Uri::from_str("file:///w/plain.p").unwrap();
+        assert_eq!(uri_to_path(&uri), Some(PathBuf::from("/w/plain.p")));
+    }
+
+    /// A document with no filesystem path yields no anchor, which is what makes
+    /// leaving `config_resolved` unset the right behavior for it.
+    #[test]
+    fn uri_to_path_rejects_non_file_schemes() {
+        for s in ["untitled:Untitled-1", "git:/w/main.p?ref%3Dhead"] {
+            let uri = Uri::from_str(s).unwrap();
+            assert_eq!(uri_to_path(&uri), None, "{s} must not yield a path");
+        }
     }
 
     /// A superseded result must not reschedule either: the edit that superseded
