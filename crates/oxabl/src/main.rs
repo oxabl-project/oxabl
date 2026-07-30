@@ -13,7 +13,7 @@ use oxabl_pipeline::{
 };
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{RealFileSystem, discover_path, resolved_include_paths};
+use oxabl_workspace::{RealFileSystem, discover_path};
 use serde::Serialize;
 
 #[derive(ClapParser)]
@@ -898,10 +898,8 @@ fn run_check(
             // The unjudged-symbol note is a statement about the *count-gated lint
             // rules'* coverage, so it has nothing to qualify when those findings
             // are suppressed.
-            if !no_lint {
-                if let Some(sem) = result.semantic() {
-                    unjudged += surface_unjudged_symbols(sem);
-                }
+            if !no_lint && let Some(sem) = result.semantic() {
+                unjudged += surface_unjudged_symbols(sem);
             }
         }
 
@@ -1176,13 +1174,26 @@ fn run_conformance(
         return ExitCode::from(2);
     }
 
-    // Merge CLI `-I` flags with any auto-discovered `oxabl.toml` include paths.
+    // Merge CLI `-I` flags with any auto-discovered `oxabl.toml` include paths —
+    // through the shared resolution (D3), which is where that derivation now lives
+    // for every client. `oxabl_workspace::resolved_include_paths` reimplemented it
+    // line-for-line, so the two could disagree about PROPATH order or anchoring
+    // while looking identical; it is gone, and this was its last caller.
+    //
+    // The schema-free resolution because a parse-conformance walk has no use for a
+    // `.df`, and a malformed config degrades to flags-only with one warning, as
+    // before: this command reports what oxabl can parse, not whether the caller's
+    // configuration is right.
     let effective_paths: Vec<PathBuf> = if preprocess {
-        let (merged, cfg_err) = resolved_include_paths(path, include_paths);
-        if let Some(err) = cfg_err {
-            eprintln!("warning: {err}");
+        let overrides = ConfigOverrides {
+            include_paths: include_paths.to_vec(),
+            ..Default::default()
+        };
+        let (config, warnings) = PipelineConfig::resolve_style_only(path, &overrides);
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
         }
-        merged
+        config.include_paths
     } else {
         Vec::new()
     };
