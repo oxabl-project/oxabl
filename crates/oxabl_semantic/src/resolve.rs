@@ -23,6 +23,8 @@
 //! - `SEM0002` — SHARED / NEW SHARED boundary mismatch (declare pass)
 //! - `SEM0003` — BLOB/CLOB used as a local variable type
 
+use std::collections::VecDeque;
+
 use oxabl_ast::{
     AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
     HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
@@ -34,8 +36,9 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
-    AnalysisContext, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree,
-    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, builtins, diagnostics, resolve_span,
+    AnalysisContext, IndexAnswer, IndexName, MemberType, NamespaceId, NodeIndexVec, ResolvedType,
+    ScopeId, ScopeKind, ScopeTree, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
+    builtins, diagnostics, resolve_span,
 };
 
 /// Resolution of a single reference site. Populated by Phase 4a; the type
@@ -353,14 +356,15 @@ impl<'a> Walker<'a> {
             // ---- Class / Method / Constructor / Destructor / Interface ----
             StatementKind::Class {
                 name,
+                inherits,
+                implements,
                 is_abstract,
                 is_final,
                 body,
-                ..
             } => {
                 let flags = flag_if(*is_abstract, SymbolFlags::ABSTRACT)
                     | flag_if(*is_final, SymbolFlags::FINAL);
-                self.declare(
+                let sym = self.declare(
                     stmt,
                     scope,
                     name,
@@ -370,11 +374,24 @@ impl<'a> Walker<'a> {
                     flags,
                     None,
                 );
+                // The header's supertype names, kept rather than dropped: the
+                // resolve pass needs them to walk the chain, and their spans are
+                // the only thing a later diagnostic about an unresolvable parent
+                // could point at.
+                self.record_supertypes(
+                    sym,
+                    inherits.as_ref().map(supertype_ref),
+                    implements.iter().map(supertype_ref).collect(),
+                );
                 let class_scope = self.tree.push(ScopeKind::Class, scope, stmt.id);
                 self.walk_block(body, class_scope);
             }
-            StatementKind::Interface { name, body, .. } => {
-                self.declare(
+            StatementKind::Interface {
+                name,
+                inherits,
+                body,
+            } => {
+                let sym = self.declare(
                     stmt,
                     scope,
                     name,
@@ -384,6 +401,10 @@ impl<'a> Walker<'a> {
                     SymbolFlags::empty(),
                     None,
                 );
+                // An interface extends a *list* of interfaces, so its supertypes
+                // go to `implements` — see [`Supertypes`] for why that loses
+                // nothing.
+                self.record_supertypes(sym, None, inherits.iter().map(supertype_ref).collect());
                 let iface_scope = self.tree.push(ScopeKind::Interface, scope, stmt.id);
                 self.walk_block(body, iface_scope);
             }
@@ -865,6 +886,33 @@ impl<'a> Walker<'a> {
         Some(id)
     }
 
+    /// Attach a class or interface header's supertypes to its symbol.
+    ///
+    /// A no-op when the header named none, so the symbol gets no entry — which is
+    /// what makes "declares no parent" distinguishable from "declares one that
+    /// resolved to nothing" — and a no-op when [`Self::declare`] refused the
+    /// declaration (a duplicate), because there is no symbol of *this* header's
+    /// to hang them on and writing them onto the prior declaration's symbol
+    /// would attribute one class's parent to another.
+    fn record_supertypes(
+        &mut self,
+        sym: Option<SymbolId>,
+        inherits: Option<crate::SupertypeRef>,
+        implements: Vec<crate::SupertypeRef>,
+    ) {
+        let Some(sym) = sym else { return };
+        if inherits.is_none() && implements.is_empty() {
+            return;
+        }
+        self.symbols.record_supertypes(
+            sym,
+            crate::Supertypes {
+                inherits,
+                implements,
+            },
+        );
+    }
+
     /// Reconcile FUNCTION prototype(s) with a later (or earlier) definition.
     ///
     /// Returns `Some(prior)` when the collision is a legal prototype/prototype
@@ -1058,6 +1106,60 @@ struct ResolveWalker<'a> {
     /// Dedup cache for synthesized default-buffer symbols: one symbol per
     /// schema table referenced by bare name.
     synth_buffers: FxHashMap<TableId, SymbolId>,
+    /// The class whose body the walk is currently inside, if any. An inherited
+    /// member is only reachable from within its subclass, so this is the gate on
+    /// consulting [`Self::inherited`] at all.
+    current_class: Option<SymbolId>,
+    /// Classes whose supertype chain has already been walked. Holds the *class*,
+    /// not the member: the walk is the expensive half (one index lookup per
+    /// ancestor), so it is memoized once per class no matter how many members of
+    /// it are named, and a chain of depth five under twenty references costs five
+    /// lookups rather than a hundred.
+    inherited_walked: FxHashSet<SymbolId>,
+    /// What each ancestor contributes to a class in this file, keyed by
+    /// `(subclass, folded member name)`. Populated by the chain walk; the symbol
+    /// inside is minted only when a reference actually names the member.
+    inherited: FxHashMap<(SymbolId, OxablAtom), InheritedMember>,
+    /// Names an ancestor declares but does **not** pass on to a subclass, keyed
+    /// the same way. Kept because "an ancestor declares this privately" and
+    /// "nothing anywhere declares this" are different facts, and only the second
+    /// one is an undefined symbol.
+    inherited_inaccessible: FxHashSet<(SymbolId, OxablAtom)>,
+}
+
+/// What the enclosing class's inherited surface says about a name.
+enum InheritedLookup {
+    /// A member the class inherits, with the symbol synthesized for it.
+    Member(SymbolId),
+    /// A name an ancestor declares and does not pass on — `PRIVATE`, or
+    /// package-private, which the index treats conservatively because it does not
+    /// model packages. Not a resolution, but a fact about the workspace rather
+    /// than a missing declaration.
+    Inaccessible,
+    /// Nothing in the chain contributes the name.
+    Absent,
+}
+
+/// One member an ancestor contributes to a class in this file: enough to mint a
+/// symbol for it without asking the index again, plus that symbol once minted.
+///
+/// Split from the synthesis itself so an inherited member nobody names never
+/// reaches the symbol table at all — the alternative, materializing a whole
+/// ancestor's surface on first contact, would grow every subclass's symbol table
+/// by its parent's full member list and give each entry a `name_span` pointing at
+/// whichever unrelated reference happened to trigger the walk.
+struct InheritedMember {
+    kind: SymbolKind,
+    /// Namespace the member resolves in — `Functions` for a method,
+    /// `Values` for a property, matching where the declare pass binds a locally
+    /// declared one. Checked against the reference site's candidate namespaces so
+    /// a call never resolves to an inherited property, nor a bare read to an
+    /// inherited method.
+    namespace: NamespaceId,
+    data_type: Option<ResolvedType>,
+    flags: SymbolFlags,
+    /// `None` until the first reference names this member.
+    symbol: Option<SymbolId>,
 }
 
 impl<'a> ResolveWalker<'a> {
@@ -1080,6 +1182,10 @@ impl<'a> ResolveWalker<'a> {
             track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
+            current_class: None,
+            inherited_walked: FxHashSet::default(),
+            inherited: FxHashMap::default(),
+            inherited_inaccessible: FxHashSet::default(),
         }
     }
 
@@ -1359,9 +1465,18 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_block(body, fs);
                 }
             }
-            StatementKind::Class { body, .. } => {
+            StatementKind::Class { name, body, .. } => {
                 if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Class) {
+                    // Remember which class we are inside so a name the scope
+                    // chain cannot answer can be tried against what this class
+                    // inherits. Saved and restored rather than assigned, so a
+                    // nested declaration cannot leak its class outward.
+                    let outer = self.current_class;
+                    self.current_class =
+                        self.tree
+                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name));
                     self.walk_block(body, cs);
+                    self.current_class = outer;
                 }
             }
             StatementKind::Interface { body, .. } => {
@@ -2043,6 +2158,41 @@ impl<'a> ResolveWalker<'a> {
                 return;
             }
         }
+        // Inherited members, from a superclass or an implemented interface the
+        // workspace index could answer for. Tried *after* the scope chain and
+        // never before it: a member the class declares itself shadows the one it
+        // inherits, and the local scope tree is the only thing that knows about
+        // the former. Nothing happens here without a loaded index, so the
+        // single-file answer is unchanged by construction.
+        if let Some(class) = self.current_class {
+            match self.lookup_inherited(class, &atom, namespaces, id) {
+                InheritedLookup::Member(sym) => {
+                    self.references.insert(expr_id, Resolution::Resolved(sym));
+                    self.bump_count(sym, mode);
+                    return;
+                }
+                InheritedLookup::Inaccessible => {
+                    // `NotInScope` would claim there is no such symbol, which is
+                    // false and is what LINT0001 renders. `NotFoundInWorkspace`
+                    // says what actually happened — we looked, and the name is
+                    // not available here — and every rule already skips it, so an
+                    // inaccessible member stays silent until the access-check
+                    // rule that should own it exists.
+                    self.references.insert(
+                        expr_id,
+                        Resolution::Unresolved {
+                            name: atom,
+                            reason: UnresolvedReason::NotFoundInWorkspace,
+                        },
+                    );
+                    return;
+                }
+                // Nothing inherited by this name: fall through to the fallbacks
+                // below, so the answer is exactly today's.
+                InheritedLookup::Absent => {}
+            }
+        }
+
         // Reserved lock / wait option keywords used as bare identifiers —
         // most commonly as arguments to dynamic query methods
         // (`hq:GET-FIRST(NO-LOCK, NO-WAIT)`). The parser admits them via
@@ -2511,6 +2661,184 @@ impl<'a> ResolveWalker<'a> {
         sym
     }
 
+    /// Ask what `class`'s supertype chain says about `atom`, minting the member's
+    /// symbol on first reference.
+    ///
+    /// [`InheritedLookup::Absent`] — leaving the caller's existing answer
+    /// untouched — when no index is attached, when nothing in the chain
+    /// contributes the name, or when the contributed member lives in a namespace
+    /// the reference site is not looking in. The last case is what keeps `foo()`
+    /// from resolving to an inherited *property* and a bare `foo` from resolving
+    /// to an inherited *method*.
+    fn lookup_inherited(
+        &mut self,
+        class: SymbolId,
+        atom: &OxablAtom,
+        namespaces: &[NamespaceId],
+        use_site: &Identifier,
+    ) -> InheritedLookup {
+        // The one gate: with no index attached nothing was looked at, so a
+        // cross-file name keeps exactly the answer it has today.
+        if !self.ctx.index_loaded {
+            return InheritedLookup::Absent;
+        }
+        self.walk_supertype_chain(class);
+
+        let key = (class, atom.clone());
+        let Some(member) = self.inherited.get(&key) else {
+            return if self.inherited_inaccessible.contains(&key) {
+                InheritedLookup::Inaccessible
+            } else {
+                InheritedLookup::Absent
+            };
+        };
+        if !namespaces.contains(&member.namespace) {
+            return InheritedLookup::Absent;
+        }
+        if let Some(sym) = member.symbol {
+            return InheritedLookup::Member(sym);
+        }
+        // Copied out of the map rather than borrowed across the insert below,
+        // which needs `&mut self.symbols`.
+        let (kind, namespace, data_type, flags) = (
+            member.kind,
+            member.namespace,
+            member.data_type.clone(),
+            member.flags,
+        );
+        // KTD6, the schema-field conventions exactly: a dummy declaration (this
+        // is not a declaration in *this* file), the use site as the span so a
+        // diagnostic can still point somewhere real, the root scope, and — the
+        // load-bearing part — the symbol table only, never the scope tree. Not
+        // being in the scope tree is what stops ordinary name resolution from
+        // observing an indexed symbol by accident: it is reachable only through
+        // the reference entry the caller is about to record.
+        let sym = self.symbols.insert(Symbol {
+            name: atom.clone(),
+            namespace,
+            kind,
+            declared_in: ScopeId::ROOT,
+            declaration: NodeId::DUMMY,
+            name_span: VirtualSpan::new(use_site.span.start, use_site.span.end),
+            data_type,
+            read_count: 0,
+            write_count: 0,
+            flags,
+            table_id: None,
+        });
+        if let Some(member) = self.inherited.get_mut(&key) {
+            member.symbol = Some(sym);
+        }
+        InheritedLookup::Member(sym)
+    }
+
+    /// Walk `class`'s supertype chain once and record what each ancestor
+    /// contributes to it.
+    ///
+    /// Breadth-first from the class's own header outward, so a member declared by
+    /// a nearer ancestor wins over the same name farther up — `or_insert` is what
+    /// implements that, and it is the reason the queue is FIFO rather than a
+    /// stack.
+    ///
+    /// Termination is a **visited set**, not a depth bound. A class inheriting
+    /// itself, directly or around a cycle, is a real shape in broken code, and a
+    /// set says exactly what happens (each name is asked about once) where a bound
+    /// would only say when we give up. The class's own name is seeded into it, so
+    /// `CLASS a INHERITS a` neither recurses nor folds its own members in as
+    /// inherited ones.
+    ///
+    /// Only the *first* call per class does any of this; the rest is a set probe.
+    fn walk_supertype_chain(&mut self, class: SymbolId) {
+        if !self.inherited_walked.insert(class) {
+            return;
+        }
+        // Copied out so no borrow of `self` is held across the synthesis below.
+        let index = self.ctx.index;
+        let mut visited: FxHashSet<IndexName> = FxHashSet::default();
+        visited.insert(IndexName::new(&self.symbols.get(class).name));
+        let mut queue: VecDeque<IndexName> = VecDeque::new();
+        if let Some(supers) = self.symbols.supertypes(class) {
+            queue.extend(
+                supers
+                    .inherits
+                    .iter()
+                    .chain(&supers.implements)
+                    .map(|s| s.name.clone()),
+            );
+        }
+
+        while let Some(name) = queue.pop_front() {
+            if !visited.insert(name.clone()) {
+                continue;
+            }
+            match index.class(&name) {
+                IndexAnswer::Found(descriptor) => {
+                    // An interface's methods contribute exactly as a superclass's
+                    // do, so the walk does not branch on `descriptor.kind`.
+                    for supertype in descriptor.inherits.iter().chain(&descriptor.implements) {
+                        queue.push_back(supertype.clone());
+                    }
+                }
+                // A supertype no file on the paths declares, or one that cannot
+                // be known statically, contributes nothing — and no diagnostic:
+                // the unresolved name is recorded on the class symbol, and
+                // reporting it is a rule's decision, not this pass's.
+                IndexAnswer::NotFound | IndexAnswer::Unknowable => continue,
+            }
+            match index.class_members(&name) {
+                IndexAnswer::Found(members) => {
+                    for member in members.iter() {
+                        // Private and package-private members are not inherited.
+                        // Synthesizing them would resolve a reference that ABL
+                        // rejects, and would hand a later access-check rule an
+                        // already-resolved reference instead of a violation. The
+                        // *name* is still worth remembering: a reference to it is
+                        // an inaccessible member, not an undefined symbol.
+                        if !member.inherited_by_subclass() {
+                            self.inherited_inaccessible
+                                .insert((class, member.name.as_atom().clone()));
+                            continue;
+                        }
+                        let namespace = match member.kind {
+                            SymbolKind::Function => NamespaceId::Functions,
+                            SymbolKind::Property => NamespaceId::Values,
+                            // The index reports methods and properties and
+                            // nothing else; a kind that gained membership later
+                            // must choose its own namespace rather than
+                            // defaulting into one.
+                            _ => continue,
+                        };
+                        let data_type = match &member.ty {
+                            MemberType::Portable(ty) => Some(ty.as_resolved().clone()),
+                            // A class-typed member. `ResolvedType::Class` carries
+                            // a `SymbolId` in *this* file's table and no symbol
+                            // for a cross-file class exists yet — minting one is
+                            // `USING`/`NEW` resolution's job — so the type stays
+                            // `Unknown`. That is the lattice bottom, and exactly
+                            // what a locally declared class-typed variable gets
+                            // today when its class is declared elsewhere. It also
+                            // avoids a second chain walk per member.
+                            MemberType::Named(_) => Some(ResolvedType::Unknown),
+                            // `VOID`, or a form naming no type: no type at all.
+                            MemberType::Untyped => None,
+                        };
+                        self.inherited
+                            .entry((class, member.name.as_atom().clone()))
+                            .or_insert(InheritedMember {
+                                kind: member.kind,
+                                namespace,
+                                data_type,
+                                flags: access_flag(member.access)
+                                    | flag_if(member.is_static, SymbolFlags::STATIC),
+                                symbol: None,
+                            });
+                    }
+                }
+                IndexAnswer::NotFound | IndexAnswer::Unknowable => {}
+            }
+        }
+    }
+
     /// Return the synthesized default-buffer symbol for schema table `tid`,
     /// minting one on first use. Same synthetic conventions as
     /// [`Self::synth_field_symbol`]; the symbol carries the `table_id` link
@@ -2596,6 +2924,19 @@ impl<'a> ResolveWalker<'a> {
 
 fn identifier_span(id: &Identifier) -> VirtualSpan {
     VirtualSpan::new(id.span.start, id.span.end)
+}
+
+/// Project one header identifier into a [`SupertypeRef`](crate::SupertypeRef).
+///
+/// [`IndexName::new`] folds for identity while keeping the source spelling, which
+/// is what the index needs to derive a candidate file path on a case-sensitive
+/// filesystem. Called once per name in a class header, so the two intern lookups
+/// it costs are not on any hot path.
+fn supertype_ref(id: &Identifier) -> crate::SupertypeRef {
+    crate::SupertypeRef {
+        name: crate::IndexName::new(&id.name),
+        name_span: identifier_span(id),
+    }
 }
 
 fn access_flag(access: AccessModifier) -> SymbolFlags {

@@ -13,7 +13,7 @@ use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 
-use crate::{NamespaceId, ResolvedType, ScopeId};
+use crate::{IndexName, NamespaceId, ResolvedType, ScopeId};
 
 /// Dense arena index for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,6 +160,47 @@ bitflags! {
     }
 }
 
+/// One supertype named in a `CLASS` or `INTERFACE` header, recorded by the
+/// declare pass **as written and where written**.
+///
+/// The span is the load-bearing half: a later diagnostic about a parent no file
+/// declares has to point at the name in the header, and by the time the resolve
+/// pass discovers the miss the AST node is long behind it. The name is an
+/// [`IndexName`] rather than a bare atom because that is what the workspace
+/// index is keyed by, and because it keeps the source casing the index needs to
+/// derive a file path from — folding here and re-spelling later is not possible.
+#[derive(Debug, Clone)]
+pub struct SupertypeRef {
+    /// The supertype as the header spelled it, folded for identity.
+    pub name: IndexName,
+    /// Span of the name inside the header.
+    pub name_span: VirtualSpan,
+}
+
+/// The supertypes a `CLASS` or `INTERFACE` header declared.
+///
+/// Recorded verbatim and **unresolved**: whether any of these names corresponds
+/// to a class the workspace declares is the resolve pass's question, and
+/// answering it at declare time would make the declare pass depend on the index
+/// (which the indexer itself runs, so it would recurse).
+///
+/// An `INTERFACE` may extend several interfaces, which does not fit
+/// `inherits: Option<_>`; its supertype list is recorded in
+/// [`implements`](Self::implements) instead. That mirrors
+/// `oxabl_index`'s own projection of an interface header, so the two spellings
+/// of "the other supertypes, as a set" agree and a consumer's walk needs no
+/// special case.
+#[derive(Debug, Clone, Default)]
+pub struct Supertypes {
+    /// The `INHERITS` name, if any. `None` means the header named no parent —
+    /// deliberately distinguishable from a parent that failed to resolve, which
+    /// is recorded here and simply never links to anything.
+    pub inherits: Option<SupertypeRef>,
+    /// The `IMPLEMENTS` names, in declaration order (or, for an interface, the
+    /// interfaces it extends).
+    pub implements: Vec<SupertypeRef>,
+}
+
 /// A declared name. Identity is the `SymbolId` issued by [`SymbolTable`];
 /// two declarations of the same name in overlapping scopes are distinct
 /// symbols.
@@ -213,6 +254,18 @@ pub struct SymbolTable {
     /// symbol nor allocates. The `block-var-used-outside` analysis (LINT0005)
     /// uses it to classify a reference as inside/outside the defining block.
     block_defined: FxHashMap<SymbolId, ScopeId>,
+    /// The supertypes each `Class` / `Interface` symbol's header named, recorded
+    /// by the declare pass and consumed by the resolve pass's chain walk.
+    ///
+    /// A **typed record** rather than a [`SymbolFlags`] bit — there is no yes/no
+    /// fact here to flag, the payload is names and spans — but a side map rather
+    /// than a `Symbol` field, for the reason `block_defined` above gives and
+    /// because that reason turned out to be measurable: even boxed to one
+    /// pointer, the field grew `Symbol` from 64 to 72 bytes and cost the declare
+    /// pass 17–25% across every benchmark fixture. Classes are a small minority
+    /// of symbols and nothing on the hot path reads this, so the map is entirely
+    /// absent from the common file.
+    supertypes: FxHashMap<SymbolId, Supertypes>,
 }
 
 impl SymbolTable {
@@ -255,6 +308,21 @@ impl SymbolTable {
     /// `SHARED`/`NEW SHARED`/`NEW GLOBAL SHARED`.
     pub fn record_rebinding(&mut self, sym: SymbolId, scope: ScopeId) {
         self.rebinding_scopes.entry(sym).or_default().push(scope);
+    }
+
+    /// Record the supertypes `sym`'s class or interface header named.
+    ///
+    /// Only called for a header that named at least one, so a class with no
+    /// parent has no entry — which is what makes "declares no parent"
+    /// distinguishable from "declares one that resolved to nothing".
+    pub fn record_supertypes(&mut self, sym: SymbolId, supertypes: Supertypes) {
+        self.supertypes.insert(sym, supertypes);
+    }
+
+    /// The supertypes `sym`'s header named, or `None` when it named none (or
+    /// `sym` is not a class or interface at all).
+    pub fn supertypes(&self, sym: SymbolId) -> Option<&Supertypes> {
+        self.supertypes.get(&sym)
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

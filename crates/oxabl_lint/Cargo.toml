@@ -13,6 +13,10 @@ oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 rustc-hash = "2"
 
 [dev-dependencies]
+# The batch workspace index, for the cross-file resolution tests: they build a
+# real `BatchIndex` over an `InMemoryFileSystem` rather than a hand-written stub,
+# so what they pin is the resolution every client gets.
+oxabl_index = { path = "../oxabl_index", version = "0.1.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = ["test-support"] }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
 oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }

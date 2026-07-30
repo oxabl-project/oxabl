@@ -37,7 +37,9 @@ pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
 pub use resolve::{Resolution, UnresolvedReason, declare_pass, resolve_pass};
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
-pub use symbol::{Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable};
+pub use symbol::{
+    SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
+};
 pub use types::{PrimitiveTy, ResolvedType};
 
 use oxabl_common::{Diagnostic, FileId, LintSeverityMap, VirtualSpan};
