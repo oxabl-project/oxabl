@@ -971,6 +971,7 @@ dependencies = [
  "oxabl_lint",
  "oxabl_lsp",
  "oxabl_parser",
+ "oxabl_pipeline",
  "oxabl_preprocessor",
  "oxabl_schema",
  "oxabl_semantic",
@@ -1084,6 +1085,7 @@ dependencies = [
  "oxabl_formatter",
  "oxabl_lexer",
  "oxabl_parser",
+ "oxabl_pipeline",
  "oxabl_preprocessor",
  "oxabl_schema",
  "oxabl_style",
@@ -1108,6 +1110,22 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+]
+
+[[package]]
+name = "oxabl_pipeline"
+version = "0.1.0"
+dependencies = [
+ "oxabl_analyze",
+ "oxabl_ast",
+ "oxabl_common",
+ "oxabl_formatter",
+ "oxabl_pipeline",
+ "oxabl_schema",
+ "oxabl_semantic",
+ "oxabl_style",
+ "oxabl_workspace",
+ "tempfile",
 ]
 
 [[package]]
@@ -1164,6 +1182,7 @@ name = "oxabl_wasm"
 version = "0.1.0"
 dependencies = [
  "oxabl",
+ "oxabl_pipeline",
  "serde",
  "serde_json",
  "wasm-bindgen",

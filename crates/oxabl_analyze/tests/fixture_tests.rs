@@ -56,16 +56,29 @@ fn diagnostic_codes(dump: &Value) -> Vec<String> {
 
 fn assert_envelope_sane(dump: &Value) {
     assert_eq!(dump["envelope"], 1);
-    assert!(dump["sections"]["scopes"].is_number());
-    assert!(dump["sections"]["symbols"].is_number());
-    assert!(dump["sections"]["types"].is_number());
-    assert!(dump["sections"]["references"].is_number());
-    assert!(dump["sections"]["diagnostics"].is_number());
+    for section in [
+        "scopes",
+        "symbols",
+        "types",
+        "references",
+        "diagnostics",
+        "preproc",
+        "coverage",
+    ] {
+        assert!(
+            dump["sections"][section].is_number(),
+            "{section} must carry a version"
+        );
+    }
     assert!(dump["scopes"].is_array());
     assert!(dump["symbols"].is_array());
     assert!(dump["references"].is_array());
     assert!(dump["types"].is_array());
     assert!(dump["diagnostics"].is_array());
+    // `preproc` is an array of the same diagnostic rows; `coverage` is an object,
+    // so the next coverage fact is an added key rather than a new section.
+    assert!(dump["preproc"].is_array());
+    assert!(dump["coverage"]["unjudged_symbols"].is_u64());
 }
 
 // ---------------------------------------------------------------------------

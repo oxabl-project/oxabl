@@ -23,9 +23,11 @@ fn config_with(
 ) -> AnalysisConfig {
     AnalysisConfig {
         fs,
-        include_paths: Arc::new(include_paths),
+        pipeline: Arc::new(oxabl_pipeline::PipelineConfig {
+            include_paths,
+            ..oxabl_pipeline::PipelineConfig::default()
+        }),
         preprocess,
-        ..Default::default()
     }
 }
 

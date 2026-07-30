@@ -247,6 +247,53 @@ fn deprecated_panicking_surface_still_resolves() {
     assert!(oxabl::format_source("MESSAGE \"x\".", &StyleGuide::default_base()).is_ok());
 }
 
+/// The deprecated wrappers are now thin adapters over `oxabl::pipeline`, so they
+/// must answer exactly what the pipeline answers for the same input.
+///
+/// Pinned because the re-pointing is the whole content of that change: if the
+/// adapter drifted — a different root file id, a lost diagnostic, a different
+/// collection order — a consumer still on the deprecated surface would silently
+/// get a different analysis than every in-repo client.
+#[test]
+#[allow(deprecated)]
+fn the_deprecated_wrappers_agree_with_the_pipeline_they_delegate_to() {
+    use oxabl::pipeline::{LintPipeline, PipelineConfig};
+    use oxabl::style::StyleGuide;
+    use oxabl::workspace::InMemoryFileSystem;
+
+    let fs = InMemoryFileSystem::new();
+    // Something with a finding in every stage the collector labels: a recovered
+    // parse error and an unused variable.
+    let source = "DEFINE VARIABLE neverUsed AS INTEGER NO-UNDO.\n@ @ @\n";
+
+    let options = oxabl::AnalyzeOptions::default();
+    let (wrapper_model, wrapper_diags) = oxabl::analyze_with_fs(source, &fs, &options);
+
+    let config: PipelineConfig = (&options).into();
+    let direct = LintPipeline::new(&config, &fs)
+        .with_preprocess(options.preprocess)
+        .run(source);
+
+    assert_eq!(&wrapper_diags, direct.diagnostics());
+    assert_eq!(wrapper_model.is_some(), direct.semantic().is_some());
+    assert!(
+        wrapper_diags
+            .all()
+            .any(|d| d.diagnostic.code.0 == "LINT0002"),
+        "the fixture must actually produce findings: {wrapper_diags:?}"
+    );
+
+    // The format side likewise: `try_format_source` folds the pipeline's
+    // `Unchanged` arm into `Ok(original bytes)` and nothing else.
+    let style = StyleGuide::default_base();
+    let already = "MESSAGE \"x\".\n";
+    assert_eq!(
+        oxabl::try_format_source(already, &style).as_deref(),
+        Ok(already),
+        "an unchanged file comes back as its own bytes, not an error"
+    );
+}
+
 /// The fallible surface's shapes, pinned as fn-pointers so a later refactor
 /// cannot quietly reshape them while the reachability compile-gate still passes.
 #[test]
@@ -272,6 +319,82 @@ fn fallible_entry_point_signatures_are_pinned() {
     // The formatter's failure channel is flat, not a nested `Result`.
     let _try_format: fn(&str, &StyleGuide) -> Result<String, FormatFailure> =
         oxabl::try_format_source;
+}
+
+/// Every item the `oxabl::pipeline` re-export carries, pinned individually.
+///
+/// The module was widened from the two config items to the whole shared-run
+/// surface, and reachability alone was under-tested: `LintPipeline` and
+/// `PipelineConfig` had call sites, so the other ten rode along untested and
+/// could have been dropped from the re-export list — or reshaped — without a
+/// single test noticing. This file's charter is every item reachable through
+/// `oxabl::…`, so each one is named here, as a value, a type binding, or a
+/// fn-pointer, in the same style the rest of the file uses.
+#[test]
+fn every_pipeline_re_export_is_pinned_item_by_item() {
+    use std::path::Path;
+
+    use oxabl::common::{FileId, SourceMap};
+    use oxabl::pipeline::{
+        ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, LintPipeline,
+        LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID, position,
+        resolve_from_config,
+    };
+    use oxabl::style::StyleGuide;
+    use oxabl::workspace::{InMemoryFileSystem, WorkspaceConfig};
+
+    // The one root file id every client must agree on (KTD12) — a value, so a
+    // change of type is a compile error here.
+    let _root: FileId = ROOT_FILE_ID;
+
+    // Configuration: the overrides struct, the no-I/O resolution entry point,
+    // and the warning channel. `resolve_from_config` is a fn-pointer rather than
+    // a call because `WorkspaceConfig` has no `Default` — the shape is what
+    // matters, and the pointer pins all four of its types at once.
+    let _overrides = ConfigOverrides {
+        include_paths: Vec::new(),
+        schema_path: None,
+        style: None,
+    };
+    let _resolve: fn(
+        &WorkspaceConfig,
+        &Path,
+        &ConfigOverrides,
+    ) -> (PipelineConfig, Vec<ConfigWarning>) = resolve_from_config;
+    // `ConfigWarning` is `#[non_exhaustive]`, so its data-carrying arm is
+    // constructed rather than matched exhaustively.
+    let warning = ConfigWarning::Config("unreadable oxabl.toml".to_string());
+    assert!(!warning.to_string().is_empty(), "a warning states itself");
+
+    // The lint run: the handle, the intermediate `Expansion` the language server
+    // memoizes for its early cutoff, and the `LintResult` every client renders.
+    let config = PipelineConfig::default();
+    let fs = InMemoryFileSystem::new();
+    let pipeline: LintPipeline<'_> = LintPipeline::new(&config, &fs).with_preprocess(false);
+    let expansion: Expansion = pipeline.expand("DEFINE VARIABLE neverUsed AS INTEGER NO-UNDO.\n");
+    let result: LintResult = pipeline.collect(&expansion);
+    assert!(
+        result.all().any(|d| d.diagnostic.code.0 == "LINT0002"),
+        "the pinned run must actually produce findings"
+    );
+
+    // `position`: the module, its span resolution, and the shape it yields. The
+    // byte-offset clients derive line/column here and nowhere else (KTD5).
+    let map = SourceMap::new("MESSAGE \"x\".\n");
+    let resolved: position::ResolvedSpan = position::resolve_offsets(&map, 0, 7);
+    let start: position::Position = resolved.start;
+    assert_eq!((start.line, start.column, start.byte), (1, 1, 0));
+
+    // The format run: the handle, the outcome, and both refusal types. A bail is
+    // the reachable arm; `NotFormattedKind` is `#[non_exhaustive]`, so it is
+    // compared rather than matched.
+    let formatter: FormatPipeline = FormatPipeline::new(StyleGuide::default_base());
+    let outcome: FormatOutcome = formatter.format("@ @ @\n");
+    let refusal: &NotFormatted = outcome
+        .not_formatted()
+        .unwrap_or_else(|| panic!("a parse-dirty buffer must refuse, got {outcome:?}"));
+    assert_eq!(refusal.kind(), NotFormattedKind::Bail);
+    assert!(!refusal.is_internal_panic());
 }
 
 /// `catch_panic` and `InternalPanic` are reachable through the facade, and the

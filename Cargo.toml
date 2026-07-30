@@ -12,6 +12,7 @@ members = [
     "crates/oxabl_semantic",
     "crates/oxabl_lint",
     "crates/oxabl_analyze",
+    "crates/oxabl_pipeline",
     "crates/oxabl_style",
     "crates/oxabl_lsp",
     "crates/oxabl_formatter",

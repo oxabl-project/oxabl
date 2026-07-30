@@ -151,6 +151,27 @@ pub struct SchemaConfig {
 }
 
 impl WorkspaceConfig {
+    /// The configuration of a project with no `oxabl.toml` — every section at its
+    /// documented default, and an empty name.
+    ///
+    /// Exists so a caller that resolves configuration from a parsed value can
+    /// take the same derivation path whether or not a config file was found: the
+    /// "no config" and "malformed config" cases become *this value* rather than a
+    /// second, separately-maintained set of fallbacks. `name` is required by the
+    /// deserializer (a real config must name its project) and is empty here
+    /// because there is no project file to name one.
+    pub fn defaults() -> Self {
+        WorkspaceConfig {
+            workspace: WorkspaceSection {
+                name: String::new(),
+                sources: SourcesConfig::default(),
+                schema: SchemaConfig::default(),
+                lint: LintConfig::default(),
+                style: StyleGuide::default_base(),
+            },
+        }
+    }
+
     /// Parse an `oxabl.toml` string into a [`WorkspaceConfig`].
     ///
     /// Returns a human-readable error string on parse failure rather than

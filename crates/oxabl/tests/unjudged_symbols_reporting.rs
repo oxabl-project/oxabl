@@ -8,10 +8,11 @@
 //! it was only partly checked. These tests pin the honest line — same treatment
 //! the `PREPROC007` unresolvable-include warning gets, and the same stream.
 //!
-//! Reported from `analyze`, not from `check`: `check` is a parse-success
-//! reporter and runs no lint rules at all, so there is no coverage there to
-//! qualify. `analyze` is where the rules run and where a user reads (or fails to
-//! read) a diagnostic.
+//! These drive `analyze`, which is where the note originated. `check` now runs
+//! the same rules and carries the same count (R26) — its own coverage of the
+//! note lives in `check_cli.rs`, since the two commands render it into different
+//! shapes (a scalar in `check`'s report versus a key in the `analyze` envelope)
+//! and each shape needs its own pin.
 
 use std::fs;
 use std::path::Path;
@@ -90,16 +91,45 @@ fn the_note_goes_to_stderr_not_stdout() {
 }
 
 /// Machine consumers get a count, not prose to scrape out of stderr.
+///
+/// It lives in the envelope's `coverage` section: the count used to be a
+/// top-level key the CLI spliced into the finished document, so it was
+/// unversioned and unreachable through the library.
 #[test]
-fn json_output_carries_the_count_as_a_field() {
+fn json_output_carries_the_count_in_the_coverage_section() {
     let (stdout, _stderr) = analyze(ONE_SKIPPED, "json");
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(v["unjudged_symbols"], 1, "{stdout}");
+    assert_eq!(v["coverage"]["unjudged_symbols"], 1, "{stdout}");
+    assert!(v["sections"]["coverage"].is_number(), "{stdout}");
 
     let (stdout, _stderr) = analyze(NO_SKIPPED, "json");
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(
-        v["unjudged_symbols"], 0,
+        v["coverage"]["unjudged_symbols"], 0,
         "the field is always present; only the prose is conditional"
+    );
+}
+
+/// The envelope and the stderr note must report the *same* count — one fact, two
+/// renderings. A divergence would mean a machine consumer and a human reading the
+/// same run disagree about how much of the file was checked.
+#[test]
+fn the_envelope_count_matches_the_stderr_note() {
+    let (stdout, stderr) = analyze(ONE_SKIPPED, "json");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["coverage"]["unjudged_symbols"], 1);
+    assert!(
+        stderr.contains("1 symbol could not be fully checked"),
+        "stderr must report the same single symbol, got: {stderr:?}"
+    );
+}
+
+/// And it reaches `--format text`, which the spliced key never did.
+#[test]
+fn text_output_carries_the_coverage_section() {
+    let (stdout, _stderr) = analyze(ONE_SKIPPED, "text");
+    assert!(
+        stdout.contains("=== Coverage ===") && stdout.contains("unjudged symbols: 1"),
+        "expected the coverage section in text output, got:\n{stdout}"
     );
 }

@@ -3,7 +3,7 @@
 #
 # Same role as the 9-module private-corpus A/B used for #58: micro-tests cannot prove
 # that a global change to &IF / &ELSE / &ENDIF end-offsets is net-safe on a
-# real tree. This script runs `oxabl check --preprocess --json` over a module
+# real tree. This script runs `oxabl conformance --preprocess --json` over a module
 # list and diffs pass/fail + error-pattern counts between baseline and candidate.
 #
 # Usage:
@@ -23,6 +23,11 @@
 #      STRICT=1
 #   2  usage / missing CORPUS_ROOT / missing modules
 #   3  oxabl binary missing
+#   4  the gate itself broke: a sub-run exited unexpectedly, produced no report,
+#      or the aggregation examined zero files. Kept distinct from 1 on purpose —
+#      "the parser regressed" and "the gate measured nothing" are different
+#      answers, and a gate that cannot tell them apart reports PASS for a run
+#      that verified nothing.
 
 set -euo pipefail
 
@@ -34,7 +39,7 @@ if [[ ! -x "$OXABL_BIN" ]]; then
 fi
 
 usage() {
-  sed -n '2,25p' "$0" | sed 's/^# \?//'
+  sed -n '2,30p' "$0" | sed 's/^# \?//'
   exit 2
 }
 
@@ -106,11 +111,11 @@ run_check_modules() {
   local stderr_log="$tmp_dir/stderr.txt"
   : >"$stderr_log"
 
-  echo "=== $label: oxabl check --preprocess over ${#paths[@]} path(s) ===" >&2
+  echo "=== $label: oxabl conformance --preprocess over ${#paths[@]} path(s) ===" >&2
   echo "    bin=$OXABL_BIN" >&2
   echo "    corpus=$CORPUS_ROOT" >&2
 
-  # Aggregate per-path JSON into one summary. oxabl check --json is one path
+  # Aggregate per-path JSON into one summary. oxabl conformance --json is one path
   # at a time; we merge.
   python3 - "$out_json" <<'PY' &
 import json, sys, os
@@ -122,21 +127,43 @@ PY
   local combined="$tmp_dir/combined.jsonl"
   : >"$combined"
 
+  # A sub-run that never produced a report contributes nothing to the totals,
+  # and the aggregation's zero-defaults turn that silence into "no failures".
+  # So every sub-run is checked here instead: nothing may be skipped quietly.
+  local gate_broken=0
+
   for p in "${paths[@]}"; do
     echo "--- checking $p ---" >&2
     local raw="$tmp_dir/$(echo "$p" | tr '/' '_').json"
     # Capture stdout JSON and stderr (PREPROC007 / other loud preproc lines).
     set +e
-    "$OXABL_BIN" check --preprocess --json "${inc[@]}" "$p" \
+    "$OXABL_BIN" conformance --preprocess --json "${inc[@]}" "$p" \
       >"$raw" 2>>"$stderr_log"
     local rc=$?
     set -e
     echo "{\"path\": $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$p"), \"rc\": $rc}" >>"$combined"
+    # `conformance` exits 0 when every file parsed and 1 when some did not.
+    # Both are ordinary results this gate is built to measure. Anything else —
+    # 2 usage, 6 serialize, or a signal (128+n) — means the measurement did not
+    # happen, which is not a result at all.
+    if [[ $rc -ne 0 && $rc -ne 1 ]]; then
+      echo "error: conformance exited $rc for $p (expected 0 or 1)" >&2
+      gate_broken=1
+    fi
     if [[ -s "$raw" ]]; then
       python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({"path":sys.argv[2],"report":d}))' \
         "$raw" "$p" >>"$combined.reports"
+    else
+      echo "error: conformance produced no report for $p" >&2
+      gate_broken=1
     fi
   done
+
+  if [[ $gate_broken -ne 0 ]]; then
+    echo "error: $label run is incomplete — refusing to write a summary that would" >&2
+    echo "  read as zero failures for the paths that produced no data." >&2
+    exit 4
+  fi
 
   python3 - "$out_json" "$combined" "$combined.reports" "$stderr_log" <<'PY'
 import json, sys, re, collections
@@ -155,14 +182,14 @@ if Path(reports_path).exists():
         entry = json.loads(line)
         reports.append(entry)
         r = entry.get("report") or {}
-        # Support both flat and nested shapes from oxabl check --json.
+        # Support both flat and nested shapes from oxabl conformance --json.
         p = int(r.get("passed", 0) or 0)
         f = int(r.get("failed", 0) or 0)
         t = int(r.get("total", p + f) or 0)
         passed += p
         failed += f
         files += t
-        # oxabl check --json: error_patterns is [{pattern, count}, ...]
+        # oxabl conformance --json: error_patterns is [{pattern, count}, ...]
         pats = r.get("error_patterns") or []
         if isinstance(pats, dict):
             for k, v in pats.items():
@@ -201,6 +228,16 @@ summary = {
 Path(out_path).write_text(json.dumps(summary, indent=2) + "\n")
 print(json.dumps({k: summary[k] for k in ("files", "passed", "failed", "parse_signal", "preproc_codes")}, indent=2))
 PY
+
+  # A gate that examined zero files has not verified anything, and its summary
+  # would diff cleanly against any other summary. Fail loudly instead.
+  local files
+  files=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("files") or 0))' "$out_json")
+  if [[ "$files" -eq 0 ]]; then
+    echo "error: $label run examined 0 files — nothing was verified." >&2
+    echo "  Check MODULES / CORPUS_ROOT and the conformance report shape." >&2
+    exit 4
+  fi
 
   echo "Wrote $out_json" >&2
 }

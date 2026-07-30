@@ -12,6 +12,7 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
 oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
 oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
@@ -34,8 +35,14 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0", features = [
     "test-panics",
 ] }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+# The shared cross-client parity fixture table (R19). A dev-dependency feature
+# only; the server itself takes `oxabl_pipeline` without it.
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0", features = [
+    "test-support",
+] }
 lsp-server = "0.7"
 lsp-types = "0.97"
+ropey = "1.6"
 salsa = "=0.28.1"
 serde_json = "1"
 tempfile = "3"

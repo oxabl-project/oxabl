@@ -34,7 +34,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Try-it-yourself
   - A "try it in 10 seconds" demo in the browser
   - WASM is a compile target in CI and the release pipeline; paste a code block into the browser, lint and format instantly
-  - Status: Shipped — the browser playground runs the real thing, entirely client-side. `oxabl_wasm` is a thin JSON adapter over the same `oxabl::analyze_with_fs` and `oxabl::format_source` APIs the CLI, LSP, and VS Code extension use, so a diagnostic and a reformat in the browser match what you get after installing. The first slice is deliberately single-file: no includes, no `.df` schema (so `unknown-table-or-field` is inert), and no `oxabl.toml`, so per-rule severity and style config don't apply. The website serves the released artifact and the UI around it; this repo owns the build.
+  - Status: Shipped — the browser playground runs the real thing, entirely client-side. `oxabl_wasm` is a thin JSON adapter over the same `oxabl_pipeline` lint and format handles the CLI and the language server drive, so a diagnostic and a reformat in the browser match what you get after installing. That match is now a test, not a claim: a cross-client parity suite asserts the same source yields identical codes, severities, byte spans, and sources through the pipeline, the CLI, the LSP, and these bindings. It caught a real divergence on its first run — two rules came back at a different severity in the browser because a directly-constructed config and a resolved one carried different default severity tables. The first slice is deliberately single-file: no includes, no `.df` schema (so `unknown-table-or-field` is inert), and no `oxabl.toml`, so per-rule severity and style config don't apply. Those are *absent capabilities*, not different behavior — the parity suite asserts they are unavailable rather than asserting a different answer. The website serves the released artifact and the UI around it; this repo owns the build.
 - Conformance harness
   - A real-world test suite to ensure oxabl is conformant with all ABL fragments and the compiler
   - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
@@ -77,17 +77,20 @@ Requirements:
   - Postfix operations, and
   - Has error recovery via synchronization on period boundaries
   - Still getting new features, bug fixes, and improvements.
-- `oxabl check` / `oxabl analyze`: CLI entry points in `crates/oxabl`.
-  - `check` walks a directory (or single file) for ABL files (`.p`, `.w`, `.cls`) and reports parse pass/fail counts, error locations, and top error patterns.
-  - `analyze` runs the full parse → semantic → lint pipeline over a file and dumps the resolved model + diagnostics (text or `--json`, with `--schema <file|dir>` for schema-backed resolution).
-  - Both are transitional scaffolding: the intended direction is a ruff/cargo-shaped `check` that surfaces lint + format issues, built on shared library pipelines every client drives identically (see #120). Their `--json` shapes are not yet a stable contract.
+- CLI entry points in `crates/oxabl`. The advertised surface is exactly four commands — `check`, `format`, `lsp`, and `schema` — plus two **hidden but fully supported** instruments described below.
+  - `check` walks a directory (or single file) for ABL files and reports lint findings plus formatting drift in two channels. This is the pre-commit gate: exit 1 when either channel has something to say.
+  - `format` fixes layout in place, or reports/prints without writing (`--check`, `--stdout`).
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
+  - Their `--json` shapes are not yet a stable contract.
+- Hidden commands. Both are real, documented, and reachable — `oxabl <command> --help` works — they simply do not appear in `oxabl --help`, because each answers a question about *oxabl* rather than about your source, and neither belongs in the surface a new user reads.
+  - `oxabl conformance <path>` — the parser-refinement instrument: how many files parse, which fail and where, and the ranked error patterns behind the failures.
+  - `oxabl analyze <file>` — a single file's resolved semantic model, dumped as a per-section-versioned JSON envelope or as text (`--schema <file|dir>` for schema-backed resolution). Introspection, not a gate: it exits 0 whatever it finds.
 - `oxabl_wasm`: browser bindings in `crates/oxabl_wasm`.
-  - Three `wasm-bindgen` exports — `analyze_source`, `format_source`, and `version()` (a crate version plus a build identifier, so a crash report names the exact artifact a hand-vendored copy is running) — the first two returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the semantic-preservation guard bails (in which case the original source comes back untouched).
-  - Contains no ABL behavior. It is a transport adapter over the umbrella crate, which keeps every client on one implementation.
+  - Three `wasm-bindgen` exports — `analyze_source`, `format_source`, and `version()` (a crate version plus a build identifier, so a crash report names the exact artifact a hand-vendored copy is running) — the first two returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the formatter declines to format (in which case the original source comes back untouched). Line and column come from the shared position helper the CLI's text output uses, so the two cannot drift.
+  - Contains no ABL behavior. It is a transport adapter over the shared pipelines, which keeps every client on one implementation. A refusal collapses to one `error` string here because the wire shape has one field for it, while the pipeline keeps a deliberate bail and a contained panic apart for the clients that can tell them apart.
   - CLI-only dependencies live behind the `oxabl` crate's default-on `cli` feature so the library compiles for `wasm32`; a CI job builds the wasm target on every push.
 
-Current Work: cross-file/workspace semantic resolution (the ceiling on lint accuracy), continued dogfood-driven trust-hardening, and reshaping the CLI onto shared lint/format pipelines. Shipped: the semantic layer, the layout formatter (CLI + LSP), the language server, the VS Code extension, the curated `oxabl` public API, and the browser WASM playground.
+Current Work: cross-file/workspace semantic resolution (the ceiling on lint accuracy) and continued dogfood-driven trust-hardening. Shipped: the semantic layer, the layout formatter (CLI + LSP), the language server, the VS Code extension, the curated `oxabl` public API, the browser WASM playground, and the shared lint/format pipelines every client now drives.
 
 ### WebAssembly browser package
 

@@ -6,8 +6,10 @@
 //! reach the side-table model.
 //!
 //! The dump uses **per-section versioning** so breaking changes to any one
-//! section (scopes, symbols, references, types, diagnostics) bump only
-//! that section's version, not the whole envelope.
+//! section (scopes, symbols, references, types, diagnostics, preproc, coverage)
+//! bump only that section's version, not the whole envelope. Every version lives
+//! in exactly one place — `section_versions` — so the two dump entry points
+//! cannot report different numbers for the same section.
 //!
 //! `symbols` section v2: the symbol table now includes schema-derived
 //! entries — synthesized `field` symbols for schema-validated field
@@ -22,16 +24,26 @@
 //!     "symbols": 2,
 //!     "types": 1,
 //!     "references": 1,
-//!     "diagnostics": 1
+//!     "diagnostics": 1,
+//!     "preproc": 1,
+//!     "coverage": 1
 //!   },
 //!   "schema_revision": 0,
 //!   "scopes": [ ... ],
 //!   "symbols": [ ... ],
 //!   "references": [ ... ],
 //!   "types": [ ... ],
-//!   "diagnostics": [ ... ]
+//!   "diagnostics": [ ... ],
+//!   "preproc": [ ... ],
+//!   "coverage": { "unjudged_symbols": 0 }
 //! }
 //! ```
+//!
+//! `preproc` and `coverage` were, until the CLI moved onto the shared pipelines,
+//! keys the `analyze` subcommand spliced into this document *after* the library
+//! handed it back. That made them invisible to `--format text`, unversioned, and
+//! impossible for any other consumer of these functions to receive. They are
+//! ordinary sections now.
 
 mod collect;
 
@@ -53,6 +65,35 @@ use serde_json::{Map, Value, json};
 /// the outermost JSON object (e.g. moving a section out into its own file).
 pub const ENVELOPE_VERSION: u32 = 1;
 
+/// The `sections` map: one version per section, and the **only** place those
+/// numbers are written.
+///
+/// Both dump entry points call this. That matters more than it looks: the map
+/// used to be built inline in each of them, so adding a section meant editing two
+/// literal lists and a version bump applied to one of them was a silent
+/// divergence a consumer would only notice by diffing two dumps of the same file.
+///
+/// Bump a section here when *that section's* shape changes; leave
+/// [`ENVELOPE_VERSION`] alone unless the outer object itself is restructured.
+///
+/// * `scopes` 1, `types` 1, `references` 1, `diagnostics` 1 — unchanged since
+///   the envelope was introduced.
+/// * `symbols` 2 — schema-derived synthetic entries (`declaration ==
+///   NodeId::DUMMY`) appear when a schema is loaded.
+/// * `preproc` 1, `coverage` 1 — new sections, promoted from keys the CLI used
+///   to splice in after the fact.
+fn section_versions() -> Value {
+    let mut sections = Map::new();
+    sections.insert("scopes".into(), json!(1));
+    sections.insert("symbols".into(), json!(2));
+    sections.insert("types".into(), json!(1));
+    sections.insert("references".into(), json!(1));
+    sections.insert("diagnostics".into(), json!(1));
+    sections.insert("preproc".into(), json!(1));
+    sections.insert("coverage".into(), json!(1));
+    Value::Object(sections)
+}
+
 /// Produce a stable, versioned JSON document describing a file's semantic
 /// analysis. Includes lint diagnostics from [`oxabl_lint::lint_file`].
 pub fn dump_json(
@@ -67,24 +108,21 @@ pub fn dump_json(
         Vec::new()
     };
 
-    let mut sections = Map::new();
-    sections.insert("scopes".into(), json!(1));
-    // v2: symbols include schema-derived synthetic entries (declaration =
-    // NodeId::DUMMY) when a schema is loaded.
-    sections.insert("symbols".into(), json!(2));
-    sections.insert("types".into(), json!(1));
-    sections.insert("references".into(), json!(1));
-    sections.insert("diagnostics".into(), json!(1));
-
     json!({
         "envelope": ENVELOPE_VERSION,
-        "sections": Value::Object(sections),
+        "sections": section_versions(),
         "schema_revision": sem.schema_revision.raw(),
         "scopes": scopes_json(sem),
         "symbols": symbols_json(sem),
         "references": references_json(sem),
         "types": types_json(sem),
         "diagnostics": diagnostics_json(sem, &lint_diags),
+        // Empty by construction, not by omission: this entry point is handed an
+        // already-parsed program and never ran a preprocessor, so there is no
+        // preprocessor diagnostic to report. The section is still present so a
+        // consumer can index it unconditionally.
+        "preproc": Value::Array(Vec::new()),
+        "coverage": coverage_json(sem),
     })
 }
 
@@ -94,25 +132,27 @@ pub fn dump_json(
 /// diagnostic set is byte-for-byte the collector's (R7): the non-diagnostic
 /// sections (scopes, symbols, references, types) still come from `sem`, but the
 /// `diagnostics` array is built from the collector's parse / semantic / lint
-/// entries. Preprocessor diagnostics are intentionally excluded here — the CLI
-/// surfaces them through its separate `preproc_diagnostics` channel.
+/// entries.
+///
+/// Preprocessor diagnostics stay out of `diagnostics` — they are not findings
+/// about the source, they are coverage warnings about the run — but they are no
+/// longer *dropped*: they get their own `preproc` section, built from the same
+/// `collected` set, so a caller that only reads this document still sees them.
+/// The `coverage` section reports [`unjudged_symbol_count`] for the same reason.
+/// Both used to be keys the CLI spliced in afterwards, which meant every other
+/// caller of this function silently lost them.
 pub fn dump_json_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnostics) -> Value {
-    let mut sections = Map::new();
-    sections.insert("scopes".into(), json!(1));
-    sections.insert("symbols".into(), json!(2));
-    sections.insert("types".into(), json!(1));
-    sections.insert("references".into(), json!(1));
-    sections.insert("diagnostics".into(), json!(1));
-
     json!({
         "envelope": ENVELOPE_VERSION,
-        "sections": Value::Object(sections),
+        "sections": section_versions(),
         "schema_revision": sem.schema_revision.raw(),
         "scopes": scopes_json(sem),
         "symbols": symbols_json(sem),
         "references": references_json(sem),
         "types": types_json(sem),
         "diagnostics": collected_diagnostics_json(collected),
+        "preproc": preproc_json(collected),
+        "coverage": coverage_json(sem),
     })
 }
 
@@ -159,13 +199,19 @@ pub fn dump_text(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -
         writeln!(out, "  [{}] {:?} {}", d.code.0, d.severity, d.message).ok();
     }
 
+    // This entry point never ran a preprocessor, so the `preproc` section has no
+    // text counterpart here; coverage does.
+    write_coverage(&mut out, sem);
     out
 }
 
 /// Text rendering that sources its diagnostics from the shared collector (the
 /// CLI `analyze --format text` path). Scopes and symbols come from `sem`; the
-/// diagnostics list is the collector's parse / semantic / lint entries
-/// (preprocessor diagnostics are surfaced on their own CLI channel).
+/// diagnostics list is the collector's parse / semantic / lint entries.
+///
+/// The preprocessor and coverage sections are rendered here too — they were
+/// JSON-only for as long as the CLI spliced them in, so `--format text` used to
+/// be strictly less informative than `--format json` about the *same* run.
 pub fn dump_text_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnostics) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -181,7 +227,28 @@ pub fn dump_text_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnosti
         writeln!(out, "  [{}] {:?} {}", d.code.0, d.severity, d.message).ok();
     }
 
+    let preproc: Vec<&Diagnostic> = collected
+        .by_source(DiagnosticSource::Preproc)
+        .map(|c| &c.diagnostic)
+        .collect();
+    writeln!(out, "\n=== Preprocessor ({}) ===", preproc.len()).ok();
+    for d in preproc {
+        writeln!(out, "  [{}] {:?} {}", d.code.0, d.severity, d.message).ok();
+    }
+
+    write_coverage(&mut out, sem);
     out
+}
+
+/// The `coverage` section's text form: how much of the file the count-gated lint
+/// rules could not judge. Always printed, including at zero — unlike the CLI's
+/// stderr note, which stays silent at zero because a line that always appears is
+/// a line users learn to skip. A *section* is different: a dump reader indexing
+/// into it needs it to exist.
+fn write_coverage(out: &mut String, sem: &Semantic) {
+    use std::fmt::Write;
+    writeln!(out, "\n=== Coverage ===").ok();
+    writeln!(out, "  unjudged symbols: {}", unjudged_symbol_count(sem)).ok();
 }
 
 fn write_scopes_and_symbols(out: &mut String, sem: &Semantic) {
@@ -391,10 +458,10 @@ fn diagnostics_json(sem: &Semantic, lint_diags: &[Diagnostic]) -> Value {
 
 /// Build the `diagnostics` section from the shared collector's output.
 ///
-/// Only the parse / semantic / lint stages feed the envelope section (in that
-/// pipeline order); preprocessor diagnostics are surfaced through the CLI's
-/// separate `preproc_diagnostics` channel and are skipped here. Spans are
-/// already resolved to root-buffer coordinates by the collector.
+/// Only the parse / semantic / lint stages feed this section (in that pipeline
+/// order); preprocessor diagnostics go to the `preproc` section instead — see
+/// [`preproc_json`] for why they are kept apart. Spans are already resolved to
+/// root-buffer coordinates by the collector.
 fn collected_diagnostics_json(collected: &CollectedDiagnostics) -> Value {
     let rows: Vec<DiagnosticRow> = collected
         .all()
@@ -402,6 +469,35 @@ fn collected_diagnostics_json(collected: &CollectedDiagnostics) -> Value {
         .map(|c| diag_row(&c.diagnostic, c.source.as_str()))
         .collect();
     serde_json::to_value(rows).unwrap_or(Value::Null)
+}
+
+/// Build the `preproc` section: the collector's loud, root-origin preprocessor
+/// diagnostics.
+///
+/// Its own section rather than an extra `source` in `diagnostics`, because a
+/// `PREPROC007` unresolvable include is not a finding *about the source* — it
+/// says "part of this file was never seen, so treat the rest of this document as
+/// incomplete". A consumer deciding whether to trust the dump reads this
+/// section; a consumer listing problems reads `diagnostics`. Merging them would
+/// force every such consumer to filter.
+///
+/// Rows use the same shape as `diagnostics`, so one deserializer serves both.
+fn preproc_json(collected: &CollectedDiagnostics) -> Value {
+    let rows: Vec<DiagnosticRow> = collected
+        .by_source(DiagnosticSource::Preproc)
+        .map(|c| diag_row(&c.diagnostic, c.source.as_str()))
+        .collect();
+    serde_json::to_value(rows).unwrap_or(Value::Null)
+}
+
+/// Build the `coverage` section: what the analysis could *not* answer.
+///
+/// An object rather than a bare `unjudged_symbols` scalar so the next coverage
+/// fact has a home. The CLI reached the scalar by splicing a key into the
+/// finished document, and a second such fact would have meant a second splice —
+/// which is the pattern this section exists to end.
+fn coverage_json(sem: &Semantic) -> Value {
+    json!({ "unjudged_symbols": unjudged_symbol_count(sem) })
 }
 
 fn diag_row(d: &Diagnostic, source: &'static str) -> DiagnosticRow {
