@@ -149,6 +149,12 @@ struct ComputeResult {
     /// `None` when the computation produced no trustworthy set (cancelled, or a
     /// contained panic) — see [`analyze_guarded`].
     dependencies: Option<Vec<PathBuf>>,
+    /// Whether the absent halves above come from a **contained panic** rather
+    /// than a cancellation. The two are otherwise indistinguishable at the
+    /// receiving end, and they want opposite handling: a cancellation is a race
+    /// worth retrying, a panic is deterministic in the buffer's text and
+    /// retrying it would spin forever (see [`Server::handle_result`]).
+    panicked: bool,
 }
 
 impl<'c> Server<'c> {
@@ -255,13 +261,13 @@ impl<'c> Server<'c> {
                 // The guard is inside `analyze_guarded`, so the send below is
                 // reached on every path — a panic must not leave this buffer
                 // waiting forever on a result that never arrives (R8).
-                let (diagnostics, dependencies) =
-                    analyze_guarded(&snapshot, buffer, schema, uri.as_str());
+                let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
                 let _ = tx.send(ComputeResult {
                     uri,
                     version,
-                    diagnostics,
-                    dependencies,
+                    diagnostics: analysis.diagnostics,
+                    dependencies: analysis.dependencies,
+                    panicked: analysis.panicked,
                 });
             });
         }
@@ -269,6 +275,20 @@ impl<'c> Server<'c> {
 
     /// Publish a completed computation, unless it was cancelled (`None`) or its
     /// buffer version has since been superseded by a newer edit (KTD7).
+    ///
+    /// A **cancelled** result for a buffer that is still open at the version the
+    /// worker read is the one case that must not simply be dropped.
+    /// [`salsa::Cancelled`] is global — a write to *any* buffer's input flags
+    /// every live snapshot — so editing file A cancels file B's in-flight
+    /// computation even though B never changed. B's timer was consumed when its
+    /// worker was spawned and B's own version is unchanged, so nothing would ever
+    /// re-fire it: B would keep displaying pre-edit diagnostics until the user
+    /// touched it again. Re-arming the debounce here is what makes cancellation
+    /// the optimization it is documented to be rather than lost work.
+    ///
+    /// A *contained panic* arrives in the same shape (absent diagnostics) and
+    /// must **not** be retried: it is deterministic in the buffer's text, so a
+    /// reschedule would spin the file at the debounce interval forever.
     fn handle_result(&mut self, res: ComputeResult) {
         match self.documents.get(&res.uri) {
             None => return,                                    // buffer closed
@@ -277,7 +297,11 @@ impl<'c> Server<'c> {
         }
         self.record_dependencies(&res.uri, res.dependencies);
         let Some(collected) = res.diagnostics else {
-            return; // cancelled snapshot read
+            // Cancelled snapshot read: recompute, or this buffer goes stale.
+            if !res.panicked {
+                self.debouncer.schedule(res.uri, std::time::Instant::now());
+            }
+            return;
         };
         let Some(doc) = self.documents.get(&res.uri) else {
             return;
@@ -477,10 +501,17 @@ impl<'c> Server<'c> {
         let snapshot = self.db.clone();
         // Guarded (R8): this runs on the main loop, so an unguarded panic here
         // takes the whole server down.
-        let (collected, dependencies) =
-            analyze_guarded(&snapshot, buffer, self.schema, uri.as_str());
-        self.record_dependencies(uri, dependencies);
-        let Some(collected) = collected else {
+        let analysis = analyze_guarded(&snapshot, buffer, self.schema, uri.as_str());
+        self.record_dependencies(uri, analysis.dependencies);
+        let Some(collected) = analysis.diagnostics else {
+            // A cancellation is not expected on this path (nothing writes to the
+            // db while the main loop is inside this call), but if one ever does
+            // arrive the open would otherwise publish nothing at all and no timer
+            // would remain — the same stale-forever shape as in `handle_result`.
+            if !analysis.panicked {
+                self.debouncer
+                    .schedule(uri.clone(), std::time::Instant::now());
+            }
             return;
         };
         if let Some(doc) = self.documents.get(uri) {
@@ -697,10 +728,7 @@ pub(crate) fn analyze_guarded(
     buffer: Buffer,
     schema: SchemaHandle,
     label: &str,
-) -> (
-    Option<oxabl_analyze::CollectedDiagnostics>,
-    Option<Vec<PathBuf>>,
-) {
+) -> Analysis {
     let computed = catch_panic(|| {
         let diagnostics = compute_diagnostics(snapshot, buffer, schema);
         // Dependency paths come from the (now-warm) expansion memo.
@@ -708,12 +736,32 @@ pub(crate) fn analyze_guarded(
         (diagnostics, dependencies)
     });
     match computed {
-        Ok(pair) => pair,
+        Ok((diagnostics, dependencies)) => Analysis {
+            diagnostics,
+            dependencies,
+            panicked: false,
+        },
         Err(panic) => {
             eprintln!("oxabl-lsp: analysis panicked for {label}: {panic}");
-            (None, None)
+            Analysis {
+                diagnostics: None,
+                dependencies: None,
+                panicked: true,
+            }
         }
     }
+}
+
+/// The outcome of one [`analyze_guarded`] call.
+///
+/// The two `Option`s carry the "no trustworthy answer" contract described above;
+/// `panicked` is what separates the two ways of having no answer. Client-visible
+/// behavior does not distinguish them, but the server's *scheduling* must: a
+/// cancelled computation is worth re-running, a panicked one is not.
+pub(crate) struct Analysis {
+    pub(crate) diagnostics: Option<oxabl_analyze::CollectedDiagnostics>,
+    pub(crate) dependencies: Option<Vec<PathBuf>>,
+    pub(crate) panicked: bool,
 }
 
 /// Best-effort conversion of a `file:` URI to a filesystem path. Returns `None`
@@ -768,6 +816,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            panicked: false,
         });
 
         assert_eq!(
@@ -801,5 +850,79 @@ mod tests {
             server.buffers_depending_on(&include).is_empty(),
             "an empty set is a real answer and must take effect"
         );
+    }
+
+    /// Salsa cancellation is **global**: a write to buffer A's input flags every
+    /// live snapshot, so an edit in A cancels B's in-flight computation even
+    /// though B did not change. B's timer was consumed when its worker was
+    /// spawned, so without an explicit reschedule the cancelled result is simply
+    /// dropped and B keeps showing pre-edit diagnostics until it is touched
+    /// again. The cancelled arm must re-arm the timer.
+    #[test]
+    fn a_cancelled_computation_reschedules_the_recompute() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+        assert!(server.debouncer.next_deadline().is_none());
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: false,
+        });
+
+        assert!(
+            server.debouncer.next_deadline().is_some(),
+            "a cancelled computation must re-arm the buffer's debounce timer"
+        );
+    }
+
+    /// The other side of that arm: a *contained panic* also arrives as absent
+    /// diagnostics, and rescheduling it would spin the file forever — a panic is
+    /// deterministic in the buffer's text, so every retry panics again. Only a
+    /// cancellation is retried.
+    #[test]
+    fn a_contained_panic_does_not_reschedule() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: true,
+        });
+
+        assert!(
+            server.debouncer.next_deadline().is_none(),
+            "a contained panic must not be retried in a loop"
+        );
+    }
+
+    /// A superseded result must not reschedule either: the edit that superseded
+    /// it already scheduled its own recompute, and re-arming here would only
+    /// duplicate that timer.
+    #[test]
+    fn a_superseded_result_does_not_reschedule() {
+        let (connection, _client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 2, "MESSAGE \"hi\".\n");
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: false,
+        });
+
+        assert!(server.debouncer.next_deadline().is_none());
     }
 }

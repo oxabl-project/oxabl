@@ -51,9 +51,16 @@
 //! main thread cancels in-flight snapshot reads via a `Cancelled` unwind, which
 //! [`compute_diagnostics`] swallows. [`buffer_dependencies`] carries its own
 //! catch for the same reason — every entry point that reads a snapshot needs
-//! one, or a cancellation escapes as a panic. Version tag-and-discard in the debounce
-//! layer (U6) is the primary correctness mechanism; cancellation is an
-//! optimization on top.
+//! one, or a cancellation escapes as a panic. Version tag-and-discard in the
+//! debounce layer (U6) is the primary correctness mechanism.
+//!
+//! Cancellation is **not** free on top of it: salsa flags every live snapshot,
+//! not just the one whose buffer was written, so an edit in one file cancels
+//! every other file's in-flight computation. A cancelled computation is
+//! *abandoned work on a buffer that may not have changed at all*, so the server
+//! re-arms that buffer's debounce timer when a cancelled result arrives
+//! ([`crate::Server::handle_result`]) — dropping it would leave the untouched
+//! file displaying pre-edit diagnostics until the user typed in it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -334,17 +341,21 @@ mod tests {
 
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(|_| {}));
-            let (diagnostics, dependencies) =
-                crate::analyze_guarded(&db, buffer, schema, "file:///injected.p");
+            let analysis = crate::analyze_guarded(&db, buffer, schema, "file:///injected.p");
             std::panic::set_hook(previous);
 
             assert!(
-                diagnostics.is_none(),
+                analysis.diagnostics.is_none(),
                 "a panic at {site} must degrade to no diagnostics"
             );
             assert!(
-                dependencies.is_none(),
+                analysis.dependencies.is_none(),
                 "a panic at {site} must degrade dependencies together with diagnostics"
+            );
+            assert!(
+                analysis.panicked,
+                "a panic at {site} must be reported as a panic, not as a cancellation — \
+                 the scheduler retries the latter and must not retry the former"
             );
         }
     }
@@ -373,8 +384,11 @@ mod tests {
         let buffer = Buffer::new(&db, "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n".to_string());
         let schema = SchemaHandle::new(&db, 0);
 
-        let (diagnostics, _deps) = crate::analyze_guarded(&db, buffer, schema, "file:///healthy.p");
-        let diagnostics = diagnostics.expect("a healthy buffer yields diagnostics");
+        let analysis = crate::analyze_guarded(&db, buffer, schema, "file:///healthy.p");
+        assert!(!analysis.panicked);
+        let diagnostics = analysis
+            .diagnostics
+            .expect("a healthy buffer yields diagnostics");
         assert!(diagnostics.all().any(|c| c.diagnostic.code.0 == "LINT0002"));
     }
 
