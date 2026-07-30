@@ -17,8 +17,8 @@
 //! default to `Unknown` so cascading diagnostics are suppressed.
 
 use oxabl_ast::{
-    AssignPair, CreateTarget, Expression, ExpressionKind, Literal, OnAction, OnKind, RunTarget,
-    Statement, StatementKind, StreamOperation, SubscribeTarget,
+    AssignPair, CreateTarget, Expression, ExpressionKind, Literal, NodeId, OnAction, OnKind,
+    RunTarget, Statement, StatementKind, StreamOperation, SubscribeTarget,
 };
 use oxabl_common::Diagnostic;
 
@@ -558,6 +558,25 @@ impl<'a> CheckWalker<'a> {
                 // expression that resolves *to* a class symbol (e.g. `NEW
                 // Foo(...)`) has type `Class(Foo)`.
                 match symbol.kind {
+                    // A class symbol *synthesized from the workspace index*
+                    // (`declaration == NodeId::DUMMY`, per KTD6's conventions)
+                    // deliberately does not produce a `Class` type yet. It could:
+                    // the symbol is real and shared by every reference to that
+                    // class. But `assignable` compares class symbols by identity
+                    // and knows nothing about inheritance, so typing `NEW
+                    // MyApp.Foo()` as `Class(foo)` starts reporting
+                    // `type-mismatch-assignment` on `i = NEW MyApp.Foo()` and on
+                    // every assignment of a subclass to a parent-typed variable —
+                    // findings that do not exist today. Widening assignability is
+                    // a separate, deliberately-judged step; until it lands, a
+                    // cross-file class stays at the lattice bottom, which is
+                    // exactly where a class-typed declaration whose class lives
+                    // in another file already sits.
+                    SymbolKind::Class | SymbolKind::Interface
+                        if symbol.declaration == NodeId::DUMMY =>
+                    {
+                        ResolvedType::Unknown
+                    }
                     SymbolKind::Class | SymbolKind::Interface => ResolvedType::Class(*sym),
                     SymbolKind::Buffer | SymbolKind::TempTable => ResolvedType::Buffer(*sym),
                     _ => symbol.data_type.clone().unwrap_or(ResolvedType::Unknown),
