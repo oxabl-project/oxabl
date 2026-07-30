@@ -444,11 +444,20 @@ pub mod pipeline {
     };
 }
 
-/// Workspace — the file-system abstraction and `oxabl.toml` config resolution.
+/// Workspace — the file-system abstraction, `oxabl.toml` parsing, and root-file
+/// discovery.
+///
+/// For resolved *configuration*, reach for [`pipeline::PipelineConfig`] rather
+/// than assembling surfaces here: it reads `oxabl.toml` once and derives include
+/// paths, lint severities, style, and schema together. The per-surface
+/// `resolved_lint_config` and `resolved_style` helpers this module used to
+/// re-export are gone, because each re-parsed the file and they could disagree.
+/// `resolved_include_paths` remains for the one caller that wants that single
+/// surface without a full resolution.
 pub mod workspace {
     pub use oxabl_workspace::{
-        FileSystem, InMemoryFileSystem, LintConfig, LintSeverity, RealFileSystem, Workspace,
-        WorkspaceConfig, find_workspace_root, resolved_include_paths, resolved_lint_config,
-        resolved_style,
+        FileSystem, InMemoryFileSystem, LintConfig, LintSeverity, ROOT_EXTENSIONS, RealFileSystem,
+        Workspace, WorkspaceConfig, discover_path, find_workspace_root, is_root_file,
+        resolved_include_paths, walk_directory,
     };
 }

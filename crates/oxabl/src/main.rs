@@ -474,8 +474,7 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
         None => None,
     };
 
-    // One config resolution, through the shared resolver rather than the
-    // single-surface `resolved_style` helper: `--style` outranks
+    // One config resolution for every surface: `--style` outranks
     // `[workspace.style]` wholesale, and a malformed `oxabl.toml` degrades to
     // defaults with one `warning:` line (R7).
     let overrides = ConfigOverrides {

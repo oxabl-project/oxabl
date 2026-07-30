@@ -187,7 +187,9 @@ pub enum NotFormattedKind {
 /// client stand this handle up from a preset in one expression.
 ///
 /// There is no filesystem, no include path, and no preprocess input, and that
-/// absence is the enforcement of R4/KTD4; see the [module docs](self).
+/// absence is the enforcement of R4/KTD4: the formatter must see raw source,
+/// because formatting expanded macro output would rewrite the wrong bytes. A
+/// flag that cannot be passed cannot be passed wrongly.
 #[derive(Debug, Clone)]
 pub struct FormatPipeline {
     style: StyleGuide,
@@ -209,8 +211,10 @@ impl FormatPipeline {
     /// Guarded, so a panic anywhere in `tokenize → parse → format` becomes a
     /// [`NotFormattedKind::InternalPanic`] outcome rather than unwinding into a
     /// caller that may already have rewritten earlier files. The guard is
-    /// `try_format_source`'s own [`catch_panic`](oxabl_common::catch_panic); see
-    /// the [module docs](self) for why it is not wrapped a second time.
+    /// `try_format_source`'s own [`catch_panic`](oxabl_common::catch_panic),
+    /// which is why this does not wrap it a second time — a second layer could
+    /// never fire, and reaching for the umbrella's re-export instead would be a
+    /// package cycle.
     pub fn format(&self, source: &str) -> FormatOutcome {
         match try_format_source(source, &self.style) {
             // Byte-identical output is its own answer, not a `Reformatted` a

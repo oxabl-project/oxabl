@@ -30,10 +30,11 @@ impl Workspace {
     /// Discover a workspace rooted at `root`.
     ///
     /// Reads `oxabl.toml` from `root`, then walks all declared source
-    /// directories under the shared root policy
-    /// ([`crate::discovery`]: `.p`, `.w`, `.cls`, `.v`, case-insensitive, `.i`
-    /// excluded), assigning each discovered file a
-    /// [`FileId`](oxabl_common::FileId).
+    /// directories under the shared root policy ([`is_root_file`]: `.p`, `.w`,
+    /// `.cls`, `.v`, case-insensitive, `.i` excluded), assigning each discovered
+    /// file a [`FileId`](oxabl_common::FileId).
+    ///
+    /// [`is_root_file`]: crate::is_root_file
     pub fn from_path(root: &Path) -> Result<Self, String> {
         let config = WorkspaceConfig::from_path(root)?;
         let fs = Arc::new(RealFileSystem);
@@ -177,11 +178,6 @@ include_paths = [{}]
         let ws = Workspace::in_memory(config, mem_fs);
         assert!(ws.file_set.is_empty());
     }
-
-    // The old `is_abl_file_checks` test lived here and asserted `.i` IS an ABL
-    // file — the pre-R9 policy written down. The predicate now lives in
-    // `crate::discovery` and is tested there; `in_memory_matches_the_shared_root_policy`
-    // above covers this module's use of it.
 
     #[test]
     fn resolve_include_through_workspace() {
