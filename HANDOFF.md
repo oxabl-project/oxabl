@@ -1,9 +1,9 @@
-# Handoff: table-use forms now credit their table (#130); the remaining uncredited-read half is #134
+# Handoff: one shared lint and format run behind every client (#120); dogfooded at zero drift
 
-**Date:** 2026-07-29
-**Branch:** `evanbrobertson/semantic-credit-table-reads-in-define-buffer-emp`, ahead of `master`.
-**This session:** Shipped **#130** — the five statement forms that name a table without reading a field of it now credit a read on that table, removing the residual LINT0002 false positive on a `TABLE FOR tt` parameter whose temp-table is used only that way. Details under the lint-accuracy map below.
-**Prior context:** #133 (browser WASM playground), #135 (panic-safe entry points, closing #119), and #137 (#128's unmodelled-statement crediting) all shipped in preceding sessions; #128's follow-up map is reproduced below because #130 builds directly on its carrier.
+**Date:** 2026-07-30
+**Branch:** `evanbrobertson/rework-check-analyze-into-shared-lint-format-pip` — open as **PR #140**, 18 commits ahead of `master` (`6e39138`).
+**This session:** Ran the A/B that decides whether #140 can merge, and it came back clean: **zero lint drift** against a large real-world ABL codebase kept outside this repo. Also fixed a silent defect the reshape introduced in `scripts/lint-ab-diff.sh`. Details under **Dogfood A/B** below.
+**Prior context:** #140 implements #120 — the eleven-unit plan at `docs/plans/2026-07-24-001-refactor-shared-lint-format-pipelines-plan.md` (local; `docs/plans/` is gitignored). #133 (browser playground), #135 (panic-safe entry points), #137 (#128's crediting) and #130 (table-use crediting) all shipped before it. The lint-accuracy map from #129/#128/#130 is carried forward below unchanged — it is still the thing to read before triaging a "LINT0006 is wrong" report.
 
 ---
 
@@ -11,109 +11,103 @@
 
 | Item | Status |
 |------|--------|
-| #133 browser WASM adapter | **Done — merged, playground working end to end.** |
-| #129 table-parameter FP + LINT0006 split | Done — merged, dogfooded (FP count down). |
-| #128 | **Done — standalone unmodelled forms credited** (`StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT`). Bounded triage; #136 is the scheduled drain. |
-| #130 | **Done — table-use forms credited.** All five shapes (`DEFINE BUFFER`, `DEFINE PARAMETER BUFFER`, `EMPTY TEMP-TABLE`, `DEFINE QUERY`, `OPEN QUERY`) now credit a read on the table they name. |
+| #120 CLI reshape onto shared pipelines | **Done — this branch, PR #140.** `oxabl_pipeline` owns config resolution, both runs, and one result model; CLI, LSP and WASM are renderers. Dogfooded at zero drift. |
+| #130 | Done — merged. Table-use forms credit a read on the table they name. |
+| #128 / #137 | Done — merged. Standalone unmodelled forms credited (`StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT`). #136 is the scheduled drain. |
+| #133 browser WASM adapter | Done — merged; now a transport adapter over `oxabl_pipeline` rather than over the umbrella directly. |
+| #119 panic-safe parse/format | Done — shipped as #135. |
 | #134 | Open — the last uncredited-read half: skipped *tails* inside modelled statements. |
 | #136 | Open and **scheduled** (`hermes`) — head-parse the unmodelled forms; retires #128's flag and #130's query approximation. |
-| #119 panic-safe parse/format | **Done — shipped as #135** (`catch_panic` + browser crash recovery). |
+| #108 unresolvable-include-as-argument | Open — the fully-wired re-dogfood it was waiting on **has now run**; still unconfirmed. See **Next** item 4. |
 | #131 / #132 | Open — LINT0006 write-site span breadth; `oxabl_lint` benchmark coverage. |
 | #125 | Open and **unblocked** — small, template is fresh. |
 | #124 / #126 | Open — the rest of the flow-analysis cluster. |
-| #102 / #103 cross-file resolution | Open — still the **top strategic thread**, but it does nothing for the playground. |
+| #102 / #103 cross-file resolution | Open — the **top strategic thread**, and now the clear next move: #120 built the seam it needs. |
 | #57 public lint-rule API | Open — blocked on #102. |
-| #120 CLI reshape onto shared pipelines | Open, but **strategy pass done and plan written + ratified** (`docs/plans/2026-07-24-001-refactor-shared-lint-format-pipelines-plan.md`, local — `docs/plans/` is gitignored). Both reasons it used to rank low are discharged, and the plan has been **refreshed against `971a01b`** (2026-07-29) — implementation-ready, start at U11. See **Next** item 5. |
-| #108 unresolvable-include-as-argument | Open — deferred pending a fully-wired re-dogfood. |
 
 ---
 
-## What shipped this session — #130
+## What shipped on this branch — #120
 
-Five statement forms name a table without reading a field of it, so nothing in the expression walk ever saw them and the backing symbol's `read_count` stayed at zero. That is what made LINT0002's table-parameter redirect ask the right symbol and still get the wrong answer: a `TABLE FOR tt` parameter whose temp-table was used only that way got reported as unused.
+The case for this work was never diagnostic-mapping dedup. The clients' final hops genuinely differ and still do. The layer *above* those hops was not merely duplicated but **divergent**: three config resolutions that disagreed, two file walkers that disagreed on both extensions and case, and a flagship `check` that never entered the shared analysis at all while a source comment claimed it did. Those were wrong answers.
 
-| Form | How it credits now |
-|---|---|
-| `DEFINE BUFFER b FOR tt.` | Direct AST resolution of the target |
-| `DEFINE PARAMETER BUFFER b FOR tt.` | Same, via `ParameterType::Buffer` |
-| `EMPTY TEMP-TABLE tt.` | Marked `Skipped` carrying its exactly-parsed table name |
-| `DEFINE QUERY q FOR tt.` | Marked `Skipped`, lexical harvest |
-| `OPEN QUERY q FOR EACH tt.` | Marked `Skipped`, lexical harvest |
+**The new crate.** `oxabl_pipeline` sits *beneath* `oxabl_lsp`, `oxabl_wasm` and the umbrella — it had to be a new crate, not a module in `oxabl`, because `oxabl` optionally depends on `oxabl_lsp`, so the LSP cannot depend back on the umbrella. It **must never gain a `salsa` dependency**: the umbrella re-exports it unconditionally and the browser bundle is built through the umbrella.
 
 **Decisions / gotchas future sessions should know:**
 
-- **`StatementKind::Skipped` gained `may_reference_tables`.** A marked node keeps #128's value-namespace treatment *unchanged* and additionally resolves the same names in `[Buffers, Tables]` as `AccessMode::Read`. The two paths are independent on purpose: a token can resolve in both namespaces under shadowing, and they record different facts — the value side records that counts cannot be judged, the table side records a real read. Only three forms set the marker, so ordinary #128 forms pay no extra namespace walk.
-- **The same-name guard is load-bearing.** `DEFINE BUFFER Customer FOR Customer.` is the standard ABL block-scoping idiom, and the declare pass has already bound the new buffer under that folded name. An unguarded lookup resolves the target to the buffer being declared and credits it a read *for existing*, which would silence every count-gated rule for that symbol.
-- **Both credit paths go through `resolve_statement_ident`**, which is silent on a miss. That is what lets the deliberately over-inclusive query harvest run without creating a `references` entry or an `undefined-symbol` diagnostic for every stray token.
-- **The query forms stay lexically harvested until #136 head-parses them**, so every identifier inside a `DEFINE QUERY` / `OPEN QUERY` is a table candidate. Over-crediting can silence a diagnostic but cannot invent one — the same conservative direction #128 chose, but bounded to two forms.
-- **A bare *schema* table is still credited by nobody.** `synth_table_buffer_symbol` inserts into the `SymbolTable` without binding into the `ScopeTree`, and nothing declares into `NamespaceId::Tables` at all — so `DEFINE BUFFER bCust FOR Customer.` under a loaded schema credits nothing, exactly as `FIND` and `FOR EACH` leave it today. Deliberately out of scope; that boundary now has a test (`schema_only_targets_retain_current_no_credit_behavior`) rather than being folklore.
-- **The parser accepted only the *invalid* spelling of a buffer parameter.** Buffer parameters carry no direction in ABL — the buffer binds to the caller's — but only `DEFINE INPUT PARAMETER BUFFER b FOR tt` parsed, and the valid directionless `DEFINE PARAMETER BUFFER b FOR tt` was a parse error. Fixed here: an end-to-end pin against a source form real code never contains proves nothing. Both spellings now produce the same node.
-- **A comment between `OPEN` and `QUERY` defeated the marker** in the first cut, because the split used a raw one-token lookahead while every other keyword boundary in the parser tolerates an interleaved comment. Caught in review; it now uses `peek_nth_non_comment`. Worth remembering as a class: a new lookahead in this parser should assume a comment can sit in the gap.
+- **`PipelineConfig::resolve` reads `oxabl.toml` exactly once** into include paths, lint severities, style and schema. Non-fatal problems come back as `ConfigWarning` **data**, so whether to surface them is the client's choice rather than an accident of which surface you are on. An inner `resolve_from_config` over an already-parsed value makes a second parse impossible by construction — don't add a convenience wrapper that re-reads the file.
+- **`LintPipeline` exposes `expand`/`collect` as separate phases**, plus a composed `run`. The split exists because the LSP needs the intermediate for watcher matching and salsa early cutoff. **Only `run` is guarded.** The two phases are deliberately unguarded because salsa's `Cancelled` travels as a panic payload — a `catch_panic` inside them would swallow cancellation and publish stale diagnostics. This is the single most invertible-looking decision in the crate; leave it alone.
+- **`FormatPipeline` takes a `StyleGuide` alone** — no filesystem, no include paths, and therefore **nowhere to put a preprocess flag**. "The formatter never sees expanded macros" is structural here, not documented-and-hoped-for. Its refusal variant carries the formatter's own `FormatFailure`, so #135's bail-versus-panic split survives without anyone string-matching a message.
+- **`LintResult` distinguishes a run that computed zero diagnostics from one that never got to look**, keeps `labels`/`help`, and stays **byte-span-only**. Byte spans are the contract because the LSP's rope is the only correct position oracle under a negotiated encoding.
+- **`position` gives byte-offset clients one line/column derivation** and documents why the LSP must *not* use it: a byte column is a different number from a UTF-16 column. The CLI's text output and the WASM wire shape both go through it, so those two cannot drift.
+- **`check` is now the lint-and-format gate**, reporting lint findings and format drift in **two channels** that are never merged — a finding is span-anchored, drift is a per-file boolean, and merging them means synthesizing spans that do not exist. Plus a coverage line that never moves the exit code. A per-file internal panic is reported and the walk **continues** (exit 1, not `analyze`'s 4), with those failures under their own `--json` key so an oxabl bug stays distinguishable from an unused variable.
+- **`check` preprocesses by default**, unlike `conformance` and `analyze`. A gate that does not expand includes reports every include-declared symbol as `undefined-symbol` — a flood about the caller's own correct code — and the LSP always preprocesses, so the default had to match or the gate and the editor would disagree on any project using an include.
+- **Visible CLI is exactly `check`, `format`, `lsp`, `schema`.** `conformance` (the parse-conformance walk `check` used to be) and `analyze` are **hidden but fully supported and documented in the README** — a hidden undocumented command is an undiscoverable one. Exit codes are **not** uniformly 0/1/2: `analyze` also uses 4 (contained panic), 6 (serialize failure) and 7 (unsupported `--format`), and the whole contract is pinned by tests.
+- **The analyze envelope now emits seven versioned sections.** `preproc` and `coverage` used to be keys the CLI spliced into the returned `Value` after the library handed it back; they are library-emitted now, which also made them visible in `--format text` for the first time. `coverage` is an **object** so the next coverage fact is an added key rather than an eighth section. The version map is one private helper because it had two call sites that could drift.
+- **One root-file policy.** `discovery` owns it — `p`/`w`/`cls`/`v` matched case-insensitively, `.i` never a root — replacing two private walkers that disagreed on both the extension set and case sensitivity. The per-surface config helpers the shared resolver replaced were deleted, not left as deprecated shims.
+- **The cross-client parity suite earned itself on its first run.** It asserts one source yields identical codes, severities, byte spans and sources through four entry points — composed vs two-phase run, the CLI binary, the LSP's salsa queries over a rope, and the WASM exports. It immediately caught a real shipped divergence: two default severity tables meant `unknown-table-or-field` and `type-mismatch-assignment` came back `error` in the browser and `warning` everywhere else under the same empty environment. One derived table now. Spans are compared as **bytes**, not rendered positions, so encoding conversion is never mistaken for a pipeline difference; and where a client is deliberately less capable the suite asserts the **capability is unavailable** rather than a different answer.
 
-**Follow-ups this deliberately did not do:**
+**Two known preprocessor gaps, both pre-existing and both verified against the binary** — do not let a PR description claim otherwise. An unresolvable `{include}` emits a loud `PREPROC007` naming the true cause, but (1) the downstream `undefined-symbol` flood is **not** actually suppressed — you get `PREPROC007` *and* a finding per include-declared reference — and (2) a **nested** unresolvable include is silent in every shared-pipeline client, because `expand_source` filters loud preproc diagnostics to root-origin only. The conformance walk still prints it. Suppressing the flood when a root-origin `PREPROC007` fires is the real fix and is unclaimed.
 
-1. **Whether an unused buffer symbol deserves its own diagnostic.** Crediting a buffer definition's target removes a table-parameter false positive, but a buffer that is bound and never used stays silent under the current rule set — `is_candidate` excludes `Buffer`/`TempTable`, so nothing can pick it back up.
-2. **Binding synthesized schema default buffers into the scope model**, so statement-position table references can credit schema tables consistently. Broader than #130 because it also changes `FIND` and `FOR EACH`, with visible `oxabl analyze` consequences.
-3. **#136 retires the query approximation** by head-parsing those forms, at which point `may_reference_tables` narrows to whatever is left.
-
-**Found and filed, not fixed:** `ParameterType::Buffer` records the wrong target in a procedure signature. `crates/oxabl_parser/src/parser/mod.rs:1567` — the inline parameter-list path (`PROCEDURE p (BUFFER b FOR tt)`) parses the table name and then discards it with `.ok()`, setting `target` to the *buffer's own name*. Two consequences: the declare pass calls `schema_table_id` on the buffer name, so that shape never links its schema table; and #130's new credit is skipped by the same-name guard, so it credits nothing. Pre-existing and distinct from #130.
-
-**Verification:** `cargo test --workspace` green — **1581 tests, 0 failures** — plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All fixtures synthetic.
+**Verification:** `cargo test --workspace` green — **1731 passed, 0 failed, 2 ignored** — plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All fixtures synthetic.
 
 ---
 
-## Carried forward: the browser WASM adapter (#133)
+## Dogfood A/B — the merge evidence for #140
 
-`crates/oxabl_wasm` exposes exactly two `#[wasm_bindgen]` functions, each returning a JSON string:
+Run this session over a large real-world ABL codebase kept outside this repo, fully wired (include paths and a `.df` schema via `oxabl.toml`), comparing a `master` build against this branch. Counts stay out of this file; the shapes of the results are what matter.
 
-- `analyze_source(source) -> { diagnostics: [{ source, severity, code, message, start, end, help }] }`, where `start`/`end` are `{ byte, line, column }` resolved through `SourceMap`.
-- `format_source(source) -> { source, changed, error }`.
+**1. With identical explicit CLI inputs (`-I` + `--schema`), there is zero drift.** Every one of the six rules came back at an identical count, and the comparison was not on totals — it was on exact `(file, code, byte-span, message)` identity, where **nothing appeared and nothing disappeared**, no file had a differing per-rule count, and the unjudged-symbol totals matched exactly. That is the result a refactor introducing no rule behavior is supposed to produce, and it is worth knowing it was actually measured rather than assumed.
 
-Both delegate straight to the umbrella crate — `oxabl::analyze_with_fs` with `AnalyzeOptions::default()` over an `InMemoryFileSystem`, and `oxabl::format_source` with `StyleGuide::default_base()`. The crate contains **no ABL behavior at all**; it is a transport boundary and must stay one.
+**2. The parity claim holds outside the test suite.** Per-file `analyze` and whole-tree `check` produced **identical sets** of `(file, code, byte-span, message)` tuples — zero on either side only, zero multiplicity mismatches. Separately, `check`'s format-drift channel named exactly the same file set as `oxabl format --check`. So the two channels and the two commands agree in the field, not just in `fixtures`.
 
-**Decisions / gotchas future sessions should know:**
+**3. The config-resolution fix is the measurable payoff, and it is large.** Driven by `oxabl.toml` alone with no CLI flags — the realistic way a project runs this — `master` never loaded `[workspace.schema]` at all (`schema_revision=0`). Consequences: `undefined-symbol` was roughly **double** what it should be, because every schema table and field became a false positive, and `unknown-table-or-field` was **entirely dead**. On this branch the schema loads, those false positives are gone, that rule is live, and `type-mismatch-assignment` finds slightly more because schema-typed fields make more assignments checkable. Most importantly: **on this branch a config-driven run and an explicit-flag run are byte-identical.** Config is no longer a variable in the answer either — which is the commitment `STRATEGY.md` makes, now true of the environment and not only of the client.
 
-- **The umbrella crate now has a `cli` feature, on by default.** `clap`, `walkdir`, `indicatif`, `schemars`, `serde_json`, and `oxabl_lsp` are optional dependencies gated behind it, and the `oxabl` binary carries `required-features = ["cli"]`. `oxabl_wasm` depends on `oxabl` with `default-features = false, features = ["serde"]`. **Any new native-only dependency added to `crates/oxabl` must go behind `cli` or the wasm build breaks.** The new CI job is what catches this, so don't ignore it.
-- **CI gained a `WebAssembly client` job** that runs `cargo build -p oxabl_wasm --target wasm32-unknown-unknown --release`. It builds only — no tests execute on the wasm target. The crate's three unit tests run natively under `cargo test --workspace`, which is enough because the crate is pure translation.
-- **The release workflow now packages the browser artifact**: `./scripts/build-wasm.sh target/wasm-web`, tarred and uploaded to the GitHub Release as `oxabl-wasm-web.tar.gz`. `wasm-bindgen-cli` is pinned to **0.2.126** and must match the `wasm-bindgen` crate version — a mismatch fails at bindgen time, not build time. The crate is pinned **exactly** (`=0.2.126`, not a caret range) because browser crash recovery rides on `__wbg_reset_state`, which is generated glue rather than a semver-stable API: an exact pin stops a routine `cargo update` inside 0.2.x from moving that machinery underneath the exact-pinned CLI. Three pin sites move together — the crate, `scripts/build-wasm.sh`, and `.github/workflows/release.yml`.
-- **`--no-typescript`** is passed to `wasm-bindgen`, so consumers get no `.d.ts`. Deliberate for the MVP (the wire shape is JSON strings, not typed objects), but it is the obvious next ergonomic step if the website grows.
-- **The MVP's absent capabilities are absent on purpose, not stubbed.** No include resolution (empty in-memory FS), no `.df` schema (so LINT0003 is inert), no `oxabl.toml` (so per-rule severity config and `[workspace.style]` do not apply). The rule is: a project capability the browser can't honestly provide stays *unavailable* rather than getting a second, divergent implementation in the wasm layer.
-- **A formatter bail is a first-class result, not an error path.** On any `Err`, the response returns the *original* source with `changed: false` and the message in `error` — the same never-mangle contract the LSP honors by returning no edits. A test pins this.
-- **The website is a separate, static consumer.** It serves the released artifact plus the UI around it; the Oxabl repo owns the build and versioning. Keep browser-side product logic out of this repo, and keep ABL logic out of the website.
-- **The wire shape is not a stable contract**, same as `--json` on `check`/`analyze`. It converges into #120's shared-pipeline work; don't let a website expectation freeze it prematurely.
+**4. R24 verified in the field.** A handful of source files are not valid UTF-8. Both builds fail them identically (`exit 2`, pre-existing, not a regression), and `check` lists them under its own `failures` key and **keeps walking** — exactly the behavior R24 asked for, confirmed on real input rather than a fixture.
 
-**Verification:** `cargo test --workspace` green — **1485 tests, 0 failures** — plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. CI green including the new wasm job, and the generated JS/WASM package was smoke-tested in Node before merge. All fixtures synthetic.
+**Method note for whoever repeats this:** the in-repo script is serial and one process per file. Driving it at `-P 16` with batched files cuts a full pass to a couple of minutes, and whole-tree `check --json` is faster still — but see the script's own comment on why an A/B whose baseline predates #120 cannot use `check` on both sides.
+
+**Found and fixed this session:** `scripts/lint-ab-diff.sh` read the coverage count as `d.get("unjudged_symbols", 0)`, but #120 moved it into the `coverage` section — so it silently reported **zero unjudged symbols on every file, forever**, with no error. This is the same defaulted-key failure class the plan caught for `scripts/corpus-ab-gate.sh` (R22/U11), just missed on the other consumer; `corpus-ab-gate.sh` and `.claude/skills/refine-oxabl-parser/SKILL.md` were both correctly migrated to `conformance`. The script now reads both envelope shapes — an A/B straddles the change by construction, since the two sides are different builds — and **exits 9 loudly** if it recognizes neither, rather than defaulting. A stale comment claiming `check` "runs no lint at all" was corrected in the same pass.
+
+**The class worth remembering:** a JSON consumer with defaulted key lookups fails *silently*, not loudly. When a `--json` shape changes, grep for consumers by **key name**, not just by command name — and prefer a loud failure over a plausible default in any tool whose whole job is to detect change.
 
 ---
 
-## Lint-accuracy map, carried forward from #129
+## Lint-accuracy map, carried forward from #129/#128/#130
 
 Untouched by this session; read this before triaging any "LINT0006 is wrong" report.
 
-**Standalone unmodelled forms are now credited (#128, done).** Around thirty ABL statement forms are recognized by the parser and then discarded — `PUT`, `EXPORT`, `UPDATE`, `SET`, `PROMPT-FOR`, `ENABLE`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`, `HIDE`, embedded SQL and more (the skip list in `oxabl_parser/src/parser/statements.rs` is authoritative). They used to reach `StatementKind::Empty` and credit nothing, so a variable whose only read lives in one of them looked write-only:
+**Standalone unmodelled forms are credited (#128/#137).** Around thirty ABL statement forms are recognized by the parser and then discarded — `PUT`, `EXPORT`, `UPDATE`, `SET`, `PROMPT-FOR`, `ENABLE`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`, `HIDE`, embedded SQL and more (the skip list in `oxabl_parser/src/parser/statements.rs` is authoritative). They used to reach `StatementKind::Empty` and credit nothing, so a variable whose only read lived in one of them looked write-only:
 
 ```abl
 v-total = 42.
 PUT v-total.        /* real read the model could not see → false LINT0006 */
 ```
 
-Those forms now emit `StatementKind::Skipped { names }` carrying the identifier tokens the skip passed over. The resolve pass best-effort-resolves them in `NamespaceId::Values` through `lookup_statement_ident`, a lookup that writes no side table, and records hits as `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`. All three count-gated rules — LINT0002, LINT0005, LINT0006 — consult that flag through the one shared `is_skipped` predicate. `read_count` and `write_count` stay exact; the flag says the counts are *incomplete*, it does not fabricate an access.
+Those forms emit `StatementKind::Skipped { names }` carrying the identifiers the skip passed over. The resolve pass best-effort-resolves them in `NamespaceId::Values` through `lookup_statement_ident`, a lookup that writes no side table, and records hits as `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`. All three count-gated rules — LINT0002, LINT0005, LINT0006 — consult that flag through the one shared `is_skipped` predicate. `read_count` and `write_count` stay exact; the flag says the counts are *incomplete*, it does not fabricate an access.
 
-**Know what this cost.** The mark is per-symbol and file-wide, so a genuine dead store on line 40 becomes unjudgeable because of an `ENABLE` mention on line 900. That is real evidence destruction, not just caution, and it is why `oxabl analyze` now prints a count of symbols it could not fully judge (stderr, plus an `unjudged_symbols` JSON field) rather than letting a partly-checked file look clean. It is also why the retirement path is **scheduled**, not wished for.
+**Know what this cost.** The mark is per-symbol and file-wide, so a genuine dead store on line 40 becomes unjudgeable because of an `ENABLE` mention on line 900. That is real evidence destruction, not just caution, and it is why the coverage count exists rather than letting a partly-checked file look clean. As of #120 that count reaches the audience that runs the gate: `check` carries it too, not just `analyze`. It is also why the retirement path is **scheduled**, not wished for.
 
 **#136 is the actual fix, and it is filed and labelled.** Variable traffic lives in each statement's *head*; the awkwardness lives in its *tail*. One shared parse-head/skip-tail combinator covers the large majority, and head-parsing a form buys exact lint crediting, formatter coverage (`tree.rs` routes these through pass-through arms today) and future LSP fidelity from one piece of work — where the flag buys only the first, once. `StatementKind::Skipped` doubles as the instrument for prioritizing: count which dispatch keywords actually produce `Skipped` nodes on real code and work the list in frequency order.
 
+**#130 closed the table half.** Five forms name a table without reading a field of it and now credit a read on it: `DEFINE BUFFER b FOR tt` and `DEFINE PARAMETER BUFFER b FOR tt` by direct AST resolution, `EMPTY TEMP-TABLE tt` via a `Skipped` node carrying its exactly-parsed table name, and `DEFINE QUERY` / `OPEN QUERY` via lexical harvest. Durable gotchas:
+
+- **`StatementKind::Skipped` carries `may_reference_tables`.** A marked node keeps #128's value-namespace treatment unchanged and *additionally* resolves the same names in `[Buffers, Tables]` as `AccessMode::Read`. The two paths are independent on purpose: a token can resolve in both namespaces under shadowing, and they record different facts. Only three forms set the marker.
+- **The same-name guard is load-bearing.** `DEFINE BUFFER Customer FOR Customer.` is the standard block-scoping idiom, and the declare pass has already bound the new buffer under that folded name. An unguarded lookup credits the buffer a read *for existing*, silencing every count-gated rule for that symbol.
+- **Both credit paths go through `resolve_statement_ident`**, which is silent on a miss — that is what lets the over-inclusive query harvest run without inventing a `references` entry or an `undefined-symbol` per stray token. Over-crediting can silence a diagnostic but cannot invent one.
+- **A bare *schema* table is credited by nobody.** `synth_table_buffer_symbol` inserts into the `SymbolTable` without binding into the `ScopeTree`, and nothing declares into `NamespaceId::Tables` — so `DEFINE BUFFER bCust FOR Customer.` under a loaded schema credits nothing, exactly as `FIND` and `FOR EACH` leave it. Deliberate; pinned by `schema_only_targets_retain_current_no_credit_behavior`.
+- **A new lookahead in this parser should assume a comment can sit in the gap.** A comment between `OPEN` and `QUERY` defeated the marker in the first cut because the split used a raw one-token lookahead; it uses `peek_nth_non_comment` now.
+
 **One sibling remains.** **#134** — skipped *tails* inside modelled statements (`DISPLAY … WITH FRAME` options, `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing content, and ten more): same root cause, but the statement node is already occupied so neither #128's nor #130's payload shape transfers. Pinned by a deliberately-failing-later test in `crates/oxabl_lint/tests/issue128_skipped_statement_reads.rs`.
 
-**#130 shipped (this session)** and closes the table half: the five forms that name a table without reading a field of it now credit a read on it. Mechanics, the deliberate limits, and the follow-ups are in **What shipped this session** above — read that before touching `may_reference_tables` or the buffer-target guard.
-
-Other #129 facts worth keeping:
+Other facts worth keeping:
 
 - **`FOR EACH tt:` declares a fresh block-scoped buffer symbol and credits its reads there**, not to the `DEFINE TEMP-TABLE`. Those block scopes are *descendants* of a parameter's scope and invisible to an ancestor walk, so `backing_read_count` sums reads across ancestor-or-self **and** descendant `Buffers` bindings. Any change here must keep the descendant half.
 - The backing-table matching is **name-keyed, not identity-keyed, deliberately**. The imprecision only ever produces silence, never a false claim. The shadowing case still has no test.
-- **`is_table_like_param` is deliberately outside the shared `is_skipped` predicate** in `rules/unused_symbol_shared.rs` — LINT0006 skips those symbols, LINT0002 must still report a genuinely-unused one. A future rule in this family must call both. `is_skipped` now has three callers: #128 wired LINT0005's `is_hazard` through it rather than giving that rule a parallel clause, so there is exactly one suppression path to keep correct.
+- **`is_table_like_param` is deliberately outside the shared `is_skipped` predicate** in `rules/unused_symbol_shared.rs` — LINT0006 skips those symbols, LINT0002 must still report a genuinely-unused one. A future rule in this family must call both. `is_skipped` has three callers, so there is exactly one suppression path to keep correct.
 - **`NodeId::DUMMY`**: `Expression::new` carries `DUMMY`, which the `references` side table silently drops. Any test asserting a write-site span must use the `ident_expr` helper that allocates real ids.
-- **Process lesson (recorded in #128):** for any count-gated rule, audit **both** sides of the predicate. #129's audit covered the write side it incremented; the false positives came from the unaudited read side.
+- **`ParameterType::Buffer` records the wrong target in an inline procedure signature.** `crates/oxabl_parser/src/parser/mod.rs:1567` — the `PROCEDURE p (BUFFER b FOR tt)` path parses the table name then discards it with `.ok()`, setting `target` to the *buffer's own name*. So that shape never links its schema table, and #130's credit is skipped by the same-name guard. Filed, pre-existing, not fixed.
+- **Process lesson:** for any count-gated rule, audit **both** sides of the predicate. #129's audit covered the write side it incremented; the false positives came from the unaudited read side.
 
 ### Cheap test additions still worth picking up
 
@@ -125,38 +119,32 @@ Other #129 facts worth keeping:
 
 ---
 
+## Carried forward: the browser client (#133), now over the shared pipeline
+
+`crates/oxabl_wasm` exposes three `#[wasm_bindgen]` exports — `analyze_source`, `format_source`, and `version()` (crate version plus a build identifier, so a crash report names the exact artifact a hand-vendored copy is running). It contains **no ABL behavior**; it is a transport adapter over `oxabl_pipeline` and must stay one. A refusal collapses to one `error` string because the wire shape has one field for it, while the pipeline keeps bail and contained panic apart for clients that can tell them apart.
+
+- **The umbrella's `cli` feature is on by default.** `clap`, `walkdir`, `indicatif`, `schemars`, `serde_json` and `oxabl_lsp` are optional behind it. **Any new native-only dependency added to `crates/oxabl` must go behind `cli` or the wasm build breaks** — the CI `WebAssembly client` job is what catches this.
+- **`wasm-bindgen` is pinned exactly (`=0.2.126`), not as a caret range**, because browser crash recovery rides on `__wbg_reset_state` — generated glue, not a semver-stable API. Three pin sites move together: the crate, `scripts/build-wasm.sh`, and `.github/workflows/release.yml`. A CLI/crate mismatch fails at bindgen time, *after* `cargo build` succeeds, so CI will not catch it — only the script or a release will.
+- **`catch_panic` is a documented pass-through on `wasm32-unknown-unknown`** (stable Rust builds `-Cpanic=abort` there), so routing the browser through a "guarded" entry point buys it nothing. Recovery is the panic hook plus `__wbg_reset_state`, enforced only by `scripts/build-wasm.sh`'s two assertions — that the export exists, and that no exception-handling instructions were injected (which would raise the browser floor to roughly Chrome 128 / Firefox 131 / Safari 18.4, where the module fails to *instantiate* rather than degrading). **No CI job runs `wasm-bindgen` at all.**
+- **`--verify` adds a `debug_panic()` export** for manual crash-path checks and must never ship; the release workflow does not use it.
+- **The MVP's absent capabilities are absent on purpose, not stubbed** — no include resolution, no `.df` schema, no `oxabl.toml`. A capability the browser cannot honestly provide stays *unavailable* rather than getting a second, divergent implementation. The parity suite asserts unavailability, not a different answer.
+- **The wire shape is not a stable contract**, same as `--json` on `check`/`analyze`. Don't let a website expectation freeze it.
+
+---
+
 ## Next
 
-The two items that headed this list — **#119** (panic safety) and **#128 + #130** (uncredited reads) — have all shipped, as #135, #137, and this session. Between them they closed the FP class this list called the last known one. What remains:
+#120 was the last item blocking a clean run at the strategic thread, and the A/B discharged the "don't reshape delivery while diagnostics are still wrong" risk for good.
 
-1. **#134 — skipped tails inside modelled statements.** The one uncredited-read half left. Same root cause as #128/#130, but the statement node is already occupied so neither carrier transfers. Pinned by a deliberately-failing-later test in `crates/oxabl_lint/tests/issue128_skipped_statement_reads.rs`.
-2. **#136 — head-parse the unmodelled forms.** Scheduled (`hermes`). The real drain: it retires #128's file-wide flag *and* #130's query approximation, and picks up formatter and LSP coverage on the way.
-3. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
-4. **#102 — workspace-wide cross-file semantic resolution** remains the top *strategic* thread (with #103 as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets, and cross-file `SHARED` vars all resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. It is the ceiling on lint effectiveness and **blocks #57**. It sits below the items above only on sequencing, not importance: it is weeks of architecture, and it does nothing for the playground, whose MVP has no workspace, includes, or PROPATH by design. Take it through `/ce-brainstorm` → `/ce-plan` before building.
-5. **#120 — reshape `check`/`analyze` onto shared pipelines.** The `/ce-strategy`-then-plan pass this item used to ask for has run. `STRATEGY.md` carries a third top-level commitment — *one shared pipeline behind every client; the client is never a variable in the answer*, where results differ only when the environment differs, never because of which tool you ran — and an eleven-unit plan sits at `docs/plans/2026-07-24-001-refactor-shared-lint-format-pipelines-plan.md`.
-
-   **This item's old ranking note was half right, and the correction is the point.** It argued the "three clients hand-map the same diagnostics" case is weak because the transports genuinely differ (`lsp_types::Diagnostic`, a JSON wire shape with `SourceMap`-resolved positions, rendered text), so a shared pipeline hoists *collection* while each client keeps its final hop. That is correct, and the plan concedes it by design: KTD5 keeps pipeline results byte-span-only precisely because the LSP's rope is the only correct position oracle under the negotiated encoding, so the last hop *must* stay per-client. Diagnostic-mapping dedup is not the case for #120 and never was.
-
-   **What the divergence actually is — and it is a bug class.** It sits upstream of the mapping. Config resolution is not merely duplicated but *divergent*: the LSP resolves style per formatting request and lint/include config once from the first opened document, discarding both config errors the CLI prints as `warning:`. Two private file walkers disagree on extensions **and** case sensitivity — `p/w/cls/v` lowercased in the CLI versus `p/w/cls/i` case-sensitive in `oxabl_workspace`. And `oxabl check` never enters the shared collector at all: it is a parse-conformance walk, so the flagship command and the editor are not running the same pipeline despite a source comment at `crates/oxabl_lsp/src/diagnostics.rs` saying they are. Those are wrong answers, not duplicated code.
-
-   **Both reasons this used to rank low are now discharged.** "Don't reshape delivery while the diagnostics are still wrong" — #119, #128, and #130 have all shipped, so that re-verify risk is gone. "It competes with #102 for the same design attention" — the strategy pass is done and did not need #102's. The closing-window argument still holds and is now the live one: the wire shape is not a stable contract, and every week the playground runs the website hardens around today's shape.
-
-   **The refresh has been done** (2026-07-29, against `971a01b`), so the plan is current — read it, don't re-derive it. What the merge invalidated and the refresh fixed: #135 had already shipped the panic-safety work the plan assumed it must build (`oxabl_common::catch_panic` exists, the LSP worker guard at `crates/oxabl_lsp/src/lib.rs:628` already spans both `compute_diagnostics` and `buffer_dependencies`, `parse`/`analyze`/`analyze_with_fs`/`format_source` are already `#[deprecated]`), so KTD6 is now a *non-regression constraint* — reuse the guard, keep it outside the salsa queries, still no `salsa` dependency — and KTD13 shrinks to "re-point the bodies, the attributes already exist; and do **not** deprecate `AnalyzeOptions`, the browser's only config handle."
-
-   Three gaps the refresh found are new requirements rather than restatements. **R5:** the shared `FormatOutcome` must preserve #135's bail-versus-panic split (`FormatFailure::Panic` is separate from the `PartialEq` bail arms, and `format_one` already prints different messages) — a tidy-looking `Bailed(String)` would delete a live signal and read as a simplification in review. **R24:** `check` must report a per-file internal panic and keep walking, never adopting `analyze`'s abort-with-4; and relatedly, the exit-code contract is *not* uniformly 0/1/2 — `analyze` also uses 3/4/6/7 and those are contract too. **R25:** the analyze envelope now has **two** CLI-spliced keys to promote, `preproc_diagnostics` and `unjudged_symbols` (the latter arrived with #130/#137, after the plan was written).
-
-   Two facts verified during the refresh that change how to *pitch* the work without changing the work: the extension-set divergence is **latent, not live** — neither `Workspace::from_path` nor `Workspace::in_memory` has a caller anywhere outside `workspace.rs`'s own tests, so only the CLI's walker runs today; R8 earns its place as the seam #102 will build on, not as a firing bug. And `catch_panic` is a pass-through on `wasm32`, so routing the browser through the "guarded" entry point buys it nothing — crash recovery there is still the panic hook plus `__wbg_reset_state`, enforced only by `scripts/build-wasm.sh`'s two assertions. Don't let the PR description claim otherwise on either count.
-
-   **Settled while planning, all user-ratified — do not relitigate without cause.** `check` becomes the ruff-shaped gate reporting lint diagnostics and format drift in **two channels**, never merged into one stream (a lint finding is span-anchored; format drift is a per-file boolean, and merging them means synthesizing spans that do not exist). The parse-conformance walk moves to a **hidden** `conformance` subcommand with its report, `error_patterns` aggregation, `--json` shape, `--debug`, and 0/1/2 exit codes intact, because the corpus loop reads them — and `.claude/skills/refine-oxabl-parser/SKILL.md:30,35` is updated in the same unit that moves it, or the loop silently starts linting a corpus. `analyze` survives, rewired, also hidden. Visible CLI settles at `check`, `format`, `lsp`, `schema`. One hard architectural constraint: `oxabl` → `oxabl_lsp` (optional) and `oxabl_wasm` → `oxabl`, so the LSP **cannot** depend on the umbrella — the pipelines need a new `oxabl_pipeline` crate beneath both, and it must not gain a `salsa` dependency.
-
-   **The review coverage gap is closed.** adversarial and product-lens both ran on 2026-07-29 (the three earlier personas were coherence, feasibility, and scope-guardian); no cross-model pass ran, deliberately, since it would ship the plan to an external provider. Both probed the ratified KTD7/KTD8/KTD9 decisions and neither found infeasibility — only preference-grade alternatives — so **those decisions stand and should not be reopened**. Six actionable findings were applied to the plan; seven advisory ones are recorded in its `Deferred / Open Questions` section.
-
-   **The one finding worth knowing outside the plan:** `scripts/corpus-ab-gate.sh:130` is a *second* in-repo consumer of `oxabl check --json` — it parses `passed`/`failed`/`error_patterns` with `.get(key, 0)` defaults. Every doc, including this one, previously said the `refine-oxabl-parser` skill was the only in-repo caller. After `check` reshapes, that script does not error: it reports zero files, zero failures, and "no regression" on every run, so a preprocessor regression would sail through a green gate indefinitely. R22 and U11 now cover both consumers, and the plan's DoD requires running the gate once after U11 and confirming non-zero counts. Worth remembering as a class — a JSON consumer with defaulted key lookups fails silently, not loudly, so grep for consumers by *key name*, not just by command name, whenever a `--json` shape changes.
-6. **#126 — CFG + dataflow scaffolding** still absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`, and #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
-7. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed can't catch a regression in any of them.
-8. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI so the demo's load cost can't silently balloon; and deciding whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file. Panic safety belonged on this list and shipped as #135.
-9. **Re-dogfood in a fully-wired workspace** (include paths + `.df` schema in `oxabl.toml`) to separate real bugs from config noise; then confirm/close **#108** and re-check the held block-scope false positive.
-10. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish.
+1. **#102 — workspace-wide cross-file semantic resolution** is now the top item, not just the top *strategic* one (with #103 as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets and cross-file `SHARED` vars resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. It is the ceiling on lint effectiveness and **blocks #57**. #120 built the seam it needs: one config resolution, one root-file policy, one result model. Take it through `/ce-brainstorm` → `/ce-plan` before building — it is weeks of architecture.
+2. **#134 — skipped tails inside modelled statements.** The one uncredited-read half left.
+3. **#136 — head-parse the unmodelled forms.** Scheduled (`hermes`). The real drain: retires #128's file-wide flag *and* #130's query approximation, and picks up formatter and LSP coverage on the way.
+4. **#108 — confirm or close it.** The fully-wired re-dogfood it was deferred pending has now run, and the collected `PREPROC007` evidence is the input; the check itself was not done this session. Related and unclaimed: suppressing the `undefined-symbol` flood when a root-origin `PREPROC007` fires, and the nested-include silence described above.
+5. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
+6. **#126 — CFG + dataflow scaffolding** absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`; #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
+7. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed cannot catch a regression in any of them.
+8. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI; and whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file.
+9. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish.
 
 ---
 
@@ -164,26 +152,26 @@ The two items that headed this list — **#119** (panic safety) and **#128 + #13
 
 | Issue/PR | Relation |
 |----------|----------|
-| **#130** | **This session** — table-use forms credit a read on the table they name; `Skipped` gained `may_reference_tables` |
-| **#128** | **Merged** — standalone unmodelled forms credited; `StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT` |
-| **#134** | Open — the one remaining uncredited-read half now that #128 and #130 have both shipped; skipped tails inside *modelled* statements, same root cause but the statement node is already occupied |
+| **#120 / PR #140** | **This branch** — one shared lint and format run behind every client; `oxabl_pipeline` beneath CLI/LSP/WASM, `check` becomes the gate, cross-client parity suite, dogfooded at zero drift |
+| **#130** | Merged — table-use forms credit a read on the table they name; `Skipped` gained `may_reference_tables` |
+| **#128 / #137** | Merged — standalone unmodelled forms credited; `StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT` |
+| **#134** | Open — the one remaining uncredited-read half; skipped tails inside *modelled* statements |
 | **#136** | Open, **scheduled** — head-parse the unmodelled forms; the drain that retires #128's flag and #130's query approximation |
-| **#119** | **Merged as #135** — panic-safe parse/analyze/format plus browser crash recovery |
-| **#133** | **Merged** — browser WASM adapter + playground |
-| **#102 / #103** | Open — cross-file resolution + background index (**the top strategic thread**; sequenced after the above, and no help to the playground) |
+| **#102 / #103** | Open — cross-file resolution + background index; **now the top item**, and #120 built its seam |
+| #119 | Merged as #135 — panic-safe parse/analyze/format plus browser crash recovery |
+| #133 | Merged — browser WASM adapter + playground; now a renderer of `oxabl_pipeline` |
 | #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
 | #132 | Open — `oxabl_lint` has no benchmark coverage at all |
 | #125 | Open — **unblocked**; callee-written dead-store advisory |
-| #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires the two older stopgap flags (#128's third flag drains via #136 instead) |
-| #120 | Open — **strategy pass done, plan written, ratified, and refreshed** against #135/#137/#130 (2026-07-29); implementation-ready. The real case is divergent config resolution and `check` bypassing the collector entirely, *not* diagnostic-mapping dedup (see **Next** item 5) |
+| #124 / #126 | Open — path-aware LINT0005 and the CFG scaffolding that retires the two older stopgap flags |
 | #129 | Merged — table-parameter FP + LINT0006 dead-store split |
-| #127 | Merged — LINT0002 OUTPUT-argument FP; #129 builds on its flag and supersedes its `write_count` note |
+| #127 | Merged — LINT0002 OUTPUT-argument FP |
 | #121 / #122 / #123 | Merged — preprocessor define-time refs, routine-scoped `DEFINE VARIABLE`, LINT0005 |
 | #113 / #114 / #115 / #116 | Merged — the four #55 public-API waves |
 | #55 | Improve the public API — done across the four waves; can be closed |
-| #117 / #118 | Filed — deferred #55 follow-ups (#119 was one of these; #133 promoted it, see above) |
+| #117 / #118 | Filed — deferred #55 follow-ups |
 | #104 | Merged — VS Code extension + `oxabl schema` + CI (the dogfood loop) |
 | #57 | Open — public lint-rule API; blocked on #102 |
-| #108 | Open — unresolvable-include-as-argument → misleading comma error (deferred) |
+| #108 | Open — unresolvable-include-as-argument; the re-dogfood it waited on has run |
 | #56 | Open — dependency-extraction fidelity vs AVM (converges with #102) |
-| `STRATEGY.md` | Browser try-it-out and Public API & client architecture tracks cover this session. The latter now carries the third top-level commitment (*one shared pipeline behind every client*) and the settled visible-CLI surface — both from #120's strategy pass |
+| `STRATEGY.md` | The *Public API & client architecture* track carries the third top-level commitment (*one shared pipeline behind every client*) and the settled visible-CLI surface; both are now delivered rather than planned |
