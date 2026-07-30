@@ -77,11 +77,14 @@ Requirements:
   - Postfix operations, and
   - Has error recovery via synchronization on period boundaries
   - Still getting new features, bug fixes, and improvements.
-- `oxabl check` / `oxabl analyze`: CLI entry points in `crates/oxabl`.
-  - `check` walks a directory (or single file) for ABL files (`.p`, `.w`, `.cls`) and reports parse pass/fail counts, error locations, and top error patterns.
-  - `analyze` runs the full parse → semantic → lint pipeline over a file and dumps the resolved model + diagnostics (text or `--json`, with `--schema <file|dir>` for schema-backed resolution).
-  - Both are transitional scaffolding: the intended direction is a ruff/cargo-shaped `check` that surfaces lint + format issues, built on shared library pipelines every client drives identically (see #120). Their `--json` shapes are not yet a stable contract.
+- CLI entry points in `crates/oxabl`. The advertised surface is exactly four commands — `check`, `format`, `lsp`, and `schema` — plus two **hidden but fully supported** instruments described below.
+  - `check` walks a directory (or single file) for ABL files and reports lint findings plus formatting drift in two channels. This is the pre-commit gate: exit 1 when either channel has something to say.
+  - `format` fixes layout in place, or reports/prints without writing (`--check`, `--stdout`).
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
+  - Their `--json` shapes are not yet a stable contract.
+- Hidden commands. Both are real, documented, and reachable — `oxabl <command> --help` works — they simply do not appear in `oxabl --help`, because each answers a question about *oxabl* rather than about your source, and neither belongs in the surface a new user reads.
+  - `oxabl conformance <path>` — the parser-refinement instrument: how many files parse, which fail and where, and the ranked error patterns behind the failures.
+  - `oxabl analyze <file>` — a single file's resolved semantic model, dumped as a per-section-versioned JSON envelope or as text (`--schema <file|dir>` for schema-backed resolution). Introspection, not a gate: it exits 0 whatever it finds.
 - `oxabl_wasm`: browser bindings in `crates/oxabl_wasm`.
   - Three `wasm-bindgen` exports — `analyze_source`, `format_source`, and `version()` (a crate version plus a build identifier, so a crash report names the exact artifact a hand-vendored copy is running) — the first two returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the semantic-preservation guard bails (in which case the original source comes back untouched).
   - Contains no ABL behavior. It is a transport adapter over the umbrella crate, which keeps every client on one implementation.

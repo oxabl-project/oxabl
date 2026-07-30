@@ -247,6 +247,53 @@ fn deprecated_panicking_surface_still_resolves() {
     assert!(oxabl::format_source("MESSAGE \"x\".", &StyleGuide::default_base()).is_ok());
 }
 
+/// The deprecated wrappers are now thin adapters over `oxabl::pipeline`, so they
+/// must answer exactly what the pipeline answers for the same input.
+///
+/// Pinned because the re-pointing is the whole content of that change: if the
+/// adapter drifted — a different root file id, a lost diagnostic, a different
+/// collection order — a consumer still on the deprecated surface would silently
+/// get a different analysis than every in-repo client.
+#[test]
+#[allow(deprecated)]
+fn the_deprecated_wrappers_agree_with_the_pipeline_they_delegate_to() {
+    use oxabl::pipeline::{LintPipeline, PipelineConfig};
+    use oxabl::style::StyleGuide;
+    use oxabl::workspace::InMemoryFileSystem;
+
+    let fs = InMemoryFileSystem::new();
+    // Something with a finding in every stage the collector labels: a recovered
+    // parse error and an unused variable.
+    let source = "DEFINE VARIABLE neverUsed AS INTEGER NO-UNDO.\n@ @ @\n";
+
+    let options = oxabl::AnalyzeOptions::default();
+    let (wrapper_model, wrapper_diags) = oxabl::analyze_with_fs(source, &fs, &options);
+
+    let config: PipelineConfig = (&options).into();
+    let direct = LintPipeline::new(&config, &fs)
+        .with_preprocess(options.preprocess)
+        .run(source);
+
+    assert_eq!(&wrapper_diags, direct.diagnostics());
+    assert_eq!(wrapper_model.is_some(), direct.semantic().is_some());
+    assert!(
+        wrapper_diags
+            .all()
+            .any(|d| d.diagnostic.code.0 == "LINT0002"),
+        "the fixture must actually produce findings: {wrapper_diags:?}"
+    );
+
+    // The format side likewise: `try_format_source` folds the pipeline's
+    // `Unchanged` arm into `Ok(original bytes)` and nothing else.
+    let style = StyleGuide::default_base();
+    let already = "MESSAGE \"x\".\n";
+    assert_eq!(
+        oxabl::try_format_source(already, &style).as_deref(),
+        Ok(already),
+        "an unchanged file comes back as its own bytes, not an error"
+    );
+}
+
 /// The fallible surface's shapes, pinned as fn-pointers so a later refactor
 /// cannot quietly reshape them while the reachability compile-gate still passes.
 #[test]

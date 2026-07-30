@@ -42,14 +42,15 @@
 
 use std::path::PathBuf;
 
-use oxabl_analyze::{CollectedDiagnostics, collect_with_model};
-use oxabl_common::{
-    FileId, InternalPanic, LintSeverityMap, catch_panic, panic_if_injected, panic_sites,
-};
+use oxabl_analyze::CollectedDiagnostics;
+use oxabl_common::{InternalPanic, LintSeverityMap, catch_panic};
+use oxabl_formatter::FormatFailure;
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
+use oxabl_pipeline::{FormatOutcome, FormatPipeline, LintPipeline, PipelineConfig};
 use oxabl_schema::Schema;
 use oxabl_semantic::Semantic;
+use oxabl_style::StyleGuide;
 use oxabl_workspace::{FileSystem, RealFileSystem};
 
 /// Parse ABL `source` into a [`Program`], using the parser's error-recovery
@@ -100,11 +101,6 @@ pub use oxabl_parser::Program;
 /// analysis layers.
 pub use oxabl_common::Diagnostic;
 
-/// The synthetic root [`FileId`](common::FileId) that [`analyze`] uses for an
-/// in-memory source. It matches the id the CLI and collector use, so rendered
-/// positions line up.
-const ANALYZE_ROOT: FileId = FileId::new(1);
-
 /// Inputs to [`analyze`] / [`analyze_with_fs`], wrapping the five configurable
 /// arguments of the underlying pipeline so callers don't juggle a long
 /// positional list. Every field has a sensible default (empty schema, no
@@ -142,6 +138,33 @@ impl Default for AnalyzeOptions {
             include_paths: Vec::new(),
             lint_severities: LintSeverityMap::new(),
             preprocess: false,
+        }
+    }
+}
+
+/// The bridge from this crate's caller-facing options onto the shared
+/// [`PipelineConfig`](pipeline::PipelineConfig) the run actually consumes.
+///
+/// `AnalyzeOptions` is **not** deprecated: it stays the live input type on the
+/// `try_*` surface, and it is the browser client's only configuration handle. So
+/// it does not *become* a `PipelineConfig`, it converts into one — the two differ
+/// deliberately in both directions:
+///
+/// * `preprocess` has no counterpart here. Whether to expand macros is a property
+///   of the *run*, not of the configuration, and it lives on
+///   [`LintPipeline::with_preprocess`](pipeline::LintPipeline::with_preprocess).
+///   The format pipeline has no such switch at all, by construction.
+/// * `style` has no counterpart in `AnalyzeOptions`. Analysis does not format, so
+///   asking a caller of `try_analyze` for a style guide would be asking for an
+///   input that cannot affect the answer; the config's default stands in.
+impl From<&AnalyzeOptions> for PipelineConfig {
+    fn from(options: &AnalyzeOptions) -> Self {
+        PipelineConfig {
+            include_paths: options.include_paths.clone(),
+            lint_severities: options.lint_severities.clone(),
+            schema: options.schema.clone(),
+            schema_loaded: options.schema_loaded,
+            ..PipelineConfig::default()
         }
     }
 }
@@ -217,22 +240,29 @@ pub fn try_analyze_with_fs(
 
 /// The shared body, so the fallible entry points do not have to call their own
 /// deprecated twins.
+///
+/// This is a thin adapter over [`LintPipeline`](pipeline::LintPipeline) (KTD13),
+/// not a second orchestration: the root file id, the expansion, the collection
+/// order, and the test-panic injection site all come from the shared pipeline, so
+/// this surface and the CLI/LSP/browser cannot answer differently for the same
+/// input.
+///
+/// It drives the **unguarded** `expand`/`collect` phases rather than the guarded
+/// `run`, which is load-bearing and not an oversight. `run` contains a panic and
+/// reports it as a failed result; this function's callers are split precisely on
+/// that question — [`try_analyze`] wraps it in the guard, while the deprecated
+/// [`analyze`] is documented to panic. Calling `run` here would make `analyze`
+/// silently return an empty model on an internal panic and make `try_analyze`
+/// incapable of ever returning `Err`.
 fn analyze_inner(
     source: &str,
     fs: &dyn FileSystem,
     options: &AnalyzeOptions,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
-    panic_if_injected(panic_sites::ANALYZE, source);
-    collect_with_model(
-        ANALYZE_ROOT,
-        source,
-        fs,
-        &options.include_paths,
-        &options.schema,
-        options.schema_loaded,
-        &options.lint_severities,
-        options.preprocess,
-    )
+    let config: PipelineConfig = options.into();
+    let pipeline = LintPipeline::new(&config, fs).with_preprocess(options.preprocess);
+    let expansion = pipeline.expand(source);
+    pipeline.collect(&expansion).into_parts()
 }
 
 /// Format ABL `source` with `style`, returning the reformatted string or a
@@ -240,12 +270,19 @@ fn analyze_inner(
 /// untouched.
 ///
 /// One-call convenience mirroring [`parse`], folding tokenize + parse + the
-/// layout formatter. Defined in `oxabl_formatter` so the CLI, LSP, and this
-/// umbrella all format through one shared entry point; on any bail the original
-/// bytes are returned unchanged. Like [`parse`], it may panic on some malformed
-/// inputs, so it is deprecated in favor of [`try_format_source`].
+/// layout formatter; on any bail the original bytes are returned unchanged. Like
+/// [`parse`], it may panic on some malformed inputs, so it is deprecated in
+/// favor of [`try_format_source`].
+#[deprecated(
+    note = "may panic on malformed input; use `try_format_source`, which contains the panic"
+)]
 #[allow(deprecated)]
-pub use oxabl_formatter::format_source;
+pub fn format_source(
+    source: &str,
+    style: &StyleGuide,
+) -> Result<String, oxabl_formatter::FormatBail> {
+    oxabl_formatter::format_source(source, style)
+}
 
 /// Format ABL `source` with `style`, containing any internal panic — the
 /// fallible sibling of [`format_source`] and the entry point new code should
@@ -254,7 +291,21 @@ pub use oxabl_formatter::format_source;
 /// Its [`FormatFailure`](formatter::FormatFailure) distinguishes a deliberate
 /// bail (leave the file alone; the input was not formattable) from a contained
 /// panic (leave the file alone; oxabl has a bug), without nesting `Result`s.
-pub use oxabl_formatter::try_format_source;
+///
+/// The body drives the shared
+/// [`FormatPipeline`](pipeline::FormatPipeline) (KTD13), so this surface, the
+/// CLI, the language server, and the browser all format through one handle. The
+/// mapping back to the flat `Result` is total and lossless:
+/// [`Unchanged`](pipeline::FormatOutcome::Unchanged) is `Ok` with the original
+/// bytes — the pipeline splits "ran, output identical" out as its own answer,
+/// while this signature has always folded it into `Ok`.
+pub fn try_format_source(source: &str, style: &StyleGuide) -> Result<String, FormatFailure> {
+    match FormatPipeline::new(style.clone()).format(source) {
+        FormatOutcome::Unchanged => Ok(source.to_string()),
+        FormatOutcome::Reformatted(formatted) => Ok(formatted),
+        FormatOutcome::DidNotFormat(not_formatted) => Err(not_formatted.failure().clone()),
+    }
+}
 
 /// Render a slice of [`Diagnostic`]s to `path:line:col: severity[code]: message`
 /// text with source snippets, using a [`SourceResolver`](common::SourceResolver)
@@ -371,12 +422,25 @@ pub mod style {
 /// to the client (R6, R7). [`ROOT_FILE_ID`](pipeline::ROOT_FILE_ID) is the one
 /// synthetic root file id every client shares.
 ///
+/// The **run handles** are here too — [`LintPipeline`](pipeline::LintPipeline),
+/// [`FormatPipeline`](pipeline::FormatPipeline), their result types, and the
+/// [`position`](pipeline::position) helper. Narrowing this to the configuration
+/// surface would mean an external consumer could resolve a `PipelineConfig` and
+/// then have nothing to hand it to: the shared run would be reachable only by
+/// taking a direct dependency on `oxabl_pipeline`, which is exactly the "one
+/// dependency is enough" promise this umbrella exists to keep. The two in-repo
+/// clients that *do* take the direct edge (`oxabl_lsp`, `oxabl_wasm`) keep it —
+/// they compile `oxabl_pipeline` regardless, so routing through the re-export
+/// would add an indirection without removing anything.
+///
 /// This module is **not** gated on the `cli` feature, and must not become gated:
 /// `oxabl_wasm` depends on this crate with `default-features = false`, so a gated
 /// re-export would be invisible to the browser client.
 pub mod pipeline {
     pub use oxabl_pipeline::{
-        ConfigOverrides, ConfigWarning, PipelineConfig, ROOT_FILE_ID, resolve_from_config,
+        ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, LintPipeline,
+        LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID, position,
+        resolve_from_config,
     };
 }
 

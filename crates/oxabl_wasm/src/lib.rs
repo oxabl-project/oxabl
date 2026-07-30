@@ -25,11 +25,11 @@
 //!
 //! The pipeline handles are taken from `oxabl_pipeline` rather than
 //! `oxabl::pipeline`, the same way `oxabl_lsp` takes them. The umbrella's
-//! re-export names the configuration surface only, and this crate already
-//! compiles `oxabl_pipeline` regardless (the umbrella depends on it
+//! re-export does name these handles, so either edge would work; this crate
+//! already compiles `oxabl_pipeline` regardless (the umbrella depends on it
 //! unconditionally, precisely so the browser bundle can reach it), so the direct
-//! edge adds nothing to the payload. The remaining `oxabl::` imports are plain
-//! type re-exports.
+//! edge adds nothing to the payload and one less hop of indirection to read. The
+//! remaining `oxabl::` imports are plain type re-exports.
 
 use oxabl::analyze::{CollectedDiagnostic, DiagnosticSource};
 use oxabl::common::SourceMap;

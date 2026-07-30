@@ -178,20 +178,43 @@ fn empty_directory_exits_2() {
     assert!(stderr.contains("No ABL files found in"), "got:\n{stderr}");
 }
 
+/// The visible CLI is **exactly** `check`, `format`, `lsp`, `schema` (R23), with
+/// both instruments — `conformance` and `analyze` — reachable but hidden.
+///
+/// Asserted as an exact set rather than a list of `contains` checks: the point of
+/// R23 is a settled surface, and a test that only checks the four are *present*
+/// would pass just as happily if a fifth appeared.
 #[test]
-fn conformance_is_hidden_from_help_but_reachable() {
+fn the_visible_surface_is_exactly_the_four_user_facing_commands() {
     let out = oxabl().arg("--help").output().unwrap();
     assert!(out.status.success());
     let help = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !help.contains("conformance"),
-        "the instrument must not grow the advertised surface, got:\n{help}"
-    );
-    // The visible surface is unchanged by this unit — `analyze` hides later.
-    for visible in ["check", "analyze", "format", "lsp", "schema"] {
-        assert!(help.contains(visible), "`{visible}` should still be listed");
-    }
 
+    // The `Commands:` block, one command name per line, up to the first blank
+    // line — clap lists options after it.
+    let listed: Vec<&str> = help
+        .lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|l| !l.trim().is_empty())
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+
+    assert_eq!(
+        listed,
+        vec!["check", "format", "lsp", "schema", "help"],
+        "the advertised surface must not grow, got:\n{help}"
+    );
+    for hidden in ["conformance", "analyze"] {
+        assert!(
+            !help.contains(hidden),
+            "`{hidden}` is an instrument, not part of the advertised surface, got:\n{help}"
+        );
+    }
+}
+
+#[test]
+fn conformance_is_hidden_from_help_but_reachable() {
     // Hidden, not gone: its own --help works.
     let sub = oxabl().arg("conformance").arg("--help").output().unwrap();
     assert!(sub.status.success(), "`conformance --help` must work");

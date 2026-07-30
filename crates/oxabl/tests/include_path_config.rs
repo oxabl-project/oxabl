@@ -81,6 +81,9 @@ fn check_clean_when_oxabl_toml_provides_include_path() {
     assert!(output.status.success(), "expected exit 0");
 }
 
+/// The unresolvable include reaches the envelope's `preproc` section — a real
+/// versioned section now, not a key the CLI splices in after the library returns
+/// the document.
 #[test]
 fn analyze_json_lists_preproc_diagnostics() {
     let tmp = TempDir::new().unwrap();
@@ -100,15 +103,52 @@ fn analyze_json_lists_preproc_diagnostics() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(
+        v["sections"]["preproc"].is_number(),
+        "the preproc section must be versioned like every other, got:\n{stdout}"
+    );
     let diags = v
-        .get("preproc_diagnostics")
+        .get("preproc")
         .and_then(|d| d.as_array())
-        .expect("preproc_diagnostics array present in analyze JSON");
+        .expect("preproc array present in analyze JSON");
     assert!(
         diags
             .iter()
             .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PREPROC007")),
-        "expected a PREPROC007 entry in preproc_diagnostics, got:\n{stdout}"
+        "expected a PREPROC007 entry in the preproc section, got:\n{stdout}"
+    );
+}
+
+/// The same fact reaches `--format text`, which it never did while the CLI
+/// spliced it into the JSON only.
+#[test]
+fn analyze_text_renders_the_preproc_and_coverage_sections() {
+    let tmp = TempDir::new().unwrap();
+    let main = tmp.path().join("main.p");
+    write(&main, "{globals.i}\nMESSAGE \"hi\".\n");
+
+    let output = oxabl()
+        .arg("analyze")
+        .arg("--preprocess")
+        .arg("--format")
+        .arg("text")
+        .arg(&main)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("=== Preprocessor (1) ==="),
+        "expected the preproc section in text output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PREPROC007"),
+        "expected the unresolvable-include code, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== Coverage ===") && stdout.contains("unjudged symbols: 0"),
+        "expected the coverage section in text output, got:\n{stdout}"
     );
 }
 

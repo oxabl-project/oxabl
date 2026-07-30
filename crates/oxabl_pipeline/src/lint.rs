@@ -315,6 +315,28 @@ impl LintResult {
         }
     }
 
+    /// Take both the model and the diagnostics in one move.
+    ///
+    /// [`into_semantic`](Self::into_semantic) and
+    /// [`into_diagnostics`](Self::into_diagnostics) each consume the result, so a
+    /// caller wanting both had to clone one of them. The `oxabl` umbrella's
+    /// `analyze` surface returns exactly this tuple, and it is the browser's
+    /// per-keystroke path, so that clone would have been a whole diagnostic vector
+    /// per edit for no reason.
+    ///
+    /// A failed run yields `(None, empty)` — the same silence-is-not-cleanliness
+    /// caveat as the individual accessors applies.
+    pub fn into_parts(self) -> (Option<Semantic>, CollectedDiagnostics) {
+        match self.outcome {
+            Outcome::Computed {
+                semantic,
+                diagnostics,
+                ..
+            } => (semantic.map(|model| *model), diagnostics),
+            Outcome::Failed(_) => (None, CollectedDiagnostics::default()),
+        }
+    }
+
     /// Absolute paths of the include files this run read (R17). Empty on a
     /// failed run.
     pub fn dependency_paths(&self) -> &[PathBuf] {

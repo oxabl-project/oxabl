@@ -7,21 +7,13 @@ use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
 use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
-use oxabl_formatter::FormatFailure;
 use oxabl_pipeline::{
     ConfigOverrides, FormatPipeline, LintPipeline, PipelineConfig, ROOT_FILE_ID, position,
 };
 use oxabl_preprocessor::Preprocessor;
-use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{
-    RealFileSystem, discover_path, resolved_include_paths, resolved_lint_config, resolved_style,
-};
+use oxabl_workspace::{RealFileSystem, discover_path, resolved_include_paths};
 use serde::Serialize;
-use walkdir::WalkDir;
-
-/// ABL file extensions to scan for (lowercase)
-const ABL_EXTENSIONS: &[&str] = &["p", "w", "cls", "v"];
 
 #[derive(ClapParser)]
 #[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
@@ -63,6 +55,11 @@ enum Cli {
         schema: Option<PathBuf>,
 
         /// Suppress the lint channel: report format drift only (R16).
+        ///
+        /// Here this **skips the lint run entirely** — there is nothing else in
+        /// the report that needs it, so the work is not done. `analyze --no-lint`
+        /// deliberately differs: it still needs the semantic model for its dump,
+        /// so it runs the pipeline and filters the lint findings out afterwards.
         #[arg(long)]
         no_lint: bool,
 
@@ -102,6 +99,24 @@ enum Cli {
         debug: bool,
     },
     /// Parse + semantic-analyze a single ABL file and dump the resolved model.
+    ///
+    /// This is the semantic layer's introspection tool, not a gate: it answers
+    /// "what did oxabl understand about this file?", so it **exits 0 whatever it
+    /// finds** (KTD9). A file full of lint findings and a clean one are the same
+    /// success here; `oxabl check` is the command whose exit code means something.
+    ///
+    /// Deliberately **hidden** from `--help` (R23), alongside `conformance`: it is
+    /// a debugging instrument for oxabl's own model, so it earns its own command
+    /// but not a place in the advertised surface. It stays fully reachable and
+    /// `oxabl analyze --help` works as normal.
+    ///
+    /// Exit codes: `0` on a successful dump regardless of diagnostics, `2` when
+    /// the file cannot be read, `3` on a fatal preprocessing failure (no model to
+    /// dump), `4` on a contained internal panic, `6` on a serialization failure,
+    /// `7` on an unrecognized `--format`. Single-file by design, which is why a
+    /// panic aborts here rather than being reported-and-skipped as `check` does
+    /// (R24): there is no "rest of the walk" to protect.
+    #[command(hide = true)]
     Analyze {
         /// Path to the ABL source file to analyze.
         path: PathBuf,
@@ -110,7 +125,12 @@ enum Cli {
         #[arg(long, default_value = "json")]
         format: String,
 
-        /// Skip the lint pass (semantic-layer diagnostics only).
+        /// Drop lint findings from the dump (semantic-layer diagnostics only).
+        ///
+        /// A **filter on the result**, not a skipped pass: the envelope still
+        /// wants the semantic model, so the pipeline runs either way and the
+        /// lint-sourced diagnostics are removed from the reported set. `check
+        /// --no-lint` differs — it has no model to dump, so it skips the run.
         #[arg(long)]
         no_lint: bool,
 
@@ -399,38 +419,6 @@ fn run_lsp() -> ExitCode {
     }
 }
 
-/// The pure per-file formatting decision, separated from the write/print/exit
-/// shell so it is trivially testable (KTD6).
-enum FormatOutcome {
-    /// `format()` produced output byte-identical to the input.
-    Unchanged,
-    /// `format()` produced different output (the new bytes).
-    Reformatted(String),
-    /// The file could not be formatted faithfully; leave it unchanged. Carries
-    /// the human-readable reason (a `FormatBail` or a lexer panic).
-    Bailed(String),
-}
-
-/// Parse `source` raw (preprocessing OFF, per KTD4/R8 so spans are real byte
-/// offsets) and run the formatter, classifying the outcome. The whole
-/// tokenize → parse → format pipeline goes through the shared guard
-/// [`oxabl::try_format_source`]: a panic anywhere in it (the lexer on some
-/// inputs, or the formatter engine itself) must not unwind the whole directory
-/// walk after earlier files were already rewritten (R7.1b). A panic is treated
-/// as a bail — the file is reported and left unchanged. The write happens only
-/// on `Reformatted`, so a panic never leaves a half-written file.
-fn format_one(source: &str, style: &StyleGuide) -> FormatOutcome {
-    match oxabl::try_format_source(source, style) {
-        Ok(formatted) if formatted == source => FormatOutcome::Unchanged,
-        Ok(formatted) => FormatOutcome::Reformatted(formatted),
-        Err(FormatFailure::Panic(panic)) => FormatOutcome::Bailed(format!(
-            "internal panic while formatting; left unchanged: {}",
-            panic.message()
-        )),
-        Err(failure) => FormatOutcome::Bailed(failure.to_string()),
-    }
-}
-
 /// Resolve a `--style` value to a [`StyleGuide`] (KTD2): a known preset name
 /// first, otherwise a path to a `.toml` file. Anything that is neither is a
 /// hard usage error — an unresolvable style never silently falls back.
@@ -445,8 +433,33 @@ fn resolve_style_arg(value: &str) -> Result<StyleGuide, String> {
         .map_err(|e| format!("--style `{value}`: invalid style TOML: {e}"))
 }
 
-/// `oxabl format`: resolve a [`StyleGuide`], then format each discovered file
-/// per the selected mode. See KTD5 for the per-mode exit-code contract.
+/// `oxabl format`: resolve configuration once, then render the shared
+/// [`FormatPipeline`]'s decision for each discovered file per the selected mode.
+///
+/// This function formats nothing itself (R12): it reads bytes, hands them to the
+/// pipeline, and acts on the [`FormatOutcome`](oxabl_pipeline::FormatOutcome) —
+/// the same handle `oxabl check` drives for its drift channel, which is what
+/// stops the two from disagreeing about whether a file conforms.
+///
+/// # The per-mode exit-code contract
+///
+/// Three rules, unchanged:
+///
+/// * **`--check` exits 1 if any file would change**, and writes nothing. Drift is
+///   the *only* thing that mode reports, so this is its whole product.
+/// * **A did-not-format outcome is neutral in every mode.** The formatter
+///   declining is expected behavior on some inputs (parse errors above all), not a
+///   failure of the command: the file is left byte-for-byte unchanged, the reason
+///   goes to stderr, and the exit code does not move. This is deliberately unlike
+///   `check`, which treats a *contained panic* — an oxabl bug rather than a
+///   property of the input — as a failure; here even that stays neutral, because
+///   `format`'s job is to leave unformattable files alone and one such file must
+///   never fail a batch reformat.
+/// * **Only [`Reformatted`](oxabl_pipeline::FormatOutcome::Reformatted) writes.**
+///   No other arm carries bytes, so no arm can leave a half-written file.
+///
+/// I/O failure — a file that cannot be read or written — is the one non-usage
+/// failure, and it counts in both modes.
 fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> ExitCode {
     // Resolve the style once, up front (KTD1/KTD2). An unresolvable --style is a
     // usage error (exit 2) before any file is touched.
@@ -460,13 +473,24 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
         },
         None => None,
     };
-    let (style_guide, cfg_err) = resolved_style(path, cli_style);
-    if let Some(err) = cfg_err {
-        eprintln!("warning: {err}");
+
+    // One config resolution, through the shared resolver rather than the
+    // single-surface `resolved_style` helper: `--style` outranks
+    // `[workspace.style]` wholesale, and a malformed `oxabl.toml` degrades to
+    // defaults with one `warning:` line (R7).
+    let overrides = ConfigOverrides {
+        include_paths: Vec::new(),
+        schema_path: None,
+        style: cli_style,
+    };
+    let (config, warnings) = PipelineConfig::resolve(path, &overrides);
+    for warning in &warnings {
+        eprintln!("warning: {warning}");
     }
 
-    // Discover files (exit 2 on path-not-found / no ABL files, matching `check`).
-    let files = match discover_files(path) {
+    // Discovery through the shared walker (exit 2 on path-not-found / no ABL
+    // files, matching `check`).
+    let files = match discover_path(path) {
         Ok(files) => files,
         Err(e) => {
             eprintln!("error: {e}");
@@ -484,6 +508,11 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
         return ExitCode::from(2);
     }
 
+    // Built from the resolved style and nothing else, so it cannot see expanded
+    // macro text however this run is configured (R4/KTD4) — the formatter's spans
+    // must be real byte offsets into the bytes on disk.
+    let pipeline = FormatPipeline::new(config.style.clone());
+
     let mut any_would_change = false;
     let mut any_io_error = false;
 
@@ -497,31 +526,36 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
             }
         };
 
-        match format_one(&source, &style_guide) {
-            FormatOutcome::Unchanged => {
-                // In --stdout mode we still emit the (unchanged) content.
-                if stdout {
-                    print!("{source}");
+        let outcome = pipeline.format(&source);
+        if let Some(formatted) = outcome.output() {
+            if check {
+                eprintln!("{}: would reformat", file.display());
+                any_would_change = true;
+            } else if stdout {
+                print!("{formatted}");
+            } else if let Err(e) = std::fs::write(file, formatted) {
+                eprintln!("error: cannot write {}: {e}", file.display());
+                any_io_error = true;
+            }
+        } else {
+            // Unchanged or a refusal: nothing to write in any mode, and --stdout
+            // still emits the original bytes so a pipeline never loses the file.
+            if let Some(not_formatted) = outcome.not_formatted() {
+                // A contained panic keeps its own wording — the reason alone
+                // reads as an ordinary refusal, and an oxabl bug should not
+                // (R5).
+                if not_formatted.is_internal_panic() {
+                    eprintln!(
+                        "{}: internal panic while formatting; left unchanged ({})",
+                        file.display(),
+                        not_formatted.reason()
+                    );
+                } else {
+                    eprintln!("{}: {}", file.display(), not_formatted.reason());
                 }
             }
-            FormatOutcome::Bailed(reason) => {
-                // R7.1b: file left byte-for-byte unchanged; reason to stderr; not
-                // a failure (write) and counted as "no change" (--check).
-                eprintln!("{}: {reason}", file.display());
-                if stdout {
-                    print!("{source}");
-                }
-            }
-            FormatOutcome::Reformatted(formatted) => {
-                if check {
-                    eprintln!("{}: would reformat", file.display());
-                    any_would_change = true;
-                } else if stdout {
-                    print!("{formatted}");
-                } else if let Err(e) = std::fs::write(file, &formatted) {
-                    eprintln!("error: cannot write {}: {e}", file.display());
-                    any_io_error = true;
-                }
+            if stdout {
+                print!("{source}");
             }
         }
     }
@@ -896,6 +930,23 @@ fn check_json_diagnostic(
     }
 }
 
+/// `oxabl analyze`: dump one file's resolved semantic model, in the versioned
+/// envelope or as text.
+///
+/// Like `check`, this orchestrates nothing itself (R12) — it resolves
+/// configuration once, drives [`LintPipeline`], and renders. Unlike `check` it is
+/// single-file, and it **exits 0 whatever it finds** (KTD9): introspection, not a
+/// gate. See the subcommand's own docs for the full exit-code list.
+///
+/// # Two channels, and why the envelope no longer omits one
+///
+/// The preprocessor coverage warnings and the unjudged-symbol note still go to
+/// **stderr** — they qualify the run rather than being results of it, and a human
+/// reading a piped dump needs them out of the way of the document. They are also
+/// sections of the document now (`preproc` and `coverage`), emitted by the library
+/// like every other section. Before, the CLI spliced both keys into the finished
+/// JSON, which made them invisible to `--format text` and unversioned; the stderr
+/// lines are the human channel and were never a substitute for that.
 fn run_analyze(
     path: &Path,
     format: &str,
@@ -912,71 +963,52 @@ fn run_analyze(
         }
     };
 
-    // Resolve include paths (only meaningful when preprocessing).
-    let paths = if preprocess {
-        let (paths, cfg_err) = resolved_include_paths(path, include_paths);
-        if let Some(err) = cfg_err {
-            eprintln!("warning: {err}");
-        }
-        paths
-    } else {
-        Vec::new()
+    // One resolution for every configured surface — include paths, lint
+    // severities, and the schema — instead of the three independent `resolved_*`
+    // calls this used to make, which parsed `oxabl.toml` once each and could each
+    // report the same malformed file. Warnings are non-fatal data (R7): an
+    // unreadable `.df` and a broken config both degrade to a default and say so
+    // without moving the exit code.
+    let overrides = ConfigOverrides {
+        include_paths: include_paths.to_vec(),
+        schema_path: schema_path.map(Path::to_path_buf),
+        style: None,
     };
-
-    // Load the schema when `--schema` was passed. A directory loads every
-    // `.df` inside it via `Schema::from_df_dir`; a single path loads that one
-    // file. Load diagnostics are reported but non-fatal — a partially-loaded
-    // schema still drives resolution. `schema_loaded` is set explicitly (not
-    // derived from `Schema::is_empty`) so an intentionally empty `.df` still
-    // reads as "loaded" to schema-dependent diagnostics.
-    let (schema, schema_loaded) = match schema_path {
-        Some(p) => {
-            let (schema, diags) = if p.is_dir() {
-                Schema::from_df_dir(p)
-            } else {
-                SchemaLoader::load_files(&[p.to_path_buf()], &RealFileSystem)
-            };
-            for d in &diags {
-                eprintln!("schema: [{}] {}", d.code.0, d.message);
-            }
-            (schema, true)
-        }
-        None => (Schema::empty(), false),
-    };
-
-    // Resolve the `[workspace.lint]` severity surface (CLI has no lint flags yet,
-    // so overrides are empty): CLI > oxabl.toml > default (R15).
-    let (lint_config, lint_err) = resolved_lint_config(path, &[]);
-    if let Some(err) = lint_err {
-        eprintln!("warning: {err}");
+    let (config, warnings) = PipelineConfig::resolve(path, &overrides);
+    for warning in &warnings {
+        eprintln!("warning: {warning}");
     }
 
-    // Diagnostics come from the shared `oxabl::analyze` pipeline so the CLI and
-    // the LSP can never drift (R7). It uses `parse_program` error recovery, so
-    // `analyze` surfaces semantic/lint diagnostics even on a parse error instead
-    // of aborting (U4). `analyze` defaults the file system to `RealFileSystem`
-    // and the root file id to the same synthetic id the surfacing helpers use.
-    let opts = oxabl::AnalyzeOptions {
-        schema,
-        schema_loaded,
-        include_paths: paths,
-        lint_severities: lint_config.to_severity_map(),
-        preprocess,
-    };
-    // Guarded (R7): a panic in the shared pipeline must be reported as a failure
-    // for this file, not unwind the subcommand with a raw backtrace.
-    let (sem_opt, collected) = match oxabl::try_analyze(&source, &opts) {
-        Ok(result) => result,
-        Err(panic) => {
-            eprintln!("error: analysis failed on {}: {panic}", path.display());
-            return ExitCode::from(4);
-        }
+    let fs = RealFileSystem;
+    // Guarded (R20): a panic in the shared pipeline is reported as this file's
+    // failure, not an unwind out of the subcommand with a raw backtrace. Aborting
+    // is right here — there is exactly one file — which is why `check`'s
+    // continue-the-walk rule (R24) is `check`'s alone.
+    let result = LintPipeline::new(&config, &fs)
+        .with_preprocess(preprocess)
+        .run(&source);
+    if let Some(panic) = result.failure() {
+        eprintln!("error: analysis failed on {}: {panic}", path.display());
+        return ExitCode::from(4);
+    }
+
+    // `--no-lint` is a **filter on the result**, not a skipped run: the envelope
+    // still wants the model, so the shared `excluding_source` drops the
+    // lint-sourced entries and leaves parse, semantic, and preprocessor ones
+    // alone. (`check --no-lint` skips the run outright — it has no model to dump.)
+    let collected = if no_lint {
+        result.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
+    } else {
+        result.diagnostics().clone()
     };
 
-    let sem = match sem_opt {
+    let sem = match result.semantic() {
         Some(sem) => sem,
         None => {
-            // Fatal preprocessing failure: no model to dump.
+            // Fatal preprocessing failure: no model to dump. Not reachable from
+            // any ABL input today — the preprocessor only fails fatally when it
+            // emits an error *and* produces an empty span tree — but the arm is
+            // real and reported distinctly rather than collapsed into success.
             let msg = collected
                 .by_source(oxabl_analyze::DiagnosticSource::Preproc)
                 .next()
@@ -987,43 +1019,16 @@ fn run_analyze(
         }
     };
 
-    // Honor `--no-lint` by dropping the lint-sourced diagnostics.
-    let collected = if no_lint {
-        oxabl_analyze::CollectedDiagnostics {
-            diagnostics: collected
-                .diagnostics
-                .into_iter()
-                .filter(|c| c.source != oxabl_analyze::DiagnosticSource::Lint)
-                .collect(),
-        }
-    } else {
-        collected
-    };
-
-    // CLI-owned channel (not part of the versioned analyze envelope): surface
-    // unresolvable-include / preprocessor diagnostics to stderr so machine and
-    // human consumers see the same "loud, not silent" signal.
-    let preproc_diags = surface_collected_preproc(path, &source, &collected);
-
-    // Coverage, not findings: say how much of the file the count-gated rules
-    // could not judge. Same channel as the preprocessor coverage warning above.
-    let unjudged = surface_unjudged_symbols(&sem);
+    // The human channel, unchanged: loud unresolvable-include / preprocessor
+    // diagnostics rendered with a position and a snippet, and the coverage note
+    // saying how much of the file the count-gated rules could not judge. The
+    // envelope carries both facts as well; neither replaces the other.
+    surface_collected_preproc(path, &source, &collected);
+    surface_unjudged_symbols(sem);
 
     match format {
         "json" => {
-            let mut v = dump_json_with_diagnostics(&sem, &collected);
-            if let serde_json::Value::Object(ref mut map) = v {
-                map.insert(
-                    "preproc_diagnostics".to_string(),
-                    serde_json::to_value(&preproc_diags).unwrap_or(serde_json::Value::Null),
-                );
-                // A count, not prose — machine consumers should not have to
-                // parse the stderr line.
-                map.insert(
-                    "unjudged_symbols".to_string(),
-                    serde_json::Value::from(unjudged),
-                );
-            }
+            let v = dump_json_with_diagnostics(sem, &collected);
             match serde_json::to_string_pretty(&v) {
                 Ok(s) => println!("{s}"),
                 Err(e) => {
@@ -1033,7 +1038,7 @@ fn run_analyze(
             }
         }
         "text" => {
-            print!("{}", dump_text_with_diagnostics(&sem, &collected));
+            print!("{}", dump_text_with_diagnostics(sem, &collected));
         }
         other => {
             eprintln!("error: unsupported format `{other}` (use `json` or `text`)");
@@ -1058,8 +1063,12 @@ fn run_conformance(
     include_paths: &[PathBuf],
     debug: bool,
 ) -> ExitCode {
-    // Discover files
-    let files = match discover_files(path) {
+    // Discovery through the shared walker, the same one `check` and `format` use:
+    // an explicitly named file is accepted whatever its extension, a directory is
+    // walked under the root-extension policy. That is exactly what this walk
+    // wants — it accepts a single named root the same way — so it has no reason to
+    // keep a private copy.
+    let files = match discover_path(path) {
         Ok(files) => files,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -1152,47 +1161,6 @@ fn run_conformance(
     } else {
         ExitCode::SUCCESS
     }
-}
-
-fn discover_files(path: &Path) -> Result<Vec<PathBuf>, String> {
-    if !path.exists() {
-        return Err(format!("Path does not exist: {}", path.display()));
-    }
-
-    // Single file mode
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-
-    if !path.is_dir() {
-        return Err(format!(
-            "Path is not a file or directory: {}",
-            path.display()
-        ));
-    }
-
-    let mut files = Vec::new();
-
-    for entry in WalkDir::new(path).follow_links(true) {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue, // skip unreadable directories
-        };
-
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        if let Some(ext) = entry.path().extension() {
-            let ext_lower = ext.to_string_lossy().to_lowercase();
-            if ABL_EXTENSIONS.contains(&ext_lower.as_str()) {
-                files.push(entry.into_path());
-            }
-        }
-    }
-
-    files.sort();
-    Ok(files)
 }
 
 fn parse_file(path: &Path) -> FileResult {

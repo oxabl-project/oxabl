@@ -145,6 +145,46 @@ fn parse_error_bails_unchanged_and_reports_write_mode() {
     );
 }
 
+/// `--stdout` emits the **original** bytes on both leave-it-alone arms, so a
+/// caller piping through `oxabl format --stdout` never loses a file it could not
+/// reformat. Only the reformatted arm carries new bytes.
+#[test]
+fn stdout_emits_original_bytes_on_unchanged_and_on_a_refusal() {
+    let tmp = TempDir::new().unwrap();
+
+    // Already conforming: the pipeline answers `Unchanged`, which carries no
+    // bytes of its own.
+    let good = tmp.path().join("good.p");
+    write(&good, FORMATTED_4);
+    let out = oxabl()
+        .arg("format")
+        .arg(&good)
+        .arg("--stdout")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), FORMATTED_4);
+
+    // A refusal (unterminated DO → parse errors): still the original bytes, and
+    // still exit 0 — declining is expected behavior, not a failure.
+    let bad_source = "DO:\n  MESSAGE \"hi\".\n";
+    let bad = tmp.path().join("bad.p");
+    write(&bad, bad_source);
+    let out = oxabl()
+        .arg("format")
+        .arg(&bad)
+        .arg("--stdout")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "a refusal is neutral: {out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), bad_source);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("parse errors"),
+        "the reason still goes to stderr: {out:?}"
+    );
+    assert_eq!(fs::read_to_string(&bad).unwrap(), bad_source);
+}
+
 #[test]
 fn batch_continues_past_a_bailing_file() {
     // KTD4 non-abort guarantee: a file that cannot be formatted (here a parse
