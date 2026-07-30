@@ -42,6 +42,7 @@
 
 use std::sync::Arc;
 
+use oxabl_ast::AccessModifier;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 
 use crate::resolve::fold_atom;
@@ -195,29 +196,6 @@ pub struct ClassDescriptor {
     pub implements: Vec<IndexName>,
 }
 
-/// Accessibility of a class member, which decides whether a subclass inherits
-/// it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemberAccess {
-    Public,
-    Protected,
-    Private,
-    PackagePrivate,
-}
-
-impl MemberAccess {
-    /// Whether a subclass in another file inherits this member.
-    ///
-    /// `PackagePrivate` answers `false`: ABL scopes it to the declaring
-    /// package, and the index does not model packages, so the conservative
-    /// answer avoids synthesizing a member a later access-check rule would
-    /// have to report as a violation on an already-resolved reference.
-    #[inline]
-    pub fn inherited_by_subclass(self) -> bool {
-        matches!(self, MemberAccess::Public | MemberAccess::Protected)
-    }
-}
-
 /// Declared type of an indexed member, in a form that survives crossing a file
 /// boundary.
 ///
@@ -272,11 +250,29 @@ pub struct MemberDescriptor {
     pub kind: SymbolKind,
     /// Declared return type for a method, value type for a property.
     pub ty: MemberType,
-    pub access: MemberAccess,
+    /// Declared accessibility, as the AST spells it. An undecorated member is
+    /// `Public`, matching ABL's default.
+    pub access: AccessModifier,
     /// `STATIC` members are reached through the type name rather than an
     /// instance, so the consumer needs to tell them apart from instance
     /// members.
     pub is_static: bool,
+}
+
+impl MemberDescriptor {
+    /// Whether a subclass in another file inherits this member.
+    ///
+    /// `PackagePrivate` answers `false`: ABL scopes it to the declaring
+    /// package, and the index does not model packages, so the conservative
+    /// answer avoids synthesizing a member a later access-check rule would
+    /// have to report as a violation on an already-resolved reference.
+    #[inline]
+    pub fn inherited_by_subclass(&self) -> bool {
+        matches!(
+            self.access,
+            AccessModifier::Public | AccessModifier::Protected
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -447,9 +443,16 @@ mod tests {
 
     #[test]
     fn private_and_package_private_members_are_not_inherited() {
-        assert!(MemberAccess::Public.inherited_by_subclass());
-        assert!(MemberAccess::Protected.inherited_by_subclass());
-        assert!(!MemberAccess::Private.inherited_by_subclass());
-        assert!(!MemberAccess::PackagePrivate.inherited_by_subclass());
+        let member = |access| MemberDescriptor {
+            name: IndexName::new("calculate-total"),
+            kind: SymbolKind::Function,
+            ty: MemberType::Untyped,
+            access,
+            is_static: false,
+        };
+        assert!(member(AccessModifier::Public).inherited_by_subclass());
+        assert!(member(AccessModifier::Protected).inherited_by_subclass());
+        assert!(!member(AccessModifier::Private).inherited_by_subclass());
+        assert!(!member(AccessModifier::PackagePrivate).inherited_by_subclass());
     }
 }
