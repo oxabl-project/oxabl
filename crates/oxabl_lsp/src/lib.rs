@@ -137,6 +137,10 @@ struct Server<'c> {
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
+    /// Bumped every time a configuration is installed. Workers carry the
+    /// generation they read so a result computed under a configuration the user
+    /// has since replaced is not published (see [`Server::handle_result`]).
+    config_generation: u64,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -155,6 +159,11 @@ struct ComputeResult {
     /// worth retrying, a panic is deterministic in the buffer's text and
     /// retrying it would spin forever (see [`Server::handle_result`]).
     panicked: bool,
+    /// The [`Server::config_generation`] the worker read. A result whose
+    /// generation has since moved was computed under a configuration the user has
+    /// replaced, and publishing it would show one round of diagnostics under the
+    /// old severities.
+    config_generation: u64,
 }
 
 impl<'c> Server<'c> {
@@ -179,6 +188,7 @@ impl<'c> Server<'c> {
             formatter,
             dependencies: HashMap::new(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
+            config_generation: 0,
         }
     }
 
@@ -256,6 +266,7 @@ impl<'c> Server<'c> {
             let version = doc.version;
             let snapshot = self.db.clone();
             let schema = self.schema;
+            let config_generation = self.config_generation;
             let tx = result_tx.clone();
             std::thread::spawn(move || {
                 // The guard is inside `analyze_guarded`, so the send below is
@@ -268,6 +279,7 @@ impl<'c> Server<'c> {
                     diagnostics: analysis.diagnostics,
                     dependencies: analysis.dependencies,
                     panicked: analysis.panicked,
+                    config_generation,
                 });
             });
         }
@@ -289,11 +301,25 @@ impl<'c> Server<'c> {
     /// A *contained panic* arrives in the same shape (absent diagnostics) and
     /// must **not** be retried: it is deterministic in the buffer's text, so a
     /// reschedule would spin the file at the debounce interval forever.
+    ///
+    /// A result computed under a **superseded configuration** is dropped the same
+    /// way and retried: a worker that finished microseconds before an
+    /// `oxabl.toml` change would otherwise publish one round of diagnostics under
+    /// the severities the user just replaced. The buffer version cannot catch this
+    /// — the text did not change, only the configuration did.
     fn handle_result(&mut self, res: ComputeResult) {
         match self.documents.get(&res.uri) {
             None => return,                                    // buffer closed
             Some(doc) if doc.version != res.version => return, // superseded by a newer edit
             Some(_) => {}
+        }
+        if res.config_generation != self.config_generation {
+            // Computed under a configuration that is no longer current. The
+            // watcher path already re-triggers every buffer, but this arrives on
+            // the `ensure_config` path too (a first anchor resolved while an
+            // earlier buffer's worker was in flight), where nothing else would.
+            self.debouncer.schedule(res.uri, std::time::Instant::now());
+            return;
         }
         self.record_dependencies(&res.uri, res.dependencies);
         let Some(collected) = res.diagnostics else {
@@ -465,6 +491,9 @@ impl<'c> Server<'c> {
     /// pipeline from its style. Callers must re-trigger affected buffers
     /// afterwards (the db configuration is not a salsa input, R17).
     fn install_config(&mut self, resolved: PipelineConfig) {
+        // Every install moves the generation, so any worker still running against
+        // the previous configuration is identifiable when its result lands.
+        self.config_generation = self.config_generation.wrapping_add(1);
         self.formatter = FormatPipeline::new(resolved.style.clone());
         self.db.set_config(AnalysisConfig {
             fs: std::sync::Arc::new(RealFileSystem),
@@ -867,6 +896,7 @@ mod tests {
             diagnostics: None,
             dependencies: None,
             panicked: false,
+            config_generation: 0, // no configuration is resolved in this test
         });
 
         assert_eq!(
@@ -922,6 +952,7 @@ mod tests {
             diagnostics: None,
             dependencies: None,
             panicked: false,
+            config_generation: 0, // no configuration is resolved in this test
         });
 
         assert!(
@@ -947,12 +978,76 @@ mod tests {
             diagnostics: None,
             dependencies: None,
             panicked: true,
+            config_generation: 0, // no configuration is resolved in this test
         });
 
         assert!(
             server.debouncer.next_deadline().is_none(),
             "a contained panic must not be retried in a loop"
         );
+    }
+
+    /// A worker that finished just *before* an `oxabl.toml` change would
+    /// otherwise publish one set of diagnostics computed under the old
+    /// configuration — severities from the file the user just rewrote. The result
+    /// carries the generation it was computed under and is dropped when that has
+    /// moved, then recomputed under the current one.
+    #[test]
+    fn a_result_from_a_superseded_config_is_dropped_and_retried() {
+        let (connection, client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        let stale = server.config_generation;
+        server.install_config(PipelineConfig::default());
+        assert_ne!(
+            stale, server.config_generation,
+            "installing a configuration must move the generation"
+        );
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
+            dependencies: None,
+            panicked: false,
+            config_generation: stale,
+        });
+
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "a result from the old configuration must not be published"
+        );
+        assert!(
+            server.debouncer.next_deadline().is_some(),
+            "and the buffer must be recomputed under the new configuration"
+        );
+    }
+
+    /// The gate must not swallow the ordinary case: a result computed under the
+    /// current generation publishes.
+    #[test]
+    fn a_current_generation_result_publishes() {
+        let (connection, client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
+            dependencies: None,
+            panicked: false,
+            config_generation: server.config_generation,
+        });
+
+        let message = client.receiver.try_recv().expect("a publish was sent");
+        match message {
+            Message::Notification(n) => assert_eq!(n.method, "textDocument/publishDiagnostics"),
+            other => panic!("expected a publish, got {other:?}"),
+        }
     }
 
     /// Percent-escapes are how every real client spells a path with a space, and
@@ -1011,6 +1106,7 @@ mod tests {
             diagnostics: None,
             dependencies: None,
             panicked: false,
+            config_generation: 0, // no configuration is resolved in this test
         });
 
         assert!(server.debouncer.next_deadline().is_none());
