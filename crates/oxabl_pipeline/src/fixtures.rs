@@ -34,9 +34,10 @@
 //!
 //! [`canonical_config`] is what every filesystem-backed client resolves with no
 //! `oxabl.toml` present: `WorkspaceConfig::defaults()` run through
-//! [`resolve_from_config`]. That is deliberately *not*
-//! [`PipelineConfig::default`] — see [`canonical_config`]'s own docs, which
-//! record where the two disagree.
+//! [`resolve_from_config`]. It agrees with [`PipelineConfig::default`], which is
+//! what the browser builds — the two read one severity table now, so the client
+//! is not a variable in the answer. `canonical_config` remains the named anchor
+//! the table is written against; see its own docs.
 
 use std::path::Path;
 
@@ -45,7 +46,9 @@ use oxabl_common::Severity;
 use oxabl_schema::Schema;
 use oxabl_workspace::{LintConfig, LintSeverity, WorkspaceConfig};
 
-use crate::{ConfigOverrides, FormatOutcome, PipelineConfig, resolve_from_config};
+use crate::{
+    ConfigOverrides, FormatOutcome, NotFormattedKind, PipelineConfig, resolve_from_config,
+};
 
 /// An input a client may or may not be able to supply.
 ///
@@ -86,7 +89,15 @@ pub enum ExpectedFormat {
     /// improvement is not a parity failure.
     Reformatted(&'static str),
     /// The formatter declined. A refusal is **not** drift.
-    Refused,
+    ///
+    /// The [`NotFormattedKind`] travels with it because "some refusal happened"
+    /// is not the claim worth pinning. The crate keeps the bail-versus-panic
+    /// split *structural* precisely so a client can tell "the formatter correctly
+    /// declined, given this input" from "oxabl has a bug" — and a table that
+    /// accepted any refusal would let a bail regress into a contained
+    /// [`InternalPanic`](oxabl_common::InternalPanic) with every leg still green,
+    /// losing exactly the distinction the design invested in.
+    Refused(NotFormattedKind),
 }
 
 /// One row of the shared table.
@@ -171,7 +182,15 @@ impl ParityFixture {
                     self.name
                 );
             }
-            (ExpectedFormat::Refused, FormatOutcome::DidNotFormat(_)) => {}
+            (ExpectedFormat::Refused(kind), FormatOutcome::DidNotFormat(refusal)) => {
+                assert_eq!(
+                    refusal.kind(),
+                    kind,
+                    "{leg} refused fixture `{}` for the wrong reason: {}",
+                    self.name,
+                    refusal.reason()
+                );
+            }
             (expected, actual) => panic!(
                 "{leg} diverged on fixture `{}`: expected {expected:?}, got {actual:?}",
                 self.name
@@ -188,7 +207,20 @@ impl ParityFixture {
         match self.format {
             ExpectedFormat::Unchanged => (false, false, false),
             ExpectedFormat::Reformatted(_) => (true, true, false),
-            ExpectedFormat::Refused => (false, false, true),
+            ExpectedFormat::Refused(_) => (false, false, true),
+        }
+    }
+
+    /// The kind of refusal this fixture expects, or `None` when it expects the
+    /// formatter to produce an answer at all.
+    ///
+    /// For the legs whose surface is not a [`FormatOutcome`]: the CLI reports a
+    /// contained panic under its own `failures` key and a bail nowhere, so it
+    /// needs the discriminant even though it never sees the type.
+    pub fn expected_refusal_kind(&self) -> Option<NotFormattedKind> {
+        match self.format {
+            ExpectedFormat::Refused(kind) => Some(kind),
+            ExpectedFormat::Unchanged | ExpectedFormat::Reformatted(_) => None,
         }
     }
 }
@@ -306,18 +338,28 @@ pub fn schema() -> Schema {
 /// The configuration a filesystem-backed client resolves when there is no
 /// `oxabl.toml`: `WorkspaceConfig::defaults()` through [`resolve_from_config`].
 ///
-/// # Why not `PipelineConfig::default()`
+/// # Its relationship to `PipelineConfig::default()`
 ///
-/// The two are **not** the same value, and the difference is observable.
-/// `PipelineConfig::default()` carries an empty `LintSeverityMap`, so every
-/// rule keeps the severity `oxabl_lint` emits it at. Resolving a config — even
-/// an all-defaults one — materializes `[workspace.lint]`'s defaults as explicit
-/// overrides, and two of those disagree with the built-in ones
-/// (`unknown-table-or-field` and `type-mismatch-assignment` are `warn` in the
-/// config table and `error` in the rules). The CLI and the language server both
-/// resolve, so this is the configuration the parity table is written against;
-/// the browser builds `PipelineConfig::default()` and therefore diverges on
-/// those two severities. That divergence is pinned by name in the browser leg.
+/// The two are the **same value**, by construction rather than by coincidence:
+/// both lower `LintConfig::default()` through `to_severity_map`, and both take
+/// `StyleGuide::default_base()`, an empty include path, and no schema. That
+/// matters because the filesystem-backed clients resolve while the browser
+/// builds a default directly — if the two ever stopped agreeing, one client
+/// would be answering a different question about the same source.
+///
+/// It did once. `PipelineConfig::default()` used to leave its `LintSeverityMap`
+/// empty, which is not "the defaults" but "no rule has a configured severity",
+/// so `unknown-table-or-field` and `type-mismatch-assignment` came back at the
+/// severity `oxabl_lint` constructs them with (`error`) instead of the
+/// `[workspace.lint]` default a resolution materializes (`warn`). One table
+/// closed that; `browser_expected` and the browser leg's
+/// `browser_severity_matches_every_other_client` keep it closed.
+///
+/// So this function exists as the parity table's **named anchor**, not as a
+/// different value: the table's expectations are written against "what a
+/// filesystem-backed client resolves with no `oxabl.toml`", and saying that in
+/// one place is what lets a leg's setup be read as the client's real default
+/// rather than as test tuning.
 pub fn canonical_config() -> PipelineConfig {
     let (config, warnings) = resolve_from_config(
         &WorkspaceConfig::defaults(),
@@ -487,7 +529,8 @@ pub const FIXTURES: &[ParityFixture] = &[
     },
     // Error recovery: the parse error is reported *and* the lint pass still runs
     // over the recovered tree. The formatter refuses a parse-dirty file, which is
-    // also this table's refusal case.
+    // also this table's refusal case — a `Bail`, since declining to format a file
+    // that does not parse is correct behavior and not an oxabl defect.
     ParityFixture {
         name: "parse_error",
         source: "DEFINE VARIABLE leftAlone AS INTEGER NO-UNDO.\n@ @ @\nMESSAGE \"after\".\n",
@@ -507,7 +550,7 @@ pub const FIXTURES: &[ParityFixture] = &[
                 end: 25,
             },
         ],
-        format: ExpectedFormat::Refused,
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
         needs: &[],
     },
     ParityFixture {

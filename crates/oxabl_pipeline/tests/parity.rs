@@ -20,7 +20,9 @@
 use oxabl_pipeline::fixtures::{
     self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
 };
-use oxabl_pipeline::{FormatPipeline, LintPipeline, LintResult, PipelineConfig};
+use oxabl_pipeline::{
+    FormatPipeline, LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig,
+};
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
 /// A filesystem with nothing in it — the include fixture is *unresolvable* on
@@ -74,6 +76,16 @@ fn the_shared_table_matches_the_format_pipeline() {
         assert_eq!(
             outcome.not_formatted().is_some(),
             refused,
+            "{}",
+            fixture.name
+        );
+
+        // The *kind* of refusal, not merely that one happened: a bail that
+        // regressed into a contained panic is a defect the table must not
+        // accept as parity.
+        assert_eq!(
+            outcome.not_formatted().map(NotFormatted::kind),
+            fixture.expected_refusal_kind(),
             "{}",
             fixture.name
         );
@@ -293,8 +305,8 @@ fn the_table_covers_every_rule_a_parse_error_a_clean_file_and_format_drift() {
     assert!(
         FIXTURES
             .iter()
-            .any(|f| matches!(f.format, ExpectedFormat::Refused)),
-        "no format-refusal fixture"
+            .any(|f| f.expected_refusal_kind() == Some(NotFormattedKind::Bail)),
+        "no format-refusal fixture the formatter declines on purpose"
     );
 
     let mut names: Vec<&str> = FIXTURES.iter().map(|f| f.name).collect();
@@ -302,6 +314,34 @@ fn the_table_covers_every_rule_a_parse_error_a_clean_file_and_format_drift() {
     let unique = names.len();
     names.dedup();
     assert_eq!(unique, names.len(), "fixture names must be unique");
+}
+
+/// The two ways a client can arrive at "no `oxabl.toml`" are the same value.
+///
+/// [`fixtures::canonical_config`] resolves — which is what the CLI and the
+/// language server do — while the browser constructs [`PipelineConfig::default`]
+/// in-process. The parity table is written against the first, so if the second
+/// drifted from it, every browser-leg comparison would be asserting a different
+/// question and the table would still look right. That drift is exactly the
+/// defect the suite caught on its first run, and this is the assertion that keeps
+/// the two derivations pinned to each other rather than only to prose.
+#[test]
+fn the_resolved_and_in_process_defaults_are_one_configuration() {
+    let resolved = fixtures::canonical_config();
+    let in_process = PipelineConfig::default();
+
+    assert_eq!(
+        resolved.lint_severities, in_process.lint_severities,
+        "two default severity tables have been reintroduced"
+    );
+    assert_eq!(
+        resolved.style.to_toml().unwrap(),
+        in_process.style.to_toml().unwrap(),
+        "the default style must not depend on how the config was built"
+    );
+    assert_eq!(resolved.include_paths, in_process.include_paths);
+    assert_eq!(resolved.schema_loaded, in_process.schema_loaded);
+    assert!(!in_process.schema_loaded);
 }
 
 /// The expected byte spans really do point at the substring they claim to, so a

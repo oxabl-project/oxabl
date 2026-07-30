@@ -549,7 +549,13 @@ mod tests {
                         );
                         assert_eq!(response["source"], expected, "{}", fixture.name);
                     }
-                    ExpectedFormat::Refused => {
+                    // The browser wire shape collapses the refusal to its reason
+                    // text — a genuine capability gap, not a divergence: there
+                    // is no discriminant field to compare. What the table's kind
+                    // buys here is that the *reason* is the one the shared
+                    // pipeline produced for that kind, checked below against an
+                    // independent derivation.
+                    ExpectedFormat::Refused(_) => {
                         assert_eq!(response["changed"], false, "{}", fixture.name);
                         assert!(
                             response["error"].is_string(),
@@ -561,6 +567,35 @@ mod tests {
                     }
                 }
             }
+        }
+
+        /// A refusal's `error` text is the shared pipeline's own
+        /// [`NotFormatted::reason`](oxabl_pipeline::NotFormatted::reason), not a
+        /// message this client assembled.
+        ///
+        /// The wire shape has one `error` field, so the browser cannot carry the
+        /// [`NotFormattedKind`](oxabl_pipeline::NotFormattedKind) the table now
+        /// pins — that discriminant is genuinely unavailable here. Comparing the
+        /// text against the pipeline's own rendering is what recovers the claim:
+        /// a bail that regressed into a contained panic reports a different
+        /// reason, and this fails.
+        #[test]
+        fn a_refusal_reports_the_shared_pipelines_reason() {
+            let shared = FormatPipeline::new(PipelineConfig::default().style);
+            let mut refusals = 0;
+            for fixture in FIXTURES {
+                let Some(refusal) = shared.format(fixture.source).not_formatted().cloned() else {
+                    continue;
+                };
+                refusals += 1;
+                assert_eq!(
+                    formatted(fixture.source)["error"],
+                    serde_json::Value::String(refusal.reason()),
+                    "{}",
+                    fixture.name
+                );
+            }
+            assert!(refusals > 0, "the table must carry a refusal fixture");
         }
 
         /// The browser's format style is the shared default configuration's,

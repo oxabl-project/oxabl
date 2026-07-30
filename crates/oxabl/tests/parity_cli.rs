@@ -20,6 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use oxabl_pipeline::NotFormattedKind;
 use oxabl_pipeline::fixtures::{
     self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
 };
@@ -253,7 +254,7 @@ fn format_outcomes_agree_through_check_and_through_format() {
         // fixture, the original bytes on both leave-it-alone arms.
         let expected_bytes = match fixture.format {
             ExpectedFormat::Reformatted(bytes) => bytes,
-            ExpectedFormat::Unchanged | ExpectedFormat::Refused => fixture.source,
+            ExpectedFormat::Unchanged | ExpectedFormat::Refused(_) => fixture.source,
         };
         assert_eq!(
             format_stdout(&case.source),
@@ -268,10 +269,22 @@ fn format_outcomes_agree_through_check_and_through_format() {
 
 /// A refusal is neutral, not drift: `check` reports no drifting file, no failure,
 /// and exits on its lint channel alone.
+///
+/// The empty `failures` array is where the CLI renders the bail-versus-panic
+/// distinction the table now pins as a
+/// [`NotFormattedKind`](oxabl_pipeline::NotFormattedKind). `check` reports a
+/// contained internal panic under that key and a deliberate bail nowhere, so
+/// asserting it against the table's kind — rather than against a hard-coded zero
+/// — is what makes this leg fail if the formatter starts *panicking* on a file it
+/// used to correctly decline.
 #[test]
 fn a_format_refusal_is_not_drift() {
     let fixture = fixtures::fixture("parse_error");
-    assert!(matches!(fixture.format, ExpectedFormat::Refused));
+    assert_eq!(
+        fixture.expected_refusal_kind(),
+        Some(NotFormattedKind::Bail),
+        "this test is about a deliberate refusal, not a contained panic"
+    );
     let case = case(fixture);
     let (report, _code, stderr) = check_json(&case, &[]);
 
@@ -281,6 +294,32 @@ fn a_format_refusal_is_not_drift() {
         Some(0),
         "a bail is not an internal failure: {stderr}"
     );
+}
+
+/// Every fixture the table expects a *bail* on stays out of `check`'s failure
+/// channel, and every fixture it expects an answer on has nothing there either.
+///
+/// The narrow test above pins the parse-error case by name; this one holds the
+/// property across the table, so a new fixture cannot quietly start reporting an
+/// oxabl defect as an ordinary refusal.
+#[test]
+fn no_fixture_reports_an_internal_failure() {
+    for fixture in FIXTURES {
+        assert_ne!(
+            fixture.expected_refusal_kind(),
+            Some(NotFormattedKind::InternalPanic),
+            "fixture `{}`: the table must not normalize an oxabl bug",
+            fixture.name
+        );
+        let case = case(fixture);
+        let (report, _code, stderr) = check_json(&case, &[]);
+        assert_eq!(
+            report["failures"].as_array().map(Vec::len),
+            Some(0),
+            "fixture `{}` reported an internal failure: {stderr}",
+            fixture.name
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
