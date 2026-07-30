@@ -569,6 +569,31 @@ mod tests {
             }
         }
 
+        /// The non-ASCII fixture's byte span reaches the wire, and the
+        /// line/column beside it is the **byte** column the shared helper derives.
+        ///
+        /// Only the bytes enter the full-table comparison, so the wire's derived
+        /// pair — the number the playground actually shows a user — is only
+        /// covered by a test like this one, on a source where counting characters
+        /// instead of bytes gives a different answer.
+        #[test]
+        fn the_non_ascii_fixture_reaches_the_wire_with_byte_positions() {
+            let fixture = fixtures::fixture(fixtures::NON_ASCII_FIXTURE);
+            assert!(fixture.browser_comparable());
+            let response: serde_json::Value =
+                serde_json::from_str(&analyze_source(fixture.source)).unwrap();
+            let rendered = &response["diagnostics"][0];
+
+            assert_eq!(rendered["start"]["byte"], fixture.diagnostics[0].start);
+            assert_eq!(rendered["end"]["byte"], fixture.diagnostics[0].end);
+            assert_eq!(rendered["start"]["line"], fixtures::NON_ASCII_LINE);
+            assert_eq!(
+                rendered["start"]["column"],
+                fixtures::NON_ASCII_BYTE_COLUMN,
+                "the browser reports SourceMap's byte column, got {rendered}"
+            );
+        }
+
         /// A refusal's `error` text is the shared pipeline's own
         /// [`NotFormatted::reason`](oxabl_pipeline::NotFormatted::reason), not a
         /// message this client assembled.

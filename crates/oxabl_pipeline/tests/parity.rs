@@ -17,11 +17,13 @@
 //! All fixtures are synthetic ABL and live in the shared table, behind
 //! `oxabl_pipeline`'s `test-support` feature.
 
+use oxabl_common::SourceMap;
 use oxabl_pipeline::fixtures::{
     self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
 };
 use oxabl_pipeline::{
     FormatPipeline, LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig,
+    position,
 };
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
@@ -309,6 +311,12 @@ fn the_table_covers_every_rule_a_parse_error_a_clean_file_and_format_drift() {
         "no format-refusal fixture the formatter declines on purpose"
     );
 
+    assert!(
+        FIXTURES.iter().any(|f| !f.source.is_ascii()),
+        "no fixture exercises non-ASCII source, so byte-versus-character \
+         confusion would be invisible to every leg"
+    );
+
     let mut names: Vec<&str> = FIXTURES.iter().map(|f| f.name).collect();
     names.sort_unstable();
     let unique = names.len();
@@ -344,6 +352,49 @@ fn the_resolved_and_in_process_defaults_are_one_configuration() {
     assert!(!in_process.schema_loaded);
 }
 
+// ---------------------------------------------------------------------------
+// The non-ASCII case
+// ---------------------------------------------------------------------------
+
+/// The non-ASCII fixture's byte offsets and character offsets really do disagree,
+/// and the shared position helper derives the *byte* column.
+///
+/// Two claims, both needed. The first is about the fixture: if the source were
+/// quietly edited back to ASCII, or the constants drifted onto each other, the
+/// row would still pass every other test in the suite while testing nothing —
+/// which is the state the table was in before this fixture existed. The second is
+/// about [`position`](oxabl_pipeline::position), the one derivation the
+/// byte-offset clients share: its convention is `SourceMap`'s 1-based byte
+/// column, and each client asserts that same number through its own surface.
+#[test]
+fn the_non_ascii_fixture_distinguishes_bytes_from_characters() {
+    let fixture = fixtures::fixture(fixtures::NON_ASCII_FIXTURE);
+    let source = fixture.source;
+    assert!(
+        !source.is_ascii(),
+        "the fixture that exercises encoding must not be ASCII"
+    );
+    assert_ne!(
+        fixtures::NON_ASCII_BYTE_COLUMN,
+        fixtures::NON_ASCII_CHARACTER_COLUMN + 1,
+        "a byte column and a 0-based character column that differ only by the \
+         indexing base would make every leg's assertion vacuous"
+    );
+
+    let expected = fixture.diagnostics[0];
+    let map = SourceMap::new(source);
+    let resolved = position::resolve_offsets(&map, expected.start, expected.end);
+    assert_eq!(resolved.start.line, fixtures::NON_ASCII_LINE);
+    assert_eq!(resolved.start.column, fixtures::NON_ASCII_BYTE_COLUMN);
+
+    // And the span really does cover the identifier, not a neighbouring slice
+    // shifted by the multi-byte characters ahead of it.
+    assert_eq!(
+        &source[expected.start as usize..expected.end as usize],
+        "unusedTwo"
+    );
+}
+
 /// The expected byte spans really do point at the substring they claim to, so a
 /// span typo is caught in the table rather than surviving as four legs agreeing
 /// on the wrong number.
@@ -355,6 +406,16 @@ fn expected_spans_are_inside_their_source_and_land_on_real_text() {
             assert!(
                 end <= fixture.source.len() && start < end,
                 "fixture `{}`: {} has an impossible span {start}..{end}",
+                fixture.name,
+                expected.code
+            );
+            // Byte offsets, so a span may not land mid-character. On the
+            // non-ASCII fixture this is the difference between a real offset and
+            // one a character count produced; stated explicitly because the slice
+            // below would otherwise report it as an unexplained panic.
+            assert!(
+                fixture.source.is_char_boundary(start) && fixture.source.is_char_boundary(end),
+                "fixture `{}`: {}'s span {start}..{end} splits a character",
                 fixture.name,
                 expected.code
             );

@@ -223,6 +223,30 @@ fn the_schema_gated_fixture_needs_the_schema_flag() {
     );
 }
 
+/// The non-ASCII fixture's byte span survives the CLI, and the `start`/`end`
+/// keys beside it are the **byte** line/column the shared helper derives.
+///
+/// The module doc explains why only `span` enters the shared comparison. This is
+/// the other half of that bargain: the rendered pair is this client's own
+/// derivation, so it is checked here, on the one source where a character count
+/// would produce a different number.
+#[test]
+fn the_non_ascii_fixture_keeps_its_byte_span_and_byte_column() {
+    let fixture = fixtures::fixture(fixtures::NON_ASCII_FIXTURE);
+    let case = case(fixture);
+    let (report, _code, _stderr) = check_json(&case, &[]);
+    fixture.assert_diagnostics("cli check --json", observed(&report));
+
+    let rendered = &report["diagnostics"][0];
+    assert_eq!(rendered["start"]["byte"], fixture.diagnostics[0].start);
+    assert_eq!(rendered["start"]["line"], fixtures::NON_ASCII_LINE);
+    assert_eq!(
+        rendered["start"]["column"],
+        fixtures::NON_ASCII_BYTE_COLUMN,
+        "the CLI prints SourceMap's byte column, got {rendered}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Format
 // ---------------------------------------------------------------------------
