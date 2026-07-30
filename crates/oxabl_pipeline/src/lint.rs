@@ -264,15 +264,11 @@ impl LintResult {
     /// the CLI rebuilt a `CollectedDiagnostics` by hand to honor `--no-lint`,
     /// and the analyze envelope split preprocessor diagnostics out separately.
     /// One method, so the two cannot disagree about what "excluding" means.
+    ///
+    /// Delegates to [`CollectedDiagnostics::excluding_source`], which is the
+    /// chainable form for a client that drops more than one stage.
     pub fn excluding_source(&self, source: DiagnosticSource) -> CollectedDiagnostics {
-        CollectedDiagnostics {
-            diagnostics: self
-                .diagnostics()
-                .all()
-                .filter(|d| d.source != source)
-                .cloned()
-                .collect(),
-        }
+        self.diagnostics().excluding_source(source)
     }
 
     /// Take the diagnostics, for a client that needs to own them without

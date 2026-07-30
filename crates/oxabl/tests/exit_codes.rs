@@ -195,12 +195,21 @@ fn check_exits_1_when_formatting_panics_and_0_when_it_merely_bails() {
     assert!(stderr.contains("formatting failed"), "got: {stderr}");
 
     // A refusal on unparseable input is expected behavior, not drift and not a
-    // failure: with the lint channel off there is nothing left to fail on.
+    // failure. The exit code cannot show that on its own — the only input the
+    // formatter reliably bails on is unparseable, and `PARSE001` gates on its own
+    // now that `--no-lint` no longer skips the run (A1) — so the assertion is on
+    // the two format-channel keys: neither drift nor a failure entry.
     let (_dir2, bails) = one_file("bails.p", UNPARSEABLE);
+    let (_exit, stdout, _stderr) = run(&[s("check"), s("--json"), bails.as_os_str()]);
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(
-        code(&[s("check"), s("--no-lint"), bails.as_os_str()]),
+        report["format"]["drifted_count"], 0,
+        "a deliberate bail is not drift: {report}"
+    );
+    assert_eq!(
+        report["failures"].as_array().map(Vec::len),
         Some(0),
-        "a deliberate bail is neutral in the format channel"
+        "and not a per-file failure either: {report}"
     );
 }
 

@@ -41,6 +41,9 @@ const BOTH: &str = "DO:\nDEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nEND.\n";
 /// `PUT` is recognized but unmodelled, so the count-gated rules go blind on
 /// `v-total` — a coverage note, not a finding.
 const UNJUDGED: &str = "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\nPUT v-total.\n";
+/// A hard `PARSE001` *and* a lint finding, so a run can be asked which channel
+/// a suppression flag actually silenced.
+const PARSE_ERROR_AND_UNUSED: &str = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n@ @ @\n";
 
 /// A one-file project holding `source`, returned with the file's path.
 fn project(name: &str, source: &str) -> (TempDir, std::path::PathBuf) {
@@ -201,6 +204,61 @@ fn no_lint_exits_0_on_a_file_whose_only_problem_is_a_lint_finding() {
 
     assert_eq!(run.code, Some(0), "stdout:\n{}", run.stdout);
     assert!(!run.stdout.contains("LINT0002"));
+}
+
+/// `--no-lint` suppresses the **lint** findings, not the parse and semantic
+/// errors that share the same pipeline run (A1).
+///
+/// The flag is named for the channel it silences, and `analyze --no-lint` has
+/// always meant exactly this: filter the lint-sourced diagnostics out of the
+/// reported set. `check`'s used to skip the run outright, which also threw away
+/// the only source of `PARSE001` — so a file oxabl could not even parse passed
+/// the gate with a green exit code. A gate that reports success on unparseable
+/// source is worse than no gate.
+#[test]
+fn no_lint_still_gates_on_parse_errors() {
+    let (_tmp, file) = project("bad.p", PARSE_ERROR_AND_UNUSED);
+
+    let run = check([Path::new("--no-lint").as_os_str(), file.as_os_str()]);
+
+    assert_eq!(
+        run.code,
+        Some(1),
+        "a parse error must still fail the gate under --no-lint. stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout.contains("PARSE001"),
+        "the parse error must still be reported, got:\n{}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains("LINT0002"),
+        "the lint channel is what --no-lint silences, got:\n{}",
+        run.stdout
+    );
+
+    let json = check([
+        Path::new("--json").as_os_str(),
+        Path::new("--no-lint").as_os_str(),
+        file.as_os_str(),
+    ])
+    .json();
+    let sources: Vec<&str> = json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["source"].as_str().unwrap())
+        .collect();
+    assert!(
+        sources.contains(&"parse"),
+        "expected a parse-sourced entry, got {sources:?} in:\n{json}"
+    );
+    assert!(
+        !sources.contains(&"lint"),
+        "expected no lint-sourced entry, got {sources:?} in:\n{json}"
+    );
 }
 
 #[test]
