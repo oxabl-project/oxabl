@@ -339,63 +339,35 @@ fn derive(
         }
     };
 
-    let (schema, schema_loaded) = match schema_path {
-        // `--schema` replaces the configured set. A directory loads every `.df`
-        // inside it; a path loads that one file.
-        //
-        // A directory is the case that can silently yield *nothing* — no match, or
-        // no read at all — and both had been resolving as a loaded-but-empty
-        // schema (A2). Neither is: they get their own warning and leave
-        // `schema_loaded` false, so schema-dependent diagnostics stay off exactly
-        // as they do with no `--schema` at all.
-        Some(path) if path.is_dir() => match oxabl_schema::df_files_in_dir(path) {
-            Err(e) => {
-                warnings.push(ConfigWarning::SchemaPath(format!(
-                    "cannot read schema directory `{}`: {e}; schema-backed \
-                     resolution is off for this run",
-                    path.display()
-                )));
-                (Schema::empty(), false)
-            }
-            Ok(files) if files.is_empty() => {
-                warnings.push(ConfigWarning::SchemaPath(format!(
-                    "`{}` matched no .df files; schema-backed resolution is off \
-                     for this run",
-                    path.display()
-                )));
-                (Schema::empty(), false)
-            }
-            Ok(files) => {
-                let (schema, diags) = SchemaLoader::load_files(&files, &RealFileSystem);
-                warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
-                (schema, true)
-            }
-        },
-        // A *named* path: load that one file. Load diagnostics are non-fatal — a
-        // partially-loaded schema still drives resolution — and an intentionally
-        // empty `.df` is a schema the user supplied, so it reads as loaded.
-        Some(path) => {
-            let (schema, diags) =
-                SchemaLoader::load_files(std::slice::from_ref(path), &RealFileSystem);
-            warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
-            (schema, true)
-        }
-        None => {
-            let files: Vec<PathBuf> = config
-                .workspace
-                .schema
-                .files
-                .iter()
-                .map(|f| anchor_to(root, f))
-                .collect();
-            if files.is_empty() {
-                (Schema::empty(), false)
-            } else {
-                let (schema, diags) = SchemaLoader::load_files(&files, &RealFileSystem);
-                warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
-                (schema, true)
-            }
-        }
+    // `--schema` replaces the configured set rather than adding to it; absent it,
+    // `[workspace.schema].files` is the set. Either way the entries go through the
+    // same expansion, so a directory means the same thing wherever it is written.
+    let entries: Vec<PathBuf> = match schema_path {
+        Some(path) => vec![path.clone()],
+        None => config
+            .workspace
+            .schema
+            .files
+            .iter()
+            .map(|f| anchor_to(root, f))
+            .collect(),
+    };
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in &entries {
+        files.extend(expand_schema_entry(entry, &mut warnings));
+    }
+
+    // Nothing to open — no entries at all, or every entry was a directory that
+    // yielded nothing (already warned about) — reads as no schema, so
+    // schema-dependent diagnostics stay off. Otherwise load diagnostics are
+    // non-fatal: a partially-loaded schema drives resolution better than none,
+    // and an intentionally empty `.df` is a schema the user supplied.
+    let (schema, schema_loaded) = if files.is_empty() {
+        (Schema::empty(), false)
+    } else {
+        let (schema, diags) = SchemaLoader::load_files(&files, &RealFileSystem);
+        warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
+        (schema, true)
     };
 
     (
@@ -408,6 +380,46 @@ fn derive(
         },
         warnings,
     )
+}
+
+/// Expand one schema entry — a `--schema` path or a `[workspace.schema].files`
+/// entry — into the `.df` files it names.
+///
+/// A named path expands to itself, unread: a missing or unreadable `.df` the user
+/// pointed at is a schema they supplied, so it reads as loaded and its load
+/// diagnostic is the report.
+///
+/// A *directory* is the case that can silently yield **nothing** — no match, or no
+/// read at all — and both had been resolving as a loaded-but-empty schema (A2).
+/// Neither does: each gets its own warning and expands to nothing, which leaves
+/// `schema_loaded` false so schema-dependent diagnostics stay off exactly as they
+/// do with no schema at all. Shared by both entry sources because a directory in
+/// `oxabl.toml` had kept the old behaviour — `SchemaLoader` read it as a file and
+/// reported `Is a directory`, then the empty schema flooded the run with
+/// undefined-symbol findings.
+fn expand_schema_entry(path: &Path, warnings: &mut Vec<ConfigWarning>) -> Vec<PathBuf> {
+    if !path.is_dir() {
+        return vec![path.to_path_buf()];
+    }
+    match oxabl_schema::df_files_in_dir(path) {
+        Err(e) => {
+            warnings.push(ConfigWarning::SchemaPath(format!(
+                "cannot read schema directory `{}`: {e}; schema-backed \
+                 resolution is off for this run",
+                path.display()
+            )));
+            Vec::new()
+        }
+        Ok(files) if files.is_empty() => {
+            warnings.push(ConfigWarning::SchemaPath(format!(
+                "`{}` matched no .df files; schema-backed resolution is off \
+                 for this run",
+                path.display()
+            )));
+            Vec::new()
+        }
+        Ok(files) => files,
+    }
 }
 
 /// Where the ancestor walk for `oxabl.toml` begins: the anchor itself when it is
@@ -917,6 +929,69 @@ mod tests {
                 .iter()
                 .any(|w| matches!(w, ConfigWarning::Schema(_))),
             "{warnings:?}"
+        );
+    }
+
+    /// A *directory* in `[workspace.schema].files` is the same misconfiguration as
+    /// a `--schema` directory holding no `.df`, and gets the same answer. It used
+    /// to reach `SchemaLoader` as a file, which reported `Is a directory` and left
+    /// an empty schema reading as loaded — every symbol in the run then came back
+    /// undefined.
+    #[test]
+    fn configured_schema_dir_with_no_df_files_warns_and_does_not_read_as_loaded() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("sch")).unwrap();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n[workspace.schema]\nfiles = [\"sch\"]\n",
+        );
+        write(root, "main.p", "");
+
+        let (config, warnings) =
+            PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+
+        assert!(
+            !config.schema_loaded,
+            "a configured directory with no .df must not read as a loaded schema"
+        );
+        assert!(config.schema.is_empty());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::SchemaPath(_))),
+            "expected a schema-path warning, got: {warnings:?}"
+        );
+    }
+
+    /// The other half: a configured directory that *does* hold a `.df` loads it,
+    /// so routing configured entries through the directory handling did not cost
+    /// the capability.
+    #[test]
+    fn configured_schema_dir_holding_a_df_loads_it() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let schema_dir = root.join("sch");
+        fs::create_dir_all(&schema_dir).unwrap();
+        write(&schema_dir, "s.df", "ADD TABLE \"Customer\"\n");
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n[workspace.schema]\nfiles = [\"sch\"]\n",
+        );
+        write(root, "main.p", "");
+
+        let (config, warnings) =
+            PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+
+        assert!(config.schema_loaded, "{warnings:?}");
+        assert!(!config.schema.is_empty());
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::SchemaPath(_))),
+            "a directory that matched should not warn: {warnings:?}"
         );
     }
 
