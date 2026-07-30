@@ -24,6 +24,13 @@
 //! that conversion with pipeline output would make an encoding bug look like a
 //! parity failure (KTD5).
 //!
+//! One row ([`NON_ASCII_FIXTURE`]) is deliberately **not** ASCII, so that
+//! caution is actually exercised: everywhere else a byte offset and a character
+//! offset are the same integer, and a client that confused them would pass. Each
+//! leg additionally checks the rendered position it derives *for that row* —
+//! which is where a rendered position belongs, since it is per-client output
+//! rather than a shared answer.
+//!
 //! [`Capability`] is the other half of the design. A client that cannot be given
 //! a schema, or cannot resolve an include, must not be asserted to produce the
 //! same diagnostics as one that can — the strategy's distinction is between
@@ -437,6 +444,36 @@ pub fn config_with_override() -> PipelineConfig {
     }
 }
 
+// --- The non-ASCII case -----------------------------------------------------
+
+/// The fixture whose source is *not* pure ASCII, so byte offsets and character
+/// offsets disagree.
+///
+/// Named rather than looked up by string in three places because each leg also
+/// asserts its own **rendered** position for it. Rendered positions are
+/// deliberately outside the shared comparison — the whole table is byte spans, so
+/// that an encoding conversion cannot masquerade as a pipeline divergence — which
+/// means the conversions themselves are only covered if each client checks its
+/// own, on a source where getting it wrong shows up at all.
+pub const NON_ASCII_FIXTURE: &str = "non_ascii_prefix";
+
+/// The 1-based line the non-ASCII fixture's finding sits on.
+pub const NON_ASCII_LINE: usize = 2;
+
+/// The 1-based **byte** column of that finding — `SourceMap`'s convention, and
+/// therefore what [`position`](crate::position) and every byte-offset client
+/// report.
+///
+/// Deliberately different from [`NON_ASCII_CHARACTER_COLUMN`]: a client that
+/// counted characters here would produce this number's neighbour, which is the
+/// bug the fixture exists to make visible.
+pub const NON_ASCII_BYTE_COLUMN: usize = 33;
+
+/// The 0-based character (and, for this source, UTF-16 code unit) column of the
+/// same finding — what a position-encoding-aware client such as the language
+/// server must send instead.
+pub const NON_ASCII_CHARACTER_COLUMN: usize = 30;
+
 // --- The table --------------------------------------------------------------
 
 /// Every fixture, shared by all four legs.
@@ -551,6 +588,28 @@ pub const FIXTURES: &[ParityFixture] = &[
             },
         ],
         format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[],
+    },
+    // Multi-byte text ahead of the finding, on both the preceding line and the
+    // finding's own line. Every other fixture is pure ASCII, which made byte
+    // offsets and character offsets numerically identical and so left the suite's
+    // stated fear — byte-versus-UTF-16 confusion — never actually exercised. Here
+    // the two disagree: line 2 begins at byte 23 but character 19, and the span
+    // starts at byte column 33 where a character column would say 31. A client
+    // that counted characters where it should count bytes now produces a wrong
+    // *byte span* and fails the shared comparison, and the per-client rendered
+    // positions are checked where they are each derived.
+    ParityFixture {
+        name: NON_ASCII_FIXTURE,
+        source: "/* café — naïve */\n/* ¡señor! */ DEFINE VARIABLE unusedTwo AS INTEGER NO-UNDO.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0002",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Lint,
+            start: 55,
+            end: 64,
+        }],
+        format: ExpectedFormat::Unchanged,
         needs: &[],
     },
     ParityFixture {

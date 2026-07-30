@@ -20,6 +20,7 @@ use lsp_types::PositionEncodingKind;
 use oxabl_lsp::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics};
 use oxabl_lsp::document::Document;
 use oxabl_lsp::formatting::compute_formatting_edits;
+use oxabl_lsp::position::byte_to_position;
 use oxabl_pipeline::fixtures::{self, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture};
 use oxabl_pipeline::{FormatPipeline, PipelineConfig};
 use oxabl_workspace::InMemoryFileSystem;
@@ -142,6 +143,43 @@ fn a_memoized_recompute_returns_the_same_set() {
         assert_eq!(first, second, "fixture `{}`", fixture.name);
         fixture.assert_diagnostics("lsp queries (memoized)", fixtures::observed(&second));
     }
+}
+
+/// The non-ASCII fixture's **byte** span comes back from the queries unchanged,
+/// and the server's own conversion turns it into a *different* number under
+/// UTF-16 — which is the whole reason this leg compares bytes.
+///
+/// This is the fixture that makes the module doc's caution load-bearing. Every
+/// other row is pure ASCII, where a byte column and a UTF-16 column are the same
+/// integer, so a client that used one where it meant the other would pass. Here
+/// the two disagree, and the assertion is both that the pipeline's byte span is
+/// preserved through the rope and that the client-facing position is the
+/// encoding-aware one rather than the byte column the CLI prints.
+#[test]
+fn the_non_ascii_fixture_keeps_bytes_and_renders_utf16_columns() {
+    let fixture = fixtures::fixture(fixtures::NON_ASCII_FIXTURE);
+    fixture.assert_diagnostics("lsp queries", observed(fixture, fixture.config()));
+
+    let rope = Rope::from_str(fixture.source);
+    let start = fixture.diagnostics[0].start as usize;
+
+    let utf16 = byte_to_position(&rope, start, &PositionEncodingKind::UTF16);
+    assert_eq!(utf16.line as usize, fixtures::NON_ASCII_LINE - 1);
+    assert_eq!(
+        utf16.character as usize,
+        fixtures::NON_ASCII_CHARACTER_COLUMN,
+        "the server must send the negotiated encoding's column, not the byte one"
+    );
+
+    // The byte column is what UTF-8 negotiation asks for, and it is a different
+    // number — so the two conversions cannot be confused for each other here.
+    let utf8 = byte_to_position(&rope, start, &PositionEncodingKind::UTF8);
+    assert_eq!(
+        utf8.character as usize,
+        fixtures::NON_ASCII_BYTE_COLUMN - 1,
+        "UTF-8 negotiation asks for the byte column, 0-based"
+    );
+    assert_ne!(utf8.character, utf16.character);
 }
 
 // ---------------------------------------------------------------------------
