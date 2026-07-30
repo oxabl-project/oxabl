@@ -529,6 +529,30 @@ mod tests {
         );
     }
 
+    /// A relative `-I` is absolutized against the working directory — where the
+    /// user typed it — so the preprocessor never has to resolve a path whose
+    /// meaning depends on where the process happens to be by then.
+    #[test]
+    fn relative_cli_include_paths_are_absolutized_against_the_cwd() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "lonely.p", "");
+
+        let overrides = ConfigOverrides {
+            include_paths: vec![PathBuf::from("some/rel/inc")],
+            ..Default::default()
+        };
+        let (config, _) = PipelineConfig::resolve(&tmp.path().join("lonely.p"), &overrides);
+
+        assert_eq!(config.include_paths.len(), 1);
+        let resolved = &config.include_paths[0];
+        assert!(resolved.is_absolute(), "got {}", resolved.display());
+        assert!(
+            resolved.ends_with("some/rel/inc"),
+            "got {}",
+            resolved.display()
+        );
+    }
+
     /// Config-relative include paths anchor to the directory holding
     /// `oxabl.toml`, not to the anchor's own subdirectory.
     #[test]
