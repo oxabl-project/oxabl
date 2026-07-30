@@ -306,7 +306,9 @@ impl<'c> Server<'c> {
     /// way and retried: a worker that finished microseconds before an
     /// `oxabl.toml` change would otherwise publish one round of diagnostics under
     /// the severities the user just replaced. The buffer version cannot catch this
-    /// — the text did not change, only the configuration did.
+    /// — the text did not change, only the configuration did. The
+    /// never-retry-a-panic rule applies to that reschedule too, since the
+    /// generation gate is reached before the absent-diagnostics one.
     fn handle_result(&mut self, res: ComputeResult) {
         match self.documents.get(&res.uri) {
             None => return,                                    // buffer closed
@@ -318,7 +320,14 @@ impl<'c> Server<'c> {
             // watcher path already re-triggers every buffer, but this arrives on
             // the `ensure_config` path too (a first anchor resolved while an
             // earlier buffer's worker was in flight), where nothing else would.
-            self.debouncer.schedule(res.uri, std::time::Instant::now());
+            //
+            // A panic is never rescheduled, here as below: this gate runs first, so
+            // without the check a contained panic that happened to land under a
+            // superseded generation would get the one retry `panicked` exists to
+            // prevent.
+            if !res.panicked {
+                self.debouncer.schedule(res.uri, std::time::Instant::now());
+            }
             return;
         }
         self.record_dependencies(&res.uri, res.dependencies);
@@ -1022,6 +1031,41 @@ mod tests {
         assert!(
             server.debouncer.next_deadline().is_some(),
             "and the buffer must be recomputed under the new configuration"
+        );
+    }
+
+    /// The two rules meet here: the generation gate is reached *before* the
+    /// absent-diagnostics arm, so a contained panic that happened to land under a
+    /// superseded generation was rescheduled by the gate — the one retry `panicked`
+    /// exists to prevent, since the panic is deterministic in the buffer's text and
+    /// the retry panics again. Dropped, not retried.
+    #[test]
+    fn a_panic_from_a_superseded_config_is_dropped_and_not_retried() {
+        let (connection, client) = Connection::memory();
+        let mut server = server(&connection);
+        let uri = Uri::from_str("file:///main.p").unwrap();
+        server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
+
+        let stale = server.config_generation;
+        server.install_config(PipelineConfig::default());
+        assert_ne!(stale, server.config_generation);
+
+        server.handle_result(ComputeResult {
+            uri: uri.clone(),
+            version: 1,
+            diagnostics: None,
+            dependencies: None,
+            panicked: true,
+            config_generation: stale,
+        });
+
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "there is nothing to publish"
+        );
+        assert!(
+            server.debouncer.next_deadline().is_none(),
+            "and a panic must not be retried, whichever gate drops it"
         );
     }
 
