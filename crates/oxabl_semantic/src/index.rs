@@ -252,6 +252,20 @@ pub enum IndexAnswer<T> {
     Unknowable,
 }
 
+impl<T> IndexAnswer<T> {
+    /// Project the value inside a [`IndexAnswer::Found`], leaving the two
+    /// negative states untouched — an implementation that answers a narrower
+    /// question by deriving it from a wider one keeps the found/not-found/
+    /// unknowable split instead of restating the match.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> IndexAnswer<U> {
+        match self {
+            IndexAnswer::Found(value) => IndexAnswer::Found(f(value)),
+            IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
+        }
+    }
+}
+
 /// Whether an indexed type was declared as a class or an interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassKind {
@@ -608,5 +622,21 @@ mod tests {
         assert!(member(AccessModifier::Protected).inherited_by_subclass());
         assert!(!member(AccessModifier::Private).inherited_by_subclass());
         assert!(!member(AccessModifier::PackagePrivate).inherited_by_subclass());
+    }
+
+    #[test]
+    fn map_projects_found_and_preserves_both_negative_states() {
+        assert_eq!(
+            IndexAnswer::Found(2u32).map(|n| n + 1),
+            IndexAnswer::Found(3u32)
+        );
+        assert_eq!(
+            IndexAnswer::<u32>::NotFound.map(|n| n + 1),
+            IndexAnswer::NotFound
+        );
+        assert_eq!(
+            IndexAnswer::<u32>::Unknowable.map(|n| n + 1),
+            IndexAnswer::Unknowable
+        );
     }
 }

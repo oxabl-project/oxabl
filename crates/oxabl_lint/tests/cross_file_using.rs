@@ -19,21 +19,15 @@
 //!    asserts a sibling shape where the finding genuinely does fire, so the
 //!    assertion cannot pass by the rule being inert.
 
-use std::path::PathBuf;
+mod support;
 
 use oxabl_ast::{NodeId, RunTarget, Statement, StatementKind};
-use oxabl_common::{Diagnostic, FileId};
-use oxabl_index::BatchIndex;
 use oxabl_lexer::oxabl_atom::OxablAtom;
-use oxabl_lexer::tokenize;
-use oxabl_lint::{LINT0001, LINT0004, type_mismatch_assignment, undefined_symbol};
-use oxabl_parser::Parser;
-use oxabl_schema::Schema;
 use oxabl_semantic::{
-    AnalysisContext, NamespaceId, PrimitiveTy, Resolution, ResolvedType, ScopeId, Semantic,
-    SymbolId, SymbolKind, UnresolvedReason, analyze_file,
+    NamespaceId, PrimitiveTy, Resolution, ResolvedType, SymbolKind, UnresolvedReason,
 };
-use oxabl_workspace::InMemoryFileSystem;
+
+use support::*;
 
 // ---------------------------------------------------------------------------
 // Fixtures — synthetic ABL only
@@ -60,163 +54,6 @@ const CACHE_PATH: &str = "/src/myapp/cache.cls";
 
 /// The workspace as every scenario sees it.
 const WORKSPACE: [(&str, &str); 1] = [(CACHE_PATH, CACHE)];
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
-fn parse(source: &str) -> Vec<Statement> {
-    let tokens = tokenize(source);
-    let program = Parser::new(&tokens, source).parse_program();
-    assert!(
-        program.errors.is_empty(),
-        "fixture must parse cleanly: {:?}",
-        program.errors
-    );
-    program.statements
-}
-
-/// Analyze `source` against a batch index over `workspace`, rooted at `/src`.
-fn with_index(source: &str, workspace: &[(&str, &str)]) -> (Vec<Statement>, Semantic) {
-    let mut fs = InMemoryFileSystem::new();
-    for (path, contents) in workspace {
-        fs.insert(PathBuf::from(path), *contents);
-    }
-    let paths = vec![PathBuf::from("/src")];
-    let index = BatchIndex::new(&fs, &paths);
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    (stmts, sem)
-}
-
-/// Analyze `source` the way every client does today: no index at all.
-fn without_index(source: &str) -> (Vec<Statement>, Semantic) {
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    (stmts, sem)
-}
-
-/// `undefined-symbol` findings for `source`, with an index attached.
-fn lint0001_with_index(source: &str, workspace: &[(&str, &str)]) -> Vec<Diagnostic> {
-    let mut fs = InMemoryFileSystem::new();
-    for (path, contents) in workspace {
-        fs.insert(PathBuf::from(path), *contents);
-    }
-    let paths = vec![PathBuf::from("/src")];
-    let index = BatchIndex::new(&fs, &paths);
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    undefined_symbol::run(&stmts, &sem, &ctx)
-        .into_iter()
-        .filter(|d| d.code.0 == LINT0001)
-        .collect()
-}
-
-/// `type-mismatch-assignment` findings for `source`, with an index attached.
-fn lint0004_with_index(source: &str, workspace: &[(&str, &str)]) -> Vec<Diagnostic> {
-    let mut fs = InMemoryFileSystem::new();
-    for (path, contents) in workspace {
-        fs.insert(PathBuf::from(path), *contents);
-    }
-    let paths = vec![PathBuf::from("/src")];
-    let index = BatchIndex::new(&fs, &paths);
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    type_mismatch_assignment::run(&stmts, &sem, &ctx)
-        .into_iter()
-        .filter(|d| d.code.0 == LINT0004)
-        .collect()
-}
-
-/// `type-mismatch-assignment` findings for `source`, with no index at all.
-fn lint0004_without_index(source: &str) -> Vec<Diagnostic> {
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    type_mismatch_assignment::run(&stmts, &sem, &ctx)
-        .into_iter()
-        .filter(|d| d.code.0 == LINT0004)
-        .collect()
-}
-
-/// Every distinct symbol some reference resolved to under the name `name`.
-fn resolved_to(sem: &Semantic, name: &str) -> Vec<SymbolId> {
-    let atom = OxablAtom::from(name);
-    let mut hits: Vec<SymbolId> = sem
-        .references
-        .iter()
-        .filter_map(|(_, res)| match res {
-            Resolution::Resolved(sym) if sem.symbols.get(*sym).name == atom => Some(*sym),
-            Resolution::Resolved(_) | Resolution::Unresolved { .. } => None,
-        })
-        .collect();
-    hits.sort_by_key(|s| s.raw());
-    hits.dedup();
-    hits
-}
-
-/// The one symbol references under `name` resolved to. Panics unless exactly one
-/// symbol answers, so a test can never accidentally assert about two.
-fn sole_resolved(sem: &Semantic, name: &str) -> SymbolId {
-    let hits = resolved_to(sem, name);
-    assert_eq!(
-        hits.len(),
-        1,
-        "expected exactly one resolved symbol named `{name}`, got {hits:?}"
-    );
-    hits[0]
-}
-
-/// Reasons carried by every unresolved reference under `name`.
-fn unresolved_reasons(sem: &Semantic, name: &str) -> Vec<UnresolvedReason> {
-    let atom = OxablAtom::from(name);
-    sem.references
-        .iter()
-        .filter_map(|(_, res)| match res {
-            Resolution::Unresolved { name, reason } if *name == atom => Some(*reason),
-            Resolution::Unresolved { .. } | Resolution::Resolved(_) => None,
-        })
-        .collect()
-}
-
-/// Symbols in the table carrying `name`, whether declared or synthesized.
-fn symbols_named(sem: &Semantic, name: &str) -> Vec<SymbolId> {
-    let atom = OxablAtom::from(name);
-    sem.symbols
-        .iter()
-        .filter(|(_, s)| s.name == atom)
-        .map(|(id, _)| id)
-        .collect()
-}
-
-/// Assert `sym` follows the synthesized-cross-file-symbol conventions: no
-/// declaration node, the root scope, and absent from every scope tree binding.
-fn assert_synthesized(sem: &Semantic, sym: SymbolId, ns: NamespaceId) {
-    let symbol = sem.symbols.get(sym);
-    assert_eq!(
-        symbol.declaration,
-        NodeId::DUMMY,
-        "a symbol synthesized from the index declares no node in this file"
-    );
-    assert_eq!(symbol.declared_in, ScopeId::ROOT);
-    assert_eq!(symbol.namespace, ns);
-    for (scope, _) in sem.scope_tree.iter() {
-        assert_ne!(
-            sem.scope_tree.get(scope).get_in(ns, &symbol.name),
-            Some(sym),
-            "a synthesized symbol must never be bound in the scope tree"
-        );
-    }
-}
 
 /// The `(node id, name span)` of the file's sole top-level `USING`.
 fn sole_using(stmts: &[Statement]) -> (NodeId, oxabl_ast::Span) {

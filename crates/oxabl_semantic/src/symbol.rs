@@ -238,6 +238,49 @@ pub struct Symbol {
     pub table_id: Option<oxabl_schema::TableId>,
 }
 
+impl Symbol {
+    /// A symbol the resolve pass synthesizes for something **this file does not
+    /// declare** — a schema table's field or default buffer, a workspace class,
+    /// an external program, an inherited member.
+    ///
+    /// The constant fields are the convention, and having one constructor is
+    /// what makes it structural rather than restated at each site:
+    ///
+    /// - `declaration: NodeId::DUMMY` — there is no declaring node in this file,
+    ///   so nothing may look one up.
+    /// - `name_span` is the **use site**, not a declaration, so a diagnostic can
+    ///   still point somewhere real in the file under analysis.
+    /// - `declared_in: ScopeId::ROOT` and, load-bearing, the symbol table
+    ///   **only** — a synthesized symbol is never inserted into the scope tree.
+    ///   That is what stops ordinary name resolution from stumbling onto it; it
+    ///   is reachable only through the `references` entry the caller records.
+    /// - `read_count` / `write_count` start at zero and are credited by the
+    ///   resolve pass exactly as a declared symbol's are.
+    ///
+    /// `data_type`, `flags`, and `table_id` default to empty/absent; a caller
+    /// that carries one fills it in with struct-update syntax.
+    pub fn synthesized(
+        name: OxablAtom,
+        namespace: NamespaceId,
+        kind: SymbolKind,
+        name_span: VirtualSpan,
+    ) -> Self {
+        Symbol {
+            name,
+            namespace,
+            kind,
+            declared_in: ScopeId::ROOT,
+            declaration: NodeId::DUMMY,
+            name_span,
+            data_type: None,
+            read_count: 0,
+            write_count: 0,
+            flags: SymbolFlags::empty(),
+            table_id: None,
+        }
+    }
+}
+
 /// Arena of symbols plus the SHARED rebinding side map.
 #[derive(Debug, Default)]
 pub struct SymbolTable {
@@ -269,9 +312,9 @@ pub struct SymbolTable {
     /// The indexed file that supplies each synthesized external-program symbol —
     /// the file a literal `RUN` target resolved to.
     ///
-    /// A side map for the reason [`Self::supertypes`] documents and that U5
-    /// measured: eight more bytes on `Symbol` cost the declare pass 17–25%, and
-    /// resolved `RUN` targets are a handful per file at most. Absent entirely
+    /// A side map for the reason [`Self::supertypes`] documents: eight more bytes
+    /// on `Symbol` cost the declare pass 17–25%, and resolved `RUN` targets are a
+    /// handful per file at most. Absent entirely
     /// from a run with no index attached, which is what keeps a single-file
     /// analysis at exactly its current cost.
     program_files: FxHashMap<SymbolId, IndexedFileId>,

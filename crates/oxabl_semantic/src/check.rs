@@ -585,8 +585,9 @@ impl<'a> CheckWalker<'a> {
                     // false positive. Turning cross-file types into diagnostics
                     // is the *follow-up* unit's job — the one that flips the
                     // rules onto the newly-resolvable population, where drift is
-                    // expected and judged deliberately. **That unit owns removing
-                    // this arm, not U8.** Until then a cross-file class stays at
+                    // expected and judged deliberately. **The follow-up that turns
+                    // the lint rules onto the cross-file population owns removing
+                    // this arm.** Until then a cross-file class stays at
                     // the lattice bottom, exactly where a class-typed declaration
                     // whose class lives in another file already sits.
                     SymbolKind::Class | SymbolKind::Interface

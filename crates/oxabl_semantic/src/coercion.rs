@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn a_cross_file_shaped_chain_widens_through_a_qualified_name() {
-        // The shape U6's firewall currently hides: a locally declared class whose
+        // The shape the `check.rs` firewall currently hides: a locally declared class whose
         // parent is an index-synthesized symbol carrying the qualified folded
         // name. The walk resolves it by that name and widens — which is what
         // must already be true on the day the firewall lifts.
@@ -698,8 +698,8 @@ mod tests {
 
     #[test]
     fn a_class_is_still_not_assignable_to_a_primitive() {
-        // The lattice widens class-to-class only; the two shapes U6's firewall
-        // keeps out of reach (a class into an INTEGER, a primitive into a
+        // The lattice widens class-to-class only; the two shapes the `check.rs`
+        // firewall keeps out of reach (a class into an INTEGER, a primitive into a
         // class-typed variable) must stay mismatches on their own merits.
         let mut t = SymbolTable::new();
         let cls = add_class(&mut t, "some-cls", SymbolKind::Class, false);

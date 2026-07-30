@@ -33,22 +33,19 @@
 //! unconditional today, and seeding the batch with the run's file set is separate,
 //! already-tracked work.
 
-use std::path::PathBuf;
+mod support;
 
 use oxabl_ast::{RunTarget, Statement, StatementKind};
-use oxabl_common::{Diagnostic, FileId};
-use oxabl_index::BatchIndex;
+use oxabl_common::FileId;
 use oxabl_lexer::oxabl_atom::OxablAtom;
-use oxabl_lexer::tokenize;
-use oxabl_lint::{LINT0001, LINT0004, type_mismatch_assignment, undefined_symbol};
-use oxabl_parser::Parser;
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId,
-    MemberDescriptor, PrimitiveTy, Resolution, ResolvedType, Semantic, SymbolFlags, SymbolId,
-    SymbolKind, UnresolvedReason, WorkspaceIndex, analyze_file,
+    MemberDescriptor, PrimitiveTy, Resolution, ResolvedType, Semantic, SymbolFlags, SymbolKind,
+    UnresolvedReason, WorkspaceIndex, analyze_file,
 };
-use oxabl_workspace::InMemoryFileSystem;
+
+use support::*;
 
 // ---------------------------------------------------------------------------
 // Fixtures — synthetic ABL only
@@ -74,114 +71,6 @@ const WORKSPACE: [(&str, &str); 4] = [
     ("/src/init-region.p", INIT_REGION),
 ];
 
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
-fn parse(source: &str) -> Vec<Statement> {
-    let tokens = tokenize(source);
-    let program = Parser::new(&tokens, source).parse_program();
-    assert!(
-        program.errors.is_empty(),
-        "fixture must parse cleanly: {:?}",
-        program.errors
-    );
-    program.statements
-}
-
-/// Analyze `source` against a batch index over `workspace`, searching `paths`.
-fn with_paths(
-    source: &str,
-    workspace: &[(&str, &str)],
-    paths: &[&str],
-) -> (Vec<Statement>, Semantic) {
-    let mut fs = InMemoryFileSystem::new();
-    for (path, contents) in workspace {
-        fs.insert(PathBuf::from(path), *contents);
-    }
-    let dirs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    let index = BatchIndex::new(&fs, &dirs);
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    (stmts, sem)
-}
-
-/// The common case: one path entry, `/src`.
-fn with_index(source: &str, workspace: &[(&str, &str)]) -> (Vec<Statement>, Semantic) {
-    with_paths(source, workspace, &["/src"])
-}
-
-/// Analyze `source` the way every client does today: no index at all.
-fn without_index(source: &str) -> (Vec<Statement>, Semantic) {
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    (stmts, sem)
-}
-
-/// `undefined-symbol` findings for `source`, with an index attached.
-fn lint0001_with_index(source: &str, workspace: &[(&str, &str)]) -> Vec<Diagnostic> {
-    let mut fs = InMemoryFileSystem::new();
-    for (path, contents) in workspace {
-        fs.insert(PathBuf::from(path), *contents);
-    }
-    let dirs = vec![PathBuf::from("/src")];
-    let index = BatchIndex::new(&fs, &dirs);
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    undefined_symbol::run(&stmts, &sem, &ctx)
-        .into_iter()
-        .filter(|d| d.code.0 == LINT0001)
-        .collect()
-}
-
-/// `undefined-symbol` findings for `source`, with no index at all.
-fn lint0001_without_index(source: &str) -> Vec<Diagnostic> {
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    undefined_symbol::run(&stmts, &sem, &ctx)
-        .into_iter()
-        .filter(|d| d.code.0 == LINT0001)
-        .collect()
-}
-
-/// `type-mismatch-assignment` findings for `source`, with an index attached.
-fn lint0004_with_index(source: &str, workspace: &[(&str, &str)]) -> Vec<Diagnostic> {
-    let mut fs = InMemoryFileSystem::new();
-    for (path, contents) in workspace {
-        fs.insert(PathBuf::from(path), *contents);
-    }
-    let dirs = vec![PathBuf::from("/src")];
-    let index = BatchIndex::new(&fs, &dirs);
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    type_mismatch_assignment::run(&stmts, &sem, &ctx)
-        .into_iter()
-        .filter(|d| d.code.0 == LINT0004)
-        .collect()
-}
-
-/// `type-mismatch-assignment` findings for `source`, with no index at all.
-fn lint0004_without_index(source: &str) -> Vec<Diagnostic> {
-    let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    type_mismatch_assignment::run(&stmts, &sem, &ctx)
-        .into_iter()
-        .filter(|d| d.code.0 == LINT0004)
-        .collect()
-}
-
 /// The resolution recorded for the file's one `RUN` statement.
 ///
 /// The two arms are keyed differently on purpose and the test suite must not
@@ -203,23 +92,6 @@ fn run_resolution(stmts: &[Statement], sem: &Semantic) -> Option<Resolution> {
         found = Some(sem.references.get(key).cloned());
     }
     found.expect("fixture must contain a RUN statement")
-}
-
-/// The symbol a name is declared as, insisting on exactly one.
-fn sole_symbol(sem: &Semantic, name: &str) -> SymbolId {
-    let atom = OxablAtom::from(name);
-    let hits: Vec<SymbolId> = sem
-        .symbols
-        .iter()
-        .filter(|(_, s)| s.name == atom)
-        .map(|(id, _)| id)
-        .collect();
-    assert_eq!(
-        hits.len(),
-        1,
-        "expected one symbol named `{name}`: {hits:?}"
-    );
-    hits[0]
 }
 
 /// An index that reports a real revision and panics on the one query a locally

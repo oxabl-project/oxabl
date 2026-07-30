@@ -181,22 +181,14 @@ impl Memo {
 
 impl WorkspaceIndex for BatchIndex<'_> {
     fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
-        match self.class_facts(name) {
-            IndexAnswer::Found(facts) => IndexAnswer::Found(facts.descriptor),
-            IndexAnswer::NotFound => IndexAnswer::NotFound,
-            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-        }
+        self.class_facts(name).map(|facts| facts.descriptor)
     }
 
     fn class_members(&self, class: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
         // Same lookup, same memo entry, so the consumer's two-question pattern
         // (descriptor, then members, then up the chain) costs one search and one
         // parse per class.
-        match self.class_facts(class) {
-            IndexAnswer::Found(facts) => IndexAnswer::Found(facts.members),
-            IndexAnswer::NotFound => IndexAnswer::NotFound,
-            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-        }
+        self.class_facts(class).map(|facts| facts.members)
     }
 
     fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {

@@ -1463,11 +1463,9 @@ impl<'a> ResolveWalker<'a> {
     /// The synthesized `Types` symbol for an indexed class, minted on first
     /// reference and shared by every later one.
     ///
-    /// KTD6's conventions, the same ones the inherited-member and schema-field
-    /// synthesis follow: a dummy declaration (this file declares nothing), the
-    /// first use site as the span, the root scope, and the symbol table only —
-    /// **never** the scope tree, so ordinary name resolution cannot stumble onto
-    /// a workspace class that no `USING` imported.
+    /// [`Symbol::synthesized`] carries the conventions — notably that the symbol
+    /// goes in the symbol table only, so ordinary name resolution cannot stumble
+    /// onto a workspace class that no `USING` imported.
     fn indexed_class_symbol(
         &mut self,
         name: &IndexName,
@@ -1477,22 +1475,15 @@ impl<'a> ResolveWalker<'a> {
         if let Some(sym) = self.synth_classes.get(name) {
             return *sym;
         }
-        let sym = self.symbols.insert(Symbol {
-            name: name.as_atom().clone(),
-            namespace: NamespaceId::Types,
-            kind: match kind {
+        let sym = self.symbols.insert(Symbol::synthesized(
+            name.as_atom().clone(),
+            NamespaceId::Types,
+            match kind {
                 ClassKind::Class => SymbolKind::Class,
                 ClassKind::Interface => SymbolKind::Interface,
             },
-            declared_in: ScopeId::ROOT,
-            declaration: NodeId::DUMMY,
-            name_span: use_span,
-            data_type: None,
-            read_count: 0,
-            write_count: 0,
-            flags: SymbolFlags::empty(),
-            table_id: None,
-        });
+            use_span,
+        ));
         self.synth_classes.insert(name.clone(), sym);
         self.indexed_class_of.insert(sym, name.clone());
         sym
@@ -1731,7 +1722,7 @@ impl<'a> ResolveWalker<'a> {
             ClassTypedDecl::Foreign(
                 decl_sym,
                 IndexName::new(class_name),
-                VirtualSpan::new(decl_name.span.start, decl_name.span.end),
+                identifier_span(decl_name),
             )
         })
     }
@@ -2805,12 +2796,10 @@ impl<'a> ResolveWalker<'a> {
     /// The synthesized `Procedures` symbol for an external program, minted on the
     /// first `RUN` that reaches it and shared by every later one.
     ///
-    /// KTD6's conventions, the same ones the indexed-class and schema-field
-    /// synthesis follow: a dummy declaration (this file declares nothing), the
-    /// `RUN` site as the span, the root scope, and the symbol table only —
-    /// **never** the scope tree. That last part is load-bearing here: a program
-    /// name like `orders/recalc-total.p` is not an ABL identifier at all, and it
-    /// must be unreachable by ordinary name resolution rather than merely
+    /// [`Symbol::synthesized`] carries the conventions, with the `RUN` site as
+    /// the span. Staying out of the scope tree is especially load-bearing here: a
+    /// program name like `orders/recalc-total.p` is not an ABL identifier at all,
+    /// and it must be unreachable by ordinary name resolution rather than merely
     /// unlikely to be written.
     fn indexed_program_symbol(
         &mut self,
@@ -2821,19 +2810,12 @@ impl<'a> ResolveWalker<'a> {
         if let Some(sym) = self.synth_programs.get(name) {
             return *sym;
         }
-        let sym = self.symbols.insert(Symbol {
-            name: name.as_atom().clone(),
-            namespace: NamespaceId::Procedures,
-            kind: SymbolKind::Procedure,
-            declared_in: ScopeId::ROOT,
-            declaration: NodeId::DUMMY,
-            name_span: use_span,
-            data_type: None,
-            read_count: 0,
-            write_count: 0,
-            flags: SymbolFlags::empty(),
-            table_id: None,
-        });
+        let sym = self.symbols.insert(Symbol::synthesized(
+            name.as_atom().clone(),
+            NamespaceId::Procedures,
+            SymbolKind::Procedure,
+            use_span,
+        ));
         self.symbols.record_program_file(sym, file);
         self.synth_programs.insert(name.clone(), sym);
         sym
@@ -3082,11 +3064,7 @@ impl<'a> ResolveWalker<'a> {
                 // The scope tree first, always: a locally declared name must not
                 // be shadowed by a workspace class that happens to share it.
                 self.walk_expression(expr, scope, AccessMode::Read);
-                self.try_receiver_type(
-                    expr.id,
-                    &id.name,
-                    VirtualSpan::new(id.span.start, id.span.end),
-                );
+                self.try_receiver_type(expr.id, &id.name, identifier_span(id));
                 self.soften_unresolved_to_external(expr.id);
             }
             ExpressionKind::FieldAccess { qualifier, field } => {
@@ -3386,12 +3364,9 @@ impl<'a> ResolveWalker<'a> {
     }
 
     /// Return the synthesized `Field` symbol for `(tid, field_atom)`,
-    /// minting one on first use. Synthetic symbols carry
-    /// `declaration: NodeId::DUMMY` (marking them as non-user-declared, the
-    /// same convention as built-ins) and `name_span` pointing at the use
-    /// site so diagnostics can still locate a reference. They are inserted
-    /// into the symbol table only — never into the scope tree — so name
-    /// resolution never observes them.
+    /// minting one on first use. [`Symbol::synthesized`] carries the conventions
+    /// — a dummy declaration marking it non-user-declared, the same convention as
+    /// built-ins, and the symbol table only, so name resolution never observes it.
     fn synth_field_symbol(
         &mut self,
         tid: TableId,
@@ -3403,17 +3378,13 @@ impl<'a> ResolveWalker<'a> {
             return *sym;
         }
         let sym = self.symbols.insert(Symbol {
-            name: field_atom.clone(),
-            namespace: NamespaceId::Values,
-            kind: SymbolKind::Field,
-            declared_in: ScopeId::ROOT,
-            declaration: NodeId::DUMMY,
-            name_span: VirtualSpan::new(use_site.span.start, use_site.span.end),
             data_type: Some(data_type),
-            read_count: 0,
-            write_count: 0,
-            flags: SymbolFlags::empty(),
-            table_id: None,
+            ..Symbol::synthesized(
+                field_atom.clone(),
+                NamespaceId::Values,
+                SymbolKind::Field,
+                identifier_span(use_site),
+            )
         });
         self.synth_fields.insert((tid, field_atom.clone()), sym);
         sym
@@ -3464,25 +3435,10 @@ impl<'a> ResolveWalker<'a> {
             member.data_type.clone(),
             member.flags,
         );
-        // KTD6, the schema-field conventions exactly: a dummy declaration (this
-        // is not a declaration in *this* file), the use site as the span so a
-        // diagnostic can still point somewhere real, the root scope, and — the
-        // load-bearing part — the symbol table only, never the scope tree. Not
-        // being in the scope tree is what stops ordinary name resolution from
-        // observing an indexed symbol by accident: it is reachable only through
-        // the reference entry the caller is about to record.
         let sym = self.symbols.insert(Symbol {
-            name: atom.clone(),
-            namespace,
-            kind,
-            declared_in: ScopeId::ROOT,
-            declaration: NodeId::DUMMY,
-            name_span: VirtualSpan::new(use_site.span.start, use_site.span.end),
             data_type,
-            read_count: 0,
-            write_count: 0,
             flags,
-            table_id: None,
+            ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
         });
         if let Some(member) = self.inherited.get_mut(&key) {
             member.symbol = Some(sym);
@@ -3634,17 +3590,16 @@ impl<'a> ResolveWalker<'a> {
             return *sym;
         }
         let sym = self.symbols.insert(Symbol {
-            name: table_atom.clone(),
-            namespace: NamespaceId::Buffers,
-            kind: SymbolKind::Buffer,
-            declared_in: ScopeId::ROOT,
-            declaration: NodeId::DUMMY,
-            name_span: VirtualSpan::new(use_site.span.start, use_site.span.end),
-            data_type: None,
-            read_count: 0,
-            write_count: 0,
-            flags: SymbolFlags::empty(),
+            // The one deviation from the convention, and the reason this helper
+            // exists: the link is what makes field accesses through the default
+            // buffer resolve against the schema.
             table_id: Some(tid),
+            ..Symbol::synthesized(
+                table_atom.clone(),
+                NamespaceId::Buffers,
+                SymbolKind::Buffer,
+                identifier_span(use_site),
+            )
         });
         self.synth_buffers.insert(tid, sym);
         sym
