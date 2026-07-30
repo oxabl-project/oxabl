@@ -465,6 +465,52 @@ fn schema_flag_drives_schema_backed_diagnostics() {
     );
 }
 
+/// A `--schema` directory that matches no `.df` file is a misconfiguration, and
+/// the gate says so instead of turning every table reference into a finding (A2).
+///
+/// Loading it as an empty-but-present schema made the whole tree light up:
+/// `undefined-symbol` on each table plus `unknown-table-or-field` on each field,
+/// with nothing explaining why. The most likely cause is a typo in the flag, so
+/// the useful answer is one warning naming it — not a hundred findings about
+/// correct code.
+#[test]
+fn a_schema_dir_with_no_df_files_warns_instead_of_flooding_findings() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("src").join("cust.p");
+    write(&file, "FIND FIRST Customer.\nDISPLAY Customer.CustNum.\n");
+    let empty_dir = tmp.path().join("schema");
+    fs::create_dir_all(&empty_dir).unwrap();
+
+    let run = check([
+        Path::new("--schema").as_os_str(),
+        empty_dir.as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    assert!(
+        run.stderr.contains("no .df files"),
+        "expected a warning naming the empty schema directory, got:\n{}",
+        run.stderr
+    );
+    assert!(
+        !run.stdout.contains("LINT0001"),
+        "a schema that did not load must not make every table undefined, got:\n{}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains("LINT0003"),
+        "nor every field unknown, got:\n{}",
+        run.stdout
+    );
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the file itself is clean. stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Preprocessing is on by default (R19)
 // ---------------------------------------------------------------------------
