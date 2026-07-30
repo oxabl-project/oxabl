@@ -364,6 +364,10 @@ pub fn collect_from_expanded(
         source: &expanded.text,
         schema,
         schema_loaded,
+        // No cross-file index in the batch collect path yet; the null handle
+        // keeps every cross-file name on today's `External` reason.
+        index: &oxabl_semantic::NullIndex,
+        index_loaded: false,
         lint_severities: lint_severities.clone(),
     };
     let sem = analyze_file(&program.statements, &ctx);

@@ -2631,7 +2631,9 @@ fn wrap_extent(ty: ResolvedType, extent: Option<u32>) -> ResolvedType {
     }
 }
 
-fn fold_atom(s: &str) -> OxablAtom {
+/// Case-fold and intern an identifier. Shared with [`crate::index`], whose
+/// keys must fold identically to the symbol table's names.
+pub(crate) fn fold_atom(s: &str) -> OxablAtom {
     let bytes = s.as_bytes();
     const INLINE: usize = 64;
     if bytes.len() <= INLINE {
