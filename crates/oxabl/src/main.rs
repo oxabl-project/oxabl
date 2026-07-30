@@ -1328,7 +1328,7 @@ fn parse_file_with_preprocess(
 
     // Preprocess
     let preprocessor = Preprocessor::new(fs, include_paths);
-    let file_id = FileId::new(1);
+    let file_id = ROOT_FILE_ID;
     let preprocessed = match preprocessor.process(file_id, &source) {
         Ok(pf) => pf,
         Err(diags) => {
@@ -1609,7 +1609,7 @@ fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_p
 
     let parse_source: String = if preprocess {
         let preprocessor = Preprocessor::new(fs, include_paths);
-        let file_id = FileId::new(1);
+        let file_id = ROOT_FILE_ID;
         match preprocessor.process(file_id, &source) {
             Ok(pf) => {
                 if !pf.diagnostics.is_empty() {
