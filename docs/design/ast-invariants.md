@@ -59,7 +59,8 @@ currently has to code defensively around; they become targets for follow-up hard
   wildcard is included; a trailing `FROM PROPATH` / `FROM ASSEMBLY` clause and the statement
   terminator are not). For a quoted `RUN` target the extent **includes the surrounding quotes**
   even though the stored `name` has them stripped, so the underline matches the literal as
-  written. Unlike the wrapper `span` above, these are inline fields of a derived-`PartialEq`
+  written — and, for the same reason, includes a trailing translation/width suffix (`:U`) when
+  the literal carries one, which `name` likewise excludes. Unlike the wrapper `span` above, these are inline fields of a derived-`PartialEq`
   enum and therefore *do* participate in structural equality — see §2.
 - **Span source order is asserted.** Where sibling `Statement`/`Expression` values are
   assembled (block bodies, the top-level program, argument/item lists), a `debug_assert!`

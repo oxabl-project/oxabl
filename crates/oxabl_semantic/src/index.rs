@@ -12,12 +12,20 @@
 //!
 //! Three properties are load-bearing and every implementation owes them:
 //!
-//! 1. **Every query is total.** There is no error and no panic — an answer is
+//! 1. **Every query is total.** There is no error case — an answer is
 //!    [`IndexAnswer::Found`], [`IndexAnswer::NotFound`], or
 //!    [`IndexAnswer::Unknowable`]. A file that could not be read or parsed is
 //!    *not found* (a broken file is knowably unusable); a name whose target
 //!    can only be decided at run time is *unknowable*. That is why a caching
 //!    implementation never has to model failure.
+//!
+//!    Totality is about *answers*, not about unwinding: it is **not** licence
+//!    to catch panics. In this workspace salsa's `Cancelled` travels as a panic
+//!    payload, so an implementation that wrapped its lookups in a guard would
+//!    convert a cancelled recompute into `NotFound` and freeze a buffer on
+//!    stale results. Cancellation must propagate. This is the same reason
+//!    `LintPipeline::expand`/`collect` are deliberately unguarded — see
+//!    `oxabl_pipeline/src/lint.rs`.
 //! 2. **Each query is keyed by one name.** A class's answer does not depend on
 //!    any other class's file, so an incremental implementation gets early
 //!    cutoff per key: editing one file's method body cannot invalidate an
@@ -126,11 +134,24 @@ impl IndexRevision {
     /// The revision of [`NullIndex`] — no index was present.
     pub const ABSENT: IndexRevision = IndexRevision(0);
 
-    /// Mint a revision. Only an index implementation should call this, and
-    /// only with a non-zero, monotonically increasing value; `0` is
-    /// [`ABSENT`](Self::ABSENT).
+    /// Mint a revision. Only an index implementation should call this, and only
+    /// with a monotonically increasing value.
+    ///
+    /// # Panics
+    ///
+    /// If `value` is `0`. That value is [`ABSENT`](Self::ABSENT), and this
+    /// constructor is `pub` because out-of-crate implementors need it, so the
+    /// reservation has to be enforced rather than merely documented: a real
+    /// index that claimed `ABSENT` would read as *no index*, and
+    /// [`AnalysisContext::index_loaded`](crate::AnalysisContext::index_loaded)
+    /// is derived from exactly this value. Being a `const fn`, a literal `0` in
+    /// a `const` initializer fails to compile rather than at run time.
     #[inline]
     pub const fn new(value: u32) -> Self {
+        assert!(
+            value != 0,
+            "IndexRevision::new(0) is reserved for IndexRevision::ABSENT"
+        );
         IndexRevision(value)
     }
 
@@ -196,20 +217,55 @@ pub struct ClassDescriptor {
     pub implements: Vec<IndexName>,
 }
 
+/// A [`ResolvedType`] proven safe to carry across a file boundary.
+///
+/// A bare [`ResolvedType`] is not: its `Class`, `Buffer`, and `Table` variants
+/// carry a [`SymbolId`](crate::SymbolId) or a
+/// [`TableId`](oxabl_schema::TableId) valid only in the tables of the file that
+/// minted it, so handing one across the seam would produce a dangling
+/// reference in the consumer's symbol table.
+///
+/// The field is private — as with [`IndexName`] — so [`PortableType::new`] is
+/// the *only* way an out-of-crate index implementation can produce one. A
+/// public payload would let an implementor write the file-scoped type straight
+/// into the variant and smuggle the dangling id across the seam the check
+/// exists to guard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortableType(ResolvedType);
+
+impl PortableType {
+    /// Check `ty` for file-scoped ids and wrap it if it has none.
+    ///
+    /// Returns `None` for `Class`, `Buffer`, and `Table` (and arrays over
+    /// them) — use [`MemberType::Named`] for those. Extraction code should
+    /// treat a `None` here as "spell this one as a name", never as a reason to
+    /// drop the member.
+    pub fn new(ty: ResolvedType) -> Option<Self> {
+        fn is_portable(ty: &ResolvedType) -> bool {
+            match ty {
+                ResolvedType::Primitive(_) | ResolvedType::Unknown | ResolvedType::Error => true,
+                ResolvedType::Array { element, .. } => is_portable(element),
+                ResolvedType::Class(_) | ResolvedType::Buffer(_) | ResolvedType::Table(..) => false,
+            }
+        }
+        is_portable(&ty).then_some(PortableType(ty))
+    }
+
+    /// The wrapped type, ready to install on a synthesized symbol.
+    #[inline]
+    pub fn as_resolved(&self) -> &ResolvedType {
+        &self.0
+    }
+}
+
 /// Declared type of an indexed member, in a form that survives crossing a file
 /// boundary.
-///
-/// A bare [`ResolvedType`] would not: its `Class`, `Buffer`, and `Table`
-/// variants carry a [`SymbolId`](crate::SymbolId) or a
-/// [`TableId`](oxabl_schema::TableId) valid only in the tables of the file
-/// that minted it, so handing one across the seam would produce a dangling
-/// reference in the consumer's symbol table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberType {
     /// A type whose meaning does not depend on any one file's side tables — a
     /// primitive, an array over one, `Unknown`, or `Error`. Install directly
     /// on a synthesized symbol.
-    Portable(ResolvedType),
+    Portable(PortableType),
     /// A class- or interface-typed declaration, carried as the name written in
     /// the declaring file. The consumer resolves it in *its own* symbol space,
     /// through [`WorkspaceIndex::class`] if need be.
@@ -220,21 +276,10 @@ pub enum MemberType {
 }
 
 impl MemberType {
-    /// Wrap a [`ResolvedType`] that is safe to carry across files.
-    ///
-    /// Returns `None` for `Class`, `Buffer`, and `Table` (and arrays over
-    /// them) — use [`MemberType::Named`] for those. Extraction code should
-    /// treat a `None` here as "spell this one as a name", never as a reason to
-    /// drop the member.
+    /// Wrap a [`ResolvedType`] that is safe to carry across files, deferring to
+    /// [`PortableType::new`] for the check — the one construction path.
     pub fn portable(ty: ResolvedType) -> Option<Self> {
-        fn is_portable(ty: &ResolvedType) -> bool {
-            match ty {
-                ResolvedType::Primitive(_) | ResolvedType::Unknown | ResolvedType::Error => true,
-                ResolvedType::Array { element, .. } => is_portable(element),
-                ResolvedType::Class(_) | ResolvedType::Buffer(_) | ResolvedType::Table(..) => false,
-            }
-        }
-        is_portable(&ty).then_some(MemberType::Portable(ty))
+        PortableType::new(ty).map(MemberType::Portable)
     }
 }
 
@@ -291,6 +336,12 @@ impl MemberDescriptor {
 /// There are exactly four queries and no client carve-outs. A client that
 /// cannot answer one of them answers [`IndexAnswer::NotFound`] for it — it
 /// does not get a narrower trait.
+///
+/// Every query is total in the sense of property 1 above: three answers, no
+/// error variant. That is not a mandate to swallow unwinding — an
+/// implementation must never turn a salsa `Cancelled` (which travels as a panic
+/// payload) into `NotFound`; cancellation propagates, as it does through the
+/// unguarded `LintPipeline::expand`/`collect` in `oxabl_pipeline/src/lint.rs`.
 pub trait WorkspaceIndex: Send + Sync {
     /// Look up a class or interface by qualified name.
     ///
@@ -410,26 +461,41 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "reserved for IndexRevision::ABSENT")]
+    fn minting_the_absent_revision_is_rejected() {
+        // `new` is `pub` for out-of-crate implementors, so the reservation of 0
+        // has to be enforced rather than documented. `black_box` keeps the
+        // argument out of a const context, where this is a compile error
+        // instead of a run-time panic.
+        let _ = IndexRevision::new(std::hint::black_box(0));
+    }
+
+    #[test]
     fn portable_accepts_file_independent_types() {
         assert_eq!(
             MemberType::portable(ResolvedType::Primitive(PrimitiveTy::Integer)),
-            Some(MemberType::Portable(ResolvedType::Primitive(
-                PrimitiveTy::Integer
-            )))
+            Some(MemberType::Portable(
+                PortableType::new(ResolvedType::Primitive(PrimitiveTy::Integer)).unwrap()
+            ))
         );
         assert!(MemberType::portable(ResolvedType::Unknown).is_some());
-        assert!(
-            MemberType::portable(ResolvedType::Array {
-                element: Box::new(ResolvedType::Primitive(PrimitiveTy::Character)),
-                extent: Some(4),
-            })
-            .is_some()
-        );
+        let array = ResolvedType::Array {
+            element: Box::new(ResolvedType::Primitive(PrimitiveTy::Character)),
+            extent: Some(4),
+        };
+        let wrapped = PortableType::new(array.clone()).expect("array over a primitive is portable");
+        // The wrapper is transparent: the consumer gets back exactly the type
+        // the index extracted, ready to install on a synthesized symbol.
+        assert_eq!(wrapped.as_resolved(), &array);
+        assert!(MemberType::portable(array).is_some());
     }
 
     #[test]
     fn portable_rejects_types_carrying_single_file_ids() {
         use crate::SymbolId;
+        // The guard lives on `PortableType::new`, which is the only way to
+        // construct the variant's payload, so rejecting here rejects everywhere.
+        assert!(PortableType::new(ResolvedType::Class(SymbolId::new(0))).is_none());
         assert!(MemberType::portable(ResolvedType::Class(SymbolId::new(0))).is_none());
         assert!(MemberType::portable(ResolvedType::Buffer(SymbolId::new(0))).is_none());
         assert!(

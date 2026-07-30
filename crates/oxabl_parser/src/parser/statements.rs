@@ -3402,9 +3402,16 @@ impl Parser<'_> {
         } else if self.check(Kind::StringLiteral) {
             // String literal target: RUN "my-proc.p".
             let token = self.advance().clone();
-            let name = self.source[token.start + 1..token.end - 1].to_string();
-            // The span keeps the quotes the name drops, so a diagnostic
-            // underlines the literal exactly as it was written.
+            // Take the name from the lexer's parsed payload rather than
+            // re-slicing between the quotes: an ABL literal may carry a
+            // translation/width suffix (`RUN "my-proc.p":U.`), whose bytes fall
+            // inside the token extent, so a raw slice would yield `my-proc.p":`.
+            let name = match &token.value {
+                TokenValue::String(s) => s.to_string(),
+                _ => self.source[token.start + 1..token.end - 1].to_string(),
+            };
+            // The span keeps the quotes (and any suffix) the name drops, so a
+            // diagnostic underlines the literal exactly as it was written.
             RunTarget::Literal {
                 id: self.node_id(),
                 name,

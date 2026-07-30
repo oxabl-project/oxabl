@@ -4685,6 +4685,30 @@ fn parse_run_quoted_target_name_span_includes_the_quotes() {
 }
 
 #[test]
+fn parse_run_quoted_target_with_translation_suffix_keeps_the_name_clean() {
+    // A `:U` suffix's bytes sit inside the string token's extent, so building
+    // the name by slicing between the first and last byte would yield
+    // `my-proc.p":`. The name comes from the token's parsed payload instead;
+    // the span still underlines the literal as written, suffix included.
+    let source = r#"RUN "my-proc.p":U."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Run { target, .. } => {
+            assert_eq!(target.literal_name(), Some("my-proc.p"));
+            match target {
+                RunTarget::Literal { name_span, .. } => {
+                    assert_span_covers(source, name_span, r#""my-proc.p":U"#);
+                }
+                RunTarget::Dynamic(_) => panic!("Expected a literal target"),
+            }
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
 fn using_and_run_target_ids_are_unique_across_a_program() {
     let source = "\
 USING MyApp.Services.Foo.

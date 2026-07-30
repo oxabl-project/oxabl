@@ -30,7 +30,7 @@ pub use coercion::{assignable, assignable_strict, is_narrowing_warning, widen_pr
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
 pub use index::{
     ClassDescriptor, ClassKind, IndexAnswer, IndexName, IndexRevision, IndexedFileId,
-    MemberDescriptor, MemberType, NullIndex, WorkspaceIndex,
+    MemberDescriptor, MemberType, NullIndex, PortableType, WorkspaceIndex,
 };
 pub use index_vec::NodeIndexVec;
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
@@ -98,12 +98,20 @@ impl<'a> AnalysisContext<'a> {
         self
     }
 
-    /// Attach a workspace index to this context (builder-style), marking it
-    /// loaded. Accepts anything that borrows as `&dyn WorkspaceIndex`, so a
-    /// language server holding an `Arc<dyn WorkspaceIndex>` passes `&*arc`.
+    /// Attach a workspace index to this context (builder-style). Accepts
+    /// anything that borrows as `&dyn WorkspaceIndex`, so a language server
+    /// holding an `Arc<dyn WorkspaceIndex>` passes `&*arc`.
+    ///
+    /// [`index_loaded`](Self::index_loaded) is **derived from the handle**, not
+    /// asserted: only [`NullIndex`] may report [`IndexRevision::ABSENT`], so a
+    /// handle that knows nothing cannot be talked into claiming it was
+    /// consulted. Setting the flag unconditionally would let
+    /// `with_index(&NullIndex)` turn a miss into
+    /// [`UnresolvedReason::NotFoundInWorkspace`] — a fact about the workspace —
+    /// when nothing was looked at.
     pub fn with_index(mut self, index: &'a dyn WorkspaceIndex) -> Self {
         self.index = index;
-        self.index_loaded = true;
+        self.index_loaded = index.revision() != IndexRevision::ABSENT;
         self
     }
 }
@@ -228,6 +236,18 @@ mod tests {
             ctx.index.program(&IndexName::new("thing.p")),
             IndexAnswer::Unknowable
         );
+    }
+
+    #[test]
+    fn with_index_of_the_null_index_leaves_the_flag_clear() {
+        // The flag is derived from the handle, so routing `NullIndex` through
+        // the builder cannot claim an index was consulted — a miss has to stay
+        // `External` ("we did not look") rather than becoming a claim about
+        // what the workspace contains.
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&NullIndex);
+        assert!(!ctx.index_loaded);
+        assert_eq!(ctx.index.revision(), IndexRevision::ABSENT);
     }
 
     #[test]
