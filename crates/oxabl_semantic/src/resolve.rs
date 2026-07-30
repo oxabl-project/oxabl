@@ -1650,9 +1650,11 @@ impl<'a> ResolveWalker<'a> {
                 ..
             } => {
                 match target {
-                    RunTarget::Literal(_) => {
-                        // External procedure name — no statement-level NodeId
-                        // to bind; lint rules treat as External when needed.
+                    RunTarget::Literal { .. } => {
+                        // External procedure name — nothing to bind in a
+                        // single-file model; lint rules treat as External when
+                        // needed. The target's own NodeId is what workspace
+                        // resolution will hang a reference entry off.
                     }
                     RunTarget::Dynamic(e) => {
                         self.walk_expression(e, scope, AccessMode::Read);
@@ -5256,7 +5258,7 @@ mod tests {
         let stmts = vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: ParameterDirection::Output,
                     expression: arg_expr,
@@ -5286,7 +5288,7 @@ mod tests {
         let stmts = vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: ParameterDirection::InputOutput,
                     expression: arg_expr,
@@ -5317,7 +5319,7 @@ mod tests {
         vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction,
                     expression: arg,

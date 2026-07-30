@@ -519,7 +519,7 @@ mod tests {
         let stmts = vec![
             var_decl("x"),
             stmt(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: ParameterDirection::Output,
                     expression: Expression::with_id(
@@ -623,7 +623,7 @@ mod tests {
             let stmts = vec![
                 var_decl("h"),
                 stmt(StatementKind::Run {
-                    target: RunTarget::Literal("proc".into()),
+                    target: RunTarget::literal("proc"),
                     arguments: vec![],
                     in_handle: None,
                     persistent,

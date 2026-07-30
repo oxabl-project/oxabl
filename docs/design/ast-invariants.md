@@ -52,6 +52,15 @@ currently has to code defensively around; they become targets for follow-up hard
   no-preprocess mode, where the virtual offset equals the real source offset (the formatter's
   parse mode); the virtual-offset/`resolve` machinery above is unchanged. Data-type-level
   spans remain out of scope — a `DataType` is positioned within its owning statement's span.
+- **A cross-file target's `name_span` covers the name, not the statement.** `StatementKind::Using`
+  and `RunTarget::Literal` each carry a `name_span` alongside the target string: the byte extent
+  of the *named target itself*, so a "could not be located" diagnostic points at the name rather
+  than at the whole statement. For `USING` that extent stops at the last name segment (the `.*`
+  wildcard is included; a trailing `FROM PROPATH` / `FROM ASSEMBLY` clause and the statement
+  terminator are not). For a quoted `RUN` target the extent **includes the surrounding quotes**
+  even though the stored `name` has them stripped, so the underline matches the literal as
+  written. Unlike the wrapper `span` above, these are inline fields of a derived-`PartialEq`
+  enum and therefore *do* participate in structural equality — see §2.
 - **Span source order is asserted.** Where sibling `Statement`/`Expression` values are
   assembled (block bodies, the top-level program, argument/item lists), a `debug_assert!`
   enforces `prev.span.end <= next.span.start`: siblings are in source order and non-overlapping.
@@ -79,6 +88,21 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
   Statement` and `PartialEq<ExpressionKind> for Expression` (and their symmetric partners) let
   tests assert against a bare `...Kind` value. No compare-ignoring helper is required at call
   sites.
+- **Two non-wrapper nodes also carry a NodeId: `StatementKind::Using` and `RunTarget::Literal`.**
+  Both name a cross-file target as a bare `String`, and workspace resolution records such a
+  target as an entry in the `NodeId`-keyed `references` side table — so the target needs its own
+  identity, distinct from the enclosing statement's. Ids come from the same parser allocator
+  (`Parser::node_id()`), so the id space stays one dense range. `RunTarget::Dynamic` gets no id:
+  it names nothing at parse time. **`Identifier` is deliberately id-free** — giving every
+  identifier a NodeId would inflate the id space and the per-keystroke `NodeIndexVec`
+  allocations to buy a uniformity no consumer needs.
+- **Exception to the "ids are excluded from `PartialEq`" rule.** `StatementKind` and `RunTarget`
+  derive `PartialEq`, so the `id` and `name_span` fields inside those two variants *are* compared.
+  Whole-value equality against a hand-built target therefore does not hold; compare the
+  `type_name` / `name` field instead (`RunTarget::literal_name()` is the accessor, and
+  `RunTarget::literal(name)` builds a `DUMMY`-id target for hand-constructed test AST). Making
+  these fields equality-invisible would mean hand-writing `PartialEq` for the whole of
+  `StatementKind`, which is not worth the maintenance surface.
 - Recovery-generated `Statement { kind: StatementKind::Empty, .. }` nodes still get a NodeId
   like any other. Side tables (the future `references` / `types` in `oxabl_semantic`) are
   allowed to be absent at those NodeIds — consumers treat "no entry" as "not analyzed."

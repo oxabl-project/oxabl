@@ -487,7 +487,7 @@ mod tests {
         vec![
             var_decl("x", DataType::Integer),
             stmt(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: dir,
                     expression: Expression::with_id(

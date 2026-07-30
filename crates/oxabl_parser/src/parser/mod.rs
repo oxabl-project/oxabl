@@ -14,8 +14,8 @@ mod tests;
 
 use oxabl_ast::{
     AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, HandleParamKind,
-    HandlePassingOptions, Identifier, NodeIdAllocator, ParameterDirection, ParameterType, Span,
-    Statement, StatementKind, TypeSource,
+    HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection, ParameterType,
+    Span, Statement, StatementKind, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -221,6 +221,18 @@ impl<'a> Parser<'a> {
         // The span defaults to DUMMY here; the `parse_statement` funnel
         // overwrites it with the real full-extent span (KTD2).
         Statement::with_id(self.node_ids.alloc(), Span::DUMMY, kind)
+    }
+
+    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) for a node that is not a
+    /// [`Statement`] or [`Expression`] wrapper.
+    ///
+    /// The only such nodes are the two cross-file targets named as bare strings
+    /// — `StatementKind::Using` and `RunTarget::Literal` — which need identity
+    /// because workspace resolution records them in the `NodeId`-keyed
+    /// `references` side table (`docs/design/ast-invariants.md` §2).
+    #[inline]
+    pub(crate) fn node_id(&mut self) -> NodeId {
+        self.node_ids.alloc()
     }
 
     /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap an
