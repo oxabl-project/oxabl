@@ -171,7 +171,7 @@ fn formatting_edits_agree_with_the_shared_table() {
             }
             // A refusal and an already-conforming buffer are both "send no
             // edits" — the editor leaves the buffer as the user typed it.
-            ExpectedFormat::Unchanged | ExpectedFormat::Refused => {
+            ExpectedFormat::Unchanged | ExpectedFormat::Refused(_) => {
                 assert!(
                     edits.is_empty(),
                     "fixture `{}`: expected no edits, got {edits:?}",
