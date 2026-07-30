@@ -1085,6 +1085,7 @@ dependencies = [
  "oxabl_formatter",
  "oxabl_lexer",
  "oxabl_parser",
+ "oxabl_pipeline",
  "oxabl_preprocessor",
  "oxabl_schema",
  "oxabl_style",
@@ -1180,6 +1181,7 @@ name = "oxabl_wasm"
 version = "0.1.0"
 dependencies = [
  "oxabl",
+ "oxabl_pipeline",
  "serde",
  "serde_json",
  "wasm-bindgen",

@@ -1,16 +1,41 @@
 //! Browser bindings for Oxabl's shared public pipelines.
 //!
-//! This crate deliberately contains no ABL behavior. It translates the
-//! diagnostics and formatter result returned by the `oxabl` umbrella crate
-//! into a small JSON wire shape suitable for a browser. The CLI, LSP, VS Code
-//! extension, and browser therefore share the same lexer, parser, semantic
-//! analysis, lint rules, formatter, and safe default style.
+//! This crate deliberately contains no ABL behavior. It drives
+//! [`LintPipeline`] and [`FormatPipeline`] — the same two handles the CLI and the
+//! language server drive — and translates the
+//! [`LintResult`](oxabl_pipeline::LintResult) and [`FormatOutcome`] they return
+//! into a small JSON wire shape suitable for a
+//! browser (R11). The CLI, LSP, VS Code extension, and browser therefore share
+//! the same lexer, parser, semantic analysis, lint rules, formatter, safe default
+//! style, *and* run orchestration.
+//!
+//! Line/column derivation is not done here either: it comes from
+//! [`oxabl_pipeline::position`], the one derivation the CLI's text rendering also
+//! uses, so the two cannot drift (R13).
+//!
+//! # Reduced capability, not divergent behavior
+//!
+//! The browser MVP has no project filesystem, include path, or schema upload, so
+//! the pipeline is configured with [`PipelineConfig::default`] — no include
+//! paths, no schema — and preprocessing off. Those capabilities are *absent*
+//! rather than emulated: a second, divergent implementation in this layer is
+//! exactly what R11 forbids.
+//!
+//! # `oxabl_pipeline` directly, not through the umbrella
+//!
+//! The pipeline handles are taken from `oxabl_pipeline` rather than
+//! `oxabl::pipeline`, the same way `oxabl_lsp` takes them. The umbrella's
+//! re-export names the configuration surface only, and this crate already
+//! compiles `oxabl_pipeline` regardless (the umbrella depends on it
+//! unconditionally, precisely so the browser bundle can reach it), so the direct
+//! edge adds nothing to the payload. The remaining `oxabl::` imports are plain
+//! type re-exports.
 
 use oxabl::analyze::{CollectedDiagnostic, DiagnosticSource};
 use oxabl::common::SourceMap;
 use oxabl::style::StyleGuide;
 use oxabl::workspace::InMemoryFileSystem;
-use oxabl::{AnalyzeOptions, try_analyze_with_fs, try_format_source};
+use oxabl_pipeline::{FormatOutcome, FormatPipeline, LintPipeline, PipelineConfig, position};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -117,29 +142,35 @@ struct FormatResponse {
     error: Option<String>,
 }
 
+/// Map one collected diagnostic onto the wire, deriving both endpoints through
+/// the shared position helper (R13) rather than reaching for
+/// [`SourceMap::lookup`] here.
+///
+/// The helper's convention is `SourceMap`'s own — 1-based line, 1-based **byte**
+/// column — so this is the same number the hand-rolled pair produced, and the
+/// same number the CLI's text output prints.
 fn diagnostic_to_wire(item: CollectedDiagnostic, source_map: &SourceMap) -> WireDiagnostic {
     let diagnostic = item.diagnostic;
-    let start = diagnostic.span.span.start;
-    let end = diagnostic.span.span.end;
-    let (start_line, start_column) = source_map.lookup(start as usize);
-    let (end_line, end_column) = source_map.lookup(end as usize);
+    let resolved = position::resolve_diagnostic(source_map, &diagnostic);
 
     WireDiagnostic {
         source: diagnostic_source(item.source),
         severity: diagnostic.severity.as_str(),
         code: diagnostic.code.0,
         message: diagnostic.message,
-        start: WirePosition {
-            byte: start,
-            line: start_line,
-            column: start_column,
-        },
-        end: WirePosition {
-            byte: end,
-            line: end_line,
-            column: end_column,
-        },
+        start: WirePosition::from(resolved.start),
+        end: WirePosition::from(resolved.end),
         help: diagnostic.help,
+    }
+}
+
+impl From<position::Position> for WirePosition {
+    fn from(position: position::Position) -> Self {
+        WirePosition {
+            byte: position.byte,
+            line: position.line,
+            column: position.column,
+        }
     }
 }
 
@@ -147,32 +178,31 @@ fn diagnostic_source(source: DiagnosticSource) -> &'static str {
     source.as_str()
 }
 
-/// Analyze one in-memory ABL file through the same parse → semantic → lint
-/// collector used by the CLI and LSP.
+/// Analyze one in-memory ABL file through the shared [`LintPipeline`] the CLI and
+/// the language server also drive.
 ///
-/// The browser MVP has no project filesystem, include path, or schema upload,
-/// so preprocessing and schema-backed rules are disabled rather than emulated.
+/// Configuration is [`PipelineConfig::default`] over an empty in-memory file
+/// system, with preprocessing off: the browser MVP has no project filesystem,
+/// include path, or schema upload, so those capabilities are absent rather than
+/// emulated here.
 #[wasm_bindgen]
 pub fn analyze_source(source: &str) -> String {
-    let options = AnalyzeOptions::default();
+    let config = PipelineConfig::default();
     let fs = InMemoryFileSystem::new();
-    // The canonical fallible entry point, though its guard is a documented
+    // `run` is the guarded convenience, though its guard is a documented
     // pass-through on wasm32 — under `panic=abort` a panic traps instead of
-    // arriving here, so the browser's protection is the panic hook plus instance
-    // reinitialization, not this `Err` arm. The arm exists because this crate
-    // also compiles natively for its unit tests, where the guard does catch. The
-    // wire shape deliberately gains no `error` field for it.
-    let (_, collected) = match try_analyze_with_fs(source, &fs, &options) {
-        Ok(result) => result,
-        Err(_) => {
-            return serde_json::to_string(&AnalyzeResponse {
-                diagnostics: Vec::new(),
-            })
-            .expect("the browser diagnostic wire shape is always serializable");
-        }
-    };
+    // being contained, so the browser's protection is the panic hook plus
+    // instance reinitialization, not a failed-run result. A failed run is
+    // nonetheless reachable natively, where this crate's unit tests live, and it
+    // reports as an empty diagnostic set: the wire shape deliberately gains no
+    // `error` field for something the browser can never observe.
+    let result = LintPipeline::new(&config, &fs)
+        .with_preprocess(false)
+        .run(source);
+
     let source_map = SourceMap::new(source);
-    let diagnostics = collected
+    let diagnostics = result
+        .into_diagnostics()
         .diagnostics
         .into_iter()
         .map(|diagnostic| diagnostic_to_wire(diagnostic, &source_map))
@@ -182,20 +212,32 @@ pub fn analyze_source(source: &str) -> String {
         .expect("the browser diagnostic wire shape is always serializable")
 }
 
-/// Format one ABL file through Oxabl's shared layout-only formatter using the
-/// same safe default style as the LSP when no `oxabl.toml` is present.
+/// Format one ABL file through the shared [`FormatPipeline`], using the same safe
+/// default style as the language server when no `oxabl.toml` is present.
+///
+/// The wire shape has a single `error` field, so a refusal's bail-versus-panic
+/// distinction — which [`FormatOutcome`] keeps structural — collapses to its
+/// reason text *here*, at the transport boundary, not in the pipeline. On either
+/// leave-it-alone arm the original bytes come back untouched with
+/// `changed: false`; no arm ever returns partially formatted source.
 #[wasm_bindgen]
 pub fn format_source(source: &str) -> String {
-    let result = match try_format_source(source, &StyleGuide::default_base()) {
-        Ok(formatted) => FormatResponse {
-            changed: formatted != source,
+    let pipeline = FormatPipeline::new(StyleGuide::default_base());
+    let result = match pipeline.format(source) {
+        FormatOutcome::Reformatted(formatted) => FormatResponse {
             source: formatted,
+            changed: true,
             error: None,
         },
-        Err(error) => FormatResponse {
+        FormatOutcome::Unchanged => FormatResponse {
             source: source.to_string(),
             changed: false,
-            error: Some(error.to_string()),
+            error: None,
+        },
+        FormatOutcome::DidNotFormat(not_formatted) => FormatResponse {
+            source: source.to_string(),
+            changed: false,
+            error: Some(not_formatted.reason()),
         },
     };
 
@@ -204,6 +246,8 @@ pub fn format_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use oxabl::common::{Diagnostic, FileSpan, Span};
+
     use super::*;
 
     #[test]
@@ -277,5 +321,97 @@ mod tests {
         assert_eq!(response["source"], source);
         assert_eq!(response["changed"], false);
         assert!(response["error"].is_string());
+    }
+
+    // Already-formatted source takes the pipeline's `Unchanged` arm, which is a
+    // separate arm from `Reformatted` — the browser must still get the bytes
+    // back, since the wire shape always carries a source.
+    #[test]
+    fn already_formatted_source_round_trips_unchanged() {
+        let source = "IF TRUE THEN\n    MESSAGE \"hello\".\n";
+        let response: serde_json::Value = serde_json::from_str(&format_source(source)).unwrap();
+
+        assert_eq!(response["error"], serde_json::Value::Null);
+        assert_eq!(response["changed"], false);
+        assert_eq!(response["source"], source);
+    }
+
+    #[test]
+    fn a_clean_source_reports_no_diagnostics() {
+        let response: serde_json::Value =
+            serde_json::from_str(&analyze_source("MESSAGE \"hello\".\n")).unwrap();
+
+        assert_eq!(
+            response["diagnostics"].as_array().map(Vec::len),
+            Some(0),
+            "got {response}"
+        );
+    }
+
+    // R13: the wire positions are the shared helper's answer, byte column and
+    // all, so the browser and the CLI's text output cannot disagree. Pinned
+    // against the helper directly rather than against a hand-computed number.
+    #[test]
+    fn wire_positions_come_from_the_shared_helper() {
+        let source = "/* é */ DEFINE VARIABLE unused AS INTEGER NO-UNDO.\n";
+        let response: serde_json::Value = serde_json::from_str(&analyze_source(source)).unwrap();
+        let diagnostic = response["diagnostics"]
+            .as_array()
+            .and_then(|all| all.iter().find(|d| d["code"] == "LINT0002"))
+            .unwrap_or_else(|| panic!("expected an unused-variable diagnostic, got {response}"));
+
+        let map = SourceMap::new(source);
+        let start = source.find("unused").expect("fixture names the variable") as u32;
+        let expected = position::resolve_offset(&map, start);
+
+        assert_eq!(diagnostic["start"]["byte"], expected.byte);
+        assert_eq!(diagnostic["start"]["line"], expected.line);
+        assert_eq!(diagnostic["start"]["column"], expected.column);
+        // A two-byte character precedes the span, so a byte column and a
+        // character column differ here — which is what makes this assertion
+        // load-bearing rather than tautological.
+        assert_eq!(expected.column, start as usize + 1);
+    }
+
+    // `help` survives the wire mapping. `LintResult` keeps `labels` and `help`
+    // intact, so dropping `help` here would be this layer's bug — and this layer
+    // is where it would happen, since the wire struct enumerates its fields.
+    //
+    // Driven through a synthetic diagnostic rather than real ABL: with
+    // preprocessing off (the browser's configuration) the only diagnostic in the
+    // workspace that carries `help` is the preprocessor's unresolvable-include
+    // warning, which is unreachable from here by construction. Asserting on the
+    // mapping directly beats asserting nothing.
+    #[test]
+    fn diagnostic_help_reaches_the_wire() {
+        let source = "DEFINE VARIABLE unused AS INTEGER NO-UNDO.\n";
+        let map = SourceMap::new(source);
+        let start = source.find("unused").expect("fixture names the variable") as u32;
+        let collected = CollectedDiagnostic {
+            diagnostic: Diagnostic::warning(
+                "LINT9999",
+                "synthetic".to_string(),
+                FileSpan {
+                    file: oxabl_pipeline::ROOT_FILE_ID,
+                    span: Span {
+                        start,
+                        end: start + 6,
+                    },
+                },
+            )
+            .with_help("do something about it".to_string()),
+            source: DiagnosticSource::Lint,
+        };
+
+        let wire = diagnostic_to_wire(collected, &map);
+        assert_eq!(wire.help.as_deref(), Some("do something about it"));
+        assert_eq!(wire.source, "lint");
+        assert_eq!(wire.severity, "warning");
+        assert_eq!(wire.start.byte, start);
+        assert_eq!(wire.start.line, 1);
+
+        // And it survives serialization, since that is what the browser reads.
+        let json = serde_json::to_value(&wire).expect("serializable");
+        assert_eq!(json["help"], "do something about it");
     }
 }

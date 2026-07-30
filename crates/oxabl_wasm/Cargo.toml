@@ -12,6 +12,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 oxabl = { path = "../oxabl", version = "0.5.0", default-features = false, features = ["serde"] }
+# The shared lint/format pipelines and the shared position helper. A direct edge
+# rather than the umbrella's `oxabl::pipeline` re-export, which names the
+# configuration surface only; the umbrella depends on this crate unconditionally
+# either way, so the browser payload is unchanged. It carries no native-only
+# dependency — nothing here may, since the wasm build is the check.
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Exact pin, not a caret range. The browser recovery path depends on
