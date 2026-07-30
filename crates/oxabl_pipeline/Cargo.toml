@@ -32,9 +32,12 @@ test-support = ["oxabl_schema/test-support"]
 
 [dev-dependencies]
 tempfile = "3"
-# The parity legs in this crate consume the fixture table like any downstream
-# leg does, through the feature rather than through a `#[cfg(test)]` back door.
-oxabl_pipeline = { path = ".", features = ["test-support"] }
+# NOTE: no self `oxabl_pipeline = { path = "." }` entry here. Feature-enabling a
+# crate for its own `tests/` target needs one, and Cargo accepts it, but
+# release-please's `cargo-workspace` plugin reads the `path = "."` edge as a
+# dependency cycle and fails the release run outright. This crate's parity leg
+# therefore lives in `src/parity.rs` under `#[cfg(test)]`, where the fixture
+# table is in scope without a feature; see `src/fixtures.rs`.
 # Only for `Span` inside a fabricated `FileSpan` — see the fatal-expansion test.
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 # Arms `panic_if_injected` so a source carrying an `OXABL-TEST-PANIC:<site>`

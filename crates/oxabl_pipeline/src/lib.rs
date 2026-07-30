@@ -50,12 +50,18 @@
 //! column from a byte span, for the byte-offset clients. The language server
 //! deliberately does not use it (R13, KTD5); see [`position`].
 
-#[cfg(feature = "test-support")]
+// `test-support` is how the three downstream parity legs reach the table; `test`
+// is how this crate's own leg (`parity`) does, because a self `path = "."`
+// dev-dependency — the only way to feature-enable this crate for its own
+// `tests/` target — reads as a dependency cycle to release-please.
+#[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 
 mod config;
 mod format;
 mod lint;
+#[cfg(test)]
+mod parity;
 pub mod position;
 
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
