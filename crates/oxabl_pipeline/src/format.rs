@@ -141,17 +141,27 @@ impl NotFormatted {
 
     /// Which of the two kinds of refusal this is — the distinction R5 exists to
     /// preserve.
+    ///
+    /// [`FormatFailure`] is `#[non_exhaustive]`, so an arm this function has not
+    /// been taught about classifies as [`NotFormattedKind::InternalPanic`]. That
+    /// is the loud default on purpose: an unclassified failure is a wiring gap in
+    /// oxabl, and reporting it as an oxabl defect is both the honest answer and
+    /// the one someone will notice.
     pub fn kind(&self) -> NotFormattedKind {
         match &self.failure {
             // Both named arms stay explicit above the wildcard. `FormatFailure`
             // is `#[non_exhaustive]`, so a wildcard is unavoidable; keeping
             // these two spelled out is what makes a future arm a visible gap in
             // review — grep for `NotFormattedKind` and the classification is
-            // right here — rather than a new failure mode silently reported as
-            // an ordinary bail.
+            // right here.
             FormatFailure::Bail(_) => NotFormattedKind::Bail,
             FormatFailure::Panic(_) => NotFormattedKind::InternalPanic,
-            _ => NotFormattedKind::Bail,
+            // An arm added upstream and not classified here is an unfinished
+            // wiring job, so it fails loud: `InternalPanic` is the answer that
+            // makes a client report it as an oxabl defect. Defaulting to `Bail`
+            // would blame the input instead and hide the omission behind a
+            // plausible-looking result.
+            _ => NotFormattedKind::InternalPanic,
         }
     }
 
@@ -197,7 +207,9 @@ pub enum NotFormattedKind {
     /// Expected behavior on some inputs, not a defect.
     Bail,
     /// The formatter panicked and the guard contained it. An oxabl bug; the
-    /// message is worth reporting verbatim.
+    /// message is worth reporting verbatim. Also the classification for a
+    /// `FormatFailure` arm [`NotFormatted::kind`] has not been taught about,
+    /// which is likewise an oxabl bug.
     InternalPanic,
 }
 
