@@ -1,0 +1,30 @@
+[package]
+name = "oxabl_index"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Cross-file fact extraction and the batch workspace index for oxabl"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_index"
+
+# NOTE (KTD1/KTD6): this crate sits *beneath* `oxabl_pipeline`, so it must depend
+# on none of `oxabl_pipeline`, `oxabl_lsp`, `oxabl_wasm`, or the `oxabl` umbrella.
+# It must also never gain a `salsa` dependency: the pipeline depends on this
+# crate, the umbrella re-exports the pipeline unconditionally, and the browser
+# bundle goes through the umbrella — so a `salsa` edge here would land in the
+# WASM payload. The language server's incremental cache implements
+# `WorkspaceIndex` *above* this crate, and it is the only implementation that may
+# know about salsa; the routine both caches share (`index_file`) lives here so
+# neither can drift from the other.
+[dependencies]
+oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
+# For the empty `Schema` the declare pass is handed: a referenced file's facts
+# (classes, routines, `SHARED` definitions) do not depend on the database schema,
+# and every diagnostic the pass emits is discarded, so there is nothing for a
+# real schema to change. `AnalysisContext` takes a borrow, not an `Option`.
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+rustc-hash = "2"

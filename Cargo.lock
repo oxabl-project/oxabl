@@ -1043,6 +1043,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_index"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_common",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "oxabl_schema",
+ "oxabl_semantic",
+ "oxabl_workspace",
+ "rustc-hash",
+]
+
+[[package]]
 name = "oxabl_lexer"
 version = "0.4.1"
 dependencies = [
