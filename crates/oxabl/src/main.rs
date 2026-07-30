@@ -877,13 +877,19 @@ fn run_check(
             // Machine-readable, through the *same* row builder the findings use
             // (D1): an entry names its file, so two files losing coverage on
             // different includes are two distinguishable entries.
-            {
-                let map = SourceMap::new(&source);
-                preproc.extend(
-                    result
-                        .by_source(oxabl_analyze::DiagnosticSource::Preproc)
-                        .map(|c| check_json_diagnostic(&display, &map, c)),
-                );
+            //
+            // Only `--json` reads these rows, and most files have no preproc
+            // diagnostic at all — so the `SourceMap` (a scan of the whole file) is
+            // built behind both conditions, the way the findings rows below build
+            // theirs only once there is a finding.
+            if json_output {
+                let mut collected = result
+                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                    .peekable();
+                if collected.peek().is_some() {
+                    let map = SourceMap::new(&source);
+                    preproc.extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
+                }
             }
 
             // `--no-lint` is a **filter on the reported set**, exactly as it is
@@ -1129,7 +1135,9 @@ fn run_analyze(
     // `--no-lint` is a **filter on the result**, not a skipped run: the envelope
     // still wants the model, so the shared `excluding_source` drops the
     // lint-sourced entries and leaves parse, semantic, and preprocessor ones
-    // alone. (`check --no-lint` skips the run outright — it has no model to dump.)
+    // alone. `check --no-lint` means the same thing by the same mechanism (A1): it
+    // also runs the pipeline — the only source of the parse and semantic
+    // diagnostics that gate regardless — and filters the reported set.
     let collected = if no_lint {
         result.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
     } else {
