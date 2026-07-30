@@ -92,6 +92,27 @@ impl CollectedDiagnostics {
     ) -> impl Iterator<Item = &CollectedDiagnostic> {
         self.diagnostics.iter().filter(move |d| d.source == source)
     }
+
+    /// Every diagnostic *except* those from `source`, as an owned set.
+    ///
+    /// The same filter [`LintResult::excluding_source`] applies, but on the set
+    /// rather than the result, so a client that has to drop **two** stages —
+    /// `check` under `--no-lint`, which reports neither the preprocessor's own
+    /// coverage warnings nor the lint findings — chains two calls instead of
+    /// hand-rolling a second predicate that could disagree with this one.
+    ///
+    /// [`LintResult::excluding_source`]: https://docs.rs/oxabl_pipeline
+    #[must_use]
+    pub fn excluding_source(&self, source: DiagnosticSource) -> CollectedDiagnostics {
+        CollectedDiagnostics {
+            diagnostics: self
+                .diagnostics
+                .iter()
+                .filter(|d| d.source != source)
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 /// The *loud* preprocessor surfacing rule (moved here from the CLI so both

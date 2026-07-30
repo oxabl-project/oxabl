@@ -75,12 +75,13 @@ enum Cli {
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
 
-        /// Suppress the lint channel: report format drift only (R16).
+        /// Suppress lint findings; parse/semantic errors still gate (R16).
         ///
-        /// Here this **skips the lint run entirely** — there is nothing else in
-        /// the report that needs it, so the work is not done. `analyze --no-lint`
-        /// deliberately differs: it still needs the semantic model for its dump,
-        /// so it runs the pipeline and filters the lint findings out afterwards.
+        /// A **filter on the reported set**, not a skipped run — the same meaning
+        /// `analyze --no-lint` has always had. The pipeline that produces lint
+        /// findings is also the only source of `PARSE001` and the semantic
+        /// diagnostics, so skipping it would let a file oxabl cannot even parse
+        /// pass the gate with a green exit code.
         #[arg(long)]
         no_lint: bool,
 
@@ -151,7 +152,7 @@ enum Cli {
         /// A **filter on the result**, not a skipped pass: the envelope still
         /// wants the semantic model, so the pipeline runs either way and the
         /// lint-sourced diagnostics are removed from the reported set. `check
-        /// --no-lint` differs — it has no model to dump, so it skips the run.
+        /// --no-lint` means the same thing, for the same reason.
         #[arg(long)]
         no_lint: bool,
 
@@ -625,8 +626,9 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 struct CheckJsonReport {
     version: u32,
     files_checked: usize,
-    /// Whether the lint channel ran at all (`false` under `--no-lint`), so an
-    /// empty `diagnostics` cannot be misread as "clean".
+    /// Whether lint findings are reported (`false` under `--no-lint`), so an
+    /// empty `diagnostics` cannot be misread as "clean". The pipeline itself runs
+    /// either way — parse and semantic diagnostics are never suppressed (A1).
     lint_enabled: bool,
     diagnostics: Vec<CheckJsonDiagnostic>,
     /// Whether the format channel ran at all (`false` under `--no-format`).
@@ -797,40 +799,54 @@ fn run_check(
             }
         };
 
-        if !no_lint {
-            let result = lint.run(&source);
-            if let Some(panic) = result.failure() {
-                eprintln!("error: analysis failed on {display}: {panic}");
-                failures.push(CheckJsonFailure {
-                    path: display.clone(),
-                    reason: panic.to_string(),
-                });
+        // The pipeline runs whatever `--no-lint` says (A1): it is the only source
+        // of parse and semantic diagnostics too, and those gate regardless.
+        let result = lint.run(&source);
+        if let Some(panic) = result.failure() {
+            eprintln!("error: analysis failed on {display}: {panic}");
+            failures.push(CheckJsonFailure {
+                path: display.clone(),
+                reason: panic.to_string(),
+            });
+        } else {
+            // Preprocessor diagnostics keep their own channel — surfaced by the
+            // same helper `analyze` uses, so the two cannot drift. They are
+            // coverage warnings, not findings, and never move the exit code: an
+            // elided include still parses.
+            preproc_diagnostics.extend(surface_collected_preproc(
+                file,
+                &source,
+                result.diagnostics(),
+            ));
+
+            // `--no-lint` is a **filter on the reported set**, exactly as it is
+            // for `analyze`: the lint-sourced entries go, the parse and semantic
+            // ones stay. Two chained calls to the one shared filter rather than a
+            // second hand-rolled predicate.
+            let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
+            let reported = if no_lint {
+                reported.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
             } else {
-                // Preprocessor diagnostics keep their own channel — surfaced by
-                // the same helper `analyze` uses, so the two cannot drift. They
-                // are coverage warnings, not findings, and never move the exit
-                // code: an elided include still parses.
-                preproc_diagnostics.extend(surface_collected_preproc(
-                    file,
-                    &source,
-                    result.diagnostics(),
-                ));
-
-                let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
-                if !reported.diagnostics.is_empty() {
-                    if !json_output {
-                        let resolver =
-                            SourceResolver::new(ROOT_FILE_ID, display.clone(), source.as_str());
-                        let rendered: Vec<Diagnostic> =
-                            reported.all().map(|c| c.diagnostic.clone()).collect();
-                        print!("{}", render_diagnostics(&rendered, &resolver));
-                    }
-                    let map = SourceMap::new(&source);
-                    for collected in reported.all() {
-                        diagnostics.push(check_json_diagnostic(&display, &map, collected));
-                    }
+                reported
+            };
+            if !reported.diagnostics.is_empty() {
+                if !json_output {
+                    let resolver =
+                        SourceResolver::new(ROOT_FILE_ID, display.clone(), source.as_str());
+                    let rendered: Vec<Diagnostic> =
+                        reported.all().map(|c| c.diagnostic.clone()).collect();
+                    print!("{}", render_diagnostics(&rendered, &resolver));
                 }
+                let map = SourceMap::new(&source);
+                for collected in reported.all() {
+                    diagnostics.push(check_json_diagnostic(&display, &map, collected));
+                }
+            }
 
+            // The unjudged-symbol note is a statement about the *count-gated lint
+            // rules'* coverage, so it has nothing to qualify when those findings
+            // are suppressed.
+            if !no_lint {
                 if let Some(sem) = result.semantic() {
                     unjudged += surface_unjudged_symbols(sem);
                 }
