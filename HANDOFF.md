@@ -1,7 +1,7 @@
 # Handoff: one shared lint and format run behind every client (#120); dogfooded at zero drift
 
 **Date:** 2026-07-30
-**Branch:** `evanbrobertson/rework-check-analyze-into-shared-lint-format-pip` — open as **PR #140**, 18 commits ahead of `master` (`6e39138`).
+**Branch:** `master` — **PR #140 is merged** (`58d961e`). The branch it came from (`evanbrobertson/rework-check-analyze-into-shared-lint-format-pip`) is spent.
 **This session:** Ran the A/B that decides whether #140 can merge, and it came back clean: **zero lint drift** against a large real-world ABL codebase kept outside this repo. Also fixed a silent defect the reshape introduced in `scripts/lint-ab-diff.sh`. Details under **Dogfood A/B** below.
 **Prior context:** #140 implements #120 — the eleven-unit plan at `docs/plans/2026-07-24-001-refactor-shared-lint-format-pipelines-plan.md` (local; `docs/plans/` is gitignored). #133 (browser playground), #135 (panic-safe entry points), #137 (#128's crediting) and #130 (table-use crediting) all shipped before it. The lint-accuracy map from #129/#128/#130 is carried forward below unchanged — it is still the thing to read before triaging a "LINT0006 is wrong" report.
 
@@ -11,7 +11,7 @@
 
 | Item | Status |
 |------|--------|
-| #120 CLI reshape onto shared pipelines | **Done — this branch, PR #140.** `oxabl_pipeline` owns config resolution, both runs, and one result model; CLI, LSP and WASM are renderers. Dogfooded at zero drift. |
+| #120 CLI reshape onto shared pipelines | **Done — merged as PR #140 (`58d961e`).** `oxabl_pipeline` owns config resolution, both runs, and one result model; CLI, LSP and WASM are renderers. Dogfooded at zero drift. |
 | #130 | Done — merged. Table-use forms credit a read on the table they name. |
 | #128 / #137 | Done — merged. Standalone unmodelled forms credited (`StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT`). #136 is the scheduled drain. |
 | #133 browser WASM adapter | Done — merged; now a transport adapter over `oxabl_pipeline` rather than over the umbrella directly. |
@@ -19,6 +19,8 @@
 | #134 | Open — the last uncredited-read half: skipped *tails* inside modelled statements. |
 | #136 | Open and **scheduled** (`hermes`) — head-parse the unmodelled forms; retires #128's flag and #130's query approximation. |
 | #108 unresolvable-include-as-argument | Open — the fully-wired re-dogfood it was waiting on **has now run**; still unconfirmed. See **Next** item 4. |
+| #142 nested unresolvable include is silent | Open — filed this session. A nested unresolvable include drops its `PREPROC007` in every shared-pipeline client while the `undefined-symbol` findings still fire. Sequenced after #102. |
+| #144 `oxabl check --watch` | Open — filed this session. The only live-feedback path for developers who cannot host a language server (Progress editor, plain vim, notepad++). Ships separately but **constrains #102**: the cross-file index must serve two incremental callers, so it must not assume editor-specific state. |
 | #131 / #132 | Open — LINT0006 write-site span breadth; `oxabl_lint` benchmark coverage. |
 | #125 | Open and **unblocked** — small, template is fresh. |
 | #124 / #126 | Open — the rest of the flow-analysis cluster. |
@@ -47,7 +49,11 @@ The case for this work was never diagnostic-mapping dedup. The clients' final ho
 - **One root-file policy.** `discovery` owns it — `p`/`w`/`cls`/`v` matched case-insensitively, `.i` never a root — replacing two private walkers that disagreed on both the extension set and case sensitivity. The per-surface config helpers the shared resolver replaced were deleted, not left as deprecated shims.
 - **The cross-client parity suite earned itself on its first run.** It asserts one source yields identical codes, severities, byte spans and sources through four entry points — composed vs two-phase run, the CLI binary, the LSP's salsa queries over a rope, and the WASM exports. It immediately caught a real shipped divergence: two default severity tables meant `unknown-table-or-field` and `type-mismatch-assignment` came back `error` in the browser and `warning` everywhere else under the same empty environment. One derived table now. Spans are compared as **bytes**, not rendered positions, so encoding conversion is never mistaken for a pipeline difference; and where a client is deliberately less capable the suite asserts the **capability is unavailable** rather than a different answer.
 
-**Two known preprocessor gaps, both pre-existing and both verified against the binary** — do not let a PR description claim otherwise. An unresolvable `{include}` emits a loud `PREPROC007` naming the true cause, but (1) the downstream `undefined-symbol` flood is **not** actually suppressed — you get `PREPROC007` *and* a finding per include-declared reference — and (2) a **nested** unresolvable include is silent in every shared-pipeline client, because `expand_source` filters loud preproc diagnostics to root-origin only. The conformance walk still prints it. Suppressing the flood when a root-origin `PREPROC007` fires is the real fix and is unclaimed.
+**Preprocessor include resolution — one settled decision and one real gap (#142).** Both verified against the binary this session, not inferred.
+
+*Settled, do not "fix" it.* An unresolvable `{include}` emits a loud `PREPROC007` spanned on the include itself, and because the body is elided, each reference to a symbol it declared becomes an `undefined-symbol` error. Earlier revisions of this file called the unsuppressed findings a second gap with an unclaimed fix. **That was wrong and the framing is now retracted.** The findings are correct — the symbols are genuinely not declared in anything oxabl can see, exactly as unimported names are in any other language — and the `PREPROC007` is what explains them. Suppression would have to be per-file and coarse, i.e. the same evidence destruction as `TOUCHED_BY_UNMODELLED_STATEMENT`, which #136 exists to drain. Owner-confirmed 2026-07-30.
+
+*The real gap, filed as #142.* A **nested** unresolvable include — reached through an include that resolves — emits no `PREPROC007` in `check`, `analyze`, the LSP, or WASM, while its `undefined-symbol` findings still fire. So those errors arrive with nothing naming the cause. Cause is `expand_source`'s `d.span.file == root` filter (`crates/oxabl_analyze/src/collect.rs:231`, and the fatal path at `:245`). Not an oversight: a nested span points into a file the client may have no text for. `conformance --preprocess` prints it because it never anchors the span, and `render_diagnostics` already falls back to `(in included file)` (`oxabl_common/src/diagnostic.rs:190-192`), so relaxing the filter serves the byte-offset clients; the LSP needs the primary span re-anchored to the include site (`expand_include` already has it as `site: FileSpan`) with the true location as a `Label` — a shape `Diagnostic.labels` already supports. Sequenced **after** #102, which rewrites this expansion path.
 
 **Verification:** `cargo test --workspace` green — **1731 passed, 0 failed, 2 ignored** — plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All fixtures synthetic.
 
@@ -136,10 +142,10 @@ Other facts worth keeping:
 
 #120 was the last item blocking a clean run at the strategic thread, and the A/B discharged the "don't reshape delivery while diagnostics are still wrong" risk for good.
 
-1. **#102 — workspace-wide cross-file semantic resolution** is now the top item, not just the top *strategic* one (with #103 as the fast-follow). The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets and cross-file `SHARED` vars resolve to `Unknown`/`External` → `undefined-symbol` false positives on real OO ABL. It is the ceiling on lint effectiveness and **blocks #57**. #120 built the seam it needs: one config resolution, one root-file policy, one result model. Take it through `/ce-brainstorm` → `/ce-plan` before building — it is weeks of architecture.
+1. **#102 — workspace-wide cross-file semantic resolution** is now the top item, not just the top *strategic* one (with #103 as the fast-follow). **Requirements are settled and every open question is closed** — the corrected plan is `docs/plans/2026-07-23-007-feat-workspace-resolution-plan.md` (13 requirements, 4 acceptance examples, 14 session-settled decisions), and a ready-to-paste goal prompt with the eight hard constraints is at `docs/plans/2026-07-30-001-goal-workspace-resolution.md`. Both are local; `docs/plans/` is gitignored. Next step is `/ce-plan` on the plan, not implementation. The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets and cross-file `SHARED` vars never resolve. **Correct the justification before planning it:** #102's issue body and the existing requirements plan both claim this false-positives on every inherited member. It does not. Cross-file names are deliberately soft-resolved to `UnresolvedReason::External` (`oxabl_semantic/src/resolve.rs:1920-1933`, `:2032`, `:2052`) and `External` is skip-listed by every rule (`oxabl_lint/src/rules/undefined_symbol.rs:6-8`, and the same in LINT0003/LINT0004). **The cost today is silence, not noise** — oxabl cannot check a whole class of real code and says nothing about it. That still makes it the ceiling on lint value and it still **blocks #57**, but it is a capability gap, not trust repair, and the difference changes what success looks like: the old success criterion ("`undefined-symbol` no longer fires on inherited members") is already vacuously true. #120 built the seam it needs: one config resolution, one root-file policy, one result model. Take it through `/ce-brainstorm` → `/ce-plan` before building — it is weeks of architecture.
 2. **#134 — skipped tails inside modelled statements.** The one uncredited-read half left.
 3. **#136 — head-parse the unmodelled forms.** Scheduled (`hermes`). The real drain: retires #128's file-wide flag *and* #130's query approximation, and picks up formatter and LSP coverage on the way.
-4. **#108 — confirm or close it.** The fully-wired re-dogfood it was deferred pending has now run, and the collected `PREPROC007` evidence is the input; the check itself was not done this session. Related and unclaimed: suppressing the `undefined-symbol` flood when a root-origin `PREPROC007` fires, and the nested-include silence described above.
+4. **#108 — confirm or close it.** The fully-wired re-dogfood it was deferred pending has now run, and the collected `PREPROC007` evidence is the input; the check itself was not done this session. Related: **#142** (nested-include silence, described above). The "suppress the downstream flood" item that used to sit here is **retracted, not unclaimed** — see the settled decision above.
 5. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
 6. **#126 — CFG + dataflow scaffolding** absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`; #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
 7. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed cannot catch a regression in any of them.
@@ -157,7 +163,7 @@ Other facts worth keeping:
 | **#128 / #137** | Merged — standalone unmodelled forms credited; `StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT` |
 | **#134** | Open — the one remaining uncredited-read half; skipped tails inside *modelled* statements |
 | **#136** | Open, **scheduled** — head-parse the unmodelled forms; the drain that retires #128's flag and #130's query approximation |
-| **#102 / #103** | Open — cross-file resolution + background index; **now the top item**, and #120 built its seam |
+| **#102 / #103** | Open — cross-file resolution + background index; **now the top item**, and #120 built its seam. Requirements plan exists at `docs/plans/2026-07-23-007-feat-workspace-resolution-plan.md` (local, gitignored) but predates #140 and carries the retracted false-positive framing |
 | #119 | Merged as #135 — panic-safe parse/analyze/format plus browser crash recovery |
 | #133 | Merged — browser WASM adapter + playground; now a renderer of `oxabl_pipeline` |
 | #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
@@ -173,5 +179,7 @@ Other facts worth keeping:
 | #104 | Merged — VS Code extension + `oxabl schema` + CI (the dogfood loop) |
 | #57 | Open — public lint-rule API; blocked on #102 |
 | #108 | Open — unresolvable-include-as-argument; the re-dogfood it waited on has run |
+| **#142** | Open — filed this session; a nested unresolvable include drops its `PREPROC007` in every shared-pipeline client. Sequenced after #102 |
+| **#144** | Open — filed this session; `oxabl check --watch`. Ships separately, constrains #102's index design |
 | #56 | Open — dependency-extraction fidelity vs AVM (converges with #102) |
 | `STRATEGY.md` | The *Public API & client architecture* track carries the third top-level commitment (*one shared pipeline behind every client*) and the settled visible-CLI surface; both are now delivered rather than planned |
