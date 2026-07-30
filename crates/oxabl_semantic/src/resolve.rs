@@ -36,9 +36,9 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
-    AnalysisContext, ClassKind, IndexAnswer, IndexName, MemberDescriptor, MemberType, NamespaceId,
-    NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree, Symbol, SymbolFlags, SymbolId,
-    SymbolKind, SymbolTable, builtins, diagnostics, resolve_span,
+    AnalysisContext, ClassKind, IndexAnswer, IndexName, IndexedFileId, MemberDescriptor,
+    MemberType, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree, Symbol,
+    SymbolFlags, SymbolId, SymbolKind, SymbolTable, builtins, diagnostics, resolve_span,
 };
 
 /// Resolution of a single reference site. Populated by Phase 4a; the type
@@ -1008,6 +1008,10 @@ pub fn resolve_pass(
     walker.collect_using_imports(program);
     walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
+    // After the walk, never during it: the only files the index can answer a
+    // `SHARED` producer question from are the ones the walk's `RUN` lookups
+    // pulled in. See `link_shared_consumers`.
+    walker.link_shared_consumers();
 
     // Flush symbol-level read/write counts exactly once at pass end.
     for (sym, (reads, writes)) in &walker.counts {
@@ -1169,7 +1173,23 @@ struct ResolveWalker<'a> {
     /// exactly the fact member resolution needs and nothing the type checker
     /// can see.
     indexed_receiver_class: FxHashMap<SymbolId, SymbolId>,
+    /// One synthesized `Procedures` symbol per external program a literal `RUN`
+    /// resolved to, so two `RUN post-order.p` sites in one file point at the
+    /// *same* symbol rather than minting one each.
+    synth_programs: FxHashMap<IndexName, SymbolId>,
 }
+
+/// The atom carried by the resolution recorded for a run-time-computed `RUN`
+/// target.
+///
+/// [`Resolution::Unresolved`] carries a name so a diagnostic need not reslice the
+/// source, and a computed target *has* no name — the identifier inside
+/// `VALUE(...)` names the variable holding the target, not the target, and it
+/// already owns its own resolution one node down. So the field is empty rather
+/// than misleading: the only reason it exists here is that the variant requires
+/// it, and [`UnresolvedReason::Unknowable`] is skip-listed by every rule, so no
+/// renderer ever reaches it.
+const COMPUTED_TARGET: &str = "";
 
 /// Where a type name was found, and therefore what a miss on it means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1281,6 +1301,7 @@ impl<'a> ResolveWalker<'a> {
             synth_classes: FxHashMap::default(),
             indexed_class_of: FxHashMap::default(),
             indexed_receiver_class: FxHashMap::default(),
+            synth_programs: FxHashMap::default(),
         }
     }
 
@@ -2085,14 +2106,19 @@ impl<'a> ResolveWalker<'a> {
                 ..
             } => {
                 match target {
-                    RunTarget::Literal { .. } => {
-                        // External procedure name — nothing to bind in a
-                        // single-file model; lint rules treat as External when
-                        // needed. The target's own NodeId is what workspace
-                        // resolution will hang a reference entry off.
-                    }
+                    RunTarget::Literal {
+                        id,
+                        name,
+                        name_span,
+                    } => self.resolve_run_target(*id, name, *name_span, scope),
                     RunTarget::Dynamic(e) => {
+                        // The expression is walked first and its resolution is
+                        // left strictly alone: `RUN VALUE(c-name)` reads
+                        // `c-name` exactly as it always has, and the unknowable
+                        // fact is about the *target*, which is a different thing
+                        // recorded at a different node.
                         self.walk_expression(e, scope, AccessMode::Read);
+                        self.record_computed_run_target(stmt.id);
                     }
                 }
                 for arg in arguments {
@@ -2706,6 +2732,187 @@ impl<'a> ResolveWalker<'a> {
             }
         };
         self.references.insert(id, resolution);
+    }
+
+    /// Resolve a literal `RUN` target — `RUN post-order.p`,
+    /// `RUN "orders/recalc-total.p"`, `RUN some-internal-procedure` — and record
+    /// the answer on the target's own node id.
+    ///
+    /// The order is not negotiable:
+    ///
+    /// 1. **The local `Procedures` namespace, and if it answers the index is not
+    ///    asked at all.** An internal `PROCEDURE` declared in this file is what
+    ///    `RUN its-name` means, full stop; consulting the workspace first — or
+    ///    even as a tiebreak — would let a same-named program on the search path
+    ///    hijack an internal call, and a wrong `RUN` link mis-attributes symbols
+    ///    across the whole program graph.
+    /// 2. The index, under the exactly-one-match rule it already implements. Two
+    ///    files matching the name is [`IndexAnswer::Unknowable`], and this code
+    ///    consumes that rather than re-deriving it: the tie-breaking the AVM does
+    ///    (`.r`-versus-source precedence, working-directory-relative paths) is
+    ///    exactly what the rule declines to imitate.
+    ///
+    /// Nothing is recorded without an index attached, which is what makes this a
+    /// no-behavior-change addition: today a literal target produces no reference
+    /// entry, and a run that asked no cross-file question must not grow one.
+    /// That gate also covers step 1 deliberately — resolving the local procedure
+    /// only when an index is present looks arbitrary, but the alternative is a
+    /// `references` row (and, if a count were credited, a `read_count`) that
+    /// appears and disappears with an unrelated flag. An index-dependent answer
+    /// to a purely local question is the worse of the two.
+    ///
+    /// No count is bumped on a resolved target, for that same reason: a `RUN` of
+    /// an internal procedure genuinely is a use of it, but crediting it here
+    /// would make the same file report different `read_count`s with and without
+    /// an index. Whether a procedure was ever run is a question for the unit that
+    /// can answer it identically either way.
+    fn resolve_run_target(&mut self, id: NodeId, raw: &str, name_span: Span, scope: ScopeId) {
+        if !self.ctx.index_loaded {
+            return;
+        }
+        let atom = fold_atom(raw);
+        if let Some(sym) = self.tree.resolve(scope, NamespaceId::Procedures, &atom) {
+            self.references.insert(id, Resolution::Resolved(sym));
+            return;
+        }
+        // Copied out so no borrow of `self` is held across the synthesis below.
+        let index = self.ctx.index;
+        let name = IndexName::new(raw);
+        let span = VirtualSpan::new(name_span.start, name_span.end);
+        let resolution = match index.program(&name) {
+            IndexAnswer::Found(file) => {
+                Resolution::Resolved(self.indexed_program_symbol(&name, span, file))
+            }
+            // An index was attached and it searched every path entry: this is a
+            // fact about the workspace, not a missing capability.
+            IndexAnswer::NotFound => Resolution::Unresolved {
+                name: name.as_atom().clone(),
+                reason: UnresolvedReason::NotFoundInWorkspace,
+            },
+            IndexAnswer::Unknowable => Resolution::Unresolved {
+                name: name.as_atom().clone(),
+                reason: UnresolvedReason::Unknowable,
+            },
+        };
+        self.references.insert(id, resolution);
+    }
+
+    /// The synthesized `Procedures` symbol for an external program, minted on the
+    /// first `RUN` that reaches it and shared by every later one.
+    ///
+    /// KTD6's conventions, the same ones the indexed-class and schema-field
+    /// synthesis follow: a dummy declaration (this file declares nothing), the
+    /// `RUN` site as the span, the root scope, and the symbol table only —
+    /// **never** the scope tree. That last part is load-bearing here: a program
+    /// name like `orders/recalc-total.p` is not an ABL identifier at all, and it
+    /// must be unreachable by ordinary name resolution rather than merely
+    /// unlikely to be written.
+    fn indexed_program_symbol(
+        &mut self,
+        name: &IndexName,
+        use_span: VirtualSpan,
+        file: IndexedFileId,
+    ) -> SymbolId {
+        if let Some(sym) = self.synth_programs.get(name) {
+            return *sym;
+        }
+        let sym = self.symbols.insert(Symbol {
+            name: name.as_atom().clone(),
+            namespace: NamespaceId::Procedures,
+            kind: SymbolKind::Procedure,
+            declared_in: ScopeId::ROOT,
+            declaration: NodeId::DUMMY,
+            name_span: use_span,
+            data_type: None,
+            read_count: 0,
+            write_count: 0,
+            flags: SymbolFlags::empty(),
+            table_id: None,
+        });
+        self.symbols.record_program_file(sym, file);
+        self.synth_programs.insert(name.clone(), sym);
+        sym
+    }
+
+    /// Record that a `RUN VALUE(<expr>)` target cannot be known statically.
+    ///
+    /// This is the canonical instance of the unknowable signal: no amount of
+    /// indexing resolves a name the program computes at run time, which is
+    /// precisely why it must be distinguishable from "searched for and absent" —
+    /// a consumer may report the second and must never report the first.
+    ///
+    /// Anchored on the **statement's** node id, because a dynamic target has none
+    /// of its own and the expression's id is already taken by the expression's
+    /// own resolution. Gated on an attached index for the same reason as
+    /// [`Self::resolve_run_target`]: unknowability does not depend on an index,
+    /// but a run that looked at nothing should not grow its `references` table.
+    fn record_computed_run_target(&mut self, stmt_id: NodeId) {
+        if !self.ctx.index_loaded {
+            return;
+        }
+        self.references.insert(
+            stmt_id,
+            Resolution::Unresolved {
+                name: OxablAtom::from(COMPUTED_TARGET),
+                reason: UnresolvedReason::Unknowable,
+            },
+        );
+    }
+
+    /// Link every `DEFINE SHARED` consumer in this file to the file whose
+    /// `DEFINE NEW [GLOBAL] SHARED` definition produces the same name.
+    ///
+    /// Runs **after** the statement walk, and that ordering is the whole reason
+    /// this lives in the resolve pass rather than the declare pass. A `SHARED`
+    /// name maps onto no path, so the index can only answer from files it has
+    /// already read — which in practice means files a `RUN` in *this* file pulled
+    /// in, and `RUN` targets are resolved by the walk. Asking during declare, or
+    /// even mid-walk, would ask before the producer existed to be found, and
+    /// would make the answer depend on whether the `DEFINE SHARED` happened to be
+    /// written above or below the `RUN`.
+    ///
+    /// Records the link and nothing else. Notably absent: any comparison of the
+    /// two declarations' types. See
+    /// [`SymbolTable::shared_producer`](crate::SymbolTable::shared_producer).
+    fn link_shared_consumers(&mut self) {
+        if !self.ctx.index_loaded {
+            return;
+        }
+        let index = self.ctx.index;
+        // Collected first: the lookup borrows the symbol table immutably and the
+        // record borrows it mutably. A `Vec` rather than a map because a file has
+        // at most a handful of `SHARED` consumers and most have none — this
+        // allocates only when one exists.
+        let mut links: Vec<(SymbolId, IndexedFileId)> = Vec::new();
+        for (sid, sym) in self.symbols.iter() {
+            if !sym.flags.contains(SymbolFlags::SHARED) {
+                continue;
+            }
+            // A producer is not its own consumer. The two spellings are already
+            // exclusive in the AST, so this is belt-and-braces — but a link from
+            // a `NEW SHARED` declaration back to the file it was found in would
+            // invent a cross-file relationship out of a single declaration.
+            if sym
+                .flags
+                .intersects(SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED)
+            {
+                continue;
+            }
+            // The symbol's name is already folded, and `shared_producer` derives
+            // no path from it, so there is nothing here that needs the original
+            // spelling.
+            match index.shared_producer(&IndexName::new(&sym.name)) {
+                IndexAnswer::Found(file) => links.push((sid, file)),
+                // Nothing to link, and nothing to say about it: an unlinked
+                // consumer is still a perfectly good local declaration, and two
+                // producers is the same ambiguity the literal-`RUN` rule declines
+                // to guess at.
+                IndexAnswer::NotFound | IndexAnswer::Unknowable => {}
+            }
+        }
+        for (sid, file) in links {
+            self.symbols.record_shared_producer(sid, file);
+        }
     }
 
     /// Resolve a member named through a receiver (`obj:method()`, `obj:prop`)

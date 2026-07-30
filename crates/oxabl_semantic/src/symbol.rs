@@ -13,7 +13,7 @@ use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 
-use crate::{IndexName, NamespaceId, ResolvedType, ScopeId};
+use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId};
 
 /// Dense arena index for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -266,6 +266,31 @@ pub struct SymbolTable {
     /// of symbols and nothing on the hot path reads this, so the map is entirely
     /// absent from the common file.
     supertypes: FxHashMap<SymbolId, Supertypes>,
+    /// The indexed file that supplies each synthesized external-program symbol —
+    /// the file a literal `RUN` target resolved to.
+    ///
+    /// A side map for the reason [`Self::supertypes`] documents and that U5
+    /// measured: eight more bytes on `Symbol` cost the declare pass 17–25%, and
+    /// resolved `RUN` targets are a handful per file at most. Absent entirely
+    /// from a run with no index attached, which is what keeps a single-file
+    /// analysis at exactly its current cost.
+    program_files: FxHashMap<SymbolId, IndexedFileId>,
+    /// For each `DEFINE SHARED` consumer symbol, the indexed file whose
+    /// `DEFINE NEW [GLOBAL] SHARED` definition it corresponds to.
+    ///
+    /// **This is the whole link.** It records *which file*, and nothing else: the
+    /// consumer's own declaration remains the type of record, and no diagnostic
+    /// compares the two declarations. Retyping from the producer, or reporting a
+    /// disagreement between them, is deferred follow-up work — doing either here
+    /// would produce new findings from a pass whose contract is that it produces
+    /// none.
+    ///
+    /// Deliberately separate from [`Self::program_files`] even though both map a
+    /// symbol to a file. They are different facts: a program symbol *is* defined
+    /// in the file it names, while a `SHARED` consumer is defined right here and
+    /// merely has a counterpart elsewhere. One map would force a consumer to
+    /// re-derive which of the two it was looking at.
+    shared_producers: FxHashMap<SymbolId, IndexedFileId>,
 }
 
 impl SymbolTable {
@@ -323,6 +348,38 @@ impl SymbolTable {
     /// `sym` is not a class or interface at all).
     pub fn supertypes(&self, sym: SymbolId) -> Option<&Supertypes> {
         self.supertypes.get(&sym)
+    }
+
+    /// Record that synthesized program symbol `sym` is supplied by indexed file
+    /// `file`. Only the resolve pass calls this, and only for a symbol it
+    /// synthesized from a resolved literal `RUN` target.
+    pub fn record_program_file(&mut self, sym: SymbolId, file: IndexedFileId) {
+        self.program_files.insert(sym, file);
+    }
+
+    /// The indexed file supplying `sym`, or `None` when `sym` is not a
+    /// synthesized external-program symbol — which includes every locally
+    /// declared `PROCEDURE`, since a local declaration is supplied by this file.
+    pub fn program_file(&self, sym: SymbolId) -> Option<IndexedFileId> {
+        self.program_files.get(&sym).copied()
+    }
+
+    /// Record that `DEFINE SHARED` consumer `sym` corresponds to the
+    /// `DEFINE NEW [GLOBAL] SHARED` definition in `file`.
+    pub fn record_shared_producer(&mut self, sym: SymbolId, file: IndexedFileId) {
+        self.shared_producers.insert(sym, file);
+    }
+
+    /// The file producing the `SHARED` name `sym` consumes, or `None` when no
+    /// producer was located.
+    ///
+    /// `None` covers three genuinely different situations on purpose — no index
+    /// was attached, no indexed file defines the name, or two do and the index
+    /// declined to choose. None of them is a link, and a consumer of this map
+    /// wants the link or nothing; the reason a link is absent is the index's
+    /// business, not the symbol table's.
+    pub fn shared_producer(&self, sym: SymbolId) -> Option<IndexedFileId> {
+        self.shared_producers.get(&sym).copied()
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.
