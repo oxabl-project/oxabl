@@ -11,21 +11,28 @@
 //!
 //! It is also the leg that establishes the *expected* column of the shared
 //! table: the other three legs assert against the same
-//! [`fixtures::FIXTURES`](oxabl_pipeline::fixtures::FIXTURES) rows this one
-//! validates against the pipeline directly.
+//! [`fixtures::FIXTURES`](crate::fixtures::FIXTURES) rows this one validates
+//! against the pipeline directly.
 //!
-//! All fixtures are synthetic ABL and live in the shared table, behind
-//! `oxabl_pipeline`'s `test-support` feature.
+//! All fixtures are synthetic ABL and live in the shared table. This leg is the
+//! one that reaches the table through `#[cfg(test)]` rather than through the
+//! `test-support` feature: an integration test under `tests/` is a separate
+//! crate, so enabling a feature *on this crate* for it would require a self
+//! `[dev-dependencies]` entry — a `path = "."` edge that Cargo tolerates but
+//! that release-please's `cargo-workspace` plugin reads as a dependency cycle
+//! and refuses the whole release on. The three downstream legs still consume
+//! the table the way any external crate must, through the feature.
 
 use oxabl_common::SourceMap;
-use oxabl_pipeline::fixtures::{
+use oxabl_workspace::{FileSystem, InMemoryFileSystem};
+
+use crate::fixtures::{
     self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
 };
-use oxabl_pipeline::{
+use crate::{
     FormatPipeline, LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig,
     position,
 };
-use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
 /// A filesystem with nothing in it — the include fixture is *unresolvable* on
 /// purpose, so no leg needs to plant a file for it.
@@ -363,7 +370,7 @@ fn the_resolved_and_in_process_defaults_are_one_configuration() {
 /// quietly edited back to ASCII, or the constants drifted onto each other, the
 /// row would still pass every other test in the suite while testing nothing —
 /// which is the state the table was in before this fixture existed. The second is
-/// about [`position`](oxabl_pipeline::position), the one derivation the
+/// about [`position`](crate::position), the one derivation the
 /// byte-offset clients share: its convention is `SourceMap`'s 1-based byte
 /// column, and each client asserts that same number through its own surface.
 #[test]

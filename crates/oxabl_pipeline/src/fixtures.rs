@@ -10,9 +10,17 @@
 //! unconditionally so the browser can reach it.
 //!
 //! The `test-support` feature is therefore **off by default** and enabled only
-//! from each leg's `[dev-dependencies]`, the same arrangement
+//! from each downstream leg's `[dev-dependencies]`, the same arrangement
 //! `oxabl_schema/test-support` already uses. A plain `cargo build` never
 //! compiles this file.
+//!
+//! This crate's *own* leg ([`crate::parity`]) reaches the table through
+//! `#[cfg(test)]` instead, which is why the module is gated on `any(test,
+//! feature = "test-support")`. Enabling a feature on this crate for a target
+//! under `tests/` would mean a self `path = "."` dev-dependency, and
+//! release-please's `cargo-workspace` plugin treats that edge as a dependency
+//! cycle and fails the release. Nothing is lost: the cross-*crate* claim is
+//! carried by the three legs that genuinely are external crates.
 //!
 //! # What the table pins, and what it deliberately does not
 //!
