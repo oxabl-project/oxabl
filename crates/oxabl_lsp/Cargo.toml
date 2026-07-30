@@ -9,12 +9,11 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lsp"
 [dependencies]
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
 oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
-oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
-oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
+# The server reaches the lexer, parser, preprocessor, formatter, and schema
+# loader *through* `oxabl_pipeline` and `oxabl_analyze` — it names none of them
+# directly. Keep it that way: a direct edge back to a layer beneath the shared
+# run is how a client starts assembling its own.
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
-oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 anyhow = "1"
