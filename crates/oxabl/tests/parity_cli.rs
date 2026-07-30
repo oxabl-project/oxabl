@@ -12,9 +12,9 @@
 //! one client must not read as a pipeline divergence.
 //!
 //! `check`'s two channels are re-joined here: lint findings live under
-//! `diagnostics` and the loud preprocessor warnings under
-//! `preproc_diagnostics`, which is a *reporting* split, not a different
-//! diagnostic set. Every fixture is synthetic ABL from the shared table.
+//! `diagnostics` and the loud preprocessor warnings under `preproc`, which is a
+//! *reporting* split, not a different diagnostic set. Every fixture is synthetic
+//! ABL from the shared table.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -96,18 +96,15 @@ fn observed(report: &Value) -> Vec<ObservedDiagnostic> {
             d["span"]["end"].as_u64().unwrap() as u32,
         ));
     }
-    for d in report["preproc_diagnostics"]
-        .as_array()
-        .expect("preproc_diagnostics array")
-    {
-        // This key is the preprocessor channel by construction, so its entries
-        // carry no `source` tag of their own.
+    for d in report["preproc"].as_array().expect("preproc array") {
+        // Same row shape as `diagnostics` since D1 — the split is which key the
+        // row lands under, not what a row looks like.
         all.push(ObservedDiagnostic::from_wire(
             d["code"].as_str().unwrap(),
             d["severity"].as_str().unwrap(),
-            "preproc",
-            d["span"]["span"]["start"].as_u64().unwrap() as u32,
-            d["span"]["span"]["end"].as_u64().unwrap() as u32,
+            d["source"].as_str().unwrap(),
+            d["span"]["start"].as_u64().unwrap() as u32,
+            d["span"]["end"].as_u64().unwrap() as u32,
         ));
     }
     all
