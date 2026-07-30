@@ -8,7 +8,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
 use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
 use oxabl_pipeline::{
-    ConfigOverrides, FormatPipeline, LintPipeline, PipelineConfig, ROOT_FILE_ID, position,
+    ConfigOverrides, ConfigWarning, FormatPipeline, LintPipeline, PipelineConfig, ROOT_FILE_ID,
+    position,
 };
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
@@ -29,6 +30,15 @@ enum Cli {
     /// either is present (or a file could not be read or analyzed), `2` on a
     /// usage or config error. `--json` adds `6` for a serialization failure,
     /// matching `analyze`.
+    ///
+    /// A config error means an `oxabl.toml` this command could not parse. Alone
+    /// among the subcommands, `check` refuses to run on one rather than degrading
+    /// to defaults: those defaults would drop the project's `[workspace.lint]`
+    /// severities, `off` included, so the gate would report findings for switched-
+    /// off rules and could still exit 0 — a wrong answer under a green light.
+    /// Non-fatal problems (a schema file that would not load, a `--schema`
+    /// directory that matched nothing) stay `warning:` lines and do not move the
+    /// exit code.
     ///
     /// `oxabl format --check` remains the format pipeline's granular dry-run —
     /// the *same* pipeline this command calls, so the two cannot diverge.
@@ -759,14 +769,35 @@ fn run_check(
 
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
     // `.df` it names, so doing it inside the loop would re-parse the schema for
-    // every file in the tree. Warnings are non-fatal data (R7) — a malformed
-    // config degrades to defaults and says so.
+    // every file in the tree.
     let overrides = ConfigOverrides {
         include_paths: include_paths.to_vec(),
         schema_path: schema_path.map(Path::to_path_buf),
         style: None,
     };
     let (config, warnings) = PipelineConfig::resolve(path, &overrides);
+
+    // The one place the gate hardens where every other command degrades (A3): an
+    // `oxabl.toml` the resolver could not use is a **config error**, exit 2.
+    //
+    // `ConfigWarning::Config` means the whole file was discarded, so the run would
+    // proceed on defaults — and defaults are not what the user wrote. A dropped
+    // `[workspace.lint]` table takes every `off` with it, so the gate reports
+    // findings for rules the project switched off, and reports them under a green
+    // exit code if nothing else fires. `format`, `analyze`, `conformance` and the
+    // LSP keep degrading with a warning: none of them answers a pass/fail
+    // question, so none of them can answer it wrongly.
+    //
+    // Every other warning stays a warning. A `.df` that would not load, or a
+    // `--schema` directory that matched nothing (A2), leaves the rest of the
+    // configuration intact, so the run still means what it says.
+    if let Some(msg) = warnings.iter().find_map(|w| match w {
+        ConfigWarning::Config(msg) => Some(msg),
+        _ => None,
+    }) {
+        eprintln!("error: {msg}");
+        return ExitCode::from(2);
+    }
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
