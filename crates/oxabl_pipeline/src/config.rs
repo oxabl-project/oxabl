@@ -195,26 +195,69 @@ impl PipelineConfig {
     /// Warnings are non-fatal by construction — a malformed `oxabl.toml` yields
     /// defaults plus one [`ConfigWarning::Config`], never an error.
     pub fn resolve(anchor: &Path, overrides: &ConfigOverrides) -> (Self, Vec<ConfigWarning>) {
-        let start_dir = start_dir(anchor);
+        resolve_at(anchor, overrides, SchemaLoading::Load)
+    }
 
-        let root = find_workspace_root(&start_dir);
-        let parsed = root.as_ref().map(|r| (r, WorkspaceConfig::from_path(r)));
+    /// Resolve everything except the schema, which stays [`Schema::empty`] with
+    /// `schema_loaded = false` — no `.df` is opened and no schema warning is
+    /// produced (D2).
+    ///
+    /// For a client whose pipeline cannot consume a schema at all.
+    /// [`FormatPipeline`](crate::FormatPipeline) takes a [`StyleGuide`] and
+    /// nothing else, so under [`resolve`](Self::resolve) `oxabl format` parsed
+    /// every configured `.df` per invocation and printed `warning: schema:` lines
+    /// about problems it had no way to act on — on the command most likely to be
+    /// wired to save-on-write.
+    ///
+    /// This is *not* a lighter `resolve` to reach for when the schema is merely
+    /// unlikely to be needed: a caller that might read `schema`/`schema_loaded`
+    /// would silently see "no schema configured" here. The name says style
+    /// because that is the surface it is for.
+    pub fn resolve_style_only(
+        anchor: &Path,
+        overrides: &ConfigOverrides,
+    ) -> (Self, Vec<ConfigWarning>) {
+        resolve_at(anchor, overrides, SchemaLoading::Skip)
+    }
+}
 
-        match parsed {
-            // A config exists and parsed: derive everything from that one value.
-            Some((root, Ok(config))) => resolve_from_config(&config, root, overrides),
-            // A config exists but is unreadable or malformed. Degrade every
-            // configured surface to its default and report once — not once per
-            // surface, which is what the three `resolved_*` helpers do today.
-            Some((root, Err(message))) => {
-                let (config, mut warnings) =
-                    resolve_from_config(&WorkspaceConfig::defaults(), root, overrides);
-                warnings.insert(0, ConfigWarning::Config(message));
-                (config, warnings)
-            }
-            // No config anywhere above the anchor: overrides only, silently.
-            None => resolve_from_config(&WorkspaceConfig::defaults(), &start_dir, overrides),
+/// Whether a resolution reads the `.df` files its configuration names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaLoading {
+    Load,
+    Skip,
+}
+
+/// The shared body of both public resolvers: find the root once, read the file
+/// once, hand the parsed value to the derivation.
+///
+/// Both entry points funnel through here so the one-parse invariant (KTD3) holds
+/// for every caller — a second resolver with its own discovery-and-read would be
+/// exactly the duplication [`resolve_from_config`] exists to prevent.
+fn resolve_at(
+    anchor: &Path,
+    overrides: &ConfigOverrides,
+    schema: SchemaLoading,
+) -> (PipelineConfig, Vec<ConfigWarning>) {
+    let start_dir = start_dir(anchor);
+
+    let root = find_workspace_root(&start_dir);
+    let parsed = root.as_ref().map(|r| (r, WorkspaceConfig::from_path(r)));
+
+    match parsed {
+        // A config exists and parsed: derive everything from that one value.
+        Some((root, Ok(config))) => derive(&config, root, overrides, schema),
+        // A config exists but is unreadable or malformed. Degrade every
+        // configured surface to its default and report once — not once per
+        // surface, which is what the three `resolved_*` helpers do today.
+        Some((root, Err(message))) => {
+            let (config, mut warnings) =
+                derive(&WorkspaceConfig::defaults(), root, overrides, schema);
+            warnings.insert(0, ConfigWarning::Config(message));
+            (config, warnings)
         }
+        // No config anywhere above the anchor: overrides only, silently.
+        None => derive(&WorkspaceConfig::defaults(), &start_dir, overrides, schema),
     }
 }
 
@@ -235,6 +278,21 @@ pub fn resolve_from_config(
     config: &WorkspaceConfig,
     root: &Path,
     overrides: &ConfigOverrides,
+) -> (PipelineConfig, Vec<ConfigWarning>) {
+    derive(config, root, overrides, SchemaLoading::Load)
+}
+
+/// [`resolve_from_config`]'s body, with the schema step made optional so
+/// [`PipelineConfig::resolve_style_only`] can skip it (D2).
+///
+/// Deliberately one function rather than two: every non-schema surface is derived
+/// identically either way, and a second copy would be a second set of precedence
+/// rules to keep in step.
+fn derive(
+    config: &WorkspaceConfig,
+    root: &Path,
+    overrides: &ConfigOverrides,
+    schema_loading: SchemaLoading,
 ) -> (PipelineConfig, Vec<ConfigWarning>) {
     let mut warnings = Vec::new();
 
@@ -263,7 +321,25 @@ pub fn resolve_from_config(
 
     let lint_severities = config.workspace.lint.to_severity_map();
 
-    let (schema, schema_loaded) = match &overrides.schema_path {
+    let schema_path = match schema_loading {
+        SchemaLoading::Load => overrides.schema_path.as_ref(),
+        // No `.df` is opened and `[workspace.schema]` is not consulted: the
+        // resolution reports exactly what it did, which is nothing.
+        SchemaLoading::Skip => {
+            return (
+                PipelineConfig {
+                    include_paths,
+                    lint_severities,
+                    style,
+                    schema: Schema::empty(),
+                    schema_loaded: false,
+                },
+                warnings,
+            );
+        }
+    };
+
+    let (schema, schema_loaded) = match schema_path {
         // `--schema` replaces the configured set. A directory loads every `.df`
         // inside it; a path loads that one file.
         //
@@ -732,6 +808,65 @@ mod tests {
         assert!(
             warnings.is_empty(),
             "the configured (missing) file must not be read at all: {warnings:?}"
+        );
+    }
+
+    /// `resolve_style_only` reads the style from the same single parse but opens no
+    /// `.df` and reports no schema problem (D2) — the surface a style-only client
+    /// like [`FormatPipeline`](crate::FormatPipeline) can actually act on.
+    #[test]
+    fn resolve_style_only_reads_the_style_and_no_schema() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.schema]\nfiles = [\"absent.df\"]\n\
+             [workspace.style]\nindent_size = 2\n",
+        );
+        write(root, "main.p", "");
+
+        let (config, warnings) =
+            PipelineConfig::resolve_style_only(&root.join("main.p"), &ConfigOverrides::default());
+
+        assert_eq!(config.style.indent_size, 2, "the style still resolves");
+        assert!(!config.schema_loaded);
+        assert!(config.schema.is_empty());
+        assert!(
+            warnings.is_empty(),
+            "an unreadable .df that was never opened cannot warn: {warnings:?}"
+        );
+
+        // …and the same tree through the full resolver does warn, so the
+        // difference is the schema step and not the fixture.
+        let (_, warnings) =
+            PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::Schema(_))),
+            "{warnings:?}"
+        );
+    }
+
+    /// A schema-free resolution still reports a config it could not parse: the
+    /// skipped step is the schema, not the honesty about the file.
+    #[test]
+    fn resolve_style_only_still_reports_an_unusable_config() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "oxabl.toml", "this is not valid toml {{{");
+        write(root, "main.p", "");
+
+        let (config, warnings) =
+            PipelineConfig::resolve_style_only(&root.join("main.p"), &ConfigOverrides::default());
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(matches!(warnings[0], ConfigWarning::Config(_)));
+        assert_eq!(
+            config.style.to_toml().unwrap(),
+            StyleGuide::default_base().to_toml().unwrap()
         );
     }
 

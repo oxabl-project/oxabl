@@ -510,15 +510,28 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
         None => None,
     };
 
-    // One config resolution for every surface: `--style` outranks
-    // `[workspace.style]` wholesale, and a malformed `oxabl.toml` degrades to
-    // defaults with one `warning:` line (R7).
-    let overrides = ConfigOverrides {
-        include_paths: Vec::new(),
-        schema_path: None,
-        style: cli_style,
+    // Style is the *only* surface this command has (D2), so the resolution is the
+    // schema-free one: a `.df` that would not load is a problem `format` cannot
+    // act on, and printing a `warning: schema:` line about it — on the command
+    // most likely to be wired to save-on-write — is noise, not information.
+    //
+    // `--style` names a whole guide, so it leaves nothing in `oxabl.toml` for the
+    // run to need: it short-circuits discovery entirely rather than resolving a
+    // config only to override it. That is what makes `--style` work in a tree
+    // whose `oxabl.toml` cannot be parsed. Without it, a malformed config still
+    // degrades to defaults with one `warning:` line (R7) — `format` rewrites
+    // layout rather than answering a pass/fail question, so unlike `check` (A3) it
+    // has nothing to report wrongly.
+    let (config, warnings) = match cli_style {
+        Some(style) => (
+            PipelineConfig {
+                style,
+                ..PipelineConfig::default()
+            },
+            Vec::new(),
+        ),
+        None => PipelineConfig::resolve_style_only(path, &ConfigOverrides::default()),
     };
-    let (config, warnings) = PipelineConfig::resolve(path, &overrides);
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
