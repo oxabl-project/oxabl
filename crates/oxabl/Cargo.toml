@@ -41,7 +41,11 @@ schemars = { version = "0.8", optional = true }
 # with `default-features = false`.
 default = ["serde", "cli"]
 serde = ["oxabl_ast/serde", "oxabl_common/serde", "oxabl_parser/serde"]
+# The CLI serializes diagnostics through `serde_json`, so it cannot build
+# without the `serde` derives the sub-crates gate behind our `serde` feature.
+# Implying it here keeps `--no-default-features --features cli` compiling.
 cli = [
+    "serde",
     "dep:clap",
     "dep:indicatif",
     "dep:oxabl_lsp",
