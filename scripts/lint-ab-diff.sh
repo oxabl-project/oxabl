@@ -29,8 +29,10 @@
 #
 # Exit codes:
 #   0  ok
+#   1  regression: LINT0001/LINT0003 moved (R8 says they must be identical)
 #   2  usage / missing CORPUS_ROOT
 #   3  oxabl binary missing
+#   4  an analyze envelope this script does not recognize — fix it, don't diff
 
 set -euo pipefail
 
@@ -46,7 +48,7 @@ fi
 RULES="LINT0001 LINT0002 LINT0003 LINT0005 LINT0006"
 
 usage() {
-  sed -n '2,33p' "$0" | sed 's/^# \?//'
+  sed -n '2,35p' "$0" | sed 's/^# \?//'
   exit 2
 }
 
@@ -70,8 +72,15 @@ need_oxabl() {
 # Walk the corpus, run `analyze --format json` per file, and emit one JSONL
 # record per diagnostic: {file, code, line_hint, message}.
 #
-# `analyze` is per-file (unlike `check`, which takes a directory and runs no
-# lint at all), so this loops. Slow but simple; a corpus run is a one-off.
+# `analyze` is per-file, so this loops. Slow but simple; a corpus run is a
+# one-off.
+#
+# Why not `check`, which takes a directory and — since #120 — runs the same
+# shared lint pipeline in one process, far faster? Because the two sides of an
+# A/B straddle that change: on a pre-#120 build `check` is the parse-conformance
+# walk and runs no lint at all, so it cannot produce a comparable baseline.
+# `analyze` is the one command that reports lint on both sides. Once the
+# baseline is post-#120 on both sides, prefer `check --json` over a directory.
 collect() {
   local label=$1
   need_corpus
@@ -115,8 +124,31 @@ for diag in d.get("diagnostics", []):
         "start": span.get("start"),
         "message": diag.get("message", ""),
     }))
-print(json.dumps({"file": path, "code": "_UNJUDGED", "start": 0,
-                  "message": str(d.get("unjudged_symbols", 0))}))
+
+# The coverage count lives in the `coverage` section post-#120 and at the top
+# level before it. An A/B run straddles that change by construction — the two
+# sides are different builds — so read both shapes, and refuse to guess if it
+# is neither. A `.get(key, 0)` default here silently reported zero unjudged
+# symbols on every file, which is the failure mode this whole script exists to
+# expose: a defaulted key lookup does not error, it lies.
+#
+# Note this cannot report the problem by exit code: the caller ends in `|| true`
+# so a per-file oxabl failure does not abort the walk. So it emits a meta record
+# instead, and `diff` refuses to run while any are present.
+cov = d.get("coverage")
+if isinstance(cov, dict) and "unjudged_symbols" in cov:
+    unjudged = cov["unjudged_symbols"]
+elif "unjudged_symbols" in d:
+    unjudged = d["unjudged_symbols"]
+else:
+    unjudged = None
+
+if unjudged is None:
+    print(json.dumps({"file": path, "code": "_ENVELOPE_UNKNOWN", "start": 0,
+                      "message": "no unjudged_symbols at coverage.* or top level"}))
+else:
+    print(json.dumps({"file": path, "code": "_UNJUDGED", "start": 0,
+                      "message": str(unjudged)}))
 ' "$f" "$RULES" >>"$out" || true
     if (( n % 200 == 0 )); then echo "    …$n files" >&2; fi
   done < <(find "$CORPUS_ROOT" -type f \( -name '*.p' -o -name '*.w' -o -name '*.cls' -o -name '*.v' \) -print0)
@@ -148,16 +180,32 @@ def key(r):
 
 before, after = load(before_path), load(after_path)
 
+# Meta records are bookkeeping, not diagnostics — never counted as a rule.
+META = {"_UNJUDGED", "_ENVELOPE_UNKNOWN"}
+
+# Refuse to report on a collection whose coverage count could not be located.
+# The numbers below would still print, and would still look plausible, which is
+# exactly why this has to stop the run rather than warn inside it.
+for label, rows in (("before", before), ("after", after)):
+    unknown = [r for r in rows if r["code"] == "_ENVELOPE_UNKNOWN"]
+    if unknown:
+        sys.stderr.write(
+            "error: {} file(s) on the '{}' side had an analyze envelope this "
+            "script does not recognize ({}). Fix the envelope lookup in "
+            "collect() — do not diff a partly-understood collection.\n".format(
+                len(unknown), label, unknown[0]["message"]))
+        sys.exit(4)
+
 def counts(rows):
-    c = collections.Counter(r["code"] for r in rows if r["code"] != "_UNJUDGED")
+    c = collections.Counter(r["code"] for r in rows if r["code"] not in META)
     return c
 
 cb, ca = counts(before), counts(after)
-bset = {key(r) for r in before if r["code"] != "_UNJUDGED"}
-aset = {key(r) for r in after if r["code"] != "_UNJUDGED"}
+bset = {key(r) for r in before if r["code"] not in META}
+aset = {key(r) for r in after if r["code"] not in META}
 
-gone = [r for r in before if r["code"] != "_UNJUDGED" and key(r) not in aset]
-new = [r for r in after if r["code"] != "_UNJUDGED" and key(r) not in bset]
+gone = [r for r in before if r["code"] not in META and key(r) not in aset]
+new = [r for r in after if r["code"] not in META and key(r) not in bset]
 
 with open(gone_path, "w") as fh:
     for r in gone:
