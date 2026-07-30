@@ -8,11 +8,14 @@ use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
 use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
 use oxabl_formatter::FormatFailure;
+use oxabl_pipeline::{
+    ConfigOverrides, FormatPipeline, LintPipeline, PipelineConfig, ROOT_FILE_ID, position,
+};
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    RealFileSystem, resolved_include_paths, resolved_lint_config, resolved_style,
+    RealFileSystem, discover_path, resolved_include_paths, resolved_lint_config, resolved_style,
 };
 use serde::Serialize;
 use walkdir::WalkDir;
@@ -23,7 +26,20 @@ const ABL_EXTENSIONS: &[&str] = &["p", "w", "cls", "v"];
 #[derive(ClapParser)]
 #[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
 enum Cli {
-    /// Parse ABL files and report what succeeds and what fails
+    /// Lint ABL source and report formatting drift — the one pre-commit gate.
+    ///
+    /// Two channels, deliberately not merged (KTD7): lint diagnostics are
+    /// span-anchored findings, while format drift is a per-file boolean. Folding
+    /// the second into the first would mean inventing spans that do not exist,
+    /// so `--json` carries two findings keys instead of one array.
+    ///
+    /// Exit codes (R15): `0` with neither a lint finding nor drift, `1` when
+    /// either is present (or a file could not be read or analyzed), `2` on a
+    /// usage or config error. `--json` adds `6` for a serialization failure,
+    /// matching `analyze`.
+    ///
+    /// `oxabl format --check` remains the format pipeline's granular dry-run —
+    /// the *same* pipeline this command calls, so the two cannot diverge.
     Check {
         /// Path to a directory or single file to check
         path: PathBuf,
@@ -39,6 +55,20 @@ enum Cli {
         /// Include search paths (can be specified multiple times)
         #[arg(long = "include-path", short = 'I')]
         include_paths: Vec<PathBuf>,
+
+        /// Path to a `.df` schema file (or a directory of them) driving
+        /// schema-backed resolution — field validation, field types, and the
+        /// unknown-table/field rule.
+        #[arg(long = "schema")]
+        schema: Option<PathBuf>,
+
+        /// Suppress the lint channel: report format drift only (R16).
+        #[arg(long)]
+        no_lint: bool,
+
+        /// Suppress the format-drift channel: report lint findings only (R16).
+        #[arg(long)]
+        no_format: bool,
     },
     /// Walk a tree and report the parser's conformance: how many files parse,
     /// which ones fail and where, and the ranked error patterns behind the
@@ -270,16 +300,23 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli {
-        // `check` still runs the conformance walk verbatim (minus `--debug`,
-        // which moved to `conformance` with the rest of the instrument). U11 is
-        // a pure relocation: reshaping `check` into a linting front end is U8's
-        // job, which is what keeps this unit independently revertible.
         Cli::Check {
             path,
             json,
             preprocess,
             include_paths,
-        } => run_conformance(&path, json, preprocess, &include_paths, false),
+            schema,
+            no_lint,
+            no_format,
+        } => run_check(
+            &path,
+            json,
+            preprocess,
+            &include_paths,
+            schema.as_deref(),
+            no_lint,
+            no_format,
+        ),
         Cli::Conformance {
             path,
             json,
@@ -501,6 +538,361 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `oxabl check`'s machine-readable report — **two findings keys**, not one
+/// merged array (KTD7).
+///
+/// `diagnostics` is span-anchored; `format` is a per-file boolean rolled up into
+/// a path list plus its total. Merging them would mean synthesizing a span for a
+/// fact that has none, so they stay apart here exactly as they do in the text
+/// output.
+///
+/// `version` is bumped when a key's meaning changes, so a consumer can pin. The
+/// remaining keys are deliberately *not* findings:
+///
+/// * `preproc_diagnostics` — the loud `PREPROC007`-family coverage warnings,
+///   same channel and same shape `analyze` gives them. They never move the exit
+///   code.
+/// * `unjudged_symbols` — the count-gated rules' coverage note (R26). Also never
+///   moves the exit code.
+/// * `failures` — per-file internal failures (an unreadable file, or a contained
+///   panic). These *do* move the exit code to 1 (R24), and they get their own key
+///   rather than a fabricated diagnostic: without it a contained panic would be
+///   machine-indistinguishable from an unused variable, which would undo the
+///   loud-diagnosis posture the panic guards exist for.
+#[derive(Serialize)]
+struct CheckJsonReport {
+    version: u32,
+    files_checked: usize,
+    /// Whether the lint channel ran at all (`false` under `--no-lint`), so an
+    /// empty `diagnostics` cannot be misread as "clean".
+    lint_enabled: bool,
+    diagnostics: Vec<CheckJsonDiagnostic>,
+    /// Whether the format channel ran at all (`false` under `--no-format`).
+    format_enabled: bool,
+    format: CheckJsonFormat,
+    preproc_diagnostics: Vec<Diagnostic>,
+    unjudged_symbols: usize,
+    failures: Vec<CheckJsonFailure>,
+}
+
+/// One lint finding, carrying the pipeline's **byte** span and, when the span is
+/// root-origin, the derived line/column.
+///
+/// Both representations are present because they answer different questions and
+/// have different owners: `span` is the pipeline's own coordinate space (KTD5),
+/// which is what a cross-client parity test must compare, while `start`/`end`
+/// are this client's rendering of it through the shared position helper (R13).
+/// A diagnostic belonging to an *include* file has no honest position in the
+/// root buffer, so those two are omitted rather than fabricated — the same rule
+/// the text renderer applies.
+#[derive(Serialize)]
+struct CheckJsonDiagnostic {
+    path: String,
+    code: String,
+    severity: &'static str,
+    source: &'static str,
+    message: String,
+    span: CheckJsonSpan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<CheckJsonPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<CheckJsonPosition>,
+}
+
+#[derive(Serialize)]
+struct CheckJsonSpan {
+    start: u32,
+    end: u32,
+}
+
+#[derive(Serialize)]
+struct CheckJsonPosition {
+    byte: u32,
+    line: usize,
+    column: usize,
+}
+
+impl From<position::Position> for CheckJsonPosition {
+    fn from(p: position::Position) -> Self {
+        CheckJsonPosition {
+            byte: p.byte,
+            line: p.line,
+            column: p.column,
+        }
+    }
+}
+
+/// The format channel: the drifting paths, with the count as a trailing total
+/// (R14). A count alone would force a second `format --check` run just to learn
+/// *which* files, which is the friction a single gate exists to remove.
+#[derive(Serialize)]
+struct CheckJsonFormat {
+    drifted: Vec<String>,
+    drifted_count: usize,
+}
+
+/// A per-file internal failure: the walk reported it and kept going (R24).
+#[derive(Serialize)]
+struct CheckJsonFailure {
+    path: String,
+    reason: String,
+}
+
+/// `oxabl check`: lint every discovered file and report formatting drift, in two
+/// channels (R14, KTD7).
+///
+/// Everything here is a *render* of the shared pipelines — this function
+/// tokenizes nothing, parses nothing, and collects nothing itself (R12). File
+/// discovery goes through the shared walker, configuration is resolved **once**
+/// up front rather than per file, and the two pipelines are stood up once and
+/// reused across the walk.
+///
+/// # Streams
+///
+/// Findings — the command's product — go to **stdout**, and `--json` replaces
+/// them there with the report document. The two coverage channels
+/// (`PREPROC007`-family preprocessor warnings, and the unjudged-symbol note) go
+/// to **stderr** in both modes, which is exactly how `analyze` splits them: they
+/// qualify the run rather than being results of it.
+///
+/// # A per-file failure never aborts the walk (R24)
+///
+/// A file that cannot be read, or whose analysis hits a contained panic, is
+/// reported against that path and the walk continues to the remaining files —
+/// the same posture `format` already takes. It counts toward exit 1 and never
+/// toward `analyze`'s exit 4: `analyze` is single-file, so aborting is right
+/// there and wrong here.
+///
+/// The lint run therefore goes through [`LintPipeline::run`], the *guarded*
+/// composition, rather than the raw `expand`/`collect` phases. Those two are
+/// unguarded on purpose so the language server's cancellation can travel as an
+/// unwind; a non-incremental caller like this one wants the guard, and it is
+/// what makes "report and continue" possible at all.
+fn run_check(
+    path: &Path,
+    json_output: bool,
+    preprocess: bool,
+    include_paths: &[PathBuf],
+    schema_path: Option<&Path>,
+    no_lint: bool,
+    no_format: bool,
+) -> ExitCode {
+    // Discovery through the shared walker: a named file is checked regardless of
+    // extension, a directory is walked under the root-extension policy. A
+    // missing path and an empty tree are distinct facts but the same usage
+    // error (exit 2).
+    let files = match discover_path(path) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if files.is_empty() {
+        eprintln!("error: no ABL files found in {}", path.display());
+        return ExitCode::from(2);
+    }
+
+    // Config once, not once per file: a resolution reads `oxabl.toml` and every
+    // `.df` it names, so doing it inside the loop would re-parse the schema for
+    // every file in the tree. Warnings are non-fatal data (R7) — a malformed
+    // config degrades to defaults and says so.
+    let overrides = ConfigOverrides {
+        include_paths: include_paths.to_vec(),
+        schema_path: schema_path.map(Path::to_path_buf),
+        style: None,
+    };
+    let (config, warnings) = PipelineConfig::resolve(path, &overrides);
+    for warning in &warnings {
+        eprintln!("warning: {warning}");
+    }
+
+    let fs = RealFileSystem;
+    let lint = LintPipeline::new(&config, &fs).with_preprocess(preprocess);
+    // The format pipeline is built from the resolved style and nothing else, so
+    // it *cannot* see expanded macro text however this walk is configured (R4).
+    let format = FormatPipeline::new(config.style.clone());
+
+    let mut diagnostics: Vec<CheckJsonDiagnostic> = Vec::new();
+    let mut preproc_diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut failures: Vec<CheckJsonFailure> = Vec::new();
+    let mut drifted: Vec<String> = Vec::new();
+    let mut unjudged = 0usize;
+
+    for file in &files {
+        let display = file.display().to_string();
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                // Report and continue (R24): one unreadable file must not cost
+                // the caller every other file's findings.
+                eprintln!("error: cannot read {display}: {e}");
+                failures.push(CheckJsonFailure {
+                    path: display,
+                    reason: format!("cannot read: {e}"),
+                });
+                continue;
+            }
+        };
+
+        if !no_lint {
+            let result = lint.run(&source);
+            if let Some(panic) = result.failure() {
+                eprintln!("error: analysis failed on {display}: {panic}");
+                failures.push(CheckJsonFailure {
+                    path: display.clone(),
+                    reason: panic.to_string(),
+                });
+            } else {
+                // Preprocessor diagnostics keep their own channel — surfaced by
+                // the same helper `analyze` uses, so the two cannot drift. They
+                // are coverage warnings, not findings, and never move the exit
+                // code: an elided include still parses.
+                preproc_diagnostics.extend(surface_collected_preproc(
+                    file,
+                    &source,
+                    result.diagnostics(),
+                ));
+
+                let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
+                if !reported.diagnostics.is_empty() {
+                    if !json_output {
+                        let resolver =
+                            SourceResolver::new(ROOT_FILE_ID, display.clone(), source.as_str());
+                        let rendered: Vec<Diagnostic> =
+                            reported.all().map(|c| c.diagnostic.clone()).collect();
+                        print!("{}", render_diagnostics(&rendered, &resolver));
+                    }
+                    let map = SourceMap::new(&source);
+                    for collected in reported.all() {
+                        diagnostics.push(check_json_diagnostic(&display, &map, collected));
+                    }
+                }
+
+                if let Some(sem) = result.semantic() {
+                    unjudged += surface_unjudged_symbols(sem);
+                }
+            }
+        }
+
+        if !no_format {
+            // The same `FormatPipeline` `oxabl format` drives, so `check`'s
+            // drift answer and `format --check`'s cannot disagree (KTD7).
+            let outcome = format.format(&source);
+            if outcome.changed() {
+                drifted.push(display.clone());
+            } else if let Some(not_formatted) = outcome.not_formatted() {
+                if not_formatted.is_internal_panic() {
+                    // An oxabl bug, not a property of the input (R5): worth a
+                    // failure entry and exit 1.
+                    eprintln!(
+                        "error: formatting failed on {display}: {}",
+                        not_formatted.reason()
+                    );
+                    failures.push(CheckJsonFailure {
+                        path: display,
+                        reason: not_formatted.reason(),
+                    });
+                } else {
+                    // A deliberate bail is expected behavior on some inputs and
+                    // is *not* drift, so it stays neutral — the same call
+                    // `format --check` makes.
+                    eprintln!("{display}: {}", not_formatted.reason());
+                }
+            }
+        }
+    }
+
+    if json_output {
+        let report = CheckJsonReport {
+            version: 1,
+            files_checked: files.len(),
+            lint_enabled: !no_lint,
+            diagnostics,
+            format_enabled: !no_format,
+            format: CheckJsonFormat {
+                drifted_count: drifted.len(),
+                drifted,
+            },
+            preproc_diagnostics,
+            unjudged_symbols: unjudged,
+            failures,
+        };
+        match serde_json::to_string_pretty(&report) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                eprintln!("error: json serialize: {e}");
+                return ExitCode::from(6);
+            }
+        }
+        // The report owns every count now, so recompute the exit from it.
+        return check_exit_code(
+            report.diagnostics.len(),
+            report.format.drifted_count,
+            report.failures.len(),
+        );
+    }
+
+    // The drift channel: the paths first, the count as a trailing total (R14),
+    // pointing at the command that fixes them.
+    if !drifted.is_empty() {
+        println!();
+        println!("Files that would be reformatted:");
+        for file in &drifted {
+            println!("  {file}");
+        }
+        let plural = if drifted.len() == 1 { "file" } else { "files" };
+        println!(
+            "{} {plural} would be reformatted — run `oxabl format` to fix.",
+            drifted.len()
+        );
+    }
+
+    check_exit_code(diagnostics.len(), drifted.len(), failures.len())
+}
+
+/// `check`'s exit code (R15): `1` when either channel produced something or a
+/// file failed, `0` otherwise.
+///
+/// The coverage note is deliberately *not* an input here (R26): "this file was
+/// partly unjudgeable" is not "this file has a problem", and a gate that failed
+/// on it would punish the honesty signal.
+fn check_exit_code(findings: usize, drifted: usize, failures: usize) -> ExitCode {
+    if findings > 0 || drifted > 0 || failures > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Render one collected diagnostic into `check`'s JSON entry, deriving line and
+/// column through the shared position helper (R13) rather than a second
+/// hand-rolled `SourceMap::lookup` pair.
+///
+/// An include-origin span resolves against the wrong text, so its position is
+/// omitted rather than fabricated — the byte span still travels.
+fn check_json_diagnostic(
+    path: &str,
+    map: &SourceMap,
+    collected: &oxabl_analyze::CollectedDiagnostic,
+) -> CheckJsonDiagnostic {
+    let d = &collected.diagnostic;
+    let resolved = (d.span.file == ROOT_FILE_ID).then(|| position::resolve_diagnostic(map, d));
+    CheckJsonDiagnostic {
+        path: path.to_string(),
+        code: d.code.0.to_string(),
+        severity: d.severity.as_str(),
+        source: collected.source.as_str(),
+        message: d.message.clone(),
+        span: CheckJsonSpan {
+            start: d.span.span.start,
+            end: d.span.span.end,
+        },
+        start: resolved.map(|r| r.start.into()),
+        end: resolved.map(|r| r.end.into()),
     }
 }
 

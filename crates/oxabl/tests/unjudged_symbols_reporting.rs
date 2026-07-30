@@ -8,10 +8,11 @@
 //! it was only partly checked. These tests pin the honest line — same treatment
 //! the `PREPROC007` unresolvable-include warning gets, and the same stream.
 //!
-//! Reported from `analyze`, not from `check`: `check` is a parse-success
-//! reporter and runs no lint rules at all, so there is no coverage there to
-//! qualify. `analyze` is where the rules run and where a user reads (or fails to
-//! read) a diagnostic.
+//! These drive `analyze`, which is where the note originated. `check` now runs
+//! the same rules and carries the same count (R26) — its own coverage of the
+//! note lives in `check_cli.rs`, since the two commands render it into different
+//! shapes (a scalar in `check`'s report versus a key in the `analyze` envelope)
+//! and each shape needs its own pin.
 
 use std::fs;
 use std::path::Path;

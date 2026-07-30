@@ -112,6 +112,16 @@ fn analyze_json_lists_preproc_diagnostics() {
     );
 }
 
+/// A nested-include diagnostic must render without a root-relative line/col.
+///
+/// Driven through `conformance`, not `check`: this assertion is about
+/// `surface_preproc_diagnostics`, which renders the *preprocessor's own*
+/// diagnostic list, and the conformance walk is now its only caller. `check` and
+/// `analyze` go through the shared expansion instead, which drops loud
+/// diagnostics whose span belongs to an include rather than to the root file —
+/// so there is no include-origin diagnostic left for them to mis-position. The
+/// behavior described here is unchanged; only the subcommand that exercises it
+/// moved.
 #[test]
 fn nested_unresolved_include_renders_without_garbage_linecol() {
     let tmp = TempDir::new().unwrap();
@@ -128,7 +138,7 @@ fn nested_unresolved_include_renders_without_garbage_linecol() {
     write(&root.join("main.p"), "{outer.i}\n");
 
     let output = oxabl()
-        .arg("check")
+        .arg("conformance")
         .arg("--preprocess")
         .arg(root)
         .output()
