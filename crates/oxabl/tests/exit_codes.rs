@@ -222,8 +222,15 @@ fn check_exits_1_when_formatting_panics_and_0_when_it_merely_bails() {
 /// findings for rules the project has switched off and — worse — a green exit
 /// code for a run whose configuration it silently ignored. A gate that answers
 /// the wrong question must not answer it successfully.
+///
+/// "Cannot use" is broader than "malformed": `LintConfig` and `StyleGuide` deny
+/// unknown fields, so syntactically valid TOML naming a key oxabl does not know —
+/// a typo'd or not-yet-released rule — is discarded the same way and gets the same
+/// exit 2. Asserted here so nobody reads the exit-2 contract as a TOML-syntax
+/// check.
 #[test]
-fn check_exits_2_on_a_config_it_cannot_parse() {
+fn check_exits_2_on_a_config_it_cannot_use() {
+    // Malformed TOML.
     let (dir, file) = one_file("a.p", CLEAN);
     write(&dir.path().join("oxabl.toml"), "this is not valid toml {{{");
 
@@ -233,6 +240,26 @@ fn check_exits_2_on_a_config_it_cannot_parse() {
     assert!(
         stderr.contains("oxabl.toml"),
         "the parse error must name the file: {stderr}"
+    );
+
+    // Valid TOML, unknown key: strict parsing rejects it, so the whole file is
+    // discarded and the gate must refuse for the same reason.
+    let (dir, file) = one_file("a.p", CLEAN);
+    write(
+        &dir.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n[workspace.lint]\nfuture-rule = \"off\"\n",
+    );
+
+    let (exit, _stdout, stderr) = run(&[s("check"), file.as_os_str()]);
+
+    assert_eq!(
+        exit,
+        Some(2),
+        "an unknown config key is a config it cannot use: {stderr}"
+    );
+    assert!(
+        stderr.contains("oxabl.toml"),
+        "and the error must still name the file: {stderr}"
     );
 }
 

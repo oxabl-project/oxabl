@@ -31,11 +31,15 @@ enum Cli {
     /// usage or config error. `--json` adds `6` for a serialization failure,
     /// matching `analyze`.
     ///
-    /// A config error means an `oxabl.toml` this command could not parse. Alone
-    /// among the subcommands, `check` refuses to run on one rather than degrading
-    /// to defaults: those defaults would drop the project's `[workspace.lint]`
-    /// severities, `off` included, so the gate would report findings for switched-
-    /// off rules and could still exit 0 — a wrong answer under a green light.
+    /// A config error means an `oxabl.toml` this run could not **use** — which is
+    /// broader than malformed TOML. Parsing is strict (unknown fields are
+    /// rejected), so a syntactically valid file naming a key oxabl does not know —
+    /// a misspelled or not-yet-released `[workspace.lint]` rule, say — is a config
+    /// error too. Alone among the subcommands, `check` refuses to run on one rather
+    /// than degrading to defaults: those defaults would drop the project's
+    /// `[workspace.lint]` severities, `off` included, so the gate would report
+    /// findings for switched-off rules and could still exit 0 — a wrong answer
+    /// under a green light.
     /// Non-fatal problems (a schema file that would not load, a `--schema`
     /// directory that matched nothing) stay `warning:` lines and do not move the
     /// exit code.
@@ -806,6 +810,12 @@ fn run_check(
     // exit code if nothing else fires. `format`, `analyze`, `conformance` and the
     // LSP keep degrading with a warning: none of them answers a pass/fail
     // question, so none of them can answer it wrongly.
+    //
+    // "Could not use" is broader than "malformed TOML": `LintConfig` and
+    // `StyleGuide` deny unknown fields, so a syntactically valid file naming a key
+    // oxabl does not know — a typo'd or not-yet-released rule name — lands here
+    // too. That is the intended answer, for the same reason: the gate would
+    // otherwise run on a configuration the user never wrote.
     //
     // Every other warning stays a warning. A `.df` that would not load, or a
     // `--schema` directory that matched nothing (A2), leaves the rest of the
