@@ -43,6 +43,30 @@
 //! bundle. Leaving these two raw is what lets the language server layer its own
 //! guard *outside* its cancellation catch, which is where it belongs.
 //!
+//! # Cross-file resolution, and why the file's identity is a builder (KTD7)
+//!
+//! The pipeline owns the run's cross-file index: it is built from the *same*
+//! [`FileSystem`] handle and the *same* resolved include paths this handle
+//! already has, never a second filesystem. That matters because the CLI reads
+//! sources with real `std::fs` calls while holding a trait object here — an index
+//! built over the wrong one would have the command line and the language server
+//! searching different trees for the same name (R7).
+//!
+//! The three phases still take a source string, so the asking file's identity —
+//! needed at minimum so a file cannot resolve a name to its own copy on disk —
+//! arrives through [`LintPipeline::with_file`] rather than a signature change.
+//! Every phase signature and every client compiles unchanged, and the identity
+//! stays *optional*, which is correct rather than merely convenient: the browser
+//! has no path for its buffer, and a file with no identity cannot collide with
+//! itself.
+//!
+//! `with_file` borrows rather than consuming, and that is the load-bearing part.
+//! One index must span a whole **run** — that is what makes the shared-dependency
+//! dedup pay, since a hundred files inheriting one base must read that base
+//! once — while the exclusion varies per **file**. So a multi-file walk stands up
+//! one pipeline and derives a per-file handle from it for each file, all of them
+//! sharing the one index behind [`ExcludingFile`](oxabl_index::ExcludingFile).
+//!
 //! # Byte spans only (KTD5)
 //!
 //! Nothing here bakes line/column. The language server's only correct position
@@ -51,7 +75,7 @@
 //! clients (CLI text output, the browser wire shape) share one position helper
 //! instead.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile,
@@ -60,7 +84,8 @@ use oxabl_analyze::{
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
-use oxabl_semantic::Semantic;
+use oxabl_index::BatchIndex;
+use oxabl_semantic::{Semantic, WorkspaceIndex};
 use oxabl_workspace::FileSystem;
 
 use crate::{PipelineConfig, ROOT_FILE_ID};
@@ -376,17 +401,53 @@ pub struct LintPipeline<'a> {
     config: &'a PipelineConfig,
     fs: &'a dyn FileSystem,
     preprocess: bool,
+    /// The run's cross-file index.
+    index: RunIndex<'a>,
+    /// The file being analysed, when the client knows which one that is.
+    file: Option<PathBuf>,
+}
+
+/// Where a handle's index lives: owned by the handle that built it, borrowed
+/// from the run handle by a per-file sibling, or supplied whole by a client with
+/// a cache of its own.
+///
+/// The first two arms are what let "one index per run" and "one exclusion per
+/// file" both be true. [`LintPipeline::new`] builds the
+/// [`Owned`](RunIndex::Owned) arm; [`LintPipeline::with_file`] hands out siblings
+/// on the [`Shared`](RunIndex::Shared) one, which is a pointer copy and reads
+/// nothing.
+///
+/// [`External`](RunIndex::External) is the incremental client's arm. A language
+/// server cannot use a [`BatchIndex`]: that cache grows for the life of the
+/// value that owns it and never sees an edit, which is exactly wrong for a
+/// process that outlives many edits to the files it indexed. Its own cache is
+/// keyed and invalidated per file, and it arrives here as the trait object the
+/// semantic layer already takes — so the *questions* stay shared (R7) while the
+/// memoization differs, which is the whole shape of KTD2.
+enum RunIndex<'a> {
+    Owned(BatchIndex<'a>),
+    Shared(&'a BatchIndex<'a>),
+    External(&'a dyn WorkspaceIndex),
 }
 
 impl<'a> LintPipeline<'a> {
     /// A pipeline over `config`, reading include files through `fs`, with
     /// preprocessing **on** — the setting every client but the CLI's
     /// `--preprocess=false` escape hatch wants.
+    ///
+    /// This is the **run** handle, and it owns the run's cross-file index: build
+    /// it once and reuse it, either across many edits of one buffer or — via
+    /// [`with_file`](Self::with_file) — across every file of a walk.
     pub fn new(config: &'a PipelineConfig, fs: &'a dyn FileSystem) -> Self {
         LintPipeline {
             config,
             fs,
             preprocess: true,
+            // The index reads nothing until a name is looked up (R6), so building
+            // it here costs a pair of borrows and no I/O — which is what lets it
+            // be unconditional rather than another thing a client can forget.
+            index: RunIndex::Owned(BatchIndex::new(fs, &config.include_paths)),
+            file: None,
         }
     }
 
@@ -400,6 +461,98 @@ impl<'a> LintPipeline<'a> {
         self
     }
 
+    /// Tell the run's index which files this run already knows it will read.
+    ///
+    /// Only one cross-file question needs it: a `SHARED` name maps onto no path,
+    /// so `shared_producer` can answer only from files the run has already
+    /// indexed, and nothing pulls a producer in unless some file happens to `RUN`
+    /// it. A walk already enumerated every file it is about to read, so handing
+    /// that list over makes the producer link work on the command line without a
+    /// directory scan or a whole-workspace walk — the list is the walk's own, and
+    /// the index reads from it lazily, on the first `SHARED` lookup.
+    ///
+    /// A client with no such list (the language server, the browser) does not
+    /// call this and behaves exactly as before. Apply it to the **run** handle,
+    /// before any lookup: a per-file sibling shares the run's already-seeded
+    /// index, so there is nothing left for it to seed.
+    #[must_use]
+    pub fn with_known_files(mut self, files: &'a [PathBuf]) -> Self {
+        self.index = match self.index {
+            RunIndex::Owned(index) => RunIndex::Owned(index.seeded_with(files)),
+            // A sibling does not own the index it answers from, so it cannot
+            // change what that index knows — and must not, since the run handle
+            // has already told it. Explicit arm rather than a catch-all so a
+            // future third arm is a compile error here.
+            RunIndex::Shared(index) => RunIndex::Shared(index),
+            // A supplied index owns its own file set — the language server
+            // learns about a file when a lookup reaches it, and has no walk to
+            // enumerate. Explicit arm rather than a catch-all so a future
+            // fourth arm is a compile error here.
+            RunIndex::External(index) => RunIndex::External(index),
+        };
+        self
+    }
+
+    /// Answer this run's cross-file questions from `index` instead of building a
+    /// batch cache.
+    ///
+    /// For a client that memoizes across edits rather than across a walk: the
+    /// language server's salsa-backed index, whose entries are keyed and
+    /// invalidated per file. The questions are the same four — that is the point
+    /// of handing over a [`WorkspaceIndex`] rather than a narrower handle.
+    ///
+    /// **The supplied index owns its own self-exclusion.** A batch index is
+    /// excluded through [`with_file`](Self::with_file), which needs the memo to
+    /// have already minted an id for the analysed path; a client with its own
+    /// cache already knows which file it is analysing and can decline earlier and
+    /// more directly. So this arm applies no exclusion of its own, and
+    /// [`file`](Self::file) is not consulted for it.
+    #[must_use]
+    pub fn with_index(mut self, index: &'a dyn WorkspaceIndex) -> Self {
+        self.index = RunIndex::External(index);
+        self
+    }
+
+    /// A handle for analysing the file at `path`, sharing this run's index.
+    ///
+    /// The identity does exactly one thing today: it excludes `path` from its own
+    /// cross-file lookups, so a buffer cannot inherit from — or be linked to as
+    /// the `SHARED` producer of — its own copy on disk, which for an editor is a
+    /// stale revision of the very text being analysed.
+    ///
+    /// # Why this borrows instead of consuming
+    ///
+    /// Unlike [`with_preprocess`](Self::with_preprocess) this is not a
+    /// configuration tweak on one handle; it is how a walk asks the *same* run,
+    /// with its one index and its one memo, about the next file. Consuming
+    /// `self` would force a walk to rebuild the index per file, and re-reading
+    /// every shared dependency once per file is the cost the index exists to
+    /// avoid. Single-file clients simply bind the run handle first:
+    ///
+    /// ```ignore
+    /// let run = LintPipeline::new(&config, &fs);
+    /// let result = run.with_file(path).run(&source);
+    /// ```
+    #[must_use]
+    pub fn with_file(&'a self, path: impl Into<PathBuf>) -> LintPipeline<'a> {
+        LintPipeline {
+            config: self.config,
+            fs: self.fs,
+            preprocess: self.preprocess,
+            index: match &self.index {
+                // A sibling shares the run's memo rather than building a second
+                // one — that is what makes the shared-dependency dedup pay.
+                RunIndex::Owned(index) => RunIndex::Shared(index),
+                RunIndex::Shared(index) => RunIndex::Shared(index),
+                // A supplied index is already shared by construction, and it
+                // applies its own exclusion, so the identity below is recorded
+                // but not consulted for this arm.
+                RunIndex::External(index) => RunIndex::External(*index),
+            },
+            file: Some(path.into()),
+        }
+    }
+
     /// The configuration this pipeline runs under.
     pub fn config(&self) -> &PipelineConfig {
         self.config
@@ -408,6 +561,33 @@ impl<'a> LintPipeline<'a> {
     /// Whether this pipeline preprocesses.
     pub fn preprocess(&self) -> bool {
         self.preprocess
+    }
+
+    /// The file being analysed, or `None` when the client has no path for its
+    /// buffer.
+    pub fn file(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
+    /// Run `with` against this handle's index, viewed as the file being analysed.
+    ///
+    /// The three arms differ only in where the index lives and who applies the
+    /// self-exclusion, and every one of them ends up as the same `&dyn
+    /// WorkspaceIndex` the semantic layer takes. Written as one closure applied
+    /// three ways rather than three copies of the collect call, so a change to
+    /// what `collect` passes cannot be made in two arms and forgotten in the
+    /// third.
+    fn with_run_index<T>(&self, with: impl FnOnce(&dyn WorkspaceIndex) -> T) -> T {
+        match &self.index {
+            // The exclusion is applied here, per handle, while the memo behind it
+            // stays the run's. With no identity nothing is excluded, which is the
+            // browser's case.
+            RunIndex::Owned(index) => with(&index.excluding(self.file())),
+            RunIndex::Shared(index) => with(&index.excluding(self.file())),
+            // A supplied index excludes the analysed file itself — see
+            // [`with_index`](Self::with_index).
+            RunIndex::External(index) => with(*index),
+        }
     }
 
     /// Phase one: preprocess `source` into an [`Expansion`].
@@ -441,12 +621,15 @@ impl<'a> LintPipeline<'a> {
         let dependency_paths = expansion.dependency_paths().to_vec();
         match &expansion.inner {
             Ok(expanded) => {
-                let (semantic, diagnostics) = collect_from_expanded(
-                    expanded,
-                    &self.config.schema,
-                    self.config.schema_loaded,
-                    &self.config.lint_severities,
-                );
+                let (semantic, diagnostics) = self.with_run_index(|index| {
+                    collect_from_expanded(
+                        expanded,
+                        &self.config.schema,
+                        self.config.schema_loaded,
+                        &self.config.lint_severities,
+                        index,
+                    )
+                });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
             }
             // Fatal preprocessing failure: no model, and the preprocessor's own
@@ -497,6 +680,8 @@ mod tests {
     use oxabl_schema::Schema;
     use oxabl_schema::test_support::customer_schema;
     use oxabl_workspace::InMemoryFileSystem;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     /// Silence the default panic hook for the duration of a deliberately
     /// panicking test, so a green run does not print a backtrace.
@@ -864,6 +1049,435 @@ mod tests {
         let failed = quietly(|| pipeline.run("/* OXABL-TEST-PANIC:analyze */\nMESSAGE \"hi\".\n"));
         assert!(failed.failed_run());
         assert!(failed.into_diagnostics().diagnostics.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-file resolution through the shared run (KTD7)
+    // -----------------------------------------------------------------------
+
+    /// A parent class declaring one public method with a return type. Synthetic.
+    const CALC_BASE: &str = r#"CLASS orders.calc-base:
+    METHOD PUBLIC INTEGER calc-total():
+        RETURN 0.
+    END METHOD.
+END CLASS."#;
+
+    /// Where a `/src` include-path entry makes the batch index look for it: a
+    /// qualified name maps onto a relative path by replacing dots with separators.
+    const CALC_BASE_PATH: &str = "/src/orders/calc-base.cls";
+
+    /// A subclass calling the inherited method. Without cross-file resolution the
+    /// call is an `undefined-symbol` finding — the false positive this whole line
+    /// of work removes — which is what makes resolution observable from out here.
+    const CHILD: &str = r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-total().
+        MESSAGE v-total.
+    END METHOD.
+END CLASS."#;
+
+    /// A second subclass of the same parent, so "read the parent once per run" has
+    /// two askers.
+    const OTHER_CHILD: &str = r#"CLASS orders.other-child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-sum AS INTEGER NO-UNDO.
+        v-sum = calc-total().
+        MESSAGE v-sum.
+    END METHOD.
+END CLASS."#;
+
+    fn workspace(files: &[(&str, &str)]) -> InMemoryFileSystem {
+        let mut fs = InMemoryFileSystem::new();
+        for (path, contents) in files {
+            fs.insert(PathBuf::from(path), *contents);
+        }
+        fs
+    }
+
+    fn searching(paths: &[&str]) -> PipelineConfig {
+        PipelineConfig {
+            include_paths: paths.iter().map(PathBuf::from).collect(),
+            ..PipelineConfig::default()
+        }
+    }
+
+    /// A filesystem that counts reads per path, so "the parent is read once per
+    /// run" is asserted against real I/O rather than against index internals.
+    struct CountingFs {
+        inner: InMemoryFileSystem,
+        reads: Mutex<HashMap<PathBuf, usize>>,
+    }
+
+    impl CountingFs {
+        fn new(files: &[(&str, &str)]) -> Self {
+            CountingFs {
+                inner: workspace(files),
+                reads: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn reads_of(&self, path: &str) -> usize {
+            self.reads
+                .lock()
+                .unwrap()
+                .get(&PathBuf::from(path))
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    impl FileSystem for CountingFs {
+        fn read(&self, path: &Path) -> Result<Arc<str>, std::io::Error> {
+            *self
+                .reads
+                .lock()
+                .unwrap()
+                .entry(path.to_path_buf())
+                .or_insert(0) += 1;
+            self.inner.read(path)
+        }
+
+        fn exists(&self, path: &Path) -> bool {
+            self.inner.exists(path)
+        }
+    }
+
+    #[test]
+    fn a_parents_member_resolves_through_the_composed_run() {
+        let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let config = searching(&["/src"]);
+        let run = LintPipeline::new(&config, &fs);
+
+        let result = run.with_file("/src/orders/child.cls").run(CHILD);
+        assert!(
+            !codes(&result).contains(&"LINT0001"),
+            "the inherited call must resolve through the run's index, got {:?}",
+            codes(&result)
+        );
+    }
+
+    #[test]
+    fn the_two_phase_run_gives_the_identical_cross_file_answer() {
+        // The property the parity suite depends on: attaching an index must not
+        // make the composed convenience and the incremental pair disagree.
+        let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let config = searching(&["/src"]);
+        let run = LintPipeline::new(&config, &fs);
+        let pipeline = run.with_file("/src/orders/child.cls");
+
+        let two_phase = pipeline.collect(&pipeline.expand(CHILD));
+        let one_shot = pipeline.run(CHILD);
+
+        assert_eq!(two_phase.diagnostics(), one_shot.diagnostics());
+        assert_eq!(two_phase.dependency_paths(), one_shot.dependency_paths());
+        assert_eq!(two_phase.failed_run(), one_shot.failed_run());
+        assert!(!codes(&two_phase).contains(&"LINT0001"));
+    }
+
+    #[test]
+    fn with_no_file_identity_resolution_still_happens_and_the_file_can_be_itself() {
+        // The browser's position: no path for the buffer, so nothing is excluded.
+        // Resolution must still work (first half), and the run must not need an
+        // identity to produce an answer (second half).
+        let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let config = searching(&["/src"]);
+        let anonymous = LintPipeline::new(&config, &fs);
+        assert_eq!(anonymous.file(), None);
+
+        let result = anonymous.run(CHILD);
+        assert!(
+            !codes(&result).contains(&"LINT0001"),
+            "an identity-less run resolves cross-file too, got {:?}",
+            codes(&result)
+        );
+
+        // And with no identity the file on disk that *is* the buffer is just
+        // another workspace file: analysing the parent's own text against a
+        // workspace containing it resolves the same way, because nothing has been
+        // told to exclude it. This is the control for the exclusion test below.
+        let sub_of_itself = r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-total().
+        MESSAGE v-total.
+    END METHOD.
+END CLASS."#;
+        let unexcluded = anonymous.run(sub_of_itself);
+        assert!(!codes(&unexcluded).contains(&"LINT0001"));
+    }
+
+    #[test]
+    fn a_file_is_excluded_from_its_own_class_lookup() {
+        // The buffer being analysed *is* `/src/orders/calc-base.cls` — an editor
+        // showing unsaved edits, or the CLI having just read those bytes — and the
+        // buffer now declares a subclass of the class that file used to hold.
+        // Resolving `orders.calc-base` to that same file would inherit from the
+        // file's own stale copy, so the identity has to shut the lookup out.
+        let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let config = searching(&["/src"]);
+        let run = LintPipeline::new(&config, &fs);
+
+        let itself = run.with_file(CALC_BASE_PATH);
+        assert_eq!(itself.file(), Some(Path::new(CALC_BASE_PATH)));
+        let excluded = itself.run(CHILD);
+        assert!(
+            codes(&excluded).contains(&"LINT0001"),
+            "the analysed file must not resolve a class to itself, got {:?}",
+            codes(&excluded)
+        );
+
+        // Any *other* file's handle, off the same run and the same index, still
+        // resolves it — the exclusion is per asking file, not a state change.
+        let neighbour = run.with_file("/src/orders/child.cls");
+        assert!(!codes(&neighbour.run(CHILD)).contains(&"LINT0001"));
+    }
+
+    #[test]
+    fn two_files_sharing_a_parent_read_it_once_per_run() {
+        // What makes one index per run worth the plumbing. Both children are
+        // analysed through per-file handles off one run handle; the parent is read
+        // on the first lookup and answered from the memo thereafter.
+        let fs = CountingFs::new(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let config = searching(&["/src"]);
+        let run = LintPipeline::new(&config, &fs);
+
+        let first = run.with_file("/src/orders/child.cls").run(CHILD);
+        let second = run
+            .with_file("/src/orders/other-child.cls")
+            .run(OTHER_CHILD);
+
+        assert!(!codes(&first).contains(&"LINT0001"));
+        assert!(!codes(&second).contains(&"LINT0001"));
+        assert_eq!(
+            fs.reads_of(CALC_BASE_PATH),
+            1,
+            "the shared parent is indexed once for the run, not once per file"
+        );
+    }
+
+    #[test]
+    fn an_empty_include_path_list_resolves_nothing_cross_file() {
+        // Nowhere to search, so the answer must be exactly the single-file one:
+        // the inherited call is undefined, as it has always been.
+        let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let config = PipelineConfig::default();
+        assert!(config.include_paths.is_empty());
+        let run = LintPipeline::new(&config, &fs);
+
+        let result = run.with_file("/src/orders/child.cls").run(CHILD);
+        assert!(
+            codes(&result).contains(&"LINT0001"),
+            "with no search path the parent is unreachable, got {:?}",
+            codes(&result)
+        );
+        // And the whole set matches the no-index collect, not just that one code.
+        let (_model, baseline) = oxabl_analyze::collect_with_model(
+            ROOT_FILE_ID,
+            CHILD,
+            &fs,
+            &[],
+            &config.schema,
+            config.schema_loaded,
+            &config.lint_severities,
+            true,
+        );
+        assert_eq!(
+            result.diagnostics(),
+            &baseline,
+            "an index with nowhere to look must answer identically to no index"
+        );
+    }
+
+    // R11's firewall, checked where it finally matters: the index is live in a
+    // real client now, so attaching one must not *add* a finding. Containment
+    // rather than equality, because removing an `undefined-symbol` on an
+    // inherited member is the pre-existing false positive this work fixes.
+    #[test]
+    fn attaching_an_index_adds_no_diagnostic() {
+        let fs = workspace(&[
+            (CALC_BASE_PATH, CALC_BASE),
+            (
+                "/src/init-globals.p",
+                "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n",
+            ),
+            (
+                "/src/orders/i-calc.cls",
+                "INTERFACE orders.i-calc: END INTERFACE.",
+            ),
+        ]);
+        let config = searching(&["/src"]);
+        let run = LintPipeline::new(&config, &fs);
+
+        // Every shape the index can influence: an inherited member, a typed
+        // assignment from one, a private member, a `USING`, a `NEW`, an
+        // implemented interface, a literal `RUN`, a `SHARED` consumer, and a
+        // plain misspelling.
+        let sources = [
+            CHILD,
+            "CLASS orders.child INHERITS orders.calc-base:\n\
+             METHOD PUBLIC VOID run-it():\n\
+             DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n\
+             v-flag = calc-total().\n\
+             MESSAGE v-flag.\n\
+             END METHOD.\n\
+             END CLASS.",
+            "CLASS orders.child INHERITS orders.calc-base:\n\
+             METHOD PUBLIC VOID run-it():\n\
+             DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
+             v-n = calc-totl().\n\
+             MESSAGE v-n.\n\
+             END METHOD.\n\
+             END CLASS.",
+            "USING orders.calc-base.\nMESSAGE \"hi\".\n",
+            "DEFINE VARIABLE v-obj AS CLASS orders.calc-base NO-UNDO.\n\
+             v-obj = NEW orders.calc-base().\n\
+             MESSAGE v-obj:calc-total().\n",
+            "CLASS orders.impl IMPLEMENTS orders.i-calc: END CLASS.",
+            "RUN init-globals.p.\n",
+            "DEFINE SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n\
+             RUN init-globals.p.\n\
+             MESSAGE v-site-code.\n",
+            "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n",
+        ];
+
+        for source in sources {
+            let with = run.with_file("/src/orders/child.cls").run(source);
+            let (_model, without) = oxabl_analyze::collect_with_model(
+                ROOT_FILE_ID,
+                source,
+                &fs,
+                &config.include_paths,
+                &config.schema,
+                config.schema_loaded,
+                &config.lint_severities,
+                true,
+            );
+            for found in with.all() {
+                assert!(
+                    without.all().any(|baseline| baseline == found),
+                    "an index added {} at {:?} for:\n{source}\nno-index set: {:?}",
+                    found.diagnostic.code.0,
+                    found.diagnostic.span.span,
+                    without
+                        .all()
+                        .map(|d| d.diagnostic.code.0)
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+
+    // The seeded file set (R6, without a scan): the walk's own list is what lets a
+    // `SHARED` consumer find its producer when nothing `RUN`s the producing file.
+    #[test]
+    fn a_seeded_walk_links_a_shared_consumer_to_a_producer_no_run_pulled_in() {
+        let fs = workspace(&[
+            (
+                "/src/init-globals.p",
+                "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n",
+            ),
+            (
+                "/src/report.p",
+                "DEFINE SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n",
+            ),
+        ]);
+        let config = searching(&["/src"]);
+        let known = vec![
+            PathBuf::from("/src/init-globals.p"),
+            PathBuf::from("/src/report.p"),
+        ];
+        // No `RUN` anywhere in the consumer — the seed is the only thing that can
+        // make the producer visible.
+        let consumer = "DEFINE SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n\
+                        MESSAGE v-site-code.\n";
+
+        let seeded = LintPipeline::new(&config, &fs).with_known_files(&known);
+        let result = seeded.with_file("/src/report.p").run(consumer);
+        assert!(
+            shared_producer_named(&result, "v-site-code").is_some(),
+            "the walk supplied both files, so the producer link resolves"
+        );
+
+        // Without the seed the same run cannot know the producer exists, which is
+        // the behavior every client that supplies no file list keeps.
+        let unseeded = LintPipeline::new(&config, &fs);
+        let result = unseeded.with_file("/src/report.p").run(consumer);
+        assert!(
+            shared_producer_named(&result, "v-site-code").is_none(),
+            "nothing pulled the producing file in"
+        );
+    }
+
+    /// The indexed file a `SHARED` symbol named `name` was linked to, if any.
+    fn shared_producer_named(
+        result: &LintResult,
+        name: &str,
+    ) -> Option<oxabl_semantic::IndexedFileId> {
+        let sem = result.semantic().expect("the run produced a model");
+        sem.symbols
+            .iter()
+            .find(|(_, symbol)| &*symbol.name == name)
+            .and_then(|(id, _)| sem.symbols.shared_producer(id))
+    }
+
+    /// The incremental client's arm: a supplied index is the one consulted, and
+    /// the batch the handle would otherwise have built is not.
+    ///
+    /// Proven by making the two *disagree*. The pipeline's own configuration has an
+    /// empty include-path list, so a batch index built from it can find nothing;
+    /// the supplied index searches `/src` and does. A run that resolves the
+    /// inherited call therefore cannot have used the handle's own index.
+    #[test]
+    fn a_supplied_index_answers_instead_of_the_handles_own() {
+        let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let searchable = vec![PathBuf::from("/src")];
+        let supplied = oxabl_index::BatchIndex::new(&fs, &searchable);
+
+        let nowhere = PipelineConfig::default();
+        assert!(nowhere.include_paths.is_empty());
+
+        // The control: without the supplied index this exact configuration cannot
+        // resolve the parent — that is `an_empty_include_path_list_resolves_nothing`.
+        let unaided = LintPipeline::new(&nowhere, &fs);
+        assert!(codes(&unaided.run(CHILD)).contains(&"LINT0001"));
+
+        let aided = LintPipeline::new(&nowhere, &fs).with_index(&supplied);
+        let result = aided.run(CHILD);
+        assert!(
+            !codes(&result).contains(&"LINT0001"),
+            "the supplied index must be the one consulted, got {:?}",
+            codes(&result)
+        );
+
+        // And a per-file sibling keeps answering from it rather than falling back
+        // to a fresh batch — which is what the language server relies on, since its
+        // index is the only one that knows anything.
+        let per_file = aided.with_file("/src/orders/child.cls");
+        assert!(!codes(&per_file.run(CHILD)).contains(&"LINT0001"));
+        // The supplied index owns its own exclusion, so recording the identity does
+        // not make the handle apply one on its behalf.
+        assert_eq!(per_file.file(), Some(Path::new("/src/orders/child.cls")));
+    }
+
+    #[test]
+    fn a_per_file_handle_inherits_the_runs_configuration() {
+        let fs = InMemoryFileSystem::new();
+        let config = searching(&["/src"]);
+        let run = LintPipeline::new(&config, &fs).with_preprocess(false);
+
+        let per_file = run.with_file("/src/thing.p");
+        assert!(
+            !per_file.preprocess(),
+            "a sibling must not silently re-enable preprocessing"
+        );
+        assert_eq!(per_file.config().include_paths, config.include_paths);
+        // And the toggle still composes the other way round.
+        assert!(
+            run.with_file("/src/thing.p")
+                .with_preprocess(true)
+                .preprocess()
+        );
     }
 
     #[test]

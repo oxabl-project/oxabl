@@ -133,6 +133,12 @@ pub mod panic_sites {
     /// The language server's include-dependency query — a separate site so a
     /// test can prove each guard spans *both* calls, not just the first.
     pub const LSP_DEPENDENCIES: &str = "lsp.dependencies";
+    /// The language server's cross-file index extraction. Triggered by a marker
+    /// in a *referenced* file rather than in the open buffer, which is what lets
+    /// a test prove that a panic while indexing somebody else's file is
+    /// contained and reports no answer — instead of committing an empty
+    /// diagnostic set for the buffer that named it.
+    pub const LSP_INDEX: &str = "lsp.index";
 }
 
 /// Panic when `source` carries this `site`'s injection marker.

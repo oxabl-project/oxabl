@@ -831,8 +831,27 @@ fn run_check(
         eprintln!("warning: {warning}");
     }
 
+    // Absolute spellings of the discovered files, for the index alone. The
+    // display paths below stay exactly as the user typed them; these exist
+    // because the index keys files by path, and a name lookup spells a candidate
+    // by joining an *absolutized* include path — so a walk that handed over
+    // `./src/a.cls` would look like a second, different file from the one a class
+    // lookup finds, splitting one file into two identities.
+    let indexed: Vec<PathBuf> = files
+        .iter()
+        .map(|f| std::path::absolute(f).unwrap_or_else(|_| f.clone()))
+        .collect();
+
     let fs = RealFileSystem;
-    let lint = LintPipeline::new(&config, &fs).with_preprocess(preprocess);
+    // One run handle, so one cross-file index spans the whole walk: files sharing
+    // a parent class read it once, not once each. The per-file handle below is a
+    // pointer copy off this one.
+    let lint = LintPipeline::new(&config, &fs)
+        .with_preprocess(preprocess)
+        // The walk's own file list — no directory scan — which is what lets a
+        // `DEFINE SHARED` consumer find its producer even when no `RUN` names the
+        // producing file.
+        .with_known_files(&indexed);
     // The format pipeline is built from the resolved style and nothing else, so
     // it *cannot* see expanded macro text however this walk is configured (R4).
     let format = FormatPipeline::new(config.style.clone());
@@ -843,7 +862,7 @@ fn run_check(
     let mut drifted: Vec<String> = Vec::new();
     let mut unjudged = 0usize;
 
-    for file in &files {
+    for (file, indexed_path) in files.iter().zip(&indexed) {
         let display = file.display().to_string();
         let source = match std::fs::read_to_string(file) {
             Ok(s) => s,
@@ -861,7 +880,12 @@ fn run_check(
 
         // The pipeline runs whatever `--no-lint` says (A1): it is the only source
         // of parse and semantic diagnostics too, and those gate regardless.
-        let result = lint.run(&source);
+        //
+        // Identity, so this file is excluded from its own cross-file lookups:
+        // the bytes just read are what is being analysed, and resolving a name
+        // to the same file on disk would attribute it to itself as a foreign
+        // dependency.
+        let result = lint.with_file(indexed_path).run(&source);
         if let Some(panic) = result.failure() {
             eprintln!("error: analysis failed on {display}: {panic}");
             failures.push(CheckJsonFailure {
@@ -1124,9 +1148,12 @@ fn run_analyze(
     // failure, not an unwind out of the subcommand with a raw backtrace. Aborting
     // is right here — there is exactly one file — which is why `check`'s
     // continue-the-walk rule (R24) is `check`'s alone.
-    let result = LintPipeline::new(&config, &fs)
-        .with_preprocess(preprocess)
-        .run(&source);
+    let run = LintPipeline::new(&config, &fs).with_preprocess(preprocess);
+    // The analysed file's identity, absolutized for the same reason `check`'s is:
+    // it must be spelled the way a name lookup spells a candidate, or the file
+    // fails to exclude itself.
+    let analysed = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let result = run.with_file(analysed).run(&source);
     if let Some(panic) = result.failure() {
         eprintln!("error: analysis failed on {}: {panic}", path.display());
         return ExitCode::from(4);

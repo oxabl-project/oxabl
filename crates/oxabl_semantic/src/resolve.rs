@@ -36,9 +36,10 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
-    AnalysisContext, ClassKind, IndexAnswer, IndexName, IndexedFileId, MemberDescriptor,
-    MemberType, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree, Symbol,
-    SymbolFlags, SymbolId, SymbolKind, SymbolTable, builtins, diagnostics, resolve_span,
+    AnalysisContext, ClassKind, ClassLookup, IndexAnswer, IndexName, IndexedFileId,
+    MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind,
+    ScopeTree, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, builtins, diagnostics,
+    resolve_span,
 };
 
 /// Resolution of a single reference site. Populated by Phase 4a; the type
@@ -3696,8 +3697,17 @@ impl<'a> ResolveWalker<'a> {
             if !visited.insert(name.clone()) {
                 continue;
             }
+            // The answer is recorded before it is acted on, on every arm. It is
+            // pure bookkeeping — no pass or rule branches on it — but it is the
+            // *only* record that this lookup happened: a supertype that resolved
+            // mints no symbol of its own (its members do), so without this the
+            // absent-parent case looks exactly like a parent that resolved and
+            // contributed nothing. The analyze envelope's dependency-state
+            // section is what reads it.
             match index.class(&name) {
                 IndexAnswer::Found(descriptor) => {
+                    self.symbols
+                        .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
                     // An interface's methods contribute exactly as a superclass's
                     // do, so the walk does not branch on `descriptor.kind`.
                     for supertype in descriptor.inherits.iter().chain(&descriptor.implements) {
@@ -3708,7 +3718,16 @@ impl<'a> ResolveWalker<'a> {
                 // be known statically, contributes nothing — and no diagnostic:
                 // the unresolved name is recorded on the class symbol, and
                 // reporting it is a rule's decision, not this pass's.
-                IndexAnswer::NotFound | IndexAnswer::Unknowable => continue,
+                IndexAnswer::NotFound => {
+                    self.symbols
+                        .record_class_lookup(name.as_atom(), ClassLookup::Absent);
+                    continue;
+                }
+                IndexAnswer::Unknowable => {
+                    self.symbols
+                        .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
+                    continue;
+                }
             }
             match index.class_members(&name) {
                 IndexAnswer::Found(members) => {

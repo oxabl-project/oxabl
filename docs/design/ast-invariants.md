@@ -15,10 +15,7 @@ Future invariant changes must edit this file in the same PR. Reviewers enforce t
 
 ## Scope and status
 
-Baseline invariants as of 2026-04-17 (commit on `feat/ast-invariants-doc`). This pre-dates
-Phase 1 of the semantic-layer v1 plan — invariants marked *(Phase 1)* land when NodeIds are
-added to the AST. Invariants marked *(aspirational)* are contracts the semantic layer
-currently has to code defensively around; they become targets for follow-up hardening.
+Baselined 2026-04-17 (commit on `feat/ast-invariants-doc`) and maintained since — the file is current, not a snapshot. The *(Phase 1)* NodeId invariants have **landed**; §2 describes shipped behavior, including the two non-wrapper nodes (`StatementKind::Using`, `RunTarget::Literal`) that carry ids of their own so cross-file resolution has something to key a `references` entry on. No invariant below is aspirational any more — every one of them describes the tree the parser produces today, so a resolver that has to guard against a shape this file calls impossible has found a parser bug.
 
 **Primary references:**
 

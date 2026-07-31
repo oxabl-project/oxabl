@@ -171,6 +171,20 @@ impl Default for AnalyzeOptions {
 /// * `style` has no counterpart in `AnalyzeOptions`. Analysis does not format, so
 ///   asking a caller of `try_analyze` for a style guide would be asking for an
 ///   input that cannot affect the answer; the config's default stands in.
+///
+/// # Cross-file resolution comes along for free
+///
+/// There is no index field on either side, and that is the design rather than an
+/// omission: the pipeline derives the run's cross-file index from the two things
+/// already here — the `FileSystem` the caller passed and `include_paths` — so a
+/// `try_analyze_with_fs` caller resolves classes, `RUN` targets, and `SHARED`
+/// producers exactly as the CLI and the editor do (R7), and one with no include
+/// paths resolves nothing cross-file and gets today's single-file answer.
+///
+/// What this surface cannot supply is the analysed *file's* identity: it takes a
+/// source string and no path. That leaves the file unexcluded from its own
+/// lookups, which is the same position the browser is in and is harmless — see
+/// [`LintPipeline::with_file`](pipeline::LintPipeline::with_file).
 impl From<&AnalyzeOptions> for PipelineConfig {
     fn from(options: &AnalyzeOptions) -> Self {
         PipelineConfig {

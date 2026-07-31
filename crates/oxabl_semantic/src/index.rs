@@ -405,12 +405,20 @@ impl MemberDescriptor {
 
 /// The four questions the semantic layer may ask about another file.
 ///
-/// Object-safe and `Send + Sync`, mirroring `oxabl_workspace::FileSystem`:
-/// the language server holds an
-/// `Arc<dyn WorkspaceIndex>` (so cloning its config on every debounced
-/// recompute stays a pointer bump) and borrows it into
-/// [`AnalysisContext::index`](crate::AnalysisContext::index), while every
-/// other client hands over a borrow of a value it owns for the run.
+/// Object-safe, and deliberately **not** `Send + Sync`. That bound would read as
+/// harmless prudence and would in fact rule out the incremental implementation
+/// this seam exists to serve: a salsa-backed index answers by calling tracked
+/// queries, so it must hold a borrow of the database handle, and salsa makes a
+/// database `Send` but **not** `Sync` on purpose — a handle belongs to one
+/// thread, and each worker gets its own snapshot clone. A `Send + Sync` trait
+/// object could therefore never be implemented over a snapshot.
+///
+/// Nothing is lost by dropping it. Sharing is required of the *handles that are
+/// actually shared* — the language server keeps its `Arc`-shaped index handle
+/// (KTD8) in its cloned configuration and builds the borrowing `&dyn` view
+/// inside the query that uses it — and an implementation that genuinely is
+/// shareable across threads still is: `oxabl_index::BatchIndex` pins its own
+/// `Send + Sync` in a test.
 ///
 /// There are exactly four queries and no client carve-outs. A client that
 /// cannot answer one of them answers [`IndexAnswer::NotFound`] for it — it
@@ -421,7 +429,7 @@ impl MemberDescriptor {
 /// implementation must never turn a salsa `Cancelled` (which travels as a panic
 /// payload) into `NotFound`; cancellation propagates, as it does through the
 /// unguarded `LintPipeline::expand`/`collect` in `oxabl_pipeline/src/lint.rs`.
-pub trait WorkspaceIndex: Send + Sync {
+pub trait WorkspaceIndex {
     /// Look up a class or interface by qualified name.
     ///
     /// The returned descriptor is `Arc`-wrapped so a memoizing implementation

@@ -45,6 +45,14 @@ const BATCH_REVISION: IndexRevision = IndexRevision::new(1);
 pub struct BatchIndex<'a> {
     fs: &'a dyn FileSystem,
     include_paths: &'a [PathBuf],
+    /// Files the run already knows it is going to read — the CLI walk's own
+    /// discovered file list, handed over by [`BatchIndex::seeded_with`].
+    ///
+    /// Consulted by exactly one query, [`BatchIndex::shared_producer`], and only
+    /// on its first call. See that method for why a `SHARED` name needs a file
+    /// set at all, and [`Memo::known_indexed`] for why the indexing is deferred
+    /// rather than done at construction.
+    known_files: &'a [PathBuf],
     /// Interior mutability because [`WorkspaceIndex`] takes `&self` — it has to,
     /// since the language server shares one index behind an `Arc` across
     /// threads, so the trait cannot ask for `&mut`.
@@ -103,27 +111,98 @@ struct Memo {
     /// outside this index, exactly as [`IndexedFileId`] documents. Starts at 1
     /// so a zero id never reads as a real file in a dump.
     next_file_id: u32,
+    /// Whether [`BatchIndex::known_files`] has been folded into `facts` yet.
+    ///
+    /// The seeded set is indexed **lazily**, on the first `shared_producer` call,
+    /// rather than eagerly in [`BatchIndex::new`]. Two reasons, both about R6's
+    /// "nothing is read until a name is looked up":
+    ///
+    /// * `shared_producer` is the only query that cannot derive a candidate path
+    ///   from its key, so it is the only one the set exists for. A run whose
+    ///   files declare no `DEFINE SHARED` consumer never asks, and must not pay
+    ///   for a parse of every file in the walk.
+    /// * Eager indexing would double the parse cost of the whole walk up front —
+    ///   once for facts, once for the real analysis — including for the files a
+    ///   run bails out before reaching.
+    ///
+    /// A flag rather than "is `facts` empty": the set may legitimately contribute
+    /// nothing new (every file already indexed by a class lookup), and re-running
+    /// the seed on every subsequent `shared_producer` call would re-`exists`-check
+    /// the whole walk per consumed name.
+    known_indexed: bool,
 }
 
 impl<'a> BatchIndex<'a> {
     /// Build an index over `fs` and `include_paths`. Reads nothing yet.
     ///
     /// Kept to the two things every client already has. The analysed file's own
-    /// identity — which a later unit needs so a file cannot resolve a name to
-    /// itself — arrives as a builder method on top of this, the way
-    /// `with_preprocess` sits on the pipeline's config: applied before any
-    /// lookup, so it cannot invalidate a memo entry that was computed without it.
+    /// identity — so a file cannot resolve a name to itself — is **not** state
+    /// here: it arrives per asking file through [`BatchIndex::excluding`], which
+    /// hands back a view rather than mutating the index. That is what lets one
+    /// index span a whole multi-file walk while each file in it excludes only
+    /// itself.
     pub fn new(fs: &'a dyn FileSystem, include_paths: &'a [PathBuf]) -> Self {
         BatchIndex {
             fs,
             include_paths,
+            known_files: &[],
             memo: RwLock::new(Memo {
                 facts: FxHashMap::default(),
                 classes: FxHashMap::default(),
                 programs: FxHashMap::default(),
                 next_file_id: 1,
+                known_indexed: false,
             }),
         }
+    }
+
+    /// Tell the index which files the run already knows it will read.
+    ///
+    /// Only [`shared_producer`](WorkspaceIndex::shared_producer) uses them, and
+    /// only because a `SHARED` name maps onto no path: with nothing to derive a
+    /// candidate from, the only honest answers are "enumerate the workspace" —
+    /// the scan R6 forbids, and one the [`FileSystem`] trait cannot perform
+    /// anyway, having no directory listing — or "consult the files this run
+    /// already knows about". This is that second set, and it is the walk's *own*
+    /// file list, never a directory scan.
+    ///
+    /// Apply before any lookup. A client with no such list (the language server,
+    /// the browser) simply does not call this, and behavior is exactly as
+    /// before: `shared_producer` then answers only from the files some other
+    /// lookup pulled in.
+    #[must_use]
+    pub fn seeded_with(mut self, known_files: &'a [PathBuf]) -> Self {
+        self.known_files = known_files;
+        self
+    }
+
+    /// A view of this index that answers as though the file at `path` did not
+    /// exist, leaving the memo — and therefore the whole run's I/O — shared.
+    ///
+    /// `None` excludes nothing, which is the right answer for a client that has
+    /// no path for the buffer it is analysing (the browser): a file with no
+    /// identity cannot collide with itself.
+    ///
+    /// # Why a view and not a field
+    ///
+    /// The exclusion varies per *asking file* while the memo must span the whole
+    /// **run** — those are different lifetimes. Storing the analysed path on the
+    /// index would force one index per file, which is exactly the shape that
+    /// makes the shared-dependency dedup stop paying: a hundred files inheriting
+    /// one base would read that base a hundred times.
+    pub fn excluding<'v>(&'v self, path: Option<&'v Path>) -> ExcludingFile<'v, 'a> {
+        ExcludingFile { index: self, path }
+    }
+
+    /// The id this run assigned to `path`, or `None` if nothing has indexed it.
+    ///
+    /// A memo probe only — it never reads. That is what makes it usable *after* a
+    /// lookup has answered: by then the file behind the answer is in `facts`, so
+    /// [`ExcludingFile`] can compare ids without having to know how the search
+    /// turned a name into a path.
+    fn indexed_id(&self, path: &Path) -> Option<IndexedFileId> {
+        let key = search::normalize_lexically(path);
+        self.memo().facts.get(&key).map(|facts| facts.file)
     }
 
     /// The memo, recovering from poisoning.
@@ -265,7 +344,16 @@ impl WorkspaceIndex for BatchIndex<'_> {
         // literal-`RUN` rule refuses to guess at, so it declines rather than
         // picking whichever file happened to be indexed first — which also keeps
         // the answer independent of `HashMap` iteration order.
-        let memo = self.memo();
+        let mut memo = self.memo();
+        // The seeded set, folded in on first ask. This is the only query it feeds,
+        // and deferring it to here is what keeps a run that consumes no `SHARED`
+        // name from parsing the whole walk — see `Memo::known_indexed`.
+        if !memo.known_indexed {
+            memo.known_indexed = true;
+            for path in self.known_files {
+                memo.facts_for(self.fs, path);
+            }
+        }
         let mut found = None;
         for facts in memo.facts.values() {
             if !facts.defines_shared(name) {
@@ -281,6 +369,92 @@ impl WorkspaceIndex for BatchIndex<'_> {
 
     fn revision(&self) -> IndexRevision {
         BATCH_REVISION
+    }
+}
+
+/// One asking file's view of a [`BatchIndex`]: every answer that would name the
+/// file being analysed becomes [`IndexAnswer::NotFound`].
+///
+/// Built by [`BatchIndex::excluding`]. The memo stays shared, so a walk of a
+/// thousand files still reads each dependency once while each file answers as if
+/// its own copy on disk were absent.
+///
+/// # Why a file must not resolve a name to itself
+///
+/// The client analyses a *buffer*, which for an editor is the unsaved text and
+/// for the CLI is the bytes it just read; the index answers from what is on
+/// disk. Letting the two meet would attribute the buffer's own — possibly
+/// stale — disk copy to it as a *foreign* file: a class would inherit from
+/// itself, and a `SHARED` consumer would be linked to a producer that is really
+/// its own earlier revision. Both are wrong answers of the kind this seam
+/// declines to guess at, so the file is excluded from its own lookups.
+///
+/// # How the exclusion is decided
+///
+/// By [`IndexedFileId`], **after** the underlying query has answered. The
+/// answers carry the id of the file they came from, and by the time one arrives
+/// the file behind it is in the memo, so the analysed path has an id to compare
+/// against. Deciding beforehand would not work: a file the run has not touched
+/// yet has no id at all.
+pub struct ExcludingFile<'v, 'a> {
+    index: &'v BatchIndex<'a>,
+    /// The analysed file, or `None` for a client with no path for its buffer.
+    path: Option<&'v Path>,
+}
+
+impl ExcludingFile<'_, '_> {
+    /// Whether `file` is the analysed file. `false` whenever there is no
+    /// identity to compare against, which is what makes the no-path client's
+    /// behavior identical to an unexcluded index.
+    fn is_analysed(&self, file: IndexedFileId) -> bool {
+        self.path
+            .and_then(|path| self.index.indexed_id(path))
+            .is_some_and(|analysed| analysed == file)
+    }
+}
+
+impl WorkspaceIndex for ExcludingFile<'_, '_> {
+    fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
+        match self.index.class(name) {
+            IndexAnswer::Found(descriptor) if self.is_analysed(descriptor.file) => {
+                IndexAnswer::NotFound
+            }
+            other => other,
+        }
+    }
+
+    fn class_members(&self, class: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
+        // The member list carries no file id of its own, so the owning class is
+        // asked for one first. That costs nothing: both queries read the same
+        // memo entry, so the pair is still one search and one parse.
+        if let IndexAnswer::Found(descriptor) = self.index.class(class)
+            && self.is_analysed(descriptor.file)
+        {
+            return IndexAnswer::NotFound;
+        }
+        self.index.class_members(class)
+    }
+
+    fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
+        match self.index.program(target) {
+            IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::NotFound,
+            other => other,
+        }
+    }
+
+    fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
+        match self.index.shared_producer(name) {
+            IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::NotFound,
+            other => other,
+        }
+    }
+
+    fn revision(&self) -> IndexRevision {
+        // The view is the same generation as what it views: it filters answers,
+        // it does not compute newer ones. Reporting anything else — least of all
+        // `ABSENT`, which means *no index* — would make a consumer's staleness
+        // check disagree with the index it actually asked.
+        self.index.revision()
     }
 }
 
@@ -656,6 +830,151 @@ mod tests {
     }
 
     #[test]
+    fn the_seeded_file_set_gives_a_shared_producer_link_with_no_run_to_pull_it_in() {
+        // The command-line shape: the walk knows every file it is about to read,
+        // so a `SHARED` consumer can be linked to its producer even though no
+        // `RUN` names the producing file. Without the seed this answers
+        // `NotFound`, which is the assertion in
+        // `a_shared_producer_is_found_among_the_files_the_run_indexed`.
+        let fs = CountingFs::new(&[
+            (
+                "/src/init-globals.p",
+                "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.",
+            ),
+            (
+                "/src/report.p",
+                "DEFINE SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.",
+            ),
+        ]);
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/init-globals.p", "/src/report.p"]);
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+
+        assert_eq!(
+            fs.reads_of("/src/init-globals.p"),
+            0,
+            "seeding reads nothing until a `SHARED` name is actually asked about"
+        );
+        let IndexAnswer::Found(producer) = index.shared_producer(&IndexName::new("v-site-code"))
+        else {
+            panic!("the seeded set contains the producer");
+        };
+        assert_eq!(fs.reads_of("/src/init-globals.p"), 1);
+        // Repeating the question must not re-index the set.
+        assert_eq!(
+            index.shared_producer(&IndexName::new("v-site-code")),
+            IndexAnswer::Found(producer)
+        );
+        assert_eq!(fs.reads_of("/src/init-globals.p"), 1);
+        assert_eq!(
+            index.shared_producer(&IndexName::new("v-never-defined")),
+            IndexAnswer::NotFound,
+            "a name nothing in the walk produces is still not found"
+        );
+    }
+
+    #[test]
+    fn a_seeded_file_is_the_same_entry_a_name_lookup_would_have_produced() {
+        // The seed must not mint a second identity for a file a lookup also
+        // reaches, or `shared_producer` would see one file as two producers.
+        let fs = CountingFs::new(&[(
+            "/src/init-globals.p",
+            "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.",
+        )]);
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/init-globals.p"]);
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+
+        let IndexAnswer::Found(via_run) = index.program(&IndexName::new("init-globals.p")) else {
+            panic!("the program is on the paths");
+        };
+        assert_eq!(
+            index.shared_producer(&IndexName::new("v-site-code")),
+            IndexAnswer::Found(via_run),
+            "one file, one id, however it was reached"
+        );
+        assert_eq!(fs.reads_of("/src/init-globals.p"), 1);
+    }
+
+    #[test]
+    fn an_excluded_file_answers_no_class_of_its_own() {
+        let fs = CountingFs::new(&[("/src/orders/calc-base.cls", PARENT)]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let name = IndexName::new("orders.calc-base");
+
+        // The control: with no identity, nothing is excluded — the browser's case.
+        let open = index.excluding(None);
+        assert!(matches!(open.class(&name), IndexAnswer::Found(_)));
+        assert!(matches!(open.class_members(&name), IndexAnswer::Found(_)));
+        assert_eq!(open.revision(), index.revision());
+
+        // Asking *as* that file: its own class must not come back, either as a
+        // descriptor or as a member list.
+        let itself = index.excluding(Some(Path::new("/src/orders/calc-base.cls")));
+        assert_eq!(itself.class(&name), IndexAnswer::NotFound);
+        assert_eq!(itself.class_members(&name), IndexAnswer::NotFound);
+        // A different file's view is unaffected, and the memo is shared, so the
+        // parent was still read exactly once across all three views.
+        let other = index.excluding(Some(Path::new("/src/orders/child.cls")));
+        assert!(matches!(other.class(&name), IndexAnswer::Found(_)));
+        assert_eq!(fs.reads_of("/src/orders/calc-base.cls"), 1);
+    }
+
+    #[test]
+    fn an_excluded_file_answers_no_program_or_shared_producer_of_its_own() {
+        let fs = CountingFs::new(&[(
+            "/src/init-globals.p",
+            "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.",
+        )]);
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/init-globals.p"]);
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+        let excluded = index.excluding(Some(Path::new("/src/init-globals.p")));
+
+        assert_eq!(
+            excluded.program(&IndexName::new("init-globals.p")),
+            IndexAnswer::NotFound,
+            "a file does not `RUN` itself into the index"
+        );
+        assert_eq!(
+            excluded.shared_producer(&IndexName::new("v-site-code")),
+            IndexAnswer::NotFound,
+            "and it is not its own SHARED producer — that link would name its \
+             own copy on disk"
+        );
+        // The same index, asked as a different file, still answers.
+        let other = index.excluding(Some(Path::new("/src/report.p")));
+        assert!(matches!(
+            other.shared_producer(&IndexName::new("v-site-code")),
+            IndexAnswer::Found(_)
+        ));
+    }
+
+    #[test]
+    fn a_path_spelled_differently_is_still_the_excluded_file() {
+        // Exclusion goes through the same lexical normalization the facts memo
+        // keys on, so a caller that spells the analysed path with a `.` or a `..`
+        // is not silently un-excluded.
+        let fs = CountingFs::new(&[("/src/orders/calc-base.cls", PARENT)]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let name = IndexName::new("orders.calc-base");
+        let spelled = index.excluding(Some(Path::new("/src/./orders/sub/../calc-base.cls")));
+        assert_eq!(spelled.class(&name), IndexAnswer::NotFound);
+    }
+
+    #[test]
+    fn an_excluding_view_is_shareable_across_threads() {
+        // `WorkspaceIndex` deliberately does *not* require `Send + Sync` (a
+        // salsa-snapshot-backed index could never satisfy it), so this
+        // implementation pins its own shareability rather than inheriting it.
+        // The view is what a client actually hands to the semantic layer.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ExcludingFile<'_, '_>>();
+    }
+
+    #[test]
     fn the_revision_is_never_absent() {
         let fs = InMemoryFileSystem::new();
         let paths = Vec::new();
@@ -665,8 +984,9 @@ mod tests {
 
     #[test]
     fn the_index_is_shareable_across_threads() {
-        // `WorkspaceIndex` requires `Send + Sync`; the memo's interior mutability
-        // is the only reason that could fail, so pin it.
+        // Not inherited from `WorkspaceIndex`, which deliberately carries no such
+        // bound — this implementation claims it for itself. The memo's interior
+        // mutability is the only reason the claim could fail, so pin it.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BatchIndex<'_>>();
 

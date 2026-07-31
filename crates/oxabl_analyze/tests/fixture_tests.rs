@@ -56,7 +56,10 @@ fn diagnostic_codes(dump: &Value) -> Vec<String> {
 
 fn assert_envelope_sane(dump: &Value) {
     assert_eq!(dump["envelope"], 1);
-    for section in [
+    // Presence and numeric type only, deliberately: a section version *bumps*
+    // whenever that section's rows change shape, so pinning the numbers here
+    // would turn every legitimate bump into a fixture-test failure.
+    let names = [
         "scopes",
         "symbols",
         "types",
@@ -64,7 +67,10 @@ fn assert_envelope_sane(dump: &Value) {
         "diagnostics",
         "preproc",
         "coverage",
-    ] {
+        "dependencies",
+    ];
+    assert_eq!(names.len(), 8, "the envelope emits eight sections");
+    for section in names {
         assert!(
             dump["sections"][section].is_number(),
             "{section} must carry a version"
@@ -79,6 +85,24 @@ fn assert_envelope_sane(dump: &Value) {
     // so the next coverage fact is an added key rather than a new section.
     assert!(dump["preproc"].is_array());
     assert!(dump["coverage"]["unjudged_symbols"].is_u64());
+    // `dependencies` is an object for the same reason `coverage` is: the next
+    // index fact is an added key, not a ninth section. Empty-but-present on a
+    // file with nothing cross-file about it — these fixtures are all single-file
+    // and analyzed with no index, so `index_revision` is 0 and both arrays are
+    // empty, which is a shape a consumer can index into unconditionally.
+    assert!(
+        dump["dependencies"].is_object(),
+        "dependencies is an object"
+    );
+    assert_eq!(dump["dependencies"]["index_revision"], 0);
+    assert_eq!(
+        dump["dependencies"]["files"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        dump["dependencies"]["unresolved"].as_array().map(Vec::len),
+        Some(0)
+    );
 }
 
 // ---------------------------------------------------------------------------

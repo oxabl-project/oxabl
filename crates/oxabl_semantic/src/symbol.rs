@@ -201,6 +201,31 @@ pub struct Supertypes {
     pub implements: Vec<SupertypeRef>,
 }
 
+/// What the index answered when the chain walk asked about one class name.
+///
+/// Recorded per name the walk actually asked about — a class's own declared
+/// supertypes, and every ancestor reached through them — so the *outcome* of a
+/// cross-file class lookup survives the walk that made it. Nothing else in the
+/// model carries it: a supertype that resolved mints no symbol (the members it
+/// contributes do), so without this record a parent no file declares is
+/// indistinguishable from one that resolved and contributed nothing.
+///
+/// Bookkeeping only. No pass branches on it and no rule may read it — it exists
+/// so the analyze envelope can report which files a run consulted and which
+/// lookups came back empty, which is the evidence a dependency-extraction
+/// consumer needs and the only way the absent-parent case is observable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassLookup {
+    /// The index found it, in this file.
+    Linked(IndexedFileId),
+    /// Searched on the configured paths and genuinely absent — or located and
+    /// unusable, which [`IndexAnswer::NotFound`](crate::IndexAnswer::NotFound)
+    /// folds in for the reason KTD4 gives.
+    Absent,
+    /// The index declined to choose between candidates.
+    Unknowable,
+}
+
 /// A declared name. Identity is the `SymbolId` issued by [`SymbolTable`];
 /// two declarations of the same name in overlapping scopes are distinct
 /// symbols.
@@ -397,6 +422,20 @@ struct SymbolSideMaps {
     /// bytes on `Symbol` cost the declare pass 17–25%, and this map is absent
     /// entirely from a run with no index attached.
     inherited_member_types: FxHashMap<SymbolId, ResolvedType>,
+    /// Every class name the resolve pass's chain walk asked the index about, and
+    /// what came back. Keyed by the **folded** class name, since that is the
+    /// index's own identity for a name and two spellings of one class must not
+    /// produce two entries.
+    ///
+    /// Keyed by name rather than by [`SymbolId`] because most of these names have
+    /// no symbol in this table: a resolved supertype contributes members, not a
+    /// symbol of its own, and an absent one contributes nothing at all. That is
+    /// exactly why the map is needed — see [`ClassLookup`].
+    ///
+    /// A side map for the reason [`Self::supertypes`] documents, and absent
+    /// entirely from a run with no index attached or one whose classes nobody
+    /// inherits from.
+    class_lookups: FxHashMap<OxablAtom, ClassLookup>,
 }
 
 impl SymbolTable {
@@ -525,6 +564,30 @@ impl SymbolTable {
     /// attached, so nothing was synthesized.
     pub fn inherited_member_type(&self, sym: SymbolId) -> Option<&ResolvedType> {
         self.side.as_deref()?.inherited_member_types.get(&sym)
+    }
+
+    /// Record what the index answered for class name `name`. Only the resolve
+    /// pass's chain walk calls this, once per name per walk; a repeat overwrites
+    /// with the same answer, since the index is keyed by name and total.
+    pub fn record_class_lookup(&mut self, name: &OxablAtom, lookup: ClassLookup) {
+        self.side_mut().class_lookups.insert(name.clone(), lookup);
+    }
+
+    /// What the index answered for folded class name `name`, or `None` when no
+    /// walk ever asked about it — which is the common case: with no index
+    /// attached nothing is asked, and a file whose classes inherit nothing asks
+    /// nothing either.
+    pub fn class_lookup(&self, name: &OxablAtom) -> Option<ClassLookup> {
+        self.side.as_deref()?.class_lookups.get(name).copied()
+    }
+
+    /// Every class lookup this run made, in **unspecified order** — a hash map's
+    /// order, so a consumer that renders these must sort them itself.
+    pub fn class_lookups(&self) -> impl Iterator<Item = (&OxablAtom, ClassLookup)> {
+        self.side
+            .as_deref()
+            .into_iter()
+            .flat_map(|side| side.class_lookups.iter().map(|(n, l)| (n, *l)))
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

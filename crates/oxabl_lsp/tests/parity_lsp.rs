@@ -14,6 +14,7 @@
 //!
 //! Every fixture is synthetic ABL from the shared table.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use lsp_types::PositionEncodingKind;
@@ -26,17 +27,31 @@ use oxabl_pipeline::{FormatPipeline, PipelineConfig};
 use oxabl_workspace::InMemoryFileSystem;
 use ropey::Rope;
 
+/// Where this leg roots a fixture's files — the same directory the pipeline and
+/// browser legs use, so all three resolve over one set of spellings.
+fn root() -> &'static Path {
+    Path::new(fixtures::PARITY_ROOT)
+}
+
 /// A database configured exactly as the live server is for a project with no
 /// `oxabl.toml`: the resolved all-defaults configuration, preprocessing on, and
-/// a filesystem for include reads.
+/// a filesystem for include reads and cross-file lookups.
 ///
-/// The filesystem is empty because the include fixture is *unresolvable* on
-/// purpose — the loud `PREPROC007` is the point, not a successful expansion.
-fn db_with(config: PipelineConfig) -> AnalysisDatabase {
+/// The filesystem holds the fixture's sibling files and nothing else. For a
+/// single-file fixture that means it is empty — the include row is
+/// *unresolvable* on purpose, so the loud `PREPROC007` is the point rather than a
+/// successful expansion.
+///
+/// Nothing is shared with the other legs but the fixture: this database builds its
+/// own salsa-backed index, and that two different backends answer identically is
+/// the property being asserted. (A `SnapshotIndex` borrows its database and is
+/// deliberately not `Sync`, so it could not be shared even if that were wanted.)
+fn db_with(config: PipelineConfig, fs: InMemoryFileSystem) -> AnalysisDatabase {
     AnalysisDatabase::new(AnalysisConfig {
-        fs: Arc::new(InMemoryFileSystem::new()),
+        fs: Arc::new(fs),
         pipeline: Arc::new(config),
         preprocess: true,
+        ..Default::default()
     })
 }
 
@@ -44,19 +59,30 @@ fn db_with(config: PipelineConfig) -> AnalysisDatabase {
 /// rope rather than handing the `&str` straight to the buffer is deliberate — it
 /// is what the server does on `didOpen`, and a rope round-trip that lost bytes
 /// would shift every span this leg compares.
-fn buffer(db: &AnalysisDatabase, source: &str) -> Buffer {
-    let rope = Rope::from_str(source);
+///
+/// The buffer carries the fixture's path, as a real `didOpen` does: it is what
+/// excludes the analysed file from its own cross-file lookups.
+fn buffer(db: &AnalysisDatabase, fixture: &ParityFixture) -> Buffer {
+    let rope = Rope::from_str(fixture.source);
     assert_eq!(
         rope.to_string(),
-        source,
+        fixture.source,
         "the rope must round-trip the source"
     );
-    Buffer::new(db, rope.to_string())
+    Buffer::new(db, rope.to_string(), Some(fixture.root_path(root())))
 }
 
 fn observed(fixture: &ParityFixture, config: PipelineConfig) -> Vec<ObservedDiagnostic> {
-    let db = db_with(config);
-    let buffer = buffer(&db, fixture.source);
+    observed_over(fixture, config, fixture.filesystem_under(root()))
+}
+
+fn observed_over(
+    fixture: &ParityFixture,
+    config: PipelineConfig,
+    fs: InMemoryFileSystem,
+) -> Vec<ObservedDiagnostic> {
+    let db = db_with(config, fs);
+    let buffer = buffer(&db, fixture);
     let schema = SchemaHandle::new(&db, 0);
     let diagnostics = compute_diagnostics(&db, buffer, schema)
         .expect("an uncontended snapshot read is never cancelled");
@@ -79,7 +105,10 @@ fn document(source: &str) -> Document {
 #[test]
 fn every_fixture_matches_the_shared_table_through_the_queries() {
     for fixture in FIXTURES {
-        fixture.assert_diagnostics("lsp queries", observed(fixture, fixture.config()));
+        fixture.assert_diagnostics(
+            "lsp queries",
+            observed(fixture, fixture.config_under(root())),
+        );
     }
 }
 
@@ -88,7 +117,7 @@ fn every_fixture_matches_the_shared_table_through_the_queries() {
 fn the_clean_fixture_yields_no_diagnostics() {
     let fixture = fixtures::fixture("clean");
     assert!(
-        observed(fixture, fixture.config()).is_empty(),
+        observed(fixture, fixture.config_under(root())).is_empty(),
         "a clean buffer must produce nothing"
     );
 }
@@ -98,7 +127,7 @@ fn the_clean_fixture_yields_no_diagnostics() {
 #[test]
 fn a_parse_error_yields_the_same_recovered_set() {
     let fixture = fixtures::fixture("parse_error");
-    let observed = observed(fixture, fixture.config());
+    let observed = observed(fixture, fixture.config_under(root()));
     fixture.assert_diagnostics("lsp queries", observed.clone());
     assert!(
         observed.iter().any(|d| d.code == "PARSE001")
@@ -113,7 +142,7 @@ fn a_parse_error_yields_the_same_recovered_set() {
 #[test]
 fn the_loud_include_warning_is_published() {
     let fixture = fixtures::fixture("unresolvable_include");
-    let observed = observed(fixture, fixture.config());
+    let observed = observed(fixture, fixture.config_under(root()));
     fixture.assert_diagnostics("lsp queries", observed.clone());
     assert!(observed.iter().any(|d| d.code == "PREPROC007"));
 }
@@ -123,7 +152,10 @@ fn the_loud_include_warning_is_published() {
 #[test]
 fn the_schema_gated_fixture_needs_a_loaded_schema() {
     let fixture = fixtures::fixture("unknown_field");
-    fixture.assert_diagnostics("lsp queries", observed(fixture, fixture.config()));
+    fixture.assert_diagnostics(
+        "lsp queries",
+        observed(fixture, fixture.config_under(root())),
+    );
     assert!(
         observed(fixture, fixtures::canonical_config()).is_empty(),
         "with no schema loaded the rule must be inert"
@@ -135,8 +167,11 @@ fn the_schema_gated_fixture_needs_a_loaded_schema() {
 #[test]
 fn a_memoized_recompute_returns_the_same_set() {
     for fixture in FIXTURES {
-        let db = db_with(fixture.config());
-        let buffer = buffer(&db, fixture.source);
+        let db = db_with(
+            fixture.config_under(root()),
+            fixture.filesystem_under(root()),
+        );
+        let buffer = buffer(&db, fixture);
         let schema = SchemaHandle::new(&db, 0);
         let first = compute_diagnostics(&db, buffer, schema).unwrap();
         let second = compute_diagnostics(&db, buffer, schema).unwrap();
@@ -180,6 +215,44 @@ fn the_non_ascii_fixture_keeps_bytes_and_renders_utf16_columns() {
         "UTF-8 negotiation asks for the byte column, 0-based"
     );
     assert_ne!(utf8.character, utf16.character);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file resolution (R7)
+// ---------------------------------------------------------------------------
+
+/// Every cross-file row answers through the salsa queries exactly as the table
+/// says, with the siblings supplied and with them withheld.
+///
+/// This is the leg with a *different index backend*: the server answers from
+/// per-file salsa inputs keyed and invalidated individually, where the other three
+/// answer from the batch memo. Identical answers from two memoization strategies
+/// over the same supplied files is the property R7 asks for — the clients differ
+/// in what they cache, not in what they resolve.
+#[test]
+fn cross_file_fixtures_resolve_through_the_salsa_queries() {
+    for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+        let supplied = observed(fixture, fixture.config_under(root()));
+        fixture.assert_diagnostics("lsp queries (siblings supplied)", supplied.clone());
+
+        // Same include path, empty filesystem: the files are the only variable.
+        let withheld = observed_over(
+            fixture,
+            fixture.config_under(root()),
+            InMemoryFileSystem::new(),
+        );
+        fixture.assert_diagnostics_without_siblings("lsp queries (siblings withheld)", withheld);
+
+        if fixture.siblings_change_the_answer() {
+            assert_ne!(
+                fixtures::normalize(supplied),
+                fixture.expected_without_siblings(),
+                "fixture `{}`: the two halves must differ, or the supplied half \
+                 would pass for a server that never looked",
+                fixture.name
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +302,7 @@ fn formatting_edits_agree_with_the_shared_table() {
 #[test]
 fn a_per_rule_severity_override_changes_only_the_severity() {
     let fixture = fixtures::fixture(fixtures::OVERRIDE_FIXTURE);
-    let baseline = observed(fixture, fixture.config());
+    let baseline = observed(fixture, fixture.config_under(root()));
     let overridden = observed(fixture, fixtures::config_with_override());
 
     let target = overridden

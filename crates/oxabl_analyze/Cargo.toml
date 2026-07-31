@@ -20,4 +20,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
+# Tests only: the cross-file envelope tests run the *real* batch index over an
+# in-memory filesystem rather than a hand-written stub, so what they pin is the
+# dump every client emits. `oxabl_index` sits above this crate at run time and
+# must never become a normal dependency of it.
+oxabl_index = { path = "../oxabl_index", version = "0.1.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = ["test-support"] }

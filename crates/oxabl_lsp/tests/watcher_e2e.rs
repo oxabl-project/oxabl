@@ -1,6 +1,11 @@
 //! U8 end-to-end: `workspace/didChangeWatchedFiles` drives recompute for
 //! `oxabl.toml` changes (R17) and idle `*.i` changes (R17), and does nothing
 //! for an include no buffer depends on.
+//!
+//! U11 extends the watch to the root source extensions, so a workspace file
+//! changing on disk reaches the buffers that resolved against it (R10). The
+//! registration test below pins that the three original globs are still there;
+//! `cross_file_invalidation.rs` covers what the new ones do.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -125,6 +130,63 @@ fn has_lint(p: &PublishDiagnosticsParams, code: &str) -> bool {
     p.diagnostics
         .iter()
         .any(|d| d.code == Some(NumberOrString::String(code.to_string())))
+}
+
+/// The dynamic registration must cover the root source extensions **and** keep the
+/// three globs it has always carried.
+///
+/// Registration is fire-and-forget — the server sends a `client/registerCapability`
+/// request and never looks for the response — so the message itself is the only
+/// place this is observable. Asserting on it is what stops the new globs from
+/// arriving at the cost of a dropped `*.i` or `*.df`, which would silently disable
+/// include re-triggering and schema hot-reload.
+#[test]
+fn watcher_registration_covers_the_original_globs_and_every_root_extension() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let main = tmp.path().join("main.p");
+
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+    handshake(&client);
+    open(&client, &file_uri(&main), "MESSAGE \"hi\".\n");
+
+    // Drain until the registration arrives (diagnostics publishes interleave).
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut globs: Vec<String> = Vec::new();
+    while std::time::Instant::now() < deadline && globs.is_empty() {
+        let Ok(Message::Request(req)) = client
+            .receiver
+            .recv_timeout(deadline - std::time::Instant::now())
+        else {
+            continue;
+        };
+        if req.method != "client/registerCapability" {
+            continue;
+        }
+        globs = req.params["registrations"][0]["registerOptions"]["watchers"]
+            .as_array()
+            .expect("watchers is an array")
+            .iter()
+            .map(|w| w["globPattern"].as_str().unwrap().to_string())
+            .collect();
+    }
+
+    for original in ["**/*.i", "**/*.df", "**/oxabl.toml"] {
+        assert!(
+            globs.iter().any(|g| g == original),
+            "the pre-existing glob {original} must still be registered, got {globs:?}"
+        );
+    }
+    for ext in oxabl_workspace::ROOT_EXTENSIONS {
+        let expected = format!("**/*.{ext}");
+        assert!(
+            globs.contains(&expected),
+            "every root extension must be watched; {expected} is missing from {globs:?}"
+        );
+    }
+
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
 }
 
 #[test]

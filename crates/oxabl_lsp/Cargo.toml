@@ -13,7 +13,13 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 # loader *through* `oxabl_pipeline` and `oxabl_analyze` — it names none of them
 # directly. Keep it that way: a direct edge back to a layer beneath the shared
 # run is how a client starts assembling its own.
+#
+# The shared fact extraction and the shared name-to-path search. This crate
+# supplies only the *memoization* (salsa, per file); the questions and the
+# resolution policy stay in one place (R7, KTD2).
+oxabl_index = { path = "../oxabl_index", version = "0.1.0" }
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 anyhow = "1"
