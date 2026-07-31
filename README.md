@@ -37,7 +37,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - Status: Shipped — the browser playground runs the real thing, entirely client-side. `oxabl_wasm` is a thin JSON adapter over the same `oxabl_pipeline` lint and format handles the CLI and the language server drive, so a diagnostic and a reformat in the browser match what you get after installing. That match is now a test, not a claim: a cross-client parity suite asserts the same source yields identical codes, severities, byte spans, and sources through the pipeline, the CLI, the LSP, and these bindings. It caught a real divergence on its first run — two rules came back at a different severity in the browser because a directly-constructed config and a resolved one carried different default severity tables. The first slice is deliberately single-file: no includes, no `.df` schema (so `unknown-table-or-field` is inert), and no `oxabl.toml`, so per-rule severity and style config don't apply. Those are *absent capabilities*, not different behavior — the parity suite asserts they are unavailable rather than asserting a different answer. The website serves the released artifact and the UI around it; this repo owns the build.
 - Conformance harness
   - A real-world test suite to ensure oxabl is conformant with all ABL fragments and the compiler
-  - Status: oxabl uses a private corpus and has started building a public, open-source corpus that will feature several real-world example ABL projects to make use of as many ABL built-ins as possible.
+  - Status: oxabl is building a public, open-source corpus featuring several real-world example ABL projects, to exercise as many ABL built-ins as possible.
 - Linter
   - Lint rule engine
   - Public API for creating new lint rules and submitting them upstream for inclusion in oxabl's default rule set
@@ -51,23 +51,23 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 
 ## Project Status
 
-The lexer, source map, ast, and parser crates are passing 100% of our test suite against our corpus.
+The lexer, source map, ast, and parser crates are stable and green across the workspace test suite.
 
 Requirements:
 - `oxabl_lexer`: Stable in `crates/oxabl_lexer`.
   - Produces tokens against all known ABL keywords, primitive datatypes, operators, and identifiers.
-  - Correctly tokenises our corpus.
+  - Correctly tokenises the full keyword, operator, and literal surface, including abbreviations.
   - Benchmarks and token dumps in `crates/oxabl_lexer/benches` and `crates/oxabl_lexer/examples` using a test file in `resources/bench_keywords.abl`.
   - No new features planned, the lexer is complete, and will (most likely) only receive bug fixes and performance improvements.
 - `source_map`: Stable in `crates/oxabl_common`.
   - Produces line and column numbers from byte offsets stored in tokens.
   - Used in our token dumps and benchmarks.
-  - Souce maps generated from the corpus line up to it's source accurately.
-  - No new features planned, the source_map is complete, and will (most likely) only receive bug fixes and performance improvemnets.
+  - Source maps line up to their source accurately.
+  - No new features planned, the source_map is complete, and will (most likely) only receive bug fixes and performance improvements.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
   - MVP complete, still getting new features to support better diagnostics and formatting.
-- `oxabl_parser`: MVP has been completed, parses 100% of our corpus code base. Parses:
+- `oxabl_parser`: MVP has been completed. Parses:
   - Expressions with proper operator precedence
   - Declarations
   - Statements
