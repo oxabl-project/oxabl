@@ -67,6 +67,24 @@ fn parse_success_envelope_shape_preserved() {
     }
     assert!(v["sections"]["coverage"].is_number());
     assert!(v["coverage"]["unjudged_symbols"].is_u64());
+    // `dependencies` is the eighth section and, like `coverage`, an object — so
+    // the next index fact is an added key rather than a ninth section. Present
+    // and empty for a file with nothing cross-file about it, never missing.
+    assert!(v["sections"]["dependencies"].is_number());
+    assert!(v["dependencies"].is_object());
+    assert!(v["dependencies"]["index_revision"].is_u64());
+    assert!(v["dependencies"]["files"].as_array().unwrap().is_empty());
+    assert!(
+        v["dependencies"]["unresolved"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        v["sections"].as_object().unwrap().len(),
+        8,
+        "the envelope emits eight versioned sections"
+    );
     // No parse errors in a clean file.
     let diags = v["diagnostics"].as_array().unwrap();
     assert!(
@@ -183,6 +201,89 @@ fn analyze_is_hidden_from_help_but_fully_usable() {
     // And it still runs — `analyze_json` asserts success internally.
     let v = analyze_json("MESSAGE \"hi\".\n", false);
     assert_eq!(v["envelope"], 1);
+}
+
+/// The cross-file contract, end to end through the built binary and in **both**
+/// formats: a child class analysed with its parent on the include path shows the
+/// inherited member with its return type, the call site resolving to it, and the
+/// parent's file as a consulted dependency. Text output carries the same section —
+/// which is the property `preproc` and `coverage` lost for as long as the CLI
+/// spliced them into the finished JSON.
+///
+/// Fixtures are synthetic ABL, and the temp directory is the only path involved.
+#[test]
+fn a_cross_file_child_reports_its_inherited_member_in_both_formats() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    write(
+        &src.join("orders/calc-base.cls"),
+        "CLASS orders.calc-base:\n    METHOD PUBLIC INTEGER calc-total():\n        RETURN 0.\n    END METHOD.\nEND CLASS.\n",
+    );
+    let child = src.join("orders/child.cls");
+    write(
+        &child,
+        "CLASS orders.child INHERITS orders.calc-base:\n    METHOD PUBLIC VOID run-it():\n        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n        v-total = calc-total().\n        MESSAGE v-total.\n    END METHOD.\nEND CLASS.\n",
+    );
+
+    let json_out = oxabl()
+        .arg("analyze")
+        .arg("--format")
+        .arg("json")
+        .arg("-I")
+        .arg(&src)
+        .arg(&child)
+        .output()
+        .unwrap();
+    assert!(json_out.status.success(), "{json_out:?}");
+    let v: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+
+    let member = v["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "calc-total")
+        .expect("the inherited member is dumped");
+    assert_eq!(member["data_type"], "integer");
+    assert_eq!(member["data_type_source"], "inherited");
+    assert_eq!(member["origin"], "cross_file");
+
+    let sid = member["id"].as_u64().unwrap();
+    assert!(
+        v["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["symbol"].as_u64() == Some(sid) && r["origin"] == "cross_file"),
+        "the call site must resolve cross-file"
+    );
+    assert!(
+        v["dependencies"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["via"] == "class" && f["name"] == "orders.calc-base"),
+        "the parent's file is a consulted dependency: {}",
+        v["dependencies"]
+    );
+    assert!(v["dependencies"]["index_revision"].as_u64().unwrap() > 0);
+
+    let text_out = oxabl()
+        .arg("analyze")
+        .arg("--format")
+        .arg("text")
+        .arg("-I")
+        .arg(&src)
+        .arg(&child)
+        .output()
+        .unwrap();
+    assert!(text_out.status.success(), "{text_out:?}");
+    let text = String::from_utf8_lossy(&text_out.stdout);
+    assert!(text.contains("=== Dependencies ==="), "got:\n{text}");
+    assert!(text.contains("class orders.calc-base"), "got:\n{text}");
+    assert!(
+        text.contains("integer(inherited)"),
+        "the inherited return type must show in text too, got:\n{text}"
+    );
 }
 
 /// Introspection, not a gate (KTD9): a file full of findings is still exit 0.
