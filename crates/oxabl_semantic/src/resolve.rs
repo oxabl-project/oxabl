@@ -38,8 +38,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, IndexAnswer, IndexName, IndexedFileId,
     MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind,
-    ScopeTree, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, builtins, diagnostics,
-    resolve_span,
+    ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
+    builtins, diagnostics, resolve_span,
 };
 
 /// Resolution of a single reference site. Populated by Phase 4a; the type
@@ -1212,23 +1212,6 @@ struct CrossFileState {
     /// indexed class
     /// symbol apart from a locally declared one.
     indexed_class_of: FxHashMap<SymbolId, IndexName>,
-    /// Declarations whose `AS CLASS <name>` named a class only the index could
-    /// find: the declared symbol, mapped to the synthesized class symbol.
-    ///
-    /// Deliberately **not** written into `Symbol::data_type`. A real
-    /// `ResolvedType::Class` there would widen the type lattice, so `DEFINE
-    /// VARIABLE v AS CLASS MyApp.Cache. v = 5.` would start reporting
-    /// `type-mismatch-assignment` the moment an index was attached — a *correct*
-    /// finding that nonetheless does not exist today, which is exactly what R11
-    /// forbids this phase from adding.
-    ///
-    /// Inheritance widening (`coercion::ClassLattice`) does not change that: it
-    /// removes the subclass-to-parent false positive, and says nothing about a
-    /// class assigned to a primitive. This map and the matching `check.rs` arm
-    /// therefore both stand until the follow-up unit turns the rules onto the
-    /// cross-file population and judges the drift; the map carries exactly the
-    /// fact member resolution needs and nothing the type checker can see.
-    indexed_receiver_class: FxHashMap<SymbolId, SymbolId>,
     /// One synthesized `Procedures` symbol per external program a literal `RUN`
     /// resolved to, so two `RUN post-order.p` sites in one file point at the
     /// *same* symbol rather than minting one each.
@@ -1607,6 +1590,47 @@ impl<'a> ResolveWalker<'a> {
         let cf = self.cross_file_mut();
         cf.synth_classes.insert(name.clone(), sym);
         cf.indexed_class_of.insert(sym, name.clone());
+        // The class's own header, recorded on the symbol the same way a local
+        // header's is. Needed the moment a cross-file class became a real
+        // `ResolvedType::Class`: `coercion::ClassLattice` climbs from a value's
+        // class through `SymbolTable::supertypes`, so a synthesized class with no
+        // entry looks like a class that inherits nothing — and a subclass assigned
+        // into its parent-typed variable reads as a mismatch. That would be a
+        // false positive minted by attaching an index, on the one shape
+        // inheritance widening exists to allow.
+        //
+        // Every supertype span points at the *use site* in this file, since the
+        // header is in another one and no span of it is available here. That is
+        // what the spans are for anyway — a diagnostic about an unresolvable
+        // parent must underline something the reader can see.
+        if let IndexAnswer::Found(descriptor) = self.ctx.index.class(name) {
+            let refs = |names: &[IndexName]| -> Vec<SupertypeRef> {
+                names
+                    .iter()
+                    .map(|n| SupertypeRef {
+                        name: n.clone(),
+                        name_span: use_span,
+                    })
+                    .collect()
+            };
+            let inherits = descriptor.inherits.as_ref().map(|n| SupertypeRef {
+                name: n.clone(),
+                name_span: use_span,
+            });
+            let implements = refs(&descriptor.implements);
+            // Nothing recorded when the header named nothing, which is what keeps
+            // "declares no parent" distinguishable from "declares one that
+            // resolved to nothing".
+            if inherits.is_some() || !implements.is_empty() {
+                self.symbols.record_supertypes(
+                    sym,
+                    Supertypes {
+                        inherits,
+                        implements,
+                    },
+                );
+            }
+        }
         sym
     }
 
@@ -1622,15 +1646,14 @@ impl<'a> ResolveWalker<'a> {
         for decl in decls {
             match decl {
                 ClassTypedDecl::Local(sid, rt) => self.symbols.get_mut(sid).data_type = Some(rt),
-                // A class only the workspace knows. The link goes in a side map
-                // rather than into `data_type` — see `indexed_receiver_class` for
-                // why the type lattice must not learn about it in this unit.
+                // A class only the workspace knows. Written into `data_type`
+                // exactly as the local branch above does: the declaration's type
+                // *is* that class, and holding the link in a side map instead was
+                // the valve that kept the type lattice from learning it.
                 ClassTypedDecl::Foreign(sid, name, span) => {
                     match self.resolve_type_in_workspace(name.as_written(), span) {
                         TypeLookup::Indexed(class) => {
-                            self.cross_file_mut()
-                                .indexed_receiver_class
-                                .insert(sid, class);
+                            self.symbols.get_mut(sid).data_type = Some(ResolvedType::Class(class));
                         }
                         // Nothing to link. The declaration keeps `Unknown`,
                         // which is what it has today, and a member access
@@ -3098,7 +3121,8 @@ impl<'a> ResolveWalker<'a> {
     /// * the receiver resolved *to* an indexed class symbol — a type name used
     ///   as a receiver, or a `NEW` of one;
     /// * the receiver resolved to a declaration whose `AS CLASS` named an
-    ///   indexed class (see [`CrossFileState::indexed_receiver_class`]).
+    ///   indexed class — read off the declaration's own
+    ///   `ResolvedType::Class`, which is where that link now lives.
     ///
     /// A locally declared class is deliberately not handled: its members live in
     /// the scope tree, not the index, and resolving them is a different job that
@@ -3114,7 +3138,16 @@ impl<'a> ResolveWalker<'a> {
         if cf.indexed_class_of.contains_key(sym) {
             return Some(*sym);
         }
-        cf.indexed_receiver_class.get(sym).copied()
+        // A declaration typed as a class: qualify only when that class came from
+        // the index, which `indexed_class_of` is the record of. A locally
+        // declared class's members live in the scope tree, and resolving them is
+        // a different job that does not work today either.
+        match self.symbols.get(*sym).data_type {
+            Some(ResolvedType::Class(class)) if cf.indexed_class_of.contains_key(&class) => {
+                Some(class)
+            }
+            _ => None,
+        }
     }
 
     /// A receiver identifier that resolved to nothing local may still be a

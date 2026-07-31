@@ -23,6 +23,7 @@ mod support;
 
 use oxabl_ast::{NodeId, RunTarget, Statement, StatementKind};
 use oxabl_lexer::oxabl_atom::OxablAtom;
+use oxabl_lint::LINT0004;
 use oxabl_semantic::{
     NamespaceId, PrimitiveTy, Resolution, ResolvedType, SymbolKind, UnresolvedReason,
 };
@@ -428,44 +429,63 @@ fn twenty_references_to_one_member_synthesize_it_once() {
 }
 
 // ---------------------------------------------------------------------------
-// The type lattice must not learn about a cross-file class in this unit
+// A cross-file class is a type the lattice knows
 // ---------------------------------------------------------------------------
 
 #[test]
-fn resolving_a_cross_file_class_produces_no_type_mismatch_finding() {
-    // The R11 firewall, on the three shapes that would break it. Each one is a
-    // genuine mistake that `type-mismatch-assignment` *would* report the moment
-    // a cross-file class became a real `ResolvedType::Class`: `assignable`
-    // compares class symbols by identity and knows nothing about inheritance.
-    // Until assignability is widened deliberately, a workspace class stays at
-    // the lattice bottom — which is exactly where a class-typed declaration
-    // whose class lives in another file already sits today.
-    let shapes = [
+fn a_cross_file_class_is_judged_in_both_assignment_directions() {
+    // The three shapes the old firewall was written to hold back, each a genuine
+    // mistake `type-mismatch-assignment` reports the moment a cross-file class
+    // becomes a real `ResolvedType::Class`. Two of them now fire; the third does
+    // not, and the split is the deferred `:`-qualified boundary rather than
+    // anything about classes.
+    //
+    // Both directions matter because the rule reads the target's type and the
+    // value's type from different places — `target_type` off the symbol,
+    // the value off the `types` side table — so one direction firing proves
+    // nothing about the other.
+    let judged = [
         // A `NEW` of a workspace class assigned to a primitive.
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
-         v-count = NEW cache().\n",
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+             v-count = NEW cache().\n",
+            "INTEGER",
+        ),
         // A primitive assigned to a workspace-class-typed variable.
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
-         v-cache = 5.\n",
-        // A workspace-class-typed variable assigned from a method return.
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
-         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
-         v-count = v-cache:fetch-label().\n",
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+             v-cache = 5.\n",
+            "myapp.cache",
+        ),
     ];
-    for source in shapes {
-        assert_eq!(
-            lint0004_with_index(source, &WORKSPACE),
-            lint0004_without_index(source),
-            "attaching an index must not change what LINT0004 says about:\n{source}"
+    for (source, expected_in_message) in judged {
+        let found = lint0004_with_index(source, &WORKSPACE);
+        assert_eq!(found.len(), 1, "one mismatch for:\n{source}\ngot {found:?}");
+        assert!(
+            found[0].message.contains(expected_in_message),
+            "the message names the ABL type: {}",
+            found[0].message
         );
         assert!(
-            lint0004_with_index(source, &WORKSPACE).is_empty(),
-            "and today it says nothing about any of these:\n{source}"
+            lint0004_without_index(source).is_empty(),
+            "and it is the index that makes the verdict possible:\n{source}"
         );
     }
+
+    // The third shape: a method return read through `:`-qualified access. The
+    // member resolves and carries its declared type, but `check.rs` types the
+    // *call expression* as `Unknown` without consulting it, so there is nothing
+    // for the rule to compare. Deliberate, and scoped out of this phase.
+    let colon_qualified = "USING myapp.cache.\n\
+         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+         v-count = v-cache:fetch-label().\n";
+    assert!(
+        lint0004_with_index(colon_qualified, &WORKSPACE).is_empty(),
+        "a `:`-qualified member call is not typed yet"
+    );
 }
 
 #[test]
@@ -490,19 +510,16 @@ fn a_locally_declared_class_still_types_as_itself() {
 }
 
 #[test]
-fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
-    // The phase's central property, swept over every `USING` / `NEW` / member-access
-    // fixture in this file at once and across **all six** lint rules plus the
-    // semantic pass. `resolving_a_cross_file_class_produces_no_type_mismatch_finding`
-    // above covers three class-typed shapes through LINT0004 only; this covers every
-    // shape through every rule, which is what makes a rule nobody thought about the
-    // sweep's problem rather than a reviewer's.
-    //
-    // The mismatched fixtures come first, and they are the reason the sweep is not
-    // vacuous: a *member*'s declared type reaching the lattice is a separate route
-    // from a *class*'s, and every member fixture below happened to type-match its
-    // assignment (`v-label AS CHARACTER = v-cache:fetch-label()`), so none of them
-    // could observe it.
+fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
+    // Every `USING` / `NEW` / member-access fixture in this file, swept at once
+    // across all six lint rules plus the semantic pass. It used to assert that
+    // attaching an index added nothing anywhere; the enumeration below is what it
+    // adds now, and the shape of the answer is worth reading twice: a *class*
+    // reaching the lattice produces findings, and a *member* reached through
+    // `:`-qualified access still does not, because `check.rs` types every
+    // `MethodCall` and `MemberAccess` as `Unknown` regardless of what it resolved
+    // to. That asymmetry is the deferred boundary, visible here as the mismatched
+    // member fixtures staying silent while the two class-typed ones fire.
     let mismatched = [
         // A `CHARACTER`-returning method on an imported instance, into an INTEGER.
         instance_source("v-count = v-cache:fetch-label()."),
@@ -580,9 +597,31 @@ fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
         "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n".to_string(),
     ];
 
+    // The two shapes that gain a finding, named by their source rather than by an
+    // index into the list above, so the expectation survives a fixture being
+    // reordered and reads as a statement about ABL rather than about array
+    // positions.
+    let judged = [
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+         v-count = NEW cache().\n",
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+         v-cache = 5.\n",
+    ];
+
+    let mut gained: Vec<(&str, Vec<&str>)> = Vec::new();
     for source in mismatched.iter().chain(&scenarios) {
-        assert_index_adds_no_diagnostic(source, &WORKSPACE);
+        let added = codes_added_by_index(source, &WORKSPACE);
+        if !added.is_empty() {
+            gained.push((source.as_str(), added));
+        }
     }
+    let expected: Vec<(&str, Vec<&str>)> = judged.iter().map(|s| (*s, vec![LINT0004])).collect();
+    assert_eq!(
+        gained, expected,
+        "these and only these `USING` shapes gain a finding when an index is attached"
+    );
 }
 
 #[test]

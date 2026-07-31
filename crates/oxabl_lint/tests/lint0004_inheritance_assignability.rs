@@ -270,18 +270,20 @@ v-other = NEW child-cls().
 }
 
 // ---------------------------------------------------------------------------
-// Cross-file: silent today, and the reason is asserted
+// Cross-file: silent because the lattice widens, and the reason is asserted
 // ---------------------------------------------------------------------------
 
 #[test]
 fn a_child_assigned_to_a_cross_file_parent_typed_variable_is_silent() {
-    // The child is declared here; the parent lives in another file. Silent —
-    // but *not* because the walk ran: the `AS CLASS orders.base` declaration is
-    // never upgraded past `ResolvedType::Unknown` (resolve's
-    // `indexed_receiver_class` keeps the cross-file link out of the type
-    // lattice), so the rule has nothing to compare. The lattice is what will
-    // carry this case once that firewall lifts; until then the assertion below
-    // pins the real cause, so this test cannot go quietly inert.
+    // The child is declared here; the parent lives in another file. Silent — and
+    // now for the reason the rule is supposed to be silent for: the declaration
+    // carries the workspace class as its type, the value carries the local child's,
+    // and `ClassLattice` climbs from child to parent and allows the assignment.
+    //
+    // It used to be silent because the declaration never got past
+    // `ResolvedType::Unknown` — the cross-file link was parked in a side map so it
+    // could not reach the lattice. The assertion below is what keeps the test from
+    // going quietly inert either way: it pins the cause, not just the silence.
     let source = r#"CLASS orders.child INHERITS orders.base:
 END CLASS.
 
@@ -296,14 +298,16 @@ v-base = NEW orders.child().
         matches!(value_type(&stmts, &sem), ResolvedType::Class(_)),
         "the locally declared child does type as a real class"
     );
-    assert_eq!(
-        declared_type(&sem, "v-base"),
-        Some(ResolvedType::Unknown),
-        "the cross-file parent-typed declaration stays at the lattice bottom — \
-         that, not the chain walk, is why this is silent today"
+    assert!(
+        matches!(declared_type(&sem, "v-base"), Some(ResolvedType::Class(_))),
+        "the cross-file parent-typed declaration carries that class as its type — \
+         so the chain walk, not a missing type, is what makes this silent"
     );
 
-    // And with no index attached, exactly the same answer: the R11 firewall.
+    // With no index attached the declaration has no class to name, so it stays at
+    // the lattice bottom and is silent for the older, weaker reason. Both legs
+    // silent, different mechanisms — which is why attaching an index cannot add a
+    // finding on this shape.
     let (_stmts, plain_sem, plain_diags) = lint(source);
     assert!(plain_diags.is_empty(), "unexpected diags: {plain_diags:?}");
     assert_eq!(
@@ -314,10 +318,12 @@ v-base = NEW orders.child().
 
 #[test]
 fn a_cross_file_child_assigned_to_a_local_parent_typed_variable_is_silent() {
-    // The mirror image: the parent is local, the child lives elsewhere. Silent
-    // because `check`'s firewall types an index-synthesized class as `Unknown`,
-    // which is asserted rather than assumed. When that arm is removed this
-    // assertion fails, and the chain walk must be what keeps the case silent.
+    // The mirror image: the parent is local, the child lives elsewhere. It used to
+    // be silent because `check` typed an index-synthesized class as `Unknown`; with
+    // that arm gone, the value is a real class type and the chain walk is what
+    // keeps the case silent — the synthesized child carries the supertypes the
+    // index read from its header, so `ClassLattice` can climb from it to the local
+    // parent.
     let source = r#"CLASS parent-cls:
 END CLASS.
 
@@ -331,11 +337,10 @@ v-parent = NEW orders.child().
 
     let (stmts, sem, diags) = lint_with_index(source, &workspace);
     assert!(diags.is_empty(), "unexpected diags: {diags:?}");
-    assert_eq!(
-        value_type(&stmts, &sem),
-        ResolvedType::Unknown,
-        "an index-synthesized class is held at the lattice bottom by the \
-         firewall in `oxabl_semantic::check` — that is why this is silent"
+    assert!(
+        matches!(value_type(&stmts, &sem), ResolvedType::Class(_)),
+        "an index-synthesized class types as itself now, so the silence has to \
+         come from the lattice"
     );
     assert!(
         matches!(
@@ -367,4 +372,79 @@ v-ghost = v-n.
             "a class nothing declares stays at the lattice bottom {label}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The declaration's own type, promoted out of the side map
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_declaration_typed_as_a_workspace_class_judges_a_primitive_assignment() {
+    // `AS CLASS orders.base` where only the workspace declares `orders.base`. The
+    // link used to live in a side map that member resolution read and the lattice
+    // could not; it is the declaration's `data_type` now, so assigning a primitive
+    // into it is the mismatch it always was.
+    let source = r#"DEFINE VARIABLE v-base AS CLASS orders.base NO-UNDO.
+v-base = 5.
+"#;
+    let workspace = [("/src/orders/base.cls", "CLASS orders.base: END CLASS.")];
+
+    let (_stmts, sem, diags) = lint_with_index(source, &workspace);
+    assert!(
+        matches!(declared_type(&sem, "v-base"), Some(ResolvedType::Class(_))),
+        "the declaration carries the workspace class as its type"
+    );
+    assert_eq!(diags.len(), 1, "one mismatch: {diags:?}");
+    assert!(
+        diags[0].message.contains("orders.base") && diags[0].message.contains("INTEGER"),
+        "and it names both ABL types: {}",
+        diags[0].message
+    );
+
+    // Without an index the class name resolves to nothing, the declaration keeps
+    // `Unknown`, and the rule has nothing to compare — the former behavior, intact.
+    let (_stmts, plain_sem, plain_diags) = lint(source);
+    assert_eq!(
+        declared_type(&plain_sem, "v-base"),
+        Some(ResolvedType::Unknown)
+    );
+    assert!(plain_diags.is_empty());
+}
+
+#[test]
+fn member_access_through_a_workspace_class_typed_declaration_still_resolves() {
+    // The side map's other reader. Member resolution used to find the class link
+    // in `indexed_receiver_class`; it reads the declaration's own
+    // `ResolvedType::Class` instead, so this must keep working — a resolved member
+    // is what proves the deletion did not cost a resolution.
+    let source = r#"DEFINE VARIABLE v-base AS CLASS orders.base NO-UNDO.
+DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+v-total = v-base:calc-total().
+"#;
+    let workspace = [(
+        "/src/orders/base.cls",
+        "CLASS orders.base:\n    METHOD PUBLIC INTEGER calc-total():\n        RETURN 0.\n    END METHOD.\nEND CLASS.",
+    )];
+
+    let (_stmts, sem, _diags) = lint_with_index(source, &workspace);
+    let resolved = sem.references.iter().any(|(_, r)| {
+        matches!(r, oxabl_semantic::Resolution::Resolved(sym)
+            if sem.symbols.get(*sym).name.as_ref() == "calc-total")
+    });
+    assert!(
+        resolved,
+        "the member still resolves through the declaration's class type"
+    );
+}
+
+#[test]
+fn a_new_of_a_workspace_class_assigned_into_an_integer_is_a_mismatch() {
+    let source = r#"DEFINE VARIABLE v-count AS INTEGER NO-UNDO.
+v-count = NEW orders.base().
+"#;
+    let workspace = [("/src/orders/base.cls", "CLASS orders.base: END CLASS.")];
+
+    let (_stmts, _sem, diags) = lint_with_index(source, &workspace);
+    assert_eq!(diags.len(), 1, "one mismatch: {diags:?}");
+    assert!(lint(source).2.is_empty(), "and nothing without an index");
 }

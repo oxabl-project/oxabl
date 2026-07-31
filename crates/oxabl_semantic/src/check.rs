@@ -17,8 +17,8 @@
 //! default to `Unknown` so cascading diagnostics are suppressed.
 
 use oxabl_ast::{
-    AssignPair, CreateTarget, Expression, ExpressionKind, Literal, NodeId, OnAction, OnKind,
-    RunTarget, Statement, StatementKind, StreamOperation, SubscribeTarget,
+    AssignPair, CreateTarget, Expression, ExpressionKind, Literal, OnAction, OnKind, RunTarget,
+    Statement, StatementKind, StreamOperation, SubscribeTarget,
 };
 use oxabl_common::Diagnostic;
 
@@ -558,43 +558,15 @@ impl<'a> CheckWalker<'a> {
                 // expression that resolves *to* a class symbol (e.g. `NEW
                 // Foo(...)`) has type `Class(Foo)`.
                 match symbol.kind {
-                    // A class symbol *synthesized from the workspace index*
-                    // (`declaration == NodeId::DUMMY`, per KTD6's conventions)
-                    // deliberately does not produce a `Class` type yet. It could:
-                    // the symbol is real and shared by every reference to that
-                    // class.
-                    //
-                    // **Assignability now understands inheritance** —
-                    // `coercion::assignable` takes a `ClassLattice` and widens a
-                    // subclass to a parent or an implemented interface — so the
-                    // one shape this firewall was originally written to hold back
-                    // is fixed. It stays anyway, and the reason is arithmetic:
-                    // lifting it re-enables *three* assignment shapes, and
-                    // widening fixes exactly one of them. The other two are
-                    // genuinely type-mismatched code that would become **new
-                    // true-positive findings**:
-                    //
-                    //   * `DEFINE VARIABLE v-count AS INTEGER.
-                    //      v-count = NEW myapp.cache().` — a class into an
-                    //     integer;
-                    //   * a class-typed variable assigned a primitive.
-                    //
-                    // New findings, even correct ones, break R11: the A/B over a
-                    // real codebase must come back identical, and the single
-                    // admissible delta is the removed in-file subclass-to-parent
-                    // false positive. Turning cross-file types into diagnostics
-                    // is the *follow-up* unit's job — the one that flips the
-                    // rules onto the newly-resolvable population, where drift is
-                    // expected and judged deliberately. **The follow-up that turns
-                    // the lint rules onto the cross-file population owns removing
-                    // this arm.** Until then a cross-file class stays at
-                    // the lattice bottom, exactly where a class-typed declaration
-                    // whose class lives in another file already sits.
-                    SymbolKind::Class | SymbolKind::Interface
-                        if symbol.declaration == NodeId::DUMMY =>
-                    {
-                        ResolvedType::Unknown
-                    }
+                    // A class symbol synthesized from the workspace index types
+                    // as its class, exactly like a locally declared one. It used
+                    // to type as the lattice bottom so that attaching an index
+                    // could add no finding; judging the cross-file population is
+                    // what re-enables the three assignment shapes that arm held
+                    // back — a subclass into a parent (which `ClassLattice`
+                    // widening already made correct), a class into a primitive,
+                    // and a primitive into a class-typed variable. The last two
+                    // are genuinely mismatched code.
                     SymbolKind::Class | SymbolKind::Interface => ResolvedType::Class(*sym),
                     SymbolKind::Buffer | SymbolKind::TempTable => ResolvedType::Buffer(*sym),
                     _ => symbol.data_type.clone().unwrap_or(ResolvedType::Unknown),
