@@ -260,7 +260,7 @@ pub enum ExtensionPolicy {
     /// programs, so the walk picks the conventional extensions and nothing else.
     WalkRoots,
     /// Anything except `.i`. What a **literal `RUN` target** should accept,
-    /// because the author wrote the path: `RUN cv/table_rec_count.pp` names that
+    /// because the author wrote the path: `RUN util/row-count.pp` names that
     /// file and no other, and oxabl declining to look because `.pp` is not one of
     /// the four conventional extensions makes it report a file that plainly
     /// exists as absent from the workspace. `.i` stays excluded — the one
@@ -631,16 +631,16 @@ mod tests {
         // exists as absent from the workspace, which is the one claim a search must
         // not make wrongly.
         let mut fs = InMemoryFileSystem::new();
-        fs.insert(PathBuf::from("/src/cv/table_rec_count.pp"), "MESSAGE 1.");
+        fs.insert(PathBuf::from("/src/util/row-count.pp"), "MESSAGE 1.");
         let paths = vec![PathBuf::from("/src")];
         assert_eq!(
             find_name(
                 &fs,
                 &paths,
-                &IndexName::new("cv/table_rec_count.pp"),
+                &IndexName::new("util/row-count.pp"),
                 NameKind::Program
             ),
-            IndexAnswer::Found(PathBuf::from("/src/cv/table_rec_count.pp"))
+            IndexAnswer::Found(PathBuf::from("/src/util/row-count.pp"))
         );
     }
 

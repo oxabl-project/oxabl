@@ -4595,9 +4595,9 @@ impl Parser<'_> {
             // two apart without having to classify the following keyword.
             //
             // The rule used to be "anywhere on the same line", and `RUN` is usable
-            // as an identifier, so `RUN outputHeader. RUN GetWarehouseList.`
+            // as an identifier, so `RUN write-header. RUN build-list.`
             // consumed the period and the next statement's keyword into the target
-            // name — yielding `outputHeader. RUN`, a name nobody wrote, which
+            // name — yielding `write-header. RUN`, a name nobody wrote, which
             // became a diagnostic once `undefined-symbol` began reporting absent
             // targets.
             let period_end = self.tokens[self.current].end;

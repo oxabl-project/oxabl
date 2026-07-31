@@ -4664,9 +4664,9 @@ fn parse_run_target_stops_at_the_period_before_another_statement() {
     // `RUN a. RUN b.` on one line. The target-name scan accepts a dotted method
     // name on the same line, and `RUN` is usable as an identifier, so it used to
     // consume the period and the next statement's keyword into the name — yielding
-    // the target `outputHeader. RUN` and, once cross-file resolution began
+    // the target `write-header. RUN` and, once cross-file resolution began
     // reporting absent targets, a diagnostic about a name nobody wrote.
-    let source = "RUN outputHeader. RUN GetWarehouseList.";
+    let source = "RUN write-header. RUN build-list.";
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
@@ -4681,7 +4681,7 @@ fn parse_run_target_stops_at_the_period_before_another_statement() {
             _ => None,
         })
         .collect();
-    assert_eq!(names, vec!["outputHeader", "GetWarehouseList"]);
+    assert_eq!(names, vec!["write-header", "build-list"]);
 }
 
 #[test]
