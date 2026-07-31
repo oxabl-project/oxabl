@@ -297,6 +297,29 @@ pub struct SymbolTable {
     /// symbol nor allocates. The `block-var-used-outside` analysis (LINT0005)
     /// uses it to classify a reference as inside/outside the defining block.
     block_defined: FxHashMap<SymbolId, ScopeId>,
+    /// The four **class-and-cross-file** side maps, behind one `Option<Box<…>>`
+    /// so a table that needs none of them costs one word rather than four empty
+    /// hash maps.
+    ///
+    /// Same lesson as the maps themselves, one level up. Inline, they grew
+    /// `SymbolTable` from 88 to 216 bytes; a `SymbolTable` is built once per
+    /// analysis, and on a small file per-run setup *is* the measurement (the
+    /// sibling `ResolveWalker::cross_file` note records a ~10% `tiny/resolve`
+    /// regression from exactly this shape). The overwhelmingly common file
+    /// declares no class and is analyzed with no index attached, so it should
+    /// carry none of this.
+    ///
+    /// Created on the first write. Every reader treats `None` as "no entry",
+    /// which is the same answer an empty map gives, so no consumer can tell the
+    /// difference.
+    side: Option<Box<SymbolSideMaps>>,
+}
+
+/// The `SymbolTable` side maps only a class-bearing file or an index-backed run
+/// populates. Reached exclusively through `SymbolTable`'s accessors, which is
+/// what lets the box be created lazily without any caller knowing.
+#[derive(Debug, Default)]
+struct SymbolSideMaps {
     /// The supertypes each `Class` / `Interface` symbol's header named, recorded
     /// by the declare pass and consumed by the resolve pass's chain walk.
     ///
@@ -361,7 +384,7 @@ pub struct SymbolTable {
     /// A `SymbolFlags` bit would not do the job — it would have to be honored at
     /// *both* read sites above, and a third reader added later would silently
     /// ignore it. A side map cannot be read by accident: nothing reaches the type
-    /// except through [`Self::inherited_member_type`].
+    /// except through [`SymbolTable::inherited_member_type`].
     ///
     /// **The follow-up that turns the lint rules onto the cross-file population
     /// owns promoting this onto `Symbol::data_type`** — the same unit that owns
@@ -418,39 +441,46 @@ impl SymbolTable {
         self.rebinding_scopes.entry(sym).or_default().push(scope);
     }
 
+    /// The side maps, created on first write. Private: the box is an allocation
+    /// detail, and every reader goes through an accessor that treats an absent
+    /// box as an absent entry.
+    fn side_mut(&mut self) -> &mut SymbolSideMaps {
+        self.side.get_or_insert_with(Default::default)
+    }
+
     /// Record the supertypes `sym`'s class or interface header named.
     ///
     /// Only called for a header that named at least one, so a class with no
     /// parent has no entry — which is what makes "declares no parent"
     /// distinguishable from "declares one that resolved to nothing".
     pub fn record_supertypes(&mut self, sym: SymbolId, supertypes: Supertypes) {
-        self.supertypes.insert(sym, supertypes);
+        self.side_mut().supertypes.insert(sym, supertypes);
     }
 
     /// The supertypes `sym`'s header named, or `None` when it named none (or
     /// `sym` is not a class or interface at all).
     pub fn supertypes(&self, sym: SymbolId) -> Option<&Supertypes> {
-        self.supertypes.get(&sym)
+        self.side.as_deref()?.supertypes.get(&sym)
     }
 
     /// Record that synthesized program symbol `sym` is supplied by indexed file
     /// `file`. Only the resolve pass calls this, and only for a symbol it
     /// synthesized from a resolved literal `RUN` target.
     pub fn record_program_file(&mut self, sym: SymbolId, file: IndexedFileId) {
-        self.program_files.insert(sym, file);
+        self.side_mut().program_files.insert(sym, file);
     }
 
     /// The indexed file supplying `sym`, or `None` when `sym` is not a
     /// synthesized external-program symbol — which includes every locally
     /// declared `PROCEDURE`, since a local declaration is supplied by this file.
     pub fn program_file(&self, sym: SymbolId) -> Option<IndexedFileId> {
-        self.program_files.get(&sym).copied()
+        self.side.as_deref()?.program_files.get(&sym).copied()
     }
 
     /// Record that `DEFINE SHARED` consumer `sym` corresponds to the
     /// `DEFINE NEW [GLOBAL] SHARED` definition in `file`.
     pub fn record_shared_producer(&mut self, sym: SymbolId, file: IndexedFileId) {
-        self.shared_producers.insert(sym, file);
+        self.side_mut().shared_producers.insert(sym, file);
     }
 
     /// The file producing the `SHARED` name `sym` consumes, or `None` when no
@@ -462,15 +492,16 @@ impl SymbolTable {
     /// wants the link or nothing; the reason a link is absent is the index's
     /// business, not the symbol table's.
     pub fn shared_producer(&self, sym: SymbolId) -> Option<IndexedFileId> {
-        self.shared_producers.get(&sym).copied()
+        self.side.as_deref()?.shared_producers.get(&sym).copied()
     }
 
     /// Record the declared type of synthesized inherited-member symbol `sym`.
     /// Only the resolve pass calls this, and only for a member it synthesized
-    /// from the workspace index. See [`Self::inherited_member_types`] for why the
+    /// from the workspace index. See [`SymbolSideMaps::inherited_member_types`] for
+    /// why the
     /// type is *not* written to `sym`'s `data_type`.
     pub fn record_inherited_member_type(&mut self, sym: SymbolId, ty: ResolvedType) {
-        self.inherited_member_types.insert(sym, ty);
+        self.side_mut().inherited_member_types.insert(sym, ty);
     }
 
     /// The declared type of synthesized inherited-member symbol `sym` — a
@@ -484,7 +515,8 @@ impl SymbolTable {
     /// directly, and a real type there makes LINT0004 report assignments it says
     /// nothing about without an index — which is exactly the property this phase
     /// must hold. The full argument is on
-    /// [`Self::inherited_member_types`]; the follow-up that turns the lint rules
+    /// [`SymbolSideMaps::inherited_member_types`]; the follow-up that turns the lint
+    /// rules
     /// onto the cross-file population owns promoting it.
     ///
     /// `None` covers three different situations, none of which is a type: `sym`
@@ -492,7 +524,7 @@ impl SymbolTable {
     /// no type (`VOID`, or a method declared without one); or no index was
     /// attached, so nothing was synthesized.
     pub fn inherited_member_type(&self, sym: SymbolId) -> Option<&ResolvedType> {
-        self.inherited_member_types.get(&sym)
+        self.side.as_deref()?.inherited_member_types.get(&sym)
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

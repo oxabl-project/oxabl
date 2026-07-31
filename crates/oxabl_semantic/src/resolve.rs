@@ -1115,8 +1115,36 @@ struct ResolveWalker<'a> {
     synth_buffers: FxHashMap<TableId, SymbolId>,
     /// The class whose body the walk is currently inside, if any. An inherited
     /// member is only reachable from within its subclass, so this is the gate on
-    /// consulting [`Self::inherited`] at all.
+    /// consulting [`CrossFileState::inherited`] at all.
+    ///
+    /// Stays on the walker rather than moving into [`CrossFileState`]: it is one
+    /// word, and it is assigned on the ordinary class-walk path rather than from
+    /// behind an index gate, so boxing it would buy nothing and cost a branch.
     current_class: Option<SymbolId>,
+    /// Everything cross-file resolution needs, and **nothing a single-file run
+    /// touches** — behind one `Option<Box<…>>` so a run with no index attached
+    /// pays one word for the whole apparatus.
+    ///
+    /// This is a measured shape, not a stylistic one. Inline, the nine
+    /// containers inside grew `ResolveWalker` from 296 to 608 bytes, and
+    /// constructing and dropping nine empty hash containers per pass cost the
+    /// `tiny/resolve` benchmark ~10% of its instruction count — a fixture small
+    /// enough that per-run setup *is* the measurement. It is the same lesson
+    /// `SymbolTable`'s side maps record: this crate's hot structs are sensitive
+    /// to bytes, and machinery a run never uses must not be sitting in them.
+    ///
+    /// `None` is indistinguishable from empty at every read site (see
+    /// [`Self::cross_file`]), so the resolution answers are identical either way.
+    cross_file: Option<Box<CrossFileState>>,
+}
+
+/// The resolve pass's cross-file state: memos, synthesized-symbol caches, and the
+/// inherited-member surface. Reached only from behind an `index_loaded` gate.
+///
+/// Created lazily on the first write, so even a run *with* an index attached that
+/// never resolves anything across a file boundary allocates nothing.
+#[derive(Default)]
+struct CrossFileState {
     /// Classes whose supertype chain has already been walked. Holds the *class*,
     /// not the member: the walk is the expensive half (one index lookup per
     /// ancestor), so it is memoized once per class no matter how many members of
@@ -1179,7 +1207,8 @@ struct ResolveWalker<'a> {
     /// Reverse of [`Self::synth_classes`]. Two jobs: it is how a member lookup
     /// re-derives the index key from a class symbol (the symbol's own `name` is
     /// the *folded* spelling, which cannot derive a path on a case-sensitive
-    /// filesystem), and it is how [`Self::member_role`] tells an indexed class
+    /// filesystem), and it is how [`ResolveWalker::walk_member_surface`] tells an
+    /// indexed class
     /// symbol apart from a locally declared one.
     indexed_class_of: FxHashMap<SymbolId, IndexName>,
     /// Declarations whose `AS CLASS <name>` named a class only the index could
@@ -1216,6 +1245,22 @@ struct ResolveWalker<'a> {
 /// it, and [`UnresolvedReason::Unknowable`] is skip-listed by every rule, so no
 /// renderer ever reaches it.
 const COMPUTED_TARGET: &str = "";
+
+/// `ResolveWalker` is constructed once per resolve pass, and on a small file that
+/// construction *is* the measurement: the `tiny/resolve` benchmark regressed ~10%
+/// on instruction count when nine cross-file containers were added inline, taking
+/// the struct from 296 to 608 bytes. Moving them behind
+/// [`ResolveWalker::cross_file`] brought it back.
+///
+/// So the size is pinned. A new field that pushes past the bound is not
+/// necessarily wrong — but it must be a deliberate decision made against a
+/// benchmark, not one discovered by CodSpeed after the fact. Prefer
+/// [`CrossFileState`] (or a `SymbolTable` side map) for anything the common
+/// single-file run does not touch; raise the bound only with a measurement.
+const _: () = assert!(
+    std::mem::size_of::<ResolveWalker<'_>>() <= 320,
+    "ResolveWalker grew: see the note above this assertion before raising the bound"
+);
 
 /// Where a type name was found, and therefore what a miss on it means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1318,17 +1363,48 @@ impl<'a> ResolveWalker<'a> {
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
             current_class: None,
-            inherited_walked: FxHashSet::default(),
-            inherited: FxHashMap::default(),
-            inherited_inaccessible: FxHashSet::default(),
-            using_types: Vec::new(),
-            using_prefixes: Vec::new(),
-            type_lookups: FxHashMap::default(),
-            synth_classes: FxHashMap::default(),
-            indexed_class_of: FxHashMap::default(),
-            indexed_receiver_class: FxHashMap::default(),
-            synth_programs: FxHashMap::default(),
+            // Deliberately not created here, not even when an index *is*
+            // attached: the first cross-file write creates it, so the cost is
+            // paid by the run that has something to put in it.
+            cross_file: None,
         }
+    }
+
+    /// Read side of the cross-file state.
+    ///
+    /// `None` means "nothing has been recorded", which every caller must treat
+    /// exactly as it treats an empty map — that equivalence is what makes the
+    /// boxing invisible to resolution. A caller reaching this without an index
+    /// attached therefore still gets today's answer rather than a wrong one.
+    fn cross_file(&self) -> Option<&CrossFileState> {
+        self.cross_file.as_deref()
+    }
+
+    /// Write side of the cross-file state, created on first use.
+    ///
+    /// Every call site sits behind an `ctx.index_loaded` gate, so this allocates
+    /// only on a run that has an index to resolve against. Returning `&mut`
+    /// rather than an `Option` is what keeps the call sites readable; the price
+    /// is that it borrows all of `self`, so a site that also needs
+    /// `self.symbols` must scope the borrow (see [`Self::lookup_inherited`]).
+    fn cross_file_mut(&mut self) -> &mut CrossFileState {
+        self.cross_file.get_or_insert_with(Default::default)
+    }
+
+    /// The file's explicit `USING <package>.<Name>` imports — empty when no
+    /// index is attached, because nothing collected them.
+    ///
+    /// A slice accessor rather than `cross_file()?.using_types` because the
+    /// search below indexes it in a loop whose body needs `&mut self`, and
+    /// threading an `Option` through that is how an off-by-one gets in.
+    fn using_types(&self) -> &[(OxablAtom, IndexName)] {
+        self.cross_file().map_or(&[], |cf| &cf.using_types)
+    }
+
+    /// The file's wildcard `USING <package>.*` prefixes — empty for the reason
+    /// [`Self::using_types`] gives.
+    fn using_prefixes(&self) -> &[String] {
+        self.cross_file().map_or(&[], |cf| &cf.using_prefixes)
     }
 
     /// Record the file's `USING` imports before anything tries to resolve a
@@ -1354,13 +1430,17 @@ impl<'a> ResolveWalker<'a> {
                 // `USING MyApp.Services.*` — names no single class, so it
                 // resolves to nothing and instead widens the set of prefixes an
                 // unqualified name is tried against.
-                Some(prefix) => self.using_prefixes.push(prefix.to_string()),
+                Some(prefix) => self
+                    .cross_file_mut()
+                    .using_prefixes
+                    .push(prefix.to_string()),
                 // `USING MyApp.Services.Cache` — makes `Cache` mean this one
                 // qualified name. Stored under the simple name, since that is
                 // the spelling a later reference will use.
                 None => {
                     let simple = type_name.rsplit('.').next().unwrap_or(type_name);
-                    self.using_types
+                    self.cross_file_mut()
+                        .using_types
                         .push((fold_atom(simple), IndexName::new(type_name)));
                 }
             }
@@ -1425,11 +1505,17 @@ impl<'a> ResolveWalker<'a> {
         // case-sensitive memo has to be at least as case-sensitive, or it
         // reintroduces the poisoning the lower one avoided.
         let key = OxablAtom::from(raw);
-        if let Some(hit) = self.type_lookups.get(&key) {
-            return *hit;
+        // `copied()` ends the borrow on the memo before the miss path takes
+        // `&mut self` below.
+        if let Some(hit) = self
+            .cross_file()
+            .and_then(|cf| cf.type_lookups.get(&key))
+            .copied()
+        {
+            return hit;
         }
         let answer = self.search_type_in_workspace(raw, use_span);
-        self.type_lookups.insert(key, answer);
+        self.cross_file_mut().type_lookups.insert(key, answer);
         answer
     }
 
@@ -1444,21 +1530,21 @@ impl<'a> ResolveWalker<'a> {
         let simple = fold_atom(raw);
         // Indexed rather than iterated: the loop body needs `&mut self` to mint
         // a symbol, and the candidate is cloned out before that borrow starts.
-        for i in 0..self.using_types.len() {
-            if self.using_types[i].0 != simple {
+        for i in 0..self.using_types().len() {
+            if self.using_types()[i].0 != simple {
                 continue;
             }
-            let candidate = self.using_types[i].1.clone();
+            let candidate = self.using_types()[i].1.clone();
             if let Some(answer) = self.try_indexed_class(&candidate, use_span) {
                 return answer;
             }
         }
-        for i in 0..self.using_prefixes.len() {
+        for i in 0..self.using_prefixes().len() {
             // One allocation per (name, prefix) pair actually tried, on a path
             // that runs once per distinct name in the file and only with an
             // index attached — `type_lookups` absorbs every repeat.
-            let mut qualified = String::with_capacity(self.using_prefixes[i].len() + raw.len());
-            qualified.push_str(&self.using_prefixes[i]);
+            let mut qualified = String::with_capacity(self.using_prefixes()[i].len() + raw.len());
+            qualified.push_str(&self.using_prefixes()[i]);
             qualified.push_str(raw);
             let candidate = IndexName::new(&qualified);
             if let Some(answer) = self.try_indexed_class(&candidate, use_span) {
@@ -1501,8 +1587,12 @@ impl<'a> ResolveWalker<'a> {
         kind: ClassKind,
         use_span: VirtualSpan,
     ) -> SymbolId {
-        if let Some(sym) = self.synth_classes.get(name) {
-            return *sym;
+        if let Some(sym) = self
+            .cross_file()
+            .and_then(|cf| cf.synth_classes.get(name))
+            .copied()
+        {
+            return sym;
         }
         let sym = self.symbols.insert(Symbol::synthesized(
             name.as_atom().clone(),
@@ -1513,8 +1603,9 @@ impl<'a> ResolveWalker<'a> {
             },
             use_span,
         ));
-        self.synth_classes.insert(name.clone(), sym);
-        self.indexed_class_of.insert(sym, name.clone());
+        let cf = self.cross_file_mut();
+        cf.synth_classes.insert(name.clone(), sym);
+        cf.indexed_class_of.insert(sym, name.clone());
         sym
     }
 
@@ -1536,7 +1627,9 @@ impl<'a> ResolveWalker<'a> {
                 ClassTypedDecl::Foreign(sid, name, span) => {
                     match self.resolve_type_in_workspace(name.as_written(), span) {
                         TypeLookup::Indexed(class) => {
-                            self.indexed_receiver_class.insert(sid, class);
+                            self.cross_file_mut()
+                                .indexed_receiver_class
+                                .insert(sid, class);
                         }
                         // Nothing to link. The declaration keeps `Unknown`,
                         // which is what it has today, and a member access
@@ -1838,9 +1931,17 @@ impl<'a> ResolveWalker<'a> {
                     // inherits. Saved and restored rather than assigned, so a
                     // nested declaration cannot leak its class outward.
                     let outer = self.current_class;
-                    self.current_class =
+                    // Gated, because the only reader is `lookup_inherited`, which
+                    // returns `Absent` without an index. Left `None` on a
+                    // single-file run this costs nothing; ungated it would intern
+                    // an atom and walk the scope chain once per `CLASS` for an
+                    // answer nothing would ever ask for.
+                    self.current_class = if self.ctx.index_loaded {
                         self.tree
-                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name));
+                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name))
+                    } else {
+                        None
+                    };
                     self.walk_block(body, cs);
                     self.current_class = outer;
                 }
@@ -2836,8 +2937,12 @@ impl<'a> ResolveWalker<'a> {
         use_span: VirtualSpan,
         file: IndexedFileId,
     ) -> SymbolId {
-        if let Some(sym) = self.synth_programs.get(name) {
-            return *sym;
+        if let Some(sym) = self
+            .cross_file()
+            .and_then(|cf| cf.synth_programs.get(name))
+            .copied()
+        {
+            return sym;
         }
         let sym = self.symbols.insert(Symbol::synthesized(
             name.as_atom().clone(),
@@ -2846,7 +2951,9 @@ impl<'a> ResolveWalker<'a> {
             use_span,
         ));
         self.symbols.record_program_file(sym, file);
-        self.synth_programs.insert(name.clone(), sym);
+        self.cross_file_mut()
+            .synth_programs
+            .insert(name.clone(), sym);
         sym
     }
 
@@ -2990,7 +3097,7 @@ impl<'a> ResolveWalker<'a> {
     /// * the receiver resolved *to* an indexed class symbol — a type name used
     ///   as a receiver, or a `NEW` of one;
     /// * the receiver resolved to a declaration whose `AS CLASS` named an
-    ///   indexed class (see [`Self::indexed_receiver_class`]).
+    ///   indexed class (see [`CrossFileState::indexed_receiver_class`]).
     ///
     /// A locally declared class is deliberately not handled: its members live in
     /// the scope tree, not the index, and resolving them is a different job that
@@ -2999,10 +3106,14 @@ impl<'a> ResolveWalker<'a> {
         let Some(Resolution::Resolved(sym)) = self.references.get(object.id) else {
             return None;
         };
-        if self.indexed_class_of.contains_key(sym) {
+        // No cross-file state means nothing was ever synthesized from an index,
+        // so no receiver can be an indexed class — the same answer both maps
+        // would give when empty.
+        let cf = self.cross_file()?;
+        if cf.indexed_class_of.contains_key(sym) {
             return Some(*sym);
         }
-        self.indexed_receiver_class.get(sym).copied()
+        cf.indexed_receiver_class.get(sym).copied()
     }
 
     /// A receiver identifier that resolved to nothing local may still be a
@@ -3443,35 +3554,45 @@ impl<'a> ResolveWalker<'a> {
         self.walk_member_surface(class);
 
         let key = (class, atom.clone());
-        let Some(member) = self.inherited.get(&key) else {
-            // Probed only in the namespaces the reference site is looking in, so
-            // an inaccessible member cannot soften a reference that was never
-            // asking about its namespace. Same gate as the `namespaces.contains`
-            // check below, on the branch where nothing accessible answered.
-            let inaccessible = namespaces.iter().any(|&ns| {
-                self.inherited_inaccessible
-                    .contains(&(class, ns, atom.clone()))
-            });
-            return if inaccessible {
-                InheritedLookup::Inaccessible
-            } else {
-                InheritedLookup::Absent
-            };
-        };
-        if !namespaces.contains(&member.namespace) {
+        // The walk above created the cross-file state if it found anything at all,
+        // so `None` here means the chain contributed nothing — the same answer
+        // both empty maps below would give.
+        let Some(cf) = self.cross_file() else {
             return InheritedLookup::Absent;
-        }
-        if let Some(sym) = member.symbol {
-            return InheritedLookup::Member(sym);
-        }
+        };
         // Copied out of the map rather than borrowed across the insert below,
-        // which needs `&mut self.symbols`.
-        let (kind, namespace, data_type, flags) = (
-            member.kind,
-            member.namespace,
-            member.data_type.clone(),
-            member.flags,
-        );
+        // which needs `&mut self.symbols`. Scoped in a block for the same reason:
+        // the borrow of the cross-file state must end before that insert.
+        let (kind, namespace, data_type, flags) = {
+            let Some(member) = cf.inherited.get(&key) else {
+                // Probed only in the namespaces the reference site is looking in,
+                // so an inaccessible member cannot soften a reference that was
+                // never asking about its namespace. Same gate as the
+                // `namespaces.contains` check below, on the branch where nothing
+                // accessible answered.
+                let inaccessible = namespaces.iter().any(|&ns| {
+                    cf.inherited_inaccessible
+                        .contains(&(class, ns, atom.clone()))
+                });
+                return if inaccessible {
+                    InheritedLookup::Inaccessible
+                } else {
+                    InheritedLookup::Absent
+                };
+            };
+            if !namespaces.contains(&member.namespace) {
+                return InheritedLookup::Absent;
+            }
+            if let Some(sym) = member.symbol {
+                return InheritedLookup::Member(sym);
+            }
+            (
+                member.kind,
+                member.namespace,
+                member.data_type.clone(),
+                member.flags,
+            )
+        };
         // `data_type: None`, and the real type into a side map instead.
         //
         // The type is genuinely known — it is the return type or property type
@@ -3499,7 +3620,9 @@ impl<'a> ResolveWalker<'a> {
         if let Some(ty) = data_type {
             self.symbols.record_inherited_member_type(sym, ty);
         }
-        if let Some(member) = self.inherited.get_mut(&key) {
+        // Re-acquired rather than held across the insert above. The entry is
+        // known to exist — the read that got us here found it.
+        if let Some(member) = self.cross_file_mut().inherited.get_mut(&key) {
             member.symbol = Some(sym);
         }
         InheritedLookup::Member(sym)
@@ -3536,16 +3659,22 @@ impl<'a> ResolveWalker<'a> {
     ///
     /// Only the *first* call per class does any of this; the rest is a set probe.
     fn walk_member_surface(&mut self, class: SymbolId) {
-        if !self.inherited_walked.insert(class) {
+        if !self.cross_file_mut().inherited_walked.insert(class) {
             return;
         }
         // Copied out so no borrow of `self` is held across the synthesis below.
         let index = self.ctx.index;
         let mut visited: FxHashSet<IndexName> = FxHashSet::default();
         let mut queue: VecDeque<IndexName> = VecDeque::new();
-        let role = match self.indexed_class_of.get(&class) {
+        // Cloned out rather than borrowed: the `None` arm below reads
+        // `self.symbols`, and the loop after it takes `&mut self`.
+        let indexed_name = self
+            .cross_file()
+            .and_then(|cf| cf.indexed_class_of.get(&class))
+            .cloned();
+        let role = match indexed_name {
             Some(name) => {
-                queue.push_back(name.clone());
+                queue.push_back(name);
                 MemberRole::Outside
             }
             None => {
@@ -3610,7 +3739,7 @@ impl<'a> ResolveWalker<'a> {
                         // inaccessible member rather than an undefined symbol,
                         // and a reference in any other namespace is untouched.
                         if !member_reachable(member, role) {
-                            self.inherited_inaccessible.insert((
+                            self.cross_file_mut().inherited_inaccessible.insert((
                                 class,
                                 namespace,
                                 member.name.as_atom().clone(),
@@ -3631,7 +3760,8 @@ impl<'a> ResolveWalker<'a> {
                             // `VOID`, or a form naming no type: no type at all.
                             MemberType::Untyped => None,
                         };
-                        self.inherited
+                        self.cross_file_mut()
+                            .inherited
                             .entry((class, member.name.as_atom().clone()))
                             .or_insert(InheritedMember {
                                 kind: member.kind,
