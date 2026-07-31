@@ -334,6 +334,46 @@ pub struct SymbolTable {
     /// merely has a counterpart elsewhere. One map would force a consumer to
     /// re-derive which of the two it was looking at.
     shared_producers: FxHashMap<SymbolId, IndexedFileId>,
+    /// The declared type of each synthesized **inherited-member** symbol — the
+    /// return type of a method, or the type of a property, that a superclass or
+    /// implemented interface in another file contributes to the class under
+    /// analysis.
+    ///
+    /// **This map exists so the type is observable without being usable.** The
+    /// obvious home for it is `Symbol::data_type`, and that is precisely what it
+    /// must not be: two independent readers pick a symbol's `data_type` up and
+    /// feed it straight into the type lattice —
+    ///
+    /// * `check.rs::type_from_reference`'s fallback arm, whose class/interface
+    ///   firewall only intercepts `SymbolKind::Class | SymbolKind::Interface`
+    ///   and therefore lets a `Function` or `Property` symbol through;
+    /// * `type_mismatch_assignment::target_type`, which reads `symbol.data_type`
+    ///   directly and so bypasses `check.rs` altogether.
+    ///
+    /// Either one turns a resolved inherited member into a real
+    /// `ResolvedType`, and LINT0004 then reports assignments it is silent about
+    /// today — `DEFINE VARIABLE v-flag AS LOGICAL. v-flag = calc-total().` where
+    /// `calc-total` is an inherited `INTEGER` method goes from zero findings to
+    /// one purely by attaching an index. New findings, even correct ones, break
+    /// this phase's central property: attaching a workspace index must not change
+    /// any rule's behavior on any input.
+    ///
+    /// A `SymbolFlags` bit would not do the job — it would have to be honored at
+    /// *both* read sites above, and a third reader added later would silently
+    /// ignore it. A side map cannot be read by accident: nothing reaches the type
+    /// except through [`Self::inherited_member_type`].
+    ///
+    /// **The follow-up that turns the lint rules onto the cross-file population
+    /// owns promoting this onto `Symbol::data_type`** — the same unit that owns
+    /// removing `check.rs`'s synthesized-class arm. Until then the type lives
+    /// here, where a consumer that genuinely wants it (an LSP hover, a test
+    /// asserting the member resolved with its declared type) can ask, and the
+    /// lattice cannot.
+    ///
+    /// A side map also for the reason [`Self::supertypes`] documents: eight more
+    /// bytes on `Symbol` cost the declare pass 17–25%, and this map is absent
+    /// entirely from a run with no index attached.
+    inherited_member_types: FxHashMap<SymbolId, ResolvedType>,
 }
 
 impl SymbolTable {
@@ -423,6 +463,36 @@ impl SymbolTable {
     /// business, not the symbol table's.
     pub fn shared_producer(&self, sym: SymbolId) -> Option<IndexedFileId> {
         self.shared_producers.get(&sym).copied()
+    }
+
+    /// Record the declared type of synthesized inherited-member symbol `sym`.
+    /// Only the resolve pass calls this, and only for a member it synthesized
+    /// from the workspace index. See [`Self::inherited_member_types`] for why the
+    /// type is *not* written to `sym`'s `data_type`.
+    pub fn record_inherited_member_type(&mut self, sym: SymbolId, ty: ResolvedType) {
+        self.inherited_member_types.insert(sym, ty);
+    }
+
+    /// The declared type of synthesized inherited-member symbol `sym` — a
+    /// method's return type or a property's type, as the file declaring it wrote
+    /// it.
+    ///
+    /// **Read this instead of `sym`'s `data_type`, which is deliberately
+    /// `None`.** The type is held off the symbol so it cannot reach the type
+    /// lattice: `check.rs::type_from_reference`'s fallback arm and
+    /// `type_mismatch_assignment::target_type` both read `Symbol::data_type`
+    /// directly, and a real type there makes LINT0004 report assignments it says
+    /// nothing about without an index — which is exactly the property this phase
+    /// must hold. The full argument is on
+    /// [`Self::inherited_member_types`]; the follow-up that turns the lint rules
+    /// onto the cross-file population owns promoting it.
+    ///
+    /// `None` covers three different situations, none of which is a type: `sym`
+    /// is not a synthesized inherited member at all; it is one whose form names
+    /// no type (`VOID`, or a method declared without one); or no index was
+    /// attached, so nothing was synthesized.
+    pub fn inherited_member_type(&self, sym: SymbolId) -> Option<&ResolvedType> {
+        self.inherited_member_types.get(&sym)
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

@@ -51,10 +51,61 @@
 //! the first attempt short-circuits rather than falling through: it already
 //! found the ambiguity worth declining over.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use oxabl_semantic::{IndexAnswer, IndexName};
 use oxabl_workspace::{FileSystem, is_root_file};
+
+/// Resolve `.` and `..` segments in `path` **textually**, leaving everything else
+/// byte-identical.
+///
+/// Deliberately *not* [`std::fs::canonicalize`]. That touches the real
+/// filesystem — it stats every component and follows symlinks — which this crate
+/// cannot do: every lookup goes through the
+/// [`FileSystem`](oxabl_workspace::FileSystem) abstraction, whose two
+/// implementations are a real-filesystem adapter and an in-memory map. The
+/// in-memory one is what the tests and the browser client run on, and there is
+/// nothing on disk for `canonicalize` to resolve against. A lexical normalization
+/// is also the *right* answer for the two jobs below, both of which are about the
+/// spelling of a key rather than about disk identity.
+///
+/// A leading `..` that has nothing to pop is **kept**, which is what makes
+/// "this path escapes its base" observable to a caller — see [`find_unique`].
+/// After a root, `..` is dropped, matching POSIX's treatment of `/..` as `/`.
+pub fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    // Tracks how many trailing components are poppable `Normal` ones. A `..`
+    // cannot pop a `RootDir`, a `Prefix`, or another `..`.
+    let mut poppable = 0usize;
+    let mut rooted = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) => out.push(component.as_os_str()),
+            Component::RootDir => {
+                rooted = true;
+                out.push(component.as_os_str());
+            }
+            // `a/./b` and `a/b` name the same file, so `.` contributes nothing.
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if poppable > 0 {
+                    out.pop();
+                    poppable -= 1;
+                } else if !rooted {
+                    // Nothing to pop and no root to absorb it: the path really
+                    // does reach outside its base, and the `..` has to survive so
+                    // a caller can see that.
+                    out.push("..");
+                }
+            }
+            Component::Normal(part) => {
+                out.push(part);
+                poppable += 1;
+            }
+        }
+    }
+    out
+}
 
 /// Extension of an ABL class file. A qualified class name maps onto a path by
 /// replacing dots with separators and appending this — the standard ABL
@@ -153,17 +204,32 @@ pub fn find_name(
 /// Search every entry of `include_paths` for `relative`, insisting on exactly
 /// one match.
 ///
-/// - no match, or a `relative` that is not a root file → [`IndexAnswer::NotFound`]
+/// - no match, a `relative` that is not a root file, or one that would search
+///   outside the include paths → [`IndexAnswer::NotFound`]
 /// - exactly one match → [`IndexAnswer::Found`]
 /// - two entries carrying distinct matching files → [`IndexAnswer::Unknowable`]
 ///
 /// Two entries that resolve to the *same* path (a duplicated PROPATH entry) are
 /// one match, not an ambiguity: there is only one file, so nothing is undecided.
 ///
-/// `dir.join(relative)` follows the same absolute-vs-relative rule the include
-/// resolver documents — an absolute `relative` replaces the directory — and
-/// there is no implicit current directory, so a caller that wants `.` searched
+/// There is no implicit current directory, so a caller that wants `.` searched
 /// puts it on the path list.
+///
+/// # A name may not escape the include paths
+///
+/// `relative` comes from source text — the operand of a literal `RUN`, or a class
+/// name — so it can be anything a file wrote, including `/etc/passwd.p` or
+/// `../../secrets/keys.p`. `dir.join(relative)` follows the platform rule that an
+/// *absolute* right-hand side replaces the directory entirely, and a `..` prefix
+/// walks out of it, so either shape would search somewhere the workspace never
+/// configured. Both answer `NotFound` instead.
+///
+/// That is a contract statement, not a hardening afterthought: the search's rule
+/// is "the configured paths, no implicit current directory, no
+/// relative-to-current-file resolution," and a name that reaches outside the path
+/// list has no answer *within* the contract. Declining is the same conservative
+/// choice the exactly-one-match rule makes — a missing link is quiet, a wrong one
+/// corrupts everything derived from it.
 pub fn find_unique(
     fs: &dyn FileSystem,
     include_paths: &[PathBuf],
@@ -173,6 +239,16 @@ pub fn find_unique(
     // amount of searching should turn an include fragment into a class or a
     // program.
     if !is_root_file(relative) {
+        return IndexAnswer::NotFound;
+    }
+    // Checked before the join, because after it the escape is indistinguishable
+    // from a legitimately configured path. `has_root` as well as `is_absolute`:
+    // on Windows a rooted-but-not-absolute `\foo.p` also replaces the directory's
+    // path component.
+    if relative.is_absolute() || relative.has_root() {
+        return IndexAnswer::NotFound;
+    }
+    if normalize_lexically(relative).starts_with("..") {
         return IndexAnswer::NotFound;
     }
 
@@ -395,6 +471,88 @@ mod tests {
                 &program_path(&IndexName::new("post-order.p"))
             ),
             IndexAnswer::NotFound
+        );
+    }
+
+    #[test]
+    fn an_absolute_run_target_is_not_searched_outside_the_include_paths() {
+        // `dir.join("/etc/thing.p")` is `/etc/thing.p` — the configured directory
+        // vanishes. The file is right there and present, and the answer is still
+        // `NotFound`, because it is not on the paths the workspace configured.
+        let fs = fs_with(&["/etc/thing.p", "/src/thing.p"]);
+        assert_eq!(
+            find_unique(
+                &fs,
+                &dirs(&["/src"]),
+                &program_path(&IndexName::new("/etc/thing.p"))
+            ),
+            IndexAnswer::NotFound
+        );
+        // The control: the same name *relative* resolves, so the rejection is about
+        // the absolute spelling rather than about the fixture.
+        assert_eq!(
+            find_unique(
+                &fs,
+                &dirs(&["/src"]),
+                &program_path(&IndexName::new("thing.p"))
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/thing.p"))
+        );
+    }
+
+    #[test]
+    fn a_run_target_that_climbs_out_with_dot_dot_is_not_searched() {
+        // `/src/sub` joined with `../../outside/thing.p` reaches `/outside`, which
+        // is not on the path list. A `..` that stays *inside* the entry is fine —
+        // it names a file the entry really does cover — so only the escaping shape
+        // is rejected.
+        let fs = fs_with(&["/outside/thing.p", "/src/other/thing.p"]);
+        assert_eq!(
+            find_unique(
+                &fs,
+                &dirs(&["/src/sub"]),
+                &program_path(&IndexName::new("../../outside/thing.p"))
+            ),
+            IndexAnswer::NotFound
+        );
+        // And the escape check itself does not object to a `..` that cancels out
+        // within the entry — that names a file the entry really does cover, so the
+        // gate has to distinguish the two rather than reject every `..`. Asserted
+        // on the predicate rather than through `find_unique`, because
+        // `InMemoryFileSystem` matches path keys literally: the joined
+        // `/src/sub/../other/thing.p` is not a key it holds, so a round trip would
+        // answer `NotFound` for a reason that has nothing to do with the gate.
+        assert!(
+            !normalize_lexically(Path::new("sub/../other/thing.p")).starts_with(".."),
+            "a `..` that cancels out within the entry is not an escape"
+        );
+    }
+
+    #[test]
+    fn normalize_lexically_resolves_dot_and_dot_dot_without_touching_disk() {
+        // No file in this test exists anywhere; the point is that the answer does
+        // not depend on one, which is why `canonicalize` is not what this does.
+        assert_eq!(
+            normalize_lexically(Path::new("a/./b/../c.p")),
+            PathBuf::from("a/c.p")
+        );
+        assert_eq!(
+            normalize_lexically(Path::new("/src/./sub/../thing.p")),
+            PathBuf::from("/src/thing.p")
+        );
+        // An escaping `..` survives, which is what makes the escape detectable.
+        assert_eq!(
+            normalize_lexically(Path::new("../../thing.p")),
+            PathBuf::from("../../thing.p")
+        );
+        assert_eq!(
+            normalize_lexically(Path::new("a/../../thing.p")),
+            PathBuf::from("../thing.p")
+        );
+        // A rooted `..` is absorbed, matching POSIX's `/..` == `/`.
+        assert_eq!(
+            normalize_lexically(Path::new("/../thing.p")),
+            PathBuf::from("/thing.p")
         );
     }
 

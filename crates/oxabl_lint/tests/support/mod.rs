@@ -18,11 +18,11 @@
 use std::path::PathBuf;
 
 use oxabl_ast::{NodeId, Statement};
-use oxabl_common::{Diagnostic, FileId};
+use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_index::BatchIndex;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_lexer::tokenize;
-use oxabl_lint::{LINT0001, LINT0004, type_mismatch_assignment, undefined_symbol};
+use oxabl_lint::{LINT0001, LINT0004, lint_file, type_mismatch_assignment, undefined_symbol};
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -140,6 +140,103 @@ pub fn lint0004_with_index(source: &str, workspace: &[(&str, &str)]) -> Vec<Diag
 /// `type-mismatch-assignment` findings for `source`, with no index at all.
 pub fn lint0004_without_index(source: &str) -> Vec<Diagnostic> {
     findings_without_index(source, LINT0004, type_mismatch_assignment::run)
+}
+
+// ---------------------------------------------------------------------------
+// Sweeping every rule at once
+// ---------------------------------------------------------------------------
+
+/// One diagnostic reduced to the parts a firewall sweep compares: its code, its
+/// severity, and its **byte** span.
+///
+/// Byte spans, not rendered positions, for the reason the cross-client parity
+/// suite gives: an encoding conversion is not a pipeline difference, and
+/// comparing the raw span keeps the sweep from mistaking one for the other. The
+/// message is deliberately excluded — it interpolates a display name, and a
+/// wording change is not a behavior change.
+pub type DiagnosticShape = (&'static str, oxabl_common::Severity, FileSpan);
+
+fn shapes(diags: Vec<Diagnostic>) -> Vec<DiagnosticShape> {
+    diags
+        .into_iter()
+        .map(|d| (d.code.0, d.severity, d.span))
+        .collect()
+}
+
+/// Every finding all **six** rules produce for `source`, with a batch index over
+/// `workspace` rooted at `/src`.
+///
+/// Goes through [`oxabl_lint::lint_file`] rather than calling the six rule
+/// functions here, so a seventh rule is swept the moment it is added rather than
+/// silently skipped — the firewall has to hold for whatever rules exist, not for
+/// the six that existed when the sweep was written.
+pub fn all_lints_with_index(source: &str, workspace: &[(&str, &str)]) -> Vec<DiagnosticShape> {
+    let mut fs = InMemoryFileSystem::new();
+    for (path, contents) in workspace {
+        fs.insert(PathBuf::from(path), *contents);
+    }
+    let dirs = vec![PathBuf::from("/src")];
+    let index = BatchIndex::new(&fs, &dirs);
+    let schema = Schema::empty();
+    let stmts = parse(source);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+    let sem = analyze_file(&stmts, &ctx);
+    shapes(lint_file(&stmts, &sem, &ctx))
+}
+
+/// Every finding all six rules produce for `source`, with no index at all —
+/// today's answer, and the one the index-attached run must match.
+pub fn all_lints_without_index(source: &str) -> Vec<DiagnosticShape> {
+    let schema = Schema::empty();
+    let stmts = parse(source);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let sem = analyze_file(&stmts, &ctx);
+    shapes(lint_file(&stmts, &sem, &ctx))
+}
+
+/// Assert that attaching an index **adds** no diagnostic to `source` — from any
+/// of the six lint rules, or from the semantic pass.
+///
+/// The whole phase reduces to this one property, so it is one helper rather than
+/// a per-file copy: a new finding arriving from cross-file resolution shows up
+/// here first, in whichever fixture file introduced the shape that produced it.
+///
+/// **Added, not "identical", and the asymmetry is the point.** Removing a finding
+/// is what cross-file resolution is *for*: `calc-total()` called inside a
+/// subclass is `NotInScope` with no index — a `LINT0001` false positive — and
+/// resolving it against the parent file is the fix. Every such removal is a name
+/// the index positively accounted for. An *addition* is the opposite: a verdict
+/// reached from a type or a resolution the single-file run did not have, on code
+/// that was silent before, which is exactly the drift this phase must not
+/// produce and which the follow-up unit owns deciding about deliberately.
+///
+/// So the check is a multiset containment: every diagnostic the index-attached
+/// run produces must already be produced without one. Multiset, not set — two
+/// findings of the same code at the same span collapsing into one would itself be
+/// a behavior change worth catching.
+pub fn assert_index_adds_no_diagnostic(source: &str, workspace: &[(&str, &str)]) {
+    let (_, with) = with_index(source, workspace);
+    let (_, without) = without_index(source);
+    assert_eq!(
+        with.diagnostics, without.diagnostics,
+        "semantic diagnostics differ for:\n{source}"
+    );
+
+    let with_lints = all_lints_with_index(source, workspace);
+    let mut available = all_lints_without_index(source);
+    for finding in &with_lints {
+        match available.iter().position(|f| f == finding) {
+            Some(i) => {
+                available.swap_remove(i);
+            }
+            None => panic!(
+                "attaching an index ADDED a finding that the single-file run does not \
+                 produce: {finding:?}\nwith an index:    {with_lints:?}\nwithout one:      \
+                 {:?}\nfor:\n{source}",
+                all_lints_without_index(source)
+            ),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

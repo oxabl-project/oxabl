@@ -178,6 +178,24 @@ impl Visitor<'_> {
         // exhaustively rather than with a wildcard: this early return is the
         // one place the compiler cannot flag a new reason for us, so an added
         // reason must be a compile error here too.
+        //
+        // **Defense in depth, not the load-bearing guard.** This match is
+        // semantically unreachable today, and knowing that matters to a reader
+        // trying to work out what actually keeps LINT0004 silent on a cross-file
+        // reference: `check.rs::type_from_reference` collapses *every*
+        // `Unresolved` reason to `ResolvedType::Unknown`, so the `Unknown | Error`
+        // check just above returns first, on every reason including the two this
+        // match falls through. That collapse is the real mechanism, and it is
+        // pinned by `check.rs`'s
+        // `every_unresolved_reason_types_to_unknown` — because it is an
+        // invariant of another module, which is exactly the kind that rots
+        // silently.
+        //
+        // The match stays anyway. Its value is not the runtime skip but the
+        // compile error: adding an `UnresolvedReason` variant has to be a decision
+        // taken here, in the rule that would have to judge it, rather than an
+        // accident absorbed by a wildcard. Deleting it would trade a tripwire for
+        // nothing.
         if let Some(Resolution::Unresolved { reason, .. }) = self.sem.references.get(value_node) {
             match reason {
                 UnresolvedReason::External

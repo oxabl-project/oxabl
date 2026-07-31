@@ -270,8 +270,8 @@ fn a_method_call_on_a_using_imported_instance_resolves_with_its_return_type() {
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Function);
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Character)),
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character)),
         "the resolved symbol carries the class's declared return type"
     );
     assert_synthesized(&sem, sym, NamespaceId::Functions);
@@ -290,8 +290,8 @@ fn a_property_read_on_a_using_imported_instance_resolves_and_types() {
     let sym = sole_resolved(&sem, "entry-count");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Property);
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Integer))
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
     assert_synthesized(&sem, sym, NamespaceId::Values);
 
@@ -311,8 +311,8 @@ fn a_method_call_through_a_using_imported_type_name_resolves() {
     assert_eq!(sem.symbols.get(class).kind, SymbolKind::Class);
     let member = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.get(member).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Character))
+        sem.symbols.inherited_member_type(member),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
 
     let (_stmts, plain) = without_index(&source);
@@ -404,8 +404,8 @@ fn a_member_of_a_new_expression_resolves_without_an_intervening_variable() {
     let (_stmts, sem) = with_index(source, &WORKSPACE);
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Character))
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
 }
 
@@ -487,6 +487,126 @@ fn a_locally_declared_class_still_types_as_itself() {
         1,
         "and attaching an index does not change that"
     );
+}
+
+#[test]
+fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
+    // The phase's central property, swept over every `USING` / `NEW` / member-access
+    // fixture in this file at once and across **all six** lint rules plus the
+    // semantic pass. `resolving_a_cross_file_class_produces_no_type_mismatch_finding`
+    // above covers three class-typed shapes through LINT0004 only; this covers every
+    // shape through every rule, which is what makes a rule nobody thought about the
+    // sweep's problem rather than a reviewer's.
+    //
+    // The mismatched fixtures come first, and they are the reason the sweep is not
+    // vacuous: a *member*'s declared type reaching the lattice is a separate route
+    // from a *class*'s, and every member fixture below happened to type-match its
+    // assignment (`v-label AS CHARACTER = v-cache:fetch-label()`), so none of them
+    // could observe it.
+    let mismatched = [
+        // A `CHARACTER`-returning method on an imported instance, into an INTEGER.
+        instance_source("v-count = v-cache:fetch-label()."),
+        // The same, through the type name used as a static receiver.
+        instance_source("v-count = cache:fetch-label()."),
+        // The same, off a `NEW` with no intervening variable.
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+         v-count = NEW cache():fetch-label().\n"
+            .to_string(),
+        // An INTEGER property read into a CHARACTER, and written from one — both
+        // directions, since the rule reads the target's type from one place and the
+        // value's from another.
+        instance_source("v-label = v-cache:entry-count."),
+        instance_source("v-cache:entry-count = v-label."),
+    ];
+
+    let scenarios = [
+        // Every fixture the tests above use, type-matched ones included, so a change
+        // that shifts one of them shows up here too.
+        "USING myapp.cache.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n".to_string(),
+        "USING myapp.absent-thing.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n".to_string(),
+        "USING myapp.*.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n".to_string(),
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+         v-cache = NEW cache().\n"
+            .to_string(),
+        "DEFINE VARIABLE v-cache AS CLASS myapp.cache NO-UNDO.\n\
+         v-cache = NEW myapp.cache().\n"
+            .to_string(),
+        "USING myapp.*.\n\
+         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+         v-cache = NEW cache().\n"
+            .to_string(),
+        "USING myapp.*.\nv-x = NEW absent-thing().\n".to_string(),
+        "USING myapp.*.\n\
+         CLASS cache:\n\
+             METHOD PUBLIC VOID build():\n\
+                 DEFINE VARIABLE v-own AS CLASS cache NO-UNDO.\n\
+                 v-own = NEW cache().\n\
+             END METHOD.\n\
+         END CLASS.\n"
+            .to_string(),
+        instance_source("v-label = v-cache:fetch-label()."),
+        instance_source("v-count = v-cache:entry-count."),
+        instance_source("v-label = cache:fetch-label()."),
+        instance_source("v-label = v-cache:absent-method()."),
+        instance_source("v-label = absent-method()."),
+        // A `PROTECTED` and a `PRIVATE` member reached from outside the class.
+        instance_source("v-count = v-cache:shared-slot()."),
+        instance_source("v-count = v-cache:hidden-slot()."),
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE cache AS CHARACTER NO-UNDO.\n\
+         DEFINE VARIABLE v-label AS CHARACTER NO-UNDO.\n\
+         v-label = cache.\n"
+            .to_string(),
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-label AS CHARACTER NO-UNDO.\n\
+         v-label = NEW cache():fetch-label().\n"
+            .to_string(),
+        // The three class-typed shapes, and a locally declared class.
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+         v-count = NEW cache().\n"
+            .to_string(),
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+         v-cache = 5.\n"
+            .to_string(),
+        "CLASS cache:\n\
+         END CLASS.\n\
+         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+         v-count = NEW cache().\n"
+            .to_string(),
+        "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n".to_string(),
+    ];
+
+    for source in mismatched.iter().chain(&scenarios) {
+        assert_index_adds_no_diagnostic(source, &WORKSPACE);
+    }
+}
+
+#[test]
+fn a_mismatched_assignment_from_an_imported_members_type_stays_silent_but_resolves() {
+    // The baseline that proves the mismatched fixtures in the sweep above are not
+    // inert: the member resolves, its declared `CHARACTER` really is recorded, the
+    // target really is `INTEGER` — and LINT0004 still says nothing, because the type
+    // is held off `Symbol::data_type` where neither `check.rs`'s fallback arm nor
+    // `type_mismatch_assignment::target_type` can read it.
+    let source = instance_source("v-count = v-cache:fetch-label().");
+    let (_stmts, sem) = with_index(&source, &WORKSPACE);
+
+    let member = sole_resolved(&sem, "fetch-label");
+    assert_eq!(
+        sem.symbols.inherited_member_type(member),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
+    );
+    assert_eq!(sem.symbols.get(member).data_type, None);
+    assert_eq!(
+        sem.symbols.get(sole_symbol(&sem, "v-count")).data_type,
+        Some(ResolvedType::Primitive(PrimitiveTy::Integer)),
+        "and the target is a genuinely incompatible INTEGER"
+    );
+    assert!(lint0004_with_index(&source, &WORKSPACE).is_empty());
 }
 
 // ---------------------------------------------------------------------------

@@ -1362,4 +1362,93 @@ mod tests {
             Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Every unresolved reason collapses to the lattice bottom
+    // -----------------------------------------------------------------------
+
+    /// The invariant that actually keeps `type-mismatch-assignment` (LINT0004)
+    /// silent on a cross-file reference: **no** [`UnresolvedReason`] produces a
+    /// type. `type_from_reference`'s `_ =>` arm answers
+    /// [`ResolvedType::Unknown`] for every one of them, LINT0004's
+    /// `Unknown | Error` early return fires on that, and its own exhaustive
+    /// reason match downstream is therefore never reached.
+    ///
+    /// Pinned here because it was implicit and untested, and because it lives in
+    /// a different crate from the rule that depends on it: someone giving one
+    /// reason a real type — plausibly `NotFoundInWorkspace`, where the workspace
+    /// genuinely answered — would turn LINT0004 back on for cross-file code
+    /// without touching `oxabl_lint` at all, and nothing would have said so.
+    /// The reason list is written out variant by variant rather than derived, so
+    /// adding a variant makes this a compile error too.
+    #[test]
+    fn every_unresolved_reason_types_to_unknown() {
+        use crate::{NodeIndexVec, ScopeTree, SymbolTable, UnresolvedReason};
+        use oxabl_ast::{Expression, ExpressionKind, Identifier, Span};
+        use oxabl_lexer::oxabl_atom::OxablAtom;
+
+        let reasons = [
+            UnresolvedReason::NotInScope,
+            UnresolvedReason::External,
+            UnresolvedReason::NoSchema,
+            UnresolvedReason::NotFoundInWorkspace,
+            UnresolvedReason::Unknowable,
+        ];
+        // Exhaustiveness, stated so the compiler enforces it: a new variant fails
+        // to match here and the author has to decide what it types to.
+        for reason in reasons {
+            match reason {
+                UnresolvedReason::NotInScope
+                | UnresolvedReason::External
+                | UnresolvedReason::NoSchema
+                | UnresolvedReason::NotFoundInWorkspace
+                | UnresolvedReason::Unknowable => {}
+            }
+        }
+
+        let tree = ScopeTree::new();
+        let symbols = SymbolTable::new();
+        for reason in reasons {
+            let expr = Expression::new(ExpressionKind::Identifier(Identifier {
+                span: Span { start: 0, end: 4 },
+                name: "name".into(),
+            }));
+            let mut references = NodeIndexVec::new();
+            references.insert(
+                expr.id,
+                Resolution::Unresolved {
+                    name: OxablAtom::from("name"),
+                    reason,
+                },
+            );
+            let mut types = NodeIndexVec::new();
+            let walker = CheckWalker {
+                tree: &tree,
+                symbols: &symbols,
+                references: &references,
+                types: &mut types,
+            };
+            assert_eq!(
+                walker.type_from_reference(&expr),
+                ResolvedType::Unknown,
+                "`{reason:?}` must type to the lattice bottom"
+            );
+        }
+
+        // And the same for a node with no reference entry at all, which is the
+        // other half of the `_ =>` arm: an expression resolution never looked at.
+        let expr = Expression::new(ExpressionKind::Identifier(Identifier {
+            span: Span { start: 0, end: 4 },
+            name: "name".into(),
+        }));
+        let references = NodeIndexVec::new();
+        let mut types = NodeIndexVec::new();
+        let walker = CheckWalker {
+            tree: &tree,
+            symbols: &symbols,
+            references: &references,
+            types: &mut types,
+        };
+        assert_eq!(walker.type_from_reference(&expr), ResolvedType::Unknown);
+    }
 }

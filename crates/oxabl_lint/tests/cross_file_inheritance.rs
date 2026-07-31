@@ -48,6 +48,22 @@ END CLASS."#;
 /// separators.
 const CALC_BASE_PATH: &str = "/src/orders/calc-base.cls";
 
+/// A subclass assigning an inherited `INTEGER` method's result into a `LOGICAL`
+/// variable — a **deliberate type mismatch**.
+///
+/// Every other fixture in this file type-matches its assignment
+/// (`v-total AS INTEGER = calc-total()`), which is exactly why they could not
+/// catch an inherited member's declared type reaching the type lattice: a
+/// correctly typed assignment produces no LINT0004 finding whether the type is
+/// known or `Unknown`. This one produces one the moment it is known, and none
+/// today, so the firewall sweep below has real work to do.
+const MISMATCHED_CHILD: &str = r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+        v-flag = calc-total().
+    END METHOD.
+END CLASS."#;
+
 // ---------------------------------------------------------------------------
 // Accessible members resolve, with their declared types
 // ---------------------------------------------------------------------------
@@ -65,10 +81,23 @@ END CLASS."#;
     let (_stmts, sem) = with_index(child, &workspace);
     let sym = sole_resolved(&sem, "calc-total");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Function);
+    // The declared return type is observable — through the side map, not through
+    // `data_type`. Two readers take a symbol's `data_type` straight into the type
+    // lattice (`check.rs::type_from_reference`'s fallback arm and
+    // `type_mismatch_assignment::target_type`), so a real type there would make
+    // LINT0004 report an inherited-INTEGER-into-LOGICAL assignment that produces
+    // no finding without an index. `attaching_an_index_adds_no_diagnostic_to_any_scenario`
+    // below is the test that catches that; this pair is why the type still has to
+    // be *somewhere*.
+    assert_eq!(
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Integer)),
+        "the resolved symbol carries the parent's declared return type"
+    );
     assert_eq!(
         sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Integer)),
-        "the resolved symbol carries the parent's declared return type"
+        None,
+        "and deliberately not on `data_type`, where the type lattice would read it"
     );
     assert_synthesized(&sem, sym, NamespaceId::Functions);
 
@@ -101,8 +130,8 @@ END CLASS."#;
     let sym = sole_resolved(&sem, "base-label");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Property);
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Character))
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
     assert_synthesized(&sem, sym, NamespaceId::Values);
 
@@ -122,8 +151,8 @@ END CLASS."#;
     let (_stmts, sem) = with_index(child, &[(CALC_BASE_PATH, CALC_BASE)]);
     let sym = sole_resolved(&sem, "calc-rate");
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Decimal))
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Decimal))
     );
 }
 
@@ -166,6 +195,62 @@ END CLASS."#;
         vec![UnresolvedReason::NotInScope],
         "with no index nothing was looked at, so today's answer stands"
     );
+}
+
+#[test]
+fn an_inaccessible_ancestor_member_only_softens_its_own_namespace() {
+    // `calc-secret` is a private ancestor *method*, so it lives in the functions
+    // namespace. A bare `calc-secret` — no parentheses — is a **value**-namespace
+    // reference, naming no method at all, and nothing in the chain declares a
+    // value by that name. It is a genuine undefined symbol and must still be
+    // reported.
+    //
+    // The inaccessible-member set is what would silence it: softening a reference
+    // to "a member an ancestor declares privately" suppresses the finding, and a
+    // key without the namespace in it suppresses across namespaces. That is a lost
+    // true positive, so the key carries the namespace.
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-n AS INTEGER NO-UNDO.
+        v-n = calc-secret.
+    END METHOD.
+END CLASS."#;
+    let workspace = [(CALC_BASE_PATH, CALC_BASE)];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    assert_eq!(
+        unresolved_reasons(&sem, "calc-secret"),
+        vec![UnresolvedReason::NotInScope],
+        "a value-namespace reference is not answered by a function-namespace member"
+    );
+    assert_eq!(
+        lint0001_with_index(child, &workspace).len(),
+        1,
+        "and the finding survives — LINT0001 renders `NotInScope` only"
+    );
+    // Exactly today's answer, which is the other half of the property: the fix
+    // restores a finding rather than adding one.
+    assert_eq!(
+        lint0001_without_index(child).len(),
+        1,
+        "the same finding the single-file run produces"
+    );
+
+    // The sibling shape that proves the softening still works where it should: the
+    // *same* private name **called**, which is a functions-namespace reference, is
+    // an inaccessible member and stays silent.
+    let called = r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-n AS INTEGER NO-UNDO.
+        v-n = calc-secret().
+    END METHOD.
+END CLASS."#;
+    let (_stmts, sem) = with_index(called, &workspace);
+    assert_eq!(
+        unresolved_reasons(&sem, "calc-secret"),
+        vec![UnresolvedReason::NotFoundInWorkspace]
+    );
+    assert!(lint0001_with_index(called, &workspace).is_empty());
 }
 
 #[test]
@@ -216,8 +301,8 @@ END CLASS."#;
     let (_stmts, sem) = with_index(child, &workspace);
     let sym = sole_resolved(&sem, "calc-total");
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Integer))
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
 }
 
@@ -264,8 +349,8 @@ END CLASS."#;
     let (_stmts, sem) = with_index(a, &workspace);
     let sym = sole_resolved(&sem, "from-b");
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Integer))
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
     assert_eq!(
         unresolved_reasons(&sem, "ghost-member"),
@@ -291,8 +376,8 @@ END INTERFACE."#,
     let (_stmts, sem) = with_index(child, &workspace);
     let sym = sole_resolved(&sem, "required-total");
     assert_eq!(
-        sem.symbols.get(sym).data_type,
-        Some(ResolvedType::Primitive(PrimitiveTy::Integer))
+        sem.symbols.inherited_member_type(sym),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
     assert_synthesized(&sem, sym, NamespaceId::Functions);
 }
@@ -467,6 +552,247 @@ fn implemented_interfaces_are_recorded_in_declaration_order() {
     );
     let implements: Vec<&str> = supers.implements.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(implements, vec!["orders.i-calc", "orders.i-audit"]);
+}
+
+// ---------------------------------------------------------------------------
+// The firewall, swept
+// ---------------------------------------------------------------------------
+
+#[test]
+fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
+    // The phase's central property, swept over every inheritance fixture in this
+    // file at once and across **all six** lint rules plus the semantic pass: the
+    // diagnostic set — codes, severities, and byte spans — is identical with and
+    // without an index.
+    //
+    // This sweep exists because the per-scenario tests above could not catch the
+    // failure it was written for. They assert *resolution*, and their assignments
+    // are all type-matched, so an inherited member's real type reaching
+    // `type-mismatch-assignment` was invisible to them. [`MISMATCHED_CHILD`] is
+    // the fixture that makes the difference observable, and it is first in the
+    // list for that reason.
+    //
+    // One combined workspace rather than each scenario's own: the property is
+    // unconditional, so a broader workspace can only make the sweep stricter.
+    let workspace = [
+        (CALC_BASE_PATH, CALC_BASE),
+        (
+            "/src/orders/middle.cls",
+            "CLASS orders.middle INHERITS orders.calc-base: END CLASS.",
+        ),
+        (
+            "/src/orders/i-calc.cls",
+            "INTERFACE orders.i-calc:\n    METHOD PUBLIC INTEGER required-total().\nEND INTERFACE.",
+        ),
+        (
+            "/src/orders/child.cls",
+            "CLASS orders.child INHERITS orders.child: END CLASS.",
+        ),
+        (
+            "/src/orders/a.cls",
+            "CLASS orders.a INHERITS orders.b: END CLASS.",
+        ),
+        (
+            "/src/orders/b.cls",
+            "CLASS orders.b INHERITS orders.a:\n    METHOD PUBLIC INTEGER from-b():\n        RETURN 0.\n    END METHOD.\nEND CLASS.",
+        ),
+    ];
+
+    let mut many_references = String::from(
+        "CLASS orders.child INHERITS orders.calc-base:\n    \
+         METHOD PUBLIC VOID run-it():\n        \
+         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n",
+    );
+    for _ in 0..20 {
+        many_references.push_str("        v-total = calc-total().\n");
+    }
+    many_references.push_str("    END METHOD.\nEND CLASS.");
+
+    let scenarios = [
+        // The mismatch: an inherited INTEGER method into a LOGICAL variable.
+        MISMATCHED_CHILD.to_string(),
+        // The same shape through an *interface* rather than a superclass, and the
+        // same shape with the mismatch in the target direction — both routes an
+        // inherited type could take into the lattice.
+        r#"CLASS orders.child IMPLEMENTS orders.i-calc:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+        v-flag = required-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        base-label = 5.
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        // `ASSIGN` and `INITIAL`, the two other forms the same mismatch reaches
+        // the rule through.
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+        ASSIGN v-flag = calc-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO INITIAL ?.
+        v-flag = calc-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        // Every type-matched fixture the tests above use, so a future change that
+        // shifts one of them shows up here too.
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-label AS CHARACTER NO-UNDO.
+        v-label = base-label.
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-rate AS DECIMAL NO-UNDO.
+        v-rate = calc-rate().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        // A private ancestor member, and a typo — the two shapes that must stay
+        // exactly as undefined (or as silent) as they are today.
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-secret().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-totl().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        // A three-level chain, a self-inheriting class, and a two-class cycle.
+        r#"CLASS orders.child INHERITS orders.middle:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.child:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.a INHERITS orders.b:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = from-b().
+        v-total = ghost-member().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        // An interface member, a child member shadowing the parent's, and a
+        // reference from a scope the synthesized symbol must not reach.
+        r#"CLASS orders.child IMPLEMENTS orders.i-calc:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = required-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC CHARACTER calc-total():
+        RETURN "mine".
+    END METHOD.
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-label AS CHARACTER NO-UNDO.
+        v-label = calc-total().
+    END METHOD.
+END CLASS."#
+            .to_string(),
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-total().
+    END METHOD.
+END CLASS.
+
+PROCEDURE elsewhere:
+    DEFINE VARIABLE v-other AS INTEGER NO-UNDO.
+    v-other = calc-total().
+END PROCEDURE."#
+            .to_string(),
+        // An unresolvable parent.
+        "CLASS orders.child INHERITS orders.no-such-base: END CLASS.".to_string(),
+        many_references,
+    ];
+
+    for source in &scenarios {
+        assert_index_adds_no_diagnostic(source, &workspace);
+    }
+}
+
+#[test]
+fn a_mismatched_assignment_from_an_inherited_method_stays_silent_but_resolves() {
+    // The sweep above proves no *new* finding arrives. This proves the sweep is
+    // not passing because the fixture is inert: the member genuinely resolves, its
+    // declared `INTEGER` really is recorded, the target really is `LOGICAL` — every
+    // ingredient LINT0004 needs is present — and it still says nothing, because the
+    // type is held off `Symbol::data_type` where neither `check.rs` nor the rule can
+    // read it.
+    let workspace = [(CALC_BASE_PATH, CALC_BASE)];
+    let (_stmts, sem) = with_index(MISMATCHED_CHILD, &workspace);
+
+    let member = sole_resolved(&sem, "calc-total");
+    assert_eq!(
+        sem.symbols.inherited_member_type(member),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Integer)),
+        "the inherited member resolved, and its declared return type is recorded"
+    );
+    assert_eq!(sem.symbols.get(member).data_type, None);
+    let target = sole_symbol(&sem, "v-flag");
+    assert_eq!(
+        sem.symbols.get(target).data_type,
+        Some(ResolvedType::Primitive(PrimitiveTy::Logical)),
+        "and the assignment target is a genuinely incompatible LOGICAL"
+    );
+
+    assert!(
+        lint0004_with_index(MISMATCHED_CHILD, &workspace).is_empty(),
+        "yet LINT0004 stays silent — the type never reaches the lattice"
+    );
+    // The baseline that proves LINT0004 is not simply inert on this shape: the same
+    // INTEGER-into-LOGICAL assignment from a method declared *in this file* fires,
+    // index or no index.
+    let local = r#"CLASS orders.child:
+    METHOD PUBLIC INTEGER calc-total():
+        RETURN 0.
+    END METHOD.
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+        v-flag = calc-total().
+    END METHOD.
+END CLASS."#;
+    assert_eq!(
+        lint0004_without_index(local).len(),
+        1,
+        "an in-file INTEGER-into-LOGICAL assignment is reported"
+    );
+    assert_eq!(lint0004_with_index(local, &workspace).len(), 1);
 }
 
 #[test]

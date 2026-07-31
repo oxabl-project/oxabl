@@ -60,9 +60,25 @@ pub struct BatchIndex<'a> {
 
 #[derive(Debug)]
 struct Memo {
-    /// Facts per indexed file. Keyed by the path the search resolved, which is
-    /// what dedups a shared dependency: two names reaching the same file find
-    /// the entry already there.
+    /// Facts per indexed file. Keyed by the path the search resolved, **lexically
+    /// normalized** ([`search::normalize_lexically`]), which is what dedups a
+    /// shared dependency: two names reaching the same file find the entry already
+    /// there.
+    ///
+    /// The normalization is load-bearing, not tidiness. The key is a joined path
+    /// derived from source text, and `find_name` tries two candidate spellings, so
+    /// two lookups can reach one physical file under two different strings —
+    /// `/src/thing.p` and `/src/sub/../thing.p`, or an include-path entry written
+    /// `/src/.`. Keyed verbatim, that mints **two** [`IndexedFileId`]s for one
+    /// file, and the ids are what everything downstream compares. It also breaks
+    /// [`BatchIndex::shared_producer`], which scans these values and answers
+    /// `Unknowable` when two *different* files define one `SHARED` name: two
+    /// entries for one file look exactly like two producers, so a name with one
+    /// real producer answers "cannot know" instead of naming it.
+    ///
+    /// Lexical, not [`std::fs::canonicalize`] — see
+    /// [`search::normalize_lexically`] for why the real filesystem is not
+    /// available here.
     facts: FxHashMap<PathBuf, Arc<FileFacts>>,
     /// Answers per class key. Kept separately from `facts` because a key can
     /// resolve to *no* file at all, and remembering that miss is what stops a
@@ -162,7 +178,13 @@ impl Memo {
     /// extraction, and the insert are one atomic step — which is what makes the
     /// shared-dependency dedup a guarantee rather than a race.
     fn facts_for(&mut self, fs: &dyn FileSystem, path: &Path) -> Arc<FileFacts> {
-        if let Some(hit) = self.facts.get(path) {
+        // Normalized *before* the probe and used for the insert as well, so the
+        // two spellings of one file are one key on both halves. `path` itself is
+        // what gets read: the normalized form is the key, not the I/O target, so a
+        // filesystem that treats the two spellings differently is still asked the
+        // question the caller actually posed.
+        let key = search::normalize_lexically(path);
+        if let Some(hit) = self.facts.get(&key) {
             return Arc::clone(hit);
         }
         let id = IndexedFileId::new(self.next_file_id);
@@ -174,7 +196,7 @@ impl Memo {
             // re-attempting the read on every reference to the same name.
             Err(_) => FileFacts::unparseable(id),
         });
-        self.facts.insert(path.to_path_buf(), Arc::clone(&facts));
+        self.facts.insert(key, Arc::clone(&facts));
         facts
     }
 }
@@ -590,6 +612,46 @@ mod tests {
         assert_eq!(
             index.shared_producer(&IndexName::new("v-site-code")),
             IndexAnswer::Unknowable
+        );
+    }
+
+    #[test]
+    fn one_file_reached_through_two_path_spellings_gets_one_id_and_one_answer() {
+        // Two `RUN` targets naming the same physical file two ways —
+        // `init-globals.p` and `sub/../init-globals.p`. Both entries are present in
+        // the filesystem because that is what a real filesystem does with a `..`
+        // segment: it resolves it and hands back the same file.
+        //
+        // Keyed verbatim, the `facts` memo mints two `IndexedFileId`s for the one
+        // file, and both of the assertions below fail: `program` answers two
+        // different ids, and `shared_producer` — which scans `facts` and declines
+        // when two *different* files define one name — sees the duplicate as two
+        // producers and answers `Unknowable` for a name with exactly one.
+        let definition = "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.";
+        let fs = CountingFs::new(&[
+            ("/src/init-globals.p", definition),
+            ("/src/sub/../init-globals.p", definition),
+        ]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+
+        let IndexAnswer::Found(direct) = index.program(&IndexName::new("init-globals.p")) else {
+            panic!("the program is on the paths");
+        };
+        let IndexAnswer::Found(via_dot_dot) =
+            index.program(&IndexName::new("sub/../init-globals.p"))
+        else {
+            panic!("and so is the same program spelled with a `..`");
+        };
+        assert_eq!(
+            direct, via_dot_dot,
+            "two spellings of one path are one file, so one id"
+        );
+        assert_eq!(
+            index.shared_producer(&IndexName::new("v-site-code")),
+            IndexAnswer::Found(direct),
+            "and one producer — not an `Unknowable` faked by the file being \
+             counted twice"
         );
     }
 

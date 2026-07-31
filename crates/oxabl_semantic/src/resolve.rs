@@ -1128,10 +1128,20 @@ struct ResolveWalker<'a> {
     /// inside is minted only when a reference actually names the member.
     inherited: FxHashMap<(SymbolId, OxablAtom), InheritedMember>,
     /// Names an ancestor declares but does **not** pass on to a subclass, keyed
-    /// the same way. Kept because "an ancestor declares this privately" and
-    /// "nothing anywhere declares this" are different facts, and only the second
-    /// one is an undefined symbol.
-    inherited_inaccessible: FxHashSet<(SymbolId, OxablAtom)>,
+    /// the same way *plus the namespace the member lives in*. Kept because "an
+    /// ancestor declares this privately" and "nothing anywhere declares this" are
+    /// different facts, and only the second one is an undefined symbol.
+    ///
+    /// **The namespace is part of the key for the same reason it gates
+    /// [`Self::inherited`].** Softening a reference to "an inaccessible member" is
+    /// what suppresses its `undefined-symbol` finding, so a namespace-blind key
+    /// suppresses across namespaces: a private ancestor *method* named
+    /// `calc-secret` would silence the value-namespace reference in
+    /// `v-n = calc-secret.`, which names no method at all and is a genuine
+    /// undefined symbol. That is a lost true positive, not a conservative
+    /// answer — the accessible path has always been namespace-gated, and this is
+    /// the same gate on the other branch.
+    inherited_inaccessible: FxHashSet<(SymbolId, NamespaceId, OxablAtom)>,
     /// Explicit `USING <package>.<Name>` imports, in the order the file wrote
     /// them: the simple name folded, paired with the qualified name **as
     /// written** (which is what a file path has to be derived from).
@@ -1143,11 +1153,22 @@ struct ResolveWalker<'a> {
     /// Each keeps its trailing dot, so a candidate is `prefix + name` with no
     /// re-splicing at lookup time.
     using_prefixes: Vec<String>,
-    /// Memo for the *workspace* half of a type-name lookup, keyed by the folded
-    /// name as the source spelled it. The scope-tree half is deliberately not
-    /// memoized here: it depends on the reference's scope, and caching a
-    /// scope-dependent answer under a scope-free key is how a shadowed name
-    /// starts resolving to the wrong symbol.
+    /// Memo for the *workspace* half of a type-name lookup, keyed by the
+    /// **as-written** spelling — the exact bytes the source used, unfolded.
+    ///
+    /// Case-sensitive on purpose, and for the same reason [`BatchIndex`]'s own
+    /// `classes` / `programs` memos are: the search underneath derives a file path
+    /// from the name, path lookup is case-sensitive, and so two spellings of one
+    /// name are two genuinely different questions. Folding the key merges them,
+    /// and the merge is not symmetric — a *miss* memoized under `myapp.cache`
+    /// would be served to `MyApp.Cache`, which would have found the file. Keying
+    /// on the written spelling costs one memo entry per distinct spelling (a
+    /// file that writes a class name two ways is already unusual) and cannot
+    /// poison.
+    ///
+    /// The scope-tree half is deliberately not memoized here: it depends on the
+    /// reference's scope, and caching a scope-dependent answer under a scope-free
+    /// key is how a shadowed name starts resolving to the wrong symbol.
     ///
     /// This is what keeps twenty `NEW Foo()` sites at one index lookup.
     type_lookups: FxHashMap<OxablAtom, TypeLookup>,
@@ -1395,7 +1416,15 @@ impl<'a> ResolveWalker<'a> {
         if !self.ctx.index_loaded {
             return TypeLookup::NotLooked;
         }
-        let key = fold_atom(raw);
+        // The as-written spelling, *not* `fold_atom(raw)`. Every candidate this
+        // memo caches an answer for is derived from `raw` verbatim and looked up
+        // on a case-sensitive path, so folding the key would serve one spelling's
+        // answer to another that would have resolved differently. Matches
+        // `BatchIndex`'s `classes` memo one layer down, which keys on
+        // `IndexName::as_written_atom` for exactly this reason — a memo above a
+        // case-sensitive memo has to be at least as case-sensitive, or it
+        // reintroduces the poisoning the lower one avoided.
+        let key = OxablAtom::from(raw);
         if let Some(hit) = self.type_lookups.get(&key) {
             return *hit;
         }
@@ -3415,7 +3444,15 @@ impl<'a> ResolveWalker<'a> {
 
         let key = (class, atom.clone());
         let Some(member) = self.inherited.get(&key) else {
-            return if self.inherited_inaccessible.contains(&key) {
+            // Probed only in the namespaces the reference site is looking in, so
+            // an inaccessible member cannot soften a reference that was never
+            // asking about its namespace. Same gate as the `namespaces.contains`
+            // check below, on the branch where nothing accessible answered.
+            let inaccessible = namespaces.iter().any(|&ns| {
+                self.inherited_inaccessible
+                    .contains(&(class, ns, atom.clone()))
+            });
+            return if inaccessible {
                 InheritedLookup::Inaccessible
             } else {
                 InheritedLookup::Absent
@@ -3435,11 +3472,33 @@ impl<'a> ResolveWalker<'a> {
             member.data_type.clone(),
             member.flags,
         );
+        // `data_type: None`, and the real type into a side map instead.
+        //
+        // The type is genuinely known — it is the return type or property type
+        // the declaring file wrote — but putting it on the symbol routes it
+        // straight into the type lattice through two readers that take a
+        // `Symbol::data_type` at face value: `check.rs::type_from_reference`'s
+        // fallback arm (its firewall intercepts only `Class`/`Interface`, so a
+        // `Function` or `Property` falls through) and
+        // `type_mismatch_assignment::target_type` (which reads `data_type`
+        // directly and never goes through `check.rs` at all). Either one makes
+        // LINT0004 report an assignment it is silent about today — an inherited
+        // `INTEGER` method assigned into a `LOGICAL` goes from zero findings to
+        // one purely by attaching an index — and this phase must add no finding on
+        // any input.
+        //
+        // A flag honored at one read site would not close the other; a side map
+        // closes both by construction, because the only door to the type is
+        // `SymbolTable::inherited_member_type`. See that accessor for the full
+        // argument and for who owns promoting it.
         let sym = self.symbols.insert(Symbol {
-            data_type,
+            data_type: None,
             flags,
             ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
         });
+        if let Some(ty) = data_type {
+            self.symbols.record_inherited_member_type(sym, ty);
+        }
         if let Some(member) = self.inherited.get_mut(&key) {
             member.symbol = Some(sym);
         }
@@ -3525,17 +3584,14 @@ impl<'a> ResolveWalker<'a> {
             match index.class_members(&name) {
                 IndexAnswer::Found(members) => {
                     for member in members.iter() {
-                        // A member the role cannot reach is not synthesized.
-                        // Doing so would resolve a reference that ABL rejects,
-                        // and would hand a later access-check rule an
-                        // already-resolved reference instead of a violation. The
-                        // *name* is still worth remembering: a reference to it is
-                        // an inaccessible member, not an undefined symbol.
-                        if !member_reachable(member, role) {
-                            self.inherited_inaccessible
-                                .insert((class, member.name.as_atom().clone()));
-                            continue;
-                        }
+                        // Derived *before* the reachability check below, because
+                        // both branches need it: the accessible one to gate the
+                        // lookup, and the inaccessible one to key the set it
+                        // records the name in. A member of a kind with no
+                        // namespace is skipped by either branch — it has no
+                        // namespace a reference site could be asking in, so
+                        // recording it as inaccessible could only soften a
+                        // reference that was never about it.
                         let namespace = match member.kind {
                             SymbolKind::Function => NamespaceId::Functions,
                             SymbolKind::Property => NamespaceId::Values,
@@ -3545,6 +3601,22 @@ impl<'a> ResolveWalker<'a> {
                             // defaulting into one.
                             _ => continue,
                         };
+                        // A member the role cannot reach is not synthesized.
+                        // Doing so would resolve a reference that ABL rejects,
+                        // and would hand a later access-check rule an
+                        // already-resolved reference instead of a violation. The
+                        // *name* is still worth remembering, under its namespace:
+                        // a reference **in that namespace** to it is an
+                        // inaccessible member rather than an undefined symbol,
+                        // and a reference in any other namespace is untouched.
+                        if !member_reachable(member, role) {
+                            self.inherited_inaccessible.insert((
+                                class,
+                                namespace,
+                                member.name.as_atom().clone(),
+                            ));
+                            continue;
+                        }
                         let data_type = match &member.ty {
                             MemberType::Portable(ty) => Some(ty.as_resolved().clone()),
                             // A class-typed member. `ResolvedType::Class` carries
@@ -3749,7 +3821,7 @@ pub(crate) fn fold_atom(s: &str) -> OxablAtom {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NamespaceId, SymbolKind};
+    use crate::{ClassDescriptor, IndexRevision, NamespaceId, SymbolKind, WorkspaceIndex};
     use oxabl_ast::{
         AccessModifier, BooleanLiteral, BufferTarget, DataType, Expression, ExpressionKind,
         Identifier, IntegerLiteral, Literal, LockType, ParameterDirection, ParameterType, Span,
@@ -7512,5 +7584,122 @@ mod tests {
         let stmts = vec![buffer_stmt_n("bCust", BufferTarget::Table(id("Customer")))];
         let (tree, symbols, _r, _ty) = run_full(&stmts);
         assert!(find_symbol(&tree, &symbols, NamespaceId::Tables, "Customer").is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // The workspace type-name memo is case-sensitive
+    // -------------------------------------------------------------------
+
+    /// An index that answers `Found` for exactly one **as-written** spelling of
+    /// one class, and `NotFound` for every other spelling of the same name.
+    ///
+    /// That is not a contrived shape — it is what a real
+    /// [`BatchIndex`](oxabl_index::BatchIndex) does over a case-sensitive
+    /// filesystem: the search derives a relative path from the name as written,
+    /// so `MyApp.Cache` finds `MyApp/Cache.cls` and `myapp.cache` does not. A
+    /// stub is used rather than the real index because `oxabl_index` depends on
+    /// this crate, and because the point under test is the memo *above* the
+    /// index, not the search below it.
+    struct OneSpellingIndex {
+        /// The one spelling that resolves, compared byte-for-byte.
+        written: &'static str,
+    }
+
+    impl WorkspaceIndex for OneSpellingIndex {
+        fn class(&self, name: &IndexName) -> IndexAnswer<std::sync::Arc<ClassDescriptor>> {
+            if name.as_written() != self.written {
+                return IndexAnswer::NotFound;
+            }
+            IndexAnswer::Found(std::sync::Arc::new(ClassDescriptor {
+                name: name.clone(),
+                file: IndexedFileId::new(1),
+                kind: ClassKind::Class,
+                inherits: None,
+                implements: Vec::new(),
+            }))
+        }
+
+        fn class_members(
+            &self,
+            _class: &IndexName,
+        ) -> IndexAnswer<std::sync::Arc<[MemberDescriptor]>> {
+            IndexAnswer::Found(std::sync::Arc::from(Vec::new()))
+        }
+
+        fn program(&self, _target: &IndexName) -> IndexAnswer<IndexedFileId> {
+            IndexAnswer::NotFound
+        }
+
+        fn shared_producer(&self, _name: &IndexName) -> IndexAnswer<IndexedFileId> {
+            IndexAnswer::NotFound
+        }
+
+        fn revision(&self) -> IndexRevision {
+            IndexRevision::new(1)
+        }
+    }
+
+    /// Resolve `source` against [`OneSpellingIndex`] and report, per `NEW`
+    /// expression in source order, whether its type name resolved.
+    fn new_targets_resolved(source: &str, written: &'static str) -> Vec<bool> {
+        let index = OneSpellingIndex { written };
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(
+            program.errors.is_empty(),
+            "fixture must parse cleanly: {:?}",
+            program.errors
+        );
+        let stmts = program.statements;
+        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
+        let (refs, _t, _diags) = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+
+        // Collected by walking the statements rather than by iterating `refs`, so
+        // the answers come back in the order the file wrote the two `NEW`s — which
+        // is the whole variable under test.
+        let mut out = Vec::new();
+        for stmt in &stmts {
+            let StatementKind::Assignment { value, .. } = &stmt.kind else {
+                continue;
+            };
+            if !matches!(value.kind, ExpressionKind::New { .. }) {
+                continue;
+            }
+            out.push(matches!(refs.get(value.id), Some(Resolution::Resolved(_))));
+        }
+        out
+    }
+
+    /// The resolve-level mirror of `oxabl_index`'s
+    /// `a_miss_under_one_spelling_does_not_poison_another`. The lower memo keys on
+    /// the as-written spelling; a memo above it that folds the key would undo
+    /// that, and this is the test that says so.
+    #[test]
+    fn a_type_lookup_miss_under_one_spelling_does_not_poison_another() {
+        // The miss first. If `type_lookups` folded its key, the `myapp.cache`
+        // miss would be served to `MyApp.Cache` and the second `NEW` would fail.
+        let miss_first = "DEFINE VARIABLE v-a AS CHARACTER NO-UNDO.\n\
+                          v-a = NEW myapp.cache().\n\
+                          v-a = NEW MyApp.Cache().\n";
+        assert_eq!(
+            new_targets_resolved(miss_first, "MyApp.Cache"),
+            vec![false, true],
+            "the spelling that matches the filesystem resolves even when a \
+             different spelling of the same name missed first"
+        );
+
+        // And the reverse order, which passes even with a folded key — included so
+        // the pair shows the asymmetry is the bug rather than the fixture.
+        let hit_first = "DEFINE VARIABLE v-a AS CHARACTER NO-UNDO.\n\
+                         v-a = NEW MyApp.Cache().\n\
+                         v-a = NEW myapp.cache().\n";
+        assert_eq!(
+            new_targets_resolved(hit_first, "MyApp.Cache"),
+            vec![true, false],
+            "and a recorded hit is likewise not handed to the spelling that \
+             genuinely misses"
+        );
     }
 }
