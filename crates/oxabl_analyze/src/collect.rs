@@ -39,7 +39,7 @@ use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{Preprocessor, SpanNode};
 use oxabl_schema::Schema;
-use oxabl_semantic::{AnalysisContext, Semantic, analyze_file};
+use oxabl_semantic::{AnalysisContext, NullIndex, Semantic, WorkspaceIndex, analyze_file};
 use oxabl_workspace::FileSystem;
 
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
@@ -329,11 +329,21 @@ fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChun
 ///
 /// This is the half the LSP's salsa `diagnostics` query calls — its input is
 /// the memoized [`ExpandedFile`], so unchanged expansion → memo hit.
+///
+/// `index` answers the cross-file questions the resolve pass may ask. It is a
+/// borrowed handle rather than an `Option` because absence already has a
+/// representation — [`NullIndex`](oxabl_semantic::NullIndex), whose revision is
+/// `ABSENT` — and one that resolution code can call unconditionally. Pass that
+/// to get exactly the single-file answers this function gave before there was an
+/// index at all; pass a real one and the caller's own file must already be
+/// excluded from it, which is the *caller's* knowledge and not something
+/// derivable from an expansion.
 pub fn collect_from_expanded(
     expanded: &ExpandedFile,
     schema: &Schema,
     schema_loaded: bool,
     lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
@@ -359,17 +369,17 @@ pub fn collect_from_expanded(
         }
     }
 
-    let ctx = AnalysisContext {
-        file_id: root,
-        source: &expanded.text,
-        schema,
-        schema_loaded,
-        // No cross-file index in the batch collect path yet; the null handle
-        // keeps every cross-file name on today's `External` reason.
-        index: &oxabl_semantic::NullIndex,
-        index_loaded: false,
-        lint_severities: lint_severities.clone(),
-    };
+    // Built through the builders rather than as a struct literal, so
+    // `index_loaded` comes from `with_index`'s single derivation — restating
+    // "loaded means the revision is not ABSENT" here would be a second copy of
+    // the rule that decides whether a cross-file miss is a fact about the
+    // workspace or merely "we did not look". Only `schema_loaded` is assigned
+    // directly: `new` infers it from an empty schema, and this path is handed the
+    // caller's explicit answer, which is the whole point of the flag.
+    let mut ctx = AnalysisContext::new(root, &expanded.text, schema)
+        .with_lint_severities(lint_severities.clone())
+        .with_index(index);
+    ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 
     for d in &sem.diagnostics {
@@ -440,6 +450,17 @@ pub fn collect_diagnostics(
 /// CLI `analyze` dump can render the non-diagnostic envelope sections without a
 /// second analysis pass. The model is `None` only when preprocessing failed
 /// fatally (no parse possible).
+///
+/// # No cross-file index
+///
+/// This composition and [`collect_diagnostics`] predate the workspace index and
+/// answer **single-file**, passing [`NullIndex`]. That is deliberate rather than
+/// pending work: an index needs the asking file's own identity so it can be
+/// excluded from its own lookups, and these two take a source string and an
+/// include-path list — nothing that says *which file* the string is. The client
+/// that does know is `oxabl_pipeline::LintPipeline` (named in prose because it
+/// sits *above* this crate), which is why it drives [`expand_source`] and
+/// [`collect_from_expanded`] directly and passes a real index.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_with_model(
     root: FileId,
@@ -452,7 +473,13 @@ pub fn collect_with_model(
     preprocess: bool,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
     match expand_source(root, source, fs, include_paths, preprocess) {
-        Ok(expanded) => collect_from_expanded(&expanded, schema, schema_loaded, lint_severities),
+        Ok(expanded) => collect_from_expanded(
+            &expanded,
+            schema,
+            schema_loaded,
+            lint_severities,
+            &NullIndex,
+        ),
         Err(preproc_errors) => {
             let mut out = CollectedDiagnostics::default();
             for d in preproc_errors {

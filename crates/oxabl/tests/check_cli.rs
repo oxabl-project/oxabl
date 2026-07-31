@@ -875,3 +875,89 @@ fn an_unreadable_file_is_reported_and_the_walk_continues() {
         run.stdout
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-file resolution through the walk
+// ---------------------------------------------------------------------------
+
+/// A parent class with one public method. Synthetic, written for this file.
+const CALC_BASE: &str = "CLASS orders.calc-base:\n\
+                         METHOD PUBLIC INTEGER calc-total():\n\
+                         RETURN 0.\n\
+                         END METHOD.\n\
+                         END CLASS.\n";
+
+/// A subclass calling the inherited method. Without cross-file resolution the
+/// call reads as an undefined symbol — the false positive the walk's index
+/// removes.
+const CALC_CHILD: &str = "CLASS orders.child INHERITS orders.calc-base:\n\
+                          METHOD PUBLIC VOID run-it():\n\
+                          DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n\
+                          v-total = calc-total().\n\
+                          MESSAGE v-total.\n\
+                          END METHOD.\n\
+                          END CLASS.\n";
+
+/// A two-class project: the parent where a qualified name maps it, the child
+/// beside it. `--no-format` throughout, so the lint channel is the only variable
+/// (these fixtures are not written to the formatter's taste).
+fn inheritance_project() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("orders/calc-base.cls"), CALC_BASE);
+    write(&tmp.path().join("orders/child.cls"), CALC_CHILD);
+    tmp
+}
+
+#[test]
+fn a_walk_with_a_search_path_resolves_an_inherited_member() {
+    let tmp = inheritance_project();
+
+    let run = check([
+        Path::new("--no-format").as_os_str(),
+        Path::new("-I").as_os_str(),
+        tmp.path().as_os_str(),
+        tmp.path().as_os_str(),
+    ]);
+
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the inherited call must resolve. stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        !run.stdout.contains("LINT0001"),
+        "a parent's method is not an undefined symbol, got:\n{}",
+        run.stdout
+    );
+}
+
+/// The control, and the shape of every workspace that configures no search path:
+/// nothing is reachable, so the walk answers exactly as it did before cross-file
+/// resolution existed — and the report keys are the same either way.
+#[test]
+fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
+    let tmp = inheritance_project();
+
+    let run = check([
+        Path::new("--no-format").as_os_str(),
+        Path::new("--json").as_os_str(),
+        tmp.path().as_os_str(),
+    ]);
+
+    assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
+    let v = run.json();
+    assert_eq!(v["version"], 1);
+    assert_eq!(v["files_checked"], 2);
+    assert_eq!(v["lint_enabled"], true);
+    assert_eq!(v["format_enabled"], false);
+    assert_eq!(v["format"]["drifted_count"], 0);
+    assert!(v["failures"].as_array().unwrap().is_empty());
+    let diagnostics = v["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        diagnostics.iter().any(|d| d["code"] == "LINT0001"),
+        "with nowhere to search, the inherited call is undefined as before:\n{}",
+        run.stdout
+    );
+}

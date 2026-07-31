@@ -32,7 +32,7 @@ mod batch;
 mod facts;
 mod search;
 
-pub use batch::BatchIndex;
+pub use batch::{BatchIndex, ExcludingFile};
 pub use facts::{ClassFacts, FileFacts};
 
 use std::sync::Arc;
