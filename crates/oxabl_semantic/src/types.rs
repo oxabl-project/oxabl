@@ -6,10 +6,12 @@
 //! resolve and type-check passes extend this side table with inferred
 //! expression types in Phases 4a/4b.
 
-use oxabl_ast::DataType;
-use oxabl_schema::{Field, SchemaRevision, SchemaType, TableId};
+use std::fmt;
 
-use crate::SymbolId;
+use oxabl_ast::DataType;
+use oxabl_schema::{Field, Schema, SchemaRevision, SchemaType, TableId};
+
+use crate::{SymbolId, symbol::SymbolTable};
 
 /// A type inferred or declared for an expression / declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +134,103 @@ impl ResolvedType {
     pub fn is_unknown(&self) -> bool {
         matches!(self, ResolvedType::Unknown)
     }
+
+    /// Pair this type with the two tables needed to name it in ABL, yielding a
+    /// [`Display`](fmt::Display) view fit for a diagnostic message.
+    ///
+    /// A borrowing wrapper rather than a bare `Display` impl because the type
+    /// alone does not know its own name: `Buffer`/`Class` carry a [`SymbolId`]
+    /// that only the symbol table can resolve, and `Table` carries a
+    /// [`TableId`] that only the schema can — `SymbolTable` holds no
+    /// `TableId`-to-name map.
+    pub fn display_abl<'a>(&'a self, symbols: &'a SymbolTable, schema: &'a Schema) -> AblType<'a> {
+        AblType {
+            ty: self,
+            symbols,
+            schema,
+        }
+    }
+}
+
+/// A [`ResolvedType`] rendered as ABL-facing text — see
+/// [`ResolvedType::display_abl`].
+///
+/// Every rendering names ABL: a keyword for a primitive, a declared name for a
+/// class, buffer, or table. No internal identifier ever reaches a message, which
+/// is what makes a diagnostic readable and an A/B over one legible.
+pub struct AblType<'a> {
+    ty: &'a ResolvedType,
+    symbols: &'a SymbolTable,
+    schema: &'a Schema,
+}
+
+impl fmt::Display for AblType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.ty {
+            ResolvedType::Primitive(p) => f.write_str(p.abl_keyword()),
+            ResolvedType::Class(sym) => {
+                write!(f, "{}", self.symbols.get(*sym).name)
+            }
+            // A buffer's useful name is the table it is over — that is what a
+            // reader has to reconcile the message against. Fall back to the
+            // buffer's own name when the schema cannot answer (no schema
+            // loaded, a temp-table buffer, or a stale revision).
+            ResolvedType::Buffer(sym) => {
+                let symbol = self.symbols.get(*sym);
+                let table = symbol
+                    .table_id
+                    .and_then(|id| self.schema.get_by_id(id))
+                    .map(|t| t.display_name.as_str());
+                match table {
+                    Some(name) => write!(f, "buffer {name}"),
+                    None => write!(f, "buffer {}", symbol.name),
+                }
+            }
+            // The revision is a freshness proof, not part of the type's name.
+            ResolvedType::Table(_, id) => match self.schema.get_by_id(*id) {
+                Some(t) => write!(f, "table {}", t.display_name),
+                None => f.write_str("table"),
+            },
+            ResolvedType::Array { element, extent } => {
+                write!(f, "{}", element.display_abl(self.symbols, self.schema))?;
+                match extent {
+                    Some(n) => write!(f, " EXTENT {n}"),
+                    // Dynamic extent — ABL writes it with no bound.
+                    None => f.write_str(" EXTENT"),
+                }
+            }
+            // Neither reaches a message from LINT0004, which early-returns on
+            // both. Named anyway, so a future interpolation cannot fall back to
+            // a debug print.
+            ResolvedType::Unknown => f.write_str("UNKNOWN"),
+            ResolvedType::Error => f.write_str("ERROR"),
+        }
+    }
+}
+
+impl PrimitiveTy {
+    /// The ABL keyword that declares this primitive.
+    pub fn abl_keyword(&self) -> &'static str {
+        match self {
+            PrimitiveTy::Integer => "INTEGER",
+            PrimitiveTy::Int64 => "INT64",
+            PrimitiveTy::Decimal => "DECIMAL",
+            PrimitiveTy::Character => "CHARACTER",
+            PrimitiveTy::Longchar => "LONGCHAR",
+            PrimitiveTy::Logical => "LOGICAL",
+            PrimitiveTy::Date => "DATE",
+            PrimitiveTy::Datetime => "DATETIME",
+            PrimitiveTy::DatetimeTz => "DATETIME-TZ",
+            PrimitiveTy::Handle => "HANDLE",
+            PrimitiveTy::Rowid => "ROWID",
+            PrimitiveTy::Recid => "RECID",
+            PrimitiveTy::Raw => "RAW",
+            PrimitiveTy::Memptr => "MEMPTR",
+            PrimitiveTy::Clob => "CLOB",
+            PrimitiveTy::Blob => "BLOB",
+            PrimitiveTy::ComHandle => "COM-HANDLE",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -155,6 +254,74 @@ mod tests {
         assert_eq!(
             ResolvedType::from_data_type(&DataType::Class("Foo.Bar".into())),
             ResolvedType::Unknown
+        );
+    }
+
+    // ---- display_abl ------------------------------------------------------
+
+    #[test]
+    fn renders_primitives_as_abl_keywords() {
+        let symbols = SymbolTable::new();
+        let schema = Schema::empty();
+        let render = |p| {
+            ResolvedType::Primitive(p)
+                .display_abl(&symbols, &schema)
+                .to_string()
+        };
+        assert_eq!(render(PrimitiveTy::Integer), "INTEGER");
+        assert_eq!(render(PrimitiveTy::DatetimeTz), "DATETIME-TZ");
+        assert_eq!(render(PrimitiveTy::ComHandle), "COM-HANDLE");
+    }
+
+    #[test]
+    fn renders_arrays_with_extent_and_dynamic_extent() {
+        let symbols = SymbolTable::new();
+        let schema = Schema::empty();
+        let arr = |extent| ResolvedType::Array {
+            element: Box::new(ResolvedType::Primitive(PrimitiveTy::Character)),
+            extent,
+        };
+        assert_eq!(
+            arr(Some(4)).display_abl(&symbols, &schema).to_string(),
+            "CHARACTER EXTENT 4"
+        );
+        // Dynamic extent carries no bound.
+        assert_eq!(
+            arr(None).display_abl(&symbols, &schema).to_string(),
+            "CHARACTER EXTENT"
+        );
+    }
+
+    #[test]
+    fn renders_a_table_by_name_and_drops_the_revision() {
+        let schema = oxabl_schema::test_support::customer_schema();
+        let symbols = SymbolTable::new();
+        let id = schema
+            .table_id(&oxabl_lexer::oxabl_atom::OxablAtom::from("customer"))
+            .expect("fixture schema has Customer");
+        let rendered = ResolvedType::Table(schema.revision(), id)
+            .display_abl(&symbols, &schema)
+            .to_string();
+        assert_eq!(rendered, "table Customer");
+    }
+
+    #[test]
+    fn renders_lattice_bottoms_by_name_not_by_debug() {
+        let symbols = SymbolTable::new();
+        let schema = Schema::empty();
+        // Neither reaches a message today, but a named rendering is what keeps
+        // a future interpolation from debug-printing.
+        assert_eq!(
+            ResolvedType::Unknown
+                .display_abl(&symbols, &schema)
+                .to_string(),
+            "UNKNOWN"
+        );
+        assert_eq!(
+            ResolvedType::Error
+                .display_abl(&symbols, &schema)
+                .to_string(),
+            "ERROR"
         );
     }
 

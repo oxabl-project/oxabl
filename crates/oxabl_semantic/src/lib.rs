@@ -46,7 +46,7 @@ pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use symbol::{
     ClassLookup, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
 };
-pub use types::{PrimitiveTy, ResolvedType};
+pub use types::{AblType, PrimitiveTy, ResolvedType};
 
 use oxabl_common::{Diagnostic, FileId, LintSeverityMap, VirtualSpan};
 use oxabl_schema::{Schema, SchemaRevision};
