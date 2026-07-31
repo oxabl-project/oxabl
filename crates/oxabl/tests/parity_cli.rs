@@ -31,33 +31,67 @@ fn oxabl() -> Command {
     Command::new(env!("CARGO_BIN_EXE_oxabl"))
 }
 
-/// A temp directory holding one fixture's source (and its `.df` when the fixture
-/// needs a schema). No `oxabl.toml`, so the binary resolves the same
-/// all-defaults configuration [`fixtures::canonical_config`] models.
+/// A temp directory holding one fixture's source at the fixture's own relative
+/// path, its sibling files beside it, and its `.df` when the fixture needs a
+/// schema. No `oxabl.toml`, so the binary resolves the same all-defaults
+/// configuration [`fixtures::canonical_config`] models.
+///
+/// This is the one leg that roots a fixture somewhere other than
+/// [`fixtures::PARITY_ROOT`]: it drives a separate process over the real
+/// filesystem, which is why the table holds sibling paths relatively.
 struct Case {
     _dir: TempDir,
     source: PathBuf,
     schema: Option<PathBuf>,
+    /// The directory to pass as `-I`, for a cross-file fixture. Present whether
+    /// or not the siblings were actually written, so the withheld-siblings case
+    /// varies the *files* and nothing else.
+    include: Option<PathBuf>,
 }
 
 fn case(fixture: &ParityFixture) -> Case {
+    case_with_siblings(fixture, true)
+}
+
+/// The same case with the sibling files left unwritten — the withheld half of the
+/// cross-file pair.
+fn case_without_siblings(fixture: &ParityFixture) -> Case {
+    case_with_siblings(fixture, false)
+}
+
+fn case_with_siblings(fixture: &ParityFixture, siblings: bool) -> Case {
     let dir = TempDir::new().unwrap();
-    let source = dir.path().join("main.p");
-    fs::write(&source, fixture.source).unwrap();
+    let source = fixture.root_path(dir.path());
+    write_file(&source, fixture.source);
+    if siblings {
+        for sibling in fixture.siblings {
+            write_file(&dir.path().join(sibling.path), sibling.source);
+        }
+    }
     let schema = fixture.needs_capability(Capability::Schema).then(|| {
         let path = dir.path().join("schema.df");
         fs::write(&path, fixtures::CUSTOMER_DF).unwrap();
         path
     });
     Case {
+        include: fixture.is_cross_file().then(|| dir.path().to_path_buf()),
         _dir: dir,
         source,
         schema,
     }
 }
 
-/// `oxabl check --json`, with `--schema` when the fixture needs it — and with no
-/// preprocessing flag at all.
+/// A fixture path may name a subdirectory (`orders/child.cls`), which the temp
+/// directory does not have yet.
+fn write_file(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, contents).unwrap();
+}
+
+/// `oxabl check --json`, with `--schema` when the fixture needs it and `-I` when
+/// it has siblings to find — and with no preprocessing flag at all.
 ///
 /// That omission is deliberate (R19). This leg runs `check` in its **default**
 /// configuration precisely so a default-only divergence cannot hide: the whole
@@ -72,6 +106,9 @@ fn check_json(case: &Case, extra: &[&str]) -> (Value, Option<i32>, String) {
     command.arg("check").arg("--json").arg(&case.source);
     if let Some(schema) = &case.schema {
         command.arg("--schema").arg(schema);
+    }
+    if let Some(include) = &case.include {
+        command.arg("-I").arg(include);
     }
     for arg in extra {
         command.arg(arg);
@@ -210,12 +247,13 @@ fn the_schema_gated_fixture_needs_the_schema_flag() {
 
     // Same source, same binary, schema withheld.
     let dir = TempDir::new().unwrap();
-    let source = dir.path().join("main.p");
-    fs::write(&source, fixture.source).unwrap();
+    let source = fixture.root_path(dir.path());
+    write_file(&source, fixture.source);
     let bare = Case {
         _dir: dir,
         source,
         schema: None,
+        include: None,
     };
     assert!(
         observed(&check_json(&bare, &[]).0).is_empty(),
@@ -245,6 +283,51 @@ fn the_non_ascii_fixture_keeps_its_byte_span_and_byte_column() {
         fixtures::NON_ASCII_BYTE_COLUMN,
         "the CLI prints SourceMap's byte column, got {rendered}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file resolution (R7)
+// ---------------------------------------------------------------------------
+
+/// Every cross-file row answers through the built binary exactly as the table
+/// says — with the siblings on disk, and with them withheld.
+///
+/// The binary is the only leg where the files are *real* and the search path
+/// arrives as a command-line flag, so this is where a resolver that quietly
+/// depended on the in-memory filesystem would show up. `-I` is passed in both
+/// halves, so the variable is the sibling files alone.
+#[test]
+fn cross_file_fixtures_resolve_through_the_built_binary() {
+    for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+        let supplied = case(fixture);
+        assert!(
+            supplied.include.is_some(),
+            "fixture `{}`: a cross-file case must pass a search path",
+            fixture.name
+        );
+        fixture.assert_diagnostics(
+            "cli check --json (siblings supplied)",
+            observed(&check_json(&supplied, &[]).0),
+        );
+
+        let withheld = case_without_siblings(fixture);
+        fixture.assert_diagnostics_without_siblings(
+            "cli check --json (siblings withheld)",
+            observed(&check_json(&withheld, &[]).0),
+        );
+
+        // The not-inert half: a row claiming a diagnostic-visible resolution must
+        // really answer differently once the files are gone, or the supplied half
+        // would pass for a binary that never looked.
+        if fixture.siblings_change_the_answer() {
+            assert_ne!(
+                fixtures::normalize(observed(&check_json(&supplied, &[]).0)),
+                fixtures::normalize(observed(&check_json(&withheld, &[]).0)),
+                "fixture `{}`: the two halves must differ",
+                fixture.name
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

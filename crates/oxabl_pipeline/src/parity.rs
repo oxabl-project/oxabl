@@ -23,20 +23,36 @@
 //! and refuses the whole release on. The three downstream legs still consume
 //! the table the way any external crate must, through the feature.
 
+use std::path::Path;
+
 use oxabl_common::SourceMap;
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
 use crate::fixtures::{
-    self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
+    self, Capability, CrossFileEffect, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
+};
 };
 use crate::{
     FormatPipeline, LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig,
     position,
 };
 
-/// A filesystem with nothing in it — the include fixture is *unresolvable* on
-/// purpose, so no leg needs to plant a file for it.
-fn fs() -> InMemoryFileSystem {
+/// Where this leg roots a fixture's files, shared with the language-server and
+/// browser legs so all three resolve over the same spellings.
+fn root() -> &'static Path {
+    Path::new(fixtures::PARITY_ROOT)
+}
+
+/// The filesystem a fixture runs over: its sibling files, rooted at
+/// [`fixtures::PARITY_ROOT`]. Empty for a single-file fixture — the include row is
+/// *unresolvable* on purpose, so no leg plants a file for it.
+fn fs(fixture: &ParityFixture) -> InMemoryFileSystem {
+    fixture.filesystem_under(root())
+}
+
+/// A filesystem with nothing in it, for the withheld-siblings half of the
+/// cross-file capability pair.
+fn empty_fs() -> InMemoryFileSystem {
     InMemoryFileSystem::new()
 }
 
@@ -44,8 +60,14 @@ fn observed(result: &LintResult) -> Vec<ObservedDiagnostic> {
     fixtures::observed(result.diagnostics())
 }
 
+/// The composed run, through a per-file handle carrying the fixture's own
+/// identity — which is how a walk and an editor both drive it, and what keeps a
+/// file from resolving a name to its own copy on disk.
 fn run(fixture: &ParityFixture, config: &PipelineConfig, fs: &dyn FileSystem) -> LintResult {
-    LintPipeline::new(config, fs).run(fixture.source)
+    let pipeline = LintPipeline::new(config, fs);
+    pipeline
+        .with_file(fixture.root_path(root()))
+        .run(fixture.source)
 }
 
 // ---------------------------------------------------------------------------
@@ -57,9 +79,9 @@ fn run(fixture: &ParityFixture, config: &PipelineConfig, fs: &dyn FileSystem) ->
 /// other three legs are compared against.
 #[test]
 fn the_shared_table_matches_the_composed_run() {
-    let fs = fs();
     for fixture in FIXTURES {
-        let config = fixture.config();
+        let fs = fs(fixture);
+        let config = fixture.config_under(root());
         let result = run(fixture, &config, &fs);
         assert!(
             !result.failed_run(),
@@ -110,10 +132,11 @@ fn the_shared_table_matches_the_format_pipeline() {
 /// the interesting part) and the parse-error one (where recovery is).
 #[test]
 fn two_phase_and_composed_run_agree_on_every_fixture() {
-    let fs = fs();
     for fixture in FIXTURES {
-        let config = fixture.config();
-        let pipeline = LintPipeline::new(&config, &fs);
+        let fs = fs(fixture);
+        let config = fixture.config_under(root());
+        let run = LintPipeline::new(&config, &fs);
+        let pipeline = run.with_file(fixture.root_path(root()));
 
         let expansion = pipeline.expand(fixture.source);
         let two_phase = pipeline.collect(&expansion);
@@ -160,11 +183,11 @@ fn two_phase_and_composed_run_agree_on_every_fixture() {
 /// where the capability can be toggled directly.
 #[test]
 fn the_schema_gated_fixture_is_inert_without_a_schema() {
-    let fs = fs();
     let fixture = FIXTURES
         .iter()
         .find(|f| f.needs_capability(Capability::Schema))
         .expect("the table carries a schema-gated fixture");
+    let fs = fs(fixture);
 
     let unloaded = fixtures::canonical_config();
     assert!(!unloaded.schema_loaded, "the canonical config loads no .df");
@@ -186,12 +209,12 @@ fn the_schema_gated_fixture_is_inert_without_a_schema() {
 /// differently-diagnosed.
 #[test]
 fn the_include_fixture_is_inert_without_include_resolution() {
-    let fs = fs();
     let fixture = FIXTURES
         .iter()
         .find(|f| f.needs_capability(Capability::IncludeResolution))
         .expect("the table carries an include fixture");
-    let config = fixture.config();
+    let fs = fs(fixture);
+    let config = fixture.config_under(root());
 
     let without = LintPipeline::new(&config, &fs)
         .with_preprocess(false)
@@ -219,9 +242,9 @@ fn the_include_fixture_is_inert_without_include_resolution() {
 /// agreement with the CLI would only hold by luck.
 #[test]
 fn capability_free_fixtures_are_indifferent_to_preprocessing() {
-    let fs = fs();
     for fixture in FIXTURES.iter().filter(|f| f.needs.is_empty()) {
-        let config = fixture.config();
+        let fs = fs(fixture);
+        let config = fixture.config_under(root());
         let on = LintPipeline::new(&config, &fs).run(fixture.source);
         let off = LintPipeline::new(&config, &fs)
             .with_preprocess(false)
@@ -236,6 +259,135 @@ fn capability_free_fixtures_are_indifferent_to_preprocessing() {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-file resolution (R7)
+// ---------------------------------------------------------------------------
+
+/// Sibling files are not a capability but an *input*: with them supplied the row
+/// answers as the table says, and with them withheld it answers as
+/// [`ParityFixture::expected_without_siblings`] says — louder, never quieter.
+///
+/// The second half is what stops a wholly broken resolver from passing the first:
+/// a row whose siblings change the answer must actually produce a *different*
+/// answer when they are gone. For a row where resolution is silent, unresolvable,
+/// or unknowable the two answers are equal by construction, and this asserts that
+/// equality rather than pretending a difference exists.
+#[test]
+fn withholding_a_fixtures_siblings_only_ever_makes_it_louder() {
+    for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+        let config = fixture.config_under(root());
+
+        let with = observed(&run(fixture, &config, &fs(fixture)));
+        fixture.assert_diagnostics("pipeline run (siblings supplied)", with.clone());
+
+        // Same configuration, same include path, nothing on the filesystem for it
+        // to find — so this isolates the sibling files as the only variable.
+        let without = observed(&run(fixture, &config, &empty_fs()));
+        fixture.assert_diagnostics_without_siblings("pipeline run (siblings withheld)", without);
+
+        let with = fixtures::normalize(with);
+        let without = fixture.expected_without_siblings();
+        if fixture.siblings_change_the_answer() {
+            assert_ne!(
+                with, without,
+                "fixture `{}` claims a diagnostic-visible resolution, so the two \
+                 answers must differ — otherwise the supplied half would pass for \
+                 a resolver that never looked",
+                fixture.name
+            );
+            for found in &with {
+                assert!(
+                    without.contains(found),
+                    "fixture `{}`: supplying siblings added {} at {}..{} — attaching \
+                     an index must only ever remove a finding (R11)",
+                    fixture.name,
+                    found.code,
+                    found.start,
+                    found.end
+                );
+            }
+        } else {
+            assert_eq!(
+                with, without,
+                "fixture `{}` claims no diagnostic-visible resolution, so the \
+                 supplied and withheld answers must be identical",
+                fixture.name
+            );
+        }
+    }
+}
+
+/// The composed and two-phase entry points agree on every cross-file row, and
+/// both are re-asserted against the table.
+///
+/// The whole-table test above already covers this for the supplied half; this one
+/// exists for the **withheld** half, where the pipeline's index answers
+/// `NotFound` rather than being absent, and for the model and dependency facts
+/// the table does not carry.
+#[test]
+fn the_two_entry_points_agree_on_cross_file_rows_with_and_without_siblings() {
+    for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+        let config = fixture.config_under(root());
+        for (label, fs) in [
+            ("siblings supplied", fixture.filesystem_under(root())),
+            ("siblings withheld", empty_fs()),
+        ] {
+            let run = LintPipeline::new(&config, &fs);
+            let pipeline = run.with_file(fixture.root_path(root()));
+
+            let two_phase = pipeline.collect(&pipeline.expand(fixture.source));
+            let composed = pipeline.run(fixture.source);
+
+            assert_eq!(
+                two_phase.diagnostics(),
+                composed.diagnostics(),
+                "fixture `{}` ({label}): the two-phase and composed runs disagree",
+                fixture.name
+            );
+            assert_eq!(
+                two_phase.semantic().is_some(),
+                composed.semantic().is_some(),
+                "fixture `{}` ({label}): model presence disagrees",
+                fixture.name
+            );
+            assert_eq!(
+                two_phase.dependency_paths(),
+                composed.dependency_paths(),
+                "fixture `{}` ({label}): dependency paths disagree",
+                fixture.name
+            );
+
+            // Both paths against the table, not merely against each other.
+            let observed = observed(&two_phase);
+            if label == "siblings supplied" {
+                fixture.assert_diagnostics("pipeline two-phase", observed);
+            } else {
+                fixture.assert_diagnostics_without_siblings("pipeline two-phase", observed);
+            }
+        }
+    }
+}
+
+/// A cross-file row resolves the same way with no file identity at all — the
+/// browser's position, where the buffer has no path.
+///
+/// Without this the browser leg's agreement with the other three would hold only
+/// by luck, exactly as `capability_free_fixtures_are_indifferent_to_preprocessing`
+/// makes its preprocessing-off comparison legitimate.
+#[test]
+fn cross_file_rows_do_not_depend_on_the_analysed_files_identity() {
+    for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+        let fs = fs(fixture);
+        let config = fixture.config_under(root());
+        let anonymous = LintPipeline::new(&config, &fs);
+        assert_eq!(anonymous.file(), None);
+        fixture.assert_diagnostics(
+            "pipeline run (no identity)",
+            observed(&anonymous.run(fixture.source)),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The per-rule severity override
 // ---------------------------------------------------------------------------
 
@@ -244,8 +396,8 @@ fn capability_free_fixtures_are_indifferent_to_preprocessing() {
 /// through their own configuration surfaces.
 #[test]
 fn a_per_rule_severity_override_changes_only_the_severity() {
-    let fs = fs();
     let fixture = fixtures::fixture(fixtures::OVERRIDE_FIXTURE);
+    let fs = fs(fixture);
 
     let baseline = observed(&run(fixture, &fixture.config(), &fs));
     let overridden = observed(&run(fixture, &fixtures::config_with_override(), &fs));
@@ -405,10 +557,19 @@ fn the_non_ascii_fixture_distinguishes_bytes_from_characters() {
 /// The expected byte spans really do point at the substring they claim to, so a
 /// span typo is caught in the table rather than surviving as four legs agreeing
 /// on the wrong number.
+///
+/// Covers the cross-file rows' `Resolved` findings too: those spans are in the
+/// same root buffer and are just as easy to mistype.
 #[test]
 fn expected_spans_are_inside_their_source_and_land_on_real_text() {
     for fixture in FIXTURES {
-        for expected in fixture.diagnostics {
+        let resolved = fixture.resolutions.iter().filter_map(|r| match r.effect {
+            CrossFileEffect::Resolved(finding) => Some(finding),
+            CrossFileEffect::ResolvedSilently
+            | CrossFileEffect::Unresolvable
+            | CrossFileEffect::Unknowable => None,
+        });
+        for expected in fixture.diagnostics.iter().copied().chain(resolved) {
             let (start, end) = (expected.start as usize, expected.end as usize);
             assert!(
                 end <= fixture.source.len() && start < end,
@@ -434,5 +595,92 @@ fn expected_spans_are_inside_their_source_and_land_on_real_text() {
                 expected.code
             );
         }
+    }
+}
+
+/// Cross-file hygiene: files and claims come in pairs, the claimed removals are
+/// really removals, the table covers every effect arm, and every path is a
+/// neutral relative one.
+///
+/// A row that planted files and claimed nothing about them would assert that four
+/// clients agree without saying on what — the failure mode this whole unit exists
+/// to prevent, one level up.
+#[test]
+fn every_fixture_carrying_siblings_declares_what_they_resolve() {
+    for fixture in FIXTURES {
+        assert_eq!(
+            fixture.is_cross_file(),
+            !fixture.resolutions.is_empty(),
+            "fixture `{}`: sibling files and declared resolutions must come together",
+            fixture.name
+        );
+
+        for resolution in fixture.resolutions {
+            assert!(
+                !resolution.name.is_empty(),
+                "fixture `{}`: a resolution must name its reference",
+                fixture.name
+            );
+            // A claimed removal that is also in the row's own expected set would
+            // be no removal at all.
+            if let CrossFileEffect::Resolved(finding) = resolution.effect {
+                assert!(
+                    !fixture.expected().iter().any(|d| d.code == finding.code
+                        && d.start == finding.start
+                        && d.end == finding.end),
+                    "fixture `{}`: {} at {}..{} is claimed as removed by resolution \
+                     but is also expected with the siblings supplied",
+                    fixture.name,
+                    finding.code,
+                    finding.start,
+                    finding.end
+                );
+            }
+        }
+
+        // Relative, and pointing inside the fixture's own root: an absolute path
+        // would only be right for the three in-process legs, and a `..` would
+        // reach outside the temp directory the CLI leg builds.
+        for path in std::iter::once(fixture.root_file)
+            .chain(fixture.siblings.iter().map(|sibling| sibling.path))
+        {
+            let path = Path::new(path);
+            assert!(
+                path.is_relative(),
+                "fixture `{}`: `{}` must be relative to the fixture root",
+                fixture.name,
+                path.display()
+            );
+            assert!(
+                path.components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+                "fixture `{}`: `{}` must not escape the fixture root",
+                fixture.name,
+                path.display()
+            );
+        }
+    }
+
+    // Every effect arm is exercised, so the four legs' cross-file assertions
+    // cover a removal, an agreed silence, an absence, and an unknowable.
+    let effects: Vec<CrossFileEffect> = FIXTURES
+        .iter()
+        .flat_map(|f| f.resolutions.iter().map(|r| r.effect))
+        .collect();
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, CrossFileEffect::Resolved(_))),
+        "no fixture covers a diagnostic-visible cross-file resolution"
+    );
+    for arm in [
+        CrossFileEffect::ResolvedSilently,
+        CrossFileEffect::Unresolvable,
+        CrossFileEffect::Unknowable,
+    ] {
+        assert!(
+            effects.contains(&arm),
+            "no fixture covers the {arm:?} cross-file effect"
+        );
     }
 }

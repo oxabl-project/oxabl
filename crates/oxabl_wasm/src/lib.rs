@@ -184,10 +184,46 @@ fn diagnostic_source(source: DiagnosticSource) -> &'static str {
 /// system, with preprocessing off: the browser MVP has no project filesystem,
 /// include path, or schema upload, so those capabilities are absent rather than
 /// emulated here.
+///
+/// # The exported entry point takes source only
+///
+/// It delegates to `analyze_over` (private, so this is a plain mention rather
+/// than a doc link into the browser's public surface), which accepts a
+/// configuration and a
+/// filesystem, because *nothing about the analysis itself* is file-less — the
+/// browser resolves cross-file names over whatever filesystem it is given, the
+/// same way every other client does. What is absent is a JS-visible way to
+/// **supply** files, and that is a scope boundary in this signature rather than a
+/// different resolver underneath it. Widening the wire shape to carry a virtual
+/// project is a separate piece of work; until then this is the honest surface,
+/// and the parity suite reaches the seam directly rather than asserting the
+/// browser is a special case (R7, R19).
 #[wasm_bindgen]
 pub fn analyze_source(source: &str) -> String {
-    let config = PipelineConfig::default();
-    let fs = InMemoryFileSystem::new();
+    analyze_over(
+        source,
+        &PipelineConfig::default(),
+        &InMemoryFileSystem::new(),
+    )
+}
+
+/// The whole analysis body, over a caller-supplied configuration and filesystem —
+/// the seam [`analyze_source`] is a file-less call into.
+///
+/// Deliberately **not** exported and not `pub`: this is one implementation with a
+/// wider signature, not a second entry point with its own behavior. Keeping it
+/// private is what makes "the browser has no upload path" a fact about the
+/// exported surface rather than about how the browser resolves names.
+///
+/// No file identity is threaded through, because the browser genuinely has none:
+/// a buffer in a text area has no path. The pipeline leg pins that this costs
+/// nothing — a cross-file row answers identically with and without an identity,
+/// since an identity only ever excludes the analysed file from its own lookups.
+fn analyze_over(
+    source: &str,
+    config: &PipelineConfig,
+    fs: &dyn oxabl::workspace::FileSystem,
+) -> String {
     // `run` is the guarded convenience, though its guard is a documented
     // pass-through on wasm32 — under `panic=abort` a panic traps instead of
     // being contained, so the browser's protection is the panic hook plus
@@ -195,7 +231,7 @@ pub fn analyze_source(source: &str) -> String {
     // nonetheless reachable natively, where this crate's unit tests live, and it
     // reports as an empty diagnostic set: the wire shape deliberately gains no
     // `error` field for something the browser can never observe.
-    let result = LintPipeline::new(&config, &fs)
+    let result = LintPipeline::new(config, fs)
         .with_preprocess(false)
         .run(source);
 
@@ -440,19 +476,71 @@ mod tests {
     // gap** rather than a different diagnostic set. One genuine *defect* is also
     // pinned by name; see `browser_default_severities_diverge_for_two_rules`.
     mod parity {
+        use std::path::{Path, PathBuf};
+
+        use oxabl::workspace::InMemoryFileSystem;
+        use oxabl_pipeline::PipelineConfig;
         use oxabl_pipeline::fixtures::{
             self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
         };
 
         use oxabl_pipeline::{FormatOutcome, FormatPipeline, PipelineConfig};
 
-        use super::super::{analyze_source, format_source};
+        use super::super::{analyze_over, analyze_source, format_source};
 
-        /// Every diagnostic `analyze_source` reported, in the shared comparison
-        /// form.
-        fn observed(source: &str) -> Vec<ObservedDiagnostic> {
-            let response: serde_json::Value = serde_json::from_str(&analyze_source(source))
-                .expect("the browser wire shape is JSON");
+        /// Where this leg roots a fixture's files, matching the pipeline and
+        /// language-server legs so all three resolve over one set of spellings.
+        fn root() -> &'static Path {
+            Path::new(fixtures::PARITY_ROOT)
+        }
+
+        /// The configuration the browser runs a fixture under: what the exported
+        /// entry point builds for **itself**, plus the include path a cross-file
+        /// row's siblings live on.
+        ///
+        /// Derived from [`PipelineConfig::default`] rather than from
+        /// `fixture.config_under`, on purpose. `default` is the browser's own
+        /// table and `resolve` is every other client's; the one time they
+        /// disagreed, two rules came back `error` here and `warning` everywhere
+        /// else. Reaching for the resolved value would make this leg stop being
+        /// able to catch that.
+        fn browser_config(fixture: &ParityFixture) -> PipelineConfig {
+            let mut config = PipelineConfig::default();
+            if fixture.is_cross_file() {
+                config.include_paths = vec![PathBuf::from(fixtures::PARITY_ROOT)];
+            }
+            config
+        }
+
+        /// Every diagnostic the browser reported for `fixture`, in the shared
+        /// comparison form — through the seam, with the fixture's sibling files
+        /// supplied.
+        fn observed(fixture: &ParityFixture) -> Vec<ObservedDiagnostic> {
+            wire(&analyze_over(
+                fixture.source,
+                &browser_config(fixture),
+                &fixture.filesystem_under(root()),
+            ))
+        }
+
+        /// The same, with the sibling files withheld and nothing else changed.
+        fn observed_without_siblings(fixture: &ParityFixture) -> Vec<ObservedDiagnostic> {
+            wire(&analyze_over(
+                fixture.source,
+                &browser_config(fixture),
+                &InMemoryFileSystem::new(),
+            ))
+        }
+
+        /// What the *exported*, file-less entry point reports — the surface a JS
+        /// caller actually has.
+        fn observed_through_the_export(source: &str) -> Vec<ObservedDiagnostic> {
+            wire(&analyze_source(source))
+        }
+
+        fn wire(response: &str) -> Vec<ObservedDiagnostic> {
+            let response: serde_json::Value =
+                serde_json::from_str(response).expect("the browser wire shape is JSON");
             response["diagnostics"]
                 .as_array()
                 .expect("diagnostics array")
@@ -488,7 +576,7 @@ mod tests {
         #[test]
         fn every_browser_capable_fixture_matches_the_shared_table() {
             for fixture in comparable() {
-                let observed = fixtures::normalize(observed(fixture.source));
+                let observed = fixtures::normalize(observed(fixture));
                 assert_eq!(
                     observed,
                     fixtures::browser_expected(fixture),
@@ -501,7 +589,7 @@ mod tests {
         /// A clean source is clean in the browser too.
         #[test]
         fn the_clean_fixture_yields_no_diagnostics() {
-            assert!(observed(fixtures::fixture("clean").source).is_empty());
+            assert!(observed(fixtures::fixture("clean")).is_empty());
         }
 
         /// The recovered set survives: a parse error does not cost the browser
@@ -509,7 +597,7 @@ mod tests {
         #[test]
         fn a_parse_error_yields_the_same_recovered_set() {
             let fixture = fixtures::fixture("parse_error");
-            let observed = fixtures::normalize(observed(fixture.source));
+            let observed = fixtures::normalize(observed(fixture));
             assert_eq!(observed, fixtures::browser_expected(fixture));
             assert!(
                 observed.iter().any(|d| d.code == "PARSE001")
@@ -652,6 +740,64 @@ mod tests {
             }
         }
 
+        // --- Cross-file resolution (R7) -------------------------------------
+
+        /// The browser resolves cross-file names over a supplied filesystem
+        /// exactly as the other three clients do — with the siblings supplied and
+        /// with them withheld.
+        ///
+        /// **This is not a carve-out and there is no compensating flag.** The
+        /// browser is handed the same files as every other leg, through the
+        /// internal seam, and is held to the same table. What it lacks is a
+        /// JS-exported way for a page to supply those files; the test below pins
+        /// that boundary separately, as a fact about the export rather than about
+        /// the resolver.
+        #[test]
+        fn cross_file_fixtures_resolve_over_a_supplied_filesystem() {
+            for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+                let supplied = fixtures::normalize(observed(fixture));
+                assert_eq!(
+                    supplied,
+                    fixtures::browser_expected(fixture),
+                    "the browser diverged on cross-file fixture `{}`",
+                    fixture.name
+                );
+
+                fixture.assert_diagnostics_without_siblings(
+                    "browser (siblings withheld)",
+                    observed_without_siblings(fixture),
+                );
+
+                if fixture.siblings_change_the_answer() {
+                    assert_ne!(
+                        supplied,
+                        fixture.expected_without_siblings(),
+                        "fixture `{}`: the two halves must differ, or the supplied \
+                         half would pass for a browser that never looked",
+                        fixture.name
+                    );
+                }
+            }
+        }
+
+        /// The *exported* entry point is file-less, so a cross-file row reaches it
+        /// with nothing to resolve against and reports the withheld-siblings
+        /// answer.
+        ///
+        /// Asserted rather than assumed, because this is the boundary that keeps
+        /// the seam honest: if the export ever grows a way to supply files, this
+        /// test is what has to change, and it says why in one place instead of
+        /// leaving the difference implicit in a helper.
+        #[test]
+        fn the_exported_entry_point_supplies_no_files() {
+            for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+                fixture.assert_diagnostics_without_siblings(
+                    "browser export (no filesystem)",
+                    observed_through_the_export(fixture.source),
+                );
+            }
+        }
+
         // --- Capability gaps, asserted as gaps ------------------------------
 
         /// Includes are an **unavailable capability**, not a different answer:
@@ -673,9 +819,7 @@ mod tests {
             // The capability is absent, so the loud warning the other three legs
             // assert cannot be produced here at all.
             assert!(
-                !observed(fixture.source)
-                    .iter()
-                    .any(|d| d.code == "PREPROC007"),
+                !observed(fixture).iter().any(|d| d.code == "PREPROC007"),
                 "with no include resolution there is no include to fail to resolve"
             );
         }
@@ -688,9 +832,7 @@ mod tests {
             assert!(fixture.needs_capability(Capability::Schema));
             assert!(!fixture.browser_comparable());
             assert!(
-                !observed(fixture.source)
-                    .iter()
-                    .any(|d| d.code == "LINT0003"),
+                !observed(fixture).iter().any(|d| d.code == "LINT0003"),
                 "the rule is schema-gated and the browser has no schema"
             );
         }
@@ -704,7 +846,7 @@ mod tests {
         #[test]
         fn per_rule_severity_is_an_unavailable_capability() {
             let fixture = fixtures::fixture(fixtures::OVERRIDE_FIXTURE);
-            let target = observed(fixture.source)
+            let target = observed(fixture)
                 .into_iter()
                 .find(|d| d.code == fixtures::OVERRIDE_CODE)
                 .unwrap_or_else(|| panic!("expected {}", fixtures::OVERRIDE_CODE));
@@ -742,7 +884,7 @@ mod tests {
         #[test]
         fn browser_severity_matches_every_other_client() {
             let fixture = fixtures::fixture("type_mismatch");
-            let observed = observed(fixture.source);
+            let observed = observed(fixture);
             let browser = observed
                 .iter()
                 .find(|d| d.code == "LINT0004")
