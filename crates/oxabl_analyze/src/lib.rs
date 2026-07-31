@@ -41,7 +41,7 @@
 //!     "diagnostics": 1,
 //!     "preproc": 1,
 //!     "coverage": 1,
-//!     "dependencies": 1
+//!     "dependencies": 2
 //!   },
 //!   "schema_revision": 0,
 //!   "scopes": [ ... ],
@@ -111,6 +111,10 @@ pub const ENVELOPE_VERSION: u32 = 1;
 /// * `dependencies` 1 — cross-file *index* state: which files the run consulted
 ///   and which class lookups came back empty. Its own section because it is a
 ///   property of neither a symbol nor a reference.
+/// * `dependencies` 2 — an `unresolved` row's `reason` strings changed.
+///   `not_found_in_workspace` split into `absent_from_workspace` (searched, no
+///   such file) and `present_but_unusable` (located, unreadable or unparseable),
+///   because only the first licenses telling a user the name does not exist.
 fn section_versions() -> Value {
     let mut sections = Map::new();
     sections.insert("scopes".into(), json!(1));
@@ -120,7 +124,7 @@ fn section_versions() -> Value {
     sections.insert("diagnostics".into(), json!(1));
     sections.insert("preproc".into(), json!(1));
     sections.insert("coverage".into(), json!(1));
-    sections.insert("dependencies".into(), json!(1));
+    sections.insert("dependencies".into(), json!(2));
     Value::Object(sections)
 }
 
@@ -823,7 +827,13 @@ fn dependencies_json(sem: &Semantic) -> Value {
             oxabl_semantic::ClassLookup::Absent => unresolved.push(UnresolvedLookupRow {
                 via: "class",
                 name: name.as_ref().to_string(),
-                reason: unresolved_reason_str(UnresolvedReason::NotFoundInWorkspace),
+                reason: unresolved_reason_str(UnresolvedReason::AbsentFromWorkspace),
+                span: supertype_span(sem, name),
+            }),
+            oxabl_semantic::ClassLookup::Unusable => unresolved.push(UnresolvedLookupRow {
+                via: "class",
+                name: name.as_ref().to_string(),
+                reason: unresolved_reason_str(UnresolvedReason::PresentButUnusable),
                 span: supertype_span(sem, name),
             }),
             oxabl_semantic::ClassLookup::Unknowable => unresolved.push(UnresolvedLookupRow {
@@ -1040,7 +1050,8 @@ fn unresolved_reason_str(r: UnresolvedReason) -> &'static str {
         UnresolvedReason::NotInScope => "not_in_scope",
         UnresolvedReason::External => "external",
         UnresolvedReason::NoSchema => "no_schema",
-        UnresolvedReason::NotFoundInWorkspace => "not_found_in_workspace",
+        UnresolvedReason::AbsentFromWorkspace => "absent_from_workspace",
+        UnresolvedReason::PresentButUnusable => "present_but_unusable",
         UnresolvedReason::Unknowable => "unknowable",
     }
 }
@@ -1318,9 +1329,10 @@ mod tests {
             (UnresolvedReason::External, "external"),
             (UnresolvedReason::NoSchema, "no_schema"),
             (
-                UnresolvedReason::NotFoundInWorkspace,
-                "not_found_in_workspace",
+                UnresolvedReason::AbsentFromWorkspace,
+                "absent_from_workspace",
             ),
+            (UnresolvedReason::PresentButUnusable, "present_but_unusable"),
             (UnresolvedReason::Unknowable, "unknowable"),
         ];
         for (reason, expected) in all {
@@ -1478,8 +1490,9 @@ mod tests {
             .unwrap_or_else(|| panic!("absent parent must be reported, got {unresolved:?}"));
         assert_eq!(parent["via"], "class");
         assert_eq!(
-            parent["reason"], "not_found_in_workspace",
-            "an index was attached, so a miss is a fact about the workspace"
+            parent["reason"], "absent_from_workspace",
+            "an index was attached and it searched, so a miss is a fact about the \
+             workspace — as distinct from a file it located and could not read"
         );
         // The span points at the name inside the header — computed from the
         // fixture rather than hard-coded, so it stays true if the fixture moves.
@@ -1549,7 +1562,7 @@ mod tests {
             sections["references"], 2,
             "bumped for the resolved row's origin"
         );
-        assert_eq!(sections["dependencies"], 1, "the new section");
+        assert_eq!(sections["dependencies"], 2, "the new section");
         // The untouched five keep their numbers: a bump is a claim about a
         // section's shape, and claiming one falsely is as bad as missing one.
         for (name, version) in [

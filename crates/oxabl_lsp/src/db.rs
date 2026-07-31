@@ -522,14 +522,17 @@ fn indexed_class(
     file: IndexedFile,
     name: IndexName,
 ) -> IndexAnswer<Arc<ClassDescriptor>> {
-    // The file exists but may not declare the class its path promised — a
-    // mis-namespaced file, or one whose parse recovered errors. Both are knowably
-    // unusable, so both are `NotFound`, exactly as in the batch cache.
-    indexed_facts(db, file)
-        .class(&name)
-        .map_or(IndexAnswer::NotFound, |facts| {
-            IndexAnswer::Found(Arc::clone(&facts.descriptor))
-        })
+    // The file exists but may not declare the class its path promised. Two
+    // reasons, and they get different answers — exactly as in the batch cache: a
+    // parse that recovered errors is `Unusable`, since the declaration may be in
+    // there and oxabl could not read it, while a file that parsed and simply does
+    // not declare this class is a genuine `NotFound`.
+    let facts = indexed_facts(db, file);
+    match facts.class(&name) {
+        Some(class) => IndexAnswer::Found(Arc::clone(&class.descriptor)),
+        None if !facts.parsed => IndexAnswer::Unusable,
+        None => IndexAnswer::NotFound,
+    }
 }
 
 /// One class's own member list, keyed per file and per class.
@@ -545,24 +548,25 @@ fn indexed_class_members(
     file: IndexedFile,
     name: IndexName,
 ) -> IndexAnswer<Arc<[MemberDescriptor]>> {
-    indexed_facts(db, file)
-        .class(&name)
-        .map_or(IndexAnswer::NotFound, |facts| {
-            IndexAnswer::Found(Arc::clone(&facts.members))
-        })
+    let facts = indexed_facts(db, file);
+    match facts.class(&name) {
+        Some(class) => IndexAnswer::Found(Arc::clone(&class.members)),
+        None if !facts.parsed => IndexAnswer::Unusable,
+        None => IndexAnswer::NotFound,
+    }
 }
 
 /// Whether a located file is usable as a `RUN` target, keyed per file.
 ///
-/// A broken file answers `NotFound` — the seam's rule that a file we cannot use
-/// is *not found* rather than an error.
+/// A broken file answers `Unusable` — located, and oxabl could not read it, which
+/// is a fact about oxabl rather than about the workspace.
 #[salsa::tracked(returns(clone))]
 fn indexed_program(db: &dyn AblDatabase, file: IndexedFile) -> IndexAnswer<IndexedFileId> {
     let facts = indexed_facts(db, file);
     if facts.parsed {
         IndexAnswer::Found(facts.file)
     } else {
-        IndexAnswer::NotFound
+        IndexAnswer::Unusable
     }
 }
 
@@ -636,6 +640,9 @@ impl<'db> SnapshotIndex<'db> {
                 IndexAnswer::Found(config.index.file_for(self.db, &path))
             }
             IndexAnswer::NotFound => IndexAnswer::NotFound,
+            // `find_name` locates without reading, so it never mints this; the arm
+            // is exhaustiveness and passes it through unchanged.
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         }
     }
@@ -654,6 +661,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
         match self.locate(name, NameKind::Class) {
             IndexAnswer::Found(file) => indexed_class(self.db, file, name.clone()),
             IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         }
     }
@@ -662,6 +670,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
         match self.locate(class, NameKind::Class) {
             IndexAnswer::Found(file) => indexed_class_members(self.db, file, class.clone()),
             IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         }
     }
@@ -670,6 +679,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
         match self.locate(target, NameKind::Program) {
             IndexAnswer::Found(file) => indexed_program(self.db, file),
             IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         }
     }
@@ -708,6 +718,14 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
 
     fn revision(&self) -> IndexRevision {
         SALSA_INDEX_REVISION
+    }
+
+    /// The configured include paths, which are what `locate` searches. With none,
+    /// a miss says "we did not look" rather than claiming a fact about the
+    /// workspace — the same answer the CLI gives under the same configuration,
+    /// which is what keeps the two clients from disagreeing about a diagnostic.
+    fn searches_any_path(&self) -> bool {
+        !self.db.config().pipeline.include_paths.is_empty()
     }
 }
 

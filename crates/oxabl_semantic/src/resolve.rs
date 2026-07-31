@@ -71,17 +71,33 @@ pub enum UnresolvedReason {
     /// Field / table reference that needs a schema we don't have loaded.
     NoSchema,
     /// A cross-file name searched for on the configured paths and genuinely
-    /// absent — the index was present and answered "no such file / no such
-    /// member". Distinct from [`Self::External`] because the answer is a
-    /// fact about the workspace rather than a missing capability. A parent
-    /// that *was* located but could not be parsed folds in here too: a
-    /// broken file is knowably not usable, and the only distinction any
-    /// consumer branches on is knowable-versus-unknowable.
-    NotFoundInWorkspace,
+    /// absent — the index was present, it looked, and no file supplies the
+    /// name. Distinct from [`Self::External`] because the answer is a fact
+    /// about the workspace rather than a missing capability, and it is the
+    /// **only** cross-file reason `undefined-symbol` reports.
+    AbsentFromWorkspace,
+    /// A cross-file name that exists but cannot be used from here.
+    ///
+    /// Three situations, one answer, because a consumer's question — "may I tell
+    /// the user this name does not exist?" — has the same answer for all three:
+    /// an inherited member the class declares but does not expose here
+    /// (`PRIVATE`, or `PROTECTED` from outside the chain); a member lookup that
+    /// came up empty against a class the index *did* answer for; and a file that
+    /// was located but could not be read or parsed.
+    ///
+    /// Split out of the reason that became [`Self::AbsentFromWorkspace`], which
+    /// named all of these plus the genuine misses. That was harmless while every
+    /// rule skip-listed the lot; once `undefined-symbol` began reporting an
+    /// absent name, a rule firing on the reason would have rendered "no such
+    /// symbol" — the one claim these three cases make false. "Declared but not
+    /// accessible from here" belongs to an access-check rule that does not exist
+    /// yet, and blaming the user for a gap in oxabl's own parser would be worse
+    /// than silence.
+    PresentButUnusable,
     /// A cross-file name that cannot be known statically — a runtime-computed
     /// target, so no amount of indexing would resolve it. Separated from
-    /// [`Self::NotFoundInWorkspace`] so a future rule can report the absent
-    /// name without ever reporting the unknowable one.
+    /// [`Self::AbsentFromWorkspace`] so a rule can report the absent name
+    /// without ever reporting the unknowable one.
     Unknowable,
 }
 
@@ -1255,6 +1271,10 @@ enum TypeLookup {
     Indexed(SymbolId),
     /// An index is attached and no candidate spelling matched a class.
     NotFound,
+    /// A file that would declare the class was located and could not be used.
+    /// Stops the candidate search: another spelling is not going to make the
+    /// located file parse.
+    Unusable,
     /// The index declined to choose between candidates.
     Unknowable,
     /// No index is attached, so nothing was looked at. Callers keep today's
@@ -1541,6 +1561,26 @@ impl<'a> ResolveWalker<'a> {
         TypeLookup::NotFound
     }
 
+    /// The reason a **searched-for and not found** cross-file name gets.
+    ///
+    /// [`UnresolvedReason::AbsentFromWorkspace`] normally — an index was
+    /// attached, it looked, and nothing supplies the name. But an index with no
+    /// configured search path answers `NotFound` to everything without ever
+    /// having somewhere to look, and calling that "absent from the workspace"
+    /// would be a claim nobody was in a position to make; there the truthful
+    /// answer is the older [`UnresolvedReason::External`], "we did not look".
+    ///
+    /// Derived once, here, from the flag `AnalysisContext` derives from the index
+    /// handle — so no rule has to know anything about path configuration, which is
+    /// the whole point of putting it at the producer.
+    fn absent_reason(&self) -> UnresolvedReason {
+        if self.ctx.index_searches_paths {
+            UnresolvedReason::AbsentFromWorkspace
+        } else {
+            UnresolvedReason::External
+        }
+    }
+
     /// Ask the index about one candidate spelling. `None` means "keep looking";
     /// `Some` is an answer the search must stop on.
     fn try_indexed_class(&mut self, name: &IndexName, use_span: VirtualSpan) -> Option<TypeLookup> {
@@ -1555,6 +1595,7 @@ impl<'a> ResolveWalker<'a> {
             // No file on the configured paths spells the name this way; another
             // candidate spelling still might.
             IndexAnswer::NotFound => None,
+            IndexAnswer::Unusable => Some(TypeLookup::Unusable),
             IndexAnswer::Unknowable => Some(TypeLookup::Unknowable),
         }
     }
@@ -1660,6 +1701,7 @@ impl<'a> ResolveWalker<'a> {
                         // through it stays unresolved.
                         TypeLookup::Local(_)
                         | TypeLookup::NotFound
+                        | TypeLookup::Unusable
                         | TypeLookup::Unknowable
                         | TypeLookup::NotLooked => {}
                     }
@@ -2615,7 +2657,16 @@ impl<'a> ResolveWalker<'a> {
                             expr.id,
                             Resolution::Unresolved {
                                 name: atom,
-                                reason: UnresolvedReason::NotFoundInWorkspace,
+                                reason: self.absent_reason(),
+                            },
+                        );
+                    }
+                    TypeLookup::Unusable => {
+                        self.references.insert(
+                            expr.id,
+                            Resolution::Unresolved {
+                                name: atom,
+                                reason: UnresolvedReason::PresentButUnusable,
                             },
                         );
                     }
@@ -2719,16 +2770,15 @@ impl<'a> ResolveWalker<'a> {
                 }
                 InheritedLookup::Inaccessible => {
                     // `NotInScope` would claim there is no such symbol, which is
-                    // false and is what LINT0001 renders. `NotFoundInWorkspace`
-                    // says what actually happened — we looked, and the name is
-                    // not available here — and every rule already skips it, so an
-                    // inaccessible member stays silent until the access-check
-                    // rule that should own it exists.
+                    // false and is what LINT0001 renders. The member is declared;
+                    // it is simply not exposed here, so the reason says exactly
+                    // that and every rule skips it, until the access-check rule
+                    // that should own the case exists.
                     self.references.insert(
                         expr_id,
                         Resolution::Unresolved {
                             name: atom,
-                            reason: UnresolvedReason::NotFoundInWorkspace,
+                            reason: UnresolvedReason::PresentButUnusable,
                         },
                     );
                     return;
@@ -2865,12 +2915,17 @@ impl<'a> ResolveWalker<'a> {
                 name: name.as_atom().clone(),
                 reason: UnresolvedReason::Unknowable,
             },
+            Some(TypeLookup::Unusable) => Resolution::Unresolved {
+                name: name.as_atom().clone(),
+                reason: UnresolvedReason::PresentButUnusable,
+            },
             // `None` is the index's `NotFound`: an index was attached, it looked
             // on the configured paths, and no file declares this class. That is
-            // a fact about the workspace, not a missing capability.
+            // a fact about the workspace, not a missing capability — unless there
+            // were no paths to look on, which `absent_reason` handles.
             None => Resolution::Unresolved {
                 name: name.as_atom().clone(),
-                reason: UnresolvedReason::NotFoundInWorkspace,
+                reason: self.absent_reason(),
             },
             // `try_indexed_class` answers with these two states only; the arms
             // exist so a third would be a compile error rather than a silent
@@ -2937,7 +2992,12 @@ impl<'a> ResolveWalker<'a> {
             // fact about the workspace, not a missing capability.
             IndexAnswer::NotFound => Resolution::Unresolved {
                 name: name.as_atom().clone(),
-                reason: UnresolvedReason::NotFoundInWorkspace,
+                reason: self.absent_reason(),
+            },
+            // The program file is right there and oxabl could not parse it.
+            IndexAnswer::Unusable => Resolution::Unresolved {
+                name: name.as_atom().clone(),
+                reason: UnresolvedReason::PresentButUnusable,
             },
             IndexAnswer::Unknowable => Resolution::Unresolved {
                 name: name.as_atom().clone(),
@@ -3054,7 +3114,7 @@ impl<'a> ResolveWalker<'a> {
                 // consumer is still a perfectly good local declaration, and two
                 // producers is the same ambiguity the literal-`RUN` rule declines
                 // to guess at.
-                IndexAnswer::NotFound | IndexAnswer::Unknowable => {}
+                IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {}
             }
         }
         for (sid, file) in links {
@@ -3098,15 +3158,17 @@ impl<'a> ResolveWalker<'a> {
             // Two different facts, one answer: the class declares the name but
             // not accessibly (`Inaccessible`), or offers nothing by that name in
             // this namespace at all (`Absent`). Either way the class *was*
-            // consulted, so this is `NotFoundInWorkspace` — never `NotInScope`,
-            // which would claim there is no such symbol and is what LINT0001
-            // renders.
+            // located and consulted, so the honest answer is that the lookup
+            // failed against a class that exists — never `NotInScope`, which
+            // would claim there is no such symbol and is what LINT0001 renders,
+            // and never `AbsentFromWorkspace`, which is the reason LINT0001 now
+            // reports.
             InheritedLookup::Inaccessible | InheritedLookup::Absent => {
                 self.references.insert(
                     expr_id,
                     Resolution::Unresolved {
                         name: atom,
-                        reason: UnresolvedReason::NotFoundInWorkspace,
+                        reason: UnresolvedReason::PresentButUnusable,
                     },
                 );
             }
@@ -3183,6 +3245,7 @@ impl<'a> ResolveWalker<'a> {
             }
             TypeLookup::Local(_)
             | TypeLookup::NotFound
+            | TypeLookup::Unusable
             | TypeLookup::Unknowable
             | TypeLookup::NotLooked => {}
         }
@@ -3747,6 +3810,16 @@ impl<'a> ResolveWalker<'a> {
                         .record_class_lookup(name.as_atom(), ClassLookup::Absent);
                     continue;
                 }
+                // A supertype whose file was located and will not parse
+                // contributes no members either, but it is recorded as its own
+                // outcome: the envelope is where a reader finds out why a member
+                // did not resolve, and this one is oxabl's gap rather than a
+                // missing file.
+                IndexAnswer::Unusable => {
+                    self.symbols
+                        .record_class_lookup(name.as_atom(), ClassLookup::Unusable);
+                    continue;
+                }
                 IndexAnswer::Unknowable => {
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
@@ -3816,7 +3889,7 @@ impl<'a> ResolveWalker<'a> {
                             });
                     }
                 }
-                IndexAnswer::NotFound | IndexAnswer::Unknowable => {}
+                IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {}
             }
         }
     }

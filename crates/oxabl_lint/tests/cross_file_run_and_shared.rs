@@ -134,7 +134,7 @@ impl WorkspaceIndex for RunHostileIndex {
 fn run_value_records_unknowable_and_produces_no_undefined_symbol_finding() {
     // AE2. `RUN VALUE(<expr>)` is the canonical statically-undecidable target:
     // no amount of indexing resolves it, so it is `Unknowable` rather than
-    // `NotFoundInWorkspace`, and no rule may report it.
+    // `AbsentFromWorkspace`, and no rule may report it.
     let source = "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\n\
                   c-name = \"post-order.p\".\n\
                   RUN VALUE(c-name).\n";
@@ -265,7 +265,7 @@ fn one_name_on_two_path_entries_is_unknowable_not_the_first_match() {
 }
 
 #[test]
-fn a_name_no_file_on_the_paths_matches_is_not_found_in_the_workspace() {
+fn a_name_no_file_on_the_paths_matches_is_absent_from_the_workspace() {
     let source = "RUN never-shipped.p.\n";
     let (stmts, sem) = with_index(source, &WORKSPACE);
 
@@ -273,7 +273,7 @@ fn a_name_no_file_on_the_paths_matches_is_not_found_in_the_workspace() {
         run_resolution(&stmts, &sem),
         Some(Resolution::Unresolved {
             name: OxablAtom::from("never-shipped.p"),
-            reason: UnresolvedReason::NotFoundInWorkspace,
+            reason: UnresolvedReason::AbsentFromWorkspace,
         }),
         "an index was attached and it looked: that is a fact about the \
          workspace, not a missing capability"

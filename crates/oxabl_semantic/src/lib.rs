@@ -72,8 +72,20 @@ pub struct AnalysisContext<'a> {
     /// [`NullIndex`]. This is what decides the *meaning* of a miss: with no
     /// index attached a cross-file name stays
     /// [`UnresolvedReason::External`] ("we did not look"), and only a loaded
-    /// index turns a miss into [`UnresolvedReason::NotFoundInWorkspace`].
+    /// index turns a miss into [`UnresolvedReason::AbsentFromWorkspace`].
     pub index_loaded: bool,
+    /// Whether the attached index has anywhere to search, from
+    /// [`WorkspaceIndex::searches_any_path`].
+    ///
+    /// Separate from [`index_loaded`](Self::index_loaded) because the two answer
+    /// different questions and a run can be in either combination: an index with
+    /// a seeded file list but no configured path is loaded and searches nothing,
+    /// and it can still link a `SHARED` producer. What this decides is only the
+    /// *meaning of a miss* — with nowhere to look, a miss stays
+    /// [`UnresolvedReason::External`] rather than becoming a claim about the
+    /// workspace. It also keeps the browser, which has no filesystem, from
+    /// diverging from the CLI.
+    pub index_searches_paths: bool,
     /// Resolved per-rule lint severity overrides. Empty (the default) means
     /// every lint rule keeps its built-in severity. `oxabl_lint::lint_file`
     /// consults this to skip *off* rules and remap emitted severities (KTD6);
@@ -96,6 +108,7 @@ impl<'a> AnalysisContext<'a> {
             schema_loaded: !schema.is_empty(),
             index: &NullIndex,
             index_loaded: false,
+            index_searches_paths: false,
             lint_severities: LintSeverityMap::new(),
         }
     }
@@ -115,11 +128,12 @@ impl<'a> AnalysisContext<'a> {
     /// handle that knows nothing cannot be talked into claiming it was
     /// consulted. Setting the flag unconditionally would let
     /// `with_index(&NullIndex)` turn a miss into
-    /// [`UnresolvedReason::NotFoundInWorkspace`] — a fact about the workspace —
+    /// [`UnresolvedReason::AbsentFromWorkspace`] — a fact about the workspace —
     /// when nothing was looked at.
     pub fn with_index(mut self, index: &'a dyn WorkspaceIndex) -> Self {
         self.index = index;
         self.index_loaded = index.revision() != IndexRevision::ABSENT;
+        self.index_searches_paths = index.searches_any_path();
         self
     }
 }

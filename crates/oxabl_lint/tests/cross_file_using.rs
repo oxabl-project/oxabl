@@ -114,9 +114,9 @@ fn a_using_naming_a_class_no_file_declares_records_not_found_over_the_qualified_
         sem.references.get(using_id),
         Some(&Resolution::Unresolved {
             name: OxablAtom::from("myapp.absent-thing"),
-            // `NotFoundInWorkspace`, not `External`: an index was attached, it
+            // `AbsentFromWorkspace`, not `External`: an index was attached, it
             // looked on the configured paths, and no file declares this class.
-            reason: UnresolvedReason::NotFoundInWorkspace,
+            reason: UnresolvedReason::AbsentFromWorkspace,
         })
     );
     // The span is the load-bearing half — a later diagnostic about an import
@@ -211,7 +211,7 @@ fn new_of_a_class_no_file_declares_records_not_found() {
     let source = "USING myapp.*.\nv-x = NEW absent-thing().\n";
     let (_stmts, sem) = with_index(source, &WORKSPACE);
     assert!(
-        unresolved_reasons(&sem, "absent-thing").contains(&UnresolvedReason::NotFoundInWorkspace),
+        unresolved_reasons(&sem, "absent-thing").contains(&UnresolvedReason::AbsentFromWorkspace),
         "a `NEW` operand is unambiguously a type name, so a miss is a fact about \
          the workspace rather than a shrug"
     );
@@ -355,9 +355,9 @@ fn a_method_the_class_does_not_declare_resolves_as_not_found_and_produces_no_fin
     );
     assert_eq!(
         unresolved_reasons(&sem, "absent-method"),
-        vec![UnresolvedReason::NotFoundInWorkspace],
-        "the class *was* consulted, so this is not `NotInScope` — which is the \
-         one reason LINT0001 renders"
+        vec![UnresolvedReason::PresentButUnusable],
+        "the class *was* located and consulted, so this is neither `NotInScope` \
+         nor `AbsentFromWorkspace` — the two reasons LINT0001 renders"
     );
     assert!(
         lint0001_with_index(&source, &WORKSPACE).is_empty(),
@@ -394,7 +394,7 @@ fn a_protected_or_private_member_is_not_reachable_from_outside_the_class() {
         );
         assert_eq!(
             unresolved_reasons(&sem, member),
-            vec![UnresolvedReason::NotFoundInWorkspace]
+            vec![UnresolvedReason::PresentButUnusable]
         );
         assert!(lint0001_with_index(&source, &WORKSPACE).is_empty());
     }

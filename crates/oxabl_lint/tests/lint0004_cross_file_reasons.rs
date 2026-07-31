@@ -24,9 +24,12 @@ use oxabl_semantic::{
     AnalysisContext, Resolution, Semantic, UnresolvedReason, analyze_file, resolve_pass,
 };
 
-/// The reasons under test, so every scenario runs against both.
+/// The cross-file reasons under test, so every scenario runs against all of
+/// them. `AbsentFromWorkspace` is deliberately **not** here: it is the one
+/// cross-file reason `undefined-symbol` reports, and the tests below assert
+/// silence.
 const NEW_REASONS: [UnresolvedReason; 2] = [
-    UnresolvedReason::NotFoundInWorkspace,
+    UnresolvedReason::PresentButUnusable,
     UnresolvedReason::Unknowable,
 ];
 
@@ -270,13 +273,13 @@ fn reasons_for(sem: &Semantic, name: &str) -> Vec<UnresolvedReason> {
 }
 
 #[test]
-fn a_name_no_configured_path_provides_is_not_found_in_the_workspace() {
+fn a_name_no_configured_path_provides_is_absent_from_the_workspace() {
     // The genuine path-search miss: an index is attached, every configured path
     // was searched, and no file spells the name.
     let (_stmts, sem) = with_index("RUN never-shipped.p.\n", &[]);
     assert_eq!(
         reasons_for(&sem, "never-shipped.p"),
-        vec![UnresolvedReason::NotFoundInWorkspace]
+        vec![UnresolvedReason::AbsentFromWorkspace]
     );
 }
 
@@ -333,4 +336,159 @@ fn a_class_name_only_the_workspace_could_provide_is_external_without_an_index() 
         vec![UnresolvedReason::External],
         "with nothing attached, the honest answer is that we did not look"
     );
+}
+
+/// Analyze `source` against a batch index over `workspace` that searches
+/// **nowhere** — an index with no configured path.
+fn with_index_searching_nothing(source: &str, workspace: &[(&str, &str)]) -> Semantic {
+    use std::path::PathBuf;
+    let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+    for (path, contents) in workspace {
+        fs.insert(PathBuf::from(path), *contents);
+    }
+    let index = oxabl_index::BatchIndex::new(&fs, &[]);
+    let schema = Schema::empty();
+    let stmts = parse(source);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+    analyze_file(&stmts, &ctx)
+}
+
+#[test]
+fn an_inaccessible_inherited_member_is_present_but_unusable() {
+    // The member is declared, `PRIVATE`, and therefore not passed on. Reporting it
+    // as absent would say "no such symbol" about a symbol in the parent's own
+    // source — which is why this reason exists.
+    let base = "CLASS orders.calc-base:\n\
+                    METHOD PRIVATE INTEGER calc-secret():\n\
+                        RETURN 0.\n\
+                    END METHOD.\n\
+                END CLASS.\n";
+    let child = "CLASS orders.child INHERITS orders.calc-base:\n\
+                     METHOD PUBLIC VOID run-it():\n\
+                         DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
+                         v-n = calc-secret().\n\
+                     END METHOD.\n\
+                 END CLASS.\n";
+    let (_stmts, sem) = with_index(child, &[("/src/orders/calc-base.cls", base)]);
+    assert_eq!(
+        reasons_for(&sem, "calc-secret"),
+        vec![UnresolvedReason::PresentButUnusable]
+    );
+}
+
+#[test]
+fn a_protected_member_reached_from_an_unrelated_class_is_present_but_unusable() {
+    // Not an inheritance question at all: the caller holds an instance, and
+    // `PROTECTED` is not part of the public surface. Same situation, same answer.
+    let base = "CLASS orders.calc-base:\n\
+                    METHOD PROTECTED INTEGER calc-rate():\n\
+                        RETURN 0.\n\
+                    END METHOD.\n\
+                END CLASS.\n";
+    let caller = "USING orders.calc-base.\n\
+                  DEFINE VARIABLE v-calc AS CLASS orders.calc-base NO-UNDO.\n\
+                  DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
+                  v-n = v-calc:calc-rate().\n";
+    let (_stmts, sem) = with_index(caller, &[("/src/orders/calc-base.cls", base)]);
+    assert_eq!(
+        reasons_for(&sem, "calc-rate"),
+        vec![UnresolvedReason::PresentButUnusable]
+    );
+}
+
+#[test]
+fn a_located_but_unparseable_dependency_is_present_but_unusable() {
+    // The file is on the search path and oxabl cannot parse it. Blaming the user
+    // for that would be worse than silence, so it is not `AbsentFromWorkspace` —
+    // the one reason `undefined-symbol` reports.
+    let broken = "DEFINE VARIABLE .\n";
+    let source = "RUN post-order.p.\n";
+    let (_stmts, sem) = with_index(source, &[("/src/post-order.p", broken)]);
+    assert_eq!(
+        reasons_for(&sem, "post-order.p"),
+        vec![UnresolvedReason::PresentButUnusable],
+        "located and unreadable is a fact about oxabl, not about the workspace"
+    );
+}
+
+#[test]
+fn an_index_with_no_search_path_reports_external_not_absent() {
+    // R17. With nowhere to look, "we did not look" is the truthful answer — and it
+    // is what keeps the browser, which has no filesystem, from disagreeing with the
+    // CLI about a diagnostic.
+    let sem = with_index_searching_nothing("RUN never-shipped.p.\n", &[]);
+    assert_eq!(
+        reasons_for(&sem, "never-shipped.p"),
+        vec![UnresolvedReason::External]
+    );
+
+    let using = "USING myapp.cache.\nMESSAGE \"hi\".\n";
+    let sem = with_index_searching_nothing(using, &[]);
+    assert_eq!(
+        reasons_for(&sem, "myapp.cache"),
+        vec![UnresolvedReason::External]
+    );
+
+    // The contrast, on the same source: give the index a path to search and the
+    // same miss becomes a claim about the workspace.
+    let (_stmts, searched) = with_index(using, &[]);
+    assert_eq!(
+        reasons_for(&searched, "myapp.cache"),
+        vec![UnresolvedReason::AbsentFromWorkspace]
+    );
+}
+
+#[test]
+fn every_rule_is_silent_for_both_new_reasons() {
+    // This unit adds no diagnostic: it splits a reason and leaves both halves
+    // skip-listed. `undefined-symbol` reporting `AbsentFromWorkspace` is the next
+    // unit's job, which is why that reason is not in this list.
+    let sources = [
+        // An inaccessible inherited member.
+        (
+            "CLASS orders.child INHERITS orders.calc-base:\n\
+                 METHOD PUBLIC VOID run-it():\n\
+                     DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
+                     v-n = calc-secret().\n\
+                     MESSAGE v-n.\n\
+                 END METHOD.\n\
+             END CLASS.\n",
+            "/src/orders/calc-base.cls",
+            "CLASS orders.calc-base:\n\
+                 METHOD PRIVATE INTEGER calc-secret():\n\
+                     RETURN 0.\n\
+                 END METHOD.\n\
+             END CLASS.\n",
+        ),
+        // A located-but-unparseable dependency.
+        (
+            "RUN post-order.p.\n",
+            "/src/post-order.p",
+            "DEFINE VARIABLE .\n",
+        ),
+    ];
+    for (source, path, sibling) in sources {
+        let stmts = parse(source);
+        let schema = customer_schema();
+        let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+        fs.insert(std::path::PathBuf::from(path), sibling);
+        let dirs = vec![std::path::PathBuf::from("/src")];
+        let index = oxabl_index::BatchIndex::new(&fs, &dirs);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+        let sem = analyze_file(&stmts, &ctx);
+        for (rule, code) in [
+            (undefined_symbol::run as fn(_, _, _) -> _, LINT0001),
+            (unknown_table_or_field::run, LINT0003),
+            (type_mismatch_assignment::run, LINT0004),
+        ] {
+            let diags: Vec<Diagnostic> = rule(&stmts, &sem, &ctx)
+                .into_iter()
+                .filter(|d| d.code.0 == code)
+                .collect();
+            assert!(
+                diags.is_empty(),
+                "{code} fired for a `PresentButUnusable` name: {diags:?}\nin:\n{source}"
+            );
+        }
+    }
 }

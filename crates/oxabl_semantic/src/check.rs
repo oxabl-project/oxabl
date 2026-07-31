@@ -1348,7 +1348,7 @@ mod tests {
     ///
     /// Pinned here because it was implicit and untested, and because it lives in
     /// a different crate from the rule that depends on it: someone giving one
-    /// reason a real type — plausibly `NotFoundInWorkspace`, where the workspace
+    /// reason a real type — plausibly `AbsentFromWorkspace`, where the workspace
     /// genuinely answered — would turn LINT0004 back on for cross-file code
     /// without touching `oxabl_lint` at all, and nothing would have said so.
     /// The reason list is written out variant by variant rather than derived, so
@@ -1363,7 +1363,8 @@ mod tests {
             UnresolvedReason::NotInScope,
             UnresolvedReason::External,
             UnresolvedReason::NoSchema,
-            UnresolvedReason::NotFoundInWorkspace,
+            UnresolvedReason::AbsentFromWorkspace,
+            UnresolvedReason::PresentButUnusable,
             UnresolvedReason::Unknowable,
         ];
         // Exhaustiveness, stated so the compiler enforces it: a new variant fails
@@ -1373,7 +1374,8 @@ mod tests {
                 UnresolvedReason::NotInScope
                 | UnresolvedReason::External
                 | UnresolvedReason::NoSchema
-                | UnresolvedReason::NotFoundInWorkspace
+                | UnresolvedReason::AbsentFromWorkspace
+                | UnresolvedReason::PresentButUnusable
                 | UnresolvedReason::Unknowable => {}
             }
         }

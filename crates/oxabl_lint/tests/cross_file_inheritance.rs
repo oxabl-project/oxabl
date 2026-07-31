@@ -175,13 +175,14 @@ END CLASS."#;
         "and no symbol is synthesized for it either — a later access-check rule \
          must see a violation, not a resolved reference"
     );
-    // `NotFoundInWorkspace`, not `NotInScope`: the chain *does* declare the name,
-    // it just does not pass it on, and claiming there is no such symbol would be
-    // false. Every rule already skips the cross-file reasons, so the reference is
-    // silent rather than reported as undefined.
+    // `PresentButUnusable`, not `NotInScope` and not `AbsentFromWorkspace`: the
+    // chain *does* declare the name, it just does not pass it on. Both other
+    // reasons would claim there is no such symbol, and `AbsentFromWorkspace` is
+    // the one `undefined-symbol` reports — so the distinction is what keeps an
+    // inaccessible member silent while a genuinely missing name is an error.
     assert_eq!(
         unresolved_reasons(&sem, "calc-secret"),
-        vec![UnresolvedReason::NotFoundInWorkspace]
+        vec![UnresolvedReason::PresentButUnusable]
     );
     assert!(
         lint0001_with_index(child, &workspace).is_empty(),
@@ -247,7 +248,7 @@ END CLASS."#;
     let (_stmts, sem) = with_index(called, &workspace);
     assert_eq!(
         unresolved_reasons(&sem, "calc-secret"),
-        vec![UnresolvedReason::NotFoundInWorkspace]
+        vec![UnresolvedReason::PresentButUnusable]
     );
     assert!(lint0001_with_index(called, &workspace).is_empty());
 }

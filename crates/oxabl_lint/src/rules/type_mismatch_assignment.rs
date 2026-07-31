@@ -10,9 +10,10 @@
 //! Skips (captured as tests below):
 //! - Either side `Unknown` or `Error` (suppresses cascades; `?` is ABL's
 //!   universal bottom).
-//! - The value side bound to a cross-file reference (`External`,
-//!   `NotFoundInWorkspace`, `Unknowable`) — cross-file typing is not
-//!   available, so no verdict is possible.
+//! - The value side bound to an *unresolved* cross-file reference (`External`,
+//!   `AbsentFromWorkspace`, `PresentButUnusable`, `Unknowable`) — there is no
+//!   symbol behind it, so no verdict is possible. A cross-file reference that
+//!   *resolved* is judged like any other now: its type is on the symbol.
 
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind, TypeSource};
 use oxabl_common::{Diagnostic, FileSpan, Severity};
@@ -200,7 +201,8 @@ impl<'a> Visitor<'a> {
         if let Some(Resolution::Unresolved { reason, .. }) = self.sem.references.get(value_node) {
             match reason {
                 UnresolvedReason::External
-                | UnresolvedReason::NotFoundInWorkspace
+                | UnresolvedReason::AbsentFromWorkspace
+                | UnresolvedReason::PresentButUnusable
                 | UnresolvedReason::Unknowable => return,
                 UnresolvedReason::NotInScope | UnresolvedReason::NoSchema => {}
             }

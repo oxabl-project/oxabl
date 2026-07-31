@@ -231,17 +231,23 @@ impl<'a> BatchIndex<'a> {
             match search::find_name(self.fs, self.include_paths, name, search::NameKind::Class) {
                 IndexAnswer::Found(path) => {
                     let facts = memo.facts_for(self.fs, &path);
-                    // The file exists but may not declare the class the path
-                    // promised — a mis-namespaced file, or one whose parse failed.
-                    // Both are knowably unusable, so both are `NotFound`. The
-                    // comparison here is the case-insensitive one: the declaring
-                    // file is free to spell the class differently from the reference.
-                    facts
-                        .class(name)
-                        .cloned()
-                        .map_or(IndexAnswer::NotFound, IndexAnswer::Found)
+                    // Two different situations, and the caller can now tell them
+                    // apart. A file whose parse recovered errors is `Unusable` —
+                    // the declaration may well be in there and oxabl could not
+                    // read it, so nothing may claim the name is absent. A file
+                    // that parsed cleanly and simply does not declare this class
+                    // is a genuine `NotFound`: the search found the wrong file, a
+                    // mis-namespaced one. The class comparison is
+                    // case-insensitive, since the declaring file is free to spell
+                    // the name differently from the reference.
+                    match facts.class(name).cloned() {
+                        Some(class) => IndexAnswer::Found(class),
+                        None if !facts.parsed => IndexAnswer::Unusable,
+                        None => IndexAnswer::NotFound,
+                    }
                 }
                 IndexAnswer::NotFound => IndexAnswer::NotFound,
+                IndexAnswer::Unusable => IndexAnswer::Unusable,
                 IndexAnswer::Unknowable => IndexAnswer::Unknowable,
             };
         memo.classes
@@ -306,19 +312,21 @@ impl WorkspaceIndex for BatchIndex<'_> {
         ) {
             IndexAnswer::Found(path) => {
                 // The target is indexed rather than merely existence-checked,
-                // for two reasons: an unusable file must answer `NotFound`
-                // per the seam's totality rule, and a program a file `RUN`s
-                // is the realistic producer of the `SHARED` names that file
-                // consumes — indexing it here is what gives
-                // `shared_producer` something true to say.
+                // for two reasons: the seam's totality rule needs a verdict for
+                // an unusable file, and a program a file `RUN`s is the realistic
+                // producer of the `SHARED` names that file consumes — indexing it
+                // here is what gives `shared_producer` something true to say.
                 let facts = memo.facts_for(self.fs, &path);
                 if facts.parsed {
                     IndexAnswer::Found(facts.file)
                 } else {
-                    IndexAnswer::NotFound
+                    // Located, and oxabl could not parse it. Reporting the target
+                    // as absent would blame the caller for oxabl's own gap.
+                    IndexAnswer::Unusable
                 }
             }
             IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         };
         memo.programs
@@ -369,6 +377,17 @@ impl WorkspaceIndex for BatchIndex<'_> {
 
     fn revision(&self) -> IndexRevision {
         BATCH_REVISION
+    }
+
+    /// The resolved include paths this index searches. With none, every name-based
+    /// query answers `NotFound` without anything having been looked at, and the
+    /// resolve pass files such a miss as "we did not look" rather than as a fact
+    /// about the workspace.
+    ///
+    /// Note this is *not* the same as the index being absent: a seeded file list
+    /// still lets `shared_producer` answer with no path configured.
+    fn searches_any_path(&self) -> bool {
+        !self.include_paths.is_empty()
     }
 }
 
@@ -455,6 +474,12 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
         // `ABSENT`, which means *no index* — would make a consumer's staleness
         // check disagree with the index it actually asked.
         self.index.revision()
+    }
+
+    /// Delegated for the same reason: the view filters answers, it does not change
+    /// where they are searched for.
+    fn searches_any_path(&self) -> bool {
+        self.index.searches_any_path()
     }
 }
 
@@ -580,14 +605,22 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_program_is_not_found_rather_than_an_error() {
+    fn a_broken_program_is_unusable_rather_than_absent_or_an_error() {
         let fs = CountingFs::new(&[("/src/calc-total.p", "DEFINE VARIABLE .")]);
         let paths = dirs(&["/src"]);
         let index = BatchIndex::new(&fs, &paths);
         assert_eq!(
             index.program(&IndexName::new("calc-total.p")),
-            IndexAnswer::NotFound,
-            "a broken file is knowably unusable"
+            IndexAnswer::Unusable,
+            "the file is right there and oxabl could not parse it, which is not \
+             the same claim as `NotFound` — reporting the target as absent would \
+             blame the caller for oxabl's own gap"
+        );
+        // And a name no file supplies is still the other answer, so the split is
+        // a real distinction rather than a rename.
+        assert_eq!(
+            index.program(&IndexName::new("never-shipped.p")),
+            IndexAnswer::NotFound
         );
     }
 

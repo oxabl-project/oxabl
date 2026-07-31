@@ -218,10 +218,15 @@ pub struct Supertypes {
 pub enum ClassLookup {
     /// The index found it, in this file.
     Linked(IndexedFileId),
-    /// Searched on the configured paths and genuinely absent — or located and
-    /// unusable, which [`IndexAnswer::NotFound`](crate::IndexAnswer::NotFound)
-    /// folds in for the reason KTD4 gives.
+    /// Searched on the configured paths and genuinely absent.
     Absent,
+    /// A file that would declare it was located, and could not be read or
+    /// parsed. Separate from [`Self::Absent`] because the envelope's dependency
+    /// section is where a user goes to find out *why* a member did not resolve,
+    /// and "the file is right there and oxabl could not read it" is a different
+    /// answer from "no file declares it" — the first is a gap in oxabl, the
+    /// second a fact about the workspace.
+    Unusable,
     /// The index declined to choose between candidates.
     Unknowable,
 }

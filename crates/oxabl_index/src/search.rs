@@ -186,6 +186,11 @@ pub fn find_name(
         // Already ambiguous under the spelling the source used; a second
         // candidate cannot un-ambiguate it.
         IndexAnswer::Unknowable => return IndexAnswer::Unknowable,
+        // `find_unique` locates files; it never reads one, so it has no way to
+        // reach a verdict about usability. The arm exists for exhaustiveness and
+        // is passed straight through rather than folded into the retry, since a
+        // second spelling would not make a located file readable either.
+        IndexAnswer::Unusable => return IndexAnswer::Unusable,
         IndexAnswer::NotFound => {}
     }
 
