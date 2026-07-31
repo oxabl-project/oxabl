@@ -13,7 +13,7 @@ use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 
-use crate::{NamespaceId, ResolvedType, ScopeId};
+use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId};
 
 /// Dense arena index for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,6 +160,47 @@ bitflags! {
     }
 }
 
+/// One supertype named in a `CLASS` or `INTERFACE` header, recorded by the
+/// declare pass **as written and where written**.
+///
+/// The span is the load-bearing half: a later diagnostic about a parent no file
+/// declares has to point at the name in the header, and by the time the resolve
+/// pass discovers the miss the AST node is long behind it. The name is an
+/// [`IndexName`] rather than a bare atom because that is what the workspace
+/// index is keyed by, and because it keeps the source casing the index needs to
+/// derive a file path from — folding here and re-spelling later is not possible.
+#[derive(Debug, Clone)]
+pub struct SupertypeRef {
+    /// The supertype as the header spelled it, folded for identity.
+    pub name: IndexName,
+    /// Span of the name inside the header.
+    pub name_span: VirtualSpan,
+}
+
+/// The supertypes a `CLASS` or `INTERFACE` header declared.
+///
+/// Recorded verbatim and **unresolved**: whether any of these names corresponds
+/// to a class the workspace declares is the resolve pass's question, and
+/// answering it at declare time would make the declare pass depend on the index
+/// (which the indexer itself runs, so it would recurse).
+///
+/// An `INTERFACE` may extend several interfaces, which does not fit
+/// `inherits: Option<_>`; its supertype list is recorded in
+/// [`implements`](Self::implements) instead. That mirrors
+/// `oxabl_index`'s own projection of an interface header, so the two spellings
+/// of "the other supertypes, as a set" agree and a consumer's walk needs no
+/// special case.
+#[derive(Debug, Clone, Default)]
+pub struct Supertypes {
+    /// The `INHERITS` name, if any. `None` means the header named no parent —
+    /// deliberately distinguishable from a parent that failed to resolve, which
+    /// is recorded here and simply never links to anything.
+    pub inherits: Option<SupertypeRef>,
+    /// The `IMPLEMENTS` names, in declaration order (or, for an interface, the
+    /// interfaces it extends).
+    pub implements: Vec<SupertypeRef>,
+}
+
 /// A declared name. Identity is the `SymbolId` issued by [`SymbolTable`];
 /// two declarations of the same name in overlapping scopes are distinct
 /// symbols.
@@ -197,6 +238,49 @@ pub struct Symbol {
     pub table_id: Option<oxabl_schema::TableId>,
 }
 
+impl Symbol {
+    /// A symbol the resolve pass synthesizes for something **this file does not
+    /// declare** — a schema table's field or default buffer, a workspace class,
+    /// an external program, an inherited member.
+    ///
+    /// The constant fields are the convention, and having one constructor is
+    /// what makes it structural rather than restated at each site:
+    ///
+    /// - `declaration: NodeId::DUMMY` — there is no declaring node in this file,
+    ///   so nothing may look one up.
+    /// - `name_span` is the **use site**, not a declaration, so a diagnostic can
+    ///   still point somewhere real in the file under analysis.
+    /// - `declared_in: ScopeId::ROOT` and, load-bearing, the symbol table
+    ///   **only** — a synthesized symbol is never inserted into the scope tree.
+    ///   That is what stops ordinary name resolution from stumbling onto it; it
+    ///   is reachable only through the `references` entry the caller records.
+    /// - `read_count` / `write_count` start at zero and are credited by the
+    ///   resolve pass exactly as a declared symbol's are.
+    ///
+    /// `data_type`, `flags`, and `table_id` default to empty/absent; a caller
+    /// that carries one fills it in with struct-update syntax.
+    pub fn synthesized(
+        name: OxablAtom,
+        namespace: NamespaceId,
+        kind: SymbolKind,
+        name_span: VirtualSpan,
+    ) -> Self {
+        Symbol {
+            name,
+            namespace,
+            kind,
+            declared_in: ScopeId::ROOT,
+            declaration: NodeId::DUMMY,
+            name_span,
+            data_type: None,
+            read_count: 0,
+            write_count: 0,
+            flags: SymbolFlags::empty(),
+            table_id: None,
+        }
+    }
+}
+
 /// Arena of symbols plus the SHARED rebinding side map.
 #[derive(Debug, Default)]
 pub struct SymbolTable {
@@ -213,6 +297,106 @@ pub struct SymbolTable {
     /// symbol nor allocates. The `block-var-used-outside` analysis (LINT0005)
     /// uses it to classify a reference as inside/outside the defining block.
     block_defined: FxHashMap<SymbolId, ScopeId>,
+    /// The four **class-and-cross-file** side maps, behind one `Option<Box<…>>`
+    /// so a table that needs none of them costs one word rather than four empty
+    /// hash maps.
+    ///
+    /// Same lesson as the maps themselves, one level up. Inline, they grew
+    /// `SymbolTable` from 88 to 216 bytes; a `SymbolTable` is built once per
+    /// analysis, and on a small file per-run setup *is* the measurement (the
+    /// sibling `ResolveWalker::cross_file` note records a ~10% `tiny/resolve`
+    /// regression from exactly this shape). The overwhelmingly common file
+    /// declares no class and is analyzed with no index attached, so it should
+    /// carry none of this.
+    ///
+    /// Created on the first write. Every reader treats `None` as "no entry",
+    /// which is the same answer an empty map gives, so no consumer can tell the
+    /// difference.
+    side: Option<Box<SymbolSideMaps>>,
+}
+
+/// The `SymbolTable` side maps only a class-bearing file or an index-backed run
+/// populates. Reached exclusively through `SymbolTable`'s accessors, which is
+/// what lets the box be created lazily without any caller knowing.
+#[derive(Debug, Default)]
+struct SymbolSideMaps {
+    /// The supertypes each `Class` / `Interface` symbol's header named, recorded
+    /// by the declare pass and consumed by the resolve pass's chain walk.
+    ///
+    /// A **typed record** rather than a [`SymbolFlags`] bit — there is no yes/no
+    /// fact here to flag, the payload is names and spans — but a side map rather
+    /// than a `Symbol` field, for the reason `block_defined` above gives and
+    /// because that reason turned out to be measurable: even boxed to one
+    /// pointer, the field grew `Symbol` from 64 to 72 bytes and cost the declare
+    /// pass 17–25% across every benchmark fixture. Classes are a small minority
+    /// of symbols and nothing on the hot path reads this, so the map is entirely
+    /// absent from the common file.
+    supertypes: FxHashMap<SymbolId, Supertypes>,
+    /// The indexed file that supplies each synthesized external-program symbol —
+    /// the file a literal `RUN` target resolved to.
+    ///
+    /// A side map for the reason [`Self::supertypes`] documents: eight more bytes
+    /// on `Symbol` cost the declare pass 17–25%, and resolved `RUN` targets are a
+    /// handful per file at most. Absent entirely
+    /// from a run with no index attached, which is what keeps a single-file
+    /// analysis at exactly its current cost.
+    program_files: FxHashMap<SymbolId, IndexedFileId>,
+    /// For each `DEFINE SHARED` consumer symbol, the indexed file whose
+    /// `DEFINE NEW [GLOBAL] SHARED` definition it corresponds to.
+    ///
+    /// **This is the whole link.** It records *which file*, and nothing else: the
+    /// consumer's own declaration remains the type of record, and no diagnostic
+    /// compares the two declarations. Retyping from the producer, or reporting a
+    /// disagreement between them, is deferred follow-up work — doing either here
+    /// would produce new findings from a pass whose contract is that it produces
+    /// none.
+    ///
+    /// Deliberately separate from [`Self::program_files`] even though both map a
+    /// symbol to a file. They are different facts: a program symbol *is* defined
+    /// in the file it names, while a `SHARED` consumer is defined right here and
+    /// merely has a counterpart elsewhere. One map would force a consumer to
+    /// re-derive which of the two it was looking at.
+    shared_producers: FxHashMap<SymbolId, IndexedFileId>,
+    /// The declared type of each synthesized **inherited-member** symbol — the
+    /// return type of a method, or the type of a property, that a superclass or
+    /// implemented interface in another file contributes to the class under
+    /// analysis.
+    ///
+    /// **This map exists so the type is observable without being usable.** The
+    /// obvious home for it is `Symbol::data_type`, and that is precisely what it
+    /// must not be: two independent readers pick a symbol's `data_type` up and
+    /// feed it straight into the type lattice —
+    ///
+    /// * `check.rs::type_from_reference`'s fallback arm, whose class/interface
+    ///   firewall only intercepts `SymbolKind::Class | SymbolKind::Interface`
+    ///   and therefore lets a `Function` or `Property` symbol through;
+    /// * `type_mismatch_assignment::target_type`, which reads `symbol.data_type`
+    ///   directly and so bypasses `check.rs` altogether.
+    ///
+    /// Either one turns a resolved inherited member into a real
+    /// `ResolvedType`, and LINT0004 then reports assignments it is silent about
+    /// today — `DEFINE VARIABLE v-flag AS LOGICAL. v-flag = calc-total().` where
+    /// `calc-total` is an inherited `INTEGER` method goes from zero findings to
+    /// one purely by attaching an index. New findings, even correct ones, break
+    /// this phase's central property: attaching a workspace index must not change
+    /// any rule's behavior on any input.
+    ///
+    /// A `SymbolFlags` bit would not do the job — it would have to be honored at
+    /// *both* read sites above, and a third reader added later would silently
+    /// ignore it. A side map cannot be read by accident: nothing reaches the type
+    /// except through [`SymbolTable::inherited_member_type`].
+    ///
+    /// **The follow-up that turns the lint rules onto the cross-file population
+    /// owns promoting this onto `Symbol::data_type`** — the same unit that owns
+    /// removing `check.rs`'s synthesized-class arm. Until then the type lives
+    /// here, where a consumer that genuinely wants it (an LSP hover, a test
+    /// asserting the member resolved with its declared type) can ask, and the
+    /// lattice cannot.
+    ///
+    /// A side map also for the reason [`Self::supertypes`] documents: eight more
+    /// bytes on `Symbol` cost the declare pass 17–25%, and this map is absent
+    /// entirely from a run with no index attached.
+    inherited_member_types: FxHashMap<SymbolId, ResolvedType>,
 }
 
 impl SymbolTable {
@@ -255,6 +439,92 @@ impl SymbolTable {
     /// `SHARED`/`NEW SHARED`/`NEW GLOBAL SHARED`.
     pub fn record_rebinding(&mut self, sym: SymbolId, scope: ScopeId) {
         self.rebinding_scopes.entry(sym).or_default().push(scope);
+    }
+
+    /// The side maps, created on first write. Private: the box is an allocation
+    /// detail, and every reader goes through an accessor that treats an absent
+    /// box as an absent entry.
+    fn side_mut(&mut self) -> &mut SymbolSideMaps {
+        self.side.get_or_insert_with(Default::default)
+    }
+
+    /// Record the supertypes `sym`'s class or interface header named.
+    ///
+    /// Only called for a header that named at least one, so a class with no
+    /// parent has no entry — which is what makes "declares no parent"
+    /// distinguishable from "declares one that resolved to nothing".
+    pub fn record_supertypes(&mut self, sym: SymbolId, supertypes: Supertypes) {
+        self.side_mut().supertypes.insert(sym, supertypes);
+    }
+
+    /// The supertypes `sym`'s header named, or `None` when it named none (or
+    /// `sym` is not a class or interface at all).
+    pub fn supertypes(&self, sym: SymbolId) -> Option<&Supertypes> {
+        self.side.as_deref()?.supertypes.get(&sym)
+    }
+
+    /// Record that synthesized program symbol `sym` is supplied by indexed file
+    /// `file`. Only the resolve pass calls this, and only for a symbol it
+    /// synthesized from a resolved literal `RUN` target.
+    pub fn record_program_file(&mut self, sym: SymbolId, file: IndexedFileId) {
+        self.side_mut().program_files.insert(sym, file);
+    }
+
+    /// The indexed file supplying `sym`, or `None` when `sym` is not a
+    /// synthesized external-program symbol — which includes every locally
+    /// declared `PROCEDURE`, since a local declaration is supplied by this file.
+    pub fn program_file(&self, sym: SymbolId) -> Option<IndexedFileId> {
+        self.side.as_deref()?.program_files.get(&sym).copied()
+    }
+
+    /// Record that `DEFINE SHARED` consumer `sym` corresponds to the
+    /// `DEFINE NEW [GLOBAL] SHARED` definition in `file`.
+    pub fn record_shared_producer(&mut self, sym: SymbolId, file: IndexedFileId) {
+        self.side_mut().shared_producers.insert(sym, file);
+    }
+
+    /// The file producing the `SHARED` name `sym` consumes, or `None` when no
+    /// producer was located.
+    ///
+    /// `None` covers three genuinely different situations on purpose — no index
+    /// was attached, no indexed file defines the name, or two do and the index
+    /// declined to choose. None of them is a link, and a consumer of this map
+    /// wants the link or nothing; the reason a link is absent is the index's
+    /// business, not the symbol table's.
+    pub fn shared_producer(&self, sym: SymbolId) -> Option<IndexedFileId> {
+        self.side.as_deref()?.shared_producers.get(&sym).copied()
+    }
+
+    /// Record the declared type of synthesized inherited-member symbol `sym`.
+    /// Only the resolve pass calls this, and only for a member it synthesized
+    /// from the workspace index. See [`SymbolSideMaps::inherited_member_types`] for
+    /// why the
+    /// type is *not* written to `sym`'s `data_type`.
+    pub fn record_inherited_member_type(&mut self, sym: SymbolId, ty: ResolvedType) {
+        self.side_mut().inherited_member_types.insert(sym, ty);
+    }
+
+    /// The declared type of synthesized inherited-member symbol `sym` — a
+    /// method's return type or a property's type, as the file declaring it wrote
+    /// it.
+    ///
+    /// **Read this instead of `sym`'s `data_type`, which is deliberately
+    /// `None`.** The type is held off the symbol so it cannot reach the type
+    /// lattice: `check.rs::type_from_reference`'s fallback arm and
+    /// `type_mismatch_assignment::target_type` both read `Symbol::data_type`
+    /// directly, and a real type there makes LINT0004 report assignments it says
+    /// nothing about without an index — which is exactly the property this phase
+    /// must hold. The full argument is on
+    /// [`SymbolSideMaps::inherited_member_types`]; the follow-up that turns the lint
+    /// rules
+    /// onto the cross-file population owns promoting it.
+    ///
+    /// `None` covers three different situations, none of which is a type: `sym`
+    /// is not a synthesized inherited member at all; it is one whose form names
+    /// no type (`VOID`, or a method declared without one); or no index was
+    /// attached, so nothing was synthesized.
+    pub fn inherited_member_type(&self, sym: SymbolId) -> Option<&ResolvedType> {
+        self.side.as_deref()?.inherited_member_types.get(&sym)
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

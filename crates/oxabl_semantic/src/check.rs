@@ -17,8 +17,8 @@
 //! default to `Unknown` so cascading diagnostics are suppressed.
 
 use oxabl_ast::{
-    AssignPair, CreateTarget, Expression, ExpressionKind, Literal, OnAction, OnKind, RunTarget,
-    Statement, StatementKind, StreamOperation, SubscribeTarget,
+    AssignPair, CreateTarget, Expression, ExpressionKind, Literal, NodeId, OnAction, OnKind,
+    RunTarget, Statement, StatementKind, StreamOperation, SubscribeTarget,
 };
 use oxabl_common::Diagnostic;
 
@@ -558,6 +558,43 @@ impl<'a> CheckWalker<'a> {
                 // expression that resolves *to* a class symbol (e.g. `NEW
                 // Foo(...)`) has type `Class(Foo)`.
                 match symbol.kind {
+                    // A class symbol *synthesized from the workspace index*
+                    // (`declaration == NodeId::DUMMY`, per KTD6's conventions)
+                    // deliberately does not produce a `Class` type yet. It could:
+                    // the symbol is real and shared by every reference to that
+                    // class.
+                    //
+                    // **Assignability now understands inheritance** —
+                    // `coercion::assignable` takes a `ClassLattice` and widens a
+                    // subclass to a parent or an implemented interface — so the
+                    // one shape this firewall was originally written to hold back
+                    // is fixed. It stays anyway, and the reason is arithmetic:
+                    // lifting it re-enables *three* assignment shapes, and
+                    // widening fixes exactly one of them. The other two are
+                    // genuinely type-mismatched code that would become **new
+                    // true-positive findings**:
+                    //
+                    //   * `DEFINE VARIABLE v-count AS INTEGER.
+                    //      v-count = NEW myapp.cache().` — a class into an
+                    //     integer;
+                    //   * a class-typed variable assigned a primitive.
+                    //
+                    // New findings, even correct ones, break R11: the A/B over a
+                    // real codebase must come back identical, and the single
+                    // admissible delta is the removed in-file subclass-to-parent
+                    // false positive. Turning cross-file types into diagnostics
+                    // is the *follow-up* unit's job — the one that flips the
+                    // rules onto the newly-resolvable population, where drift is
+                    // expected and judged deliberately. **The follow-up that turns
+                    // the lint rules onto the cross-file population owns removing
+                    // this arm.** Until then a cross-file class stays at
+                    // the lattice bottom, exactly where a class-typed declaration
+                    // whose class lives in another file already sits.
+                    SymbolKind::Class | SymbolKind::Interface
+                        if symbol.declaration == NodeId::DUMMY =>
+                    {
+                        ResolvedType::Unknown
+                    }
                     SymbolKind::Class | SymbolKind::Interface => ResolvedType::Class(*sym),
                     SymbolKind::Buffer | SymbolKind::TempTable => ResolvedType::Buffer(*sym),
                     _ => symbol.data_type.clone().unwrap_or(ResolvedType::Unknown),
@@ -1324,5 +1361,94 @@ mod tests {
             sem.types.get(pid),
             Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Every unresolved reason collapses to the lattice bottom
+    // -----------------------------------------------------------------------
+
+    /// The invariant that actually keeps `type-mismatch-assignment` (LINT0004)
+    /// silent on a cross-file reference: **no** [`UnresolvedReason`] produces a
+    /// type. `type_from_reference`'s `_ =>` arm answers
+    /// [`ResolvedType::Unknown`] for every one of them, LINT0004's
+    /// `Unknown | Error` early return fires on that, and its own exhaustive
+    /// reason match downstream is therefore never reached.
+    ///
+    /// Pinned here because it was implicit and untested, and because it lives in
+    /// a different crate from the rule that depends on it: someone giving one
+    /// reason a real type — plausibly `NotFoundInWorkspace`, where the workspace
+    /// genuinely answered — would turn LINT0004 back on for cross-file code
+    /// without touching `oxabl_lint` at all, and nothing would have said so.
+    /// The reason list is written out variant by variant rather than derived, so
+    /// adding a variant makes this a compile error too.
+    #[test]
+    fn every_unresolved_reason_types_to_unknown() {
+        use crate::{NodeIndexVec, ScopeTree, SymbolTable, UnresolvedReason};
+        use oxabl_ast::{Expression, ExpressionKind, Identifier, Span};
+        use oxabl_lexer::oxabl_atom::OxablAtom;
+
+        let reasons = [
+            UnresolvedReason::NotInScope,
+            UnresolvedReason::External,
+            UnresolvedReason::NoSchema,
+            UnresolvedReason::NotFoundInWorkspace,
+            UnresolvedReason::Unknowable,
+        ];
+        // Exhaustiveness, stated so the compiler enforces it: a new variant fails
+        // to match here and the author has to decide what it types to.
+        for reason in reasons {
+            match reason {
+                UnresolvedReason::NotInScope
+                | UnresolvedReason::External
+                | UnresolvedReason::NoSchema
+                | UnresolvedReason::NotFoundInWorkspace
+                | UnresolvedReason::Unknowable => {}
+            }
+        }
+
+        let tree = ScopeTree::new();
+        let symbols = SymbolTable::new();
+        for reason in reasons {
+            let expr = Expression::new(ExpressionKind::Identifier(Identifier {
+                span: Span { start: 0, end: 4 },
+                name: "name".into(),
+            }));
+            let mut references = NodeIndexVec::new();
+            references.insert(
+                expr.id,
+                Resolution::Unresolved {
+                    name: OxablAtom::from("name"),
+                    reason,
+                },
+            );
+            let mut types = NodeIndexVec::new();
+            let walker = CheckWalker {
+                tree: &tree,
+                symbols: &symbols,
+                references: &references,
+                types: &mut types,
+            };
+            assert_eq!(
+                walker.type_from_reference(&expr),
+                ResolvedType::Unknown,
+                "`{reason:?}` must type to the lattice bottom"
+            );
+        }
+
+        // And the same for a node with no reference entry at all, which is the
+        // other half of the `_ =>` arm: an expression resolution never looked at.
+        let expr = Expression::new(ExpressionKind::Identifier(Identifier {
+            span: Span { start: 0, end: 4 },
+            name: "name".into(),
+        }));
+        let references = NodeIndexVec::new();
+        let mut types = NodeIndexVec::new();
+        let walker = CheckWalker {
+            tree: &tree,
+            symbols: &symbols,
+            references: &references,
+            types: &mut types,
+        };
+        assert_eq!(walker.type_from_reference(&expr), ResolvedType::Unknown);
     }
 }

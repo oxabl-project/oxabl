@@ -10,6 +10,7 @@ members = [
     "crates/oxabl_preprocessor",
     "crates/oxabl_schema",
     "crates/oxabl_semantic",
+    "crates/oxabl_index",
     "crates/oxabl_lint",
     "crates/oxabl_analyze",
     "crates/oxabl_pipeline",

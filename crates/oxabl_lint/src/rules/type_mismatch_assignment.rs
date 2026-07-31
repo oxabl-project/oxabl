@@ -17,8 +17,8 @@
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind, TypeSource};
 use oxabl_common::{Diagnostic, FileSpan, Severity};
 use oxabl_semantic::{
-    AnalysisContext, Resolution, ResolvedType, Semantic, UnresolvedReason, assignable,
-    is_narrowing_warning,
+    AnalysisContext, ClassLattice, Resolution, ResolvedType, Semantic, UnresolvedReason,
+    assignable, is_narrowing_warning,
 };
 
 use super::LINT0004;
@@ -178,6 +178,24 @@ impl Visitor<'_> {
         // exhaustively rather than with a wildcard: this early return is the
         // one place the compiler cannot flag a new reason for us, so an added
         // reason must be a compile error here too.
+        //
+        // **Defense in depth, not the load-bearing guard.** This match is
+        // semantically unreachable today, and knowing that matters to a reader
+        // trying to work out what actually keeps LINT0004 silent on a cross-file
+        // reference: `check.rs::type_from_reference` collapses *every*
+        // `Unresolved` reason to `ResolvedType::Unknown`, so the `Unknown | Error`
+        // check just above returns first, on every reason including the two this
+        // match falls through. That collapse is the real mechanism, and it is
+        // pinned by `check.rs`'s
+        // `every_unresolved_reason_types_to_unknown` — because it is an
+        // invariant of another module, which is exactly the kind that rots
+        // silently.
+        //
+        // The match stays anyway. Its value is not the runtime skip but the
+        // compile error: adding an `UnresolvedReason` variant has to be a decision
+        // taken here, in the rule that would have to judge it, rather than an
+        // accident absorbed by a wildcard. Deleting it would trade a tripwire for
+        // nothing.
         if let Some(Resolution::Unresolved { reason, .. }) = self.sem.references.get(value_node) {
             match reason {
                 UnresolvedReason::External
@@ -187,7 +205,12 @@ impl Visitor<'_> {
             }
         }
 
-        if !assignable(from, to) {
+        // The lattice is the file's own symbol table: assignability between two
+        // class types is a question about the inheritance graph recorded there,
+        // not about the two types. Constructed here rather than held on the
+        // visitor because it is a one-pointer `Copy` view — there is nothing to
+        // amortize, and a stored copy would only add a lifetime.
+        if !assignable(from, to, ClassLattice::new(&self.sem.symbols)) {
             self.diags.push(Diagnostic::error(
                 LINT0004,
                 format!("type mismatch: cannot assign `{:?}` to `{:?}`", from, to),
