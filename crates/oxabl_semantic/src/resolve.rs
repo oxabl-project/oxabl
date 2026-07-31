@@ -59,10 +59,26 @@ pub enum Resolution {
 pub enum UnresolvedReason {
     NotInScope,
     /// USING import, `RUN "x"`, `DYNAMIC-FUNCTION`, dynamic buffer op — any
-    /// reference outside the single-file unit.
+    /// reference outside the single-file unit that no workspace index was
+    /// present to answer. Every lint rule skip-lists this reason, so it is
+    /// the *suppression* state: "we did not look", not "we looked and
+    /// failed".
     External,
     /// Field / table reference that needs a schema we don't have loaded.
     NoSchema,
+    /// A cross-file name searched for on the configured paths and genuinely
+    /// absent — the index was present and answered "no such file / no such
+    /// member". Distinct from [`Self::External`] because the answer is a
+    /// fact about the workspace rather than a missing capability. A parent
+    /// that *was* located but could not be parsed folds in here too: a
+    /// broken file is knowably not usable, and the only distinction any
+    /// consumer branches on is knowable-versus-unknowable.
+    NotFoundInWorkspace,
+    /// A cross-file name that cannot be known statically — a runtime-computed
+    /// target, so no amount of indexing would resolve it. Separated from
+    /// [`Self::NotFoundInWorkspace`] so a future rule can report the absent
+    /// name without ever reporting the unknowable one.
+    Unknowable,
 }
 
 // ---------------------------------------------------------------------------
@@ -1634,9 +1650,11 @@ impl<'a> ResolveWalker<'a> {
                 ..
             } => {
                 match target {
-                    RunTarget::Literal(_) => {
-                        // External procedure name — no statement-level NodeId
-                        // to bind; lint rules treat as External when needed.
+                    RunTarget::Literal { .. } => {
+                        // External procedure name — nothing to bind in a
+                        // single-file model; lint rules treat as External when
+                        // needed. The target's own NodeId is what workspace
+                        // resolution will hang a reference entry off.
                     }
                     RunTarget::Dynamic(e) => {
                         self.walk_expression(e, scope, AccessMode::Read);
@@ -2613,7 +2631,9 @@ fn wrap_extent(ty: ResolvedType, extent: Option<u32>) -> ResolvedType {
     }
 }
 
-fn fold_atom(s: &str) -> OxablAtom {
+/// Case-fold and intern an identifier. Shared with [`crate::index`], whose
+/// keys must fold identically to the symbol table's names.
+pub(crate) fn fold_atom(s: &str) -> OxablAtom {
     let bytes = s.as_bytes();
     const INLINE: usize = 64;
     if bytes.len() <= INLINE {
@@ -5240,7 +5260,7 @@ mod tests {
         let stmts = vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: ParameterDirection::Output,
                     expression: arg_expr,
@@ -5270,7 +5290,7 @@ mod tests {
         let stmts = vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: ParameterDirection::InputOutput,
                     expression: arg_expr,
@@ -5301,7 +5321,7 @@ mod tests {
         vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::Run {
-                target: RunTarget::Literal("proc".into()),
+                target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction,
                     expression: arg,

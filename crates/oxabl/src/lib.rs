@@ -384,9 +384,11 @@ pub mod schema {
 /// model. [`analyze_file`](semantic::analyze_file) composes the passes.
 pub mod semantic {
     pub use oxabl_semantic::{
-        AnalysisContext, BindingMap, NamespaceId, PrimitiveTy, Resolution, ResolvedType, Scope,
-        ScopeId, ScopeKind, ScopeTree, Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind,
-        SymbolTable, UnresolvedReason, analyze_file, check_pass, declare_pass, resolve_pass,
+        AnalysisContext, BindingMap, ClassDescriptor, ClassKind, IndexAnswer, IndexName,
+        IndexRevision, IndexedFileId, MemberDescriptor, MemberType, NamespaceId, NullIndex,
+        PortableType, PrimitiveTy, Resolution, ResolvedType, Scope, ScopeId, ScopeKind, ScopeTree,
+        Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnresolvedReason,
+        WorkspaceIndex, analyze_file, check_pass, declare_pass, resolve_pass,
     };
 }
 

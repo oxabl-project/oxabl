@@ -15,6 +15,7 @@ mod builtins;
 mod check;
 mod coercion;
 mod diagnostics;
+mod index;
 mod index_vec;
 mod namespace;
 mod operators;
@@ -27,6 +28,10 @@ pub use builtins::SYSTEM_HANDLES;
 pub use check::check_pass;
 pub use coercion::{assignable, assignable_strict, is_narrowing_warning, widen_primitive};
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
+pub use index::{
+    ClassDescriptor, ClassKind, IndexAnswer, IndexName, IndexRevision, IndexedFileId,
+    MemberDescriptor, MemberType, NullIndex, PortableType, WorkspaceIndex,
+};
 pub use index_vec::NodeIndexVec;
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
@@ -41,15 +46,26 @@ use oxabl_schema::{Schema, SchemaRevision};
 /// Input to [`analyze_file`] and the per-pass entry points.
 ///
 /// The context never takes ownership of any data — the caller holds the AST,
-/// the preprocessor output, and the schema. `schema_loaded` is an explicit
-/// flag so schema-dependent diagnostics can suppress silently when a `.df`
-/// was not loaded; it is independent of `Schema::is_empty()` because an
-/// intentionally empty `.df` should still read as "loaded".
+/// the preprocessor output, the schema, and the workspace index.
+/// `schema_loaded` is an explicit flag so schema-dependent diagnostics can
+/// suppress silently when a `.df` was not loaded; it is independent of
+/// `Schema::is_empty()` because an intentionally empty `.df` should still read
+/// as "loaded". `index_loaded` plays the same role for the workspace index.
 pub struct AnalysisContext<'a> {
     pub file_id: FileId,
     pub source: &'a str,
     pub schema: &'a Schema,
     pub schema_loaded: bool,
+    /// Answers to the four cross-file questions. Always a live handle —
+    /// [`NullIndex`] when the caller supplied none — so resolution code can
+    /// query unconditionally.
+    pub index: &'a dyn WorkspaceIndex,
+    /// Whether [`index`](Self::index) is a real index rather than
+    /// [`NullIndex`]. This is what decides the *meaning* of a miss: with no
+    /// index attached a cross-file name stays
+    /// [`UnresolvedReason::External`] ("we did not look"), and only a loaded
+    /// index turns a miss into [`UnresolvedReason::NotFoundInWorkspace`].
+    pub index_loaded: bool,
     /// Resolved per-rule lint severity overrides. Empty (the default) means
     /// every lint rule keeps its built-in severity. `oxabl_lint::lint_file`
     /// consults this to skip *off* rules and remap emitted severities (KTD6);
@@ -58,14 +74,20 @@ pub struct AnalysisContext<'a> {
 }
 
 impl<'a> AnalysisContext<'a> {
-    /// Construct a context with a default-empty schema. Used by tests and by
-    /// the analyze subcommand when `--schema` is absent.
+    /// Construct a context with a default-empty schema and no workspace index.
+    /// Used by tests and by the analyze subcommand when `--schema` is absent.
+    ///
+    /// The signature deliberately stays three-argument: a cross-file index is
+    /// an addition, and every caller that has nothing to say about one keeps
+    /// today's single-file behavior by saying nothing.
     pub fn new(file_id: FileId, source: &'a str, schema: &'a Schema) -> Self {
         AnalysisContext {
             file_id,
             source,
             schema,
             schema_loaded: !schema.is_empty(),
+            index: &NullIndex,
+            index_loaded: false,
             lint_severities: LintSeverityMap::new(),
         }
     }
@@ -73,6 +95,23 @@ impl<'a> AnalysisContext<'a> {
     /// Attach resolved lint severity overrides to this context (builder-style).
     pub fn with_lint_severities(mut self, severities: LintSeverityMap) -> Self {
         self.lint_severities = severities;
+        self
+    }
+
+    /// Attach a workspace index to this context (builder-style). Accepts
+    /// anything that borrows as `&dyn WorkspaceIndex`, so a language server
+    /// holding an `Arc<dyn WorkspaceIndex>` passes `&*arc`.
+    ///
+    /// [`index_loaded`](Self::index_loaded) is **derived from the handle**, not
+    /// asserted: only [`NullIndex`] may report [`IndexRevision::ABSENT`], so a
+    /// handle that knows nothing cannot be talked into claiming it was
+    /// consulted. Setting the flag unconditionally would let
+    /// `with_index(&NullIndex)` turn a miss into
+    /// [`UnresolvedReason::NotFoundInWorkspace`] — a fact about the workspace —
+    /// when nothing was looked at.
+    pub fn with_index(mut self, index: &'a dyn WorkspaceIndex) -> Self {
+        self.index = index;
+        self.index_loaded = index.revision() != IndexRevision::ABSENT;
         self
     }
 }
@@ -86,6 +125,11 @@ pub struct Semantic {
     pub references: NodeIndexVec<Resolution>,
     pub types: NodeIndexVec<ResolvedType>,
     pub schema_revision: SchemaRevision,
+    /// Generation of the workspace index this result was computed under.
+    /// [`IndexRevision::ABSENT`] when no index was attached, so "analyzed
+    /// single-file" is distinguishable from "analyzed against an index" in the
+    /// output itself.
+    pub index_revision: IndexRevision,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -106,6 +150,7 @@ pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> 
         references,
         types,
         schema_revision: ctx.schema.revision(),
+        index_revision: ctx.index.revision(),
         diagnostics,
     }
 }
@@ -121,5 +166,123 @@ pub fn resolve_span(ctx: &AnalysisContext, vs: VirtualSpan) -> oxabl_common::Fil
             start: vs.start,
             end: vs.end,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Minimal index that answers `Found` for one class and carries a
+    /// non-absent revision, so a test can tell it apart from [`NullIndex`].
+    struct StubIndex;
+
+    const STUB_REVISION: IndexRevision = IndexRevision::new(7);
+
+    impl WorkspaceIndex for StubIndex {
+        fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
+            if name == &IndexName::new("app.thing") {
+                IndexAnswer::Found(Arc::new(ClassDescriptor {
+                    name: name.clone(),
+                    file: IndexedFileId::new(3),
+                    kind: ClassKind::Class,
+                    inherits: None,
+                    implements: Vec::new(),
+                }))
+            } else {
+                IndexAnswer::NotFound
+            }
+        }
+
+        fn class_members(&self, _class: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
+            IndexAnswer::NotFound
+        }
+
+        fn program(&self, _target: &IndexName) -> IndexAnswer<IndexedFileId> {
+            IndexAnswer::Unknowable
+        }
+
+        fn shared_producer(&self, _name: &IndexName) -> IndexAnswer<IndexedFileId> {
+            IndexAnswer::NotFound
+        }
+
+        fn revision(&self) -> IndexRevision {
+            STUB_REVISION
+        }
+    }
+
+    #[test]
+    fn new_context_has_no_index_loaded() {
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        assert!(!ctx.index_loaded);
+        assert_eq!(ctx.index.revision(), IndexRevision::ABSENT);
+    }
+
+    #[test]
+    fn with_index_marks_loaded_and_installs_the_handle() {
+        let schema = Schema::empty();
+        let stub = StubIndex;
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&stub);
+        assert!(ctx.index_loaded);
+        // The handle the passes see is the one supplied, not the null index.
+        assert_eq!(ctx.index.revision(), STUB_REVISION);
+        assert!(matches!(
+            ctx.index.class(&IndexName::new("App.Thing")),
+            IndexAnswer::Found(_)
+        ));
+        assert_eq!(
+            ctx.index.program(&IndexName::new("thing.p")),
+            IndexAnswer::Unknowable
+        );
+    }
+
+    #[test]
+    fn with_index_of_the_null_index_leaves_the_flag_clear() {
+        // The flag is derived from the handle, so routing `NullIndex` through
+        // the builder cannot claim an index was consulted — a miss has to stay
+        // `External` ("we did not look") rather than becoming a claim about
+        // what the workspace contains.
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&NullIndex);
+        assert!(!ctx.index_loaded);
+        assert_eq!(ctx.index.revision(), IndexRevision::ABSENT);
+    }
+
+    #[test]
+    fn with_index_accepts_a_shared_handle() {
+        // KTD8: the language server clones an `Arc<dyn WorkspaceIndex>` into
+        // its config and borrows it into the `&dyn` slot.
+        let schema = Schema::empty();
+        let shared: Arc<dyn WorkspaceIndex> = Arc::new(StubIndex);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&*shared);
+        assert!(ctx.index_loaded);
+        assert_eq!(ctx.index.revision(), STUB_REVISION);
+    }
+
+    #[test]
+    fn semantic_records_whether_an_index_was_attached() {
+        let schema = Schema::empty();
+        let source = "DEFINE VARIABLE i AS INTEGER NO-UNDO.";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+
+        let without = analyze_file(
+            &program.statements,
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema),
+        );
+        let stub = StubIndex;
+        let with = analyze_file(
+            &program.statements,
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&stub),
+        );
+
+        assert_eq!(without.index_revision, IndexRevision::ABSENT);
+        assert_eq!(with.index_revision, STUB_REVISION);
+        assert_ne!(without.index_revision, with.index_revision);
+        // Attaching an index changes nothing else in this unit.
+        assert_eq!(without.symbols.len(), with.symbols.len());
+        assert_eq!(without.diagnostics.len(), with.diagnostics.len());
     }
 }

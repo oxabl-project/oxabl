@@ -2,7 +2,7 @@ use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CommentKind, CreateTarget, CreateTargetKind,
     DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, ExpressionKind, FindType,
-    HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, OnAction, OnKind,
+    HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
     StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral,
     WhenBranch, WidgetQualifier,
@@ -49,6 +49,19 @@ fn marks_tables(source: &str) -> bool {
         } => *may_reference_tables,
         other => panic!("expected StatementKind::Skipped, got {other:?}"),
     }
+}
+
+/// Assert `span` covers exactly the first occurrence of `needle` in `source`.
+///
+/// Offsets are located rather than hardcoded so the assertion survives an edit
+/// to the fixture text.
+#[track_caller]
+fn assert_span_covers(source: &str, span: Span, needle: &str) {
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} does not appear in {source:?}"));
+    assert_eq!(span.start as usize, start, "span start");
+    assert_eq!(span.end as usize, start + needle.len(), "span end");
 }
 
 #[test]
@@ -4576,7 +4589,7 @@ fn parse_run_simple_procedure() {
             no_error,
             ..
         } => {
-            assert_eq!(target, RunTarget::Literal("simple-proc".to_string()));
+            assert_eq!(target.literal_name(), Some("simple-proc"));
             assert!(arguments.is_empty());
             assert!(in_handle.is_none());
             assert!(!no_error);
@@ -4595,7 +4608,7 @@ fn parse_run_with_mixed_direction_args() {
         StatementKind::Run {
             target, arguments, ..
         } => {
-            assert_eq!(target, RunTarget::Literal("calculate-total".to_string()));
+            assert_eq!(target.literal_name(), Some("calculate-total"));
             assert_eq!(arguments.len(), 3);
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
             assert_eq!(arguments[1].direction, ParameterDirection::Input);
@@ -4614,9 +4627,118 @@ fn parse_run_dynamic_value() {
     match stmt.kind {
         StatementKind::Run { target, .. } => {
             assert!(matches!(target, RunTarget::Dynamic(_)));
+            // A dynamic target names nothing at parse time, so there is no
+            // literal target to give an identity to.
+            assert_eq!(target.literal_name(), None);
         }
         _ => panic!("Expected Run statement"),
     }
+}
+
+#[test]
+fn parse_run_literal_target_records_node_id_and_name_span() {
+    let source = "RUN my-proc.p.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Run { target, .. } => match target {
+            RunTarget::Literal {
+                id,
+                name,
+                name_span,
+            } => {
+                assert_eq!(name, "my-proc.p");
+                assert_ne!(id, NodeId::DUMMY);
+                assert_ne!(id, stmt.id);
+                assert_span_covers(source, name_span, "my-proc.p");
+            }
+            RunTarget::Dynamic(_) => panic!("Expected a literal target"),
+        },
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_quoted_target_name_span_includes_the_quotes() {
+    let source = r#"RUN "sub/dir/thing.p"."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Run { target, .. } => match target {
+            RunTarget::Literal {
+                id,
+                name,
+                name_span,
+            } => {
+                // `name` drops the quotes; the span keeps them so a diagnostic
+                // underlines the literal exactly as written.
+                assert_eq!(name, "sub/dir/thing.p");
+                assert_ne!(id, NodeId::DUMMY);
+                assert_span_covers(source, name_span, r#""sub/dir/thing.p""#);
+            }
+            RunTarget::Dynamic(_) => panic!("Expected a literal target"),
+        },
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn parse_run_quoted_target_with_translation_suffix_keeps_the_name_clean() {
+    // A `:U` suffix's bytes sit inside the string token's extent, so building
+    // the name by slicing between the first and last byte would yield
+    // `my-proc.p":`. The name comes from the token's parsed payload instead;
+    // the span still underlines the literal as written, suffix included.
+    let source = r#"RUN "my-proc.p":U."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Run { target, .. } => {
+            assert_eq!(target.literal_name(), Some("my-proc.p"));
+            match target {
+                RunTarget::Literal { name_span, .. } => {
+                    assert_span_covers(source, name_span, r#""my-proc.p":U"#);
+                }
+                RunTarget::Dynamic(_) => panic!("Expected a literal target"),
+            }
+        }
+        _ => panic!("Expected Run statement"),
+    }
+}
+
+#[test]
+fn using_and_run_target_ids_are_unique_across_a_program() {
+    let source = "\
+USING MyApp.Services.Foo.
+USING MyApp.Data.*.
+RUN first-proc.p.
+RUN \"second-proc.p\".
+RUN VALUE(cName).
+";
+    let stmts = parse_program_stmts(source);
+    let mut ids = Vec::new();
+    for stmt in &stmts {
+        ids.push(stmt.id);
+        match &stmt.kind {
+            StatementKind::Using { id, .. } => ids.push(*id),
+            StatementKind::Run { target, .. } => {
+                if let RunTarget::Literal { id, .. } = target {
+                    ids.push(*id);
+                }
+            }
+            other => panic!("unexpected statement: {other:?}"),
+        }
+    }
+    // 5 statements + 2 USING targets + 2 literal RUN targets; the dynamic RUN
+    // contributes no target id.
+    assert_eq!(ids.len(), 9);
+    let mut sorted: Vec<u32> = ids.iter().map(|id| id.as_u32()).collect();
+    sorted.sort_unstable();
+    let before = sorted.len();
+    sorted.dedup();
+    assert_eq!(sorted.len(), before, "node ids must be unique");
 }
 
 #[test]
@@ -4629,7 +4751,7 @@ fn parse_run_dotted_filename_with_args() {
         StatementKind::Run {
             target, arguments, ..
         } => {
-            assert_eq!(target, RunTarget::Literal("external-prog.p".to_string()));
+            assert_eq!(target.literal_name(), Some("external-prog.p"));
             assert_eq!(arguments.len(), 1);
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
         }
@@ -4645,7 +4767,7 @@ fn parse_run_hyphenated_name() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Run { target, .. } => {
-            assert_eq!(target, RunTarget::Literal("my-proc".to_string()));
+            assert_eq!(target.literal_name(), Some("my-proc"));
         }
         _ => panic!("Expected Run statement"),
     }
@@ -4661,7 +4783,7 @@ fn parse_run_with_expression_args() {
         StatementKind::Run {
             target, arguments, ..
         } => {
-            assert_eq!(target, RunTarget::Literal("some-proc".to_string()));
+            assert_eq!(target.literal_name(), Some("some-proc"));
             assert_eq!(arguments.len(), 2);
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
             // First arg should be an Add expression
@@ -4683,7 +4805,7 @@ fn parse_run_string_literal_target() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Run { target, .. } => {
-            assert_eq!(target, RunTarget::Literal("my-proc.p".to_string()));
+            assert_eq!(target.literal_name(), Some("my-proc.p"));
         }
         _ => panic!("Expected Run statement"),
     }
@@ -4702,7 +4824,7 @@ fn parse_run_in_handle() {
             no_error,
             ..
         } => {
-            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert_eq!(target.literal_name(), Some("myProc"));
             assert!(in_handle.is_some());
             assert!(!no_error);
         }
@@ -4720,7 +4842,7 @@ fn parse_run_no_error() {
         StatementKind::Run {
             target, no_error, ..
         } => {
-            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert_eq!(target.literal_name(), Some("myProc"));
             assert!(no_error);
         }
         _ => panic!("Expected Run statement"),
@@ -4740,7 +4862,7 @@ fn parse_run_with_args_and_no_error() {
             no_error,
             ..
         } => {
-            assert_eq!(target, RunTarget::Literal("myProc".to_string()));
+            assert_eq!(target.literal_name(), Some("myProc"));
             assert_eq!(arguments.len(), 1);
             assert_eq!(arguments[0].direction, ParameterDirection::Output);
             assert!(no_error);
@@ -4784,7 +4906,7 @@ fn parse_run_in_super() {
         StatementKind::Run {
             target, in_handle, ..
         } => {
-            assert_eq!(target, RunTarget::Literal("myMethod".to_string()));
+            assert_eq!(target.literal_name(), Some("myMethod"));
             assert!(in_handle.is_some());
         }
         _ => panic!("Expected Run statement"),
@@ -4804,7 +4926,7 @@ fn parse_run_persistent_no_handle() {
             persistent_handle,
             ..
         } => {
-            assert_eq!(target, RunTarget::Literal("proc.p".to_string()));
+            assert_eq!(target.literal_name(), Some("proc.p"));
             assert!(persistent);
             assert!(persistent_handle.is_none());
         }
@@ -4825,7 +4947,7 @@ fn parse_run_persistent_set_handle() {
             persistent_handle,
             ..
         } => {
-            assert_eq!(target, RunTarget::Literal("proc.p".to_string()));
+            assert_eq!(target.literal_name(), Some("proc.p"));
             assert!(persistent);
             assert!(persistent_handle.is_some());
         }
@@ -4847,7 +4969,7 @@ fn parse_run_asynchronous_no_handle() {
             event_procedure,
             ..
         } => {
-            assert_eq!(target, RunTarget::Literal("proc".to_string()));
+            assert_eq!(target.literal_name(), Some("proc"));
             assert!(asynchronous);
             assert!(async_handle.is_none());
             assert!(event_procedure.is_none());
@@ -6763,8 +6885,65 @@ fn parse_using_qualified_name() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
-        StatementKind::Using { type_name } => {
+        StatementKind::Using { type_name, .. } => {
             assert_eq!(type_name, "Progress.Lang.Object");
+        }
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_using_records_node_id_and_name_span() {
+    let source = "USING MyApp.Services.Foo.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt.kind {
+        StatementKind::Using {
+            id,
+            type_name,
+            name_span,
+        } => {
+            assert_eq!(type_name, "MyApp.Services.Foo");
+            // The import gets its own identity, distinct from the statement's.
+            assert_ne!(id, NodeId::DUMMY);
+            assert_ne!(id, stmt.id);
+            // The span stops at the name, short of the statement terminator.
+            assert_span_covers(source, name_span, "MyApp.Services.Foo");
+        }
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_using_wildcard_name_span_includes_the_star() {
+    let source = "USING MyApp.Services.*.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt.kind {
+        StatementKind::Using {
+            id,
+            type_name,
+            name_span,
+        } => {
+            assert_eq!(type_name, "MyApp.Services.*");
+            assert_ne!(id, NodeId::DUMMY);
+            assert_span_covers(source, name_span, "MyApp.Services.*");
+        }
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_using_from_propath_name_span_excludes_the_source_clause() {
+    let source = "USING MyApp.Services.Foo FROM PROPATH.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt.kind {
+        StatementKind::Using { name_span, .. } => {
+            assert_span_covers(source, name_span, "MyApp.Services.Foo");
         }
         _ => panic!("Expected Using statement"),
     }
@@ -6777,7 +6956,7 @@ fn parse_using_wildcard() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
-        StatementKind::Using { type_name } => {
+        StatementKind::Using { type_name, .. } => {
             assert_eq!(type_name, "MyApp.Services.*");
         }
         _ => panic!("Expected Using statement"),

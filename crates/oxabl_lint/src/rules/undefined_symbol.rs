@@ -3,9 +3,11 @@
 //! Fires on every reference that resolves to
 //! [`Resolution::Unresolved { reason: NotInScope }`] in a user-written
 //! namespace (Values / Procedures / Functions / Streams / Frames / Events
-//! / Types). Does *not* fire on `External` (cross-file / dynamic) or
-//! `NoSchema` (schema-absent) unresolveds — those are by-design
-//! skip-listed so the rule's signal stays high.
+//! / Types). Does *not* fire on `External` (cross-file / dynamic),
+//! `NoSchema` (schema-absent), `NotFoundInWorkspace`, or `Unknowable`
+//! unresolveds — those are by-design skip-listed so the rule's signal stays
+//! high. The skip is structural: the rule matches *positively* on the one
+//! reason it reports, so a new reason is silent without an edit here.
 
 use oxabl_ast::{
     Expression, ExpressionKind, OnAction, OnKind, Statement, StatementKind, StreamOperation,

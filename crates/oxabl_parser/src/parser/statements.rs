@@ -3402,12 +3402,32 @@ impl Parser<'_> {
         } else if self.check(Kind::StringLiteral) {
             // String literal target: RUN "my-proc.p".
             let token = self.advance().clone();
-            let name = self.source[token.start + 1..token.end - 1].to_string();
-            RunTarget::Literal(name)
+            // Take the name from the lexer's parsed payload rather than
+            // re-slicing between the quotes: an ABL literal may carry a
+            // translation/width suffix (`RUN "my-proc.p":U.`), whose bytes fall
+            // inside the token extent, so a raw slice would yield `my-proc.p":`.
+            let name = match &token.value {
+                TokenValue::String(s) => s.to_string(),
+                _ => self.source[token.start + 1..token.end - 1].to_string(),
+            };
+            // The span keeps the quotes (and any suffix) the name drops, so a
+            // diagnostic underlines the literal exactly as it was written.
+            RunTarget::Literal {
+                id: self.node_id(),
+                name,
+                name_span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+            }
         } else {
             // Procedure name (may contain hyphens, dots for .p/.w/.r/.i/.cls files)
-            let name = self.parse_procedure_name()?;
-            RunTarget::Literal(name)
+            let (name, name_span) = self.parse_procedure_name()?;
+            RunTarget::Literal {
+                id: self.node_id(),
+                name,
+                name_span,
+            }
         };
 
         // parse optional arguments
@@ -4491,16 +4511,16 @@ impl Parser<'_> {
         }
     }
 
-    /// Parse a procedure name for RUN statements.
+    /// Parse a RUN target name, returning it alongside its own byte extent.
     ///
     /// ABL procedure names can contain hyphens (e.g., `calculate-total`) and may have
     /// file extensions (e.g., `my-proc.p`). Known ABL extensions are `.p`, `.w`, `.r`,
     /// `.i`, and `.cls`. A period followed by a non-extension token is treated as the
     /// statement terminator, not part of the name.
-    fn parse_procedure_name(&mut self) -> ParseResult<String> {
+    fn parse_procedure_name(&mut self) -> ParseResult<(String, Span)> {
         // Procedure names are file paths and can start with any word-like token,
         // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`).
-        // Absolute UNIX paths starting with `/` are also valid (e.g., `RUN /u/live/sofwork.p`).
+        // Absolute UNIX paths starting with `/` are also valid (e.g., `RUN /opt/app/batch.p`).
         if !Self::is_word_kind(self.peek().kind) && !self.check(Kind::Slash) {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
@@ -4522,8 +4542,8 @@ impl Parser<'_> {
             self.advance(); // consume the first identifier token
         }
 
-        // Consume additional path components separated by `/` (e.g., `oe/oe_calc_order_total.p`)
-        // Path components may start with digits (e.g., `zp/170oe150svd.p`), so also allow
+        // Consume additional path components separated by `/` (e.g., `orders/calc_total.p`)
+        // Path components may start with digits (e.g., `rpt/170summary.p`), so also allow
         // IntegerLiteral and DecimalLiteral as path segment starts.
         while self.check(Kind::Slash)
             && (Self::is_word_kind(self.peek_at(1).kind)
@@ -4534,8 +4554,8 @@ impl Parser<'_> {
         {
             self.advance(); // consume '/'
             self.advance(); // consume next path component
-            // A digit-leading component like "170oe150svd" is lexed as two tokens:
-            // IntegerLiteral("170") + Identifier("oe150svd"). Consume the rest.
+            // A digit-leading component like "170summary" is lexed as two tokens:
+            // IntegerLiteral("170") + Identifier("summary"). Consume the rest.
             while Self::is_word_kind(self.peek().kind)
                 && !self.check(Kind::Slash)
                 && !self.check(Kind::Period)
@@ -4571,7 +4591,13 @@ impl Parser<'_> {
         }
 
         let end = self.tokens[self.current - 1].end;
-        Ok(self.source[start..end].to_string())
+        Ok((
+            self.source[start..end].to_string(),
+            Span {
+                start: start as u32,
+                end: end as u32,
+            },
+        ))
     }
 
     /// Check if the current token is the start of a find clause (WHERE, lock, no-error, terminator)
@@ -5263,6 +5289,9 @@ impl Parser<'_> {
 
         let first_token = self.advance().clone();
         let mut type_name = self.source[first_token.start..first_token.end].to_string();
+        // Tracks the end of the name itself, so the recorded span stops before
+        // any `FROM PROPATH` clause and the statement terminator.
+        let mut name_end = first_token.end;
 
         // Consume .segment parts, including .* wildcard
         while self.check(Kind::Period) {
@@ -5287,10 +5316,12 @@ impl Parser<'_> {
                 let seg = self.advance().clone();
                 type_name.push('.');
                 type_name.push_str(&self.source[seg.start..seg.end]);
+                name_end = seg.end;
             } else if next_kind == Kind::Star {
                 self.advance(); // consume .
-                self.advance(); // consume *
+                let star = self.advance().clone(); // consume *
                 type_name.push_str(".*");
+                name_end = star.end;
                 break; // wildcard is always last
             } else {
                 break; // period is statement terminator
@@ -5308,7 +5339,15 @@ impl Parser<'_> {
 
         self.expect_period("Expected '.' after USING statement")?;
 
-        Ok(self.stmt(StatementKind::Using { type_name }))
+        let id = self.node_id();
+        Ok(self.stmt(StatementKind::Using {
+            id,
+            type_name,
+            name_span: Span {
+                start: first_token.start as u32,
+                end: name_end as u32,
+            },
+        }))
     }
 
     // =========================================================================

@@ -11,8 +11,10 @@
 //! `Table::get_field`), emitting `Resolved` for real fields and
 //! `NotInScope` for absent ones — so a `bCust.NoSuchField` or
 //! `Ghost.Field` under a loaded schema now fires here. Fields the
-//! resolver cannot check (temp-table buffers, `External` resolutions)
-//! stay silent by design.
+//! resolver cannot check (temp-table buffers, and the cross-file
+//! `External` / `NotFoundInWorkspace` / `Unknowable` resolutions) stay
+//! silent by design — the match above is positive on the two reported
+//! reasons, so a new reason is skip-listed without an edit here.
 
 use oxabl_ast::{Expression, ExpressionKind, Statement, StatementKind, StreamOperation};
 use oxabl_common::{Diagnostic, FileSpan};

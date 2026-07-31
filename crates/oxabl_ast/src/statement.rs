@@ -416,8 +416,14 @@ pub enum StatementKind {
     /// `USING MyApp.Services.*.`
     /// `USING Progress.Lang.Object.`
     Using {
+        /// Identity of the named import, so workspace resolution can record it
+        /// as a reference entry (`docs/design/ast-invariants.md` §2).
+        id: NodeId,
         /// Type name or wildcard path (e.g., "MyApp.Services.*").
         type_name: String,
+        /// Byte extent of `type_name` itself — not of the enclosing statement,
+        /// which carries its own span on the [`Statement`] wrapper.
+        name_span: Span,
     },
 
     /// CREATE statement — record creation or dynamic object creation.
@@ -805,9 +811,45 @@ pub enum ParameterDirection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunTarget {
     /// Static procedure name, e.g. `RUN my-proc.p` or `RUN "file.p"`.
-    Literal(String),
+    Literal {
+        /// Identity of the named target, so workspace resolution can record it
+        /// as a reference entry (`docs/design/ast-invariants.md` §2).
+        id: NodeId,
+        /// The target as written, with any surrounding quotes stripped.
+        name: String,
+        /// Byte extent of the target as written. For a quoted target the span
+        /// **includes** the quotes even though `name` excludes them, so a
+        /// diagnostic underlines the whole literal as it appears in source.
+        name_span: Span,
+    },
     /// Dynamic target via `RUN VALUE(expr)`.
     Dynamic(Expression),
+}
+
+impl RunTarget {
+    /// Construct a [`RunTarget::Literal`] with `id` set to [`NodeId::DUMMY`] and
+    /// `name_span` set to [`Span::DUMMY`].
+    ///
+    /// Intended for hand-constructed AST in tests, mirroring
+    /// [`Statement::new`]; the parser always allocates a real id and records
+    /// the name's own span.
+    #[inline]
+    pub fn literal(name: impl Into<String>) -> Self {
+        RunTarget::Literal {
+            id: NodeId::DUMMY,
+            name: name.into(),
+            name_span: Span::DUMMY,
+        }
+    }
+
+    /// The statically named target, or `None` for a `RUN VALUE(...)` target.
+    #[inline]
+    pub fn literal_name(&self) -> Option<&str> {
+        match self {
+            RunTarget::Literal { name, .. } => Some(name),
+            RunTarget::Dynamic(_) => None,
+        }
+    }
 }
 
 /// A single argument passed to a RUN statement, with its [`ParameterDirection`].
