@@ -31,7 +31,6 @@ use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 use crate::fixtures::{
     self, Capability, CrossFileEffect, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
 };
-};
 use crate::{
     FormatPipeline, LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig,
     position,

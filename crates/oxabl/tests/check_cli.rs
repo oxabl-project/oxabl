@@ -948,7 +948,7 @@ fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
 
     assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
     let v = run.json();
-    assert_eq!(v["version"], 1);
+    assert_eq!(v["version"], 2);
     assert_eq!(v["files_checked"], 2);
     assert_eq!(v["lint_enabled"], true);
     assert_eq!(v["format_enabled"], false);

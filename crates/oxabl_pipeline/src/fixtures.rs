@@ -841,6 +841,9 @@ pub const FIXTURES: &[ParityFixture] = &[
     // positions are checked where they are each derived.
     ParityFixture {
         name: NON_ASCII_FIXTURE,
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
         source: "/* café — naïve */\n/* ¡señor! */ DEFINE VARIABLE unusedTwo AS INTEGER NO-UNDO.\n",
         diagnostics: &[ExpectedDiagnostic {
             code: "LINT0002",

@@ -484,7 +484,7 @@ mod tests {
             self, Capability, ExpectedFormat, FIXTURES, ObservedDiagnostic, ParityFixture,
         };
 
-        use oxabl_pipeline::{FormatOutcome, FormatPipeline, PipelineConfig};
+        use oxabl_pipeline::{FormatOutcome, FormatPipeline};
 
         use super::super::{analyze_over, analyze_source, format_source};
 

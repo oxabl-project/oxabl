@@ -1344,15 +1344,17 @@ mod tests {
 
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
-        let (diagnostics, dependencies) =
-            crate::analyze_guarded(&db, buffer, schema, "file:///child.cls");
+        let analysis = crate::analyze_guarded(&db, buffer, schema, "file:///child.cls");
         std::panic::set_hook(previous);
 
         assert!(
-            diagnostics.is_none(),
+            analysis.diagnostics.is_none(),
             "a panic in the index must degrade to no diagnostics, not to a clean file"
         );
-        assert!(dependencies.is_none(), "and both halves degrade together");
+        assert!(
+            analysis.dependencies.is_none(),
+            "and both halves degrade together"
+        );
     }
 
     /// The registry is the watcher's early-out, and it must not answer for a file
