@@ -85,7 +85,7 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::BatchIndex;
-use oxabl_semantic::Semantic;
+use oxabl_semantic::{Semantic, WorkspaceIndex};
 use oxabl_workspace::FileSystem;
 
 use crate::{PipelineConfig, ROOT_FILE_ID};
@@ -407,16 +407,27 @@ pub struct LintPipeline<'a> {
     file: Option<PathBuf>,
 }
 
-/// Where a handle's index lives: owned by the handle that built it, or borrowed
-/// from the run handle by a per-file sibling.
+/// Where a handle's index lives: owned by the handle that built it, borrowed
+/// from the run handle by a per-file sibling, or supplied whole by a client with
+/// a cache of its own.
 ///
-/// The two arms are what let "one index per run" and "one exclusion per file"
-/// both be true. [`LintPipeline::new`] builds the [`Owned`](RunIndex::Owned) arm;
-/// [`LintPipeline::with_file`] hands out siblings on the
-/// [`Shared`](RunIndex::Shared) one, which is a pointer copy and reads nothing.
+/// The first two arms are what let "one index per run" and "one exclusion per
+/// file" both be true. [`LintPipeline::new`] builds the
+/// [`Owned`](RunIndex::Owned) arm; [`LintPipeline::with_file`] hands out siblings
+/// on the [`Shared`](RunIndex::Shared) one, which is a pointer copy and reads
+/// nothing.
+///
+/// [`External`](RunIndex::External) is the incremental client's arm. A language
+/// server cannot use a [`BatchIndex`]: that cache grows for the life of the
+/// value that owns it and never sees an edit, which is exactly wrong for a
+/// process that outlives many edits to the files it indexed. Its own cache is
+/// keyed and invalidated per file, and it arrives here as the trait object the
+/// semantic layer already takes — so the *questions* stay shared (R7) while the
+/// memoization differs, which is the whole shape of KTD2.
 enum RunIndex<'a> {
     Owned(BatchIndex<'a>),
     Shared(&'a BatchIndex<'a>),
+    External(&'a dyn WorkspaceIndex),
 }
 
 impl<'a> LintPipeline<'a> {
@@ -473,7 +484,32 @@ impl<'a> LintPipeline<'a> {
             // has already told it. Explicit arm rather than a catch-all so a
             // future third arm is a compile error here.
             RunIndex::Shared(index) => RunIndex::Shared(index),
+            // A supplied index owns its own file set — the language server
+            // learns about a file when a lookup reaches it, and has no walk to
+            // enumerate. Explicit arm rather than a catch-all so a future
+            // fourth arm is a compile error here.
+            RunIndex::External(index) => RunIndex::External(index),
         };
+        self
+    }
+
+    /// Answer this run's cross-file questions from `index` instead of building a
+    /// batch cache.
+    ///
+    /// For a client that memoizes across edits rather than across a walk: the
+    /// language server's salsa-backed index, whose entries are keyed and
+    /// invalidated per file. The questions are the same four — that is the point
+    /// of handing over a [`WorkspaceIndex`] rather than a narrower handle.
+    ///
+    /// **The supplied index owns its own self-exclusion.** A batch index is
+    /// excluded through [`with_file`](Self::with_file), which needs the memo to
+    /// have already minted an id for the analysed path; a client with its own
+    /// cache already knows which file it is analysing and can decline earlier and
+    /// more directly. So this arm applies no exclusion of its own, and
+    /// [`file`](Self::file) is not consulted for it.
+    #[must_use]
+    pub fn with_index(mut self, index: &'a dyn WorkspaceIndex) -> Self {
+        self.index = RunIndex::External(index);
         self
     }
 
@@ -503,7 +539,16 @@ impl<'a> LintPipeline<'a> {
             config: self.config,
             fs: self.fs,
             preprocess: self.preprocess,
-            index: RunIndex::Shared(self.index()),
+            index: match &self.index {
+                // A sibling shares the run's memo rather than building a second
+                // one — that is what makes the shared-dependency dedup pay.
+                RunIndex::Owned(index) => RunIndex::Shared(index),
+                RunIndex::Shared(index) => RunIndex::Shared(index),
+                // A supplied index is already shared by construction, and it
+                // applies its own exclusion, so the identity below is recorded
+                // but not consulted for this arm.
+                RunIndex::External(index) => RunIndex::External(*index),
+            },
             file: Some(path.into()),
         }
     }
@@ -524,11 +569,24 @@ impl<'a> LintPipeline<'a> {
         self.file.as_deref()
     }
 
-    /// The run's index, whichever arm holds it.
-    fn index(&self) -> &BatchIndex<'a> {
+    /// Run `with` against this handle's index, viewed as the file being analysed.
+    ///
+    /// The three arms differ only in where the index lives and who applies the
+    /// self-exclusion, and every one of them ends up as the same `&dyn
+    /// WorkspaceIndex` the semantic layer takes. Written as one closure applied
+    /// three ways rather than three copies of the collect call, so a change to
+    /// what `collect` passes cannot be made in two arms and forgotten in the
+    /// third.
+    fn with_run_index<T>(&self, with: impl FnOnce(&dyn WorkspaceIndex) -> T) -> T {
         match &self.index {
-            RunIndex::Owned(index) => index,
-            RunIndex::Shared(index) => index,
+            // The exclusion is applied here, per handle, while the memo behind it
+            // stays the run's. With no identity nothing is excluded, which is the
+            // browser's case.
+            RunIndex::Owned(index) => with(&index.excluding(self.file())),
+            RunIndex::Shared(index) => with(&index.excluding(self.file())),
+            // A supplied index excludes the analysed file itself — see
+            // [`with_index`](Self::with_index).
+            RunIndex::External(index) => with(*index),
         }
     }
 
@@ -563,17 +621,15 @@ impl<'a> LintPipeline<'a> {
         let dependency_paths = expansion.dependency_paths().to_vec();
         match &expansion.inner {
             Ok(expanded) => {
-                let (semantic, diagnostics) = collect_from_expanded(
-                    expanded,
-                    &self.config.schema,
-                    self.config.schema_loaded,
-                    &self.config.lint_severities,
-                    // The run's index, viewed as the file being analysed: the
-                    // exclusion is applied here, per handle, while the memo behind
-                    // it stays the run's. With no identity nothing is excluded,
-                    // which is the browser's case.
-                    &self.index().excluding(self.file()),
-                );
+                let (semantic, diagnostics) = self.with_run_index(|index| {
+                    collect_from_expanded(
+                        expanded,
+                        &self.config.schema,
+                        self.config.schema_loaded,
+                        &self.config.lint_severities,
+                        index,
+                    )
+                });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
             }
             // Fatal preprocessing failure: no model, and the preprocessor's own
@@ -1363,6 +1419,45 @@ END CLASS."#;
             .iter()
             .find(|(_, symbol)| &*symbol.name == name)
             .and_then(|(id, _)| sem.symbols.shared_producer(id))
+    }
+
+    /// The incremental client's arm: a supplied index is the one consulted, and
+    /// the batch the handle would otherwise have built is not.
+    ///
+    /// Proven by making the two *disagree*. The pipeline's own configuration has an
+    /// empty include-path list, so a batch index built from it can find nothing;
+    /// the supplied index searches `/src` and does. A run that resolves the
+    /// inherited call therefore cannot have used the handle's own index.
+    #[test]
+    fn a_supplied_index_answers_instead_of_the_handles_own() {
+        let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
+        let searchable = vec![PathBuf::from("/src")];
+        let supplied = oxabl_index::BatchIndex::new(&fs, &searchable);
+
+        let nowhere = PipelineConfig::default();
+        assert!(nowhere.include_paths.is_empty());
+
+        // The control: without the supplied index this exact configuration cannot
+        // resolve the parent — that is `an_empty_include_path_list_resolves_nothing`.
+        let unaided = LintPipeline::new(&nowhere, &fs);
+        assert!(codes(&unaided.run(CHILD)).contains(&"LINT0001"));
+
+        let aided = LintPipeline::new(&nowhere, &fs).with_index(&supplied);
+        let result = aided.run(CHILD);
+        assert!(
+            !codes(&result).contains(&"LINT0001"),
+            "the supplied index must be the one consulted, got {:?}",
+            codes(&result)
+        );
+
+        // And a per-file sibling keeps answering from it rather than falling back
+        // to a fresh batch — which is what the language server relies on, since its
+        // index is the only one that knows anything.
+        let per_file = aided.with_file("/src/orders/child.cls");
+        assert!(!codes(&per_file.run(CHILD)).contains(&"LINT0001"));
+        // The supplied index owns its own exclusion, so recording the identity does
+        // not make the handle apply one on its behalf.
+        assert_eq!(per_file.file(), Some(Path::new("/src/orders/child.cls")));
     }
 
     #[test]

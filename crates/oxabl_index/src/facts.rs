@@ -28,7 +28,13 @@ use oxabl_semantic::{ClassDescriptor, IndexName, IndexedFileId, MemberDescriptor
 ///
 /// `Clone` is two refcount bumps, which is what lets a memo hand out an answer
 /// by key without copying the member list.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq`/`Eq` compare through the `Arc`s, which is what an incremental
+/// cache needs: salsa backdates a re-executed query whose value is *equal* to
+/// the old one, so a change to a parent's method **body** — which leaves its
+/// header and member list untouched — stops there instead of invalidating every
+/// consumer of that class (R9).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassFacts {
     /// The answer to [`WorkspaceIndex::class`](oxabl_semantic::WorkspaceIndex::class).
     pub descriptor: Arc<ClassDescriptor>,
@@ -39,7 +45,11 @@ pub struct ClassFacts {
 }
 
 /// Everything one indexed file contributes to the index's four answers.
-#[derive(Debug)]
+///
+/// `PartialEq`/`Eq` for the same reason as [`ClassFacts`]: they are the
+/// equality an incremental cache backdates on, so an edit that changes nothing
+/// the index reports costs a re-extraction and nothing beyond it.
+#[derive(Debug, PartialEq, Eq)]
 pub struct FileFacts {
     /// The id this file was indexed under. Every answer derived from these
     /// facts reports it, so the index's own id space is minted in exactly one

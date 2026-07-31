@@ -28,6 +28,7 @@ fn config_with(
             ..oxabl_pipeline::PipelineConfig::default()
         }),
         preprocess,
+        ..Default::default()
     }
 }
 
@@ -44,7 +45,11 @@ fn write_on_main_read_on_snapshot() {
         vec![],
         false,
     ));
-    let buffer = Buffer::new(&db, "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n".to_string());
+    let buffer = Buffer::new(
+        &db,
+        "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n".to_string(),
+        None,
+    );
     let schema = SchemaHandle::new(&db, 0);
 
     // Read on a worker snapshot; join before writing so the snapshot is dropped.
@@ -131,6 +136,7 @@ fn snapshot_read_cancelled_mid_flight_yields_none() {
     let buffer = Buffer::new(
         &db,
         "{blk.i}\nDEFINE VARIABLE x AS INTEGER NO-UNDO.\n".to_string(),
+        None,
     );
     let schema = SchemaHandle::new(&db, 0);
 
@@ -169,5 +175,106 @@ fn snapshot_read_cancelled_mid_flight_yields_none() {
     }
 
     // And writes on main still work afterwards (no outstanding snapshots).
+    buffer.set_text(&mut db).to("MESSAGE \"ok\".\n".to_string());
+}
+
+/// The hazard the cross-file index adds to this discipline (U11): a cancellation
+/// that arrives while the index is reading a *referenced* file must stay a
+/// cancellation.
+///
+/// The failure this pins is the quiet one. `WorkspaceIndex` promises every query
+/// is **total** — found, not-found, or unknowable, never an error — and the
+/// obvious way to honor that around a fallible lookup is a panic guard. In this
+/// workspace that would be wrong: salsa's `Cancelled` travels as a panic payload,
+/// so a guard there would convert "abandon this stale snapshot" into `NotFound`,
+/// and the buffer would be published with cross-file names silently unresolved.
+///
+/// So the assertion is on the *shape* of the outcome rather than on diagnostics:
+///
+/// - `Ok(None)` — what must happen. The inner `Cancelled::catch` recognized the
+///   unwind, and nothing reached the panic guard.
+/// - `Err(_)` — a catch is missing somewhere, and the server would report an
+///   ordinary edit race as an internal bug.
+/// - `Ok(Some(_))` — something swallowed the cancellation and answered anyway,
+///   which is the guard-inside-the-index regression.
+#[test]
+fn a_cancellation_while_indexing_stays_a_cancellation() {
+    // A parent class on the search path, and a child buffer that inherits from it
+    // — so the first (and only) filesystem read of the run is the index's.
+    const PARENT: &str = "CLASS orders.calc-base:\n\
+                          METHOD PUBLIC INTEGER calc-total():\n\
+                          RETURN 0.\n\
+                          END METHOD.\n\
+                          END CLASS.";
+    const CHILD: &str = "CLASS orders.child INHERITS orders.calc-base:\n\
+                         METHOD PUBLIC VOID run-it():\n\
+                         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n\
+                         v-total = calc-total().\n\
+                         MESSAGE v-total.\n\
+                         END METHOD.\n\
+                         END CLASS.";
+
+    let mut inner = InMemoryFileSystem::new();
+    inner.insert("/src/orders/calc-base.cls".into(), PARENT);
+
+    let entered = Arc::new((Mutex::new(false), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let fs = Arc::new(BlockingFs {
+        inner,
+        entered: entered.clone(),
+        release: release.clone(),
+    });
+
+    let mut db = AnalysisDatabase::new(config_with(fs, vec!["/src".into()], true));
+    let buffer = Buffer::new(
+        &db,
+        CHILD.to_string(),
+        Some(PathBuf::from("/src/orders/child.cls")),
+    );
+    let schema = SchemaHandle::new(&db, 0);
+
+    let snap = db.clone();
+    let (tok_tx, tok_rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let token = snap.cancellation_token();
+        tok_tx.send(token).unwrap();
+        // The panic guard on the outside, the cancellation catch on the inside —
+        // the same nesting `analyze_guarded` uses (KTD6). Its `Ok`/`Err` is what
+        // separates the two failure modes above.
+        oxabl_common::catch_panic(|| compute_diagnostics(&snap, buffer, schema))
+    });
+
+    let token = tok_rx.recv().unwrap();
+    // Block inside the index's read of the parent, then cancel and release.
+    wait_flag(&entered);
+    token.cancel();
+    set_flag(&release);
+
+    let outcome = handle.join().unwrap();
+    match outcome {
+        Ok(None) => {}
+        Ok(Some(_)) => panic!(
+            "the index must not swallow a cancellation into an answer — that \
+             publishes a buffer with cross-file names silently unresolved"
+        ),
+        Err(panic) => panic!("a cancellation escaped as a contained panic: {panic}"),
+    }
+
+    // The server stays responsive, and the parent still resolves on a fresh
+    // computation: a cancelled lookup left the index usable.
+    {
+        let snap2 = db.clone();
+        let recomputed =
+            compute_diagnostics(&snap2, buffer, schema).expect("responsive after cancel");
+        assert!(
+            !has_code(&recomputed, "LINT0001"),
+            "the inherited call resolves once the index is allowed to finish: {:?}",
+            recomputed
+                .all()
+                .map(|c| c.diagnostic.code.0)
+                .collect::<Vec<_>>()
+        );
+    }
+
     buffer.set_text(&mut db).to("MESSAGE \"ok\".\n".to_string());
 }

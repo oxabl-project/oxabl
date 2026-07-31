@@ -54,6 +54,10 @@ fn bench_config() -> AnalysisConfig {
             ..PipelineConfig::default()
         }),
         preprocess: true,
+        // The registry is empty and stays empty: the fixture references no
+        // other file, so the measured cycle pays for the index handle and
+        // nothing more.
+        ..Default::default()
     }
 }
 
@@ -64,7 +68,7 @@ fn lsp_cycle_benchmarks(c: &mut Criterion) {
     // ---- WARM: steady-state single-edit full cycle -----------------------
     {
         let mut db = AnalysisDatabase::new(bench_config());
-        let buffer = Buffer::new(&db, source.clone());
+        let buffer = Buffer::new(&db, source.clone(), None);
         let schema = SchemaHandle::new(&db, 0);
         // Warm the memo so we measure a steady-state edit, not a cold open.
         let _ = compute_diagnostics(&db, buffer, schema);
@@ -93,7 +97,7 @@ fn lsp_cycle_benchmarks(c: &mut Criterion) {
             bencher.iter_batched(
                 || {
                     let db = AnalysisDatabase::new(bench_config());
-                    let buffer = Buffer::new(&db, source.clone());
+                    let buffer = Buffer::new(&db, source.clone(), None);
                     let schema = SchemaHandle::new(&db, 0);
                     (db, buffer, schema)
                 },

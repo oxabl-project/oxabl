@@ -80,15 +80,19 @@ pub fn serve(connection: &Connection) -> Result<bool> {
 
 /// [`serve`] with an explicit debounce window (used by tests to run fast).
 pub fn serve_with(connection: &Connection, debounce_window: std::time::Duration) -> Result<bool> {
-    let encoding = handshake(connection)?;
-    let mut server = Server::new(connection, encoding, debounce_window);
+    let (encoding, workspace_root) = handshake(connection)?;
+    let mut server = Server::new(connection, encoding, debounce_window, workspace_root);
     server.main_loop()
 }
 
 /// Perform the initialize handshake, negotiating the position encoding from the
 /// client's advertised `general.positionEncodings` before replying with the v1
 /// server capabilities (R2, R3).
-fn handshake(connection: &Connection) -> Result<PositionEncodingKind> {
+///
+/// Also returns the client's declared **workspace root**, when it declared one.
+/// That is what lets the server's watch and its configuration cover a *project*
+/// rather than whichever directory happened to hold the first opened document.
+fn handshake(connection: &Connection) -> Result<(PositionEncodingKind, Option<PathBuf>)> {
     let (id, params) = connection
         .initialize_start()
         .context("LSP initialize_start")?;
@@ -96,6 +100,7 @@ fn handshake(connection: &Connection) -> Result<PositionEncodingKind> {
         serde_json::from_value(params).context("deserializing InitializeParams")?;
 
     let encoding = negotiate_position_encoding(&init.capabilities);
+    let workspace_root = declared_workspace_root(&init);
     let result = InitializeResult {
         capabilities: server_capabilities(encoding.clone()),
         server_info: Some(ServerInfo {
@@ -106,7 +111,29 @@ fn handshake(connection: &Connection) -> Result<PositionEncodingKind> {
     connection
         .initialize_finish(id, serde_json::to_value(result)?)
         .context("LSP initialize_finish")?;
-    Ok(encoding)
+    Ok((encoding, workspace_root))
+}
+
+/// The workspace root the client declared, if any.
+///
+/// `workspaceFolders` first, because it is the live field and the only one that
+/// can carry more than one root; `rootUri` second, because plenty of clients still
+/// send only that. Both are best-effort: a client that declares neither, or
+/// declares a non-`file:` URI, leaves the server on its previous behavior of
+/// anchoring to the first opened document.
+///
+/// Only the **first** folder is taken. A multi-root session gets one anchor, which
+/// is the same single `oxabl.toml` resolution the server has always performed;
+/// resolving per folder would mean more than one configuration alive at once, and
+/// nothing in the server can hold two yet.
+fn declared_workspace_root(init: &InitializeParams) -> Option<PathBuf> {
+    #[allow(deprecated)] // `root_uri` is how a large share of clients still speak.
+    init.workspace_folders
+        .as_ref()
+        .and_then(|folders| folders.first().map(|folder| folder.uri.clone()))
+        .or_else(|| init.root_uri.clone())
+        .as_ref()
+        .and_then(uri_to_path)
 }
 
 /// The running LSP server: negotiated session state, the open-buffer store, the
@@ -127,9 +154,14 @@ struct Server<'c> {
     /// Whether the db configuration (include paths, schema) has been resolved
     /// from a workspace yet. Resolved lazily from the first opened document.
     config_resolved: bool,
-    /// The path the workspace configuration was resolved from (first opened
-    /// document), used to re-resolve on `oxabl.toml` / `.df` changes (R16/R17).
+    /// The path the workspace configuration was resolved from — the declared
+    /// workspace root when the client sent one, else the first opened document —
+    /// used to re-resolve on `oxabl.toml` / `.df` changes (R16/R17).
     workspace_anchor: Option<PathBuf>,
+    /// The root the client declared at `initialize`, if any. Preferred over the
+    /// first-opened-document anchor, so configuration and the file watch describe
+    /// the project rather than one directory inside it.
+    workspace_root: Option<PathBuf>,
     /// The format pipeline, rebuilt whenever configuration is resolved so a
     /// formatting request costs no style resolution and no `StyleGuide` clone.
     formatter: FormatPipeline,
@@ -171,6 +203,7 @@ impl<'c> Server<'c> {
         connection: &'c Connection,
         encoding: PositionEncodingKind,
         debounce_window: std::time::Duration,
+        workspace_root: Option<PathBuf>,
     ) -> Self {
         let config = AnalysisConfig::default();
         let formatter = FormatPipeline::new(config.pipeline.style.clone());
@@ -185,6 +218,7 @@ impl<'c> Server<'c> {
             schema,
             config_resolved: false,
             workspace_anchor: None,
+            workspace_root,
             formatter,
             dependencies: HashMap::new(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
@@ -197,6 +231,11 @@ impl<'c> Server<'c> {
     /// whether shutdown was clean.
     fn main_loop(&mut self) -> Result<bool> {
         use crossbeam_channel::{after, never, select};
+
+        // A declared root is enough to resolve configuration and start watching
+        // *before* any document is opened — which is what makes the watch cover a
+        // project. Without one, both still happen, on the first `didOpen`.
+        self.ensure_config_from_root();
 
         // Clone the connection receiver so the `select!` doesn't borrow `self`
         // (the arms need `&mut self`).
@@ -357,7 +396,12 @@ impl<'c> Server<'c> {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
-                    let buffer = Buffer::new(&self.db, doc.text);
+                    // The path travels with the buffer because the *query* needs
+                    // it: cross-file resolution must exclude this file from its
+                    // own lookups, since the buffer is the unsaved text while
+                    // the index answers from disk.
+                    let path = uri_to_path(&doc.uri);
+                    let buffer = Buffer::new(&self.db, doc.text, path);
                     self.buffers.insert(doc.uri.clone(), buffer);
                     // Open shows diagnostics right away (no debounce).
                     self.compute_and_publish(&doc.uri);
@@ -443,28 +487,69 @@ impl<'c> Server<'c> {
             return;
         };
         self.config_resolved = true;
-        self.workspace_anchor = Some(path.clone());
+        // The declared root wins over the document's own directory: an
+        // `oxabl.toml` at the project root governs a file opened three levels down,
+        // and anchoring at the file would still find it by walking up — but the
+        // *root* is also what a client's watch registration is relative to, so the
+        // two must agree on what the workspace is.
+        let anchor = self.workspace_root.clone().unwrap_or(path);
+        self.workspace_anchor = Some(anchor.clone());
         // Installs both halves of the resolution: the db config the queries read
         // and the rebuilt format pipeline (`install_config`).
-        self.resolve_config_from(&path);
+        self.resolve_config_from(&anchor);
         self.register_file_watchers();
     }
 
-    /// Best-effort dynamic registration of file watchers for `*.i`, `*.df`, and
-    /// `oxabl.toml` so a real editor forwards their changes as
-    /// `workspace/didChangeWatchedFiles` (R16/R17). Clients without dynamic
-    /// registration simply ignore it; the server needs no response.
+    /// Resolve from the client's declared workspace root, if it declared one.
+    ///
+    /// Runs before the first document arrives, which matters for more than
+    /// tidiness: the cross-file index searches the *resolved* include paths, so a
+    /// buffer opened before configuration existed would resolve nothing until
+    /// something re-triggered it.
+    fn ensure_config_from_root(&mut self) {
+        if self.config_resolved {
+            return;
+        }
+        let Some(root) = self.workspace_root.clone() else {
+            return;
+        };
+        self.config_resolved = true;
+        self.workspace_anchor = Some(root.clone());
+        self.resolve_config_from(&root);
+        self.register_file_watchers();
+    }
+
+    /// Best-effort dynamic registration of file watchers for `*.i`, `*.df`,
+    /// `oxabl.toml`, and **every root source extension**, so a real editor forwards
+    /// their changes as `workspace/didChangeWatchedFiles` (R16/R17, and R10 for the
+    /// last group). Clients without dynamic registration simply ignore it; the
+    /// server needs no response.
+    ///
+    /// The root extensions are the reason a dependency edit on disk reaches the
+    /// buffers that resolved against it: a `.cls` saved in another editor, or
+    /// changed by a branch switch, is not a `didChange` on any open document, so
+    /// without this glob the server would never hear about it.
+    ///
+    /// The list comes from [`oxabl_workspace::ROOT_EXTENSIONS`] rather than being
+    /// spelled out here, so the watch cannot drift from the one root-file policy
+    /// the discovery walk and the index's own search both use.
     fn register_file_watchers(&self) {
+        let mut watchers = vec![
+            serde_json::json!({ "globPattern": "**/*.i" }),
+            serde_json::json!({ "globPattern": "**/*.df" }),
+            serde_json::json!({ "globPattern": "**/oxabl.toml" }),
+        ];
+        watchers.extend(
+            oxabl_workspace::ROOT_EXTENSIONS
+                .iter()
+                .map(|ext| serde_json::json!({ "globPattern": format!("**/*.{ext}") })),
+        );
         let params = serde_json::json!({
             "registrations": [{
                 "id": "oxabl-file-watchers",
                 "method": "workspace/didChangeWatchedFiles",
                 "registerOptions": {
-                    "watchers": [
-                        { "globPattern": "**/*.i" },
-                        { "globPattern": "**/*.df" },
-                        { "globPattern": "**/oxabl.toml" }
-                    ]
+                    "watchers": watchers
                 }
             }]
         });
@@ -499,15 +584,25 @@ impl<'c> Server<'c> {
     /// Install a freshly resolved configuration in the db and rebuild the format
     /// pipeline from its style. Callers must re-trigger affected buffers
     /// afterwards (the db configuration is not a salsa input, R17).
+    ///
+    /// **The cross-file index handle is carried forward, not rebuilt.** It is the
+    /// only route back to the per-file salsa inputs, which live in the database
+    /// and outlive any one configuration; minting a fresh registry here would
+    /// orphan every one of them, so a later disk change would find nothing to bump
+    /// and every dependent buffer would keep a stale answer indefinitely. What a
+    /// re-resolution legitimately changes is the *search paths*, and those are read
+    /// per lookup rather than memoized — see `db::SnapshotIndex`.
     fn install_config(&mut self, resolved: PipelineConfig) {
         // Every install moves the generation, so any worker still running against
         // the previous configuration is identifiable when its result lands.
         self.config_generation = self.config_generation.wrapping_add(1);
         self.formatter = FormatPipeline::new(resolved.style.clone());
+        let index = std::sync::Arc::clone(&self.db.config().index);
         self.db.set_config(AnalysisConfig {
             fs: std::sync::Arc::new(RealFileSystem),
             pipeline: std::sync::Arc::new(resolved),
             preprocess: true,
+            index,
         });
     }
 
@@ -573,13 +668,15 @@ impl<'c> Server<'c> {
     /// React to `workspace/didChangeWatchedFiles`: `.df` changes hot-reload the
     /// schema (R16); `oxabl.toml` changes re-resolve include paths + `[lint]`
     /// config (R17); `*.i` changes re-trigger the buffers that depend on them
-    /// (R17). Re-triggering bumps the buffer's salsa input so the coarse
+    /// (R17); a **root source file** change invalidates that one file's index
+    /// input (R10). Re-triggering bumps the buffer's salsa input so the coarse
     /// expansion memo recomputes and re-reads the changed file.
     fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
         let now = std::time::Instant::now();
         let mut schema_changed = false;
         let mut config_changed = false;
         let mut changed_includes: Vec<PathBuf> = Vec::new();
+        let mut changed_sources: Vec<PathBuf> = Vec::new();
 
         for event in &params.changes {
             let Some(path) = uri_to_path(&event.uri) else {
@@ -593,6 +690,12 @@ impl<'c> Server<'c> {
                 config_changed = true;
             } else if ext == Some("i") {
                 changed_includes.push(path);
+            } else if oxabl_workspace::is_root_file(&path) {
+                // The four pre-existing branches are unchanged and still match
+                // first: `.i` is never a root file, and neither is a `.df` or a
+                // `.toml`, so nothing that used to dispatch one way now dispatches
+                // the other.
+                changed_sources.push(path);
             }
         }
 
@@ -634,6 +737,56 @@ impl<'c> Server<'c> {
                     self.retrigger(&uri, now);
                 }
             }
+        }
+
+        self.invalidate_indexed_sources(&changed_sources, now);
+    }
+
+    /// Invalidate the index inputs for changed workspace source files, and
+    /// schedule the open buffers to republish (R10).
+    ///
+    /// # Why this is a bump and not a re-trigger
+    ///
+    /// An `.i` change has to force the *expansion* to re-read the file, which
+    /// salsa cannot know about — hence `retrigger`'s `set_text` and the server's
+    /// hand-rolled include→buffer map. A workspace source file is different: it is
+    /// reached through a per-file salsa input, so bumping that one input
+    /// invalidates precisely the queries that read it and, transitively, exactly
+    /// the buffers that consulted it. Re-triggering here would be strictly worse —
+    /// `set_text` invalidates a buffer's whole expansion, including for buffers
+    /// that never looked at the changed file.
+    ///
+    /// # Why every open buffer is scheduled, not just the dependents
+    ///
+    /// Salsa's dependency graph is already the reverse index, and it is an *exact*
+    /// one; a second, server-side map of cross-file edges could only ever be an
+    /// approximation of it, and the failure mode of an approximation here is the
+    /// silent one — a missed edge means a buffer quietly serving stale
+    /// diagnostics. So the scheduling is deliberately coarse and the *answer* is
+    /// precise: a buffer that consulted the changed file re-executes, and a buffer
+    /// that did not has its memo validated and republishes an identical set. The
+    /// early-out below keeps even that off the table for the overwhelmingly common
+    /// case — a file no lookup has ever reached cannot be anyone's dependency, so
+    /// nothing is scheduled at all.
+    fn invalidate_indexed_sources(&mut self, changed: &[PathBuf], now: std::time::Instant) {
+        let index = std::sync::Arc::clone(&self.db.config().index);
+        let mut any = false;
+        for path in changed {
+            // Both spellings, because a watcher's URI and the path the index
+            // search resolved need not agree on symlinks or `.` components — the
+            // same reason `buffers_depending_on` canonicalizes.
+            any |= index.bump(&mut self.db, path);
+            if let Ok(canonical) = std::fs::canonicalize(path)
+                && canonical != *path
+            {
+                any |= index.bump(&mut self.db, &canonical);
+            }
+        }
+        if !any {
+            return;
+        }
+        for uri in self.open_uris() {
+            self.debouncer.schedule(uri, now);
         }
     }
 
@@ -877,6 +1030,7 @@ mod tests {
             connection,
             PositionEncodingKind::UTF8,
             std::time::Duration::from_millis(10),
+            None,
         )
     }
 

@@ -37,6 +37,7 @@ fn db_with(config: PipelineConfig) -> AnalysisDatabase {
         fs: Arc::new(InMemoryFileSystem::new()),
         pipeline: Arc::new(config),
         preprocess: true,
+        ..Default::default()
     })
 }
 
@@ -51,7 +52,7 @@ fn buffer(db: &AnalysisDatabase, source: &str) -> Buffer {
         source,
         "the rope must round-trip the source"
     );
-    Buffer::new(db, rope.to_string())
+    Buffer::new(db, rope.to_string(), None)
 }
 
 fn observed(fixture: &ParityFixture, config: PipelineConfig) -> Vec<ObservedDiagnostic> {

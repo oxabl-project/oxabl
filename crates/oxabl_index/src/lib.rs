@@ -30,7 +30,13 @@
 
 mod batch;
 mod facts;
-mod search;
+// Public because a second cache lives outside this crate: the language server's
+// salsa-backed index does its own memoization but must use the *same*
+// name-to-path policy — two spellings tried in order, exactly one match, `.i`
+// never a root, no escaping the configured paths. A private module would force
+// that policy to be written twice, which is precisely the drift R7 exists to
+// prevent.
+pub mod search;
 
 pub use batch::{BatchIndex, ExcludingFile};
 pub use facts::{ClassFacts, FileFacts};
