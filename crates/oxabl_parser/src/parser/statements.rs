@@ -392,10 +392,17 @@ impl Parser<'_> {
         }
 
         // COMPILE VALUE(path) [OPTIONS ...] [SAVE] [NO-ERROR]. — compile an ABL program.
+        //
+        // Skipped with **no** harvested names: the operand is a file path and the
+        // trailing words are grammar keywords, so nothing in the statement is a
+        // symbol reference. Harvesting them suppressed the count-gated rules for
+        // any real variable whose name happened to collide — `save`, or a path
+        // segment. The return value is still consumed, so the `#[must_use]`
+        // discipline on the skip helpers is intact.
         if self.check(Kind::Compile) {
             self.advance(); // consume COMPILE
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            let _ = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt_no_names());
         }
 
         // PROCESS EVENTS. — flush the ABL event queue.

@@ -468,3 +468,65 @@ DELETE OBJECT ttbl:HANDLE NO-ERROR.
         "the temp-table is used by the delete: {diags:?}"
     );
 }
+
+#[test]
+fn compile_suppresses_nothing_even_when_a_variable_shares_a_word_with_it() {
+    // AE5. `COMPILE some/path.p SAVE.` harvested `save` and every path segment,
+    // so a variable named `save` — or `path`, or `some` — was marked
+    // touched-by-something-unmodelled and the count-gated rules went quiet about
+    // it. Nothing in the statement is a symbol reference, so it now carries no
+    // names at all and the dead store is reported.
+    let src = "\
+DEFINE VARIABLE save AS CHARACTER NO-UNDO.
+save = \"x\".
+COMPILE some/path.p SAVE.
+";
+    assert!(
+        flagged_variables(src).is_empty(),
+        "COMPILE must suppress nothing: {:?}",
+        flagged_variables(src)
+    );
+    let diags = lint_all(src, LintSeverityMap::new());
+    assert!(
+        of_code(&diags, LINT0006)
+            .iter()
+            .any(|(_, m, _)| m.contains("save")),
+        "the write-only variable is a dead store again: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_value_behaves_the_same_way() {
+    // `COMPILE VALUE(cPath) SAVE.` — the plan does not credit reads inside
+    // `VALUE(...)`, so the variable holding the path is *not* read here. What it
+    // must not do is suppress: the variable is judged, and reported for what it
+    // actually is.
+    let src = "\
+DEFINE VARIABLE cPath AS CHARACTER NO-UNDO.
+cPath = \"some/path.p\".
+COMPILE VALUE(cPath) SAVE.
+";
+    assert!(flagged_variables(src).is_empty());
+    let diags = lint_all(src, LintSeverityMap::new());
+    assert!(
+        of_code(&diags, LINT0006)
+            .iter()
+            .any(|(_, m, _)| m.contains("cPath")),
+        "no suppression, so the store is judged: {diags:?}"
+    );
+}
+
+#[test]
+fn a_file_whose_only_unmodelled_form_is_compile_has_nothing_unjudged() {
+    let src = "\
+DEFINE VARIABLE v-n AS INTEGER NO-UNDO.
+v-n = 1.
+MESSAGE v-n.
+COMPILE some/path.p SAVE.
+";
+    assert!(
+        flagged_variables(src).is_empty(),
+        "zero unjudged symbols: {:?}",
+        flagged_variables(src)
+    );
+}

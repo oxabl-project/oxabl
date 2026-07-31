@@ -683,6 +683,33 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// [`skipped_stmt`](Self::skipped_stmt) for a form whose operands are **not
+    /// symbols**: the node carries an empty name list.
+    ///
+    /// `COMPILE some/path.p SAVE.` is the case. Its operand is a *file path* and
+    /// its trailing words are grammar keywords, so no identifier in the statement
+    /// is a reference to anything — the harvest credited nothing true, while
+    /// actively suppressing real variables whose names collided with a path
+    /// segment or with `SAVE`. Measured over a large real-world codebase, that
+    /// made `COMPILE` one of the two forms that dominate the unmodelled-statement
+    /// suppression, and the worst of them: it is the one whose suppression is
+    /// *entirely* spurious.
+    ///
+    /// A separate entry point rather than an `Option`-ised name list on
+    /// [`skipped_stmt`](Self::skipped_stmt), mirroring how
+    /// [`skipped_table_stmt`](Self::skipped_table_stmt) was added: the shape is
+    /// the exception, and a defaulted constructor keeps every existing call site
+    /// correct by construction. The statement still emits `Skipped`, not an
+    /// error-recovery `Empty` — the form *was* recognized, which is a different
+    /// fact from a parse failure and one the span still records.
+    #[must_use]
+    pub(crate) fn skipped_stmt_no_names(&mut self) -> Statement {
+        self.stmt(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        })
+    }
+
     /// [`skipped_stmt`](Self::skipped_stmt) for a form whose grammar names a
     /// table or temp-table: `DEFINE QUERY` and `OPEN QUERY` (#130).
     ///

@@ -7111,6 +7111,30 @@ fn parse_create_no_error() {
 }
 
 #[test]
+fn compile_is_a_skipped_node_with_no_harvested_names() {
+    // Still `Skipped`, not an error-recovery `Empty` — the form was recognized,
+    // which is a different fact from a parse failure — and the span still covers
+    // the whole statement. What changes is the name list: nothing in a file path
+    // is a symbol.
+    let source = "COMPILE some/path.p SAVE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match &stmt.kind {
+        StatementKind::Skipped {
+            names,
+            may_reference_tables,
+        } => {
+            assert!(names.is_empty(), "harvested {names:?}");
+            assert!(!*may_reference_tables);
+        }
+        other => panic!("Expected Skipped, got {other:?}"),
+    }
+    assert_eq!(stmt.span.start, 0);
+    assert_eq!(stmt.span.end as usize, source.len());
+}
+
+#[test]
 fn parse_delete_object_holds_the_operand_as_an_expression() {
     let source = "DELETE OBJECT h NO-ERROR.";
     let tokens = tokenize(source);

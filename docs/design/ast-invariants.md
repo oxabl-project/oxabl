@@ -236,7 +236,7 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 - The variant is scaffolding with a scheduled successor (#136): each form that gets
   head-parsed stops emitting `Skipped`.
 
-**One form has left the `Skipped` population.**
+**Two forms have left the `Skipped` population, and they left in opposite directions.**
 
 - **`DELETE OBJECT` is head-parsed** into `StatementKind::DeleteObject { target, no_error }`.
   Its own variant rather than a spelling of `Delete`, because the operand is an
@@ -249,6 +249,14 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   credited an ordinary `read_count`, and no name in the statement is marked. Note the
   asymmetry this removes: `DELETE PROCEDURE`, `DELETE WIDGET`, and `DELETE SERVER` already
   fell through to a real `Delete` node — only the `OBJECT` spelling skipped.
+
+- **`COMPILE` still emits `Skipped`, with an empty `names` list.** Its operand is a *file
+  path* and its trailing words are grammar keywords, so no identifier in it is a symbol
+  reference. Harvesting them credited nothing true while actively suppressing real variables
+  whose names collided with a path word or with `SAVE`.
+  **Invariant:** a form whose operands are paths or literals gets its harvest deleted rather
+  than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
+  operands earn a head-parse, path-shaped ones earn an empty name list.
 
 ## 9. Property body distinguishes absence from emptiness
 
