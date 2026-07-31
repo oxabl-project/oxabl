@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [master]
+  # Unfiltered: every PR gets the full suite, including stacked PRs whose base
+  # is a feature branch rather than master. GitHub runs this against each PR's
+  # merge ref and re-runs it when the base branch moves, so a chain member is
+  # re-checked as its base rebases.
   pull_request:
-    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
