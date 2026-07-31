@@ -492,3 +492,241 @@ fn every_rule_is_silent_for_both_new_reasons() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// What `undefined-symbol` reports, and what it will not
+// ---------------------------------------------------------------------------
+
+fn lint0001_for(source: &str, workspace: &[(&str, &str)]) -> Vec<Diagnostic> {
+    use std::path::PathBuf;
+    let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+    for (path, contents) in workspace {
+        fs.insert(PathBuf::from(path), *contents);
+    }
+    let dirs = vec![PathBuf::from("/src")];
+    let index = oxabl_index::BatchIndex::new(&fs, &dirs);
+    let schema = Schema::empty();
+    let stmts = parse(source);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+    let sem = analyze_file(&stmts, &ctx);
+    undefined_symbol::run(&stmts, &sem, &ctx)
+        .into_iter()
+        .filter(|d| d.code.0 == LINT0001)
+        .collect()
+}
+
+fn lint0001_without_any_index(source: &str) -> Vec<Diagnostic> {
+    let schema = Schema::empty();
+    let stmts = parse(source);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let sem = analyze_file(&stmts, &ctx);
+    undefined_symbol::run(&stmts, &sem, &ctx)
+        .into_iter()
+        .filter(|d| d.code.0 == LINT0001)
+        .collect()
+}
+
+/// The three spellings AE2 names. The `AS CLASS pkg.Missing` declaration is
+/// deliberately absent: `DataType::Class` is a bare `String` with no span, so
+/// there is nothing to underline and nothing for the rule to see.
+const ABSENT_SPELLINGS: [&str; 3] = [
+    "USING pkg.Missing.\nMESSAGE \"hi\".\n",
+    "DEFINE VARIABLE v-thing AS CLASS pkg.Missing NO-UNDO.\nv-thing = NEW pkg.Missing().\n",
+    "RUN missing.p.\n",
+];
+
+#[test]
+fn each_absent_spelling_is_reported_with_the_search_path_help() {
+    // Covers AE2. An index over a path that contains no `pkg.Missing` and no
+    // `missing.p`: every one of these names is genuinely unreachable, the way ABL
+    // itself would find them unreachable at run time.
+    for source in ABSENT_SPELLINGS {
+        let found = lint0001_for(
+            source,
+            &[("/src/pkg/Other.cls", "CLASS pkg.Other: END CLASS.")],
+        );
+        assert_eq!(found.len(), 1, "one finding for:\n{source}\ngot {found:?}");
+        assert!(
+            found[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("include_paths") && h.contains("-I")),
+            "R18: the finding names the search-path configuration: {:?}",
+            found[0].help
+        );
+        // The span lands on real text rather than on a default.
+        let (start, end) = (
+            found[0].span.span.start as usize,
+            found[0].span.span.end as usize,
+        );
+        assert!(start < end && end <= source.len());
+        assert!(!source[start..end].trim().is_empty());
+    }
+}
+
+#[test]
+fn the_same_spellings_are_silent_with_no_index_attached() {
+    // Covers AE3. Nothing looked, so nothing is claimed — the pre-existing
+    // behavior every client had before an index could be attached.
+    for source in ABSENT_SPELLINGS {
+        assert!(
+            lint0001_without_any_index(source).is_empty(),
+            "no index attached, so nothing may be reported for:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn a_runtime_computed_run_target_is_never_reported() {
+    // Covers AE4. `Unknowable` is not a fact about the workspace, and no amount of
+    // indexing would change it.
+    let source = "DEFINE VARIABLE c-target AS CHARACTER NO-UNDO.\n\
+                  c-target = \"missing.p\".\n\
+                  RUN VALUE(c-target).\n";
+    assert!(lint0001_for(source, &[]).is_empty());
+}
+
+#[test]
+fn a_shipped_system_namespace_is_never_reported() {
+    // Covers AE6, and R15. These libraries come with the AVM and have no source on
+    // any search path, so their absence says nothing about the user's workspace —
+    // reporting them would make the rule fire on ordinary correct code.
+    let shipped = [
+        "USING Progress.Json.ObjectModel.JsonObject.\nMESSAGE \"hi\".\n",
+        "USING OpenEdge.Net.HTTP.IHttpRequest.\nMESSAGE \"hi\".\n",
+        "v-x = NEW System.Text.StringBuilder().\nMESSAGE v-x.\n",
+        "v-x = NEW Microsoft.Win32.Registry().\nMESSAGE v-x.\n",
+    ];
+    for source in shipped {
+        let with_schema = {
+            let stmts = parse(source);
+            let schema = customer_schema();
+            let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+            fs.insert(
+                std::path::PathBuf::from("/src/pkg/Other.cls"),
+                "CLASS pkg.Other: END CLASS.",
+            );
+            let dirs = vec![std::path::PathBuf::from("/src")];
+            let index = oxabl_index::BatchIndex::new(&fs, &dirs);
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+            let sem = analyze_file(&stmts, &ctx);
+            undefined_symbol::run(&stmts, &sem, &ctx)
+                .into_iter()
+                .filter(|d| d.code.0 == LINT0001 && !d.message.contains("v-x"))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            with_schema.is_empty(),
+            "a shipped system class must never be reported: {with_schema:?}\nin:\n{source}"
+        );
+        let without: Vec<Diagnostic> = lint0001_for(source, &[])
+            .into_iter()
+            .filter(|d| !d.message.contains("v-x"))
+            .collect();
+        assert!(without.is_empty(), "{without:?}");
+    }
+
+    // The carve-out is a prefix on the first segment, not a substring: a user class
+    // whose package merely starts with the same letters is still reported.
+    let user = "USING Systems.Cache.\nMESSAGE \"hi\".\n";
+    assert_eq!(
+        lint0001_for(user, &[]).len(),
+        1,
+        "`Systems.Cache` is nobody's shipped library"
+    );
+}
+
+#[test]
+fn an_inaccessible_inherited_member_is_never_reported() {
+    let base = "CLASS orders.calc-base:\n\
+                    METHOD PRIVATE INTEGER calc-secret():\n\
+                        RETURN 0.\n\
+                    END METHOD.\n\
+                END CLASS.\n";
+    let child = "CLASS orders.child INHERITS orders.calc-base:\n\
+                     METHOD PUBLIC VOID run-it():\n\
+                         DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
+                         v-n = calc-secret().\n\
+                         MESSAGE v-n.\n\
+                     END METHOD.\n\
+                 END CLASS.\n";
+    assert!(
+        lint0001_for(child, &[("/src/orders/calc-base.cls", base)]).is_empty(),
+        "the member exists — `undefined symbol` would be a false claim"
+    );
+}
+
+#[test]
+fn a_member_behind_an_unexpanded_include_gains_no_finding_from_the_index() {
+    // The index does not expand includes, so a member spliced in from one is
+    // invisible to it. Two shapes, and they differ — which is worth stating
+    // precisely, because the difference is deliberate.
+    //
+    // Qualified, the name can only be a member, so a lookup that comes up empty
+    // against a class the index *did* answer for is `PresentButUnusable` and
+    // silent. Unqualified, the same name could just as easily be a misspelled local
+    // variable — which is the case `undefined-symbol` exists for — so it stays
+    // `NotInScope` and fires, exactly as it does with no index attached. That
+    // finding is pre-existing, not something widening the rule introduced, and the
+    // assertion is therefore about the *delta*: attaching an index adds nothing
+    // here either way.
+    let base = "CLASS orders.calc-base:\n{members.i}\nEND CLASS.\n";
+    let workspace = [("/src/orders/calc-base.cls", base)];
+
+    let qualified = "USING orders.calc-base.\n\
+                     DEFINE VARIABLE v-base AS CLASS orders.calc-base NO-UNDO.\n\
+                     DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
+                     v-n = v-base:spliced-in().\n";
+    assert!(
+        lint0001_for(qualified, &workspace).is_empty(),
+        "a member the index cannot see is not a name it may call absent"
+    );
+
+    let unqualified = "CLASS orders.child INHERITS orders.calc-base:\n\
+                           METHOD PUBLIC VOID run-it():\n\
+                               DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
+                               v-n = spliced-in().\n\
+                               MESSAGE v-n.\n\
+                           END METHOD.\n\
+                       END CLASS.\n";
+    let with_index = lint0001_for(unqualified, &workspace);
+    let without = lint0001_without_any_index(unqualified);
+    assert_eq!(
+        with_index.len(),
+        without.len(),
+        "the unqualified finding is pre-existing; the index must not add to it"
+    );
+    assert!(
+        with_index.iter().all(|d| d.help.is_none()),
+        "and it is the plain not-in-scope finding, not a workspace-absence claim"
+    );
+}
+
+#[test]
+fn the_other_two_rules_stay_silent_for_every_cross_file_reason() {
+    // R5's other half: widening `undefined-symbol` is the whole behavior change,
+    // and the two rules with their own skip-lists are untouched.
+    for source in ABSENT_SPELLINGS {
+        let stmts = parse(source);
+        let schema = customer_schema();
+        let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+        fs.insert(
+            std::path::PathBuf::from("/src/pkg/Other.cls"),
+            "CLASS pkg.Other: END CLASS.",
+        );
+        let dirs = vec![std::path::PathBuf::from("/src")];
+        let index = oxabl_index::BatchIndex::new(&fs, &dirs);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+        let sem = analyze_file(&stmts, &ctx);
+        for (rule, code) in [
+            (unknown_table_or_field::run as fn(_, _, _) -> _, LINT0003),
+            (type_mismatch_assignment::run, LINT0004),
+        ] {
+            let diags: Vec<Diagnostic> = rule(&stmts, &sem, &ctx)
+                .into_iter()
+                .filter(|d| d.code.0 == code)
+                .collect();
+            assert!(diags.is_empty(), "{code} fired: {diags:?}\nin:\n{source}");
+        }
+    }
+}

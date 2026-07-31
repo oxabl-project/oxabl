@@ -181,7 +181,13 @@ pub fn find_name(
         NameKind::Class => class_path(name),
         NameKind::Program => program_path(name),
     };
-    match find_unique(fs, include_paths, &written) {
+    let policy = match kind {
+        // A derived class path always ends in `.cls`, so either policy admits it;
+        // naming the stricter one keeps the derivation honest.
+        NameKind::Class => ExtensionPolicy::WalkRoots,
+        NameKind::Program => ExtensionPolicy::AnyButInclude,
+    };
+    match find_unique_with_policy(fs, include_paths, &written, policy) {
         IndexAnswer::Found(path) => return IndexAnswer::Found(path),
         // Already ambiguous under the spelling the source used; a second
         // candidate cannot un-ambiguate it.
@@ -203,7 +209,7 @@ pub fn find_name(
         // re-run the identical search.
         return IndexAnswer::NotFound;
     }
-    find_unique(fs, include_paths, &folded)
+    find_unique_with_policy(fs, include_paths, &folded, policy)
 }
 
 /// Search every entry of `include_paths` for `relative`, insisting on exactly
@@ -240,10 +246,52 @@ pub fn find_unique(
     include_paths: &[PathBuf],
     relative: &Path,
 ) -> IndexAnswer<PathBuf> {
+    find_unique_with_policy(fs, include_paths, relative, ExtensionPolicy::WalkRoots)
+}
+
+/// Which extensions a candidate path may carry.
+///
+/// The walk and a name lookup want different answers, and conflating them cost a
+/// real codebase a wave of false `undefined-symbol` findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionPolicy {
+    /// [`is_root_file`]'s set — `.p`, `.w`, `.cls`, `.v`. What a *walk* should
+    /// collect: a directory tree offers no evidence about which files are
+    /// programs, so the walk picks the conventional extensions and nothing else.
+    WalkRoots,
+    /// Anything except `.i`. What a **literal `RUN` target** should accept,
+    /// because the author wrote the path: `RUN cv/table_rec_count.pp` names that
+    /// file and no other, and oxabl declining to look because `.pp` is not one of
+    /// the four conventional extensions makes it report a file that plainly
+    /// exists as absent from the workspace. `.i` stays excluded — the one
+    /// extension the workspace policy is actually *about*, since an include
+    /// fragment is never a unit of its own.
+    AnyButInclude,
+}
+
+impl ExtensionPolicy {
+    fn admits(self, path: &Path) -> bool {
+        match self {
+            ExtensionPolicy::WalkRoots => is_root_file(path),
+            ExtensionPolicy::AnyButInclude => path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| !ext.eq_ignore_ascii_case("i")),
+        }
+    }
+}
+
+/// [`find_unique`] under an explicit [`ExtensionPolicy`].
+pub fn find_unique_with_policy(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    relative: &Path,
+    policy: ExtensionPolicy,
+) -> IndexAnswer<PathBuf> {
     // The extension policy, applied before any I/O: `.i` is never a root, so no
     // amount of searching should turn an include fragment into a class or a
     // program.
-    if !is_root_file(relative) {
+    if !policy.admits(relative) {
         return IndexAnswer::NotFound;
     }
     // Checked before the join, because after it the escape is indistinguishable
@@ -571,6 +619,47 @@ mod tests {
                 &fs,
                 &dirs(&["/src"]),
                 &program_path(&IndexName::new("shared.i"))
+            ),
+            IndexAnswer::NotFound
+        );
+    }
+
+    #[test]
+    fn a_run_target_with_an_unconventional_extension_is_found() {
+        // `.pp` is not one of the four extensions a *walk* collects, and the author
+        // wrote the path anyway. Declining to look would report a file that plainly
+        // exists as absent from the workspace, which is the one claim a search must
+        // not make wrongly.
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(PathBuf::from("/src/cv/table_rec_count.pp"), "MESSAGE 1.");
+        let paths = vec![PathBuf::from("/src")];
+        assert_eq!(
+            find_name(
+                &fs,
+                &paths,
+                &IndexName::new("cv/table_rec_count.pp"),
+                NameKind::Program
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/cv/table_rec_count.pp"))
+        );
+    }
+
+    #[test]
+    fn an_include_fragment_is_still_never_a_run_target() {
+        // The one extension the policy is about. Widening what a `RUN` target may
+        // carry must not widen this.
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(
+            PathBuf::from("/src/shared/decls.i"),
+            "DEFINE VARIABLE x AS INTEGER.",
+        );
+        let paths = vec![PathBuf::from("/src")];
+        assert_eq!(
+            find_name(
+                &fs,
+                &paths,
+                &IndexName::new("shared/decls.i"),
+                NameKind::Program
             ),
             IndexAnswer::NotFound
         );

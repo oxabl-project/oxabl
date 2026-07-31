@@ -310,6 +310,7 @@ fn withholding_a_fixtures_siblings_changes_the_answer_exactly_as_declared() {
                 .filter_map(|r| match r.effect {
                     CrossFileEffect::Judged(finding) => Some(finding),
                     CrossFileEffect::Resolved(_)
+                    | CrossFileEffect::ResolvedFromWorkspaceMiss(_)
                     | CrossFileEffect::ResolvedSilently
                     | CrossFileEffect::Unresolvable
                     | CrossFileEffect::Unknowable => None,
@@ -603,7 +604,9 @@ fn the_non_ascii_fixture_distinguishes_bytes_from_characters() {
 fn expected_spans_are_inside_their_source_and_land_on_real_text() {
     for fixture in FIXTURES {
         let resolved = fixture.resolutions.iter().filter_map(|r| match r.effect {
-            CrossFileEffect::Resolved(finding) | CrossFileEffect::Judged(finding) => Some(finding),
+            CrossFileEffect::Resolved(finding)
+            | CrossFileEffect::ResolvedFromWorkspaceMiss(finding)
+            | CrossFileEffect::Judged(finding) => Some(finding),
             CrossFileEffect::ResolvedSilently
             | CrossFileEffect::Unresolvable
             | CrossFileEffect::Unknowable => None,
@@ -700,8 +703,9 @@ fn every_fixture_carrying_siblings_declares_what_they_resolve() {
         }
     }
 
-    // Every effect arm is exercised, so the four legs' cross-file assertions
-    // cover a removal, an agreed silence, an absence, and an unknowable.
+    // Every effect arm is exercised, so the four legs' cross-file assertions cover
+    // a removal, a produced finding, an agreed silence, an absence, and an
+    // unknowable.
     let effects: Vec<CrossFileEffect> = FIXTURES
         .iter()
         .flat_map(|f| f.resolutions.iter().map(|r| r.effect))
@@ -711,6 +715,18 @@ fn every_fixture_carrying_siblings_declares_what_they_resolve() {
             .iter()
             .any(|e| matches!(e, CrossFileEffect::Resolved(_))),
         "no fixture covers a diagnostic-visible cross-file resolution"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, CrossFileEffect::Judged(_))),
+        "no fixture covers a finding produced by a cross-file resolution"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, CrossFileEffect::ResolvedFromWorkspaceMiss(_))),
+        "no fixture covers a finding that exists only because a path was searched"
     );
     for arm in [
         CrossFileEffect::ResolvedSilently,

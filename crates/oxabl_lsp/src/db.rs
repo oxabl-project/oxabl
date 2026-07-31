@@ -522,16 +522,14 @@ fn indexed_class(
     file: IndexedFile,
     name: IndexName,
 ) -> IndexAnswer<Arc<ClassDescriptor>> {
-    // The file exists but may not declare the class its path promised. Two
-    // reasons, and they get different answers — exactly as in the batch cache: a
-    // parse that recovered errors is `Unusable`, since the declaration may be in
-    // there and oxabl could not read it, while a file that parsed and simply does
-    // not declare this class is a genuine `NotFound`.
+    // A located file that does not visibly declare the class is `Unusable`, not
+    // `NotFound` — exactly as in the batch cache, and for the reason spelled out
+    // there: the declaration may be behind an `{include}` neither backend expands,
+    // so "no file declares it" would be a false claim about a file that exists.
     let facts = indexed_facts(db, file);
     match facts.class(&name) {
         Some(class) => IndexAnswer::Found(Arc::clone(&class.descriptor)),
-        None if !facts.parsed => IndexAnswer::Unusable,
-        None => IndexAnswer::NotFound,
+        None => IndexAnswer::Unusable,
     }
 }
 
@@ -551,8 +549,7 @@ fn indexed_class_members(
     let facts = indexed_facts(db, file);
     match facts.class(&name) {
         Some(class) => IndexAnswer::Found(Arc::clone(&class.members)),
-        None if !facts.parsed => IndexAnswer::Unusable,
-        None => IndexAnswer::NotFound,
+        None => IndexAnswer::Unusable,
     }
 }
 
@@ -635,7 +632,11 @@ impl<'db> SnapshotIndex<'db> {
         match search::find_name(&*config.fs, &config.pipeline.include_paths, name, kind) {
             IndexAnswer::Found(path) => {
                 if self.is_analysed(&path) {
-                    return IndexAnswer::NotFound;
+                    // `Unusable`, not `NotFound` — the file exists, it just cannot
+                    // stand in as a foreign file for the buffer being analysed. A
+                    // program that `RUN`s itself would otherwise be told its own
+                    // path is absent from the workspace.
+                    return IndexAnswer::Unusable;
                 }
                 IndexAnswer::Found(config.index.file_for(self.db, &path))
             }

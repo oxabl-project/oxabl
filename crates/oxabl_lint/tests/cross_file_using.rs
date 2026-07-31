@@ -27,7 +27,7 @@ mod support;
 
 use oxabl_ast::{NodeId, RunTarget, Statement, StatementKind};
 use oxabl_lexer::oxabl_atom::OxablAtom;
-use oxabl_lint::LINT0004;
+use oxabl_lint::{LINT0001, LINT0004};
 use oxabl_semantic::{
     NamespaceId, PrimitiveTy, Resolution, ResolvedType, SymbolKind, UnresolvedReason,
 };
@@ -105,7 +105,7 @@ fn a_using_naming_a_class_that_exists_resolves_on_the_statement() {
 }
 
 #[test]
-fn a_using_naming_a_class_no_file_declares_records_not_found_over_the_qualified_name() {
+fn a_using_naming_a_class_no_file_declares_is_reported_on_the_qualified_name() {
     let source = "USING myapp.absent-thing.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n";
 
     let (stmts, sem) = with_index(source, &WORKSPACE);
@@ -119,15 +119,22 @@ fn a_using_naming_a_class_no_file_declares_records_not_found_over_the_qualified_
             reason: UnresolvedReason::AbsentFromWorkspace,
         })
     );
-    // The span is the load-bearing half — a later diagnostic about an import
-    // nothing declares has to point at the qualified name, not at the statement.
+    // The span is the load-bearing half, and this is the diagnostic it was kept
+    // for: the finding points at the qualified name, not at the statement.
     assert_eq!(
         &source[name_span.start as usize..name_span.end as usize],
         "myapp.absent-thing"
     );
+    let found = lint0001_with_index(source, &WORKSPACE);
+    assert_eq!(found.len(), 1, "one finding: {found:?}");
+    assert_eq!(
+        found[0].span.span, name_span,
+        "underlines the imported name"
+    );
+    assert!(found[0].help.is_some(), "and carries the search-path help");
     assert!(
-        lint0001_with_index(source, &WORKSPACE).is_empty(),
-        "an unresolvable import is not an undefined symbol"
+        lint0001_without_index(source).is_empty(),
+        "with nothing attached there is no import entry at all, so nothing fires"
     );
 
     let (stmts, plain) = without_index(source);
@@ -207,7 +214,7 @@ fn new_after_a_wildcard_using_resolves_through_the_wildcard() {
 }
 
 #[test]
-fn new_of_a_class_no_file_declares_records_not_found() {
+fn new_of_a_class_no_file_declares_is_reported() {
     let source = "USING myapp.*.\nv-x = NEW absent-thing().\n";
     let (_stmts, sem) = with_index(source, &WORKSPACE);
     assert!(
@@ -215,13 +222,21 @@ fn new_of_a_class_no_file_declares_records_not_found() {
         "a `NEW` operand is unambiguously a type name, so a miss is a fact about \
          the workspace rather than a shrug"
     );
-    // And still no finding: every rule skip-lists the cross-file reasons.
+    // Two findings: the undeclared `v-x`, and the class name itself. A `NEW`
+    // operand is a type name and nothing else, so a miss on it is a name ABL could
+    // not instantiate — the span is the whole `NEW absent-thing()` expression,
+    // since `class_name` carries none of its own.
     let findings = lint0001_with_index(source, &WORKSPACE);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    let class = findings
+        .iter()
+        .find(|d| d.message.contains("absent-thing"))
+        .expect("the class name is reported");
+    assert!(class.help.is_some(), "with the search-path help line");
     assert_eq!(
-        findings.len(),
+        lint0001_without_index(source).len(),
         1,
-        "exactly one finding, and it is for the undeclared `v-x` — not for the \
-         class name: {findings:?}"
+        "without an index only the undeclared `v-x` fires — nobody looked for the class"
     );
 }
 
@@ -605,13 +620,27 @@ fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
     // index into the list above, so the expectation survives a fixture being
     // reordered and reads as a statement about ABL rather than about array
     // positions.
-    let judged = [
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
-         v-count = NEW cache().\n",
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
-         v-cache = 5.\n",
+    // Four shapes gain a finding, in two families. A cross-file *class* reaching
+    // the type lattice gives the two LINT0004s; a class name no configured path
+    // supplies gives the two LINT0001s — an import of one, and a `NEW` of one.
+    let judged: [(&str, &str); 4] = [
+        (
+            "USING myapp.absent-thing.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n",
+            LINT0001,
+        ),
+        ("USING myapp.*.\nv-x = NEW absent-thing().\n", LINT0001),
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+             v-count = NEW cache().\n",
+            LINT0004,
+        ),
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+             v-cache = 5.\n",
+            LINT0004,
+        ),
     ];
 
     let mut gained: Vec<(&str, Vec<&str>)> = Vec::new();
@@ -621,7 +650,10 @@ fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
             gained.push((source.as_str(), added));
         }
     }
-    let expected: Vec<(&str, Vec<&str>)> = judged.iter().map(|s| (*s, vec![LINT0004])).collect();
+    let expected: Vec<(&str, Vec<&str>)> = judged
+        .iter()
+        .map(|(source, code)| (*source, vec![*code]))
+        .collect();
     assert_eq!(
         gained, expected,
         "these and only these `USING` shapes gain a finding when an index is attached"

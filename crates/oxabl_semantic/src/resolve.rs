@@ -1561,20 +1561,96 @@ impl<'a> ResolveWalker<'a> {
         TypeLookup::NotFound
     }
 
+    /// The reason a literal `RUN` target that no configured path supplies gets.
+    ///
+    /// Two shapes are held back from [`UnresolvedReason::AbsentFromWorkspace`],
+    /// both because a path search is not the mechanism the AVM would have used and
+    /// a miss therefore proves nothing:
+    ///
+    /// * **`RUN name IN handle`.** The target is an entry point in another *running*
+    ///   program, reached through a handle whose value is a run-time fact. No file
+    ///   on any path could supply it, so the answer is
+    ///   [`UnresolvedReason::Unknowable`] — the same category as
+    ///   `RUN VALUE(...)`, and for the same reason.
+    /// * **A target with no file extension.** `RUN post-order` means an internal
+    ///   procedure first: this file's own, then any registered `SUPER PROCEDURE`'s.
+    ///   oxabl models neither super-procedure registration nor persistent handles,
+    ///   so a miss here is inconclusive rather than a fact about the workspace, and
+    ///   the honest answer is [`UnresolvedReason::External`]. `RUN post-order.p`
+    ///   names a file and is judged normally.
+    ///
+    /// Both were measured, not guessed: without them the great majority of a real
+    /// codebase's new findings were `RUN x IN h` and extension-less internal calls,
+    /// every one of them correct ABL.
+    fn run_miss_reason(&self, raw: &str, in_handle: bool, name: &OxablAtom) -> UnresolvedReason {
+        if in_handle {
+            return UnresolvedReason::Unknowable;
+        }
+        // Extension on the last segment, so a dotted *package*-looking target is
+        // not mistaken for an extension.
+        let has_extension = raw
+            .rsplit(['/', '\\'])
+            .next()
+            .is_some_and(|last| last.contains('.'));
+        if !has_extension {
+            return UnresolvedReason::External;
+        }
+        self.absent_reason(name)
+    }
+
+    /// Whether any spelling the workspace search *would have tried* for the type
+    /// name `raw` lives in a namespace the AVM ships.
+    ///
+    /// The reference's own spelling is rarely the qualified one: `NEW JsonObject()`
+    /// under `USING Progress.Json.ObjectModel.JsonObject.` is searched for as the
+    /// qualified name and recorded under the bare one, so checking the bare name
+    /// alone would let every shipped class through as absent. Both import forms
+    /// count — an explicit import that maps this simple name, and any wildcard
+    /// prefix in scope, since under a shipped wildcard *any* bare name could be a
+    /// shipped class and the miss is inconclusive.
+    fn tried_a_shipped_namespace(&self, raw: &str) -> bool {
+        let simple = fold_atom(raw);
+        if is_system_namespace(&simple) {
+            return true;
+        }
+        self.using_types()
+            .iter()
+            .any(|(name, qualified)| *name == simple && is_system_namespace(qualified.as_atom()))
+            || self
+                .using_prefixes()
+                .iter()
+                .any(|prefix| is_system_namespace(&fold_atom(prefix)))
+    }
+
+    /// [`Self::absent_reason`] for a *type* name, with the shipped-namespace
+    /// carve-out applied to every spelling the search tried.
+    fn absent_type_reason(&self, raw: &str, name: &OxablAtom) -> UnresolvedReason {
+        if self.tried_a_shipped_namespace(raw) {
+            UnresolvedReason::External
+        } else {
+            self.absent_reason(name)
+        }
+    }
+
     /// The reason a **searched-for and not found** cross-file name gets.
     ///
     /// [`UnresolvedReason::AbsentFromWorkspace`] normally — an index was
-    /// attached, it looked, and nothing supplies the name. But an index with no
-    /// configured search path answers `NotFound` to everything without ever
-    /// having somewhere to look, and calling that "absent from the workspace"
-    /// would be a claim nobody was in a position to make; there the truthful
-    /// answer is the older [`UnresolvedReason::External`], "we did not look".
+    /// attached, it looked, and nothing supplies the name. Two carve-outs answer
+    /// [`UnresolvedReason::External`] instead, because in both the search was
+    /// never in a position to succeed and "absent from the workspace" would be a
+    /// claim nobody could make:
     ///
-    /// Derived once, here, from the flag `AnalysisContext` derives from the index
-    /// handle — so no rule has to know anything about path configuration, which is
-    /// the whole point of putting it at the producer.
-    fn absent_reason(&self) -> UnresolvedReason {
-        if self.ctx.index_searches_paths {
+    /// * an index with **no configured search path**, which answers `NotFound` to
+    ///   everything without having looked anywhere;
+    /// * a name in a **reserved system namespace** — see
+    ///   [`is_system_namespace`].
+    ///
+    /// Both live here rather than in a rule. A rule asking about path
+    /// configuration, or carrying a list of vendor namespaces, would be a rule
+    /// knowing things about the workspace that the resolver already knows — and
+    /// every consumer would need its own copy.
+    fn absent_reason(&self, name: &OxablAtom) -> UnresolvedReason {
+        if self.ctx.index_searches_paths && !is_system_namespace(name) {
             UnresolvedReason::AbsentFromWorkspace
         } else {
             UnresolvedReason::External
@@ -2302,7 +2378,7 @@ impl<'a> ResolveWalker<'a> {
                         id,
                         name,
                         name_span,
-                    } => self.resolve_run_target(*id, name, *name_span, scope),
+                    } => self.resolve_run_target(*id, name, *name_span, scope, in_handle.is_some()),
                     RunTarget::Dynamic(e) => {
                         // The expression is walked first and its resolution is
                         // left strictly alone: `RUN VALUE(c-name)` reads
@@ -2656,8 +2732,8 @@ impl<'a> ResolveWalker<'a> {
                         self.references.insert(
                             expr.id,
                             Resolution::Unresolved {
+                                reason: self.absent_type_reason(class_name, &atom),
                                 name: atom,
-                                reason: self.absent_reason(),
                             },
                         );
                     }
@@ -2924,8 +3000,8 @@ impl<'a> ResolveWalker<'a> {
             // a fact about the workspace, not a missing capability — unless there
             // were no paths to look on, which `absent_reason` handles.
             None => Resolution::Unresolved {
+                reason: self.absent_type_reason(type_name, name.as_atom()),
                 name: name.as_atom().clone(),
-                reason: self.absent_reason(),
             },
             // `try_indexed_class` answers with these two states only; the arms
             // exist so a third would be a compile error rather than a silent
@@ -2971,7 +3047,14 @@ impl<'a> ResolveWalker<'a> {
     /// would make the same file report different `read_count`s with and without
     /// an index. Whether a procedure was ever run is a question for the unit that
     /// can answer it identically either way.
-    fn resolve_run_target(&mut self, id: NodeId, raw: &str, name_span: Span, scope: ScopeId) {
+    fn resolve_run_target(
+        &mut self,
+        id: NodeId,
+        raw: &str,
+        name_span: Span,
+        scope: ScopeId,
+        in_handle: bool,
+    ) {
         if !self.ctx.index_loaded {
             return;
         }
@@ -2989,10 +3072,12 @@ impl<'a> ResolveWalker<'a> {
                 Resolution::Resolved(self.indexed_program_symbol(&name, span, file))
             }
             // An index was attached and it searched every path entry: this is a
-            // fact about the workspace, not a missing capability.
+            // fact about the workspace — but only where a path search is the
+            // mechanism the AVM itself would use. `run_miss_reason` is where the
+            // two shapes it would not are held back.
             IndexAnswer::NotFound => Resolution::Unresolved {
+                reason: self.run_miss_reason(raw, in_handle, name.as_atom()),
                 name: name.as_atom().clone(),
-                reason: self.absent_reason(),
             },
             // The program file is right there and oxabl could not parse it.
             IndexAnswer::Unusable => Resolution::Unresolved {
@@ -4044,6 +4129,24 @@ fn wrap_extent(ty: ResolvedType, extent: Option<u32>) -> ResolvedType {
             extent: if n == 0 { None } else { Some(n) },
         },
     }
+}
+
+/// Whether `name`'s first segment is a namespace the AVM ships rather than one a
+/// workspace supplies.
+///
+/// `Progress.*`, `OpenEdge.*`, `System.*`, and `Microsoft.*` resolve to class
+/// libraries that come with OpenEdge (the last two through .NET interop). None of
+/// them has source on any search path, so their absence is not a fact about the
+/// user's workspace and reporting them would make `undefined-symbol` fire on
+/// correct, ordinary code — the fastest way to lose a rule's credibility.
+///
+/// Prefix comparison on the *folded* name, which is what the resolve pass carries
+/// and what ABL's case-insensitivity requires. The dot is part of each prefix so a
+/// user class named `Systems.Cache` is not swept up by `System`.
+fn is_system_namespace(name: &OxablAtom) -> bool {
+    const SHIPPED: [&str; 4] = ["progress.", "openedge.", "system.", "microsoft."];
+    let folded = name.as_ref();
+    SHIPPED.iter().any(|prefix| folded.starts_with(prefix))
 }
 
 /// Case-fold and intern an identifier. Shared with [`crate::index`], whose

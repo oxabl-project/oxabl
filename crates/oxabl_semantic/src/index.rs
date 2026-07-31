@@ -250,8 +250,15 @@ pub enum IndexAnswer<T> {
     Found(T),
     /// The index looked on the configured paths and it is genuinely absent.
     NotFound,
-    /// A file that would supply the name **was located** and could not be used:
-    /// unreadable, or its parse recovered errors.
+    /// A file that would supply the name **was located** and cannot be used *as a
+    /// foreign file*: it is unreadable, its parse recovered errors, it does not
+    /// visibly declare the name (a declaration spliced in from an `{include}`
+    /// looks like this), or it is the very file being analysed.
+    ///
+    /// The last case is worth spelling out. An index excludes the analysed file
+    /// from its own answers on purpose — the client analyses a buffer while the
+    /// index answers from disk — so a program that `RUN`s itself finds nothing.
+    /// That is not the file being absent; it is right there.
     ///
     /// Split out from [`Self::NotFound`], which folded it in while nothing
     /// branched on the difference. Once `undefined-symbol` began reporting an

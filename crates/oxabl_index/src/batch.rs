@@ -231,19 +231,27 @@ impl<'a> BatchIndex<'a> {
             match search::find_name(self.fs, self.include_paths, name, search::NameKind::Class) {
                 IndexAnswer::Found(path) => {
                     let facts = memo.facts_for(self.fs, &path);
-                    // Two different situations, and the caller can now tell them
-                    // apart. A file whose parse recovered errors is `Unusable` —
-                    // the declaration may well be in there and oxabl could not
-                    // read it, so nothing may claim the name is absent. A file
-                    // that parsed cleanly and simply does not declare this class
-                    // is a genuine `NotFound`: the search found the wrong file, a
-                    // mis-namespaced one. The class comparison is
-                    // case-insensitive, since the declaring file is free to spell
-                    // the name differently from the reference.
+                    // A file *was* located at the path the class name derives, and
+                    // it does not visibly declare the class. That is `Unusable`,
+                    // not `NotFound`, and the difference decides whether a
+                    // consumer may tell a user the name does not exist — which
+                    // here it may not, because the file plainly exists.
+                    //
+                    // Three causes, and the index cannot distinguish them: the
+                    // parse recovered errors; the declaration is spliced in from
+                    // an `{include}`, which this crate deliberately does not
+                    // expand; or the class header is genuinely mis-namespaced.
+                    // Only the third is the user's mistake, and it is the rarest —
+                    // an include-built class is an ordinary ABL idiom. `NotFound`
+                    // stays reserved for the one case that *is* conclusive: no
+                    // file at the derived path at all.
+                    //
+                    // The class comparison is case-insensitive, since the
+                    // declaring file is free to spell the name differently from
+                    // the reference.
                     match facts.class(name).cloned() {
                         Some(class) => IndexAnswer::Found(class),
-                        None if !facts.parsed => IndexAnswer::Unusable,
-                        None => IndexAnswer::NotFound,
+                        None => IndexAnswer::Unusable,
                     }
                 }
                 IndexAnswer::NotFound => IndexAnswer::NotFound,
@@ -435,8 +443,12 @@ impl ExcludingFile<'_, '_> {
 impl WorkspaceIndex for ExcludingFile<'_, '_> {
     fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
         match self.index.class(name) {
+            // `Unusable`, not `NotFound`: the file exists and is simply not usable
+            // as a *foreign* file, because it is the one being analysed. Answering
+            // `NotFound` would let a consumer report a name whose declaration is in
+            // the buffer in front of the user as absent from the workspace.
             IndexAnswer::Found(descriptor) if self.is_analysed(descriptor.file) => {
-                IndexAnswer::NotFound
+                IndexAnswer::Unusable
             }
             other => other,
         }
@@ -449,20 +461,26 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
         if let IndexAnswer::Found(descriptor) = self.index.class(class)
             && self.is_analysed(descriptor.file)
         {
-            return IndexAnswer::NotFound;
+            // Same answer `class` gives for the same reason: the file exists and
+            // is not usable as a foreign one.
+            return IndexAnswer::Unusable;
         }
         self.index.class_members(class)
     }
 
     fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
         match self.index.program(target) {
-            IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::NotFound,
+            IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::Unusable,
             other => other,
         }
     }
 
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
         match self.index.shared_producer(name) {
+            // Deliberately `NotFound` rather than `Unusable`: an unlinked `SHARED`
+            // consumer produces no diagnostic either way, and a producer that is
+            // really the analysed file's own earlier revision is not a producer at
+            // all — there is nothing here for a consumer to be told about.
             IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::NotFound,
             other => other,
         }
@@ -943,10 +961,13 @@ mod tests {
         assert_eq!(open.revision(), index.revision());
 
         // Asking *as* that file: its own class must not come back, either as a
-        // descriptor or as a member list.
+        // descriptor or as a member list. `Unusable` rather than `NotFound`,
+        // because the file exists — it just cannot stand in as a foreign one, and
+        // a consumer that got `NotFound` could report a name declared in the
+        // buffer in front of the user as absent from the workspace.
         let itself = index.excluding(Some(Path::new("/src/orders/calc-base.cls")));
-        assert_eq!(itself.class(&name), IndexAnswer::NotFound);
-        assert_eq!(itself.class_members(&name), IndexAnswer::NotFound);
+        assert_eq!(itself.class(&name), IndexAnswer::Unusable);
+        assert_eq!(itself.class_members(&name), IndexAnswer::Unusable);
         // A different file's view is unaffected, and the memo is shared, so the
         // parent was still read exactly once across all three views.
         let other = index.excluding(Some(Path::new("/src/orders/child.cls")));
@@ -967,8 +988,11 @@ mod tests {
 
         assert_eq!(
             excluded.program(&IndexName::new("init-globals.p")),
-            IndexAnswer::NotFound,
-            "a file does not `RUN` itself into the index"
+            IndexAnswer::Unusable,
+            "a file does not `RUN` itself into the index — and its own path is not \
+             absent from the workspace either, so the answer is the located-but- \
+             unusable one. A program that runs itself persistently is an ordinary \
+             ABL idiom, and reporting it as undefined would be a false claim."
         );
         assert_eq!(
             excluded.shared_producer(&IndexName::new("v-site-code")),
@@ -994,7 +1018,7 @@ mod tests {
         let index = BatchIndex::new(&fs, &paths);
         let name = IndexName::new("orders.calc-base");
         let spelled = index.excluding(Some(Path::new("/src/./orders/sub/../calc-base.cls")));
-        assert_eq!(spelled.class(&name), IndexAnswer::NotFound);
+        assert_eq!(spelled.class(&name), IndexAnswer::Unusable);
     }
 
     #[test]

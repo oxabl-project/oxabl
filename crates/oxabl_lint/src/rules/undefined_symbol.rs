@@ -1,13 +1,27 @@
 //! `undefined-symbol` lint (LINT0001).
 //!
-//! Fires on every reference that resolves to
-//! [`Resolution::Unresolved { reason: NotInScope }`] in a user-written
-//! namespace (Values / Procedures / Functions / Streams / Frames / Events
-//! / Types). Does *not* fire on `External` (cross-file / dynamic),
-//! `NoSchema` (schema-absent), `AbsentFromWorkspace`, or `Unknowable`
-//! unresolveds — those are by-design skip-listed so the rule's signal stays
-//! high. The skip is structural: the rule matches *positively* on the one
-//! reason it reports, so a new reason is silent without an edit here.
+//! Fires on a reference the resolver could not resolve for one of **two**
+//! reasons, in a user-written namespace (Values / Procedures / Functions /
+//! Streams / Frames / Events / Types):
+//!
+//! * `NotInScope` — nothing in this file declares the name.
+//! * `AbsentFromWorkspace` — an index was attached, it searched every configured
+//!   path, and no file supplies the name. ABL cannot reference a symbol or
+//!   procedure whose code is not on the PROPATH, so this is genuinely undefined
+//!   rather than merely unseen. The diagnostic carries a help line naming the
+//!   search-path configuration, because a misconfigured project is the other way
+//!   to arrive here and that line is its whole remediation story.
+//!
+//! Silent for the other three: `NoSchema` (schema-absent), `External` ("we did
+//! not look" — no index attached, or an index with nowhere to search), and
+//! `Unknowable` (a runtime-computed target no indexing would resolve).
+//! `PresentButUnusable` is silent too, and that one is load-bearing rather than
+//! conservative: the name exists, so "undefined symbol" would be false.
+//!
+//! The match below is **exhaustive and wildcard-free**, deliberately. It used to
+//! match positively on the single reason it reported, which made a new reason
+//! silent without an edit here — convenient, and exactly backwards: whether a
+//! rule reports a situation is a decision that belongs in the rule.
 
 use oxabl_ast::{
     Expression, ExpressionKind, OnAction, OnKind, Statement, StatementKind, StreamOperation,
@@ -224,6 +238,16 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
+            // An import of a class no configured path supplies. Its own id and
+            // `name_span` are what let the diagnostic underline the imported name
+            // rather than the whole statement.
+            StatementKind::Using {
+                id,
+                type_name,
+                name_span,
+            } => {
+                self.check(*id, type_name, *name_span);
+            }
             StatementKind::Run {
                 target,
                 arguments,
@@ -233,8 +257,16 @@ impl Visitor<'_> {
                 event_procedure,
                 ..
             } => {
-                if let oxabl_ast::RunTarget::Dynamic(e) = target {
-                    self.walk_expression(e);
+                match target {
+                    oxabl_ast::RunTarget::Dynamic(e) => self.walk_expression(e),
+                    // A literal target carries its own id and its own span for
+                    // exactly this: a target no configured path supplies is
+                    // reported on the name rather than on the whole statement.
+                    // `Dynamic` gets no id because it names nothing statically,
+                    // and the resolver files it `Unknowable`.
+                    oxabl_ast::RunTarget::Literal { id, name, name_span } => {
+                        self.check(*id, name, *name_span);
+                    }
                 }
                 for arg in arguments {
                     self.walk_expression(&arg.expression);
@@ -318,7 +350,6 @@ impl Visitor<'_> {
             | StatementKind::DefineFrame { .. }
             | StatementKind::PreprocDefine { .. }
             | StatementKind::PreprocUndefine { .. }
-            | StatementKind::Using { .. }
             | StatementKind::TriggerProcedure { .. }
             | StatementKind::Delete { .. }
             | StatementKind::Release { .. }
@@ -350,13 +381,16 @@ impl Visitor<'_> {
                 }
             }
             ExpressionKind::New {
-                class_name: _,
+                class_name,
                 arguments,
             } => {
-                // Class names in `NEW Foo(...)` are commonly USING-imported;
-                // resolve reports them as `External`, which LINT0001 skips.
-                // Still walk the arguments for nested undefined refs.
-                self.maybe_check_expr_id(expr.id.to_owned_id(), "");
+                // The `New` expression's own id carries the class name's
+                // resolution. The span is the whole `NEW Foo(...)` expression
+                // because `class_name` is a bare `String` with no span of its
+                // own — the same gap that keeps the `AS CLASS` declaration
+                // spelling out of this rule, except here there is at least an
+                // enclosing node to underline.
+                self.check(expr.id.to_owned_id(), class_name, expr.span);
                 for a in arguments {
                     self.walk_expression(a);
                 }
@@ -435,26 +469,41 @@ impl Visitor<'_> {
     }
 
     fn check(&mut self, expr_id: oxabl_ast::NodeId, name: &str, span: oxabl_ast::Span) {
-        if let Some(Resolution::Unresolved {
-            reason: UnresolvedReason::NotInScope,
-            ..
-        }) = self.sem.references.get(expr_id)
-        {
-            self.diags.push(Diagnostic::error(
+        let Some(Resolution::Unresolved { reason, .. }) = self.sem.references.get(expr_id) else {
+            return;
+        };
+        let workspace_miss = match reason {
+            UnresolvedReason::NotInScope => false,
+            UnresolvedReason::AbsentFromWorkspace => true,
+            // Each silent for its own reason — see the module docs. Named rather
+            // than matched with a wildcard so a sixth reason has to be decided
+            // about here, in the rule that would have to judge it.
+            UnresolvedReason::External
+            | UnresolvedReason::NoSchema
+            | UnresolvedReason::PresentButUnusable
+            | UnresolvedReason::Unknowable => return,
+        };
+        let span = FileSpan {
+            file: self.ctx.file_id,
+            span,
+        };
+        let diag = if workspace_miss {
+            Diagnostic::error(
                 LINT0001,
-                format!("undefined symbol `{name}`"),
-                FileSpan {
-                    file: self.ctx.file_id,
-                    span,
-                },
-            ));
-        }
-    }
-
-    fn maybe_check_expr_id(&mut self, _id: oxabl_ast::NodeId, _placeholder: &str) {
-        // Reserved: NEW expression's own NodeId carries its resolution, but
-        // we don't have a span for the class name on the AST — the parser
-        // keeps class_name as a String without span metadata. Skip in v1.
+                format!(
+                    "undefined symbol `{name}`: no file on the configured search paths declares it"
+                ),
+                span,
+            )
+            .with_help(
+                "check `[workspace.sources].include_paths` in `oxabl.toml`, or pass the \
+                 directory with `-I`; oxabl only searches the paths it is given"
+                    .to_string(),
+            )
+        } else {
+            Diagnostic::error(LINT0001, format!("undefined symbol `{name}`"), span)
+        };
+        self.diags.push(diag);
     }
 }
 

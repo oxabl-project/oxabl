@@ -684,6 +684,12 @@ struct CheckJsonDiagnostic {
     severity: &'static str,
     source: &'static str,
     message: String,
+    /// The remediation line, when the finding carries one. Present since
+    /// version 3: `undefined-symbol` reporting a name absent from the configured
+    /// search paths puts the whole fix in its help line, and a JSON consumer that
+    /// could not see it would be reading half a diagnostic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
     span: CheckJsonSpan,
     #[serde(skip_serializing_if = "Option::is_none")]
     start: Option<CheckJsonPosition>,
@@ -980,7 +986,8 @@ fn run_check(
         let report = CheckJsonReport {
             // 2: `preproc_diagnostics` became `preproc`, matching `analyze`'s
             // envelope, and its rows gained a `path` (D1).
-            version: 2,
+            // 3: a diagnostic row carries its `help` line when it has one.
+            version: 3,
             files_checked: files.len(),
             lint_enabled: !no_lint,
             diagnostics,
@@ -1085,6 +1092,7 @@ fn check_json_diagnostic(
         severity: d.severity.as_str(),
         source: collected.source.as_str(),
         message: d.message.clone(),
+        help: d.help.clone(),
         span: CheckJsonSpan {
             start: d.span.span.start,
             end: d.span.span.end,

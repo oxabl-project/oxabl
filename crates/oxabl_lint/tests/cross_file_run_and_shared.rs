@@ -18,9 +18,12 @@
 //!    a counter.
 //! 3. **A wrong link is poison.** One name matching two path entries declines
 //!    rather than taking the first match.
-//! 4. **No new finding, ever.** Where a test says "produces no finding" it also
-//!    asserts a sibling shape where the finding genuinely does fire, so the
-//!    assertion cannot pass by the rule being inert.
+//! 4. **A finding is stated, not assumed away.** Where a test says "produces no
+//!    finding" it also asserts a sibling shape where the finding genuinely does
+//!    fire, so the assertion cannot pass by the rule being inert. One shape in
+//!    this file *does* produce a finding: a literal `RUN` target no configured
+//!    path supplies is an `undefined-symbol`, since ABL cannot run a program that
+//!    is not on the PROPATH.
 //!
 //! # The `shared_producer` precondition, stated once
 //!
@@ -34,6 +37,8 @@
 //! already-tracked work.
 
 mod support;
+
+use oxabl_lint::LINT0001;
 
 use oxabl_ast::{RunTarget, Statement, StatementKind};
 use oxabl_common::FileId;
@@ -278,10 +283,25 @@ fn a_name_no_file_on_the_paths_matches_is_absent_from_the_workspace() {
         "an index was attached and it looked: that is a fact about the \
          workspace, not a missing capability"
     );
+    // And it is reported. ABL cannot `RUN` a program that is not on the PROPATH,
+    // so a literal target no configured path supplies is genuinely undefined —
+    // reported on the target's own span, with the help line that names the
+    // search-path configuration, because a misconfigured project is the other way
+    // to arrive here.
+    let found = lint0001_with_index(source, &WORKSPACE);
+    assert_eq!(found.len(), 1, "one finding: {found:?}");
+    assert!(found[0].message.contains("never-shipped.p"));
     assert!(
-        lint0001_with_index(source, &WORKSPACE).is_empty(),
-        "the new reason stays in the suppressed position `External` occupies"
+        found[0]
+            .help
+            .as_deref()
+            .is_some_and(|h| h.contains("include_paths")),
+        "the remediation names the configuration: {:?}",
+        found[0].help
     );
+    // With no index attached the same source says nothing at all: the reason is
+    // the difference, and the reason is a property of whether anything looked.
+    assert!(lint0001_without_index(source).is_empty());
 }
 
 #[test]
@@ -497,12 +517,13 @@ fn a_resolved_target_called_with_the_wrong_argument_count_produces_no_finding() 
 }
 
 #[test]
-fn attaching_an_index_adds_no_diagnostic_to_any_run_or_shared_scenario() {
-    // Swept over every fixture in this file at once, and unlike the inheritance
-    // and `USING` suites this one still asserts a **zero**: a resolved `RUN` target
-    // and a linked `SHARED` producer contribute a symbol and a reference, not a
-    // type, so nothing here reaches the type lattice. The day `undefined-symbol`
-    // fires on an absent literal target, this is the sweep that says so.
+fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
+    // Swept over every fixture in this file at once. One shape gains a finding: a
+    // literal target no configured path supplies, which `undefined-symbol` reports
+    // now. Everything else stays silent — a resolved target and a linked `SHARED`
+    // producer contribute a symbol and a reference, not a type, so nothing here
+    // reaches the type lattice.
+    let judged = ["RUN never-shipped.p.\n"];
     for source in [
         "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n",
         "RUN post-order.p (INPUT 1).\n",
@@ -515,10 +536,15 @@ fn attaching_an_index_adds_no_diagnostic_to_any_run_or_shared_scenario() {
         // Exact rather than per-rule counts: a finding moving from one code to
         // another, or from one span to another, is a behavior change the old
         // count comparison would have absorbed.
+        let expected = if judged.contains(&source) {
+            vec![LINT0001]
+        } else {
+            Vec::new()
+        };
         assert_eq!(
             codes_added_by_index(source, &WORKSPACE),
-            Vec::<&str>::new(),
-            "attaching an index added a finding for: {source}"
+            expected,
+            "the findings an index adds for: {source}"
         );
         let (_, with) = with_index(source, &WORKSPACE);
         let (_, without) = without_index(source);

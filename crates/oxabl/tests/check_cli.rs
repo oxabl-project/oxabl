@@ -349,7 +349,10 @@ fn json_carries_two_findings_keys_and_span_anchored_lint_entries() {
     assert_eq!(run.code, Some(1));
 
     let v = run.json();
-    assert_eq!(v["version"], 2, "bumped when a key's meaning changes (D1)");
+    assert_eq!(
+        v["version"], 3,
+        "bumped when a key's meaning changes, or a key is added — 3 added `help`"
+    );
     assert_eq!(v["files_checked"], 2);
     assert_eq!(v["lint_enabled"], true);
     assert_eq!(v["format_enabled"], true);
@@ -937,6 +940,63 @@ fn a_walk_with_a_search_path_resolves_an_inherited_member() {
 /// nothing is reachable, so the walk answers exactly as it did before cross-file
 /// resolution existed — and the report keys are the same either way.
 #[test]
+fn an_absent_run_target_is_reported_with_its_remediation_in_both_channels() {
+    // R18 through the built binary: the finding names the missing path and the help
+    // line names the configuration that would fix it. Asserted in the JSON channel
+    // as well as the text one, because a machine consumer that could not see the
+    // help would be reading half a diagnostic — the whole remediation story for a
+    // misconfigured project lives in that line.
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("caller.p"),
+        "RUN never-shipped.p.\nMESSAGE \"done\".\n",
+    );
+
+    let run = check([
+        Path::new("--no-format").as_os_str(),
+        Path::new("-I").as_os_str(),
+        tmp.path().as_os_str(),
+        Path::new("--json").as_os_str(),
+        tmp.path().as_os_str(),
+    ]);
+
+    assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
+    let v = run.json();
+    let finding = v["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .find(|d| d["code"] == "LINT0001")
+        .unwrap_or_else(|| panic!("expected the absent target to be reported:\n{}", run.stdout));
+    assert!(
+        finding["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("never-shipped.p")),
+        "the message names the missing target: {finding}"
+    );
+    assert!(
+        finding["help"]
+            .as_str()
+            .is_some_and(|h| h.contains("include_paths")),
+        "and the JSON row carries the remediation: {finding}"
+    );
+
+    // The text channel, which is what a person reads.
+    let text = check([
+        Path::new("--no-format").as_os_str(),
+        Path::new("-I").as_os_str(),
+        tmp.path().as_os_str(),
+        tmp.path().as_os_str(),
+    ]);
+    assert!(
+        text.stdout.contains("include_paths") || text.stderr.contains("include_paths"),
+        "stdout:\n{}\nstderr:\n{}",
+        text.stdout,
+        text.stderr
+    );
+}
+
+#[test]
 fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
     let tmp = inheritance_project();
 
@@ -948,7 +1008,7 @@ fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
 
     assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
     let v = run.json();
-    assert_eq!(v["version"], 2);
+    assert_eq!(v["version"], 3);
     assert_eq!(v["files_checked"], 2);
     assert_eq!(v["lint_enabled"], true);
     assert_eq!(v["format_enabled"], false);

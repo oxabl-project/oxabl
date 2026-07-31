@@ -4581,10 +4581,21 @@ impl Parser<'_> {
                 3 => ext.eq_ignore_ascii_case("cls"),
                 _ => false,
             };
-            // Also accept dotted method names (e.g. Dataset.Fill) on the same line.
+            // Also accept a dotted method name (e.g. `Dataset.Fill`) — but only
+            // when it is written **adjacent** to the period, with no gap. A dotted
+            // name never has whitespace inside it, while a statement-terminating
+            // period is followed by one; that lexical difference is what tells the
+            // two apart without having to classify the following keyword.
+            //
+            // The rule used to be "anywhere on the same line", and `RUN` is usable
+            // as an identifier, so `RUN outputHeader. RUN GetWarehouseList.`
+            // consumed the period and the next statement's keyword into the target
+            // name — yielding `outputHeader. RUN`, a name nobody wrote, which
+            // became a diagnostic once `undefined-symbol` began reporting absent
+            // targets.
             let period_end = self.tokens[self.current].end;
-            let same_line = !self.source[period_end..next.start].contains('\n');
-            if is_file_ext || same_line {
+            let adjacent = next.start == period_end;
+            if is_file_ext || adjacent {
                 self.advance(); // consume the period
                 self.advance(); // consume the extension or method name
             }

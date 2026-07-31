@@ -4660,6 +4660,48 @@ fn parse_run_literal_target_records_node_id_and_name_span() {
 }
 
 #[test]
+fn parse_run_target_stops_at_the_period_before_another_statement() {
+    // `RUN a. RUN b.` on one line. The target-name scan accepts a dotted method
+    // name on the same line, and `RUN` is usable as an identifier, so it used to
+    // consume the period and the next statement's keyword into the name — yielding
+    // the target `outputHeader. RUN` and, once cross-file resolution began
+    // reporting absent targets, a diagnostic about a name nobody wrote.
+    let source = "RUN outputHeader. RUN GetWarehouseList.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let names: Vec<String> = program
+        .statements
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StatementKind::Run {
+                target: RunTarget::Literal { name, .. },
+                ..
+            } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["outputHeader", "GetWarehouseList"]);
+}
+
+#[test]
+fn parse_run_dotted_method_name_on_one_line_still_parses() {
+    // The shape the same-line allowance exists for: a plain identifier after the
+    // period is still taken as part of the name.
+    let source = "RUN Dataset.Fill.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Run {
+            target: RunTarget::Literal { name, .. },
+            ..
+        } => assert_eq!(name, "Dataset.Fill"),
+        _ => panic!("Expected a literal Run target"),
+    }
+}
+
+#[test]
 fn parse_run_quoted_target_name_span_includes_the_quotes() {
     let source = r#"RUN "sub/dir/thing.p"."#;
     let tokens = tokenize(source);
