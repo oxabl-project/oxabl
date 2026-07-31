@@ -1,9 +1,9 @@
-# Handoff: one shared lint and format run behind every client (#120); dogfooded at zero drift
+# Handoff: cross-file resolution shipped (#102) — an index consulted during resolve, adding no new diagnostic
 
 **Date:** 2026-07-30
-**Branch:** `master` — **PR #140 is merged** (`58d961e`). The branch it came from (`evanbrobertson/rework-check-analyze-into-shared-lint-format-pip`) is spent.
-**This session:** Ran the A/B that decides whether #140 can merge, and it came back clean: **zero lint drift** against a large real-world ABL codebase kept outside this repo. Also fixed a silent defect the reshape introduced in `scripts/lint-ab-diff.sh`. Details under **Dogfood A/B** below.
-**Prior context:** #140 implements #120 — the eleven-unit plan at `docs/plans/2026-07-24-001-refactor-shared-lint-format-pipelines-plan.md` (local; `docs/plans/` is gitignored). #133 (browser playground), #135 (panic-safe entry points), #137 (#128's crediting) and #130 (table-use crediting) all shipped before it. The lint-accuracy map from #129/#128/#130 is carried forward below unchanged — it is still the thing to read before triaging a "LINT0006 is wrong" report.
+**Branch:** `feat/cross-file-resolution-index` — not yet merged; 19 commits on top of `58d961e`.
+**This session:** Built #102. Inheritance chains, `USING` imports, literal `RUN` targets and cross-file `SHARED` producers now resolve across files, identically in the CLI and the editor. Deliberately **no rule behavior changed** — see **The line that must not be removed** below before you "finish the job". Details under **What shipped on this branch — #102**.
+**Prior context:** #120 (PR #140, `58d961e`) built the seam this needed: one config resolution, one root-file policy, one result model. #133 (browser playground), #135 (panic-safe entry points), #137 (#128's crediting) and #130 (table-use crediting) shipped before it. The lint-accuracy map from #129/#128/#130 is carried forward below unchanged — it is still the thing to read before triaging a "LINT0006 is wrong" report.
 
 ---
 
@@ -11,6 +11,9 @@
 
 | Item | Status |
 |------|--------|
+| #102 cross-file semantic resolution | **Done on this branch.** `oxabl_semantic::index` defines the seam, the new `oxabl_index` crate implements extraction plus the batch cache, `oxabl_pipeline` owns the run's index, and `oxabl_lsp` backs it with per-file salsa inputs. **Adds no new diagnostic, on purpose.** |
+| #103 background index | Substantially absorbed — the language server's salsa-backed index *is* the incremental half. Re-scope or close. |
+| #57 public lint-rule API | Open — was blocked on #102; now unblocked. |
 | #120 CLI reshape onto shared pipelines | **Done — merged as PR #140 (`58d961e`).** `oxabl_pipeline` owns config resolution, both runs, and one result model; CLI, LSP and WASM are renderers. Dogfooded at zero drift. |
 | #130 | Done — merged. Table-use forms credit a read on the table they name. |
 | #128 / #137 | Done — merged. Standalone unmodelled forms credited (`StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT`). #136 is the scheduled drain. |
@@ -19,17 +22,67 @@
 | #134 | Open — the last uncredited-read half: skipped *tails* inside modelled statements. |
 | #136 | Open and **scheduled** (`hermes`) — head-parse the unmodelled forms; retires #128's flag and #130's query approximation. |
 | #108 unresolvable-include-as-argument | Open — the fully-wired re-dogfood it was waiting on **has now run**; still unconfirmed. See **Next** item 4. |
-| #142 nested unresolvable include is silent | Open — filed this session. A nested unresolvable include drops its `PREPROC007` in every shared-pipeline client while the `undefined-symbol` findings still fire. Sequenced after #102. |
-| #144 `oxabl check --watch` | Open — filed this session. The only live-feedback path for developers who cannot host a language server (Progress editor, plain vim, notepad++). Ships separately but **constrains #102**: the cross-file index must serve two incremental callers, so it must not assume editor-specific state. |
+| #142 nested unresolvable include is silent | Open. A nested unresolvable include drops its `PREPROC007` in every shared-pipeline client while the `undefined-symbol` findings still fire. Was sequenced after #102, so it is **next in line** now. |
+| #144 `oxabl check --watch` | Open. The only live-feedback path for developers who cannot host a language server (Progress editor, plain vim, notepad++). The index constraint it imposed is satisfied: `WorkspaceIndex` is a four-question trait with no editor-specific state, and a second incremental caller implements it the same way the LSP does. |
 | #131 / #132 | Open — LINT0006 write-site span breadth; `oxabl_lint` benchmark coverage. |
 | #125 | Open and **unblocked** — small, template is fresh. |
 | #124 / #126 | Open — the rest of the flow-analysis cluster. |
-| #102 / #103 cross-file resolution | Open — the **top strategic thread**, and now the clear next move: #120 built the seam it needs. |
-| #57 public lint-rule API | Open — blocked on #102. |
 
 ---
 
-## What shipped on this branch — #120
+## What shipped on this branch — #102
+
+The plan is `docs/plans/2026-07-23-007-feat-workspace-resolution-plan.md` (local; `docs/plans/` is gitignored). Read the requirement labels (R6, R7, R11, R14, R17, KTD1/2/4/6/8) as they appear in module docs — they are the shorthand the code comments use.
+
+**Correct the framing before you plan follow-up work.** #102's issue body claimed cross-file names false-positive on every inherited member. They never did: cross-file names were soft-resolved to `UnresolvedReason::External`, and `External` is skip-listed by every rule. The cost was **silence**, not noise — oxabl could not check a whole class of real code and said nothing about it. That is what shipped: the *capability*. The lint value is still to come.
+
+**The mechanism, and why the committed sketch was not it.** `docs/design/semantic-v1-cross-file-sketch.md` is now marked **superseded** in place — read its banner rather than the body. It designed cross-file resolution as a post-hoc `CrossFileResolutions` side table computed after every per-file `Semantic` exists, read back through an `effective_resolution` wrapper. What shipped is an **index consulted during resolve**: the resolve pass asks the index at the moment a name fails locally and writes the hit into the ordinary `references`/`symbols` tables, so a cross-file resolution is shape-identical to a local one. The side table lost on three counts — it needs every file's `Semantic` to exist first (impossible on the per-keystroke path), it gives every consumer a second lookup to forget, and it is the wrong place to compute *why* a miss missed. The sketch's central claim (R10: no per-file public field reshaped) held anyway, which is why it was annotated rather than deleted; its two pinned tests still exist and pass.
+
+**The seam.** `oxabl_semantic::index` defines `WorkspaceIndex` with exactly **four** queries — `class`, `class_members`, `program`, `shared_producer` — answering `Found` / `NotFound` / `Unknowable`, plus `NullIndex`, the index that knows nothing. There are no client carve-outs: a client that cannot answer a question answers `NotFound`, it does not get a narrower trait. That is what makes "every client resolves identically, differing only in what files exist and how answers are cached" structural rather than documented.
+
+**The new crate.** `oxabl_index` sits *beneath* `oxabl_pipeline`. `index_file` tokenizes, parses and declare-passes a referenced file, then projects it to `FileFacts` and drops the rest; `BatchIndex` is a plain in-run memo over it; `search` is public — deliberately — because the language server's cache must use the *same* name-to-path policy (two candidate spellings tried in order, **exactly one match** or `Unknowable`, `.i` never a root, no escaping the configured paths), and a private module would force that policy to be written twice.
+
+**Decisions / gotchas future sessions should know:**
+
+- **`WorkspaceIndex` carries no `Send + Sync` bound, and that is not an oversight.** The bound reads as harmless prudence and would rule out the only incremental implementation the seam exists to serve: a salsa-backed index answers by calling tracked queries, so it must borrow the database handle, and salsa makes a database `Send` but deliberately **not** `Sync`. Nothing is lost — `oxabl_index::BatchIndex` pins its own `Send + Sync` in a test, and the language server keeps its shared handle behind an `Arc`, building the borrowing `&dyn` view inside the query that uses it.
+- **The unresolved-reason model is three-valued, and the distinction is the payload.** `External` means "we did not look" (no index attached) — the pre-existing suppression state. `NotFoundInWorkspace` means searched the configured paths and genuinely absent, i.e. a fact about the workspace. `Unknowable` means not statically knowable, so no amount of indexing would help. A file that *was* located but could not be parsed folds into `NotFoundInWorkspace`: a broken file is knowably unusable, and knowable-versus-unknowable is the only distinction a consumer branches on. `AnalysisContext::index_loaded` decides which one a miss becomes, and it is **derived from the handle** rather than asserted — only `NullIndex` may report `IndexRevision::ABSENT` — so `with_index(&NullIndex)` cannot be talked into claiming a fact about a workspace nobody looked at.
+- **A recovered parse yields no facts at all, not partial ones.** `index_file` returns `FileFacts::unparseable` if the parse recovered any error. Recovery resynchronizes on periods, so a broken statement can leave a class body missing members or a member carrying the wrong type — and a *wrong* fact mis-attributes symbols across the program graph, while a missing one just leaves a name unresolved and silent.
+- **Path keys are lexically normalized, and that is load-bearing rather than tidy.** The memo key is a joined path derived from source text and `find_name` tries two spellings, so two lookups can reach one physical file under two strings. Keyed verbatim that mints **two** `IndexedFileId`s for one file — and `shared_producer`, which scans the memo and answers `Unknowable` when two *different* files define one `SHARED` name, would then report "cannot know" for a name with exactly one real producer.
+- **Nothing in the index catches panics, deliberately.** Every query is total in its *answers*, but totality is not licence to swallow unwinding: `Cancelled` travels as a panic payload in this workspace, so a guard around a lookup turns a cancelled recompute into `NotFound` and freezes a buffer on stale results. Same reasoning that keeps `LintPipeline::expand`/`collect` unguarded.
+- **The index reads nothing until a name is looked up**, which is why `LintPipeline::new` builds one unconditionally: it costs a pair of borrows and no I/O, so it is not another thing a client can forget. It is a **run-level** handle — reused across many edits of one buffer, or across every file of a walk via `with_file` (a per-file sibling borrows it rather than rebuilding) — and `with_index` lets the language server substitute its own.
+- **`shared_producer` needed a seed, and the CLI walk is where it comes from.** A `SHARED` name maps onto no path and the filesystem trait exposes no listing, so the query can only answer from files the run has already indexed — and nothing pulls a producer in unless something happens to `RUN` it. `with_known_files` hands the index the list the walk already enumerated, read lazily on the first `SHARED` lookup, so the producer link works on the command line without a directory scan. Clients with no such list (the language server, the browser) simply do not call it.
+- **The language server invalidates per file, not globally.** Each indexed file gets its own `IndexedFile` salsa input with a bumpable `disk_revision`; bumping one invalidates exactly that file's dependents. Reusing the single `SchemaHandle` revision every buffer already reads would have invalidated *every* open buffer on any dependency edit. **Salsa's own dependency graph is the reverse-dependency map** — there is no hand-maintained one to keep correct, which is the whole reason to spend the per-file inputs.
+- **No `salsa` dependency may ever land in `oxabl_index` or `oxabl_pipeline`.** The pipeline depends on the index crate, the umbrella re-exports the pipeline unconditionally, and the browser bundle is built through the umbrella — so a `salsa` edge in either lands in the WASM payload. The language server's cache implements `WorkspaceIndex` *above* both, and is the only implementation allowed to know salsa exists.
+- **No include expansion during indexing.** A declaration that only exists after an `{include}` splice is invisible to the index. Conservative on purpose: a missing fact yields a missing link, which by the firewall below produces no finding.
+- **The parity suite was extended rather than relaxed.** A fixture row can declare sibling files and the cross-file resolutions they enable, and every row is asserted **twice** — siblings withheld, siblings supplied — so the suite pins the *direction*: attaching an index may only remove an `undefined-symbol` false positive, never add a diagnostic. Where a row's resolutions are all silent/unresolvable/unknowable the two answers are asserted *equal*. Sibling files are not a browser capability gap — the browser leg supplies a filesystem through an internal seam, so cross-file rows are fully comparable there.
+
+### The line that must not be removed
+
+**Attaching an index adds zero new diagnostics, and two mechanisms hold that line.** A reader who finds a working resolver next to unchanged rules will read it as an oversight and "fix" it. It is not an oversight; it is the firewall, and turning the rules onto the cross-file population is a separate piece of work that needs its own dogfood pass before any of it reaches a user.
+
+1. **`crates/oxabl_semantic/src/check.rs` keeps an index-synthesized *class* symbol at `ResolvedType::Unknown`.** So a cross-file type never enters the type lattice and `type-mismatch-assignment` cannot fire on one.
+2. **An inherited member's declared type lives in `SymbolTable::inherited_member_types`, not on `Symbol::data_type`.** Putting it on the symbol was tried and it *did* reach the lattice and *did* produce new `type-mismatch-assignment` findings. The `analyze` envelope reads the side map for **display only** (that is what the `data_type_source` row key is for).
+
+`crates/oxabl_lint/tests/cross_file_*.rs` and `lint0004_inheritance_assignability.rs` assert the silence **and the reason for it**, so the day the firewall lifts the tests say exactly what changed. Removing either mechanism belongs to that follow-up, not to a tidy-up pass.
+
+### Known limitations, recorded so nobody rediscovers them
+
+- **`shared_producer` sees only already-indexed files** — the seeding above is the mitigation, not a fix. A whole-workspace answer needs a listing capability the filesystem trait does not have.
+- **Same-file `CLASS Child INHERITS Base` member resolution still does not work.** Pre-existing and untouched: the index answers about *other* files, and nothing was added to make a supertype declared in the same buffer resolve.
+- **An unqualified `INHERITS` name is not resolved through a `USING` import.** The supertype name is taken verbatim.
+- **Cross-file `USING` resolution is not observable in the diagnostic channel** — only in the `analyze` envelope's `dependencies` section. Direct consequence of the firewall.
+
+### Observability and performance
+
+The `analyze` envelope now emits **eight** versioned sections. New: `dependencies` at 1 — `index_revision`, the `files` the run consulted (each row saying whether it arrived `via` a `class`, a `program` or a `shared_producer`), and the `unresolved` lookups with reason and span. Its own section because it is a property of neither a symbol nor a reference. Bumped: `symbols` 2 → 3 (rows gain `origin`, `data_type_source`, `supertypes`) and `references` 1 → 2 (a resolved row gains the `origin` of the symbol it resolved to, so a cross-file resolution is distinguishable from a local one). Both are facts about existing rows, which is why neither spawned a sibling section.
+
+Warm language-server single-edit cycle measured at **2.72ms** against the 50ms interactivity gate.
+
+**Verification:** `cargo test --workspace` green — **1935 passed, 0 failed, 3 ignored** — plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All fixtures synthetic.
+
+---
+
+## Carried forward: #120, the seam this was built on
 
 The case for this work was never diagnostic-mapping dedup. The clients' final hops genuinely differ and still do. The layer *above* those hops was not merely duplicated but **divergent**: three config resolutions that disagreed, two file walkers that disagreed on both extensions and case, and a flagship `check` that never entered the shared analysis at all while a source comment claimed it did. Those were wrong answers.
 
@@ -55,7 +108,7 @@ The case for this work was never diagnostic-mapping dedup. The clients' final ho
 
 *The real gap, filed as #142.* A **nested** unresolvable include — reached through an include that resolves — emits no `PREPROC007` in `check`, `analyze`, the LSP, or WASM, while its `undefined-symbol` findings still fire. So those errors arrive with nothing naming the cause. Cause is `expand_source`'s `d.span.file == root` filter (`crates/oxabl_analyze/src/collect.rs:231`, and the fatal path at `:245`). Not an oversight: a nested span points into a file the client may have no text for. `conformance --preprocess` prints it because it never anchors the span, and `render_diagnostics` already falls back to `(in included file)` (`oxabl_common/src/diagnostic.rs:190-192`), so relaxing the filter serves the byte-offset clients; the LSP needs the primary span re-anchored to the include site (`expand_include` already has it as `site: FileSpan`) with the true location as a `Label` — a shape `Diagnostic.labels` already supports. Sequenced **after** #102, which rewrites this expansion path.
 
-**Verification:** `cargo test --workspace` green — **1731 passed, 0 failed, 2 ignored** — plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All fixtures synthetic.
+**Verification at the time #140 merged:** `cargo test --workspace` green — **1731 passed, 0 failed, 2 ignored**. Superseded by the figures above.
 
 ---
 
@@ -140,17 +193,20 @@ Other facts worth keeping:
 
 ## Next
 
-#120 was the last item blocking a clean run at the strategic thread, and the A/B discharged the "don't reshape delivery while diagnostics are still wrong" risk for good.
+#102 shipped the *capability*. Every item below is downstream of it, and the first one is the one that turns it into user-visible value.
 
-1. **#102 — workspace-wide cross-file semantic resolution** is now the top item, not just the top *strategic* one (with #103 as the fast-follow). **Requirements are settled and every open question is closed** — the corrected plan is `docs/plans/2026-07-23-007-feat-workspace-resolution-plan.md` (13 requirements, 4 acceptance examples, 14 session-settled decisions), and a ready-to-paste goal prompt with the eight hard constraints is at `docs/plans/2026-07-30-001-goal-workspace-resolution.md`. Both are local; `docs/plans/` is gitignored. Next step is `/ce-plan` on the plan, not implementation. The engine analyses one file at a time, so inherited members from a parent `.cls`, `USING`-imported types, `RUN` targets and cross-file `SHARED` vars never resolve. **Correct the justification before planning it:** #102's issue body and the existing requirements plan both claim this false-positives on every inherited member. It does not. Cross-file names are deliberately soft-resolved to `UnresolvedReason::External` (`oxabl_semantic/src/resolve.rs:1920-1933`, `:2032`, `:2052`) and `External` is skip-listed by every rule (`oxabl_lint/src/rules/undefined_symbol.rs:6-8`, and the same in LINT0003/LINT0004). **The cost today is silence, not noise** — oxabl cannot check a whole class of real code and says nothing about it. That still makes it the ceiling on lint value and it still **blocks #57**, but it is a capability gap, not trust repair, and the difference changes what success looks like: the old success criterion ("`undefined-symbol` no longer fires on inherited members") is already vacuously true. #120 built the seam it needs: one config resolution, one root-file policy, one result model. Take it through `/ce-brainstorm` → `/ce-plan` before building — it is weeks of architecture.
-2. **#134 — skipped tails inside modelled statements.** The one uncredited-read half left.
-3. **#136 — head-parse the unmodelled forms.** Scheduled (`hermes`). The real drain: retires #128's file-wide flag *and* #130's query approximation, and picks up formatter and LSP coverage on the way.
-4. **#108 — confirm or close it.** The fully-wired re-dogfood it was deferred pending has now run, and the collected `PREPROC007` evidence is the input; the check itself was not done this session. Related: **#142** (nested-include silence, described above). The "suppress the downstream flood" item that used to sit here is **retracted, not unclaimed** — see the settled decision above.
-5. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
-6. **#126 — CFG + dataflow scaffolding** absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`; #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
-7. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed cannot catch a regression in any of them.
-8. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI; and whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file.
-9. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish.
+1. **Dogfood the index, then turn the rules onto the cross-file population.** This branch adds no diagnostic by design (see **The line that must not be removed**), so the payoff is still unbanked. Sequence: (a) run the A/B against a large real-world ABL codebase kept outside this repo with include paths and a `.df` wired, and confirm the direction the parity suite asserts holds in the field — `undefined-symbol` should *fall*, nothing should appear; (b) check `dependencies` output for names coming back `NotFoundInWorkspace` that a human would call resolvable, since those are search-policy bugs, not rule bugs; (c) only then lift the firewall, one mechanism at a time, each with its own A/B. Lifting both at once makes an unattributable diff.
+2. **#57 — public lint-rule API.** Was blocked on #102 and is now unblocked. Worth deciding whether a third-party rule sees the index at all, and if so through what.
+3. **#142 — nested unresolvable include is silent.** Was explicitly sequenced *after* #102 because #102 rewrites the expansion path. That rewrite has happened, so this is unblocked and small: the CLI half is relaxing `expand_source`'s root-origin filter; the LSP half needs the primary span re-anchored to the include site.
+4. **#103 — re-scope or close.** The language server's salsa-backed per-file index is the incremental half #103 described. Whatever remains (a warm cache across sessions, a background pre-index of the workspace) should be re-stated as a new issue rather than inherited.
+5. **#134 — skipped tails inside modelled statements.** The one uncredited-read half left.
+6. **#136 — head-parse the unmodelled forms.** Scheduled (`hermes`). The real drain: retires #128's file-wide flag *and* #130's query approximation, and picks up formatter and LSP coverage on the way.
+7. **#108 — confirm or close it.** The fully-wired re-dogfood it was deferred pending has now run, and the collected `PREPROC007` evidence is the input; the check itself is still not done. The "suppress the downstream flood" item that used to sit here is **retracted, not unclaimed** — see the settled decision above.
+8. **#125 — OUTPUT dead-store advisory.** Unblocked, small, and LINT0006's two-stage shape is a working template.
+9. **#126 — CFG + dataflow scaffolding** absorbs and retires `PASSED_AS_OUTPUT_ARG` and `PARAM_TABLE_LIKE`; #124 waits on it. Check #126 before starting #131 — widening LINT0006's write-site walk form-by-form is exactly the per-shape treadmill def-use records exist to end.
+10. **#132 — `oxabl_lint` benchmarks.** Still the only crate with no bench target, so no rule's cost is measured and CodSpeed cannot catch a regression in any of them.
+11. **Playground follow-ups worth filing** (none filed yet): TypeScript typings for the wasm package (`--no-typescript` today); a wasm bundle-size budget in CI; and whether the second browser slice adds schema upload / a synthetic include map or stays deliberately single-file.
+12. **Deferred client work (from #104's plan):** parser-driven syntax highlighting via LSP semantic tokens, quick-fix code actions to toggle a rule in `oxabl.toml`, server-side `oxabl.toml` validation diagnostics, and Marketplace publish.
 
 ---
 
@@ -158,12 +214,14 @@ Other facts worth keeping:
 
 | Issue/PR | Relation |
 |----------|----------|
-| **#120 / PR #140** | **This branch** — one shared lint and format run behind every client; `oxabl_pipeline` beneath CLI/LSP/WASM, `check` becomes the gate, cross-client parity suite, dogfooded at zero drift |
+| **#102** | **This branch** — cross-file resolution as a `WorkspaceIndex` consulted during resolve; new `oxabl_index` crate, per-file salsa inputs in the LSP, `dependencies` envelope section, three-valued unresolved reasons. **No rule behavior changed, deliberately** |
+| **#103** | Substantially absorbed by this branch's salsa-backed index; re-scope or close |
+| **#57** | Open — public lint-rule API; **unblocked** now that #102 has shipped |
+| **#120 / PR #140** | Merged (`58d961e`) — one shared lint and format run behind every client; `oxabl_pipeline` beneath CLI/LSP/WASM, `check` becomes the gate, cross-client parity suite, dogfooded at zero drift. Built the seam #102 needed |
 | **#130** | Merged — table-use forms credit a read on the table they name; `Skipped` gained `may_reference_tables` |
 | **#128 / #137** | Merged — standalone unmodelled forms credited; `StatementKind::Skipped` + `TOUCHED_BY_UNMODELLED_STATEMENT` |
 | **#134** | Open — the one remaining uncredited-read half; skipped tails inside *modelled* statements |
 | **#136** | Open, **scheduled** — head-parse the unmodelled forms; the drain that retires #128's flag and #130's query approximation |
-| **#102 / #103** | Open — cross-file resolution + background index; **now the top item**, and #120 built its seam. Requirements plan exists at `docs/plans/2026-07-23-007-feat-workspace-resolution-plan.md` (local, gitignored) but predates #140 and carries the retracted false-positive framing |
 | #119 | Merged as #135 — panic-safe parse/analyze/format plus browser crash recovery |
 | #133 | Merged — browser WASM adapter + playground; now a renderer of `oxabl_pipeline` |
 | #131 | Open — widen LINT0006's write-site walk beyond assignment and `ASSIGN` targets |
@@ -177,9 +235,10 @@ Other facts worth keeping:
 | #55 | Improve the public API — done across the four waves; can be closed |
 | #117 / #118 | Filed — deferred #55 follow-ups |
 | #104 | Merged — VS Code extension + `oxabl schema` + CI (the dogfood loop) |
-| #57 | Open — public lint-rule API; blocked on #102 |
 | #108 | Open — unresolvable-include-as-argument; the re-dogfood it waited on has run |
-| **#142** | Open — filed this session; a nested unresolvable include drops its `PREPROC007` in every shared-pipeline client. Sequenced after #102 |
-| **#144** | Open — filed this session; `oxabl check --watch`. Ships separately, constrains #102's index design |
-| #56 | Open — dependency-extraction fidelity vs AVM (converges with #102) |
-| `STRATEGY.md` | The *Public API & client architecture* track carries the third top-level commitment (*one shared pipeline behind every client*) and the settled visible-CLI surface; both are now delivered rather than planned |
+| **#142** | Open — a nested unresolvable include drops its `PREPROC007` in every shared-pipeline client. Was sequenced after #102, so **unblocked** |
+| **#144** | Open — `oxabl check --watch`. Ships separately; the index constraint it imposed is satisfied — `WorkspaceIndex` holds no editor-specific state |
+| #56 | Open — dependency-extraction fidelity vs AVM; converges with #102's index, which is now the thing to measure against |
+| `docs/design/semantic-v1-cross-file-sketch.md` | **Superseded** by this branch, annotated in place rather than deleted — its R10 claim held, its post-hoc-side-table mechanism did not ship, and its two pinned tests still pass |
+| `docs/design/ast-invariants.md` | Updated — §1 and §2 cover the `name_span` and the two non-wrapper `NodeId`s on `StatementKind::Using` / `RunTarget::Literal` |
+| `STRATEGY.md` | The *Public API & client architecture* track carries the third top-level commitment (*one shared pipeline behind every client*) and the settled visible-CLI surface; both are delivered. The ≤50ms warm-cycle latency bet is measured at 2.72ms with the index attached |

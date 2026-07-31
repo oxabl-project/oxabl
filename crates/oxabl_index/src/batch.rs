@@ -966,8 +966,10 @@ mod tests {
 
     #[test]
     fn an_excluding_view_is_shareable_across_threads() {
-        // `WorkspaceIndex` requires `Send + Sync`, and the view is what a client
-        // actually hands to the semantic layer.
+        // `WorkspaceIndex` deliberately does *not* require `Send + Sync` (a
+        // salsa-snapshot-backed index could never satisfy it), so this
+        // implementation pins its own shareability rather than inheriting it.
+        // The view is what a client actually hands to the semantic layer.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ExcludingFile<'_, '_>>();
     }
@@ -982,8 +984,9 @@ mod tests {
 
     #[test]
     fn the_index_is_shareable_across_threads() {
-        // `WorkspaceIndex` requires `Send + Sync`; the memo's interior mutability
-        // is the only reason that could fail, so pin it.
+        // Not inherited from `WorkspaceIndex`, which deliberately carries no such
+        // bound — this implementation claims it for itself. The memo's interior
+        // mutability is the only reason the claim could fail, so pin it.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BatchIndex<'_>>();
 

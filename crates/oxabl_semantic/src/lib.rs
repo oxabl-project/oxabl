@@ -8,8 +8,12 @@
 //!
 //! Side tables are stored as `IndexVec<NodeId, Option<T>>` keyed by the
 //! parser's monotonic [`NodeId`](oxabl_ast::NodeId). Side-table-over-mutation
-//! preserves the upgrade path to cross-file analysis and Salsa-style
-//! incrementality without an IR rewrite.
+//! preserved the upgrade path to cross-file analysis and Salsa-style
+//! incrementality without an IR rewrite — and that bet paid: cross-file
+//! resolution shipped as the [`WorkspaceIndex`] seam, consulted *during*
+//! the resolve pass, with no per-file table reshaped. A cross-file hit is an
+//! ordinary [`Resolution::Resolved`] against an index-synthesized symbol, so a
+//! consumer reading `references` needs no second lookup path.
 
 mod builtins;
 mod check;
@@ -159,10 +163,21 @@ pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> 
     }
 }
 
-/// Translate a [`VirtualSpan`] in analyzer output to a concrete
-/// [`FileSpan`](oxabl_common::FileSpan) for diagnostic rendering. v1 treats
-/// virtual and file offsets as identical (no preprocessor expansion between
-/// them); Phase 4a hooks `PreprocessedFile::resolve` into this boundary.
+/// Stamp a [`VirtualSpan`] with this context's [`FileId`] to produce a
+/// [`FileSpan`](oxabl_common::FileSpan). The offsets pass through unchanged:
+/// this crate analyzes one already-expanded buffer and has no expansion table
+/// to consult.
+///
+/// **Preprocessor translation does not happen here.** Turning an expanded-text
+/// offset back into a real `(file, offset)` pair is `oxabl_analyze`'s job —
+/// `ExpandedFile::resolve_span` in `crates/oxabl_analyze/src/collect.rs` owns
+/// the flattened virtual-to-real table and rewrites every diagnostic's span
+/// (and each of its labels) after the semantic passes have run. So the
+/// `file_id` a semantic diagnostic carries is the *root buffer's*, and it is
+/// only correct because `oxabl_analyze` re-anchors it downstream. Do not add
+/// an expansion lookup to this function: the semantic crate does not depend on
+/// `oxabl_preprocessor`, and duplicating the table here would give the
+/// workspace two of them.
 pub fn resolve_span(ctx: &AnalysisContext, vs: VirtualSpan) -> oxabl_common::FileSpan {
     oxabl_common::FileSpan {
         file: ctx.file_id,

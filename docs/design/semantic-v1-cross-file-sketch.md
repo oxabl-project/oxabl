@@ -1,11 +1,24 @@
 ---
 title: "Cross-File Resolution Sketch (R10)"
-status: draft
+status: superseded
 date: 2026-04-17
+superseded: 2026-07-30
 parent: docs/plans/2026-04-16-004-feat-semantic-layer-v1-plan.md
 ---
 
 # Cross-File Resolution Sketch (R10)
+
+> **Superseded — this is not the live design.** Cross-file resolution shipped, and it did not ship as the post-hoc side table designed below. The live design of record is the code plus its module docs: the seam is `oxabl_semantic::index` (`WorkspaceIndex` and its four queries), the implementation is the `oxabl_index` crate (`index_file` plus `BatchIndex`), and the two consumers are `oxabl_pipeline` (batch) and `oxabl_lsp` (salsa-backed, per-file inputs). `CLAUDE.md` and `HANDOFF.md` carry the settled decisions.
+>
+> **Read it for what it got right, because that part is load-bearing.** The central claim — R10, that cross-file resolution is reachable without reshaping the per-file model's public fields — **held.** `Semantic` gained two additive fields (`index_revision`, and `AnalysisContext`'s `index`/`index_loaded`); `scope_tree`, `symbols`, `references` and `types` kept their shapes, `Resolution` kept `Resolved(SymbolId)`, and no lint rule signature changed. The reasoning below is what produced that outcome and is worth keeping in the record.
+>
+> **What differs is the mechanism, and the difference is the whole point.** This sketch computes a `CrossFileResolutions` side table *after* every per-file `Semantic` already exists, then reads it back through an `effective_resolution` wrapper. What shipped is an **index consulted during resolve**: the resolve pass asks `WorkspaceIndex` at the moment a name fails locally, and writes the answer straight into the ordinary `references` and `symbols` tables — a cross-file hit is a `Resolution::Resolved(SymbolId)` against a symbol the index synthesized, indistinguishable in shape from a local one. Three reasons the post-hoc table was not it:
+>
+> 1. **It requires every file's `Semantic` to exist first.** The editor's per-keystroke path analyzes exactly one buffer; a whole-workspace pre-pass on each edit cannot meet the interactivity budget, and there is no `Semantic` for a dependency the run never asked about. The index instead answers *four narrow questions* about a file and extracts its facts lazily, on first ask, memoized per run.
+> 2. **Every consumer would have to learn a second lookup.** `effective_resolution(sem, xfr, file, node)` is a call each rule, the analyze dump, and every future consumer must remember to use instead of reading `references` — and forgetting it silently degrades to single-file behavior. Resolving during the pass means there is no second path to forget.
+> 3. **A wrapper cannot say why a miss missed.** The variant vocabulary turned out to matter more than the plumbing: `External` ("we did not look" — no index attached) is genuinely different from `NotFoundInWorkspace` (searched the configured paths; absent) and from `Unknowable` (not statically knowable). That distinction lives on `UnresolvedReason` in the per-file model, which a post-hoc overlay is the wrong place to compute.
+>
+> **The two pinned tests named below still exist and still pass** — `resolve_new_class_unknown_is_external` (`crates/oxabl_semantic/src/resolve.rs`) and `cross_file_class_assignment_silent` (`crates/oxabl_lint/src/rules/type_mismatch_assignment.rs`) — so this file is live documentation of a real invariant, not a dead artifact. One refinement: the invariant they pin is now "a cross-file name is never `NotInScope`", not "is always `External`". With no index attached `External` is still the answer; with one attached the same reference lands on `NotFoundInWorkspace` or `Unknowable` instead. Every one of the three is skip-listed by every rule, so the silence the tests assert is unchanged.
 
 ## Purpose
 
@@ -173,3 +186,20 @@ a one-line config on `AnalysisContext`.
 **Reviewers**: stress-test by trying to design a cross-file integration that
 *would* require changing `Semantic`'s public fields. If you find one, the v1
 shape needs adjustment before ship.
+
+---
+
+## Scored against what shipped
+
+Kept, and correct:
+
+- **R10 held.** No per-file public field was reshaped to make cross-file resolution work.
+- **`RunTarget::Literal` was promoted** almost exactly as sketched — tuple variant to struct variant carrying its own `NodeId` — and `StatementKind::Using` got the same treatment. Both also carry a `name_span` the sketch did not anticipate, so a "could not be located" diagnostic underlines the name rather than the statement (see `docs/design/ast-invariants.md` §1 and §2).
+- **`Resolution::Resolved(SymbolId)` survived unchanged**, and no new `Resolution` variant was added.
+
+Wrong, or overtaken:
+
+- **The `CrossFileResolutions` side table, `CrossFileSymbol`, `resolve_cross_file`, `effective_resolution`, and the `oxabl_workspace_semantic` crate do not exist.** Nothing named here shipped; see the banner above for the three reasons.
+- **"Breaking-change budget: none required" did not survive.** Giving `Using` and `RunTarget::Literal` their own ids, and adding the two new `UnresolvedReason` variants, are breaking changes to public enums — shipped as such, deliberately, rather than worked around.
+- **The disambiguating `(FileId, SymbolId)` key was not needed.** A cross-file symbol is synthesized *into the analysed file's own* `SymbolTable`, so one dense `SymbolId` space still covers everything a consumer reads. The origin it came from is recorded as a fact on the row, not as part of its identity.
+- **The lint half was deferred, not delivered.** This sketch's "post-v1 LINT0001 consults the map first" is still future work. Attaching an index deliberately adds **no** new diagnostic today; two mechanisms hold that line on purpose, and turning the rules onto the cross-file population is its own follow-up. `CLAUDE.md` and `HANDOFF.md` name both mechanisms — do not remove either as dead weight.
