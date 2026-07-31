@@ -7111,6 +7111,81 @@ fn parse_create_no_error() {
 }
 
 #[test]
+fn parse_delete_object_holds_the_operand_as_an_expression() {
+    let source = "DELETE OBJECT h NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match &stmt.kind {
+        StatementKind::DeleteObject { target, no_error } => {
+            assert!(*no_error);
+            assert!(matches!(&target.kind, ExpressionKind::Identifier(id) if id.name == "h"));
+        }
+        other => panic!("Expected DeleteObject, got {other:?}"),
+    }
+    // The span invariant: a statement's span covers the whole statement.
+    assert_eq!(stmt.span.start, 0);
+    assert_eq!(stmt.span.end as usize, source.len());
+}
+
+#[test]
+fn parse_delete_object_accepts_a_complex_operand() {
+    // The case that forced the old skip: an attribute access, not a name. A
+    // `StatementKind::Delete { buffer: Identifier }` could not hold it, which is
+    // why the whole statement used to be skipped and its identifiers harvested.
+    for source in [
+        "DELETE OBJECT ttbl:HANDLE.",
+        "DELETE OBJECT hArray[i].",
+        "DELETE OBJECT THIS-OBJECT:someHandle NO-ERROR.",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
+        match &stmt.kind {
+            StatementKind::DeleteObject { target, .. } => {
+                assert!(
+                    !matches!(&target.kind, ExpressionKind::Identifier(_)),
+                    "{source}: the operand should be a compound expression"
+                );
+            }
+            other => panic!("{source}: expected DeleteObject, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn parse_delete_other_spellings_are_unchanged() {
+    // `PROCEDURE`, `WIDGET` and `SERVER` already fell through to a real `Delete`
+    // node; only the `OBJECT` spelling skipped. And the ordinary buffer form is
+    // untouched.
+    for (source, expected) in [
+        ("DELETE PROCEDURE hproc.", "hproc"),
+        ("DELETE WIDGET hwidget.", "hwidget"),
+        ("DELETE Customer.", "Customer"),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
+        match &stmt.kind {
+            StatementKind::Delete { buffer, .. } => assert_eq!(buffer.name, expected),
+            other => panic!("{source}: expected Delete, got {other:?}"),
+        }
+    }
+    // `DELETE WIDGET-POOL` keeps its own shape: a `Delete` with an empty name.
+    let source = "DELETE WIDGET-POOL \"p\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    match &parser.parse_statement().expect("statement").kind {
+        StatementKind::Delete { buffer, .. } => assert!(buffer.name.is_empty()),
+        other => panic!("expected Delete, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_delete_basic() {
     let source = "DELETE Customer.";
     let tokens = tokenize(source);

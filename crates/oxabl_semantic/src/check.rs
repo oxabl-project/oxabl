@@ -341,6 +341,12 @@ impl<'a> CheckWalker<'a> {
                     self.check_expression(e, scope);
                 }
             }
+            // Typed like any other expression statement: the operand is an
+            // expression, and a handle-typed one is what makes `DELETE OBJECT
+            // ttbl:HANDLE` legal.
+            StatementKind::DeleteObject { target, .. } => {
+                self.check_expression(target, scope);
+            }
             StatementKind::Delete { .. }
             | StatementKind::Release { .. }
             | StatementKind::Validate { .. } => {}

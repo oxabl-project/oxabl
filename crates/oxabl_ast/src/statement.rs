@@ -435,6 +435,21 @@ pub enum StatementKind {
     /// DELETE buffer-name [NO-ERROR].
     Delete { buffer: Identifier, no_error: bool },
 
+    /// `DELETE OBJECT <expression> [NO-ERROR].` — destroy an object or handle.
+    ///
+    /// Its own variant rather than a spelling of [`Self::Delete`] because the
+    /// operand is an **expression**, not a name: `DELETE OBJECT ttbl:HANDLE.` and
+    /// `DELETE OBJECT hArray[i].` are both ordinary ABL, and neither fits an
+    /// `Identifier`. That is why the parser used to skip the whole statement, which
+    /// cost every name it passed over a real reference — a handle deleted and never
+    /// read again looked touched-by-something-unmodelled rather than dead.
+    DeleteObject {
+        /// The object being destroyed. Resolved like any other expression, so the
+        /// handle it names is credited a read.
+        target: Expression,
+        no_error: bool,
+    },
+
     /// RELEASE buffer-name [NO-ERROR].
     Release { buffer: Identifier, no_error: bool },
 

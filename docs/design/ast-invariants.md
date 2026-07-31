@@ -236,6 +236,20 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 - The variant is scaffolding with a scheduled successor (#136): each form that gets
   head-parsed stops emitting `Skipped`.
 
+**One form has left the `Skipped` population.**
+
+- **`DELETE OBJECT` is head-parsed** into `StatementKind::DeleteObject { target, no_error }`.
+  Its own variant rather than a spelling of `Delete`, because the operand is an
+  **`Expression`**: `DELETE OBJECT ttbl:HANDLE.` and `DELETE OBJECT hArray[i].` are both
+  ordinary ABL and neither fits `Delete`'s `buffer: Identifier`. That mismatch is exactly why
+  the form skipped, and the skip was expensive — the harvest marked every name it passed over
+  `TOUCHED_BY_UNMODELLED_STATEMENT`, silencing the count-gated rules for the whole file over a
+  statement whose one operand is perfectly parseable.
+  **Invariant:** `target` is resolved like any other expression, so the handle it names is
+  credited an ordinary `read_count`, and no name in the statement is marked. Note the
+  asymmetry this removes: `DELETE PROCEDURE`, `DELETE WIDGET`, and `DELETE SERVER` already
+  fell through to a real `Delete` node — only the `OBJECT` spelling skipped.
+
 ## 9. Property body distinguishes absence from emptiness
 
 `Statement::Property` represents the three GET/SET accessor shapes with

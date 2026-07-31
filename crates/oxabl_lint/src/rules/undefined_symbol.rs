@@ -248,6 +248,10 @@ impl Visitor<'_> {
             } => {
                 self.check(*id, type_name, *name_span);
             }
+            // The operand is a real expression now, so an undeclared handle in it is
+            // an undefined symbol like any other — the reference this form used to
+            // pass over.
+            StatementKind::DeleteObject { target, .. } => self.walk_expression(target),
             StatementKind::Run {
                 target,
                 arguments,

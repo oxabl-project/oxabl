@@ -2426,6 +2426,14 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
+            // The operand is an expression, so it resolves like any other and the
+            // handle it names is credited a read. That is the whole point of
+            // head-parsing the form: skipping it harvested every identifier it
+            // passed over and marked them touched-by-something-unmodelled, which
+            // silenced the count-gated rules for the rest of the file.
+            StatementKind::DeleteObject { target, .. } => {
+                self.walk_expression(target, scope, AccessMode::Read);
+            }
             StatementKind::Delete { buffer, .. }
             | StatementKind::Release { buffer, .. }
             | StatementKind::Validate { buffer, .. } => {

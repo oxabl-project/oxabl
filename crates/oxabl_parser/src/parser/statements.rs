@@ -5526,8 +5526,13 @@ impl Parser<'_> {
             let text = self.source[token.start..token.end].to_ascii_lowercase();
             if matches!(text.as_str(), "object") {
                 self.advance(); // consume OBJECT
-                let (_, hi) = self.skip_to_statement_end();
-                return Ok(self.skipped_stmt(hi));
+                // The operand is an expression, which is why this used to skip:
+                // `DELETE OBJECT ttbl:HANDLE.` and `DELETE OBJECT hArray[i].` are
+                // both ordinary ABL and neither is an identifier.
+                let target = self.parse_expression()?;
+                let no_error = self.parse_no_error();
+                self.expect_period("Expected '.' after DELETE OBJECT statement")?;
+                return Ok(self.stmt(StatementKind::DeleteObject { target, no_error }));
             }
             if matches!(text.as_str(), "procedure" | "widget" | "server")
                 && Self::can_be_identifier(self.peek_at(1).kind)
