@@ -270,7 +270,7 @@ fn a_method_call_on_a_using_imported_instance_resolves_with_its_return_type() {
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Function);
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Character)),
         "the resolved symbol carries the class's declared return type"
     );
@@ -290,7 +290,7 @@ fn a_property_read_on_a_using_imported_instance_resolves_and_types() {
     let sym = sole_resolved(&sem, "entry-count");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Property);
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
     assert_synthesized(&sem, sym, NamespaceId::Values);
@@ -311,7 +311,7 @@ fn a_method_call_through_a_using_imported_type_name_resolves() {
     assert_eq!(sem.symbols.get(class).kind, SymbolKind::Class);
     let member = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.inherited_member_type(member),
+        sem.symbols.get(member).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
 
@@ -404,7 +404,7 @@ fn a_member_of_a_new_expression_resolves_without_an_intervening_variable() {
     let (_stmts, sem) = with_index(source, &WORKSPACE);
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
 }
@@ -586,21 +586,28 @@ fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
 }
 
 #[test]
-fn a_mismatched_assignment_from_an_imported_members_type_stays_silent_but_resolves() {
-    // The baseline that proves the mismatched fixtures in the sweep above are not
-    // inert: the member resolves, its declared `CHARACTER` really is recorded, the
-    // target really is `INTEGER` — and LINT0004 still says nothing, because the type
-    // is held off `Symbol::data_type` where neither `check.rs`'s fallback arm nor
-    // `type_mismatch_assignment::target_type` can read it.
+fn a_mismatch_through_a_colon_qualified_member_stays_silent_at_the_call_site() {
+    // Every ingredient is present and cross-file — the member resolves, its
+    // declared `CHARACTER` is on the symbol, the target is a genuinely
+    // incompatible `INTEGER` — and LINT0004 still says nothing. The reason is no
+    // longer that the type is parked off the symbol; it is on `data_type` now.
+    // It is that `check.rs` types every `MethodCall` as `Unknown` without
+    // consulting the symbol it resolved to, so the *expression*, not the symbol,
+    // is what the rule cannot judge.
+    //
+    // That boundary is deliberate and scoped out of this phase: `:`-qualified
+    // access is the ordinary OO-ABL spelling and therefore the larger half of the
+    // population, which deserves its own evidence rather than being folded into
+    // this one. Pinned here so the day it opens, this test is what says so.
     let source = instance_source("v-count = v-cache:fetch-label().");
     let (_stmts, sem) = with_index(&source, &WORKSPACE);
 
     let member = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.inherited_member_type(member),
-        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character)),
+        "the imported member carries its declared type, like any other symbol"
     );
-    assert_eq!(sem.symbols.get(member).data_type, None);
     assert_eq!(
         sem.symbols.get(sole_symbol(&sem, "v-count")).data_type,
         Some(ResolvedType::Primitive(PrimitiveTy::Integer)),

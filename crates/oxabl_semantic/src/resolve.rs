@@ -3594,33 +3594,24 @@ impl<'a> ResolveWalker<'a> {
                 member.flags,
             )
         };
-        // `data_type: None`, and the real type into a side map instead.
+        // The declared type goes onto the symbol, exactly as a local
+        // declaration's would.
         //
-        // The type is genuinely known — it is the return type or property type
-        // the declaring file wrote — but putting it on the symbol routes it
-        // straight into the type lattice through two readers that take a
-        // `Symbol::data_type` at face value: `check.rs::type_from_reference`'s
-        // fallback arm (its firewall intercepts only `Class`/`Interface`, so a
-        // `Function` or `Property` falls through) and
-        // `type_mismatch_assignment::target_type` (which reads `data_type`
-        // directly and never goes through `check.rs` at all). Either one makes
-        // LINT0004 report an assignment it is silent about today — an inherited
-        // `INTEGER` method assigned into a `LOGICAL` goes from zero findings to
-        // one purely by attaching an index — and this phase must add no finding on
-        // any input.
-        //
-        // A flag honored at one read site would not close the other; a side map
-        // closes both by construction, because the only door to the type is
-        // `SymbolTable::inherited_member_type`. See that accessor for the full
-        // argument and for who owns promoting it.
+        // It used to be parked in a side map, so that attaching an index could be
+        // merged on evidence that it changed no diagnostic: `Symbol::data_type`
+        // feeds the type lattice through two readers that take it at face value —
+        // `check.rs::type_from_reference`'s fallback arm and
+        // `type_mismatch_assignment::target_type`, which reads `data_type`
+        // directly — and either one turns an inherited `LONGCHAR` assigned into an
+        // `INTEGER` from silence into a finding. That is now the *intent*: the
+        // type is the one the declaring file wrote, and a cross-file resolution
+        // being shape-identical to a local one is what lets every consumer read
+        // one type channel instead of two.
         let sym = self.symbols.insert(Symbol {
-            data_type: None,
+            data_type,
             flags,
             ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
         });
-        if let Some(ty) = data_type {
-            self.symbols.record_inherited_member_type(sym, ty);
-        }
         // Re-acquired rather than held across the insert above. The entry is
         // known to exist — the read that got us here found it.
         if let Some(member) = self.cross_file_mut().inherited.get_mut(&key) {
