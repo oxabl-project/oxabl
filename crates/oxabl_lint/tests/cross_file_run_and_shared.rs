@@ -497,10 +497,12 @@ fn a_resolved_target_called_with_the_wrong_argument_count_produces_no_finding() 
 }
 
 #[test]
-fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
-    // The R11 firewall, swept over every fixture in this file at once: the
-    // diagnostic set is identical with and without an index. A new finding
-    // arriving from cross-file resolution shows up here first.
+fn attaching_an_index_adds_no_diagnostic_to_any_run_or_shared_scenario() {
+    // Swept over every fixture in this file at once, and unlike the inheritance
+    // and `USING` suites this one still asserts a **zero**: a resolved `RUN` target
+    // and a linked `SHARED` producer contribute a symbol and a reference, not a
+    // type, so nothing here reaches the type lattice. The day `undefined-symbol`
+    // fires on an absent literal target, this is the sweep that says so.
     for source in [
         "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n",
         "RUN post-order.p (INPUT 1).\n",
@@ -510,22 +512,19 @@ fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
         "PROCEDURE post-order:\nMESSAGE \"local\".\nEND PROCEDURE.\nRUN post-order.\n",
         SHARED_CONSUMER,
     ] {
+        // Exact rather than per-rule counts: a finding moving from one code to
+        // another, or from one span to another, is a behavior change the old
+        // count comparison would have absorbed.
+        assert_eq!(
+            codes_added_by_index(source, &WORKSPACE),
+            Vec::<&str>::new(),
+            "attaching an index added a finding for: {source}"
+        );
         let (_, with) = with_index(source, &WORKSPACE);
         let (_, without) = without_index(source);
         assert_eq!(
-            with.diagnostics.len(),
-            without.diagnostics.len(),
+            with.diagnostics, without.diagnostics,
             "semantic diagnostics differ for: {source}"
-        );
-        assert_eq!(
-            lint0001_with_index(source, &WORKSPACE).len(),
-            lint0001_without_index(source).len(),
-            "LINT0001 differs for: {source}"
-        );
-        assert_eq!(
-            lint0004_with_index(source, &WORKSPACE).len(),
-            lint0004_without_index(source).len(),
-            "LINT0004 differs for: {source}"
         );
     }
 }

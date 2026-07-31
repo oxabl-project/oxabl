@@ -1,12 +1,15 @@
-//! The two cross-file unresolved reasons must be as silent as `External`.
+//! The cross-file unresolved reasons, who produces each one, and which rules stay
+//! silent for them.
 //!
-//! `NotFoundInWorkspace` and `Unknowable` land before anything can produce
-//! them, so these tests build a real `Semantic` from synthetic ABL and then
-//! rewrite the reference entries in question — the only way to exercise the
-//! skip-lists ahead of the workspace index. What they pin is the firewall: no
-//! rule may treat a new reason as a finding, and the trap is
-//! `type-mismatch-assignment`, whose early return names one reason by hand and
-//! would otherwise fall through for anything new.
+//! Two halves. The skip-list tests build a real `Semantic` from synthetic ABL and
+//! then rewrite the reference entries in question, which is how a rule's treatment
+//! of a reason is exercised independently of whether any input can currently
+//! produce it — the trap being `type-mismatch-assignment`, whose early return
+//! names each reason by hand and would otherwise fall through for anything new.
+//! The producer tests at the bottom go the other way: real ABL through a real
+//! index, asserting which situation mints which reason, so "searched and absent",
+//! "not statically knowable", and "we did not look" cannot quietly collapse into
+//! each other.
 
 use oxabl_ast::{NodeId, Statement, StatementKind};
 use oxabl_common::{Diagnostic, FileId};
@@ -206,10 +209,13 @@ END PROCEDURE.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn nothing_produces_the_new_reasons_yet() {
-    // The firewall's other half: this unit adds the reasons but no producer,
-    // so a resolve pass over ordinary ABL must never mint one. When the
-    // workspace index lands, this test is the one that should be replaced.
+fn no_index_produces_no_cross_file_reason() {
+    // Named for what it checks rather than for when it was written: this run
+    // attaches **no index**, and a resolve pass with nowhere to look must never
+    // mint a cross-file reason. That is the invariant the `External` case rests
+    // on — "we did not look" has to be reachable only when nothing looked — and it
+    // outlives the index landing. The per-reason producer tests below are what the
+    // old name promised would replace it; they are additions, not replacements.
     let src = "\
 DEFINE VARIABLE v-n AS INTEGER NO-UNDO.
 v-n = x-missing.
@@ -229,4 +235,102 @@ RUN some-external.p.
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Who produces each reason
+// ---------------------------------------------------------------------------
+
+/// Analyze `source` against a batch index over `workspace`, searching `/src`.
+fn with_index(source: &str, workspace: &[(&str, &str)]) -> (Vec<Statement>, Semantic) {
+    use std::path::PathBuf;
+    let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+    for (path, contents) in workspace {
+        fs.insert(PathBuf::from(path), *contents);
+    }
+    let dirs = vec![PathBuf::from("/src")];
+    let index = oxabl_index::BatchIndex::new(&fs, &dirs);
+    let schema = Schema::empty();
+    let stmts = parse(source);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+    let sem = analyze_file(&stmts, &ctx);
+    (stmts, sem)
+}
+
+/// Every reason recorded under `name`, in reference order.
+fn reasons_for(sem: &Semantic, name: &str) -> Vec<UnresolvedReason> {
+    let atom = oxabl_lexer::oxabl_atom::OxablAtom::from(name);
+    sem.references
+        .iter()
+        .filter_map(|(_, res)| match res {
+            Resolution::Unresolved { name, reason } if *name == atom => Some(*reason),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_name_no_configured_path_provides_is_not_found_in_the_workspace() {
+    // The genuine path-search miss: an index is attached, every configured path
+    // was searched, and no file spells the name.
+    let (_stmts, sem) = with_index("RUN never-shipped.p.\n", &[]);
+    assert_eq!(
+        reasons_for(&sem, "never-shipped.p"),
+        vec![UnresolvedReason::NotFoundInWorkspace]
+    );
+}
+
+#[test]
+fn a_runtime_computed_target_is_unknowable() {
+    // Not statically knowable, so no amount of indexing helps — which is the whole
+    // distinction this reason carries.
+    let source = "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n";
+    let (_stmts, sem) = with_index(source, &[]);
+    let unknowable = sem.references.iter().any(|(_, res)| {
+        matches!(
+            res,
+            Resolution::Unresolved {
+                reason: UnresolvedReason::Unknowable,
+                ..
+            }
+        )
+    });
+    assert!(unknowable, "a computed RUN target records Unknowable");
+}
+
+#[test]
+fn the_same_name_records_no_reason_at_all_when_no_index_is_attached() {
+    // The pair that makes the reasons a real distinction rather than several
+    // spellings of one: identical source, and the answer differs by whether
+    // anything looked. With no index, a literal `RUN` target gets no reference
+    // entry at all — which is a stronger silence than `External`, and is why the
+    // rule cannot see it either way.
+    let source = "RUN never-shipped.p.\n";
+    let stmts = parse(source);
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let sem = analyze_file(&stmts, &ctx);
+    assert_eq!(
+        reasons_for(&sem, "never-shipped.p"),
+        Vec::new(),
+        "nothing looked, so nothing was recorded about the name"
+    );
+}
+
+#[test]
+fn a_class_name_only_the_workspace_could_provide_is_external_without_an_index() {
+    // `External` proper: the reference *is* recorded, and the reason says the
+    // lookup never happened. This is the pre-existing suppression state every rule
+    // skip-lists, and the one the other reasons have to stay distinguishable from.
+    let source = "DEFINE VARIABLE v-cache AS CLASS myapp.cache NO-UNDO.\n\
+                  v-cache = NEW myapp.cache().\n";
+    let stmts = parse(source);
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let sem = analyze_file(&stmts, &ctx);
+    assert_eq!(
+        reasons_for(&sem, "myapp.cache"),
+        vec![UnresolvedReason::External],
+        "with nothing attached, the honest answer is that we did not look"
+    );
 }

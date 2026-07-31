@@ -8,10 +8,15 @@
 //! Two properties are asserted over and over, because they are the ones a later
 //! change is most likely to break:
 //!
-//! 1. **With no index attached nothing changes.** Every scenario is run twice —
-//!    once with an index, once without — and the no-index run must produce
-//!    today's answer. That is the R11 firewall, and it is why the shared helpers
-//!    in `support` take the workspace as an argument rather than hard-coding one.
+//! 1. **With no index attached, nothing resolves and nothing is typed.** Every
+//!    scenario is run twice — once with an index, once without — and the no-index
+//!    run must produce the single-file answer. That is what makes each finding
+//!    below attributable to cross-file resolution rather than to a rule change,
+//!    and it is why the shared helpers in `support` take the workspace as an
+//!    argument rather than hard-coding one. These tests used to assert that the
+//!    two runs produced the *same* diagnostics; now that an inherited member's
+//!    declared type reaches the type lattice, they enumerate the difference
+//!    instead.
 //! 2. **A synthesized cross-file symbol is not in the scope tree.** It is
 //!    reachable only through the reference entry that deliberately points at it,
 //!    so a bare mention of an inherited member's name outside the subclass stays

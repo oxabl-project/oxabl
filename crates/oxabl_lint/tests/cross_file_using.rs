@@ -15,9 +15,13 @@
 //!    R11 firewall.
 //! 2. **The local scope tree wins.** A class declared in the file under analysis
 //!    shadows a workspace class reachable under the same name.
-//! 3. **No new finding, ever.** Where a test says "produces no finding" it also
-//!    asserts a sibling shape where the finding genuinely does fire, so the
-//!    assertion cannot pass by the rule being inert.
+//! 3. **A finding is stated, not assumed away.** Where a test says "produces no
+//!    finding" it also asserts a sibling shape where the finding genuinely does
+//!    fire, so the assertion cannot pass by the rule being inert. The suite used
+//!    to require that *no* new finding ever arrived; a cross-file class is a real
+//!    type now, so the two class-typed mismatch shapes are enumerated as findings
+//!    while the `:`-qualified member shapes stay silent — deliberately, and
+//!    pinned as such.
 
 mod support;
 
