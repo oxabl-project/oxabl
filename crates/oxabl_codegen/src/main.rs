@@ -1263,10 +1263,11 @@ fn main() {
             eprintln!("  callable - Write callable.rs (is_callable_kind function)");
             eprintln!("  builtins - Write builtins.rs (built-in function registry)");
             eprintln!("  summary  - Show statistics without writing files");
-            eprintln!("  builtin-classes - Crawl the Progress ABL API docs and write");
-            eprintln!("      resources/progress_builtin_classes.json");
-            eprintln!("      Options: --bundle <id> --refresh --catalog-only --limit <n>");
-            eprintln!("                --names <a,b,c> --out <path>");
+            eprintln!("  builtin-classes - Crawl the Progress ABL reference docs and write");
+            eprintln!("      resources/progress_builtin_classes.json (merged from the API");
+            eprintln!("      reference and ABL Reference bundles)");
+            eprintln!("      Options: --bundle <id[,id...]> --refresh --catalog-only --limit <n>");
+            eprintln!("                --names <a,b,c> --no-member-details --out <path>");
             std::process::exit(1);
         }
     }
