@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+mod progress_docs;
+
 // Target file paths relative to workspace root
 const KIND_RS_PATH: &str = "crates/oxabl_lexer/src/kind.rs";
 const BUILD_RS_PATH: &str = "crates/oxabl_lexer/build.rs";
@@ -1221,6 +1223,13 @@ fn main() {
             write_generated_file(FORMATTER_SPELLING_PATH, &content)
                 .expect("Failed to write keyword_spelling.rs");
         }
+        "builtin-classes" => {
+            let rest = args.iter().skip(2).cloned().collect::<Vec<_>>();
+            if let Err(e) = progress_docs::run_builtin_classes(&rest) {
+                eprintln!("builtin-classes: {e}");
+                std::process::exit(1);
+            }
+        }
         "all" | "" => {
             // Default: write all generated files
             let kind_content = generate_kind_rs(&keywords, &alternates);
@@ -1254,6 +1263,10 @@ fn main() {
             eprintln!("  callable - Write callable.rs (is_callable_kind function)");
             eprintln!("  builtins - Write builtins.rs (built-in function registry)");
             eprintln!("  summary  - Show statistics without writing files");
+            eprintln!("  builtin-classes - Crawl the Progress ABL API docs and write");
+            eprintln!("      resources/progress_builtin_classes.json");
+            eprintln!("      Options: --bundle <id> --refresh --catalog-only --limit <n>");
+            eprintln!("                --names <a,b,c> --out <path>");
             std::process::exit(1);
         }
     }
