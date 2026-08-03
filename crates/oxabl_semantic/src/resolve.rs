@@ -29,6 +29,7 @@ use oxabl_ast::{
     AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
     HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
     RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeSource,
+    UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -41,6 +42,66 @@ use crate::{
     ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
     builtins, diagnostics, resolve_span,
 };
+
+fn method_signature(parameters: &[Statement]) -> Vec<String> {
+    parameters
+        .iter()
+        .filter_map(|parameter| {
+            let StatementKind::DefineParameter {
+                direction,
+                param_type,
+            } = &parameter.kind
+            else {
+                return None;
+            };
+            let direction = match direction {
+                ParameterDirection::Input => "in",
+                ParameterDirection::Output => "out",
+                ParameterDirection::InputOutput => "inout",
+                ParameterDirection::Return => "return",
+            };
+            let shape = match param_type {
+                ParameterType::Variable { type_source, .. } => match type_source {
+                    TypeSource::Explicit(ty) => format!("value:{}", canonical_data_type(ty)),
+                    TypeSource::Like { source } => {
+                        format!("like:{}", source.name.to_ascii_lowercase())
+                    }
+                },
+                ParameterType::Handle { kind, passing, .. } => format!(
+                    "handle:{kind:?}:{}:{}:{}",
+                    passing.append, passing.bind, passing.by_value
+                ),
+                ParameterType::Buffer { target, .. } => {
+                    format!("buffer:{}", target.name.to_ascii_lowercase())
+                }
+            };
+            Some(format!("{direction}:{shape}"))
+        })
+        .collect()
+}
+
+fn canonical_data_type(ty: &DataType) -> String {
+    match ty {
+        DataType::Class(name) => format!("class:{}", name.to_ascii_lowercase()),
+        DataType::PreprocIf(branches) => {
+            let mut parts = vec![canonical_data_type(&branches.then_branch)];
+            parts.extend(
+                branches
+                    .elseif_branches
+                    .iter()
+                    .map(|(_, ty)| canonical_data_type(ty)),
+            );
+            parts.push(
+                branches
+                    .else_branch
+                    .as_ref()
+                    .map_or_else(|| "none".to_string(), canonical_data_type),
+            );
+            format!("preproc:{}", parts.join("|"))
+        }
+        _ => format!("{ty:?}").to_ascii_lowercase(),
+    }
+}
 
 /// Resolution of a single reference site. Populated by Phase 4a; the type
 /// is defined here so the declare pass can ship without `references` being
@@ -440,16 +501,7 @@ impl<'a> Walker<'a> {
                     | flag_if(*is_abstract, SymbolFlags::ABSTRACT)
                     | flag_if(*is_override, SymbolFlags::OVERRIDE);
                 let ret = return_type.as_ref().map(ResolvedType::from_data_type);
-                self.declare(
-                    stmt,
-                    scope,
-                    name,
-                    NamespaceId::Functions,
-                    SymbolKind::Function,
-                    ret,
-                    flags,
-                    None,
-                );
+                self.declare_method(stmt, scope, name, parameters, ret, flags);
                 let method_scope = self.tree.push(ScopeKind::Method, scope, stmt.id);
                 self.walk_block(parameters, method_scope);
                 self.walk_block(body, method_scope);
@@ -903,6 +955,82 @@ impl<'a> Walker<'a> {
         Some(id)
     }
 
+    /// Declare one OO method while keeping the scope binding as the stable
+    /// anchor for every overload of that name.
+    fn declare_method(
+        &mut self,
+        stmt: &Statement,
+        scope: ScopeId,
+        name: &Identifier,
+        parameters: &[Statement],
+        data_type: Option<ResolvedType>,
+        flags: SymbolFlags,
+    ) -> Option<SymbolId> {
+        let atom = fold_atom(&name.name);
+        let signature = method_signature(parameters);
+        let name_span = VirtualSpan::new(name.span.start, name.span.end);
+
+        let Some(anchor) = self.tree.get(scope).get_in(NamespaceId::Functions, &atom) else {
+            let sym = self.declare(
+                stmt,
+                scope,
+                name,
+                NamespaceId::Functions,
+                SymbolKind::Function,
+                data_type,
+                flags,
+                None,
+            );
+            if let Some(sym) = sym {
+                self.symbols.record_method_signature(sym, signature);
+            }
+            return sym;
+        };
+
+        let members: Vec<SymbolId> = self
+            .symbols
+            .method_overloads(anchor)
+            .map_or_else(|| vec![anchor], |members| members.to_vec());
+        if members
+            .iter()
+            .any(|member| self.symbols.method_signature(*member) == Some(signature.as_slice()))
+        {
+            let prior_span = self.symbols.get(anchor).name_span;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    diagnostics::SEM0001,
+                    format!("`{}` is already declared in this scope", name.name),
+                    resolve_span(self.ctx, name_span),
+                )
+                .with_label(
+                    resolve_span(self.ctx, prior_span),
+                    "prior declaration here".into(),
+                ),
+            );
+            return None;
+        }
+
+        // Preserve the declaration in the arena, but deliberately do not
+        // replace the scope binding: ordinary lookup continues to return the
+        // stable anchor and consumers can ask whether it represents a set.
+        let sym = self.symbols.insert(Symbol {
+            name: atom,
+            namespace: NamespaceId::Functions,
+            kind: SymbolKind::Function,
+            declared_in: scope,
+            declaration: stmt.id,
+            name_span,
+            data_type,
+            read_count: 0,
+            write_count: 0,
+            flags,
+            table_id: None,
+        });
+        self.symbols.record_method_signature(sym, signature);
+        self.symbols.record_method_overload(anchor, sym);
+        Some(sym)
+    }
+
     /// Attach a class or interface header's supertypes to its symbol.
     ///
     /// A no-op when the header named none, so the symbol gets no entry — which is
@@ -1023,6 +1151,7 @@ pub fn resolve_pass(
     // Imports first: the class-type pre-pass immediately below resolves
     // `AS CLASS Foo` through them, so they have to be known before it runs.
     walker.collect_using_imports(program);
+    walker.resolve_supertype_edges();
     walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
     // After the walk, never during it: the only files the index can answer a
@@ -1193,11 +1322,11 @@ struct CrossFileState {
     ///
     /// Collected once, before the walk, and only when an index is attached — a
     /// single-file run pays nothing for it.
-    using_types: Vec<(OxablAtom, IndexName)>,
+    using_types: Vec<(OxablAtom, IndexName, UsingSource)>,
     /// Wildcard `USING <package>.*` prefixes, in the order the file wrote them.
     /// Each keeps its trailing dot, so a candidate is `prefix + name` with no
     /// re-splicing at lookup time.
-    using_prefixes: Vec<String>,
+    using_prefixes: Vec<(String, UsingSource)>,
     /// Memo for the *workspace* half of a type-name lookup, keyed by the
     /// **as-written** spelling — the exact bytes the source used, unfolded.
     ///
@@ -1269,6 +1398,8 @@ enum TypeLookup {
     Local(SymbolId),
     /// Resolved through the workspace index; the symbol is synthesized.
     Indexed(SymbolId),
+    /// Supplied by an explicitly external source such as `FROM ASSEMBLY`.
+    External,
     /// An index is attached and no candidate spelling matched a class.
     NotFound,
     /// A file that would declare the class was located and could not be used.
@@ -1340,6 +1471,11 @@ struct InheritedMember {
     /// a call never resolves to an inherited property, nor a bare read to an
     /// inherited method.
     namespace: NamespaceId,
+    /// The type every reachable descriptor for this name agrees on, or
+    /// [`ResolvedType::Unknown`] when they disagree — see the fold in
+    /// [`ResolveWalker::walk_member_surface`]. Never erased merely because a
+    /// name is declared more than once up the chain, which is an `OVERRIDE` or
+    /// an interface contract far more often than an overload.
     data_type: Option<ResolvedType>,
     flags: SymbolFlags,
     /// `None` until the first reference names this member.
@@ -1401,13 +1537,13 @@ impl<'a> ResolveWalker<'a> {
     /// A slice accessor rather than `cross_file()?.using_types` because the
     /// search below indexes it in a loop whose body needs `&mut self`, and
     /// threading an `Option` through that is how an off-by-one gets in.
-    fn using_types(&self) -> &[(OxablAtom, IndexName)] {
+    fn using_types(&self) -> &[(OxablAtom, IndexName, UsingSource)] {
         self.cross_file().map_or(&[], |cf| &cf.using_types)
     }
 
     /// The file's wildcard `USING <package>.*` prefixes — empty for the reason
     /// [`Self::using_types`] gives.
-    fn using_prefixes(&self) -> &[String] {
+    fn using_prefixes(&self) -> &[(String, UsingSource)] {
         self.cross_file().map_or(&[], |cf| &cf.using_prefixes)
     }
 
@@ -1427,7 +1563,10 @@ impl<'a> ResolveWalker<'a> {
             return;
         }
         for stmt in program {
-            let StatementKind::Using { type_name, .. } = &stmt.kind else {
+            let StatementKind::Using {
+                type_name, source, ..
+            } = &stmt.kind
+            else {
                 continue;
             };
             match type_name.strip_suffix('*') {
@@ -1437,17 +1576,67 @@ impl<'a> ResolveWalker<'a> {
                 Some(prefix) => self
                     .cross_file_mut()
                     .using_prefixes
-                    .push(prefix.to_string()),
+                    .push((prefix.to_string(), *source)),
                 // `USING MyApp.Services.Cache` — makes `Cache` mean this one
                 // qualified name. Stored under the simple name, since that is
                 // the spelling a later reference will use.
                 None => {
                     let simple = type_name.rsplit('.').next().unwrap_or(type_name);
-                    self.cross_file_mut()
-                        .using_types
-                        .push((fold_atom(simple), IndexName::new(type_name)));
+                    self.cross_file_mut().using_types.push((
+                        fold_atom(simple),
+                        IndexName::new(type_name),
+                        *source,
+                    ));
                 }
             }
+        }
+    }
+
+    /// Resolve authored class/interface header names once, preserving their
+    /// spelling for diagnostics while giving the type lattice stable identity
+    /// edges. In particular, `INHERITS base` under `USING pkg.base` must point
+    /// at the synthesized `pkg.base` symbol rather than be looked up later by
+    /// the short spelling.
+    fn resolve_supertype_edges(&mut self) {
+        let classes: Vec<(SymbolId, ScopeId, Vec<SupertypeRef>)> = self
+            .symbols
+            .iter()
+            .filter(|(_, symbol)| {
+                matches!(symbol.kind, SymbolKind::Class | SymbolKind::Interface)
+                    && symbol.declaration != NodeId::DUMMY
+            })
+            .filter_map(|(id, symbol)| {
+                let supers = self.symbols.supertypes(id)?;
+                Some((
+                    id,
+                    symbol.declared_in,
+                    supers
+                        .inherits
+                        .iter()
+                        .chain(&supers.implements)
+                        .cloned()
+                        .collect(),
+                ))
+            })
+            .collect();
+
+        for (class, scope, authored) in classes {
+            let mut resolved = Vec::new();
+            for parent in authored {
+                match self.resolve_type_name(parent.name.as_written(), scope, parent.name_span) {
+                    TypeLookup::Local(parent) | TypeLookup::Indexed(parent) => {
+                        if !resolved.contains(&parent) {
+                            resolved.push(parent);
+                        }
+                    }
+                    TypeLookup::External
+                    | TypeLookup::NotFound
+                    | TypeLookup::Unusable
+                    | TypeLookup::Unknowable
+                    | TypeLookup::NotLooked => {}
+                }
+            }
+            self.symbols.record_resolved_supertypes(class, resolved);
         }
     }
 
@@ -1538,17 +1727,23 @@ impl<'a> ResolveWalker<'a> {
             if self.using_types()[i].0 != simple {
                 continue;
             }
+            if self.using_types()[i].2 == UsingSource::Assembly {
+                return TypeLookup::External;
+            }
             let candidate = self.using_types()[i].1.clone();
             if let Some(answer) = self.try_indexed_class(&candidate, use_span) {
                 return answer;
             }
         }
         for i in 0..self.using_prefixes().len() {
+            if self.using_prefixes()[i].1 == UsingSource::Assembly {
+                return TypeLookup::External;
+            }
             // One allocation per (name, prefix) pair actually tried, on a path
             // that runs once per distinct name in the file and only with an
             // index attached — `type_lookups` absorbs every repeat.
-            let mut qualified = String::with_capacity(self.using_prefixes()[i].len() + raw.len());
-            qualified.push_str(&self.using_prefixes()[i]);
+            let mut qualified = String::with_capacity(self.using_prefixes()[i].0.len() + raw.len());
+            qualified.push_str(&self.using_prefixes()[i].0);
             qualified.push_str(raw);
             let candidate = IndexName::new(&qualified);
             if let Some(answer) = self.try_indexed_class(&candidate, use_span) {
@@ -1606,8 +1801,11 @@ impl<'a> ResolveWalker<'a> {
     /// qualified name and recorded under the bare one, so checking the bare name
     /// alone would let every shipped class through as absent. Both import forms
     /// count — an explicit import that maps this simple name, and any wildcard
-    /// prefix in scope, since under a shipped wildcard *any* bare name could be a
-    /// shipped class and the miss is inconclusive.
+    /// prefix in scope when `raw` is bare, since under a shipped wildcard *that
+    /// bare name* could be a shipped class and the miss is inconclusive. A
+    /// qualified spelling cannot be supplied by a wildcard and must stand on
+    /// its own namespace; otherwise one `USING Progress.Lang.*` would exempt
+    /// every unrelated qualified typo in the file.
     fn tried_a_shipped_namespace(&self, raw: &str) -> bool {
         let simple = fold_atom(raw);
         if is_system_namespace(&simple) {
@@ -1615,11 +1813,12 @@ impl<'a> ResolveWalker<'a> {
         }
         self.using_types()
             .iter()
-            .any(|(name, qualified)| *name == simple && is_system_namespace(qualified.as_atom()))
-            || self
-                .using_prefixes()
-                .iter()
-                .any(|prefix| is_system_namespace(&fold_atom(prefix)))
+            .any(|(name, qualified, _)| *name == simple && is_system_namespace(qualified.as_atom()))
+            || (!raw.contains('.')
+                && self
+                    .using_prefixes()
+                    .iter()
+                    .any(|(prefix, _)| is_system_namespace(&fold_atom(prefix))))
     }
 
     /// [`Self::absent_reason`] for a *type* name, with the shipped-namespace
@@ -1747,6 +1946,28 @@ impl<'a> ResolveWalker<'a> {
                     },
                 );
             }
+            let parent_names: Vec<IndexName> = descriptor
+                .inherits
+                .iter()
+                .chain(&descriptor.implements)
+                .cloned()
+                .collect();
+            let mut resolved = Vec::new();
+            for parent in parent_names {
+                match self.resolve_type_name(parent.as_written(), ScopeId::ROOT, use_span) {
+                    TypeLookup::Local(parent) | TypeLookup::Indexed(parent) => {
+                        if !resolved.contains(&parent) {
+                            resolved.push(parent);
+                        }
+                    }
+                    TypeLookup::External
+                    | TypeLookup::NotFound
+                    | TypeLookup::Unusable
+                    | TypeLookup::Unknowable
+                    | TypeLookup::NotLooked => {}
+                }
+            }
+            self.symbols.record_resolved_supertypes(sym, resolved);
         }
         sym
     }
@@ -1776,6 +1997,7 @@ impl<'a> ResolveWalker<'a> {
                         // which is what it has today, and a member access
                         // through it stays unresolved.
                         TypeLookup::Local(_)
+                        | TypeLookup::External
                         | TypeLookup::NotFound
                         | TypeLookup::Unusable
                         | TypeLookup::Unknowable
@@ -2594,7 +2816,8 @@ impl<'a> ResolveWalker<'a> {
                 id,
                 type_name,
                 name_span,
-            } => self.resolve_using(*id, type_name, *name_span),
+                source,
+            } => self.resolve_using(*id, type_name, *name_span, *source),
             StatementKind::Leave(_) | StatementKind::Next(_) => {}
             StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => {}
             StatementKind::Empty => {}
@@ -2766,6 +2989,15 @@ impl<'a> ResolveWalker<'a> {
                     // No index attached: today's answer, unchanged. `NEW` of a
                     // `USING`-imported class is the archetypal `External`.
                     TypeLookup::NotLooked => {
+                        self.references.insert(
+                            expr.id,
+                            Resolution::Unresolved {
+                                name: atom,
+                                reason: UnresolvedReason::External,
+                            },
+                        );
+                    }
+                    TypeLookup::External => {
                         self.references.insert(
                             expr.id,
                             Resolution::Unresolved {
@@ -2985,7 +3217,7 @@ impl<'a> ResolveWalker<'a> {
     /// No count is bumped on a resolved import. An import is not a *use* of the
     /// class, and a future unused-import rule needs to be able to tell the
     /// difference.
-    fn resolve_using(&mut self, id: NodeId, type_name: &str, name_span: Span) {
+    fn resolve_using(&mut self, id: NodeId, type_name: &str, name_span: Span, source: UsingSource) {
         if !self.ctx.index_loaded || type_name.ends_with('*') {
             return;
         }
@@ -2993,31 +3225,39 @@ impl<'a> ResolveWalker<'a> {
         // A `USING` name is always fully qualified as written — it is what
         // *defines* an import, so it is not resolved through other imports.
         let name = IndexName::new(type_name);
-        let resolution = match self.try_indexed_class(&name, span) {
-            Some(TypeLookup::Indexed(sym)) => Resolution::Resolved(sym),
-            Some(TypeLookup::Unknowable) => Resolution::Unresolved {
+        let resolution = if source == UsingSource::Assembly {
+            Resolution::Unresolved {
                 name: name.as_atom().clone(),
-                reason: UnresolvedReason::Unknowable,
-            },
-            Some(TypeLookup::Unusable) => Resolution::Unresolved {
-                name: name.as_atom().clone(),
-                reason: UnresolvedReason::PresentButUnusable,
-            },
-            // `None` is the index's `NotFound`: an index was attached, it looked
-            // on the configured paths, and no file declares this class. That is
-            // a fact about the workspace, not a missing capability — unless there
-            // were no paths to look on, which `absent_reason` handles.
-            None => Resolution::Unresolved {
-                reason: self.absent_type_reason(type_name, name.as_atom()),
-                name: name.as_atom().clone(),
-            },
-            // `try_indexed_class` answers with these two states only; the arms
-            // exist so a third would be a compile error rather than a silent
-            // fall-through.
-            Some(TypeLookup::Local(_))
-            | Some(TypeLookup::NotFound)
-            | Some(TypeLookup::NotLooked) => {
-                return;
+                reason: UnresolvedReason::External,
+            }
+        } else {
+            match self.try_indexed_class(&name, span) {
+                Some(TypeLookup::Indexed(sym)) => Resolution::Resolved(sym),
+                Some(TypeLookup::Unknowable) => Resolution::Unresolved {
+                    name: name.as_atom().clone(),
+                    reason: UnresolvedReason::Unknowable,
+                },
+                Some(TypeLookup::Unusable) => Resolution::Unresolved {
+                    name: name.as_atom().clone(),
+                    reason: UnresolvedReason::PresentButUnusable,
+                },
+                // `None` is the index's `NotFound`: an index was attached, it looked
+                // on the configured paths, and no file declares this class. That is
+                // a fact about the workspace, not a missing capability — unless there
+                // were no paths to look on, which `absent_reason` handles.
+                None => Resolution::Unresolved {
+                    reason: self.absent_type_reason(type_name, name.as_atom()),
+                    name: name.as_atom().clone(),
+                },
+                // `try_indexed_class` answers with these two states only; the arms
+                // exist so a third would be a compile error rather than a silent
+                // fall-through.
+                Some(TypeLookup::Local(_))
+                | Some(TypeLookup::External)
+                | Some(TypeLookup::NotFound)
+                | Some(TypeLookup::NotLooked) => {
+                    return;
+                }
             }
         };
         self.references.insert(id, resolution);
@@ -3337,6 +3577,7 @@ impl<'a> ResolveWalker<'a> {
                 self.references.insert(expr_id, Resolution::Resolved(sym));
             }
             TypeLookup::Local(_)
+            | TypeLookup::External
             | TypeLookup::NotFound
             | TypeLookup::Unusable
             | TypeLookup::Unknowable
@@ -3779,6 +4020,9 @@ impl<'a> ResolveWalker<'a> {
             (
                 member.kind,
                 member.namespace,
+                // Already folded across every reachable descriptor for this
+                // name, so an overload set that disagrees is `Unknown` here and
+                // one that agrees keeps its type.
                 member.data_type.clone(),
                 member.flags,
             )
@@ -3972,6 +4216,34 @@ impl<'a> ResolveWalker<'a> {
                         self.cross_file_mut()
                             .inherited
                             .entry((class, member.name.as_atom().clone()))
+                            .and_modify(|existing| {
+                                if existing.kind == SymbolKind::Function
+                                    && member.kind == SymbolKind::Function
+                                    && existing.data_type != data_type
+                                {
+                                    // The surface is walked breadth-first over
+                                    // the *whole* ancestor chain, so one name
+                                    // arrives more than once for an `OVERRIDE`
+                                    // and for a class that inherits an
+                                    // interface's contract as well as for a
+                                    // genuine overload. Erasing the type on any
+                                    // repeat unjudged most real OO-ABL: ABL
+                                    // requires an `OVERRIDE` to keep the
+                                    // overridden return type, so the repeats
+                                    // agree and the answer is the one the
+                                    // nearest declaration already gave.
+                                    //
+                                    // Only a real disagreement is unknowable.
+                                    // Overload *selection* is not modelled — no
+                                    // argument list is matched against a
+                                    // signature — so when the candidates return
+                                    // different types the call goes to the
+                                    // lattice bottom and the assignment is left
+                                    // unjudged rather than judged by whichever
+                                    // descriptor the walk happened to see first.
+                                    existing.data_type = Some(ResolvedType::Unknown);
+                                }
+                            })
                             .or_insert(InheritedMember {
                                 kind: member.kind,
                                 namespace,
@@ -5173,11 +5445,11 @@ mod tests {
             is_final: false,
             body: vec![
                 stmt(StatementKind::Method {
-                    access: AccessModifier::Public,
-                    is_static: false,
+                    access: AccessModifier::Private,
+                    is_static: true,
                     is_abstract: false,
                     is_override: false,
-                    return_type: None,
+                    return_type: Some(DataType::Character),
                     name: id("m"),
                     parameters: vec![],
                     body: vec![],
@@ -5197,6 +5469,58 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code.0 == diagnostics::SEM0001),
             "two same-name methods must still SEM0001: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn distinct_method_overloads_are_preserved_without_sem0001() {
+        let (_tree, symbols, diags) = run(vec![stmt(StatementKind::Class {
+            name: id("C"),
+            inherits: None,
+            implements: vec![],
+            is_abstract: false,
+            is_final: false,
+            body: vec![
+                stmt(StatementKind::Method {
+                    access: AccessModifier::Public,
+                    is_static: false,
+                    is_abstract: false,
+                    is_override: false,
+                    return_type: Some(DataType::Integer),
+                    name: id("m"),
+                    parameters: vec![param_stmt(
+                        "value",
+                        ParameterDirection::Input,
+                        DataType::Integer,
+                    )],
+                    body: vec![],
+                }),
+                stmt(StatementKind::Method {
+                    access: AccessModifier::Private,
+                    is_static: true,
+                    is_abstract: false,
+                    is_override: false,
+                    return_type: Some(DataType::Character),
+                    name: id("m"),
+                    parameters: vec![param_stmt(
+                        "value",
+                        ParameterDirection::Input,
+                        DataType::Character,
+                    )],
+                    body: vec![],
+                }),
+            ],
+        })]);
+        assert!(
+            diags.iter().all(|d| d.code.0 != diagnostics::SEM0001),
+            "distinct signatures are legal overloads: {diags:?}"
+        );
+        assert_eq!(
+            symbols
+                .iter()
+                .filter(|(_, symbol)| symbol.name == fold_atom("m"))
+                .count(),
+            2
         );
     }
 

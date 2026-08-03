@@ -5,7 +5,7 @@ use oxabl_ast::{
     HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
     StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral,
-    WhenBranch, WidgetQualifier,
+    UsingSource, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -6945,6 +6945,7 @@ fn parse_using_records_node_id_and_name_span() {
             id,
             type_name,
             name_span,
+            ..
         } => {
             assert_eq!(type_name, "MyApp.Services.Foo");
             // The import gets its own identity, distinct from the statement's.
@@ -6968,6 +6969,7 @@ fn parse_using_wildcard_name_span_includes_the_star() {
             id,
             type_name,
             name_span,
+            ..
         } => {
             assert_eq!(type_name, "MyApp.Services.*");
             assert_ne!(id, NodeId::DUMMY);
@@ -6984,10 +6986,43 @@ fn parse_using_from_propath_name_span_excludes_the_source_clause() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
-        StatementKind::Using { name_span, .. } => {
+        StatementKind::Using {
+            name_span,
+            source: using_source,
+            ..
+        } => {
             assert_span_covers(source, name_span, "MyApp.Services.Foo");
+            assert_eq!(using_source, UsingSource::Propath);
         }
         _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_using_from_assembly_preserves_the_source_clause() {
+    let source = "USING Acme.Widget FROM ASSEMBLY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt.kind {
+        StatementKind::Using { source, .. } => assert_eq!(source, UsingSource::Assembly),
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_unix_backslash_escapes_before_whitespace_and_inside_names() {
+    let source = "DO:\n\\ END.\nDEFINE VARIABLE ab\\cd AS INTEGER NO-UNDO.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(
+        program.errors.is_empty(),
+        "unexpected errors: {:?}",
+        program.errors
+    );
+    match &program.statements[1].kind {
+        StatementKind::VariableDeclaration { name, .. } => assert_eq!(name.name, "abcd"),
+        other => panic!("expected variable declaration, got {other:?}"),
     }
 }
 

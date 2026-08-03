@@ -350,6 +350,11 @@ pub struct SymbolTable {
 /// what lets the box be created lazily without any caller knowing.
 #[derive(Debug, Default)]
 struct SymbolSideMaps {
+    /// Canonical parameter signatures for locally declared methods.
+    method_signatures: FxHashMap<SymbolId, Vec<String>>,
+    /// All declarations sharing an overloaded method name, keyed by the
+    /// symbol retained in the scope binding map.
+    method_overloads: FxHashMap<SymbolId, Vec<SymbolId>>,
     /// The supertypes each `Class` / `Interface` symbol's header named, recorded
     /// by the declare pass and consumed by the resolve pass's chain walk.
     ///
@@ -362,6 +367,9 @@ struct SymbolSideMaps {
     /// of symbols and nothing on the hot path reads this, so the map is entirely
     /// absent from the common file.
     supertypes: FxHashMap<SymbolId, Supertypes>,
+    /// Supertype identities resolved by the resolve pass. The authored names
+    /// above remain for diagnostics; assignability consumes these edges.
+    resolved_supertypes: FxHashMap<SymbolId, Vec<SymbolId>>,
     /// The indexed file that supplies each synthesized external-program symbol —
     /// the file a literal `RUN` target resolved to.
     ///
@@ -465,6 +473,87 @@ impl SymbolTable {
     /// `sym` is not a class or interface at all).
     pub fn supertypes(&self, sym: SymbolId) -> Option<&Supertypes> {
         self.side.as_deref()?.supertypes.get(&sym)
+    }
+
+    pub fn record_resolved_supertypes(&mut self, sym: SymbolId, parents: Vec<SymbolId>) {
+        if !parents.is_empty() {
+            self.side_mut().resolved_supertypes.insert(sym, parents);
+        }
+    }
+
+    pub fn resolved_supertypes(&self, sym: SymbolId) -> &[SymbolId] {
+        self.side
+            .as_deref()
+            .and_then(|side| side.resolved_supertypes.get(&sym))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn record_method_signature(&mut self, sym: SymbolId, signature: Vec<String>) {
+        self.side_mut().method_signatures.insert(sym, signature);
+    }
+
+    pub(crate) fn method_signature(&self, sym: SymbolId) -> Option<&[String]> {
+        self.side
+            .as_deref()?
+            .method_signatures
+            .get(&sym)
+            .map(Vec::as_slice)
+    }
+
+    pub(crate) fn record_method_overload(&mut self, anchor: SymbolId, member: SymbolId) {
+        let members = self
+            .side_mut()
+            .method_overloads
+            .entry(anchor)
+            .or_insert_with(|| vec![anchor]);
+        members.push(member);
+    }
+
+    pub fn method_overloads(&self, anchor: SymbolId) -> Option<&[SymbolId]> {
+        self.side
+            .as_deref()?
+            .method_overloads
+            .get(&anchor)
+            .map(Vec::as_slice)
+    }
+
+    pub fn is_overloaded_method(&self, anchor: SymbolId) -> bool {
+        self.method_overloads(anchor)
+            .is_some_and(|members| members.len() > 1)
+    }
+
+    /// The return type an overload set can be judged by, or `None` when `anchor`
+    /// names no overload set at all and the caller should read the symbol's own
+    /// type as usual.
+    ///
+    /// Overload *selection* is not modelled — oxabl matches no argument list
+    /// against a signature — so a set whose members return **different** types
+    /// yields [`ResolvedType::Unknown`], the lattice bottom, leaving the
+    /// expression unjudged rather than judged by an arbitrary candidate. A set
+    /// whose members all return the **same** type needs no selection: whichever
+    /// candidate the AVM picks, the value has that type, so the ordinary
+    /// widening ladder still applies. That keeps the common ABL idiom of
+    /// overloading on parameters alone judgeable, which an unconditional
+    /// `Unknown` silently gave up.
+    pub fn overload_set_data_type(&self, anchor: SymbolId) -> Option<ResolvedType> {
+        let members = self.method_overloads(anchor)?;
+        if members.len() <= 1 {
+            return None;
+        }
+        let mut folded: Option<&ResolvedType> = None;
+        for member in members {
+            // A member with no declared type is `VOID` or names no type; it
+            // cannot agree with a typed sibling, so the set is unknowable.
+            let Some(ty) = self.get(*member).data_type.as_ref() else {
+                return Some(ResolvedType::Unknown);
+            };
+            match folded {
+                None => folded = Some(ty),
+                Some(seen) if seen == ty => {}
+                Some(_) => return Some(ResolvedType::Unknown),
+            }
+        }
+        Some(folded.cloned().unwrap_or(ResolvedType::Unknown))
     }
 
     /// Record that synthesized program symbol `sym` is supplied by indexed file

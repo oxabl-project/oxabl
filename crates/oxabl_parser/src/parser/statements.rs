@@ -14,7 +14,7 @@ use oxabl_ast::{
     PreprocIf, RunArgument, RunTarget, SortDirection, Span, Statement, StatementKind,
     StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TempTableField,
     TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex,
-    WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
+    UsingSource, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -5346,13 +5346,26 @@ impl Parser<'_> {
             }
         }
 
-        // Consume optional "FROM PROPATH" / "FROM ASSEMBLY" source clause
+        // Preserve the optional source clause: `FROM ASSEMBLY` is semantically
+        // different from a workspace lookup through `PROPATH`.
+        let mut source = UsingSource::Unspecified;
         if self.check(Kind::From) {
             self.advance(); // consume FROM
-            // Consume the source keyword (PROPATH, ASSEMBLY, or an identifier)
-            if Self::can_be_identifier(self.peek().kind) || self.check(Kind::Propath) {
-                self.advance();
-            }
+            let source_token = self.advance().clone();
+            let spelling = &self.source[source_token.start..source_token.end];
+            source = if source_token.kind == Kind::Propath {
+                UsingSource::Propath
+            } else if spelling.eq_ignore_ascii_case("assembly") {
+                UsingSource::Assembly
+            } else {
+                return Err(ParseError {
+                    message: "Expected PROPATH or ASSEMBLY after FROM".to_string(),
+                    span: Span {
+                        start: source_token.start as u32,
+                        end: source_token.end as u32,
+                    },
+                });
+            };
         }
 
         self.expect_period("Expected '.' after USING statement")?;
@@ -5365,6 +5378,7 @@ impl Parser<'_> {
                 start: first_token.start as u32,
                 end: name_end as u32,
             },
+            source,
         }))
     }
 

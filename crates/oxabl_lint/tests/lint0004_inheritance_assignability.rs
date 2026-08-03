@@ -110,6 +110,71 @@ fn value_type(stmts: &[Statement], sem: &Semantic) -> ResolvedType {
         .expect("the check pass types every expression")
 }
 
+#[test]
+fn an_unresolved_overload_set_does_not_lend_a_call_an_arbitrary_return_type() {
+    let source = r#"CLASS c:
+        METHOD PUBLIC INTEGER label(INPUT value AS INTEGER):
+            RETURN 1.
+        END METHOD.
+        METHOD PUBLIC CHARACTER label(INPUT value AS CHARACTER):
+            RETURN "".
+        END METHOD.
+        METHOD PUBLIC VOID exercise():
+            DEFINE VARIABLE target AS LOGICAL NO-UNDO.
+            target = label(1).
+        END METHOD.
+    END CLASS."#;
+    let (_stmts, sem, diags) = lint(source);
+    assert!(
+        sem.diagnostics.is_empty(),
+        "legal overload declarations must not SEM0001: {:?}",
+        sem.diagnostics
+    );
+    assert!(
+        diags.is_empty(),
+        "until overload selection exists, the call type must be unknown: {diags:?}"
+    );
+
+    let control = source.replace(
+        r#"        METHOD PUBLIC CHARACTER label(INPUT value AS CHARACTER):
+            RETURN "".
+        END METHOD.
+"#,
+        "",
+    );
+    let (_, _, control_diags) = lint(&control);
+    assert_eq!(
+        control_diags.len(),
+        1,
+        "single method remains precisely typed"
+    );
+}
+
+#[test]
+fn an_imported_bare_parent_resolves_to_the_qualified_supertype_identity() {
+    let base = "CLASS pkg.base: END CLASS.";
+    let child = r#"USING pkg.base.
+        CLASS pkg.child INHERITS base:
+            METHOD PUBLIC VOID exercise():
+                DEFINE VARIABLE parent AS CLASS base NO-UNDO.
+                parent = NEW pkg.child().
+            END METHOD.
+        END CLASS."#;
+    let (_, sem, diags) = lint_with_index(child, &[("/src/pkg/base.cls", base)]);
+    assert!(sem.diagnostics.is_empty(), "unexpected semantic errors");
+    assert!(
+        diags.is_empty(),
+        "child-to-imported-parent is legal widening: {diags:?}"
+    );
+
+    let reverse = child.replace(
+        "DEFINE VARIABLE parent AS CLASS base NO-UNDO.\n                parent = NEW pkg.child().",
+        "DEFINE VARIABLE parent AS CLASS pkg.child NO-UNDO.\n                parent = NEW base().",
+    );
+    let (_, _, reverse_diags) = lint_with_index(&reverse, &[("/src/pkg/base.cls", base)]);
+    assert_eq!(reverse_diags.len(), 1, "parent-to-child remains a mismatch");
+}
+
 /// Declared type recorded for the variable named `name`.
 fn declared_type(sem: &Semantic, name: &str) -> Option<ResolvedType> {
     let atom = OxablAtom::from(name);

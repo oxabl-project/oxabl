@@ -559,6 +559,13 @@ impl<'a> CheckWalker<'a> {
     fn type_from_reference(&self, expr: &Expression) -> ResolvedType {
         match self.references.get(expr.id) {
             Some(Resolution::Resolved(sym)) => {
+                // An overload set is judged by the type its members agree on,
+                // and only goes to the lattice bottom when they disagree —
+                // overloading on parameters alone is the common ABL idiom and
+                // stays checkable.
+                if let Some(ty) = self.symbols.overload_set_data_type(*sym) {
+                    return ty;
+                }
                 let symbol = self.symbols.get(*sym);
                 // Class / Interface symbols carry no `data_type`; an
                 // expression that resolves *to* a class symbol (e.g. `NEW

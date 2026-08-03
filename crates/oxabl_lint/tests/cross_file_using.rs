@@ -143,6 +143,37 @@ fn a_using_naming_a_class_no_file_declares_is_reported_on_the_qualified_name() {
 }
 
 #[test]
+fn an_assembly_using_is_external_to_the_source_workspace() {
+    let source = "USING Acme.Widget FROM ASSEMBLY.\n\
+                  DEFINE VARIABLE v-widget AS CLASS Widget NO-UNDO.\n\
+                  v-widget = NEW Widget().\n";
+
+    let (stmts, sem) = with_index(source, &[]);
+    let (using_id, _) = sole_using(&stmts);
+    assert_eq!(
+        sem.references.get(using_id),
+        Some(&Resolution::Unresolved {
+            name: OxablAtom::from("acme.widget"),
+            reason: UnresolvedReason::External,
+        })
+    );
+    assert_eq!(
+        unresolved_reasons(&sem, "widget"),
+        vec![UnresolvedReason::External]
+    );
+    assert!(
+        lint0001_with_index(source, &[]).is_empty(),
+        "assembly types are not expected to have a source file"
+    );
+}
+
+#[test]
+fn a_propath_using_still_reports_a_missing_source_class() {
+    let source = "USING Acme.Widget FROM PROPATH.\n";
+    assert_eq!(lint0001_with_index(source, &[]).len(), 1);
+}
+
+#[test]
 fn a_wildcard_using_names_no_single_class_so_it_records_nothing() {
     // It is not a miss and it is not a resolution: `USING myapp.*` has no single
     // target for a reference to point at. Its whole effect is to widen the

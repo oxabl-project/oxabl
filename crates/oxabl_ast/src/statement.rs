@@ -424,6 +424,8 @@ pub enum StatementKind {
         /// Byte extent of `type_name` itself — not of the enclosing statement,
         /// which carries its own span on the [`Statement`] wrapper.
         name_span: Span,
+        /// Where the AVM should load the imported type from.
+        source: UsingSource,
     },
 
     /// CREATE statement — record creation or dynamic object creation.
@@ -669,6 +671,19 @@ pub enum StatementKind {
     /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
     /// The label can be referenced by LEAVE and NEXT statements.
     Label { name: String, body: Box<Statement> },
+}
+
+/// Source clause attached to a [`StatementKind::Using`] import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsingSource {
+    /// No `FROM` clause was written.
+    #[default]
+    Unspecified,
+    /// `FROM PROPATH` — resolve against configured source paths.
+    Propath,
+    /// `FROM ASSEMBLY` — the type is supplied by a .NET assembly, outside the
+    /// source workspace index.
+    Assembly,
 }
 
 /// A statement in ABL paired with its parser-assigned [`NodeId`].

@@ -59,6 +59,11 @@ Baselined 2026-04-17 (commit on `feat/ast-invariants-doc`) and maintained since 
   written — and, for the same reason, includes a trailing translation/width suffix (`:U`) when
   the literal carries one, which `name` likewise excludes. Unlike the wrapper `span` above, these are inline fields of a derived-`PartialEq`
   enum and therefore *do* participate in structural equality — see §2.
+- **A `USING` source clause is semantic AST data.** `StatementKind::Using::source`
+  is `Unspecified`, `Propath`, or `Assembly`. The parser never discards a valid
+  `FROM PROPATH` / `FROM ASSEMBLY` clause, because workspace resolution must not
+  search source paths for an assembly-only type. Like the other inline fields,
+  `source` participates in `StatementKind` structural equality.
 - **Span source order is asserted.** Where sibling `Statement`/`Expression` values are
   assembled (block bodies, the top-level program, argument/item lists), a `debug_assert!`
   enforces `prev.span.end <= next.span.start`: siblings are in source order and non-overlapping.
@@ -112,8 +117,19 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
 
 ## 3. Identifier casing
 
-- `Identifier.name: String` preserves the **exact source casing** of the identifier as it
-  appeared in the input text. The AST layer performs no case folding.
+- `Identifier.name: String` preserves the **source casing** of the identifier and
+  performs no case folding.
+- **Escape-marker normalization is a property of `Identifier`, not of every name in the
+  tree.** An `Identifier` built through the parser's identifier helper drops UNIX-shaped
+  escape markers, because they are not part of the name the compiler sees: `ab\cd` has
+  authored span `ab\cd` and AST name `abcd`. A name the parser instead slices verbatim from
+  source keeps its authored spelling — most importantly `RunTarget::Literal`, and
+  **deliberately so**: its operand is a file path, where a backslash is a path separator
+  rather than an escape, so normalizing it would corrupt the path the author wrote. The
+  consequence is that a `RUN` whose target name carries an escape marker does not link to
+  the like-named procedure declaration, which is a known and accepted gap rather than an
+  invariant violation. Do not read this bullet as licence to normalize a raw-sliced name
+  without deciding which of the two cases it is.
 - Case-insensitive comparison is the job of downstream consumers (lexer keyword matching,
   future `oxabl_semantic` symbol lookup). Those consumers use ASCII-folded byte comparison
   (`eq_ignore_ascii_case`) or atom interning with case folding at intern time — see

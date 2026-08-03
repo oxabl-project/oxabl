@@ -245,6 +245,7 @@ impl Visitor<'_> {
                 id,
                 type_name,
                 name_span,
+                ..
             } => {
                 self.check(*id, type_name, *name_span);
             }

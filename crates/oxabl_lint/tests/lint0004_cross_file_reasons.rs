@@ -657,6 +657,21 @@ fn an_inaccessible_inherited_member_is_never_reported() {
 }
 
 #[test]
+fn a_shipped_wildcard_does_not_exempt_an_unrelated_qualified_type() {
+    let source = "USING Progress.Lang.*.\n\
+                  DEFINE VARIABLE v-object AS CLASS Progress.Lang.Object NO-UNDO.\n\
+                  v-object = NEW myapp.NoSuchClassAnywhere().\n";
+    let diagnostics = lint0001_for(source, &[]);
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("myapp.NoSuchClassAnywhere")),
+        "the wildcard could only qualify a bare name; it must not suppress this miss: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn a_member_behind_an_unexpanded_include_gains_no_finding_from_the_index() {
     // The index does not expand includes, so a member spliced in from one is
     // invisible to it. Two shapes, and they differ — which is worth stating

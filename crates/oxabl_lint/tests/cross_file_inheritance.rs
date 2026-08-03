@@ -831,6 +831,108 @@ END CLASS."#;
 }
 
 #[test]
+fn inherited_overloads_do_not_lend_calls_the_first_return_type() {
+    let parent = r#"CLASS orders.calc-base:
+        METHOD PUBLIC INTEGER choose(INPUT value AS INTEGER):
+            RETURN 0.
+        END METHOD.
+        METHOD PUBLIC CHARACTER choose(INPUT value AS CHARACTER):
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+        METHOD PUBLIC VOID run-it():
+            DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+            v-flag = choose(1).
+        END METHOD.
+    END CLASS."#;
+    let workspace = [(CALC_BASE_PATH, parent)];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "choose");
+    assert_eq!(
+        sem.symbols.get(member).data_type,
+        Some(ResolvedType::Unknown)
+    );
+    assert!(lint0004_with_index(child, &workspace).is_empty());
+}
+
+#[test]
+fn an_override_up_the_chain_keeps_the_inherited_return_type() {
+    // The member surface is walked breadth-first over the *whole* ancestor
+    // chain, so `choose` arrives twice here — once from the grandparent and once
+    // from the parent's `OVERRIDE`. Treating any repeat as an overload erased the
+    // type, which silenced LINT0004 on most real OO-ABL: an `OVERRIDE` must keep
+    // the overridden return type in ABL, so the repeats agree and the answer is
+    // the one the nearest declaration already gave.
+    let grandparent = r#"CLASS orders.calc-root:
+        METHOD PUBLIC CHARACTER choose():
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let parent = r#"CLASS orders.calc-base INHERITS orders.calc-root:
+        METHOD PUBLIC OVERRIDE CHARACTER choose():
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+        METHOD PUBLIC VOID run-it():
+            DEFINE VARIABLE v-count AS INTEGER NO-UNDO.
+            v-count = choose().
+        END METHOD.
+    END CLASS."#;
+    let workspace = [
+        (CALC_BASE_PATH, parent),
+        ("/src/orders/calc-root.cls", grandparent),
+    ];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "choose");
+    assert_eq!(
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character)),
+        "an overridden member's type is knowable — the declarations agree"
+    );
+    assert_eq!(
+        lint0004_with_index(child, &workspace).len(),
+        1,
+        "so assigning CHARACTER into an INTEGER is judged"
+    );
+}
+
+#[test]
+fn an_overload_set_agreeing_on_its_return_type_is_still_judged() {
+    // Overloading on parameters alone is the common ABL idiom. Selection is not
+    // modelled, but it does not need to be when every candidate returns the same
+    // type: whichever one the AVM picks, the value is a CHARACTER. Only a
+    // genuine disagreement is unknowable — see
+    // `inherited_overloads_do_not_lend_calls_the_first_return_type`.
+    let parent = r#"CLASS orders.calc-base:
+        METHOD PUBLIC CHARACTER choose(INPUT value AS INTEGER):
+            RETURN "".
+        END METHOD.
+        METHOD PUBLIC CHARACTER choose(INPUT value AS CHARACTER):
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+        METHOD PUBLIC VOID run-it():
+            DEFINE VARIABLE v-count AS INTEGER NO-UNDO.
+            v-count = choose(1).
+        END METHOD.
+    END CLASS."#;
+    let workspace = [(CALC_BASE_PATH, parent)];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "choose");
+    assert_eq!(
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
+    );
+    assert_eq!(lint0004_with_index(child, &workspace).len(), 1);
+}
+
+#[test]
 fn an_interface_records_its_supertypes_as_implements() {
     // An interface may extend several interfaces, so its list cannot fit
     // `inherits: Option<_>` — it is recorded the way `oxabl_index` records it.
