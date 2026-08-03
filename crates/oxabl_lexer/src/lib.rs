@@ -65,7 +65,8 @@ pub struct Token {
 
     /// The value of the token.
     /// For literals it will be the value of the literal (2, 1.3, "Thing", true)
-    /// For identifiers and keywords the value will be None
+    /// Escaped identifiers carry their normalized spelling; ordinary
+    /// identifiers and keywords have no value.
     pub value: TokenValue,
 }
 
@@ -93,6 +94,10 @@ pub struct Lexer<'a> {
     /// True once the terminal [`Kind::Eof`] token has been yielded through the
     /// [`Iterator`] impl, so iteration stops instead of re-reading past EOF.
     finished: bool,
+
+    /// Normalized spelling of the word currently being scanned when UNIX's
+    /// backslash escape syntax occurred inside it.
+    normalized_word: Option<OxablAtom>,
 }
 
 impl<'a> Lexer<'a> {
@@ -102,6 +107,7 @@ impl<'a> Lexer<'a> {
             chars: source.chars(),
             in_directive: false,
             finished: false,
+            normalized_word: None,
         }
     }
 
@@ -139,6 +145,13 @@ impl<'a> Lexer<'a> {
                             self.advance(); // consume \n
                         }
                         // Continue the loop — there may be more leading whitespace on the next line
+                    } else if c == '\\'
+                        && matches!(self.chars.clone().nth(1), Some(' ' | '\t' | '\r'))
+                    {
+                        // UNIX ABL also accepts backslash as the general escape
+                        // character. Before whitespace it contributes no token;
+                        // the whitespace remains a separator.
+                        self.advance();
                     } else {
                         break; // not followed by newline — stop, let read_next_kind handle it
                     }
@@ -353,6 +366,10 @@ impl<'a> Lexer<'a> {
                     }
                     continue; // keep reading
                 }
+                '\\' if matches!(self.peek(), Some('a'..='z' | 'A'..='Z' | '_')) => {
+                    self.advance();
+                    return self.read_identifier_or_keyword(start);
+                }
                 _ => {
                     return Kind::Invalid;
                 }
@@ -363,6 +380,7 @@ impl<'a> Lexer<'a> {
 
     // Read and return the next token in the source
     fn read_next_token(&mut self) -> Token {
+        self.normalized_word = None;
         self.skip_whitespace();
         let start = self.offset();
         let mut kind = self.read_next_kind(start);
@@ -460,6 +478,11 @@ impl<'a> Lexer<'a> {
                     value = TokenValue::Integer(index);
                 }
             }
+            Kind::Identifier => {
+                if let Some(normalized) = self.normalized_word.take() {
+                    value = TokenValue::String(normalized);
+                }
+            }
             // Tokens with no value (operators and keywords) just don't set a value
             _ => {}
         }
@@ -548,15 +571,37 @@ impl<'a> Lexer<'a> {
         // our case, we would think it's an identifier. It would fail
         // compilation and get flagged later on in the parser.
         // It should still match "my-var1" though.
-        while matches!(
-            self.peek(),
-            Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
-        ) {
-            self.advance();
+        let mut escaped = self.source.as_bytes().get(start) == Some(&b'\\');
+        loop {
+            if matches!(
+                self.peek(),
+                Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
+            ) {
+                self.advance();
+            } else if self.peek() == Some('\\')
+                && matches!(
+                    self.chars.clone().nth(1),
+                    Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
+                )
+            {
+                self.advance(); // backslash
+                self.advance(); // escaped word character
+                escaped = true;
+            } else {
+                break;
+            }
         }
 
         // NOW we have the full word
-        let text = &self.source[start..self.offset()];
+        let raw = &self.source[start..self.offset()];
+        let normalized;
+        let text = if escaped {
+            normalized = raw.replace('\\', "");
+            self.normalized_word = Some(OxablAtom::from(normalized.as_str()));
+            normalized.as_str()
+        } else {
+            raw
+        };
 
         // Check for space-separated lock types (e.g., "NO LOCK", "SHARE LOCK")
         // This must be done BEFORE checking keywords since "no", "share", etc.
@@ -2131,6 +2176,33 @@ end."#;
         let source = "{file.i";
         let tokens = collect_tokens(source);
         assert_eq!(tokens[0].kind, Kind::Invalid);
+    }
+
+    #[test]
+    fn unix_backslash_escapes_are_ignored_outside_strings() {
+        let tokens = collect_tokens("DO:\n\\ END.\nmes\\sage \"hello\".\nab\\cd.");
+        let kinds: Vec<_> = tokens.iter().map(|token| token.kind).collect();
+
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::Do,
+                Kind::Colon,
+                Kind::End,
+                Kind::Period,
+                Kind::Message,
+                Kind::StringLiteral,
+                Kind::Period,
+                Kind::Identifier,
+                Kind::Period,
+                Kind::Eof,
+            ]
+        );
+        assert_eq!(
+            tokens[7].value,
+            TokenValue::String(OxablAtom::from("abcd")),
+            "an escaped identifier must carry its normalized ABL spelling"
+        );
     }
 
     #[test]

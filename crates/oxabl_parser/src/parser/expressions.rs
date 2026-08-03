@@ -342,7 +342,7 @@ impl Parser<'_> {
                 start: token.start as u32,
                 end: token.end as u32,
             },
-            name: self.source[token.start..token.end].to_string(),
+            name: self.identifier_source(token.start, token.end),
         };
 
         // Check for method call: member followed by (
@@ -555,7 +555,7 @@ impl Parser<'_> {
                 start: token.start as u32,
                 end: token.end as u32,
             },
-            name: self.source[token.start..token.end].to_string(),
+            name: self.identifier_source(token.start, token.end),
         };
 
         let hi = self.prev_end();
@@ -1261,7 +1261,7 @@ impl Parser<'_> {
                 }
             }
 
-            let name = self.source[start..end].to_string();
+            let name = self.identifier_source(start, end);
             let identifier = Identifier {
                 span: Span {
                     start: start as u32,

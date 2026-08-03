@@ -1340,7 +1340,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume '.'
                     let next = self.advance().clone();
                     name.push('.');
-                    name.push_str(&self.source[next.start..next.end]);
+                    name.push_str(&self.identifier_source(next.start, next.end));
                     end = next.end as u32;
                 } else {
                     break;
@@ -1373,7 +1373,7 @@ impl<'a> Parser<'a> {
         let start_tok = self.advance().clone();
         let start = start_tok.start as u32;
         let mut end = start_tok.end as u32;
-        let mut name = self.source[start_tok.start..start_tok.end].to_string();
+        let mut name = self.identifier_source(start_tok.start, start_tok.end);
 
         // Consume .qualifier parts (same-line only)
         while self.check(Kind::Period) {
@@ -1386,7 +1386,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume '.'
                     let next = self.advance().clone();
                     name.push('.');
-                    name.push_str(&self.source[next.start..next.end]);
+                    name.push_str(&self.identifier_source(next.start, next.end));
                     end = next.end as u32;
                 } else {
                     break;
@@ -1461,8 +1461,20 @@ impl<'a> Parser<'a> {
                 start: start as u32,
                 end: end as u32,
             },
-            name: self.source[start..end].to_string(),
+            name: self.identifier_source(start, end),
         })
+    }
+
+    /// ABL on UNIX accepts backslash as an alternative escape character. The
+    /// token span stays on the authored bytes, while semantic identity uses the
+    /// spelling the compiler sees after escape removal.
+    fn identifier_source(&self, start: usize, end: usize) -> String {
+        let authored = &self.source[start..end];
+        if authored.contains('\\') {
+            authored.replace('\\', "")
+        } else {
+            authored.to_string()
+        }
     }
 
     fn current_span(&self) -> Span {
