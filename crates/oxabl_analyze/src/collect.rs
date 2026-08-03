@@ -145,6 +145,11 @@ struct ExpandedChunk {
 pub struct ExpandedFile {
     /// Expanded source text fed to the lexer.
     pub text: String,
+    /// Original root text when preprocessing selected one conditional branch.
+    /// Kept so read-count lints can conservatively account for references in
+    /// other compile-time configurations without treating those branches as
+    /// active for parsing or diagnostics.
+    root_source: Option<String>,
     /// Flattened span-tree leaves in expansion order. Empty means the identity
     /// mapping (preprocessing was off): virtual == real, origin == root.
     chunks: Vec<ExpandedChunk>,
@@ -227,6 +232,7 @@ pub fn expand_source(
     if !preprocess {
         return Ok(ExpandedFile {
             text: source.to_string(),
+            root_source: None,
             chunks: Vec::new(),
             preproc: Vec::new(),
             dependencies: Vec::new(),
@@ -254,6 +260,7 @@ pub fn expand_source(
                 .collect();
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
+                root_source: Some(source.to_string()),
                 chunks,
                 preproc,
                 dependencies: pf.dependencies.clone(),
@@ -380,7 +387,15 @@ pub fn collect_from_expanded(
         .with_lint_severities(lint_severities.clone())
         .with_index(index);
     ctx.schema_loaded = schema_loaded;
-    let sem = analyze_file(&program.statements, &ctx);
+    let mut sem = analyze_file(&program.statements, &ctx);
+    credit_reads_from_other_preprocessor_configurations(
+        expanded,
+        schema,
+        schema_loaded,
+        lint_severities,
+        index,
+        &mut sem,
+    );
 
     for d in &sem.diagnostics {
         if let Some(resolved) = resolve_diagnostic(d.clone(), expanded) {
@@ -401,6 +416,80 @@ pub fn collect_from_expanded(
     }
 
     (Some(sem), out)
+}
+
+/// Merge only the fact needed by count-based dead-store rules: a root-declared
+/// symbol is read in at least one preprocessor configuration. The active
+/// expansion remains authoritative for syntax, types, writes, diagnostics, and
+/// returned references; this cannot fabricate executable cross-branch flow.
+fn credit_reads_from_other_preprocessor_configurations(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
+    active: &mut Semantic,
+) {
+    let Some(root_source) = expanded.root_source.as_deref() else {
+        return;
+    };
+    if !root_source
+        .as_bytes()
+        .windows(3)
+        .any(|window| window.eq_ignore_ascii_case(b"&if"))
+    {
+        return;
+    }
+    let tokens = tokenize(root_source);
+    let program = Parser::new(&tokens, root_source).parse_program();
+    // Never derive semantic facts from a recovered parse. The active expansion
+    // still produces its normal diagnostics and model when raw source is
+    // incomplete during editing.
+    if !program.errors.is_empty() {
+        return;
+    }
+    let mut ctx = AnalysisContext::new(expanded.root, root_source, schema)
+        .with_lint_severities(lint_severities.clone())
+        .with_index(index);
+    ctx.schema_loaded = schema_loaded;
+    let possible = analyze_file(&program.statements, &ctx);
+
+    let read_declarations: Vec<_> = possible
+        .symbols
+        .iter()
+        .filter(|(_, symbol)| {
+            symbol.declaration != oxabl_ast::NodeId::DUMMY && symbol.read_count > 0
+        })
+        .map(|(_, symbol)| {
+            (
+                symbol.name.clone(),
+                symbol.kind,
+                symbol.name_span.start,
+                symbol.read_count,
+            )
+        })
+        .collect();
+
+    let active_declarations: Vec<_> = active
+        .symbols
+        .iter()
+        .filter_map(|(id, symbol)| {
+            let (origin, real_start) = expanded.resolve(symbol.name_span.start)?;
+            (origin == expanded.root).then(|| (id, symbol.name.clone(), symbol.kind, real_start))
+        })
+        .collect();
+    for (id, name, kind, real_start) in active_declarations {
+        if let Some((_, _, _, reads)) =
+            read_declarations
+                .iter()
+                .find(|(raw_name, raw_kind, start, _)| {
+                    *raw_name == name && *raw_kind == kind && *start == real_start
+                })
+        {
+            let current = active.symbols.get(id).read_count;
+            active.symbols.get_mut(id).read_count = current.max(*reads);
+        }
+    }
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,

@@ -1102,6 +1102,44 @@ END CLASS."#;
         }
     }
 
+    #[test]
+    fn inactive_preprocessor_branch_read_prevents_cross_configuration_dead_store() {
+        let fs = InMemoryFileSystem::new();
+        let config = PipelineConfig::default();
+        let source = r#"
+DEFINE VARIABLE target-row AS ROWID NO-UNDO.
+target-row = ?.
+&IF DEFINED(runMode) EQ 0 &THEN
+MESSAGE "default build".
+&ELSE
+FIND synthetic-row WHERE ROWID(synthetic-row) EQ target-row NO-ERROR.
+&ENDIF
+"#;
+
+        let result = LintPipeline::new(&config, &fs).run(source);
+        assert!(
+            result
+                .all()
+                .all(|diagnostic| diagnostic.diagnostic.code.0 != "LINT0006"),
+            "a read in another valid preprocessor configuration must prevent a dead-store claim: {:?}",
+            result.diagnostics()
+        );
+
+        let never_read = source.replace(
+            "FIND synthetic-row WHERE ROWID(synthetic-row) EQ target-row NO-ERROR.",
+            "MESSAGE \"alternate build\".",
+        );
+        let control = LintPipeline::new(&config, &fs).run(&never_read);
+        assert_eq!(
+            control
+                .all()
+                .filter(|diagnostic| diagnostic.diagnostic.code.0 == "LINT0006")
+                .count(),
+            1,
+            "a variable unread in every configuration remains a dead store"
+        );
+    }
+
     /// A filesystem that counts reads per path, so "the parent is read once per
     /// run" is asserted against real I/O rather than against index internals.
     struct CountingFs {
