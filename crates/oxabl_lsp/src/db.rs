@@ -761,11 +761,18 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     // own diagnostics under `DiagnosticSource::Preproc`, so there is no second
     // mapping to keep in step here. `into_diagnostics` takes the set rather than
     // cloning it — this runs per keystroke.
-    db.config()
-        .lint_pipeline()
-        .with_index(&index)
-        .collect(&expansion)
-        .into_diagnostics()
+    let run = db.config().lint_pipeline();
+    match buffer.path(db).as_deref() {
+        Some(path) => run
+            .with_file(path)
+            .with_index(&index)
+            .collect(&expansion)
+            .into_diagnostics(),
+        None => run
+            .with_index(&index)
+            .collect(&expansion)
+            .into_diagnostics(),
+    }
 }
 
 /// Compute diagnostics on a snapshot, swallowing a [`salsa::Cancelled`] unwind

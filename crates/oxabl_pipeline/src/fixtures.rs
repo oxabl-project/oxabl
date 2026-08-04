@@ -106,6 +106,9 @@ pub enum Capability {
     /// runs with preprocessing off and no filesystem, so no `PREPROC007` can
     /// ever be produced there.
     IncludeResolution,
+    /// A root filename. The browser export accepts source text only, so it
+    /// cannot distinguish a complete compilation unit from an include fragment.
+    RootFileIdentity,
 }
 
 /// A diagnostic a fixture must produce, in the pipeline's own coordinates.
@@ -794,6 +797,9 @@ pub fn config_with_override() -> PipelineConfig {
 /// own, on a source where getting it wrong shows up at all.
 pub const NON_ASCII_FIXTURE: &str = "non_ascii_prefix";
 
+/// The fixture whose `.i` root selects include-fragment analysis.
+pub const INCLUDE_FRAGMENT_FIXTURE: &str = "include_fragment_root";
+
 /// The 1-based line the non-ASCII fixture's finding sits on.
 pub const NON_ASCII_LINE: usize = 2;
 
@@ -815,6 +821,44 @@ pub const NON_ASCII_CHARACTER_COLUMN: usize = 30;
 
 /// Every fixture, shared by all four legs.
 pub const FIXTURES: &[ParityFixture] = &[
+    ParityFixture {
+        name: INCLUDE_FRAGMENT_FIXTURE,
+        root_file: "fragment.i",
+        siblings: &[],
+        resolutions: &[],
+        source: "DEFINE VARIABLE local AS INTEGER NO-UNDO.\n\
+                 local = \"wrong\".\n\
+                 outside = local.\n\
+                 DEFINE VARIABLE unused AS INTEGER NO-UNDO.\n\
+                 DEFINE VARIABLE dead AS INTEGER NO-UNDO.\n\
+                 dead = 1.\n\
+                 DO:\n\
+                     DEFINE VARIABLE escaped AS INTEGER NO-UNDO.\n\
+                     escaped = 1.\n\
+                 END.\n\
+                 MESSAGE escaped.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0004",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Lint,
+            start: 42,
+            end: 47,
+        }],
+        format: ExpectedFormat::Reformatted(concat!(
+            "DEFINE VARIABLE local AS INTEGER NO-UNDO.\n",
+            "local = \"wrong\".\n",
+            "outside = local.\n",
+            "DEFINE VARIABLE unused AS INTEGER NO-UNDO.\n",
+            "DEFINE VARIABLE dead AS INTEGER NO-UNDO.\n",
+            "dead = 1.\n",
+            "DO:\n",
+            "    DEFINE VARIABLE escaped AS INTEGER NO-UNDO.\n",
+            "    escaped = 1.\n",
+            "END.\n",
+            "MESSAGE escaped.\n",
+        )),
+        needs: &[Capability::RootFileIdentity],
+    },
     ParityFixture {
         name: "undefined_symbol",
         root_file: "main.p",
