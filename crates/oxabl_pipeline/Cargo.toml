@@ -20,6 +20,9 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_pipeline"
 # `WorkspaceIndex` seam *above* this crate, which is what keeps `salsa` on the one
 # side of the seam the browser never reaches.
 [dependencies]
+# For `Span`: a dependency edge carries the offsets in the dependent file where the
+# dependency is written, and `src/reverse.rs` hands them to a client.
+oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
 oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
@@ -47,8 +50,6 @@ tempfile = "3"
 # dependency cycle and fails the release run outright. This crate's parity leg
 # therefore lives in `src/parity.rs` under `#[cfg(test)]`, where the fixture
 # table is in scope without a feature; see `src/fixtures.rs`.
-# Only for `Span` inside a fabricated `FileSpan` — see the fatal-expansion test.
-oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 # Arms `panic_if_injected` so a source carrying an `OXABL-TEST-PANIC:<site>`
 # marker panics at the guarded site. No ABL input panics today, so this is the
 # only way to test that `LintPipeline::run` contains a panic while `expand` and

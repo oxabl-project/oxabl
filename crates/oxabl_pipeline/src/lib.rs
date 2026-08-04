@@ -63,6 +63,7 @@ mod lint;
 #[cfg(test)]
 mod parity;
 pub mod position;
+mod reverse;
 
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
@@ -70,6 +71,10 @@ pub use lint::{Expansion, LintPipeline, LintResult};
 pub use position::{
     Position, ResolvedSpan, resolve_diagnostic, resolve_file_span, resolve_offset, resolve_offsets,
 };
+pub use reverse::{Dependent, Dependents, ReverseGraph, Subject, Unanalysed, UnresolvedRow};
+// Re-exported so a consumer of the reverse query need not also depend on
+// `oxabl_index` to name the edge kind every answer is grouped by.
+pub use oxabl_index::{DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference};
 
 use oxabl_common::FileId;
 

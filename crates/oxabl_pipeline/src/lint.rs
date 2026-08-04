@@ -85,7 +85,9 @@ use oxabl_analyze::{
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
-use oxabl_index::BatchIndex;
+use oxabl_index::{
+    BatchIndex, DirectIncludeInput, EdgeInputs, UnresolvedIncludeInput, build_edge_set,
+};
 use oxabl_semantic::{Semantic, WorkspaceIndex};
 use oxabl_workspace::FileSystem;
 
@@ -591,6 +593,83 @@ impl<'a> LintPipeline<'a> {
     /// buffer.
     pub fn file(&self) -> Option<&Path> {
         self.file.as_deref()
+    }
+
+    /// The filesystem this run reads through, so a walk over this run's own index
+    /// reads files the same way its includes are read.
+    pub fn file_system(&self) -> &'a dyn FileSystem {
+        self.fs
+    }
+
+    /// The path this run's index assigned to `id`, or `None` when the id came from
+    /// somewhere this run cannot ask.
+    ///
+    /// An [`IndexedFileId`](oxabl_semantic::IndexedFileId) on a dependency edge is
+    /// opaque outside the index that minted it. A run answering from a supplied
+    /// index — the language server's cache — has no mapping to offer, and inventing
+    /// one would name the wrong file.
+    pub fn indexed_path(&self, id: oxabl_semantic::IndexedFileId) -> Option<PathBuf> {
+        match &self.index {
+            RunIndex::Owned(index) => index.indexed_path(id),
+            RunIndex::Shared(index) => index.indexed_path(id),
+            RunIndex::External(_) => None,
+        }
+    }
+
+    /// The typed dependency edge set for `source`, analysed as this handle's file.
+    ///
+    /// The whole-workspace reverse pass calls this per file. Guarded, unlike
+    /// [`expand`](Self::expand) and [`collect`](Self::collect): one unparseable or
+    /// panicking file out of fourteen thousand must cost that file's edges and
+    /// nothing else. `Err` carries a short reason so the caller can record the file
+    /// as unanalysed rather than as depending on nothing.
+    pub fn edge_set(&self, source: &str) -> Result<oxabl_index::DependencyEdges, String> {
+        let outcome = catch_panic(|| {
+            let expansion = self.expand(source);
+            let result = self.collect(&expansion);
+            (expansion, result)
+        });
+        let (expansion, result) = outcome.map_err(|panic| format!("analysis panicked: {panic}"))?;
+        let expanded = expansion
+            .expanded()
+            .ok_or_else(|| "preprocessing failed fatally".to_string())?;
+        let semantic = result
+            .semantic()
+            .ok_or_else(|| "no semantic model was produced".to_string())?;
+
+        let direct: Vec<DirectIncludeInput<'_>> = expanded
+            .direct_includes()
+            .iter()
+            .map(|include| DirectIncludeInput {
+                path: include.path.as_path(),
+                site: include.site,
+            })
+            .collect();
+        let unresolved_includes: Vec<UnresolvedIncludeInput<'_>> = expanded
+            .unresolved_includes()
+            .iter()
+            .map(|include| UnresolvedIncludeInput {
+                name: include.name.as_str(),
+                site: include.site.span,
+            })
+            .collect();
+        // The model's spans are post-expansion; an edge must carry the dependent
+        // file's own bytes, and only the expansion knows the mapping.
+        let resolve_span = |span: oxabl_common::VirtualSpan| {
+            expanded.resolve_root_span(oxabl_ast::Span {
+                start: span.start,
+                end: span.end,
+            })
+        };
+
+        Ok(build_edge_set(&EdgeInputs {
+            semantic,
+            schema: &self.config.schema,
+            direct_includes: &direct,
+            transitive_includes: expansion.dependency_paths(),
+            unresolved_includes: &unresolved_includes,
+            resolve_span: &resolve_span,
+        }))
     }
 
     /// Run `with` against this handle's index, viewed as the file being analysed.
