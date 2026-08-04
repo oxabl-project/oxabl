@@ -156,6 +156,13 @@ pub struct ExpandedFile {
     /// path-level dependency set the LSP watcher matches changed `*.i` files
     /// against (R17).
     dependency_paths: Vec<PathBuf>,
+    /// Paths of the includes this file names *itself*, at include depth 1.
+    ///
+    /// A subset of `dependency_paths`, each path once, in the order the include
+    /// sites appear. Captured here because this is the last place the nesting is
+    /// visible: the span tree is not retained, and `dependency_paths` is flat and
+    /// transitive, so "direct or transitive?" is unanswerable downstream.
+    direct_dependency_paths: Vec<PathBuf>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -169,6 +176,15 @@ impl ExpandedFile {
     /// Absolute paths of the include files this expansion read (R17 watcher).
     pub fn dependency_paths(&self) -> &[PathBuf] {
         &self.dependency_paths
+    }
+
+    /// Paths of the includes this file names itself — include depth 1, each once.
+    ///
+    /// Pairs with [`ExpandedFile::dependency_paths`], which is the transitive set.
+    /// The difference between the two is what lets a dependency edge say *direct
+    /// include* rather than merely *include*.
+    pub fn direct_dependency_paths(&self) -> &[PathBuf] {
+        &self.direct_dependency_paths
     }
 
     /// Resolve a virtual (expanded) offset to `(origin file, real offset)`.
@@ -231,6 +247,7 @@ pub fn expand_source(
             preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
+            direct_dependency_paths: Vec::new(),
             root,
         });
     }
@@ -252,12 +269,15 @@ pub fn expand_source(
                 .filter(|d| is_loud(d) && d.span.file == root)
                 .cloned()
                 .collect();
+            let mut direct_dependency_paths = Vec::new();
+            collect_direct_includes(&pf.tree, &mut direct_dependency_paths);
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
                 chunks,
                 preproc,
                 dependencies: pf.dependencies.clone(),
                 dependency_paths: recorder.into_reads(),
+                direct_dependency_paths,
                 root,
             })
         }
@@ -319,6 +339,28 @@ fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChun
                 *cursor += len;
             }
             SpanNode::Include { children, .. } => flatten_tree(children, cursor, out),
+        }
+    }
+}
+
+/// Collect the depth-1 include paths from a span tree, each once, in site order.
+///
+/// Only a node carrying a path is a file include; a `{&var}` or `{N}` substitution
+/// reuses the same variant with `path: None`. Those are walked *through* rather
+/// than counted, because their spliced text sits at the parent's own depth — and a
+/// real include reached that way is still one this file names itself. A resolved
+/// include's own children are not walked: everything below it is transitive.
+fn collect_direct_includes(nodes: &[SpanNode], out: &mut Vec<PathBuf>) {
+    for node in nodes {
+        if let SpanNode::Include { path, children, .. } = node {
+            match path {
+                Some(path) => {
+                    if !out.contains(path) {
+                        out.push(path.clone());
+                    }
+                }
+                None => collect_direct_includes(children, out),
+            }
         }
     }
 }
@@ -710,6 +752,112 @@ mod tests {
             !expanded.dependencies().is_empty(),
             "include dependency must be tracked"
         );
+    }
+
+    /// Expand `source` as the root buffer against an in-memory `/proj` tree.
+    fn expand_in_proj(files: &[(&str, &str)], source: &str) -> ExpandedFile {
+        let mut fs = InMemoryFileSystem::new();
+        for (name, content) in files {
+            fs.insert(format!("/proj/{name}").into(), *content);
+        }
+        expand_source(ROOT, source, &fs, &["/proj".into()], true).expect("expansion succeeds")
+    }
+
+    fn direct_names(expanded: &ExpandedFile) -> Vec<String> {
+        expanded
+            .direct_dependency_paths()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    // A file with one include reports exactly that include as direct.
+    #[test]
+    fn one_include_is_the_whole_direct_set() {
+        let expanded = expand_in_proj(&[("a.i", "MESSAGE \"a\".\n")], "{a.i}\nMESSAGE \"root\".\n");
+        assert_eq!(direct_names(&expanded), vec!["a.i"]);
+    }
+
+    // `a.i` includes `b.i`: only `a.i` is direct, but both are transitive.
+    #[test]
+    fn nested_include_is_transitive_not_direct() {
+        let expanded = expand_in_proj(
+            &[
+                ("a.i", "{b.i}\nMESSAGE \"a\".\n"),
+                ("b.i", "MESSAGE \"b\".\n"),
+            ],
+            "{a.i}\n",
+        );
+        assert_eq!(direct_names(&expanded), vec!["a.i"]);
+        let transitive: Vec<_> = expanded
+            .dependency_paths()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            transitive.contains(&"a.i".to_string()) && transitive.contains(&"b.i".to_string()),
+            "transitive set must hold both, got {transitive:?}"
+        );
+    }
+
+    // Including the same file twice reports it once.
+    #[test]
+    fn repeated_include_appears_once_in_the_direct_set() {
+        let expanded = expand_in_proj(&[("a.i", "MESSAGE \"a\".\n")], "{a.i}\n{a.i}\n");
+        assert_eq!(direct_names(&expanded), vec!["a.i"]);
+    }
+
+    // An include cycle terminates and each participant appears at most once.
+    #[test]
+    fn include_cycle_terminates_with_each_participant_once() {
+        let expanded = expand_in_proj(
+            &[
+                ("a.i", "{b.i}\nMESSAGE \"a\".\n"),
+                ("b.i", "{a.i}\nMESSAGE \"b\".\n"),
+            ],
+            "{a.i}\n{b.i}\n",
+        );
+        let mut names = direct_names(&expanded);
+        names.sort();
+        assert_eq!(names, vec!["a.i", "b.i"]);
+    }
+
+    // Past the include depth cap, the direct includes found are still reported and
+    // nothing panics. The cap is 64, so a 70-deep chain crosses it.
+    #[test]
+    fn include_depth_cap_reports_what_it_found() {
+        let mut files: Vec<(String, String)> = Vec::new();
+        for level in 0..70 {
+            files.push((format!("d{level}.i"), format!("{{d{}.i}}\n", level + 1)));
+        }
+        let borrowed: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(n, c)| (n.as_str(), c.as_str()))
+            .collect();
+        let expanded = expand_in_proj(&borrowed, "{d0.i}\n");
+        assert_eq!(direct_names(&expanded), vec!["d0.i"]);
+    }
+
+    // Preprocessing off yields an empty direct set rather than an error.
+    #[test]
+    fn preprocessing_disabled_yields_an_empty_direct_set() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert("/proj/a.i".into(), "MESSAGE \"a\".\n");
+        let expanded = expand_source(ROOT, "{a.i}\n", &fs, &["/proj".into()], false)
+            .expect("no preprocessing still expands");
+        assert!(expanded.direct_dependency_paths().is_empty());
+    }
+
+    // Two expansions of identical input compare equal, so salsa can still backdate
+    // and cut off the downstream diagnostics query.
+    #[test]
+    fn identical_expansions_still_compare_equal() {
+        let files = [
+            ("a.i", "{b.i}\nMESSAGE \"a\".\n"),
+            ("b.i", "MESSAGE \"b\".\n"),
+        ];
+        let src = "{a.i}\nMESSAGE \"root\".\n";
+        assert_eq!(expand_in_proj(&files, src), expand_in_proj(&files, src));
     }
 
     /// Collect diagnostics for a single root buffer against the canonical

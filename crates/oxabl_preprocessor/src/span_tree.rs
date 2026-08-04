@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use oxabl_ast::Span;
@@ -19,6 +20,15 @@ pub enum SpanNode {
     Include {
         /// The span in the *parent* file where `{file.i}` appeared.
         site: FileSpan,
+        /// The resolved path of the included file, when this node is a real
+        /// `{file.i}` expansion.
+        ///
+        /// `None` for a `{&var}` or `{N}` argument substitution. Those share this
+        /// variant because they splice foreign text into the parent the same way,
+        /// but their content is synthetic and has no file on disk. A consumer
+        /// asking "which files does this one include" must therefore filter on
+        /// this field rather than counting `Include` nodes.
+        path: Option<PathBuf>,
         /// The content of the included file, itself a span tree.
         children: Vec<SpanNode>,
     },
@@ -205,6 +215,7 @@ mod tests {
                     file: parent_id,
                     span: Span { start: 7, end: 14 }, // "{inc.i}"
                 },
+                path: Some(PathBuf::from("/proj/inc.i")),
                 children: vec![SpanNode::Chunk {
                     file: child_id,
                     start: 0,
@@ -267,6 +278,7 @@ mod tests {
                     file: parent_id,
                     span: Span { start: 2, end: 10 },
                 },
+                path: Some(PathBuf::from("/proj/inc.i")),
                 children: vec![SpanNode::Chunk {
                     file: child_id,
                     start: 0,
@@ -334,6 +346,7 @@ mod tests {
                 file: FileId::new(1),
                 span: Span { start: 0, end: 10 },
             },
+            path: Some(PathBuf::from("/proj/inc.i")),
             children: vec![
                 SpanNode::Chunk {
                     file: FileId::new(2),

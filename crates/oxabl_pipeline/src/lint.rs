@@ -118,6 +118,19 @@ impl Expansion {
         }
     }
 
+    /// Paths of the includes the root file names itself — include depth 1.
+    ///
+    /// A subset of [`Expansion::dependency_paths`], which is transitive. The
+    /// difference between the two is what lets a dependency edge distinguish a
+    /// direct include from one pulled in several levels down. Empty when
+    /// preprocessing was off or failed fatally.
+    pub fn direct_dependency_paths(&self) -> &[PathBuf] {
+        match &self.inner {
+            Ok(expanded) => expanded.direct_dependency_paths(),
+            Err(_) => &[],
+        }
+    }
+
     /// The transitively included [`FileId`]s, for invalidation keyed on file id
     /// rather than path. Empty on a fatal preprocessing failure.
     pub fn dependencies(&self) -> &[FileId] {
@@ -847,6 +860,36 @@ mod tests {
         // expansion alive just to answer the watcher.
         assert_eq!(
             pipeline.collect(&expansion).dependency_paths(),
+            expansion.dependency_paths()
+        );
+    }
+
+    // The direct set names only what the root file includes itself, while the
+    // transitive set names everything the expansion read.
+    #[test]
+    fn direct_dependency_paths_stop_at_depth_one() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert("/proj/outer.i".into(), "{inner.i}\nMESSAGE \"outer\".\n");
+        fs.insert("/proj/inner.i".into(), "MESSAGE \"inner\".\n");
+        let config = PipelineConfig {
+            include_paths: vec!["/proj".into()],
+            ..PipelineConfig::default()
+        };
+        let pipeline = LintPipeline::new(&config, &fs);
+
+        let expansion = pipeline.expand("{outer.i}\nMESSAGE \"root\".\n");
+        assert_eq!(expansion.direct_dependency_paths().len(), 1);
+        assert!(
+            expansion.direct_dependency_paths()[0].ends_with("outer.i"),
+            "got {:?}",
+            expansion.direct_dependency_paths()
+        );
+        assert!(
+            expansion
+                .dependency_paths()
+                .iter()
+                .any(|p| p.ends_with("inner.i")),
+            "the nested include must still be transitive, got {:?}",
             expansion.dependency_paths()
         );
     }

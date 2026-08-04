@@ -419,13 +419,16 @@ impl<'fs> ProcessContext<'fs> {
                                     continue;
                                 }
 
-                                // Resolve include
-                                let children =
-                                    self.expand_include(&include_name, include_site, inner, depth);
-
-                                if !children.is_empty() {
+                                // Resolve include. A resolved include yields a
+                                // node even when its content is empty: the edge
+                                // "this file includes that one" is a fact about
+                                // the source, not about how much text arrived.
+                                if let Some((path, children)) =
+                                    self.expand_include(&include_name, include_site, inner, depth)
+                                {
                                     nodes.push(SpanNode::Include {
                                         site: include_site,
+                                        path: Some(path),
                                         children,
                                     });
                                 }
@@ -602,6 +605,8 @@ impl<'fs> ProcessContext<'fs> {
                             end: ref_end as u32,
                         },
                     },
+                    // A preprocessor-variable substitution, not a file include.
+                    path: None,
                     children: vec![SpanNode::Chunk {
                         file: expanded_id,
                         start: 0,
@@ -672,6 +677,8 @@ impl<'fs> ProcessContext<'fs> {
                                 end: ref_end as u32,
                             },
                         },
+                        // A positional argument, not a file include.
+                        path: None,
                         children: vec![SpanNode::Chunk {
                             file: expanded_id,
                             start: 0,
@@ -885,13 +892,19 @@ impl<'fs> ProcessContext<'fs> {
         if changed { Some(out) } else { None }
     }
 
+    /// Expand one `{file.i}` include site.
+    ///
+    /// Returns the resolved path and the included content's span tree, or `None`
+    /// when there is nothing to splice: the include could not be resolved, could
+    /// not be read, or would close a cycle. The path is returned so the caller can
+    /// record *which* file this node included; nothing else in the tree carries it.
     fn expand_include(
         &mut self,
         include_name: &str,
         site: FileSpan,
         inner: &str,
         depth: usize,
-    ) -> Vec<SpanNode> {
+    ) -> Option<(PathBuf, Vec<SpanNode>)> {
         // Parse include arguments
         let args = parse_include_args(inner, include_name);
 
@@ -923,7 +936,7 @@ impl<'fs> ProcessContext<'fs> {
                             .to_string(),
                     ),
                 );
-                return Vec::new();
+                return None;
             }
         };
 
@@ -936,7 +949,7 @@ impl<'fs> ProcessContext<'fs> {
                     format!("failed to read include file '{}': {e}", path.display()),
                     site,
                 ));
-                return Vec::new();
+                return None;
             }
         };
 
@@ -947,7 +960,7 @@ impl<'fs> ProcessContext<'fs> {
                 format!("cyclic include detected: '{include_name}'"),
                 site,
             ));
-            return Vec::new();
+            return None;
         }
 
         // Assign a FileId
@@ -971,7 +984,7 @@ impl<'fs> ProcessContext<'fs> {
 
         self.include_stack.remove(&path);
 
-        children
+        Some((path, children))
     }
 }
 
