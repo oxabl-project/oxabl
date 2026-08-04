@@ -123,6 +123,76 @@ fn the_shared_table_matches_the_format_pipeline() {
 }
 
 // ---------------------------------------------------------------------------
+// The typed dependency edge set
+// ---------------------------------------------------------------------------
+
+/// The edge set for one fixture, over `fs`.
+fn edges(
+    fixture: &ParityFixture,
+    config: &PipelineConfig,
+    fs: &dyn FileSystem,
+) -> fixtures::ObservedEdges {
+    let run = LintPipeline::new(config, fs);
+    let pipeline = run.with_file(fixture.root_path(root()));
+    let expansion = pipeline.expand(fixture.source);
+    let result = pipeline.collect(&expansion);
+    let set = pipeline
+        .edges_of(&expansion, &result)
+        .unwrap_or_else(|reason| panic!("fixture `{}` produced no edges: {reason}", fixture.name));
+    fixtures::ObservedEdges::from_edge_set(&set, root())
+}
+
+/// Every row that claims an edge set produces exactly that set — and exactly the
+/// declared other one with its siblings withheld.
+///
+/// The withheld half is the load-bearing one. A row that only pinned the supplied
+/// answer would pass just as well if the edges arrived unconditionally, which is
+/// the drift this channel exists to catch.
+#[test]
+fn the_shared_table_matches_the_edge_sets_it_claims() {
+    for fixture in FIXTURES.iter().filter(|f| f.asserts_edges()) {
+        let config = fixture.config_under(root());
+        fixture.assert_edges("pipeline edges", &edges(fixture, &config, &fs(fixture)));
+        if fixture.is_cross_file() {
+            fixture.assert_edges_without_siblings(
+                "pipeline edges",
+                &edges(fixture, &config, &empty_fs()),
+            );
+        }
+    }
+}
+
+/// Every one of the six edge kinds is claimed by some row, so no kind can be
+/// invisible to the suite.
+#[test]
+fn every_edge_kind_has_a_fixture_that_claims_it() {
+    let claimed: Vec<&str> = FIXTURES
+        .iter()
+        .flat_map(|f| f.edges.iter())
+        .map(|expectation| match expectation {
+            fixtures::EdgeExpectation::Always(edge)
+            | fixtures::EdgeExpectation::OnlyWithSiblings(edge)
+            | fixtures::EdgeExpectation::ResolvedWithSiblings { edge, .. } => edge.via,
+            fixtures::EdgeExpectation::AlwaysUnresolved(row) => row.via,
+        })
+        .collect();
+    for kind in [
+        oxabl_index::EdgeKind::DirectInclude,
+        oxabl_index::EdgeKind::TransitiveInclude,
+        oxabl_index::EdgeKind::SchemaTable,
+        oxabl_index::EdgeKind::ClassReference,
+        oxabl_index::EdgeKind::ProgramReference,
+        oxabl_index::EdgeKind::SharedProducer,
+    ] {
+        assert!(
+            claimed.contains(&kind.as_str()),
+            "no fixture claims `{}`, so the suite cannot see it drift",
+            kind.as_str()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The composed run versus the two phases
 // ---------------------------------------------------------------------------
 

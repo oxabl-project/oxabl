@@ -85,6 +85,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource};
 use oxabl_common::Severity;
+use oxabl_index::DependencyEdges;
 use oxabl_schema::Schema;
 use oxabl_workspace::{InMemoryFileSystem, LintConfig, LintSeverity, WorkspaceConfig};
 
@@ -215,6 +216,61 @@ pub enum CrossFileEffect {
     Unknowable,
 }
 
+/// One dependency edge a fixture must produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExpectedEdge {
+    /// The edge kind's stable tag, as [`EdgeKind::as_str`](oxabl_index::EdgeKind::as_str)
+    /// spells it: `direct_include`, `transitive_include`, `schema_table`, `class`,
+    /// `program`, `shared_producer`.
+    pub via: &'static str,
+    /// The target's identity. For an include, the path **relative** to the
+    /// fixture's root directory — the same reason [`SiblingFile::path`] is
+    /// relative, since each leg roots the fixture somewhere different. For every
+    /// other kind, the folded name as the edge carries it.
+    pub target: &'static str,
+}
+
+/// One reference a fixture must report as unresolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExpectedUnresolvedEdge {
+    /// Which question was asked, from the same vocabulary as [`ExpectedEdge::via`].
+    pub via: &'static str,
+    /// The name as the fixture's root source writes it.
+    pub name: &'static str,
+    /// The reason, as
+    /// [`unresolved_reason_str`](oxabl_analyze::unresolved_reason_str) spells it.
+    pub reason: &'static str,
+}
+
+/// One claim about the typed dependency edge set, stated per sibling condition.
+///
+/// The variant *is* the claim about direction. A row that only listed the edges it
+/// produces with its siblings supplied would pass just as well if the edges arrived
+/// unconditionally, which is precisely the drift this channel exists to catch — so
+/// every claim says what the withheld half must look like too. No catch-all arm: a
+/// new kind of edge effect must be a compile error at every match site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeExpectation {
+    /// Present either way. An edge that needs no sibling — a schema table, or an
+    /// include whose file the fixture does not plant.
+    Always(ExpectedEdge),
+    /// Present when the siblings are supplied, and simply gone when they are
+    /// withheld — nothing names it, so there is nothing to report as unresolved.
+    /// A transitive include reached through a sibling is the case.
+    OnlyWithSiblings(ExpectedEdge),
+    /// Present when the siblings are supplied, and reported as an **unresolved
+    /// reference** when they are withheld. The pair that pins the direction: the
+    /// reference is written either way, so withholding the file it names must
+    /// produce a gap rather than a silence.
+    ResolvedWithSiblings {
+        edge: ExpectedEdge,
+        withheld: ExpectedUnresolvedEdge,
+    },
+    /// An unresolved reference present either way — the reference names something
+    /// no sibling supplies.
+    AlwaysUnresolved(ExpectedUnresolvedEdge),
+}
+
 /// One cross-file name a fixture exercises, and what resolving it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrossFileResolution {
@@ -253,6 +309,13 @@ pub struct ParityFixture {
     pub format: ExpectedFormat,
     /// Capabilities without which this fixture is not comparable.
     pub needs: &'static [Capability],
+    /// What this row claims about its typed dependency edge set.
+    ///
+    /// Empty means the row makes **no claim** — not that it produces no edges. A
+    /// row that does claim is asserted *exactly*: its expectations must account for
+    /// every edge and every unresolved reference the fixture produces, so an edge
+    /// that quietly appears or disappears fails the suite.
+    pub edges: &'static [EdgeExpectation],
 }
 
 impl ParityFixture {
@@ -545,6 +608,76 @@ impl ParityFixture {
         }
     }
 
+    /// Whether this row claims anything about its edge set.
+    pub fn asserts_edges(&self) -> bool {
+        !self.edges.is_empty()
+    }
+
+    /// The edge set this row must produce with its siblings **supplied**.
+    pub fn expected_edges(&self) -> ObservedEdges {
+        let mut expected = ObservedEdges::default();
+        for expectation in self.edges {
+            match expectation {
+                EdgeExpectation::Always(edge)
+                | EdgeExpectation::OnlyWithSiblings(edge)
+                | EdgeExpectation::ResolvedWithSiblings { edge, .. } => {
+                    expected.edges.push(observed_from(edge));
+                }
+                EdgeExpectation::AlwaysUnresolved(row) => {
+                    expected.unresolved.push(unresolved_from(row));
+                }
+            }
+        }
+        expected.normalize();
+        expected
+    }
+
+    /// The edge set this row must produce with its siblings **withheld**.
+    ///
+    /// Stated rather than derived from the supplied half: what withholding a file
+    /// does to an edge is the claim, and a suite that computed it would only be
+    /// checking its own arithmetic.
+    pub fn expected_edges_without_siblings(&self) -> ObservedEdges {
+        let mut expected = ObservedEdges::default();
+        for expectation in self.edges {
+            match expectation {
+                EdgeExpectation::Always(edge) => expected.edges.push(observed_from(edge)),
+                // Nothing names it once the file that named it is gone.
+                EdgeExpectation::OnlyWithSiblings(_) => {}
+                EdgeExpectation::ResolvedWithSiblings { withheld, .. } => {
+                    expected.unresolved.push(unresolved_from(withheld));
+                }
+                EdgeExpectation::AlwaysUnresolved(row) => {
+                    expected.unresolved.push(unresolved_from(row));
+                }
+            }
+        }
+        expected.normalize();
+        expected
+    }
+
+    /// Assert an observed edge set equals what this row claims with its siblings
+    /// supplied.
+    pub fn assert_edges(&self, leg: &str, observed: &ObservedEdges) {
+        assert_eq!(
+            observed,
+            &self.expected_edges(),
+            "{leg} diverged on fixture `{}`'s edge set",
+            self.name
+        );
+    }
+
+    /// Assert an observed edge set equals what this row claims with its siblings
+    /// withheld.
+    pub fn assert_edges_without_siblings(&self, leg: &str, observed: &ObservedEdges) {
+        assert_eq!(
+            observed,
+            &self.expected_edges_without_siblings(),
+            "{leg} diverged on fixture `{}`'s edge set with its siblings withheld",
+            self.name
+        );
+    }
+
     /// The kind of refusal this fixture expects, or `None` when it expects the
     /// formatter to produce an answer at all.
     ///
@@ -557,6 +690,115 @@ impl ParityFixture {
             ExpectedFormat::Unchanged | ExpectedFormat::Reformatted(_) => None,
         }
     }
+}
+
+/// A dependency edge as some client actually reported it, reduced to the two facts
+/// every client can carry.
+///
+/// The target is normalised against the fixture's root, so an include's absolute
+/// path on one leg and its temp-directory path on another compare equal — the same
+/// reason [`SiblingFile::path`] is relative.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ObservedEdge {
+    pub via: String,
+    pub target: String,
+}
+
+/// An unresolved reference as some client actually reported it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ObservedUnresolvedEdge {
+    pub via: String,
+    pub name: String,
+    pub reason: String,
+}
+
+/// An edge set as some client reported it, ready to compare.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObservedEdges {
+    pub edges: Vec<ObservedEdge>,
+    pub unresolved: Vec<ObservedUnresolvedEdge>,
+}
+
+impl ObservedEdges {
+    /// From the pipeline's own edge set, with include paths made relative to
+    /// `root`.
+    pub fn from_edge_set(set: &DependencyEdges, root: &Path) -> Self {
+        let mut observed = ObservedEdges {
+            edges: set
+                .edges()
+                .iter()
+                .map(|edge| ObservedEdge {
+                    via: edge.kind.as_str().to_string(),
+                    target: relative_target(edge.target.key(), root),
+                })
+                .collect(),
+            unresolved: set
+                .unresolved()
+                .iter()
+                .map(|row| ObservedUnresolvedEdge {
+                    via: row.kind.as_str().to_string(),
+                    name: row.name.clone(),
+                    reason: oxabl_analyze::unresolved_reason_str(row.reason).to_string(),
+                })
+                .collect(),
+        };
+        observed.normalize();
+        observed
+    }
+
+    /// From a wire rendering — the daemon leg, whose rows arrive as JSON.
+    pub fn from_wire(
+        edges: Vec<(String, String)>,
+        unresolved: Vec<(String, String, String)>,
+        root: &Path,
+    ) -> Self {
+        let mut observed = ObservedEdges {
+            edges: edges
+                .into_iter()
+                .map(|(via, target)| ObservedEdge {
+                    via,
+                    target: relative_target(&target, root),
+                })
+                .collect(),
+            unresolved: unresolved
+                .into_iter()
+                .map(|(via, name, reason)| ObservedUnresolvedEdge { via, name, reason })
+                .collect(),
+        };
+        observed.normalize();
+        observed
+    }
+
+    fn normalize(&mut self) {
+        self.edges.sort();
+        self.edges.dedup();
+        self.unresolved.sort();
+        self.unresolved.dedup();
+    }
+}
+
+fn observed_from(edge: &ExpectedEdge) -> ObservedEdge {
+    ObservedEdge {
+        via: edge.via.to_string(),
+        target: edge.target.to_string(),
+    }
+}
+
+fn unresolved_from(row: &ExpectedUnresolvedEdge) -> ObservedUnresolvedEdge {
+    ObservedUnresolvedEdge {
+        via: row.via.to_string(),
+        name: row.name.to_string(),
+        reason: row.reason.to_string(),
+    }
+}
+
+/// Strip `root` from a target that is a path under it, leaving everything else
+/// alone. A folded name is not a path and passes through untouched.
+fn relative_target(target: &str, root: &Path) -> String {
+    Path::new(target)
+        .strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| target.to_string())
 }
 
 /// A diagnostic as some client actually reported it, reduced to the four facts
@@ -830,6 +1072,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     ParityFixture {
         name: "unused_variable",
@@ -846,6 +1089,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     // Needs a loaded schema: with none, `unknown-table-or-field` is inert by
     // design and this source is clean.
@@ -864,6 +1108,12 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[Capability::Schema],
+        // A table needs no sibling, so its edge is there either way. Keyed on the
+        // folded name and carrying no CRC — a CRC needs a compiler (KTD14).
+        edges: &[EdgeExpectation::Always(ExpectedEdge {
+            via: "schema_table",
+            target: "customer",
+        })],
     },
     // `counter` is written *and* read, so neither LINT0002 (never referenced)
     // nor LINT0006 (written, never read) can fire — the two halves of that split
@@ -883,6 +1133,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     // Defined inside the DO block, assigned only there, read outside it.
     ParityFixture {
@@ -900,6 +1151,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     // Written once, never read: LINT0006's half of the split, reported at the
     // write site rather than the declaration.
@@ -918,6 +1170,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     // Error recovery: the parse error is reported *and* the lint pass still runs
     // over the recovered tree. The formatter refuses a parse-dirty file, which is
@@ -947,6 +1200,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         ],
         format: ExpectedFormat::Refused(NotFormattedKind::Bail),
         needs: &[],
+        edges: &[],
     },
     // Multi-byte text ahead of the finding, on both the preceding line and the
     // finding's own line. Every other fixture is pure ASCII, which made byte
@@ -974,6 +1228,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     ParityFixture {
         name: "clean",
@@ -984,6 +1239,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     // Lint-clean, format-dirty: the drift channel on its own.
     ParityFixture {
@@ -995,6 +1251,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Reformatted("DO:\n    MESSAGE \"x\".\nEND.\n"),
         needs: &[],
+        edges: &[],
     },
     // The loud unresolvable-include warning. Needs include resolution, which is
     // to say the preprocessor: with it off the `{missing.i}` is never attempted
@@ -1014,6 +1271,122 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[Capability::IncludeResolution],
+        // The include is unresolvable by design, so its edge is a gap either way —
+        // and a gap is what the row exists to make visible rather than absent.
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "direct_include",
+            name: "missing.i",
+            reason: "absent_from_workspace",
+        })],
+    },
+    // Real nested includes: the root names `defs/mid.i` itself and reaches
+    // `defs/base.i` through it, which is the distinction a rebuild set turns on.
+    // Withheld, the direct include becomes a gap and the transitive one is never
+    // reached at all — nothing names it once the file that named it is gone.
+    ParityFixture {
+        name: "edges_nested_include",
+        root_file: "main.p",
+        siblings: &[
+            SiblingFile {
+                path: "defs/mid.i",
+                source: "{defs/base.i}\n",
+            },
+            SiblingFile {
+                path: "defs/base.i",
+                source: "DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n",
+            },
+        ],
+        resolutions: &[
+            CrossFileResolution {
+                name: "{defs/mid.i}",
+                // Withheld, the include is loud: PREPROC007 says the symbols it
+                // declares cannot be checked.
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 0,
+                    end: 12,
+                }),
+            },
+            CrossFileResolution {
+                name: "v-base",
+                // And the symbol the include would have declared is undefined.
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 21,
+                    end: 27,
+                }),
+            },
+        ],
+        source: "{defs/mid.i}\nMESSAGE v-base.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "defs/mid.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "defs/mid.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "transitive_include",
+                target: "defs/base.i",
+            }),
+        ],
+    },
+    // A literal `RUN` target, and the file whose `DEFINE NEW SHARED` the root's
+    // `DEFINE SHARED` consumes. The `RUN` comes first on purpose: a `SHARED` name
+    // maps onto no path, so the producer link can only be found among files the run
+    // has already indexed, and nothing pulls one in unless something runs it.
+    ParityFixture {
+        name: "edges_program_and_shared_producer",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "producer.p",
+            source: "DEFINE NEW SHARED VARIABLE v-site AS CHARACTER NO-UNDO.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN producer.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 14,
+            }),
+        }],
+        source: "RUN producer.p.\n\
+                 DEFINE SHARED VARIABLE v-site AS CHARACTER NO-UNDO.\n\
+                 MESSAGE v-site.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        // Both edges are gone rather than reported as gaps when the sibling is
+        // withheld, and that is the honest description of what the model records: a
+        // `RUN` target and a `SHARED` producer are noted only when the index
+        // *answers*, so a miss leaves no row behind. The finding still arrives in
+        // the diagnostic channel above. Turning these misses into unresolved rows is
+        // edge-kind fidelity work tracked upstream; pinning the current shape here
+        // is what makes that change visible when it lands.
+        edges: &[
+            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "program",
+                target: "producer.p",
+            }),
+            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "shared_producer",
+                target: "v-site",
+            }),
+        ],
     },
     // --- Cross-file rows (R7) ---------------------------------------------
     //
@@ -1049,6 +1422,17 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
     },
     // A `USING` import of a sibling class, then that class as a declared type, a
     // `NEW` target, and a member-call receiver. Every one of those resolves
@@ -1101,6 +1485,16 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        // Withheld, this row reports no gap at all — and that is a fact worth
+        // pinning rather than hiding. A class lookup is recorded by the supertype
+        // chain walk, and nothing here inherits, so with the sibling gone there is
+        // no walk to come back empty. The finding still arrives in the diagnostic
+        // channel; the *edge set* is simply silent, which is edge-kind fidelity
+        // work tracked upstream rather than a defect this row should paper over.
+        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+            via: "class",
+            target: "orders.calc-base",
+        })],
     },
     // The one cross-file resolution still invisible in the shared diagnostic
     // channel, and it is invisible for a documented reason rather than by
@@ -1126,6 +1520,12 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        // Same shape as `cross_file_using`: the class resolves, and withholding it
+        // records no lookup because no chain walk runs.
+        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+            via: "class",
+            target: "orders.calc-base",
+        })],
     },
     // The direction cross-file resolution could not produce until an inherited
     // member's declared type reached the type lattice: supplying the sibling makes
@@ -1183,6 +1583,17 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
     },
     // A `RUN` whose target is a runtime string. The named file *is* supplied, so
     // a client tempted to guess has something to guess at — and the correct
@@ -1205,6 +1616,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        edges: &[],
     },
     // A parent no supplied file declares. A sibling *is* supplied — a different
     // class in the same package — so the row distinguishes "the search found
@@ -1236,6 +1648,13 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
+        // No supplied file declares the parent, so the gap stands either way. A
+        // resolver reaching for a plausible-looking neighbour would show up here.
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "class",
+            name: "orders.no-such-base",
+            reason: "absent_from_workspace",
+        })],
     },
 ];
 

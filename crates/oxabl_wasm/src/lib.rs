@@ -754,7 +754,15 @@ mod tests {
         /// the resolver.
         #[test]
         fn cross_file_fixtures_resolve_over_a_supplied_filesystem() {
-            for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+            // Cross-file is not itself a capability, but a cross-file row can still
+            // need one the browser lacks — an include the browser's
+            // preprocessor-off configuration never expands. Such a row is
+            // incomparable here for the ordinary reason, and its gap is asserted as
+            // a gap below rather than as a different answer.
+            for fixture in FIXTURES
+                .iter()
+                .filter(|f| f.is_cross_file() && f.browser_comparable())
+            {
                 let supplied = fixtures::normalize(observed(fixture));
                 assert_eq!(
                     supplied,
@@ -794,7 +802,10 @@ mod tests {
         /// leaving the difference implicit in a helper.
         #[test]
         fn the_exported_entry_point_supplies_no_files() {
-            for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
+            for fixture in FIXTURES
+                .iter()
+                .filter(|f| f.is_cross_file() && f.browser_comparable())
+            {
                 fixture.assert_diagnostics_with_no_search_path(
                     "browser export (no filesystem)",
                     observed_through_the_export(fixture.source),
