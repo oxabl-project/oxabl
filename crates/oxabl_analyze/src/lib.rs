@@ -64,9 +64,12 @@
 mod collect;
 
 pub use collect::{
-    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile, collect_diagnostics,
-    collect_from_expanded, collect_with_model, expand_source, is_loud,
+    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
+    collect_diagnostics, collect_from_expanded, collect_with_model, expand_source, is_loud,
 };
+// Re-exported so a consumer of an expansion need not also depend on the
+// preprocessor just to name the unresolved-include rows the expansion carries.
+pub use oxabl_preprocessor::UnresolvedInclude;
 
 use oxabl_ast::{NodeId, Statement};
 use oxabl_common::{Diagnostic, Severity};

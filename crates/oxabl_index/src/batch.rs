@@ -205,6 +205,22 @@ impl<'a> BatchIndex<'a> {
         self.memo().facts.get(&key).map(|facts| facts.file)
     }
 
+    /// The path this run indexed `id` under, or `None` if `id` came from another
+    /// index.
+    ///
+    /// The inverse of [`indexed_id`](Self::indexed_id), and the only way an
+    /// [`IndexedFileId`] on a dependency edge becomes something a client can render
+    /// or open: the id space is this index's own, so nothing outside it can do the
+    /// mapping. A linear scan of the memo, called once per distinct edge target
+    /// rather than per lookup.
+    pub fn indexed_path(&self, id: IndexedFileId) -> Option<PathBuf> {
+        self.memo()
+            .facts
+            .iter()
+            .find(|(_, facts)| facts.file == id)
+            .map(|(path, _)| path.clone())
+    }
+
     /// The memo, recovering from poisoning.
     ///
     /// A poisoned lock means a previous lookup unwound while holding it — in this

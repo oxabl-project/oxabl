@@ -8,7 +8,7 @@ use oxabl_workspace::FileSystem;
 
 use crate::PreprocVarTable;
 use crate::condition::evaluate_with_defined;
-use crate::span_tree::{PreprocessedFile, SpanNode};
+use crate::span_tree::{PreprocessedFile, SpanNode, UnresolvedInclude};
 
 /// Preprocessor for ABL source code.
 ///
@@ -41,6 +41,7 @@ impl<'fs> Preprocessor<'fs> {
             vars: PreprocVarTable::new(),
             global_vars: PreprocVarTable::new(),
             dependencies: Vec::new(),
+            unresolved_includes: Vec::new(),
             sources: vec![(file, Arc::from(source))],
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
@@ -65,6 +66,7 @@ impl<'fs> Preprocessor<'fs> {
             tree,
             ctx.vars,
             ctx.dependencies,
+            ctx.unresolved_includes,
             ctx.sources,
             ctx.diagnostics,
         ))
@@ -78,6 +80,10 @@ struct ProcessContext<'fs> {
     /// Variables set via `&GLOBAL-DEFINE` — propagated back to parent.
     global_vars: PreprocVarTable,
     dependencies: Vec<FileId>,
+    /// Include references that named no locatable file — the symbol loss
+    /// PREPROC007 reports, kept as data so a dependency edge set can report the
+    /// gap instead of quietly missing an edge.
+    unresolved_includes: Vec<UnresolvedInclude>,
     sources: Vec<(FileId, Arc<str>)>,
     diagnostics: Vec<Diagnostic>,
     /// Stack of currently-being-processed paths for cycle detection.
@@ -936,6 +942,10 @@ impl<'fs> ProcessContext<'fs> {
                             .to_string(),
                     ),
                 );
+                self.unresolved_includes.push(UnresolvedInclude {
+                    name: include_name.to_string(),
+                    site,
+                });
                 return None;
             }
         };

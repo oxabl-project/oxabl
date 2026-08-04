@@ -28,3 +28,11 @@ oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
 rustc-hash = "2"
+
+[dev-dependencies]
+# Tests only: the edge-set tests resolve schema table edges against a real
+# `Schema`, which needs the canonical fixture. The normal dependency above is the
+# empty schema the declare pass is handed and must stay feature-free.
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = [
+    "test-support",
+] }

@@ -78,9 +78,10 @@
 use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
-    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile,
-    collect_from_expanded, expand_source,
+    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
+    UnresolvedInclude, collect_from_expanded, expand_source,
 };
+
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
@@ -118,15 +119,25 @@ impl Expansion {
         }
     }
 
-    /// Paths of the includes the root file names itself — include depth 1.
+    /// The includes the root file names itself — include depth 1, with the site
+    /// of each `{...}` in the root file's own bytes.
     ///
-    /// A subset of [`Expansion::dependency_paths`], which is transitive. The
-    /// difference between the two is what lets a dependency edge distinguish a
-    /// direct include from one pulled in several levels down. Empty when
-    /// preprocessing was off or failed fatally.
-    pub fn direct_dependency_paths(&self) -> &[PathBuf] {
+    /// Their paths are a subset of [`Expansion::dependency_paths`], which is
+    /// transitive. The difference between the two is what lets a dependency edge
+    /// distinguish a direct include from one pulled in several levels down. Empty
+    /// when preprocessing was off or failed fatally.
+    pub fn direct_includes(&self) -> &[DirectInclude] {
         match &self.inner {
-            Ok(expanded) => expanded.direct_dependency_paths(),
+            Ok(expanded) => expanded.direct_includes(),
+            Err(_) => &[],
+        }
+    }
+
+    /// Root-origin include references that resolved to no file, so a consumer can
+    /// report the edges it could not follow rather than silently missing them.
+    pub fn unresolved_includes(&self) -> &[UnresolvedInclude] {
+        match &self.inner {
+            Ok(expanded) => expanded.unresolved_includes(),
             Err(_) => &[],
         }
     }
@@ -878,11 +889,11 @@ mod tests {
         let pipeline = LintPipeline::new(&config, &fs);
 
         let expansion = pipeline.expand("{outer.i}\nMESSAGE \"root\".\n");
-        assert_eq!(expansion.direct_dependency_paths().len(), 1);
+        assert_eq!(expansion.direct_includes().len(), 1);
         assert!(
-            expansion.direct_dependency_paths()[0].ends_with("outer.i"),
+            expansion.direct_includes()[0].path.ends_with("outer.i"),
             "got {:?}",
-            expansion.direct_dependency_paths()
+            expansion.direct_includes()
         );
         assert!(
             expansion

@@ -37,7 +37,7 @@ use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
-use oxabl_preprocessor::{Preprocessor, SpanNode};
+use oxabl_preprocessor::{Preprocessor, SpanNode, UnresolvedInclude};
 use oxabl_schema::Schema;
 use oxabl_semantic::{AnalysisContext, NullIndex, Semantic, WorkspaceIndex, analyze_file};
 use oxabl_workspace::FileSystem;
@@ -122,6 +122,18 @@ pub fn is_loud(d: &Diagnostic) -> bool {
     matches!(d.severity, Severity::Error) || d.code.0 == "PREPROC007" || d.code.0 == "PREPROC002"
 }
 
+/// One include a file names itself, and where it names it.
+///
+/// The site is in the including file's own bytes, which is what lets a client open
+/// an editor at the `{...}` that creates the dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectInclude {
+    /// The path the preprocessor resolved the include to.
+    pub path: PathBuf,
+    /// The `{...}` reference in the including file.
+    pub site: Span,
+}
+
 /// One flattened leaf of the preprocessor span tree: a contiguous run of
 /// expanded text `[virt_start, virt_start+len)` that maps to `real_start..` in
 /// origin file `file`.
@@ -156,13 +168,17 @@ pub struct ExpandedFile {
     /// path-level dependency set the LSP watcher matches changed `*.i` files
     /// against (R17).
     dependency_paths: Vec<PathBuf>,
-    /// Paths of the includes this file names *itself*, at include depth 1.
+    /// The includes this file names *itself*, at include depth 1.
     ///
-    /// A subset of `dependency_paths`, each path once, in the order the include
-    /// sites appear. Captured here because this is the last place the nesting is
-    /// visible: the span tree is not retained, and `dependency_paths` is flat and
-    /// transitive, so "direct or transitive?" is unanswerable downstream.
-    direct_dependency_paths: Vec<PathBuf>,
+    /// Their paths are a subset of `dependency_paths`, each once, in the order the
+    /// include sites appear. Captured here because this is the last place the
+    /// nesting is visible: the span tree is not retained, and `dependency_paths`
+    /// is flat and transitive, so "direct or transitive?" is unanswerable
+    /// downstream.
+    direct_includes: Vec<DirectInclude>,
+    /// Root-origin include references that resolved to no file. An edge set that
+    /// dropped these would under-report impact silently.
+    unresolved_includes: Vec<UnresolvedInclude>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -178,13 +194,29 @@ impl ExpandedFile {
         &self.dependency_paths
     }
 
-    /// Paths of the includes this file names itself — include depth 1, each once.
+    /// The includes this file names itself — include depth 1, each once.
     ///
     /// Pairs with [`ExpandedFile::dependency_paths`], which is the transitive set.
     /// The difference between the two is what lets a dependency edge say *direct
     /// include* rather than merely *include*.
-    pub fn direct_dependency_paths(&self) -> &[PathBuf] {
-        &self.direct_dependency_paths
+    pub fn direct_includes(&self) -> &[DirectInclude] {
+        &self.direct_includes
+    }
+
+    /// Root-origin include references that named no locatable file.
+    pub fn unresolved_includes(&self) -> &[UnresolvedInclude] {
+        &self.unresolved_includes
+    }
+
+    /// Map a span in the **expanded** buffer back to the root file's own bytes.
+    ///
+    /// `None` when the span originates inside an include rather than in the root
+    /// file, which is the same origin rule diagnostics follow (R8). A consumer
+    /// that wants to open an editor at a reference needs this: every span the
+    /// semantic model carries is in post-expansion coordinates, and only the
+    /// expansion knows the mapping back.
+    pub fn resolve_root_span(&self, span: Span) -> Option<Span> {
+        self.resolve_span(span).map(|fs| fs.span)
     }
 
     /// Resolve a virtual (expanded) offset to `(origin file, real offset)`.
@@ -247,7 +279,8 @@ pub fn expand_source(
             preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
-            direct_dependency_paths: Vec::new(),
+            direct_includes: Vec::new(),
+            unresolved_includes: Vec::new(),
             root,
         });
     }
@@ -269,15 +302,24 @@ pub fn expand_source(
                 .filter(|d| is_loud(d) && d.span.file == root)
                 .cloned()
                 .collect();
-            let mut direct_dependency_paths = Vec::new();
-            collect_direct_includes(&pf.tree, &mut direct_dependency_paths);
+            let mut direct_includes = Vec::new();
+            collect_direct_includes(&pf.tree, root, &mut direct_includes);
+            // An include that failed to resolve deeper down is that file's gap to
+            // report, not this one's — the same origin rule diagnostics follow.
+            let unresolved_includes = pf
+                .unresolved_includes
+                .iter()
+                .filter(|u| u.site.file == root)
+                .cloned()
+                .collect();
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
                 chunks,
                 preproc,
                 dependencies: pf.dependencies.clone(),
                 dependency_paths: recorder.into_reads(),
-                direct_dependency_paths,
+                direct_includes,
+                unresolved_includes,
                 root,
             })
         }
@@ -343,23 +385,35 @@ fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChun
     }
 }
 
-/// Collect the depth-1 include paths from a span tree, each once, in site order.
+/// Collect the depth-1 includes from a span tree, each path once, in site order.
 ///
 /// Only a node carrying a path is a file include; a `{&var}` or `{N}` substitution
 /// reuses the same variant with `path: None`. Those are walked *through* rather
 /// than counted, because their spliced text sits at the parent's own depth — and a
 /// real include reached that way is still one this file names itself. A resolved
 /// include's own children are not walked: everything below it is transitive.
-fn collect_direct_includes(nodes: &[SpanNode], out: &mut Vec<PathBuf>) {
+///
+/// A node whose site is not in `root` is skipped. Nothing produces one today, and
+/// the alternative to skipping is reporting a site that points at bytes of another
+/// file as though they were the root's.
+fn collect_direct_includes(nodes: &[SpanNode], root: FileId, out: &mut Vec<DirectInclude>) {
     for node in nodes {
-        if let SpanNode::Include { path, children, .. } = node {
+        if let SpanNode::Include {
+            site,
+            path,
+            children,
+        } = node
+        {
             match path {
                 Some(path) => {
-                    if !out.contains(path) {
-                        out.push(path.clone());
+                    if site.file == root && !out.iter().any(|d| d.path == *path) {
+                        out.push(DirectInclude {
+                            path: path.clone(),
+                            site: site.span,
+                        });
                     }
                 }
-                None => collect_direct_includes(children, out),
+                None => collect_direct_includes(children, root, out),
             }
         }
     }
@@ -765,9 +819,9 @@ mod tests {
 
     fn direct_names(expanded: &ExpandedFile) -> Vec<String> {
         expanded
-            .direct_dependency_paths()
+            .direct_includes()
             .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().into_owned())
             .collect()
     }
 
@@ -845,7 +899,37 @@ mod tests {
         fs.insert("/proj/a.i".into(), "MESSAGE \"a\".\n");
         let expanded = expand_source(ROOT, "{a.i}\n", &fs, &["/proj".into()], false)
             .expect("no preprocessing still expands");
-        assert!(expanded.direct_dependency_paths().is_empty());
+        assert!(expanded.direct_includes().is_empty());
+    }
+
+    // Each direct include carries the site of its own `{...}` in the root file, so
+    // a client can open an editor at the reference that creates the dependency.
+    #[test]
+    fn a_direct_include_carries_its_site_in_the_root_file() {
+        let src = "MESSAGE \"before\".\n{a.i}\n";
+        let expanded = expand_in_proj(&[("a.i", "MESSAGE \"a\".\n")], src);
+        let site = expanded.direct_includes()[0].site;
+        assert_eq!(&src[site.start as usize..site.end as usize], "{a.i}");
+    }
+
+    // An include that resolves to no file is reported as its own row, not dropped.
+    // A missing edge nobody mentions is the failure this data exists to prevent.
+    #[test]
+    fn an_unresolvable_include_is_reported_rather_than_dropped() {
+        let expanded = expand_in_proj(&[], "{nowhere.i}\nMESSAGE \"root\".\n");
+        assert!(expanded.direct_includes().is_empty());
+        let unresolved = expanded.unresolved_includes();
+        assert_eq!(unresolved.len(), 1, "got {unresolved:?}");
+        assert_eq!(unresolved[0].name, "nowhere.i");
+        assert_eq!(unresolved[0].site.file, ROOT);
+    }
+
+    // An include that fails to resolve *inside* another include is that file's gap
+    // to report, matching the origin rule diagnostics follow.
+    #[test]
+    fn an_unresolvable_include_below_the_root_is_not_the_roots_row() {
+        let expanded = expand_in_proj(&[("a.i", "{nowhere.i}\n")], "{a.i}\n");
+        assert!(expanded.unresolved_includes().is_empty());
     }
 
     // Two expansions of identical input compare equal, so salsa can still backdate

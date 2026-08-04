@@ -44,6 +44,20 @@ impl SpanNode {
     }
 }
 
+/// An include reference that named no file the preprocessor could locate.
+///
+/// Kept as data, not only as a PREPROC007 diagnostic, because a dependency edge
+/// set has to be able to say "there is an edge here I could not follow". A
+/// missing edge that nobody mentions is the failure mode that ends trust in an
+/// impact answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedInclude {
+    /// The include as written, after `{&var}` pre-expansion.
+    pub name: String,
+    /// The `{...}` site, in the coordinates of the file that wrote it.
+    pub site: FileSpan,
+}
+
 /// The preprocessed representation of a source file.
 ///
 /// Contains the virtual span tree, the preprocessor variable state after
@@ -57,6 +71,8 @@ pub struct PreprocessedFile {
     pub vars: PreprocVarTable,
     /// All include files transitively referenced (for change tracking).
     pub dependencies: Vec<FileId>,
+    /// Every include reference, at any depth, that resolved to no file.
+    pub unresolved_includes: Vec<UnresolvedInclude>,
     /// Non-fatal diagnostics accumulated during preprocessing.
     ///
     /// Fatal diagnostics bail out with `Err` from [`crate::Preprocessor::process`].
@@ -74,6 +90,7 @@ impl PreprocessedFile {
         tree: Vec<SpanNode>,
         vars: PreprocVarTable,
         dependencies: Vec<FileId>,
+        unresolved_includes: Vec<UnresolvedInclude>,
         sources: Vec<(FileId, Arc<str>)>,
         diagnostics: Vec<Diagnostic>,
     ) -> Self {
@@ -81,6 +98,7 @@ impl PreprocessedFile {
             tree,
             vars,
             dependencies,
+            unresolved_includes,
             diagnostics,
             sources,
         }
@@ -190,6 +208,7 @@ mod tests {
             }],
             PreprocVarTable::new(),
             vec![],
+            Vec::new(),
             make_sources(&[(file, source)]),
             vec![],
         );
@@ -233,6 +252,7 @@ mod tests {
             tree,
             PreprocVarTable::new(),
             vec![child_id],
+            Vec::new(),
             make_sources(&[(parent_id, parent_src), (child_id, child_src)]),
             vec![],
         );
@@ -252,6 +272,7 @@ mod tests {
             }],
             PreprocVarTable::new(),
             vec![],
+            Vec::new(),
             make_sources(&[(file, source)]),
             vec![],
         );
@@ -296,6 +317,7 @@ mod tests {
             tree,
             PreprocVarTable::new(),
             vec![child_id],
+            Vec::new(),
             make_sources(&[(parent_id, "AB--------EF"), (child_id, "CD")]),
             vec![],
         );
@@ -331,6 +353,7 @@ mod tests {
             }],
             PreprocVarTable::new(),
             vec![],
+            Vec::new(),
             make_sources(&[(FileId::new(1), "HELLO")]),
             vec![],
         );
