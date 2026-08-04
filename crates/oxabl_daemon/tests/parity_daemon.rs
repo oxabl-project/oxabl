@@ -183,6 +183,10 @@ fn the_daemon_supplies_every_capability_claimed_by_the_fixture_table() {
     let supplied = [
         fixtures::Capability::Schema,
         fixtures::Capability::IncludeResolution,
+        // A daemon buffer is opened under its real path, and the session hands
+        // that path to the shared pipeline, so an `.i` root is classified as a
+        // fragment here exactly as it is in the CLI.
+        fixtures::Capability::RootFileIdentity,
     ];
     for fixture in FIXTURES {
         for capability in fixture.needs {
