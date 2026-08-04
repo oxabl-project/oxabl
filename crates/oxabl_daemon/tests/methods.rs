@@ -362,3 +362,39 @@ fn a_query_before_handshake_is_refused() {
         .expect_err("the session is not known before a handshake");
     assert_eq!(error.code, -32600);
 }
+
+#[test]
+fn freshness_starts_the_first_workspace_pass() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+
+    let first: FreshnessResponse = call(
+        &dispatch,
+        &host,
+        &mut client,
+        method::FRESHNESS,
+        &FreshnessRequest {},
+    );
+    assert!(matches!(first.freshness.state, IndexState::Indexing { .. }));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let current: FreshnessResponse = call(
+            &dispatch,
+            &host,
+            &mut client,
+            method::FRESHNESS,
+            &FreshnessRequest {},
+        );
+        if current.freshness.state == IndexState::Ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pass did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}

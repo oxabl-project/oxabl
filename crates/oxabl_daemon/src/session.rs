@@ -37,7 +37,10 @@
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 use std::time::SystemTime;
 
 use oxabl_analyze::CollectedDiagnostics;
@@ -84,6 +87,36 @@ pub struct Session {
     buffer_generation: u64,
     /// The last completed whole-workspace pass, shared by every client.
     workspace: Option<WorkspaceSnapshot>,
+    /// Live counters for the one whole-workspace pass now running.
+    workspace_progress: Option<WorkspaceProgress>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct WorkspaceProgress {
+    indexed: Arc<AtomicU32>,
+    total: Arc<AtomicU32>,
+}
+
+impl WorkspaceProgress {
+    pub fn values(&self) -> (u32, u32) {
+        (
+            self.indexed.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn set_total(&self, total: usize) {
+        self.total.store(total as u32, Ordering::Relaxed);
+    }
+
+    pub fn advance(&self) {
+        self.indexed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn complete(&self) {
+        let total = self.total.load(Ordering::Relaxed);
+        self.indexed.store(total, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone)]
@@ -140,6 +173,7 @@ impl Session {
             editor_clients: 0,
             buffer_generation: 0,
             workspace: None,
+            workspace_progress: None,
         }
     }
 
@@ -187,6 +221,21 @@ impl Session {
 
     pub(crate) fn install_workspace(&mut self, workspace: WorkspaceSnapshot) {
         self.workspace = Some(workspace);
+        self.workspace_progress = None;
+    }
+
+    pub(crate) fn workspace_progress(&self) -> Option<WorkspaceProgress> {
+        self.workspace_progress.clone()
+    }
+
+    pub(crate) fn begin_workspace_pass(&mut self) -> WorkspaceProgress {
+        let progress = WorkspaceProgress::default();
+        self.workspace_progress = Some(progress.clone());
+        progress
+    }
+
+    pub(crate) fn clear_workspace_progress(&mut self) {
+        self.workspace_progress = None;
     }
 
     /// Unsaved file buffers, keyed by their workspace path.
@@ -648,4 +697,13 @@ mod tests {
             Disposition::Drop
         );
     }
+}
+#[test]
+fn workspace_progress_advances_and_completes() {
+    let progress = WorkspaceProgress::default();
+    progress.set_total(3);
+    progress.advance();
+    assert_eq!(progress.values(), (1, 3));
+    progress.complete();
+    assert_eq!(progress.values(), (3, 3));
 }

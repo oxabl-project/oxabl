@@ -19,7 +19,7 @@ use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
 use oxabl_workspace::{FileSystem, RealFileSystem, discover_path};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
-use crate::session::{FileStamp, SessionHost, WorkspaceSnapshot};
+use crate::session::{FileStamp, SessionHost, WorkspaceProgress, WorkspaceSnapshot};
 
 /// Register every non-LSP method. No handler checks the client kind: the daemon
 /// exposes the same capability to the editor and desktop clients (KTD5).
@@ -140,19 +140,54 @@ fn freshness(
         let session = sessions
             .get(root)
             .expect("a successful handshake creates its session");
-        session.workspace().map(|workspace| {
-            let provenance = provenance(session);
-            let freshness = workspace_freshness(&workspace);
-            (workspace, provenance, freshness)
-        })
+        session
+            .workspace()
+            .map(|workspace| {
+                let provenance = provenance(session);
+                let freshness = workspace_freshness(&workspace);
+                (workspace, provenance, freshness)
+            })
+            .map(EitherFreshness::Ready)
+            .or_else(|| session.workspace_progress().map(EitherFreshness::Indexing))
     });
 
+    if state.is_none() {
+        let host = host.clone();
+        let root = root.to_path_buf();
+        std::thread::Builder::new()
+            .name("oxabl-workspace-pass".to_string())
+            .spawn(move || {
+                if let Err(error) = ensure_workspace(&host, &root, false) {
+                    eprintln!("oxabl daemon: workspace pass failed: {error}");
+                }
+            })
+            .map_err(MethodError::internal)?;
+    }
+
     let response = match state {
-        Some((workspace, provenance, freshness)) => FreshnessResponse {
+        Some(EitherFreshness::Ready((workspace, provenance, freshness))) => FreshnessResponse {
             freshness,
             schema: schema_identity(&workspace),
             provenance,
         },
+        Some(EitherFreshness::Indexing(progress)) => {
+            let (indexed, total) = progress.values();
+            FreshnessResponse {
+                freshness: Freshness {
+                    state: IndexState::Indexing { indexed, total },
+                    indexed_files: indexed,
+                    unanalysed_files: 0,
+                    unresolved_ratio: 0.0,
+                    last_pass_millis: Sourced::unavailable("no workspace pass has completed"),
+                },
+                schema: SchemaIdentity {
+                    revision: 0,
+                    table_count: 0,
+                    loaded: false,
+                },
+                provenance: Provenance::Disk,
+            }
+        }
         None => FreshnessResponse {
             freshness: Freshness {
                 state: IndexState::Indexing {
@@ -173,6 +208,11 @@ fn freshness(
         },
     };
     serde_json::to_value(response).map_err(MethodError::internal)
+}
+
+enum EitherFreshness {
+    Ready((WorkspaceSnapshot, Provenance, Freshness)),
+    Indexing(WorkspaceProgress),
 }
 
 fn reindex(
@@ -203,46 +243,78 @@ fn ensure_workspace(
                 && let Some(workspace) = session.workspace()
                 && workspace.buffer_generation == session.buffer_generation()
             {
-                return None;
+                return WorkspacePreparation::Ready;
             }
-            Some((
+            if session.workspace_progress().is_some() {
+                return WorkspacePreparation::Wait;
+            }
+            let progress = session.begin_workspace_pass();
+            WorkspacePreparation::Build(
                 session.root().to_path_buf(),
                 session.buffer_overlay(),
                 session.buffer_generation(),
-            ))
+                progress,
+            )
         });
 
-        let Some((root, overlay, generation)) = prepared else {
-            return Ok(host.with(|sessions| {
-                sessions
-                    .get(root)
-                    .and_then(|session| session.workspace())
-                    .expect("the checked workspace remains installed")
-            }));
-        };
-        let workspace = build_workspace(&root, overlay, generation)?;
-        let installed = host.with(|sessions| {
-            let session = sessions.for_root(&root);
-            if session.buffer_generation() != generation {
-                return false;
+        match prepared {
+            WorkspacePreparation::Ready => {
+                return Ok(host.with(|sessions| {
+                    sessions
+                        .get(root)
+                        .and_then(|session| session.workspace())
+                        .expect("the checked workspace remains installed")
+                }));
             }
-            session.install_config((*workspace.config).clone());
-            session.install_workspace(workspace.clone());
-            true
-        });
-        if installed {
-            return Ok(workspace);
+            WorkspacePreparation::Wait => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            WorkspacePreparation::Build(root, overlay, generation, progress) => {
+                let workspace = match build_workspace(&root, overlay, generation, &progress) {
+                    Ok(workspace) => workspace,
+                    Err(error) => {
+                        host.with(|sessions| {
+                            if let Some(session) = sessions.get_mut(&root) {
+                                session.clear_workspace_progress();
+                            }
+                        });
+                        return Err(error);
+                    }
+                };
+                progress.complete();
+                let installed = host.with(|sessions| {
+                    let session = sessions.for_root(&root);
+                    if session.buffer_generation() != generation {
+                        return false;
+                    }
+                    session.install_config((*workspace.config).clone());
+                    session.install_workspace(workspace.clone());
+                    true
+                });
+                if installed {
+                    return Ok(workspace);
+                }
+            }
         }
     }
+}
+
+enum WorkspacePreparation {
+    Ready,
+    Wait,
+    Build(PathBuf, HashMap<PathBuf, Arc<str>>, u64, WorkspaceProgress),
 }
 
 fn build_workspace(
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
     buffer_generation: u64,
+    progress: &WorkspaceProgress,
 ) -> Result<WorkspaceSnapshot, MethodError> {
     let started = Instant::now();
     let files = discover_path(root).map_err(MethodError::internal)?;
+    progress.set_total(files.len());
     let (config, _warnings) =
         oxabl_pipeline::PipelineConfig::resolve(root, &oxabl_pipeline::ConfigOverrides::default());
     let fs = OverlayFileSystem { overlay };
@@ -250,6 +322,7 @@ fn build_workspace(
     let mut symbols = file_symbols(&files);
     let graph = ReverseGraph::build_with(&pipeline, &files, |path, expansion, result| {
         collect_symbols(path, expansion, result, &fs, &mut symbols);
+        progress.advance();
     });
     symbols.extend(table_symbols(&config));
     symbols.sort_by(|left, right| left.id.cmp(&right.id));
