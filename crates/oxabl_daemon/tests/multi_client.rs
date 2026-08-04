@@ -4,14 +4,9 @@
 //! session map: a second client that gets its own session has not shared an index,
 //! however tidy the map looks in a unit test.
 //!
-//! # These are `#[ignore]`d, and the reason is a real defect
-//!
-//! U7 is unfinished. The accept loop and the per-client reader/writer threads do not
-//! tear down cleanly, so every test here blocks rather than failing — a hang, which
-//! would stall CI indefinitely instead of reporting. They are ignored so the rest of
-//! the suite stays honest, **not** because the behaviour they assert is optional:
-//! every one of them is a U7 acceptance scenario. Remove the attributes as the
-//! teardown is fixed, one test at a time.
+//! The tests include abrupt disconnects because socket teardown is part of the
+//! transport contract. A disconnected client must not leave either peer's framing
+//! thread blocked on a socket read.
 
 #![cfg(unix)]
 
@@ -22,11 +17,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use lsp_server::{Message, Request, RequestId, Response};
-use oxabl_daemon::dispatch::{Dispatch, MethodError};
-use oxabl_daemon::{Discovery, Listener, SessionHost, connection_over, discover};
-use oxabl_daemon_protocol::{
-    CONTRACT_VERSION, ClientKind, ContractMismatch, HandshakeRequest, HandshakeResponse,
+use oxabl_daemon::dispatch::Dispatch;
+use oxabl_daemon::{
+    Discovery, Listener, SessionHost, connection_over, discover, register_handshake,
 };
+use oxabl_daemon_protocol::{CONTRACT_VERSION, ClientKind, HandshakeRequest, HandshakeResponse};
 use serde_json::{Value, json};
 
 /// Point the registration directory at a fresh temporary directory for the duration.
@@ -59,33 +54,7 @@ fn with_cache_home<T>(body: impl FnOnce() -> T) -> T {
 /// and the concurrency test below is what would catch it.
 fn dispatch(slow_calls: Arc<AtomicU32>) -> Arc<Dispatch> {
     let mut dispatch = Dispatch::new();
-    dispatch.register("oxabl/handshake", |host: &SessionHost, params: Value| {
-        let request: HandshakeRequest =
-            serde_json::from_value(params).map_err(MethodError::invalid_params)?;
-        if request.contract_version != CONTRACT_VERSION {
-            let mismatch = ContractMismatch {
-                client_version: request.contract_version,
-                daemon_version: CONTRACT_VERSION,
-            };
-            // Refused, naming both versions, before any query is attempted.
-            return Err(MethodError {
-                code: -32600,
-                message: mismatch.to_string(),
-            });
-        }
-        let clients = host.with(|sessions| {
-            let session = sessions.for_root(&request.workspace_root);
-            session.attach(matches!(request.client, ClientKind::Editor));
-            session.clients()
-        });
-        serde_json::to_value(HandshakeResponse {
-            contract_version: CONTRACT_VERSION,
-            workspace_root: request.workspace_root,
-            daemon_version: oxabl_daemon::DAEMON_VERSION.to_string(),
-            connected_clients: clients,
-        })
-        .map_err(MethodError::internal)
-    });
+    register_handshake(&mut dispatch);
     dispatch.register("oxabl/sessionCount", |host: &SessionHost, _| {
         Ok(json!(host.with(|sessions| sessions.len())))
     });
@@ -174,7 +143,7 @@ impl Client {
     fn abandon(mut self) {
         drop(self.connection);
         if let Some(threads) = self.threads.take() {
-            threads.join();
+            threads.shutdown();
         }
     }
 }
@@ -202,7 +171,6 @@ fn with_daemon<T>(root: &str, body: impl FnOnce(&Path, Arc<AtomicU32>) -> T) -> 
 }
 
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn the_daemon_registers_and_accepts_a_connection() {
     with_daemon("/proj/accepts", |socket, _| {
         match discover(Path::new("/proj/accepts")) {
@@ -223,7 +191,6 @@ fn the_daemon_registers_and_accepts_a_connection() {
 
 /// The property the daemon exists for.
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn two_clients_connect_concurrently_and_share_one_session() {
     with_daemon("/proj/shared", |socket, _| {
         let root = "/proj/shared";
@@ -263,7 +230,6 @@ fn two_clients_connect_concurrently_and_share_one_session() {
 }
 
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn two_workspace_roots_produce_two_sessions() {
     with_daemon("/proj/multi", |socket, _| {
         let mut client = Client::connect(socket);
@@ -287,7 +253,6 @@ fn two_workspace_roots_produce_two_sessions() {
 /// every query handler follows. If a handler queried under the lock, the fast client
 /// below would wait out the slow one and this test would fail — which is the point.
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn a_slow_response_to_one_client_does_not_stall_the_other() {
     with_daemon("/proj/concurrent", |socket, slow_calls| {
         let mut slow = Client::connect(socket);
@@ -329,7 +294,6 @@ fn a_slow_response_to_one_client_does_not_stall_the_other() {
 /// A client disconnecting mid-request affects neither the other client nor the
 /// session.
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn a_client_disconnecting_mid_request_leaves_the_other_working() {
     with_daemon("/proj/leaving", |socket, slow_calls| {
         let root = "/proj/leaving";
@@ -359,7 +323,6 @@ fn a_client_disconnecting_mid_request_leaves_the_other_working() {
 
 /// A panic serving one client leaves the other client's session working.
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn a_panic_serving_one_client_leaves_the_other_working() {
     with_daemon("/proj/panics", |socket, _| {
         let root = "/proj/panics";
@@ -398,7 +361,6 @@ fn a_panic_serving_one_client_leaves_the_other_working() {
 /// A client at a mismatched contract version is refused, and the refusal names both
 /// versions (R11).
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn a_mismatched_contract_version_is_refused_naming_both_versions() {
     with_daemon("/proj/mismatch", |socket, _| {
         let mut client = Client::connect(socket);
@@ -429,7 +391,6 @@ fn a_mismatched_contract_version_is_refused_naming_both_versions() {
 /// A second daemon on one root is refused rather than stealing the socket, which
 /// would leave the running daemon unreachable and two indexes over one workspace.
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn a_second_daemon_on_one_root_is_refused() {
     with_daemon("/proj/single", |_, _| {
         let Err(error) = Listener::bind("/proj/single") else {
@@ -446,7 +407,6 @@ fn a_second_daemon_on_one_root_is_refused() {
 /// An orderly exit leaves no live-looking registration, so the next client starts a
 /// daemon rather than connecting to a socket nobody holds.
 #[test]
-#[ignore = "U7 unfinished: the framing threads do not tear down, so these hang. See HANDOFF.md."]
 fn an_orderly_shutdown_removes_the_registration() {
     with_cache_home(|| {
         let root = Path::new("/proj/tidy");

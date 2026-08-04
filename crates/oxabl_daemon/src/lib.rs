@@ -43,6 +43,7 @@
 
 pub mod db;
 pub mod dispatch;
+pub mod handshake;
 #[cfg(unix)]
 pub mod listener;
 pub mod registry;
@@ -50,6 +51,7 @@ pub mod server;
 pub mod session;
 
 pub use dispatch::{Dispatch, MethodError, MethodResult};
+pub use handshake::{default_dispatch, register_handshake};
 #[cfg(unix)]
 pub use listener::{Listener, Stopper, connection_over};
 pub use registry::{Discovery, discover, register, socket_path_for, unregister};

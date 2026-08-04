@@ -21,6 +21,7 @@
 //! the rule is stated on [`SessionHost`] rather than left to habit.
 
 use std::io::{self, BufReader};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -127,7 +128,7 @@ impl Listener {
                 server::serve(&connection, &dispatch, &host);
                 // Dropping the sender lets the writer thread finish.
                 drop(connection);
-                threads.join();
+                threads.shutdown();
             }));
         }
         // Let every client finish in flight rather than cutting responses off.
@@ -169,6 +170,7 @@ impl Stopper {
 pub struct ClientThreads {
     reader: thread::JoinHandle<()>,
     writer: thread::JoinHandle<()>,
+    control: Option<UnixStream>,
 }
 
 impl ClientThreads {
@@ -176,6 +178,18 @@ impl ClientThreads {
     pub fn join(self) {
         let _ = self.reader.join();
         let _ = self.writer.join();
+    }
+
+    /// Close both socket directions, then wait for the framing threads.
+    ///
+    /// Dropping the channel pair cannot wake a reader blocked on the socket. The
+    /// control clone makes that read return, which lets both peers observe the
+    /// disconnect and prevents a teardown deadlock.
+    pub fn shutdown(mut self) {
+        if let Some(stream) = self.control.take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        self.join();
     }
 }
 
@@ -185,12 +199,12 @@ impl ClientThreads {
 /// `Message::write` are public, and `Connection`'s channel fields are public, so the
 /// framing is reused rather than reimplemented — only the socket type differs.
 pub fn connection_over(stream: UnixStream) -> (Connection, ClientThreads) {
-    let write_half = match stream.try_clone() {
-        Ok(clone) => clone,
+    let (write_half, control) = match (stream.try_clone(), stream.try_clone()) {
+        (Ok(write_half), Ok(control)) => (write_half, control),
         // A stream that cannot be cloned cannot be served. Hand back a connection
         // whose channels are already closed so the caller's loop ends immediately,
         // rather than panicking a thread that is holding no lock.
-        Err(_) => return closed_connection(),
+        _ => return closed_connection(),
     };
 
     let (inbound_tx, inbound_rx): (Sender<Message>, Receiver<Message>) = bounded(0);
@@ -227,7 +241,11 @@ pub fn connection_over(stream: UnixStream) -> (Connection, ClientThreads) {
             sender: outbound_tx,
             receiver: inbound_rx,
         },
-        ClientThreads { reader, writer },
+        ClientThreads {
+            reader,
+            writer,
+            control: Some(control),
+        },
     )
 }
 
@@ -240,6 +258,7 @@ fn closed_connection() -> (Connection, ClientThreads) {
         ClientThreads {
             reader: thread::spawn(|| {}),
             writer: thread::spawn(|| {}),
+            control: None,
         },
     )
 }

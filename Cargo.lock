@@ -966,6 +966,8 @@ dependencies = [
  "oxabl_analyze",
  "oxabl_ast",
  "oxabl_common",
+ "oxabl_daemon",
+ "oxabl_daemon_protocol",
  "oxabl_formatter",
  "oxabl_lexer",
  "oxabl_lint",

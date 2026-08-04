@@ -218,6 +218,11 @@ enum Cli {
     },
     /// Run the language server over stdio (LSP), publishing live diagnostics.
     Lsp,
+    /// Serve one workspace through the shared oxabl daemon.
+    Daemon {
+        /// Workspace root this daemon owns.
+        workspace_root: PathBuf,
+    },
     /// Emit the JSON Schema for `oxabl.toml` to stdout.
     ///
     /// The schema is derived directly from the config structs
@@ -406,6 +411,7 @@ fn main() -> ExitCode {
             style,
         } => run_format(&path, check, stdout, style.as_deref()),
         Cli::Lsp => run_lsp(),
+        Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
         Cli::Schema => run_schema(),
     }
 }
@@ -457,6 +463,37 @@ fn run_lsp() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Launch the shared daemon on the Unix socket registered for `workspace_root`.
+///
+/// This is an umbrella subcommand, like `oxabl lsp`. It uses the same executable
+/// discovery that editor clients already have, so clients do not need to locate a
+/// second binary.
+#[cfg(unix)]
+fn run_daemon(workspace_root: &Path) -> ExitCode {
+    let listener = match oxabl_daemon::Listener::bind(workspace_root) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("oxabl daemon: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let dispatch = std::sync::Arc::new(oxabl_daemon::default_dispatch());
+    let host = std::sync::Arc::new(oxabl_daemon::SessionHost::new());
+    match listener.accept_loop(dispatch, host) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("oxabl daemon: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn run_daemon(_workspace_root: &Path) -> ExitCode {
+    eprintln!("oxabl daemon: Unix domain sockets are not supported on this platform");
+    ExitCode::FAILURE
 }
 
 /// Resolve a `--style` value to a [`StyleGuide`] (KTD2): a known preset name
