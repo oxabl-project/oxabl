@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.4.0...oxabl_codegen-v0.5.0) (2026-08-04)
+
+
+### Features
+
+* **ast:** full-fidelity spans on AST wrapper nodes ([#91](https://github.com/oxabl-project/oxabl/issues/91)) ([2e774b1](https://github.com/oxabl-project/oxabl/commit/2e774b1338bd9c9ff0db014e2cdc238db10801a7))
+* close residual LINT0001 language-coverage gaps ([#58](https://github.com/oxabl-project/oxabl/issues/58)) ([b3124fd](https://github.com/oxabl-project/oxabl/commit/b3124fdf3fe6c60472e94e5d6fa4f63b3e84d1a1))
+* **formatter:** oxabl_formatter layout engine (Track B slice 3) ([#93](https://github.com/oxabl-project/oxabl/issues/93)) ([11a9659](https://github.com/oxabl-project/oxabl/commit/11a9659afd5e62912a34fba93b8945b92a033219))
+* resolve abbreviated built-in function calls in undefined-symbol lint ([3f45edd](https://github.com/oxabl-project/oxabl/commit/3f45edd11e2f33f6c924a14d1d43c772ae8bcd47))
+* resolve abbreviated built-in function calls in undefined-symbol lint ([7f763a3](https://github.com/oxabl-project/oxabl/commit/7f763a39c99d66e8f1e45d5e598ab9d18f197f66))
+
+
+### Bug Fixes
+
+* resolve built-in ABL functions in undefined-symbol lint ([c47b55a](https://github.com/oxabl-project/oxabl/commit/c47b55a694ec62297359d96b3bd36881965abc43)), closes [#58](https://github.com/oxabl-project/oxabl/issues/58)
+* silence LINT0001 for MAX/MIN/ABS/VALUE, NO-APPLY, lock method args ([1e997d2](https://github.com/oxabl-project/oxabl/commit/1e997d201e9d42a0240ca9958523c9c98085e4f4))
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.3.0...oxabl_codegen-v0.4.0) (2026-04-13)
 
 

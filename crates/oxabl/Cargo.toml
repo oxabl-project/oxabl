@@ -1,6 +1,6 @@
 [package]
 name = "oxabl"
-version = "0.5.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "High-performance tooling suite for Progress ABL"
@@ -12,21 +12,21 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
-oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
-oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
-oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
-oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
+oxabl_parser = { path = "../oxabl_parser", version = "1.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
+oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.4.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.0" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
 # Plain, non-optional: `oxabl_wasm` takes the umbrella with `default-features =
 # false`, so a `cli`-gated pipeline re-export would be invisible to the browser.
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
-oxabl_lint = { path = "../oxabl_lint", version = "0.1.0" }
-oxabl_lsp = { path = "../oxabl_lsp", version = "0.1.0", optional = true }
-oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.0" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0" }
+oxabl_lint = { path = "../oxabl_lint", version = "1.0.0" }
+oxabl_lsp = { path = "../oxabl_lsp", version = "0.1.1", optional = true }
+oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.1" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 clap = { version = "4", features = ["derive"], optional = true }
 indicatif = { version = "0.17", optional = true }
@@ -55,15 +55,15 @@ cli = [
 
 [dev-dependencies]
 tempfile = "3"
-oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
-oxabl_common = { path = "../oxabl_common", version = "0.5.0", features = [
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.0.0", features = [
     "test-panics",
 ] }
-oxabl_schema = { path = "../oxabl_schema", version = "0.1.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
 # The shared cross-client parity fixture table (R19). A dev-dependency feature
 # only: the shipped binary and the library both take `oxabl_pipeline` without it.
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0", features = [
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0", features = [
     "test-support",
 ] }
 serde_json = "1"
