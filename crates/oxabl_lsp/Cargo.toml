@@ -18,6 +18,9 @@ oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
 # supplies only the *memoization* (salsa, per file); the questions and the
 # resolution policy stay in one place (R7, KTD2).
 oxabl_index = { path = "../oxabl_index", version = "0.1.1" }
+# The session core: the salsa substrate and the supersession disciplines. This
+# crate keeps the LSP framing and rendering; it owns no second copy of either.
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.1.0" }
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
@@ -33,6 +36,9 @@ salsa = "=0.28.1"
 serde_json = "1"
 
 [dev-dependencies]
+# The tests and the bench drive the salsa substrate directly, and it lives in the
+# session core now.
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.1.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.2.0", features = ["test-support"] }

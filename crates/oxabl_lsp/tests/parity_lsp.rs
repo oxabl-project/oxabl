@@ -18,7 +18,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use lsp_types::PositionEncodingKind;
-use oxabl_lsp::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics};
+use oxabl_daemon::db::{
+    AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics,
+};
 use oxabl_lsp::document::Document;
 use oxabl_lsp::formatting::compute_formatting_edits;
 use oxabl_lsp::position::byte_to_position;

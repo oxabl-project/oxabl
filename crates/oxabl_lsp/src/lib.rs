@@ -6,19 +6,17 @@
 //! `textDocument/formatting`. It advertises nothing else (R2).
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
-//! [`oxabl_pipeline`]'s, driven through handles this server holds: the lint
-//! pipeline's two phases run inside the salsa queries in [`db`], the format
-//! pipeline runs inline in [`formatting`], and one [`PipelineConfig`] resolved
-//! from a single read of `oxabl.toml` feeds both. What is left here is genuinely
-//! server plumbing: *when* to run, *which* buffers to invalidate, and how to
-//! render a byte span as a `Range` under the negotiated encoding.
+//! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
+//! [`oxabl_daemon`]'s — the session core, where the four supersession disciplines
+//! live so no client owns a second copy of them. What is left here is genuinely
+//! server plumbing: *when* to run, *which* buffers to invalidate, and how to render
+//! a byte span as a `Range` under the negotiated encoding.
 //!
-//! Threading discipline (KTD7): input mutations run on the main loop; each
-//! debounced diagnostics computation runs on a cloned salsa snapshot on a
-//! worker thread. See [`db`] and [`debounce`].
+//! Threading discipline: input mutations run on the main loop; each debounced
+//! diagnostics computation runs on a cloned salsa snapshot on a worker thread. See
+//! `oxabl_daemon::db` and [`debounce`].
 
 pub mod capabilities;
-pub mod db;
 pub mod debounce;
 pub mod diagnostics;
 pub mod document;
@@ -41,18 +39,18 @@ use lsp_types::{
     InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams, ServerInfo,
     TextEdit, Uri,
 };
-use oxabl_common::catch_panic;
 use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
 use oxabl_workspace::RealFileSystem;
 use salsa::Setter;
 
 use crate::capabilities::{negotiate_position_encoding, server_capabilities};
-use crate::db::{
-    AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, buffer_dependencies,
-    compute_diagnostics,
-};
+// The salsa substrate and the supersession disciplines live in `oxabl_daemon`
+// now. This crate supplies the LSP framing and rendering around them; it does not
+// own a second copy of either.
 use crate::diagnostics::to_lsp_diagnostics;
 use crate::document::DocumentStore;
+use oxabl_daemon::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle};
+use oxabl_daemon::{CompletedWork, Disposition, analyze_guarded, dispose};
 
 /// Entry point invoked by the `oxabl lsp` subcommand. Owns the stdio
 /// connection, runs the handshake and main loop, and joins the I/O threads.
@@ -324,64 +322,50 @@ impl<'c> Server<'c> {
         }
     }
 
-    /// Publish a completed computation, unless it was cancelled (`None`) or its
-    /// buffer version has since been superseded by a newer edit (KTD7).
+    /// Publish a completed computation, or drop it, or re-arm it — whichever
+    /// [`oxabl_daemon::dispose`] says.
     ///
-    /// A **cancelled** result for a buffer that is still open at the version the
-    /// worker read is the one case that must not simply be dropped.
-    /// [`salsa::Cancelled`] is global — a write to *any* buffer's input flags
-    /// every live snapshot — so editing file A cancels file B's in-flight
-    /// computation even though B never changed. B's timer was consumed when its
-    /// worker was spawned and B's own version is unchanged, so nothing would ever
-    /// re-fire it: B would keep displaying pre-edit diagnostics until the user
-    /// touched it again. Re-arming the debounce here is what makes cancellation
-    /// the optimization it is documented to be rather than lost work.
+    /// The decision itself lives in the session core, because it is the same
+    /// decision for every client and two copies of it would drift into publishing a
+    /// stale answer. What stays here is the LSP-specific part: reading the buffer
+    /// version out of the document store, recording the dependency set, and
+    /// rendering diagnostics through the negotiated position encoding.
     ///
-    /// A *contained panic* arrives in the same shape (absent diagnostics) and
-    /// must **not** be retried: it is deterministic in the buffer's text, so a
-    /// reschedule would spin the file at the debounce interval forever.
-    ///
-    /// A result computed under a **superseded configuration** is dropped the same
-    /// way and retried: a worker that finished microseconds before an
-    /// `oxabl.toml` change would otherwise publish one round of diagnostics under
-    /// the severities the user just replaced. The buffer version cannot catch this
-    /// — the text did not change, only the configuration did. The
-    /// never-retry-a-panic rule applies to that reschedule too, since the
-    /// generation gate is reached before the absent-diagnostics one.
+    /// The dependency set is recorded **before** the disposition is honoured, and
+    /// only for a current-generation result: a cancelled or panicked computation
+    /// carries `None` there, which `record_dependencies` keeps rather than committing
+    /// as an empty set. An empty set for a buffer that does have includes would stop
+    /// the watcher from ever re-triggering it.
     fn handle_result(&mut self, res: ComputeResult) {
-        match self.documents.get(&res.uri) {
-            None => return,                                    // buffer closed
-            Some(doc) if doc.version != res.version => return, // superseded by a newer edit
-            Some(_) => {}
-        }
-        if res.config_generation != self.config_generation {
-            // Computed under a configuration that is no longer current. The
-            // watcher path already re-triggers every buffer, but this arrives on
-            // the `ensure_config` path too (a first anchor resolved while an
-            // earlier buffer's worker was in flight), where nothing else would.
-            //
-            // A panic is never rescheduled, here as below: this gate runs first, so
-            // without the check a contained panic that happened to land under a
-            // superseded generation would get the one retry `panicked` exists to
-            // prevent.
-            if !res.panicked {
+        let work = CompletedWork {
+            read_version: res.version,
+            current_version: self.documents.get(&res.uri).map(|doc| doc.version),
+            read_generation: res.config_generation,
+            current_generation: self.config_generation,
+            has_diagnostics: res.diagnostics.is_some(),
+            panicked: res.panicked,
+        };
+        match dispose(work) {
+            Disposition::Drop => {}
+            Disposition::Retry => {
                 self.debouncer.schedule(res.uri, std::time::Instant::now());
             }
-            return;
-        }
-        self.record_dependencies(&res.uri, res.dependencies);
-        let Some(collected) = res.diagnostics else {
-            // Cancelled snapshot read: recompute, or this buffer goes stale.
-            if !res.panicked {
-                self.debouncer.schedule(res.uri, std::time::Instant::now());
+            Disposition::Publish => {
+                self.record_dependencies(&res.uri, res.dependencies);
+                let Some(collected) = res.diagnostics else {
+                    // Unreachable: `Publish` is only returned for a result that has
+                    // diagnostics. Handled rather than unwrapped so a change to the
+                    // disposition rules degrades to publishing nothing instead of
+                    // taking down the loop.
+                    return;
+                };
+                let Some(doc) = self.documents.get(&res.uri) else {
+                    return;
+                };
+                let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
+                self.publish(res.uri.clone(), lsp_diags, Some(res.version));
             }
-            return;
-        };
-        let Some(doc) = self.documents.get(&res.uri) else {
-            return;
-        };
-        let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
-        self.publish(res.uri.clone(), lsp_diags, Some(res.version));
+        }
     }
 
     /// Dispatch a `textDocument/*` notification. Opens publish immediately (for
@@ -897,74 +881,6 @@ impl<'c> Server<'c> {
             .send(Message::Response(response))
             .context("sending LSP response")
     }
-}
-
-/// Compute a buffer's diagnostics **and** its include dependencies under one
-/// shared panic guard (R8), degrading both together to `(None, None)` on a
-/// panic.
-///
-/// Both diagnostics paths — the main loop's `compute_and_publish` and the
-/// debounced worker — call this rather than the two queries directly, so neither
-/// can drift into a narrower guard.
-///
-/// **The guard must span both calls.** `buffer_dependencies` runs the same
-/// buffer through salsa one line later, so a genuine panic in expansion just
-/// past a diagnostics-only guard would still kill the worker or the main loop.
-/// The two queries each carry their own `Cancelled::catch` *inside* this guard
-/// (KTD6): a cancellation is a race to abandon, not a bug to contain, and
-/// letting it reach `catch_panic` would report every concurrent edit as a panic.
-///
-/// Both halves are `Option`, and `None` means the same thing on each: **no
-/// trustworthy answer** — cancelled, or panicked and contained. Neither may be
-/// committed as an empty result, which is why the dependency half is not a bare
-/// `Vec`: an empty dependency set is a real answer (a file with no includes),
-/// and recording it for a buffer that does have includes stops the watcher from
-/// ever re-triggering that buffer again.
-///
-/// Returning normally on a panic is the contract the worker relies on: its
-/// `send` sits after this call, so a contained panic still produces a result and
-/// that buffer never stalls waiting on one that never arrives.
-///
-/// `label` names the buffer in the report; it is only ever the URI string.
-pub(crate) fn analyze_guarded(
-    snapshot: &AnalysisDatabase,
-    buffer: Buffer,
-    schema: SchemaHandle,
-    label: &str,
-) -> Analysis {
-    let computed = catch_panic(|| {
-        let diagnostics = compute_diagnostics(snapshot, buffer, schema);
-        // Dependency paths come from the (now-warm) expansion memo.
-        let dependencies = buffer_dependencies(snapshot, buffer);
-        (diagnostics, dependencies)
-    });
-    match computed {
-        Ok((diagnostics, dependencies)) => Analysis {
-            diagnostics,
-            dependencies,
-            panicked: false,
-        },
-        Err(panic) => {
-            eprintln!("oxabl-lsp: analysis panicked for {label}: {panic}");
-            Analysis {
-                diagnostics: None,
-                dependencies: None,
-                panicked: true,
-            }
-        }
-    }
-}
-
-/// The outcome of one [`analyze_guarded`] call.
-///
-/// The two `Option`s carry the "no trustworthy answer" contract described above;
-/// `panicked` is what separates the two ways of having no answer. Client-visible
-/// behavior does not distinguish them, but the server's *scheduling* must: a
-/// cancelled computation is worth re-running, a panicked one is not.
-pub(crate) struct Analysis {
-    pub(crate) diagnostics: Option<oxabl_analyze::CollectedDiagnostics>,
-    pub(crate) dependencies: Option<Vec<PathBuf>>,
-    pub(crate) panicked: bool,
 }
 
 /// Best-effort conversion of a `file:` URI to a filesystem path. Returns `None`

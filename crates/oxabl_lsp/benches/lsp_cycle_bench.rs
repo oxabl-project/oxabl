@@ -26,7 +26,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use oxabl_lsp::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics};
+use oxabl_daemon::db::{
+    AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics,
+};
 use oxabl_pipeline::PipelineConfig;
 use oxabl_workspace::RealFileSystem;
 use salsa::Setter;

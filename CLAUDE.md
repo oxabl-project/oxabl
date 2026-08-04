@@ -69,6 +69,8 @@ Generated files are written directly to their target locations and include a "DO
 - `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary
 - `crates/oxabl_pipeline` - The shared lint and format run every client drives; sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
 - `crates/oxabl_index` - Cross-file fact extraction plus the in-run batch index; sits *beneath* `oxabl_pipeline`
+- `crates/oxabl_daemon` - The session core: one salsa instance per workspace root, serving several clients; the **only** crate that may know about salsa
+- `crates/oxabl_daemon_protocol` - Wire types and the contract version for the daemon's `oxabl/*` methods; depends on serde and nothing else
 - `crates/oxabl_lexer` - Tokenizer for ABL source code (MVP complete)
 - `crates/oxabl_ast` - AST node definitions (expressions, statements, literals)
 - `crates/oxabl_parser` - Parser for ABL source code (actively developed)

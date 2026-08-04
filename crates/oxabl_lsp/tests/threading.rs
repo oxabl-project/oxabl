@@ -12,7 +12,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use oxabl_analyze::CollectedDiagnostics;
-use oxabl_lsp::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics};
+use oxabl_daemon::db::{
+    AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics,
+};
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 use salsa::{Database, Setter};
 

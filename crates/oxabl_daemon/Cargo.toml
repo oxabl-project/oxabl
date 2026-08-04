@@ -1,0 +1,47 @@
+[package]
+name = "oxabl_daemon"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Long-lived oxabl session core: one salsa instance per workspace root, serving several clients"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_daemon"
+
+# NOTE: this crate is the *only* place besides nothing else that may know about
+# salsa. It sits above `oxabl_pipeline` and `oxabl_index`, which are forbidden a
+# salsa edge because the umbrella re-exports the pipeline unconditionally and the
+# WASM bundle builds through the umbrella. Keep the direction: the daemon depends
+# on the shared run, never the other way.
+#
+# Absent from `release-please-config.json`, like the other client-layer crates.
+[dependencies]
+oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
+oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.1.0" }
+oxabl_index = { path = "../oxabl_index", version = "0.1.0" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+anyhow = "1"
+crossbeam-channel = "0.5"
+lsp-server = "0.7"
+# Pinned exact patch: the write-on-main / read-on-snapshot / `Cancelled` threading
+# discipline is verified against this salsa release.
+salsa = "=0.28.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = [
+    "test-support",
+] }
+# Arms `panic_if_injected`, so a source carrying an `OXABL-TEST-PANIC:<site>`
+# marker panics at the guarded site. No ABL input panics, so this is the only way
+# to test that a genuine panic fails one request and is never retried.
+oxabl_common = { path = "../oxabl_common", version = "0.5.0", features = [
+    "test-panics",
+] }
+# The shared cross-client parity fixture table, for the daemon's parity leg.
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0", features = [
+    "test-support",
+] }
+tempfile = "3"
