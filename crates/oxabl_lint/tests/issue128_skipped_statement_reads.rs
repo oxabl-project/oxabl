@@ -384,3 +384,149 @@ v-dead = 1.
         "explicit `off` must still suppress"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Forms drained out of the suppression
+// ---------------------------------------------------------------------------
+
+#[test]
+fn delete_object_credits_its_handle_and_suppresses_nothing() {
+    // `DELETE OBJECT` used to skip to the statement end and harvest every
+    // identifier it passed over, which marked the whole file's named symbols
+    // touched-by-something-unmodelled. It is head-parsed now: the operand is a
+    // real expression, the handle is credited a read, and no symbol carries the
+    // flag — so the count-gated rules judge the file again.
+    let src = "\
+DEFINE VARIABLE h AS HANDLE NO-UNDO.
+DEFINE VARIABLE v-unused AS INTEGER NO-UNDO.
+h = ?.
+DELETE OBJECT h NO-ERROR.
+";
+    assert!(
+        flagged_variables(src).is_empty(),
+        "nothing may be suppressed: {:?}",
+        flagged_variables(src)
+    );
+    let diags = lint_all(src, LintSeverityMap::new());
+    // The handle is read, so it is not a dead store...
+    assert!(
+        !of_code(&diags, LINT0006)
+            .iter()
+            .any(|(_, m, _)| m.contains("h") && !m.contains("v-unused")),
+        "the deleted handle is read: {diags:?}"
+    );
+    // ...and the untouched variable beside it is judged again, which is the
+    // suppression actually draining rather than merely moving.
+    assert!(
+        of_code(&diags, LINT0002)
+            .iter()
+            .any(|(_, m, _)| m.contains("v-unused")),
+        "the unrelated unused variable must be reported: {diags:?}"
+    );
+}
+
+#[test]
+fn a_deleted_handle_that_is_never_read_is_still_a_dead_store() {
+    // Crediting the operand a read must not make every deleted handle look used
+    // for the wrong reason: a handle that is assigned and only ever *deleted* is
+    // read by the delete, so LINT0006 stays quiet — but one assigned twice with no
+    // delete and no read is still reported. The pair is what shows the credit is
+    // the delete's, not a blanket exemption.
+    let deleted = "\
+DEFINE VARIABLE h AS HANDLE NO-UNDO.
+h = ?.
+DELETE OBJECT h.
+";
+    let never = "\
+DEFINE VARIABLE h AS HANDLE NO-UNDO.
+h = ?.
+";
+    assert!(
+        of_code(&lint_all(deleted, LintSeverityMap::new()), LINT0006).is_empty(),
+        "the delete is a read"
+    );
+    assert!(
+        !of_code(&lint_all(never, LintSeverityMap::new()), LINT0006).is_empty(),
+        "with no delete, the store is dead"
+    );
+}
+
+#[test]
+fn a_complex_delete_object_operand_credits_the_name_it_reads() {
+    // `DELETE OBJECT ttbl:HANDLE.` — the shape that forced the old skip. The
+    // attribute access resolves through the buffer, so the temp-table is read.
+    let src = "\
+DEFINE TEMP-TABLE ttbl NO-UNDO FIELD f AS INTEGER.
+DELETE OBJECT ttbl:HANDLE NO-ERROR.
+";
+    assert!(flagged_variables(src).is_empty());
+    let diags = lint_all(src, LintSeverityMap::new());
+    assert!(
+        !of_code(&diags, LINT0002)
+            .iter()
+            .any(|(_, m, _)| m.contains("ttbl")),
+        "the temp-table is used by the delete: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_suppresses_nothing_even_when_a_variable_shares_a_word_with_it() {
+    // AE5. `COMPILE some/path.p SAVE.` harvested `save` and every path segment,
+    // so a variable named `save` — or `path`, or `some` — was marked
+    // touched-by-something-unmodelled and the count-gated rules went quiet about
+    // it. Nothing in the statement is a symbol reference, so it now carries no
+    // names at all and the dead store is reported.
+    let src = "\
+DEFINE VARIABLE save AS CHARACTER NO-UNDO.
+save = \"x\".
+COMPILE some/path.p SAVE.
+";
+    assert!(
+        flagged_variables(src).is_empty(),
+        "COMPILE must suppress nothing: {:?}",
+        flagged_variables(src)
+    );
+    let diags = lint_all(src, LintSeverityMap::new());
+    assert!(
+        of_code(&diags, LINT0006)
+            .iter()
+            .any(|(_, m, _)| m.contains("save")),
+        "the write-only variable is a dead store again: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_value_behaves_the_same_way() {
+    // `COMPILE VALUE(cPath) SAVE.` — the plan does not credit reads inside
+    // `VALUE(...)`, so the variable holding the path is *not* read here. What it
+    // must not do is suppress: the variable is judged, and reported for what it
+    // actually is.
+    let src = "\
+DEFINE VARIABLE cPath AS CHARACTER NO-UNDO.
+cPath = \"some/path.p\".
+COMPILE VALUE(cPath) SAVE.
+";
+    assert!(flagged_variables(src).is_empty());
+    let diags = lint_all(src, LintSeverityMap::new());
+    assert!(
+        of_code(&diags, LINT0006)
+            .iter()
+            .any(|(_, m, _)| m.contains("cPath")),
+        "no suppression, so the store is judged: {diags:?}"
+    );
+}
+
+#[test]
+fn a_file_whose_only_unmodelled_form_is_compile_has_nothing_unjudged() {
+    let src = "\
+DEFINE VARIABLE v-n AS INTEGER NO-UNDO.
+v-n = 1.
+MESSAGE v-n.
+COMPILE some/path.p SAVE.
+";
+    assert!(
+        flagged_variables(src).is_empty(),
+        "zero unjudged symbols: {:?}",
+        flagged_variables(src)
+    );
+}

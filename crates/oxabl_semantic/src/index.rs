@@ -46,7 +46,7 @@
 //! index attached a cross-file name stays
 //! [`UnresolvedReason::External`](crate::UnresolvedReason::External) ("we did
 //! not look"), and only a loaded index turns a miss into
-//! [`NotFoundInWorkspace`](crate::UnresolvedReason::NotFoundInWorkspace).
+//! [`AbsentFromWorkspace`](crate::UnresolvedReason::AbsentFromWorkspace).
 //!
 //! [`AnalysisContext::index`]: crate::AnalysisContext::index
 //! [`AnalysisContext::index_loaded`]: crate::AnalysisContext::index_loaded
@@ -231,21 +231,43 @@ impl IndexRevision {
 // Answers
 // ---------------------------------------------------------------------------
 
-/// The three states every index query can be in.
+/// The four states every index query can be in.
 ///
 /// Total by construction: an implementation that cannot read a file, cannot
 /// parse it, or cannot decide between two candidate files still returns one of
-/// these. The split between the two negative states is the whole point —
-/// `NotFound` is a fact about the workspace that a rule may report, while
-/// `Unknowable` is a statically undecidable name that no amount of indexing
-/// would resolve and that no rule may report.
+/// these. The split between the three negative states is the whole point, and
+/// each one licenses a different thing to say to a user:
+///
+/// * `NotFound` is a fact about the *workspace* — searched, genuinely absent —
+///   and a rule may report it.
+/// * `Unusable` is a fact about *oxabl* — the file is right there and we could
+///   not read or parse it — so no rule may blame the user for it.
+/// * `Unknowable` is a fact about the *name* — statically undecidable, so no
+///   amount of indexing would resolve it and no rule may report it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexAnswer<T> {
     /// The index located the thing and this is it.
     Found(T),
-    /// The index looked on the configured paths and it is genuinely absent —
-    /// or was located but is unusable (unreadable, unparseable).
+    /// The index looked on the configured paths and it is genuinely absent.
     NotFound,
+    /// A file that would supply the name **was located** and cannot be used *as a
+    /// foreign file*: it is unreadable, its parse recovered errors, it does not
+    /// visibly declare the name (a declaration spliced in from an `{include}`
+    /// looks like this), or it is the very file being analysed.
+    ///
+    /// The last case is worth spelling out. An index excludes the analysed file
+    /// from its own answers on purpose — the client analyses a buffer while the
+    /// index answers from disk — so a program that `RUN`s itself finds nothing.
+    /// That is not the file being absent; it is right there.
+    ///
+    /// Split out from [`Self::NotFound`], which folded it in while nothing
+    /// branched on the difference. Once `undefined-symbol` began reporting an
+    /// absent cross-file name, folding stopped being harmless: it would render
+    /// "no such symbol" over a symbol whose declaration is sitting on disk, and
+    /// blame the user for a gap in oxabl's own parser. A consumer that genuinely
+    /// does not care may treat the two alike; the resolve pass does care, and
+    /// maps this to `PresentButUnusable`.
+    Unusable,
     /// The answer cannot be determined statically: a run-time-computed target,
     /// or two candidate files where exactly one match is required and picking
     /// the wrong link would be worse than declining.
@@ -261,6 +283,7 @@ impl<T> IndexAnswer<T> {
         match self {
             IndexAnswer::Found(value) => IndexAnswer::Found(f(value)),
             IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         }
     }
@@ -465,6 +488,28 @@ pub trait WorkspaceIndex {
     /// Implementations must not return [`IndexRevision::ABSENT`] — that value
     /// means [`NullIndex`].
     fn revision(&self) -> IndexRevision;
+
+    /// Whether this index has anywhere at all to search.
+    ///
+    /// An index configured with no search paths answers `NotFound` to every
+    /// name, which is indistinguishable from having searched and found nothing —
+    /// and reporting a name as absent from the workspace on that basis would be
+    /// a claim nothing was ever in a position to make. The resolve pass reads
+    /// this once, through
+    /// [`AnalysisContext::index_searches_paths`](crate::AnalysisContext::index_searches_paths),
+    /// and files such a miss as [`UnresolvedReason::External`](crate::UnresolvedReason::External)
+    /// instead: "we did not look" is the truthful answer when there was nowhere
+    /// to look. It also keeps the browser — which has no filesystem — from
+    /// diverging from the CLI.
+    ///
+    /// Defaults to `true`, so an implementation that always has somewhere to
+    /// look says nothing. `false` does **not** mean the index is absent: a
+    /// seeded file list can still answer `shared_producer` with no path
+    /// configured, which is why this is a separate question from
+    /// [`Self::revision`].
+    fn searches_any_path(&self) -> bool {
+        true
+    }
 }
 
 /// The index that knows nothing.
@@ -496,6 +541,11 @@ impl WorkspaceIndex for NullIndex {
 
     fn revision(&self) -> IndexRevision {
         IndexRevision::ABSENT
+    }
+
+    /// Nowhere to look, which is the whole nature of this index.
+    fn searches_any_path(&self) -> bool {
+        false
     }
 }
 

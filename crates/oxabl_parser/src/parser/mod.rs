@@ -683,6 +683,33 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// [`skipped_stmt`](Self::skipped_stmt) for a form whose operands are **not
+    /// symbols**: the node carries an empty name list.
+    ///
+    /// `COMPILE some/path.p SAVE.` is the case. Its operand is a *file path* and
+    /// its trailing words are grammar keywords, so no identifier in the statement
+    /// is a reference to anything — the harvest credited nothing true, while
+    /// actively suppressing real variables whose names collided with a path
+    /// segment or with `SAVE`. Measured over a large real-world codebase, that
+    /// made `COMPILE` one of the two forms that dominate the unmodelled-statement
+    /// suppression, and the worst of them: it is the one whose suppression is
+    /// *entirely* spurious.
+    ///
+    /// A separate entry point rather than an `Option`-ised name list on
+    /// [`skipped_stmt`](Self::skipped_stmt), mirroring how
+    /// [`skipped_table_stmt`](Self::skipped_table_stmt) was added: the shape is
+    /// the exception, and a defaulted constructor keeps every existing call site
+    /// correct by construction. The statement still emits `Skipped`, not an
+    /// error-recovery `Empty` — the form *was* recognized, which is a different
+    /// fact from a parse failure and one the span still records.
+    #[must_use]
+    pub(crate) fn skipped_stmt_no_names(&mut self) -> Statement {
+        self.stmt(StatementKind::Skipped {
+            names: Vec::new(),
+            may_reference_tables: false,
+        })
+    }
+
     /// [`skipped_stmt`](Self::skipped_stmt) for a form whose grammar names a
     /// table or temp-table: `DEFINE QUERY` and `OPEN QUERY` (#130).
     ///
@@ -1313,7 +1340,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume '.'
                     let next = self.advance().clone();
                     name.push('.');
-                    name.push_str(&self.source[next.start..next.end]);
+                    name.push_str(&self.identifier_source(next.start, next.end));
                     end = next.end as u32;
                 } else {
                     break;
@@ -1346,7 +1373,7 @@ impl<'a> Parser<'a> {
         let start_tok = self.advance().clone();
         let start = start_tok.start as u32;
         let mut end = start_tok.end as u32;
-        let mut name = self.source[start_tok.start..start_tok.end].to_string();
+        let mut name = self.identifier_source(start_tok.start, start_tok.end);
 
         // Consume .qualifier parts (same-line only)
         while self.check(Kind::Period) {
@@ -1359,7 +1386,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume '.'
                     let next = self.advance().clone();
                     name.push('.');
-                    name.push_str(&self.source[next.start..next.end]);
+                    name.push_str(&self.identifier_source(next.start, next.end));
                     end = next.end as u32;
                 } else {
                     break;
@@ -1434,8 +1461,20 @@ impl<'a> Parser<'a> {
                 start: start as u32,
                 end: end as u32,
             },
-            name: self.source[start..end].to_string(),
+            name: self.identifier_source(start, end),
         })
+    }
+
+    /// ABL on UNIX accepts backslash as an alternative escape character. The
+    /// token span stays on the authored bytes, while semantic identity uses the
+    /// spelling the compiler sees after escape removal.
+    fn identifier_source(&self, start: usize, end: usize) -> String {
+        let authored = &self.source[start..end];
+        if authored.contains('\\') {
+            authored.replace('\\', "")
+        } else {
+            authored.to_string()
+        }
     }
 
     fn current_span(&self) -> Span {

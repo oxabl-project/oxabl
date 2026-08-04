@@ -263,7 +263,13 @@ fn capability_free_fixtures_are_indifferent_to_preprocessing() {
 
 /// Sibling files are not a capability but an *input*: with them supplied the row
 /// answers as the table says, and with them withheld it answers as
-/// [`ParityFixture::expected_without_siblings`] says — louder, never quieter.
+/// [`ParityFixture::expected_without_siblings`] says.
+///
+/// It used to be "louder, never quieter", because the only cross-file effect
+/// visible in the diagnostic channel was a removed `undefined-symbol`. A
+/// cross-file *type* now reaches the lattice, so a row can also be *quieter*
+/// without its siblings — the `cross_file_judged_type` row is exactly that — and
+/// each row's declared effects are what say which way it moves.
 ///
 /// The second half is what stops a wholly broken resolver from passing the first:
 /// a row whose siblings change the answer must actually produce a *different*
@@ -271,7 +277,7 @@ fn capability_free_fixtures_are_indifferent_to_preprocessing() {
 /// or unknowable the two answers are equal by construction, and this asserts that
 /// equality rather than pretending a difference exists.
 #[test]
-fn withholding_a_fixtures_siblings_only_ever_makes_it_louder() {
+fn withholding_a_fixtures_siblings_changes_the_answer_exactly_as_declared() {
     for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
         let config = fixture.config_under(root());
 
@@ -293,15 +299,50 @@ fn withholding_a_fixtures_siblings_only_ever_makes_it_louder() {
                  a resolver that never looked",
                 fixture.name
             );
+            // An addition is allowed only where the row declared one. That keeps
+            // the old containment check's teeth — a finding appearing out of a
+            // cross-file resolution nobody wrote down is still a failure — while
+            // letting a `Judged` row say, in the table, that this particular
+            // finding is the point.
+            let declared: Vec<_> = fixture
+                .resolutions
+                .iter()
+                .filter_map(|r| match r.effect {
+                    CrossFileEffect::Judged(finding) => Some(finding),
+                    CrossFileEffect::Resolved(_)
+                    | CrossFileEffect::ResolvedFromWorkspaceMiss(_)
+                    | CrossFileEffect::ResolvedSilently
+                    | CrossFileEffect::Unresolvable
+                    | CrossFileEffect::Unknowable => None,
+                })
+                .collect();
             for found in &with {
+                let is_declared_addition = declared
+                    .iter()
+                    .any(|d| d.code == found.code && d.start == found.start && d.end == found.end);
                 assert!(
-                    without.contains(found),
-                    "fixture `{}`: supplying siblings added {} at {}..{} — attaching \
-                     an index must only ever remove a finding (R11)",
+                    without.contains(found) || is_declared_addition,
+                    "fixture `{}`: supplying siblings added {} at {}..{}, which no \
+                     `Judged` resolution declares — a finding produced by cross-file \
+                     resolution has to be written down in the table",
                     fixture.name,
                     found.code,
                     found.start,
                     found.end
+                );
+            }
+            // And the reverse: a declared addition must actually arrive.
+            for declared_finding in &declared {
+                assert!(
+                    with.iter().any(|f| f.code == declared_finding.code
+                        && f.start == declared_finding.start
+                        && f.end == declared_finding.end),
+                    "fixture `{}` declares that supplying siblings produces {} at \
+                     {}..{}, and it did not",
+                    fixture.name,
+                    declared_finding.code,
+                    declared_finding.start,
+                    declared_finding.end
                 );
             }
         } else {
@@ -557,13 +598,15 @@ fn the_non_ascii_fixture_distinguishes_bytes_from_characters() {
 /// span typo is caught in the table rather than surviving as four legs agreeing
 /// on the wrong number.
 ///
-/// Covers the cross-file rows' `Resolved` findings too: those spans are in the
-/// same root buffer and are just as easy to mistype.
+/// Covers the cross-file rows' `Resolved` and `Judged` findings too: those spans
+/// are in the same root buffer and are just as easy to mistype.
 #[test]
 fn expected_spans_are_inside_their_source_and_land_on_real_text() {
     for fixture in FIXTURES {
         let resolved = fixture.resolutions.iter().filter_map(|r| match r.effect {
-            CrossFileEffect::Resolved(finding) => Some(finding),
+            CrossFileEffect::Resolved(finding)
+            | CrossFileEffect::ResolvedFromWorkspaceMiss(finding)
+            | CrossFileEffect::Judged(finding) => Some(finding),
             CrossFileEffect::ResolvedSilently
             | CrossFileEffect::Unresolvable
             | CrossFileEffect::Unknowable => None,
@@ -660,8 +703,9 @@ fn every_fixture_carrying_siblings_declares_what_they_resolve() {
         }
     }
 
-    // Every effect arm is exercised, so the four legs' cross-file assertions
-    // cover a removal, an agreed silence, an absence, and an unknowable.
+    // Every effect arm is exercised, so the four legs' cross-file assertions cover
+    // a removal, a produced finding, an agreed silence, an absence, and an
+    // unknowable.
     let effects: Vec<CrossFileEffect> = FIXTURES
         .iter()
         .flat_map(|f| f.resolutions.iter().map(|r| r.effect))
@@ -671,6 +715,18 @@ fn every_fixture_carrying_siblings_declares_what_they_resolve() {
             .iter()
             .any(|e| matches!(e, CrossFileEffect::Resolved(_))),
         "no fixture covers a diagnostic-visible cross-file resolution"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, CrossFileEffect::Judged(_))),
+        "no fixture covers a finding produced by a cross-file resolution"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, CrossFileEffect::ResolvedFromWorkspaceMiss(_))),
+        "no fixture covers a finding that exists only because a path was searched"
     );
     for arm in [
         CrossFileEffect::ResolvedSilently,

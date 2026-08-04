@@ -33,6 +33,19 @@
 #   2  usage / missing CORPUS_ROOT
 #   3  oxabl binary missing
 #   4  an analyze envelope this script does not recognize — fix it, don't diff
+#   5  the two sides were collected under different inputs — see the manifests
+#
+# Each `collect` writes a `<label>.manifest` beside its JSONL recording the
+# *inputs* that produced it: the rule set, a hash of the discovered `oxabl.toml`,
+# a hash of the environment overrides, and the corpus revision. `diff` refuses to
+# compare two sides whose inputs differ, because a ratio computed across a config
+# change is not a measurement of the code change — and nothing in the JSONL shows
+# that it happened. Two runs days apart under a mutable, untracked config produced
+# exactly that: a published ratio nobody could reproduce.
+#
+# The manifest holds only hashes, counts and revisions — never a path, a file name
+# or a corpus fact — so it is safe to paste beside a published ratio, which is the
+# point of it.
 
 set -euo pipefail
 
@@ -45,7 +58,13 @@ fi
 
 # The rules this change can move. LINT0001/LINT0003 are listed so the run
 # doubles as the R8 check: their counts must be identical between the two sides.
-RULES="LINT0001 LINT0002 LINT0003 LINT0005 LINT0006"
+#
+# LINT0004 is listed because cross-file typing moves it. It was absent while this
+# script only served suppression work (#128), and an absent rule reports no delta
+# rather than reporting zero — the same class of silent-lie this script's
+# envelope guard exists to prevent, one level up. If you add a rule to
+# `oxabl_lint`, add it here.
+RULES="LINT0001 LINT0002 LINT0003 LINT0004 LINT0005 LINT0006"
 
 usage() {
   sed -n '2,35p' "$0" | sed 's/^# \?//'
@@ -154,6 +173,63 @@ else:
   done < <(find "$CORPUS_ROOT" -type f \( -name '*.p' -o -name '*.w' -o -name '*.cls' -o -name '*.v' \) -print0)
 
   echo "    $n files → $(wc -l <"$out") records in $out" >&2
+  write_manifest "$label" "$n"
+}
+
+# Record the inputs this collection was produced under, as hashes only.
+#
+# `oxabl.toml` is the input most likely to move between two runs and the least
+# likely to be noticed: it is discovered by walking up from each analyzed file, so
+# it need not be passed on the command line, and in a corpus kept outside the repo
+# it is typically untracked. Its *hash* is therefore the thing that makes two
+# collections comparable.
+write_manifest() {
+  local label=$1 files=$2
+  local manifest="$OUT_DIR/$label.manifest"
+  local config_sha="none"
+  [[ -f "$CORPUS_ROOT/oxabl.toml" ]] &&
+    config_sha=$(sha256sum "$CORPUS_ROOT/oxabl.toml" | cut -d' ' -f1)
+  # Hashed rather than stored: the override values are paths, and a manifest that
+  # is safe to publish cannot carry them.
+  local env_sha
+  env_sha=$(printf '%s\0%s\0' "${INCLUDE_PATHS:-}" "${SCHEMA:-}" | sha256sum | cut -d' ' -f1)
+  local corpus_rev="not-a-git-repo"
+  if git -C "$CORPUS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    corpus_rev="$(git -C "$CORPUS_ROOT" rev-parse --short HEAD)+$(git -C "$CORPUS_ROOT" status --short | wc -l)dirty"
+  fi
+  {
+    echo "rules=$RULES"
+    echo "config_sha256=$config_sha"
+    echo "env_sha256=$env_sha"
+    echo "corpus_rev=$corpus_rev"
+    echo "files=$files"
+  } >"$manifest"
+  echo "    inputs → $manifest" >&2
+}
+
+# Refuse to diff two sides collected under different inputs.
+#
+# A missing manifest is a warning, not a failure: a collection predating this
+# check is still diffable, it just cannot prove its inputs matched. A *differing*
+# manifest is fatal, because the resulting ratio would attribute a config change
+# to the code change and look entirely plausible doing it.
+compare_manifests() {
+  local mb="$OUT_DIR/before.manifest" ma="$OUT_DIR/after.manifest"
+  if [[ ! -f "$mb" || ! -f "$ma" ]]; then
+    echo "warning: no input manifest on one or both sides — cannot verify the two" >&2
+    echo "         collections used the same config, rule set and corpus revision." >&2
+    echo "         Re-collect both sides to get that guarantee." >&2
+    return 0
+  fi
+  if ! command diff -q "$mb" "$ma" >/dev/null; then
+    echo "error: the two sides were collected under different inputs." >&2
+    echo "       A delta across a config, rule-set or corpus change is not a" >&2
+    echo "       measurement of the code change. Re-collect both sides." >&2
+    echo >&2
+    command diff "$mb" "$ma" >&2 || true
+    exit 5
+  fi
+  echo "inputs match on both sides ($(grep '^config_sha256=' "$ma" | cut -d= -f2 | cut -c1-12)…)"
 }
 
 diff_sides() {
@@ -161,6 +237,7 @@ diff_sides() {
   for f in "$before" "$after"; do
     [[ -s "$f" ]] || { echo "error: missing or empty $f — run 'collect before' and 'collect after' first" >&2; exit 2; }
   done
+  compare_manifests
   python3 - "$before" "$after" "$OUT_DIR/disappeared.jsonl" "$OUT_DIR/appeared.jsonl" <<'PY'
 import collections, json, sys
 

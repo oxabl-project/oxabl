@@ -8,10 +8,15 @@
 //! Two properties are asserted over and over, because they are the ones a later
 //! change is most likely to break:
 //!
-//! 1. **With no index attached nothing changes.** Every scenario is run twice —
-//!    once with an index, once without — and the no-index run must produce
-//!    today's answer. That is the R11 firewall, and it is why the shared helpers
-//!    in `support` take the workspace as an argument rather than hard-coding one.
+//! 1. **With no index attached, nothing resolves and nothing is typed.** Every
+//!    scenario is run twice — once with an index, once without — and the no-index
+//!    run must produce the single-file answer. That is what makes each finding
+//!    below attributable to cross-file resolution rather than to a rule change,
+//!    and it is why the shared helpers in `support` take the workspace as an
+//!    argument rather than hard-coding one. These tests used to assert that the
+//!    two runs produced the *same* diagnostics; now that an inherited member's
+//!    declared type reaches the type lattice, they enumerate the difference
+//!    instead.
 //! 2. **A synthesized cross-file symbol is not in the scope tree.** It is
 //!    reachable only through the reference entry that deliberately points at it,
 //!    so a bare mention of an inherited member's name outside the subclass stays
@@ -20,6 +25,7 @@
 mod support;
 
 use oxabl_ast::NodeId;
+use oxabl_lint::LINT0004;
 use oxabl_semantic::{NamespaceId, PrimitiveTy, ResolvedType, SymbolKind, UnresolvedReason};
 
 use support::*;
@@ -81,23 +87,16 @@ END CLASS."#;
     let (_stmts, sem) = with_index(child, &workspace);
     let sym = sole_resolved(&sem, "calc-total");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Function);
-    // The declared return type is observable — through the side map, not through
-    // `data_type`. Two readers take a symbol's `data_type` straight into the type
-    // lattice (`check.rs::type_from_reference`'s fallback arm and
-    // `type_mismatch_assignment::target_type`), so a real type there would make
-    // LINT0004 report an inherited-INTEGER-into-LOGICAL assignment that produces
-    // no finding without an index. `attaching_an_index_adds_no_diagnostic_to_any_scenario`
-    // below is the test that catches that; this pair is why the type still has to
-    // be *somewhere*.
+    // The declared return type is on `data_type`, the same field a local
+    // declaration populates and the one both type-lattice readers consult
+    // (`check.rs::type_from_reference`'s fallback arm and
+    // `type_mismatch_assignment::target_type`). It used to be parked in a side
+    // map so it could not reach them; judging the cross-file population is what
+    // reaching them is for.
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Integer)),
         "the resolved symbol carries the parent's declared return type"
-    );
-    assert_eq!(
-        sem.symbols.get(sym).data_type,
-        None,
-        "and deliberately not on `data_type`, where the type lattice would read it"
     );
     assert_synthesized(&sem, sym, NamespaceId::Functions);
 
@@ -130,7 +129,7 @@ END CLASS."#;
     let sym = sole_resolved(&sem, "base-label");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Property);
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
     assert_synthesized(&sem, sym, NamespaceId::Values);
@@ -151,7 +150,7 @@ END CLASS."#;
     let (_stmts, sem) = with_index(child, &[(CALC_BASE_PATH, CALC_BASE)]);
     let sym = sole_resolved(&sem, "calc-rate");
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Decimal))
     );
 }
@@ -176,13 +175,14 @@ END CLASS."#;
         "and no symbol is synthesized for it either — a later access-check rule \
          must see a violation, not a resolved reference"
     );
-    // `NotFoundInWorkspace`, not `NotInScope`: the chain *does* declare the name,
-    // it just does not pass it on, and claiming there is no such symbol would be
-    // false. Every rule already skips the cross-file reasons, so the reference is
-    // silent rather than reported as undefined.
+    // `PresentButUnusable`, not `NotInScope` and not `AbsentFromWorkspace`: the
+    // chain *does* declare the name, it just does not pass it on. Both other
+    // reasons would claim there is no such symbol, and `AbsentFromWorkspace` is
+    // the one `undefined-symbol` reports — so the distinction is what keeps an
+    // inaccessible member silent while a genuinely missing name is an error.
     assert_eq!(
         unresolved_reasons(&sem, "calc-secret"),
-        vec![UnresolvedReason::NotFoundInWorkspace]
+        vec![UnresolvedReason::PresentButUnusable]
     );
     assert!(
         lint0001_with_index(child, &workspace).is_empty(),
@@ -248,7 +248,7 @@ END CLASS."#;
     let (_stmts, sem) = with_index(called, &workspace);
     assert_eq!(
         unresolved_reasons(&sem, "calc-secret"),
-        vec![UnresolvedReason::NotFoundInWorkspace]
+        vec![UnresolvedReason::PresentButUnusable]
     );
     assert!(lint0001_with_index(called, &workspace).is_empty());
 }
@@ -301,7 +301,7 @@ END CLASS."#;
     let (_stmts, sem) = with_index(child, &workspace);
     let sym = sole_resolved(&sem, "calc-total");
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
 }
@@ -349,7 +349,7 @@ END CLASS."#;
     let (_stmts, sem) = with_index(a, &workspace);
     let sym = sole_resolved(&sem, "from-b");
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
     assert_eq!(
@@ -376,7 +376,7 @@ END INTERFACE."#,
     let (_stmts, sem) = with_index(child, &workspace);
     let sym = sole_resolved(&sem, "required-total");
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
     assert_synthesized(&sem, sym, NamespaceId::Functions);
@@ -555,22 +555,24 @@ fn implemented_interfaces_are_recorded_in_declaration_order() {
 }
 
 // ---------------------------------------------------------------------------
-// The firewall, swept
+// What an index adds, enumerated
 // ---------------------------------------------------------------------------
 
 #[test]
-fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
-    // The phase's central property, swept over every inheritance fixture in this
-    // file at once and across **all six** lint rules plus the semantic pass: the
-    // diagnostic set — codes, severities, and byte spans — is identical with and
-    // without an index.
+fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
+    // This swept the phase's old central property — that attaching an index added
+    // no finding to any fixture in this file — and it is now the enumeration of
+    // what an index *does* add, one expected code list per scenario. Inverted
+    // rather than deleted: the sweep's value was never the zero, it was covering
+    // every fixture at once across all six rules plus the semantic pass, and a
+    // reader comparing a scenario against its list can see which shapes are judged
+    // and which are still silent.
     //
-    // This sweep exists because the per-scenario tests above could not catch the
-    // failure it was written for. They assert *resolution*, and their assignments
-    // are all type-matched, so an inherited member's real type reaching
-    // `type-mismatch-assignment` was invisible to them. [`MISMATCHED_CHILD`] is
-    // the fixture that makes the difference observable, and it is first in the
-    // list for that reason.
+    // Spans are deliberately out of the expectation. A fixture reflowed by one
+    // character would shift every span in it, which would make the table expensive
+    // to maintain and would say nothing about behavior; the byte-span comparison
+    // still happens inside the helper, which is what decides whether a finding is
+    // "the same" one.
     //
     // One combined workspace rather than each scenario's own: the property is
     // unconditional, so a broader workspace can only make the sweep stricter.
@@ -608,7 +610,12 @@ fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
     }
     many_references.push_str("    END METHOD.\nEND CLASS.");
 
-    let scenarios = [
+    // The five deliberate mismatches: an inherited member's declared type now
+    // reaches the lattice, so each of these gains exactly one LINT0004 — the
+    // finding the valve was holding back. Five spellings rather than one, because
+    // a type can enter the rule through a superclass method, an interface method,
+    // a property in the *target* position, `ASSIGN`, or `INITIAL`.
+    let judged = [
         // The mismatch: an inherited INTEGER method into a LOGICAL variable.
         MISMATCHED_CHILD.to_string(),
         // The same shape through an *interface* rather than a superclass, and the
@@ -643,6 +650,12 @@ END CLASS."#
     END METHOD.
 END CLASS."#
             .to_string(),
+    ];
+    // Everything else: type-matched assignments, a private ancestor member, a
+    // typo, the two inheritance cycles, an unresolvable parent, and the
+    // twenty-reference fixture. Each stays exactly as silent as it was — resolving
+    // a name across files is not, on its own, a reason to say anything.
+    let silent = [
         // Every type-matched fixture the tests above use, so a future change that
         // shifts one of them shows up here too.
         r#"CLASS orders.child INHERITS orders.calc-base:
@@ -741,29 +754,43 @@ END PROCEDURE."#
         many_references,
     ];
 
-    for source in &scenarios {
-        assert_index_adds_no_diagnostic(source, &workspace);
+    for (i, source) in judged.iter().enumerate() {
+        assert_eq!(
+            codes_added_by_index(source, &workspace),
+            vec![LINT0004],
+            "judged scenario {i} must gain exactly one type-mismatch finding:\n{source}"
+        );
+    }
+    for (i, source) in silent.iter().enumerate() {
+        assert_eq!(
+            codes_added_by_index(source, &workspace),
+            Vec::<&str>::new(),
+            "silent scenario {i} must gain nothing:\n{source}"
+        );
     }
 }
 
 #[test]
-fn a_mismatched_assignment_from_an_inherited_method_stays_silent_but_resolves() {
-    // The sweep above proves no *new* finding arrives. This proves the sweep is
-    // not passing because the fixture is inert: the member genuinely resolves, its
-    // declared `INTEGER` really is recorded, the target really is `LOGICAL` — every
-    // ingredient LINT0004 needs is present — and it still says nothing, because the
-    // type is held off `Symbol::data_type` where neither `check.rs` nor the rule can
-    // read it.
+fn a_mismatched_assignment_from_an_inherited_method_is_reported() {
+    // The enumeration above says this scenario gains a LINT0004; this says what
+    // that finding is made of. Every ingredient the rule needs is present and
+    // cross-file: the member resolves through the index, its declared `INTEGER`
+    // is on the symbol, and the target is a genuinely incompatible `LOGICAL`.
+    //
+    // The test it replaces asserted the opposite — that the ingredients were all
+    // present and the rule still said nothing, because the type was parked in a
+    // side map where neither `check.rs` nor the rule could read it. Both halves
+    // were true then. Promoting the type onto `Symbol::data_type` is what turns
+    // the silence into the finding, and this is where that shows.
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
     let (_stmts, sem) = with_index(MISMATCHED_CHILD, &workspace);
 
     let member = sole_resolved(&sem, "calc-total");
     assert_eq!(
-        sem.symbols.inherited_member_type(member),
+        sem.symbols.get(member).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Integer)),
-        "the inherited member resolved, and its declared return type is recorded"
+        "the inherited member resolved, carrying the parent's declared return type"
     );
-    assert_eq!(sem.symbols.get(member).data_type, None);
     let target = sole_symbol(&sem, "v-flag");
     assert_eq!(
         sem.symbols.get(target).data_type,
@@ -771,13 +798,21 @@ fn a_mismatched_assignment_from_an_inherited_method_stays_silent_but_resolves() 
         "and the assignment target is a genuinely incompatible LOGICAL"
     );
 
+    let found = lint0004_with_index(MISMATCHED_CHILD, &workspace);
+    assert_eq!(found.len(), 1, "one type mismatch: {found:?}");
     assert!(
-        lint0004_with_index(MISMATCHED_CHILD, &workspace).is_empty(),
-        "yet LINT0004 stays silent — the type never reaches the lattice"
+        found[0].message.contains("INTEGER") && found[0].message.contains("LOGICAL"),
+        "and it names both ABL types: {}",
+        found[0].message
     );
-    // The baseline that proves LINT0004 is not simply inert on this shape: the same
-    // INTEGER-into-LOGICAL assignment from a method declared *in this file* fires,
-    // index or no index.
+    // With no index the same call resolves to nothing, so there is no type to
+    // judge and no finding — the direction of the effect, which is the property
+    // the whole cross-file suite is built to state.
+    assert!(lint0004_without_index(MISMATCHED_CHILD).is_empty());
+
+    // The in-file baseline: the identical assignment from a method declared right
+    // here has always fired, which is what makes the cross-file finding the same
+    // verdict rather than a new kind of one.
     let local = r#"CLASS orders.child:
     METHOD PUBLIC INTEGER calc-total():
         RETURN 0.
@@ -796,6 +831,108 @@ END CLASS."#;
 }
 
 #[test]
+fn inherited_overloads_do_not_lend_calls_the_first_return_type() {
+    let parent = r#"CLASS orders.calc-base:
+        METHOD PUBLIC INTEGER choose(INPUT value AS INTEGER):
+            RETURN 0.
+        END METHOD.
+        METHOD PUBLIC CHARACTER choose(INPUT value AS CHARACTER):
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+        METHOD PUBLIC VOID run-it():
+            DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+            v-flag = choose(1).
+        END METHOD.
+    END CLASS."#;
+    let workspace = [(CALC_BASE_PATH, parent)];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "choose");
+    assert_eq!(
+        sem.symbols.get(member).data_type,
+        Some(ResolvedType::Unknown)
+    );
+    assert!(lint0004_with_index(child, &workspace).is_empty());
+}
+
+#[test]
+fn an_override_up_the_chain_keeps_the_inherited_return_type() {
+    // The member surface is walked breadth-first over the *whole* ancestor
+    // chain, so `choose` arrives twice here — once from the grandparent and once
+    // from the parent's `OVERRIDE`. Treating any repeat as an overload erased the
+    // type, which silenced LINT0004 on most real OO-ABL: an `OVERRIDE` must keep
+    // the overridden return type in ABL, so the repeats agree and the answer is
+    // the one the nearest declaration already gave.
+    let grandparent = r#"CLASS orders.calc-root:
+        METHOD PUBLIC CHARACTER choose():
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let parent = r#"CLASS orders.calc-base INHERITS orders.calc-root:
+        METHOD PUBLIC OVERRIDE CHARACTER choose():
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+        METHOD PUBLIC VOID run-it():
+            DEFINE VARIABLE v-count AS INTEGER NO-UNDO.
+            v-count = choose().
+        END METHOD.
+    END CLASS."#;
+    let workspace = [
+        (CALC_BASE_PATH, parent),
+        ("/src/orders/calc-root.cls", grandparent),
+    ];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "choose");
+    assert_eq!(
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character)),
+        "an overridden member's type is knowable — the declarations agree"
+    );
+    assert_eq!(
+        lint0004_with_index(child, &workspace).len(),
+        1,
+        "so assigning CHARACTER into an INTEGER is judged"
+    );
+}
+
+#[test]
+fn an_overload_set_agreeing_on_its_return_type_is_still_judged() {
+    // Overloading on parameters alone is the common ABL idiom. Selection is not
+    // modelled, but it does not need to be when every candidate returns the same
+    // type: whichever one the AVM picks, the value is a CHARACTER. Only a
+    // genuine disagreement is unknowable — see
+    // `inherited_overloads_do_not_lend_calls_the_first_return_type`.
+    let parent = r#"CLASS orders.calc-base:
+        METHOD PUBLIC CHARACTER choose(INPUT value AS INTEGER):
+            RETURN "".
+        END METHOD.
+        METHOD PUBLIC CHARACTER choose(INPUT value AS CHARACTER):
+            RETURN "".
+        END METHOD.
+    END CLASS."#;
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+        METHOD PUBLIC VOID run-it():
+            DEFINE VARIABLE v-count AS INTEGER NO-UNDO.
+            v-count = choose(1).
+        END METHOD.
+    END CLASS."#;
+    let workspace = [(CALC_BASE_PATH, parent)];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "choose");
+    assert_eq!(
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
+    );
+    assert_eq!(lint0004_with_index(child, &workspace).len(), 1);
+}
+
+#[test]
 fn an_interface_records_its_supertypes_as_implements() {
     // An interface may extend several interfaces, so its list cannot fit
     // `inherits: Option<_>` — it is recorded the way `oxabl_index` records it.
@@ -811,4 +948,127 @@ fn an_interface_records_its_supertypes_as_implements() {
     assert!(supers.inherits.is_none());
     let implements: Vec<&str> = supers.implements.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(implements, vec!["orders.i-audit"]);
+}
+
+// ---------------------------------------------------------------------------
+// The promotion's edges
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_void_parent_method_leaves_the_member_untyped_and_fires_nothing() {
+    // `VOID` names no type, so the index contributes none and the symbol stays
+    // `data_type: None`. That matters to the rule: `None` is what
+    // `type_mismatch_assignment::target_type` reads as "no verdict possible",
+    // so assigning a void call's result is silent rather than wrong-in-a-new-way.
+    let base = r#"CLASS orders.void-base:
+    METHOD PUBLIC VOID do-it():
+    END METHOD.
+END CLASS."#;
+    let child = r#"CLASS orders.child INHERITS orders.void-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+        v-flag = do-it().
+    END METHOD.
+END CLASS."#;
+    let workspace = [("/src/orders/void-base.cls", base)];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "do-it");
+    assert_eq!(
+        sem.symbols.get(member).data_type,
+        None,
+        "a VOID method contributes no type to promote"
+    );
+    assert!(lint0004_with_index(child, &workspace).is_empty());
+}
+
+#[test]
+fn a_parent_property_type_reaches_the_lattice_like_a_return_type_does() {
+    // A property and a method return type travel different paths through the
+    // index — different namespaces, different declaration forms — and both must
+    // land on `data_type`. The mismatch is in the *target* position here, which is
+    // the read `type_mismatch_assignment::target_type` performs directly.
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        base-label = 5.
+    END METHOD.
+END CLASS."#;
+    let workspace = [(CALC_BASE_PATH, CALC_BASE)];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "base-label");
+    assert_eq!(
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
+    );
+    let found = lint0004_with_index(child, &workspace);
+    assert_eq!(
+        found.len(),
+        1,
+        "INTEGER into a CHARACTER property: {found:?}"
+    );
+    assert!(found[0].message.contains("CHARACTER"));
+    assert!(lint0004_without_index(child).is_empty());
+}
+
+#[test]
+fn a_member_reached_through_a_three_level_chain_carries_the_grandparents_type() {
+    let child = r#"CLASS orders.child INHERITS orders.middle:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+        v-flag = calc-total().
+    END METHOD.
+END CLASS."#;
+    let workspace = [
+        (CALC_BASE_PATH, CALC_BASE),
+        (
+            "/src/orders/middle.cls",
+            "CLASS orders.middle INHERITS orders.calc-base: END CLASS.",
+        ),
+    ];
+
+    let (_stmts, sem) = with_index(child, &workspace);
+    let member = sole_resolved(&sem, "calc-total");
+    assert_eq!(
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Integer)),
+        "the type declared two levels up"
+    );
+    assert_eq!(
+        lint0004_with_index(child, &workspace).len(),
+        1,
+        "and it is judged from there"
+    );
+}
+
+#[test]
+fn nothing_is_synthesized_and_nothing_is_typed_without_an_index() {
+    // The promotion cannot fire where nothing was looked up. Stated on the
+    // mismatch fixture, so a regression shows as a *new* finding rather than as a
+    // missing symbol.
+    let (_stmts, sem) = without_index(MISMATCHED_CHILD);
+    assert!(symbols_named(&sem, "calc-total").is_empty());
+    assert!(lint0004_without_index(MISMATCHED_CHILD).is_empty());
+}
+
+#[test]
+fn a_colon_qualified_call_on_this_object_stays_unjudged() {
+    // The deferred boundary, pinned rather than assumed. `check.rs` types every
+    // `MethodCall` and `MemberAccess` as `Unknown` without consulting the symbol
+    // the receiver resolved to, so an inherited type reaches the lattice only
+    // through an *unqualified* reference. `THIS-OBJECT:calc-total()` is the
+    // ordinary OO-ABL spelling of the same call and is silent — the larger half of
+    // the population, and its own unit of work.
+    let child = r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
+        v-flag = THIS-OBJECT:calc-total().
+    END METHOD.
+END CLASS."#;
+    let workspace = [(CALC_BASE_PATH, CALC_BASE)];
+    assert!(
+        lint0004_with_index(child, &workspace).is_empty(),
+        "a `:`-qualified call is not typed yet, deliberately"
+    );
+    assert_eq!(codes_added_by_index(child, &workspace), Vec::<&str>::new());
 }

@@ -17,24 +17,31 @@
 //! marked with `declaration == NodeId::DUMMY`, i.e. `u32::MAX`).
 //!
 //! `symbols` v3 / `references` v2: cross-file resolution. A symbol row says
-//! where it came from (`origin`), what its declared type is *and where that type
-//! was read from* (`data_type_source`), and what its class header named
+//! where it came from (`origin`), what its declared type is *and which file
+//! declared it* (`data_type_source`), and what its class header named
 //! (`supertypes`); a reference row says whether the symbol it resolved to is
 //! local or cross-file (`origin`). Both are facts about an existing section's
 //! rows, which is why neither spawned a sibling section.
+//!
+//! `symbols` v4: a cross-file row's `data_type` is populated. No key was added —
+//! the field changed *meaning*. An inherited member's declared type used to be
+//! held off `Symbol::data_type` so it could not reach the type lattice, which made
+//! its absence a reliable marker for "this row is a cross-file member"; the type
+//! is on the symbol now and the rules judge it. Branch on `data_type_source`
+//! instead.
 //!
 //! ```text
 //! {
 //!   "envelope": 1,
 //!   "sections": {
 //!     "scopes": 1,
-//!     "symbols": 3,
+//!     "symbols": 4,
 //!     "types": 1,
 //!     "references": 2,
 //!     "diagnostics": 1,
 //!     "preproc": 1,
 //!     "coverage": 1,
-//!     "dependencies": 1
+//!     "dependencies": 2
 //!   },
 //!   "schema_revision": 0,
 //!   "scopes": [ ... ],
@@ -90,6 +97,13 @@ pub const ENVELOPE_VERSION: u32 = 1;
 /// * `symbols` 2 — schema-derived synthetic entries (`declaration ==
 ///   NodeId::DUMMY`) appear when a schema is loaded.
 /// * `symbols` 3 — cross-file rows: `origin`, `data_type_source`, `supertypes`.
+/// * `symbols` 4 — no new key, but `data_type` **changes meaning** for a
+///   cross-file row: it was reliably absent, because the type was held off
+///   `Symbol::data_type` to keep it out of the type lattice, and it is populated
+///   now that the rules judge that population. A consumer branching on its
+///   absence to detect a cross-file member would silently change behavior, which
+///   is what a section version exists to announce. `data_type_source` is the
+///   field to branch on instead.
 /// * `references` 2 — a resolved row carries the `origin` of the symbol it
 ///   resolved to, so a cross-file resolution is distinguishable from a local one.
 /// * `preproc` 1, `coverage` 1 — sections promoted from keys the CLI used to
@@ -97,16 +111,20 @@ pub const ENVELOPE_VERSION: u32 = 1;
 /// * `dependencies` 1 — cross-file *index* state: which files the run consulted
 ///   and which class lookups came back empty. Its own section because it is a
 ///   property of neither a symbol nor a reference.
+/// * `dependencies` 2 — an `unresolved` row's `reason` strings changed.
+///   `not_found_in_workspace` split into `absent_from_workspace` (searched, no
+///   such file) and `present_but_unusable` (located, unreadable or unparseable),
+///   because only the first licenses telling a user the name does not exist.
 fn section_versions() -> Value {
     let mut sections = Map::new();
     sections.insert("scopes".into(), json!(1));
-    sections.insert("symbols".into(), json!(3));
+    sections.insert("symbols".into(), json!(4));
     sections.insert("types".into(), json!(1));
     sections.insert("references".into(), json!(2));
     sections.insert("diagnostics".into(), json!(1));
     sections.insert("preproc".into(), json!(1));
     sections.insert("coverage".into(), json!(1));
-    sections.insert("dependencies".into(), json!(1));
+    sections.insert("dependencies".into(), json!(2));
     Value::Object(sections)
 }
 
@@ -491,39 +509,35 @@ fn symbols_json(sem: &Semantic) -> Value {
     serde_json::to_value(rows).unwrap_or(Value::Null)
 }
 
-/// The type to *display* for a symbol, and where it was read from.
+/// The type to *display* for a symbol, and which file declared it.
 ///
-/// **The fallback is the point of this helper.** A synthesized inherited member —
-/// a superclass's method or property that a class in another file contributes —
-/// deliberately carries `data_type: None`, and its real declared type lives in
-/// `SymbolTable::inherited_member_type` instead. That is not an oversight to tidy
-/// up: two readers take a `Symbol::data_type` straight into the type lattice
-/// (`check.rs::type_from_reference`'s fallback arm, whose firewall intercepts only
-/// `Class`/`Interface`, and `type_mismatch_assignment::target_type`, which reads
-/// the field directly), so a real type on the symbol makes LINT0004 report
-/// assignments it is silent about without an index — a new finding produced purely
-/// by attaching one, which this phase must not do.
-///
-/// Reading the side map *for display* is safe precisely because nothing here
-/// feeds the lattice: this function's output is a JSON string. So the envelope can
-/// show a resolved inherited member with its return type — which is the whole
-/// point of the section — while the rules stay exactly as blind as they were.
-///
-/// Do not "simplify" this by writing the type onto `Symbol::data_type`; that
-/// silently reintroduces the findings. The unit that turns the lint rules onto the
-/// cross-file population owns that promotion, and `data_type_source` is what tells
-/// a consumer which world a given row's type came from until then.
+/// One type channel now. An inherited member's declared type used to be parked in
+/// `SymbolTable::inherited_member_type` so that it was observable here without
+/// being usable by the rules; the type lives on `Symbol::data_type` like any
+/// other, and the rules judge it. What survives is `data_type_source`, which
+/// answers a question the type itself cannot: whether the declaration that
+/// supplied it is in this file or in another one the index reached.
 fn symbol_display_type(
     sem: &Semantic,
     id: SymbolId,
     sym: &oxabl_semantic::Symbol,
 ) -> (Option<String>, Option<&'static str>) {
-    match (&sym.data_type, sem.symbols.inherited_member_type(id)) {
-        // A locally declared type always wins, and a symbol never has both: the
-        // side map is written only for symbols created with `data_type: None`.
-        (Some(ty), _) => (Some(render_type(ty)), Some("declared")),
-        (None, Some(ty)) => (Some(render_type(ty)), Some("inherited")),
-        (None, None) => (None, None),
+    match &sym.data_type {
+        None => (None, None),
+        Some(ty) => {
+            // A synthesized cross-file symbol carries a type only because the
+            // declaring file wrote one — there is no local declaration to point
+            // at. `symbol_origin` is the single derivation of "which world", so
+            // the two fields cannot disagree about a row.
+            let source = if sym.declaration == NodeId::DUMMY
+                && symbol_origin(sem, id, sym) == "cross_file"
+            {
+                "inherited"
+            } else {
+                "declared"
+            };
+            (Some(render_type(ty)), Some(source))
+        }
     }
 }
 
@@ -543,13 +557,13 @@ fn symbol_origin(sem: &Semantic, id: SymbolId, sym: &oxabl_semantic::Symbol) -> 
     if matches!(sym.kind, SymbolKind::BuiltIn) {
         return "builtin";
     }
-    // The index's own footprints: an inherited member's type, a resolved literal
-    // `RUN` target's file, a `SHARED` consumer's producer file. Any one of them
-    // means the index minted or linked this symbol.
-    if sem.symbols.inherited_member_type(id).is_some()
-        || sem.symbols.program_file(id).is_some()
-        || sem.symbols.shared_producer(id).is_some()
-    {
+    // The index's own footprints: a resolved literal `RUN` target's file, a
+    // `SHARED` consumer's producer file. Either one means the index minted or
+    // linked this symbol. An inherited member used to be recognized by its entry
+    // in the type side map; with the type promoted onto the symbol, the
+    // `SymbolKind` arms below carry that case — nothing else synthesizes a
+    // `Function` or `Property`.
+    if sem.symbols.program_file(id).is_some() || sem.symbols.shared_producer(id).is_some() {
         return "cross_file";
     }
     match sym.kind {
@@ -813,7 +827,13 @@ fn dependencies_json(sem: &Semantic) -> Value {
             oxabl_semantic::ClassLookup::Absent => unresolved.push(UnresolvedLookupRow {
                 via: "class",
                 name: name.as_ref().to_string(),
-                reason: unresolved_reason_str(UnresolvedReason::NotFoundInWorkspace),
+                reason: unresolved_reason_str(UnresolvedReason::AbsentFromWorkspace),
+                span: supertype_span(sem, name),
+            }),
+            oxabl_semantic::ClassLookup::Unusable => unresolved.push(UnresolvedLookupRow {
+                via: "class",
+                name: name.as_ref().to_string(),
+                reason: unresolved_reason_str(UnresolvedReason::PresentButUnusable),
                 span: supertype_span(sem, name),
             }),
             oxabl_semantic::ClassLookup::Unknowable => unresolved.push(UnresolvedLookupRow {
@@ -1030,7 +1050,8 @@ fn unresolved_reason_str(r: UnresolvedReason) -> &'static str {
         UnresolvedReason::NotInScope => "not_in_scope",
         UnresolvedReason::External => "external",
         UnresolvedReason::NoSchema => "no_schema",
-        UnresolvedReason::NotFoundInWorkspace => "not_found_in_workspace",
+        UnresolvedReason::AbsentFromWorkspace => "absent_from_workspace",
+        UnresolvedReason::PresentButUnusable => "present_but_unusable",
         UnresolvedReason::Unknowable => "unknowable",
     }
 }
@@ -1280,7 +1301,7 @@ mod tests {
         let sem = analyze_file(&stmts, &ctx);
         let v = dump_json(&stmts, &sem, &ctx, true);
 
-        assert_eq!(v["sections"]["symbols"], 3);
+        assert_eq!(v["sections"]["symbols"], 4);
         let symbols = v["symbols"].as_array().unwrap();
         // Synthesized default buffer for `Customer` (kind buffer,
         // declaration = NodeId::DUMMY = u32::MAX).
@@ -1308,9 +1329,10 @@ mod tests {
             (UnresolvedReason::External, "external"),
             (UnresolvedReason::NoSchema, "no_schema"),
             (
-                UnresolvedReason::NotFoundInWorkspace,
-                "not_found_in_workspace",
+                UnresolvedReason::AbsentFromWorkspace,
+                "absent_from_workspace",
             ),
+            (UnresolvedReason::PresentButUnusable, "present_but_unusable"),
             (UnresolvedReason::Unknowable, "unknowable"),
         ];
         for (reason, expected) in all {
@@ -1380,10 +1402,10 @@ mod tests {
             .into_iter()
             .find(|s| s["name"] == "calc-total")
             .expect("the inherited member is in the symbol table");
-        // The type comes from `inherited_member_types`, not `Symbol::data_type` —
-        // which is `None` here on purpose, since a real type there reaches the
-        // type lattice and produces new LINT0004 findings. `data_type_source` is
-        // what keeps the two worlds distinguishable in the dump.
+        // The type is on `Symbol::data_type`, the same field a local declaration
+        // populates, and it reaches the type lattice from there — that is the
+        // point of the promotion. `data_type_source` still says which file
+        // declared it, which the type alone cannot.
         assert_eq!(member["data_type"], "integer");
         assert_eq!(member["data_type_source"], "inherited");
         assert_eq!(member["origin"], "cross_file");
@@ -1468,8 +1490,9 @@ mod tests {
             .unwrap_or_else(|| panic!("absent parent must be reported, got {unresolved:?}"));
         assert_eq!(parent["via"], "class");
         assert_eq!(
-            parent["reason"], "not_found_in_workspace",
-            "an index was attached, so a miss is a fact about the workspace"
+            parent["reason"], "absent_from_workspace",
+            "an index was attached and it searched, so a miss is a fact about the \
+             workspace — as distinct from a file it located and could not read"
         );
         // The span points at the name inside the header — computed from the
         // fixture rather than hard-coded, so it stays true if the fixture moves.
@@ -1531,12 +1554,15 @@ mod tests {
         let v = run_dump(vec![var_decl("x", DataType::Integer)]);
         let sections = v["sections"].as_object().expect("sections is an object");
         assert_eq!(sections.len(), 8, "got {sections:?}");
-        assert_eq!(sections["symbols"], 3, "bumped for cross-file symbol rows");
+        assert_eq!(
+            sections["symbols"], 4,
+            "bumped again: a cross-file row's `data_type` is populated now"
+        );
         assert_eq!(
             sections["references"], 2,
             "bumped for the resolved row's origin"
         );
-        assert_eq!(sections["dependencies"], 1, "the new section");
+        assert_eq!(sections["dependencies"], 2, "the new section");
         // The untouched five keep their numbers: a bump is a claim about a
         // section's shape, and claiming one falsely is as bad as missing one.
         for (name, version) in [

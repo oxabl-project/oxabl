@@ -5,7 +5,7 @@ use oxabl_ast::{
     HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
     StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral,
-    WhenBranch, WidgetQualifier,
+    UsingSource, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -4660,6 +4660,48 @@ fn parse_run_literal_target_records_node_id_and_name_span() {
 }
 
 #[test]
+fn parse_run_target_stops_at_the_period_before_another_statement() {
+    // `RUN a. RUN b.` on one line. The target-name scan accepts a dotted method
+    // name on the same line, and `RUN` is usable as an identifier, so it used to
+    // consume the period and the next statement's keyword into the name — yielding
+    // the target `write-header. RUN` and, once cross-file resolution began
+    // reporting absent targets, a diagnostic about a name nobody wrote.
+    let source = "RUN write-header. RUN build-list.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let names: Vec<String> = program
+        .statements
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StatementKind::Run {
+                target: RunTarget::Literal { name, .. },
+                ..
+            } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["write-header", "build-list"]);
+}
+
+#[test]
+fn parse_run_dotted_method_name_on_one_line_still_parses() {
+    // The shape the same-line allowance exists for: a plain identifier after the
+    // period is still taken as part of the name.
+    let source = "RUN Dataset.Fill.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Run {
+            target: RunTarget::Literal { name, .. },
+            ..
+        } => assert_eq!(name, "Dataset.Fill"),
+        _ => panic!("Expected a literal Run target"),
+    }
+}
+
+#[test]
 fn parse_run_quoted_target_name_span_includes_the_quotes() {
     let source = r#"RUN "sub/dir/thing.p"."#;
     let tokens = tokenize(source);
@@ -6903,6 +6945,7 @@ fn parse_using_records_node_id_and_name_span() {
             id,
             type_name,
             name_span,
+            ..
         } => {
             assert_eq!(type_name, "MyApp.Services.Foo");
             // The import gets its own identity, distinct from the statement's.
@@ -6926,6 +6969,7 @@ fn parse_using_wildcard_name_span_includes_the_star() {
             id,
             type_name,
             name_span,
+            ..
         } => {
             assert_eq!(type_name, "MyApp.Services.*");
             assert_ne!(id, NodeId::DUMMY);
@@ -6942,10 +6986,43 @@ fn parse_using_from_propath_name_span_excludes_the_source_clause() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
-        StatementKind::Using { name_span, .. } => {
+        StatementKind::Using {
+            name_span,
+            source: using_source,
+            ..
+        } => {
             assert_span_covers(source, name_span, "MyApp.Services.Foo");
+            assert_eq!(using_source, UsingSource::Propath);
         }
         _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_using_from_assembly_preserves_the_source_clause() {
+    let source = "USING Acme.Widget FROM ASSEMBLY.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt.kind {
+        StatementKind::Using { source, .. } => assert_eq!(source, UsingSource::Assembly),
+        _ => panic!("Expected Using statement"),
+    }
+}
+
+#[test]
+fn parse_unix_backslash_escapes_before_whitespace_and_inside_names() {
+    let source = "DO:\n\\ END.\nDEFINE VARIABLE ab\\cd AS INTEGER NO-UNDO.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(
+        program.errors.is_empty(),
+        "unexpected errors: {:?}",
+        program.errors
+    );
+    match &program.statements[1].kind {
+        StatementKind::VariableDeclaration { name, .. } => assert_eq!(name.name, "abcd"),
+        other => panic!("expected variable declaration, got {other:?}"),
     }
 }
 
@@ -7065,6 +7142,105 @@ fn parse_create_no_error() {
             assert!(no_error);
         }
         _ => panic!("Expected Create statement"),
+    }
+}
+
+#[test]
+fn compile_is_a_skipped_node_with_no_harvested_names() {
+    // Still `Skipped`, not an error-recovery `Empty` — the form was recognized,
+    // which is a different fact from a parse failure — and the span still covers
+    // the whole statement. What changes is the name list: nothing in a file path
+    // is a symbol.
+    let source = "COMPILE some/path.p SAVE.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match &stmt.kind {
+        StatementKind::Skipped {
+            names,
+            may_reference_tables,
+        } => {
+            assert!(names.is_empty(), "harvested {names:?}");
+            assert!(!*may_reference_tables);
+        }
+        other => panic!("Expected Skipped, got {other:?}"),
+    }
+    assert_eq!(stmt.span.start, 0);
+    assert_eq!(stmt.span.end as usize, source.len());
+}
+
+#[test]
+fn parse_delete_object_holds_the_operand_as_an_expression() {
+    let source = "DELETE OBJECT h NO-ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match &stmt.kind {
+        StatementKind::DeleteObject { target, no_error } => {
+            assert!(*no_error);
+            assert!(matches!(&target.kind, ExpressionKind::Identifier(id) if id.name == "h"));
+        }
+        other => panic!("Expected DeleteObject, got {other:?}"),
+    }
+    // The span invariant: a statement's span covers the whole statement.
+    assert_eq!(stmt.span.start, 0);
+    assert_eq!(stmt.span.end as usize, source.len());
+}
+
+#[test]
+fn parse_delete_object_accepts_a_complex_operand() {
+    // The case that forced the old skip: an attribute access, not a name. A
+    // `StatementKind::Delete { buffer: Identifier }` could not hold it, which is
+    // why the whole statement used to be skipped and its identifiers harvested.
+    for source in [
+        "DELETE OBJECT ttbl:HANDLE.",
+        "DELETE OBJECT hArray[i].",
+        "DELETE OBJECT THIS-OBJECT:someHandle NO-ERROR.",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
+        match &stmt.kind {
+            StatementKind::DeleteObject { target, .. } => {
+                assert!(
+                    !matches!(&target.kind, ExpressionKind::Identifier(_)),
+                    "{source}: the operand should be a compound expression"
+                );
+            }
+            other => panic!("{source}: expected DeleteObject, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn parse_delete_other_spellings_are_unchanged() {
+    // `PROCEDURE`, `WIDGET` and `SERVER` already fell through to a real `Delete`
+    // node; only the `OBJECT` spelling skipped. And the ordinary buffer form is
+    // untouched.
+    for (source, expected) in [
+        ("DELETE PROCEDURE hproc.", "hproc"),
+        ("DELETE WIDGET hwidget.", "hwidget"),
+        ("DELETE Customer.", "Customer"),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
+        match &stmt.kind {
+            StatementKind::Delete { buffer, .. } => assert_eq!(buffer.name, expected),
+            other => panic!("{source}: expected Delete, got {other:?}"),
+        }
+    }
+    // `DELETE WIDGET-POOL` keeps its own shape: a `Delete` with an empty name.
+    let source = "DELETE WIDGET-POOL \"p\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    match &parser.parse_statement().expect("statement").kind {
+        StatementKind::Delete { buffer, .. } => assert!(buffer.name.is_empty()),
+        other => panic!("expected Delete, got {other:?}"),
     }
 }
 

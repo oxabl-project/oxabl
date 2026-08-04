@@ -14,7 +14,7 @@ use oxabl_ast::{
     PreprocIf, RunArgument, RunTarget, SortDirection, Span, Statement, StatementKind,
     StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TempTableField,
     TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex,
-    WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
+    UsingSource, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -392,10 +392,17 @@ impl Parser<'_> {
         }
 
         // COMPILE VALUE(path) [OPTIONS ...] [SAVE] [NO-ERROR]. — compile an ABL program.
+        //
+        // Skipped with **no** harvested names: the operand is a file path and the
+        // trailing words are grammar keywords, so nothing in the statement is a
+        // symbol reference. Harvesting them suppressed the count-gated rules for
+        // any real variable whose name happened to collide — `save`, or a path
+        // segment. The return value is still consumed, so the `#[must_use]`
+        // discipline on the skip helpers is intact.
         if self.check(Kind::Compile) {
             self.advance(); // consume COMPILE
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            let _ = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt_no_names());
         }
 
         // PROCESS EVENTS. — flush the ABL event queue.
@@ -4581,10 +4588,21 @@ impl Parser<'_> {
                 3 => ext.eq_ignore_ascii_case("cls"),
                 _ => false,
             };
-            // Also accept dotted method names (e.g. Dataset.Fill) on the same line.
+            // Also accept a dotted method name (e.g. `Dataset.Fill`) — but only
+            // when it is written **adjacent** to the period, with no gap. A dotted
+            // name never has whitespace inside it, while a statement-terminating
+            // period is followed by one; that lexical difference is what tells the
+            // two apart without having to classify the following keyword.
+            //
+            // The rule used to be "anywhere on the same line", and `RUN` is usable
+            // as an identifier, so `RUN write-header. RUN build-list.`
+            // consumed the period and the next statement's keyword into the target
+            // name — yielding `write-header. RUN`, a name nobody wrote, which
+            // became a diagnostic once `undefined-symbol` began reporting absent
+            // targets.
             let period_end = self.tokens[self.current].end;
-            let same_line = !self.source[period_end..next.start].contains('\n');
-            if is_file_ext || same_line {
+            let adjacent = next.start == period_end;
+            if is_file_ext || adjacent {
                 self.advance(); // consume the period
                 self.advance(); // consume the extension or method name
             }
@@ -5328,13 +5346,26 @@ impl Parser<'_> {
             }
         }
 
-        // Consume optional "FROM PROPATH" / "FROM ASSEMBLY" source clause
+        // Preserve the optional source clause: `FROM ASSEMBLY` is semantically
+        // different from a workspace lookup through `PROPATH`.
+        let mut source = UsingSource::Unspecified;
         if self.check(Kind::From) {
             self.advance(); // consume FROM
-            // Consume the source keyword (PROPATH, ASSEMBLY, or an identifier)
-            if Self::can_be_identifier(self.peek().kind) || self.check(Kind::Propath) {
-                self.advance();
-            }
+            let source_token = self.advance().clone();
+            let spelling = &self.source[source_token.start..source_token.end];
+            source = if source_token.kind == Kind::Propath {
+                UsingSource::Propath
+            } else if spelling.eq_ignore_ascii_case("assembly") {
+                UsingSource::Assembly
+            } else {
+                return Err(ParseError {
+                    message: "Expected PROPATH or ASSEMBLY after FROM".to_string(),
+                    span: Span {
+                        start: source_token.start as u32,
+                        end: source_token.end as u32,
+                    },
+                });
+            };
         }
 
         self.expect_period("Expected '.' after USING statement")?;
@@ -5347,6 +5378,7 @@ impl Parser<'_> {
                 start: first_token.start as u32,
                 end: name_end as u32,
             },
+            source,
         }))
     }
 
@@ -5515,8 +5547,13 @@ impl Parser<'_> {
             let text = self.source[token.start..token.end].to_ascii_lowercase();
             if matches!(text.as_str(), "object") {
                 self.advance(); // consume OBJECT
-                let (_, hi) = self.skip_to_statement_end();
-                return Ok(self.skipped_stmt(hi));
+                // The operand is an expression, which is why this used to skip:
+                // `DELETE OBJECT ttbl:HANDLE.` and `DELETE OBJECT hArray[i].` are
+                // both ordinary ABL and neither is an identifier.
+                let target = self.parse_expression()?;
+                let no_error = self.parse_no_error();
+                self.expect_period("Expected '.' after DELETE OBJECT statement")?;
+                return Ok(self.stmt(StatementKind::DeleteObject { target, no_error }));
             }
             if matches!(text.as_str(), "procedure" | "widget" | "server")
                 && Self::can_be_identifier(self.peek_at(1).kind)

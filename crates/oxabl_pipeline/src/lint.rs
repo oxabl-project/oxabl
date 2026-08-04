@@ -683,6 +683,12 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    /// Spelled out rather than imported: this crate does not depend on
+    /// `oxabl_lint` directly — it reaches the rules through `oxabl_analyze` — and
+    /// a dev-dependency edge added for one string in one assertion would be a
+    /// worse trade than the literal.
+    const LINT0004: &str = "LINT0004";
+
     /// Silence the default panic hook for the duration of a deliberately
     /// panicking test, so a green run does not print a backtrace.
     fn quietly<T>(f: impl FnOnce() -> T) -> T {
@@ -1289,12 +1295,16 @@ END CLASS."#;
         );
     }
 
-    // R11's firewall, checked where it finally matters: the index is live in a
-    // real client now, so attaching one must not *add* a finding. Containment
-    // rather than equality, because removing an `undefined-symbol` on an
-    // inherited member is the pre-existing false positive this work fixes.
+    // What an index adds, checked where it matters: the index is live in a real
+    // client here, driving the same pipeline every client drives. It used to
+    // assert that attaching one added nothing; now that a cross-file type reaches
+    // the lattice, the contract is the *enumeration* — a mismatched assignment
+    // through an inherited member gains a LINT0004, and every other shape still
+    // gains nothing. Removals stay unchecked on purpose: an `undefined-symbol`
+    // disappearing from an inherited member is the pre-existing false positive
+    // this work fixes.
     #[test]
-    fn attaching_an_index_adds_no_diagnostic() {
+    fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
         let fs = workspace(&[
             (CALC_BASE_PATH, CALC_BASE),
             (
@@ -1313,35 +1323,53 @@ END CLASS."#;
         // assignment from one, a private member, a `USING`, a `NEW`, an
         // implemented interface, a literal `RUN`, a `SHARED` consumer, and a
         // plain misspelling.
-        let sources = [
-            CHILD,
-            "CLASS orders.child INHERITS orders.calc-base:\n\
+        let sources: [(&str, &[&str]); 9] = [
+            (CHILD, &[]),
+            // The one judged shape: an inherited `INTEGER` method assigned into a
+            // `LOGICAL`. Silent without an index because the call resolves to
+            // nothing at all; a type mismatch with one.
+            (
+                "CLASS orders.child INHERITS orders.calc-base:\n\
              METHOD PUBLIC VOID run-it():\n\
              DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n\
              v-flag = calc-total().\n\
              MESSAGE v-flag.\n\
              END METHOD.\n\
              END CLASS.",
-            "CLASS orders.child INHERITS orders.calc-base:\n\
+                &[LINT0004],
+            ),
+            (
+                "CLASS orders.child INHERITS orders.calc-base:\n\
              METHOD PUBLIC VOID run-it():\n\
              DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
              v-n = calc-totl().\n\
              MESSAGE v-n.\n\
              END METHOD.\n\
              END CLASS.",
-            "USING orders.calc-base.\nMESSAGE \"hi\".\n",
-            "DEFINE VARIABLE v-obj AS CLASS orders.calc-base NO-UNDO.\n\
+                &[],
+            ),
+            ("USING orders.calc-base.\nMESSAGE \"hi\".\n", &[]),
+            (
+                "DEFINE VARIABLE v-obj AS CLASS orders.calc-base NO-UNDO.\n\
              v-obj = NEW orders.calc-base().\n\
              MESSAGE v-obj:calc-total().\n",
-            "CLASS orders.impl IMPLEMENTS orders.i-calc: END CLASS.",
-            "RUN init-globals.p.\n",
-            "DEFINE SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n\
+                &[],
+            ),
+            (
+                "CLASS orders.impl IMPLEMENTS orders.i-calc: END CLASS.",
+                &[],
+            ),
+            ("RUN init-globals.p.\n", &[]),
+            (
+                "DEFINE SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n\
              RUN init-globals.p.\n\
              MESSAGE v-site-code.\n",
-            "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n",
+                &[],
+            ),
+            ("DEFINE VARIABLE x AS INTEGER NO-UNDO.\n", &[]),
         ];
 
-        for source in sources {
+        for (source, expected_added) in sources {
             let with = run.with_file("/src/orders/child.cls").run(source);
             let (_model, without) = oxabl_analyze::collect_with_model(
                 ROOT_FILE_ID,
@@ -1353,18 +1381,22 @@ END CLASS."#;
                 &config.lint_severities,
                 true,
             );
+            let mut available: Vec<_> = without.all().collect();
+            let mut added = Vec::new();
             for found in with.all() {
-                assert!(
-                    without.all().any(|baseline| baseline == found),
-                    "an index added {} at {:?} for:\n{source}\nno-index set: {:?}",
-                    found.diagnostic.code.0,
-                    found.diagnostic.span.span,
-                    without
-                        .all()
-                        .map(|d| d.diagnostic.code.0)
-                        .collect::<Vec<_>>(),
-                );
+                match available.iter().position(|baseline| *baseline == found) {
+                    Some(i) => {
+                        available.swap_remove(i);
+                    }
+                    None => added.push(found.diagnostic.code.0),
+                }
             }
+            added.sort_unstable();
+            assert_eq!(
+                added,
+                expected_added.to_vec(),
+                "the findings an index adds for:\n{source}"
+            );
         }
     }
 

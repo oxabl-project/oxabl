@@ -424,6 +424,8 @@ pub enum StatementKind {
         /// Byte extent of `type_name` itself — not of the enclosing statement,
         /// which carries its own span on the [`Statement`] wrapper.
         name_span: Span,
+        /// Where the AVM should load the imported type from.
+        source: UsingSource,
     },
 
     /// CREATE statement — record creation or dynamic object creation.
@@ -434,6 +436,21 @@ pub enum StatementKind {
 
     /// DELETE buffer-name [NO-ERROR].
     Delete { buffer: Identifier, no_error: bool },
+
+    /// `DELETE OBJECT <expression> [NO-ERROR].` — destroy an object or handle.
+    ///
+    /// Its own variant rather than a spelling of [`Self::Delete`] because the
+    /// operand is an **expression**, not a name: `DELETE OBJECT ttbl:HANDLE.` and
+    /// `DELETE OBJECT hArray[i].` are both ordinary ABL, and neither fits an
+    /// `Identifier`. That is why the parser used to skip the whole statement, which
+    /// cost every name it passed over a real reference — a handle deleted and never
+    /// read again looked touched-by-something-unmodelled rather than dead.
+    DeleteObject {
+        /// The object being destroyed. Resolved like any other expression, so the
+        /// handle it names is credited a read.
+        target: Expression,
+        no_error: bool,
+    },
 
     /// RELEASE buffer-name [NO-ERROR].
     Release { buffer: Identifier, no_error: bool },
@@ -654,6 +671,19 @@ pub enum StatementKind {
     /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
     /// The label can be referenced by LEAVE and NEXT statements.
     Label { name: String, body: Box<Statement> },
+}
+
+/// Source clause attached to a [`StatementKind::Using`] import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsingSource {
+    /// No `FROM` clause was written.
+    #[default]
+    Unspecified,
+    /// `FROM PROPATH` — resolve against configured source paths.
+    Propath,
+    /// `FROM ASSEMBLY` — the type is supplied by a .NET assembly, outside the
+    /// source workspace index.
+    Assembly,
 }
 
 /// A statement in ABL paired with its parser-assigned [`NodeId`].

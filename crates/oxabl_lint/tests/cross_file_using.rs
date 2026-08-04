@@ -15,14 +15,19 @@
 //!    R11 firewall.
 //! 2. **The local scope tree wins.** A class declared in the file under analysis
 //!    shadows a workspace class reachable under the same name.
-//! 3. **No new finding, ever.** Where a test says "produces no finding" it also
-//!    asserts a sibling shape where the finding genuinely does fire, so the
-//!    assertion cannot pass by the rule being inert.
+//! 3. **A finding is stated, not assumed away.** Where a test says "produces no
+//!    finding" it also asserts a sibling shape where the finding genuinely does
+//!    fire, so the assertion cannot pass by the rule being inert. The suite used
+//!    to require that *no* new finding ever arrived; a cross-file class is a real
+//!    type now, so the two class-typed mismatch shapes are enumerated as findings
+//!    while the `:`-qualified member shapes stay silent — deliberately, and
+//!    pinned as such.
 
 mod support;
 
 use oxabl_ast::{NodeId, RunTarget, Statement, StatementKind};
 use oxabl_lexer::oxabl_atom::OxablAtom;
+use oxabl_lint::{LINT0001, LINT0004};
 use oxabl_semantic::{
     NamespaceId, PrimitiveTy, Resolution, ResolvedType, SymbolKind, UnresolvedReason,
 };
@@ -100,7 +105,7 @@ fn a_using_naming_a_class_that_exists_resolves_on_the_statement() {
 }
 
 #[test]
-fn a_using_naming_a_class_no_file_declares_records_not_found_over_the_qualified_name() {
+fn a_using_naming_a_class_no_file_declares_is_reported_on_the_qualified_name() {
     let source = "USING myapp.absent-thing.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n";
 
     let (stmts, sem) = with_index(source, &WORKSPACE);
@@ -109,25 +114,63 @@ fn a_using_naming_a_class_no_file_declares_records_not_found_over_the_qualified_
         sem.references.get(using_id),
         Some(&Resolution::Unresolved {
             name: OxablAtom::from("myapp.absent-thing"),
-            // `NotFoundInWorkspace`, not `External`: an index was attached, it
+            // `AbsentFromWorkspace`, not `External`: an index was attached, it
             // looked on the configured paths, and no file declares this class.
-            reason: UnresolvedReason::NotFoundInWorkspace,
+            reason: UnresolvedReason::AbsentFromWorkspace,
         })
     );
-    // The span is the load-bearing half — a later diagnostic about an import
-    // nothing declares has to point at the qualified name, not at the statement.
+    // The span is the load-bearing half, and this is the diagnostic it was kept
+    // for: the finding points at the qualified name, not at the statement.
     assert_eq!(
         &source[name_span.start as usize..name_span.end as usize],
         "myapp.absent-thing"
     );
+    let found = lint0001_with_index(source, &WORKSPACE);
+    assert_eq!(found.len(), 1, "one finding: {found:?}");
+    assert_eq!(
+        found[0].span.span, name_span,
+        "underlines the imported name"
+    );
+    assert!(found[0].help.is_some(), "and carries the search-path help");
     assert!(
-        lint0001_with_index(source, &WORKSPACE).is_empty(),
-        "an unresolvable import is not an undefined symbol"
+        lint0001_without_index(source).is_empty(),
+        "with nothing attached there is no import entry at all, so nothing fires"
     );
 
     let (stmts, plain) = without_index(source);
     let (using_id, _) = sole_using(&stmts);
     assert_eq!(plain.references.get(using_id), None);
+}
+
+#[test]
+fn an_assembly_using_is_external_to_the_source_workspace() {
+    let source = "USING Acme.Widget FROM ASSEMBLY.\n\
+                  DEFINE VARIABLE v-widget AS CLASS Widget NO-UNDO.\n\
+                  v-widget = NEW Widget().\n";
+
+    let (stmts, sem) = with_index(source, &[]);
+    let (using_id, _) = sole_using(&stmts);
+    assert_eq!(
+        sem.references.get(using_id),
+        Some(&Resolution::Unresolved {
+            name: OxablAtom::from("acme.widget"),
+            reason: UnresolvedReason::External,
+        })
+    );
+    assert_eq!(
+        unresolved_reasons(&sem, "widget"),
+        vec![UnresolvedReason::External]
+    );
+    assert!(
+        lint0001_with_index(source, &[]).is_empty(),
+        "assembly types are not expected to have a source file"
+    );
+}
+
+#[test]
+fn a_propath_using_still_reports_a_missing_source_class() {
+    let source = "USING Acme.Widget FROM PROPATH.\n";
+    assert_eq!(lint0001_with_index(source, &[]).len(), 1);
 }
 
 #[test]
@@ -202,21 +245,29 @@ fn new_after_a_wildcard_using_resolves_through_the_wildcard() {
 }
 
 #[test]
-fn new_of_a_class_no_file_declares_records_not_found() {
+fn new_of_a_class_no_file_declares_is_reported() {
     let source = "USING myapp.*.\nv-x = NEW absent-thing().\n";
     let (_stmts, sem) = with_index(source, &WORKSPACE);
     assert!(
-        unresolved_reasons(&sem, "absent-thing").contains(&UnresolvedReason::NotFoundInWorkspace),
+        unresolved_reasons(&sem, "absent-thing").contains(&UnresolvedReason::AbsentFromWorkspace),
         "a `NEW` operand is unambiguously a type name, so a miss is a fact about \
          the workspace rather than a shrug"
     );
-    // And still no finding: every rule skip-lists the cross-file reasons.
+    // Two findings: the undeclared `v-x`, and the class name itself. A `NEW`
+    // operand is a type name and nothing else, so a miss on it is a name ABL could
+    // not instantiate — the span is the whole `NEW absent-thing()` expression,
+    // since `class_name` carries none of its own.
     let findings = lint0001_with_index(source, &WORKSPACE);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    let class = findings
+        .iter()
+        .find(|d| d.message.contains("absent-thing"))
+        .expect("the class name is reported");
+    assert!(class.help.is_some(), "with the search-path help line");
     assert_eq!(
-        findings.len(),
+        lint0001_without_index(source).len(),
         1,
-        "exactly one finding, and it is for the undeclared `v-x` — not for the \
-         class name: {findings:?}"
+        "without an index only the undeclared `v-x` fires — nobody looked for the class"
     );
 }
 
@@ -270,7 +321,7 @@ fn a_method_call_on_a_using_imported_instance_resolves_with_its_return_type() {
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Function);
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Character)),
         "the resolved symbol carries the class's declared return type"
     );
@@ -290,7 +341,7 @@ fn a_property_read_on_a_using_imported_instance_resolves_and_types() {
     let sym = sole_resolved(&sem, "entry-count");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Property);
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
     );
     assert_synthesized(&sem, sym, NamespaceId::Values);
@@ -311,7 +362,7 @@ fn a_method_call_through_a_using_imported_type_name_resolves() {
     assert_eq!(sem.symbols.get(class).kind, SymbolKind::Class);
     let member = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.inherited_member_type(member),
+        sem.symbols.get(member).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
 
@@ -350,9 +401,9 @@ fn a_method_the_class_does_not_declare_resolves_as_not_found_and_produces_no_fin
     );
     assert_eq!(
         unresolved_reasons(&sem, "absent-method"),
-        vec![UnresolvedReason::NotFoundInWorkspace],
-        "the class *was* consulted, so this is not `NotInScope` — which is the \
-         one reason LINT0001 renders"
+        vec![UnresolvedReason::PresentButUnusable],
+        "the class *was* located and consulted, so this is neither `NotInScope` \
+         nor `AbsentFromWorkspace` — the two reasons LINT0001 renders"
     );
     assert!(
         lint0001_with_index(&source, &WORKSPACE).is_empty(),
@@ -389,7 +440,7 @@ fn a_protected_or_private_member_is_not_reachable_from_outside_the_class() {
         );
         assert_eq!(
             unresolved_reasons(&sem, member),
-            vec![UnresolvedReason::NotFoundInWorkspace]
+            vec![UnresolvedReason::PresentButUnusable]
         );
         assert!(lint0001_with_index(&source, &WORKSPACE).is_empty());
     }
@@ -404,7 +455,7 @@ fn a_member_of_a_new_expression_resolves_without_an_intervening_variable() {
     let (_stmts, sem) = with_index(source, &WORKSPACE);
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.inherited_member_type(sym),
+        sem.symbols.get(sym).data_type.as_ref(),
         Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
 }
@@ -428,44 +479,63 @@ fn twenty_references_to_one_member_synthesize_it_once() {
 }
 
 // ---------------------------------------------------------------------------
-// The type lattice must not learn about a cross-file class in this unit
+// A cross-file class is a type the lattice knows
 // ---------------------------------------------------------------------------
 
 #[test]
-fn resolving_a_cross_file_class_produces_no_type_mismatch_finding() {
-    // The R11 firewall, on the three shapes that would break it. Each one is a
-    // genuine mistake that `type-mismatch-assignment` *would* report the moment
-    // a cross-file class became a real `ResolvedType::Class`: `assignable`
-    // compares class symbols by identity and knows nothing about inheritance.
-    // Until assignability is widened deliberately, a workspace class stays at
-    // the lattice bottom — which is exactly where a class-typed declaration
-    // whose class lives in another file already sits today.
-    let shapes = [
+fn a_cross_file_class_is_judged_in_both_assignment_directions() {
+    // The three shapes the old firewall was written to hold back, each a genuine
+    // mistake `type-mismatch-assignment` reports the moment a cross-file class
+    // becomes a real `ResolvedType::Class`. Two of them now fire; the third does
+    // not, and the split is the deferred `:`-qualified boundary rather than
+    // anything about classes.
+    //
+    // Both directions matter because the rule reads the target's type and the
+    // value's type from different places — `target_type` off the symbol,
+    // the value off the `types` side table — so one direction firing proves
+    // nothing about the other.
+    let judged = [
         // A `NEW` of a workspace class assigned to a primitive.
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
-         v-count = NEW cache().\n",
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+             v-count = NEW cache().\n",
+            "INTEGER",
+        ),
         // A primitive assigned to a workspace-class-typed variable.
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
-         v-cache = 5.\n",
-        // A workspace-class-typed variable assigned from a method return.
-        "USING myapp.cache.\n\
-         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
-         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
-         v-count = v-cache:fetch-label().\n",
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+             v-cache = 5.\n",
+            "myapp.cache",
+        ),
     ];
-    for source in shapes {
-        assert_eq!(
-            lint0004_with_index(source, &WORKSPACE),
-            lint0004_without_index(source),
-            "attaching an index must not change what LINT0004 says about:\n{source}"
+    for (source, expected_in_message) in judged {
+        let found = lint0004_with_index(source, &WORKSPACE);
+        assert_eq!(found.len(), 1, "one mismatch for:\n{source}\ngot {found:?}");
+        assert!(
+            found[0].message.contains(expected_in_message),
+            "the message names the ABL type: {}",
+            found[0].message
         );
         assert!(
-            lint0004_with_index(source, &WORKSPACE).is_empty(),
-            "and today it says nothing about any of these:\n{source}"
+            lint0004_without_index(source).is_empty(),
+            "and it is the index that makes the verdict possible:\n{source}"
         );
     }
+
+    // The third shape: a method return read through `:`-qualified access. The
+    // member resolves and carries its declared type, but `check.rs` types the
+    // *call expression* as `Unknown` without consulting it, so there is nothing
+    // for the rule to compare. Deliberate, and scoped out of this phase.
+    let colon_qualified = "USING myapp.cache.\n\
+         DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+         v-count = v-cache:fetch-label().\n";
+    assert!(
+        lint0004_with_index(colon_qualified, &WORKSPACE).is_empty(),
+        "a `:`-qualified member call is not typed yet"
+    );
 }
 
 #[test]
@@ -490,19 +560,16 @@ fn a_locally_declared_class_still_types_as_itself() {
 }
 
 #[test]
-fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
-    // The phase's central property, swept over every `USING` / `NEW` / member-access
-    // fixture in this file at once and across **all six** lint rules plus the
-    // semantic pass. `resolving_a_cross_file_class_produces_no_type_mismatch_finding`
-    // above covers three class-typed shapes through LINT0004 only; this covers every
-    // shape through every rule, which is what makes a rule nobody thought about the
-    // sweep's problem rather than a reviewer's.
-    //
-    // The mismatched fixtures come first, and they are the reason the sweep is not
-    // vacuous: a *member*'s declared type reaching the lattice is a separate route
-    // from a *class*'s, and every member fixture below happened to type-match its
-    // assignment (`v-label AS CHARACTER = v-cache:fetch-label()`), so none of them
-    // could observe it.
+fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
+    // Every `USING` / `NEW` / member-access fixture in this file, swept at once
+    // across all six lint rules plus the semantic pass. It used to assert that
+    // attaching an index added nothing anywhere; the enumeration below is what it
+    // adds now, and the shape of the answer is worth reading twice: a *class*
+    // reaching the lattice produces findings, and a *member* reached through
+    // `:`-qualified access still does not, because `check.rs` types every
+    // `MethodCall` and `MemberAccess` as `Unknown` regardless of what it resolved
+    // to. That asymmetry is the deferred boundary, visible here as the mismatched
+    // member fixtures staying silent while the two class-typed ones fire.
     let mismatched = [
         // A `CHARACTER`-returning method on an imported instance, into an INTEGER.
         instance_source("v-count = v-cache:fetch-label()."),
@@ -580,27 +647,73 @@ fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
         "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n".to_string(),
     ];
 
+    // The two shapes that gain a finding, named by their source rather than by an
+    // index into the list above, so the expectation survives a fixture being
+    // reordered and reads as a statement about ABL rather than about array
+    // positions.
+    // Four shapes gain a finding, in two families. A cross-file *class* reaching
+    // the type lattice gives the two LINT0004s; a class name no configured path
+    // supplies gives the two LINT0001s — an import of one, and a `NEW` of one.
+    let judged: [(&str, &str); 4] = [
+        (
+            "USING myapp.absent-thing.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n",
+            LINT0001,
+        ),
+        ("USING myapp.*.\nv-x = NEW absent-thing().\n", LINT0001),
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+             v-count = NEW cache().\n",
+            LINT0004,
+        ),
+        (
+            "USING myapp.cache.\n\
+             DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
+             v-cache = 5.\n",
+            LINT0004,
+        ),
+    ];
+
+    let mut gained: Vec<(&str, Vec<&str>)> = Vec::new();
     for source in mismatched.iter().chain(&scenarios) {
-        assert_index_adds_no_diagnostic(source, &WORKSPACE);
+        let added = codes_added_by_index(source, &WORKSPACE);
+        if !added.is_empty() {
+            gained.push((source.as_str(), added));
+        }
     }
+    let expected: Vec<(&str, Vec<&str>)> = judged
+        .iter()
+        .map(|(source, code)| (*source, vec![*code]))
+        .collect();
+    assert_eq!(
+        gained, expected,
+        "these and only these `USING` shapes gain a finding when an index is attached"
+    );
 }
 
 #[test]
-fn a_mismatched_assignment_from_an_imported_members_type_stays_silent_but_resolves() {
-    // The baseline that proves the mismatched fixtures in the sweep above are not
-    // inert: the member resolves, its declared `CHARACTER` really is recorded, the
-    // target really is `INTEGER` — and LINT0004 still says nothing, because the type
-    // is held off `Symbol::data_type` where neither `check.rs`'s fallback arm nor
-    // `type_mismatch_assignment::target_type` can read it.
+fn a_mismatch_through_a_colon_qualified_member_stays_silent_at_the_call_site() {
+    // Every ingredient is present and cross-file — the member resolves, its
+    // declared `CHARACTER` is on the symbol, the target is a genuinely
+    // incompatible `INTEGER` — and LINT0004 still says nothing. The reason is no
+    // longer that the type is parked off the symbol; it is on `data_type` now.
+    // It is that `check.rs` types every `MethodCall` as `Unknown` without
+    // consulting the symbol it resolved to, so the *expression*, not the symbol,
+    // is what the rule cannot judge.
+    //
+    // That boundary is deliberate and scoped out of this phase: `:`-qualified
+    // access is the ordinary OO-ABL spelling and therefore the larger half of the
+    // population, which deserves its own evidence rather than being folded into
+    // this one. Pinned here so the day it opens, this test is what says so.
     let source = instance_source("v-count = v-cache:fetch-label().");
     let (_stmts, sem) = with_index(&source, &WORKSPACE);
 
     let member = sole_resolved(&sem, "fetch-label");
     assert_eq!(
-        sem.symbols.inherited_member_type(member),
-        Some(&ResolvedType::Primitive(PrimitiveTy::Character))
+        sem.symbols.get(member).data_type.as_ref(),
+        Some(&ResolvedType::Primitive(PrimitiveTy::Character)),
+        "the imported member carries its declared type, like any other symbol"
     );
-    assert_eq!(sem.symbols.get(member).data_type, None);
     assert_eq!(
         sem.symbols.get(sole_symbol(&sem, "v-count")).data_type,
         Some(ResolvedType::Primitive(PrimitiveTy::Integer)),

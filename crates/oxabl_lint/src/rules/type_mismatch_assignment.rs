@@ -10,9 +10,10 @@
 //! Skips (captured as tests below):
 //! - Either side `Unknown` or `Error` (suppresses cascades; `?` is ABL's
 //!   universal bottom).
-//! - The value side bound to a cross-file reference (`External`,
-//!   `NotFoundInWorkspace`, `Unknowable`) — cross-file typing is not
-//!   available, so no verdict is possible.
+//! - The value side bound to an *unresolved* cross-file reference (`External`,
+//!   `AbsentFromWorkspace`, `PresentButUnusable`, `Unknowable`) — there is no
+//!   symbol behind it, so no verdict is possible. A cross-file reference that
+//!   *resolved* is judged like any other now: its type is on the symbol.
 
 use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind, TypeSource};
 use oxabl_common::{Diagnostic, FileSpan, Severity};
@@ -36,12 +37,13 @@ pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<
 
 struct Visitor<'a> {
     sem: &'a Semantic,
-    #[allow(dead_code)]
+    /// Supplies the schema half of the ABL type rendering — a
+    /// `ResolvedType::Table` names a `TableId` the symbol table cannot resolve.
     ctx: &'a AnalysisContext<'a>,
     diags: Vec<Diagnostic>,
 }
 
-impl Visitor<'_> {
+impl<'a> Visitor<'a> {
     fn walk_block(&mut self, stmts: &[Statement]) {
         for stmt in stmts {
             self.walk_statement(stmt);
@@ -199,7 +201,8 @@ impl Visitor<'_> {
         if let Some(Resolution::Unresolved { reason, .. }) = self.sem.references.get(value_node) {
             match reason {
                 UnresolvedReason::External
-                | UnresolvedReason::NotFoundInWorkspace
+                | UnresolvedReason::AbsentFromWorkspace
+                | UnresolvedReason::PresentButUnusable
                 | UnresolvedReason::Unknowable => return,
                 UnresolvedReason::NotInScope | UnresolvedReason::NoSchema => {}
             }
@@ -213,19 +216,33 @@ impl Visitor<'_> {
         if !assignable(from, to, ClassLattice::new(&self.sem.symbols)) {
             self.diags.push(Diagnostic::error(
                 LINT0004,
-                format!("type mismatch: cannot assign `{:?}` to `{:?}`", from, to),
+                format!(
+                    "type mismatch: cannot assign `{}` to `{}`",
+                    self.abl(from),
+                    self.abl(to)
+                ),
                 *span,
             ));
         } else if is_narrowing_warning(from, to) {
             self.diags.push(Diagnostic::warning(
                 LINT0004,
                 format!(
-                    "narrowing conversion: `{:?}` assigned to `{:?}` may discard data",
-                    from, to
+                    "narrowing conversion: `{}` assigned to `{}` may discard data",
+                    self.abl(from),
+                    self.abl(to)
                 ),
                 *span,
             ));
         }
+    }
+
+    /// Render a type the way the user declared it. Both messages go through
+    /// here, so neither can drift back to a debug print.
+    fn abl<'t>(&self, ty: &'t ResolvedType) -> oxabl_semantic::AblType<'t>
+    where
+        'a: 't,
+    {
+        ty.display_abl(&self.sem.symbols, self.ctx.schema)
     }
 }
 
@@ -557,6 +574,142 @@ mod tests {
         let diags =
             analyze_and_lint_with_schema(assign_from_custnum("i", DataType::Integer), &schema);
         assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
+
+    // ---- ABL-facing message text (U1) ------------------------------------
+
+    /// No message a rule renders may leak an internal id. Asserted on every
+    /// diagnostic every message-producing path below emits, not just the one
+    /// that regressed — the defect reappears wherever a `ResolvedType` is
+    /// interpolated.
+    fn assert_no_internal_ids(diags: &[Diagnostic]) {
+        for d in diags {
+            assert!(
+                !d.message.contains("SymbolId("),
+                "diagnostic leaks an internal id: {}",
+                d.message
+            );
+            assert!(
+                !d.message.contains("Primitive("),
+                "diagnostic debug-prints a ResolvedType: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn buffer_mismatch_names_the_table_not_a_symbol_id() {
+        // `c = bCust` — a whole buffer assigned into a CHARACTER variable.
+        let schema = test_schema();
+        let stmts = vec![
+            stmt_n(StatementKind::DefineBuffer {
+                name: id("bCust"),
+                target: oxabl_ast::BufferTarget::Table(id("Customer")),
+                preselect: false,
+                label: None,
+                xml_options: oxabl_ast::XmlSerializeOptions::default(),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
+            }),
+            var_decl("c", DataType::Character),
+            stmt_n(StatementKind::Assignment {
+                target: id_expr("c"),
+                value: id_expr("bCust"),
+            }),
+        ];
+        let diags = analyze_and_lint_with_schema(stmts, &schema);
+        assert_eq!(diags.len(), 1, "expected one mismatch: {diags:?}");
+        assert_no_internal_ids(&diags);
+        assert!(
+            diags[0].message.contains("buffer Customer"),
+            "expected the table's name: {}",
+            diags[0].message
+        );
+        assert!(diags[0].message.contains("CHARACTER"));
+    }
+
+    #[test]
+    fn class_mismatch_names_the_class() {
+        let stmts = vec![
+            stmt_n(StatementKind::Class {
+                name: id("Foo"),
+                inherits: None,
+                implements: vec![],
+                is_abstract: false,
+                is_final: false,
+                body: vec![],
+            }),
+            var_decl("a", DataType::Class("Foo".into())),
+            var_decl("n", DataType::Integer),
+            stmt_n(StatementKind::Assignment {
+                target: id_expr("n"),
+                value: id_expr("a"),
+            }),
+        ];
+        let diags = analyze_and_lint(stmts);
+        assert_eq!(diags.len(), 1, "expected one mismatch: {diags:?}");
+        assert_no_internal_ids(&diags);
+        assert!(
+            diags[0].message.to_lowercase().contains("foo"),
+            "expected the class name: {}",
+            diags[0].message
+        );
+        assert!(diags[0].message.contains("INTEGER"));
+    }
+
+    #[test]
+    fn array_target_renders_element_type_and_extent() {
+        let stmts = vec![
+            stmt_n(StatementKind::VariableDeclaration {
+                name: id("arr"),
+                type_source: TypeSource::Explicit(DataType::Integer),
+                initial_value: None,
+                no_undo: false,
+                extent: Some(3),
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
+            }),
+            stmt_n(StatementKind::Assignment {
+                target: id_expr("arr"),
+                value: str_lit("hi"),
+            }),
+        ];
+        let diags = analyze_and_lint(stmts);
+        assert_eq!(diags.len(), 1, "expected one mismatch: {diags:?}");
+        assert_no_internal_ids(&diags);
+        assert!(
+            diags[0].message.contains("INTEGER EXTENT 3"),
+            "expected element type and extent: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn narrowing_warning_names_both_keywords() {
+        // The narrowing message is the easy one to miss: it fires between two
+        // primitives, so no `SymbolId(` assertion would have caught it. The
+        // v1 narrowing set is LONGCHAR→CHARACTER and the two DATETIME→DATE
+        // pairs; DECIMAL→INTEGER is silent (see `decimal_to_integer_is_silent_v1`).
+        let diags = analyze_and_lint(vec![
+            var_decl("lc", DataType::Longchar),
+            var_decl("c", DataType::Character),
+            stmt_n(StatementKind::Assignment {
+                target: id_expr("c"),
+                value: id_expr("lc"),
+            }),
+        ]);
+        let warn = diags
+            .iter()
+            .find(|d| d.severity == Severity::Warning)
+            .expect("expected a narrowing warning");
+        assert_no_internal_ids(&diags);
+        assert!(
+            warn.message.contains("LONGCHAR") && warn.message.contains("CHARACTER"),
+            "expected both ABL keywords: {}",
+            warn.message
+        );
     }
 
     #[test]

@@ -59,6 +59,11 @@ Baselined 2026-04-17 (commit on `feat/ast-invariants-doc`) and maintained since 
   written — and, for the same reason, includes a trailing translation/width suffix (`:U`) when
   the literal carries one, which `name` likewise excludes. Unlike the wrapper `span` above, these are inline fields of a derived-`PartialEq`
   enum and therefore *do* participate in structural equality — see §2.
+- **A `USING` source clause is semantic AST data.** `StatementKind::Using::source`
+  is `Unspecified`, `Propath`, or `Assembly`. The parser never discards a valid
+  `FROM PROPATH` / `FROM ASSEMBLY` clause, because workspace resolution must not
+  search source paths for an assembly-only type. Like the other inline fields,
+  `source` participates in `StatementKind` structural equality.
 - **Span source order is asserted.** Where sibling `Statement`/`Expression` values are
   assembled (block bodies, the top-level program, argument/item lists), a `debug_assert!`
   enforces `prev.span.end <= next.span.start`: siblings are in source order and non-overlapping.
@@ -112,8 +117,19 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
 
 ## 3. Identifier casing
 
-- `Identifier.name: String` preserves the **exact source casing** of the identifier as it
-  appeared in the input text. The AST layer performs no case folding.
+- `Identifier.name: String` preserves the **source casing** of the identifier and
+  performs no case folding.
+- **Escape-marker normalization is a property of `Identifier`, not of every name in the
+  tree.** An `Identifier` built through the parser's identifier helper drops UNIX-shaped
+  escape markers, because they are not part of the name the compiler sees: `ab\cd` has
+  authored span `ab\cd` and AST name `abcd`. A name the parser instead slices verbatim from
+  source keeps its authored spelling — most importantly `RunTarget::Literal`, and
+  **deliberately so**: its operand is a file path, where a backslash is a path separator
+  rather than an escape, so normalizing it would corrupt the path the author wrote. The
+  consequence is that a `RUN` whose target name carries an escape marker does not link to
+  the like-named procedure declaration, which is a known and accepted gap rather than an
+  invariant violation. Do not read this bullet as licence to normalize a raw-sliced name
+  without deciding which of the two cases it is.
 - Case-insensitive comparison is the job of downstream consumers (lexer keyword matching,
   future `oxabl_semantic` symbol lookup). Those consumers use ASCII-folded byte comparison
   (`eq_ignore_ascii_case`) or atom interning with case folding at intern time — see
@@ -235,6 +251,28 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 - The statement's full extent is `Statement.span`; there is no companion `raw_span`.
 - The variant is scaffolding with a scheduled successor (#136): each form that gets
   head-parsed stops emitting `Skipped`.
+
+**Two forms have left the `Skipped` population, and they left in opposite directions.**
+
+- **`DELETE OBJECT` is head-parsed** into `StatementKind::DeleteObject { target, no_error }`.
+  Its own variant rather than a spelling of `Delete`, because the operand is an
+  **`Expression`**: `DELETE OBJECT ttbl:HANDLE.` and `DELETE OBJECT hArray[i].` are both
+  ordinary ABL and neither fits `Delete`'s `buffer: Identifier`. That mismatch is exactly why
+  the form skipped, and the skip was expensive — the harvest marked every name it passed over
+  `TOUCHED_BY_UNMODELLED_STATEMENT`, silencing the count-gated rules for the whole file over a
+  statement whose one operand is perfectly parseable.
+  **Invariant:** `target` is resolved like any other expression, so the handle it names is
+  credited an ordinary `read_count`, and no name in the statement is marked. Note the
+  asymmetry this removes: `DELETE PROCEDURE`, `DELETE WIDGET`, and `DELETE SERVER` already
+  fell through to a real `Delete` node — only the `OBJECT` spelling skipped.
+
+- **`COMPILE` still emits `Skipped`, with an empty `names` list.** Its operand is a *file
+  path* and its trailing words are grammar keywords, so no identifier in it is a symbol
+  reference. Harvesting them credited nothing true while actively suppressing real variables
+  whose names collided with a path word or with `SAVE`.
+  **Invariant:** a form whose operands are paths or literals gets its harvest deleted rather
+  than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
+  operands earn a head-parse, path-shaped ones earn an empty name list.
 
 ## 9. Property body distinguishes absence from emptiness
 

@@ -239,6 +239,46 @@ pub fn assert_index_adds_no_diagnostic(source: &str, workspace: &[(&str, &str)])
     }
 }
 
+/// The findings attaching an index **adds** to `source` — the multiset
+/// difference, index-attached minus single-file.
+///
+/// The counterpart to [`assert_index_adds_no_diagnostic`], and the reason both
+/// exist: before the type valves opened, "adds nothing" was the property worth
+/// pinning, and every cross-file test asserted it. Now that the rules judge the
+/// cross-file population, a scenario's *additions* are the contract, so a test
+/// enumerates them rather than asserting they are empty. Removals stay the
+/// business of `assert_index_removes_only`, since a removed finding is a false
+/// positive the index accounted for.
+pub fn diagnostics_added_by_index(
+    source: &str,
+    workspace: &[(&str, &str)],
+) -> Vec<DiagnosticShape> {
+    let with = all_lints_with_index(source, workspace);
+    let mut available = all_lints_without_index(source);
+    let mut added = Vec::new();
+    for finding in with {
+        match available.iter().position(|f| *f == finding) {
+            Some(i) => {
+                available.swap_remove(i);
+            }
+            None => added.push(finding),
+        }
+    }
+    added
+}
+
+/// Just the rule codes [`diagnostics_added_by_index`] reports, in a stable
+/// order — what a scenario table can state without pinning byte spans that a
+/// reformatted fixture would shift.
+pub fn codes_added_by_index(source: &str, workspace: &[(&str, &str)]) -> Vec<&'static str> {
+    let mut codes: Vec<&'static str> = diagnostics_added_by_index(source, workspace)
+        .into_iter()
+        .map(|(code, _, _)| code)
+        .collect();
+    codes.sort_unstable();
+    codes
+}
+
 // ---------------------------------------------------------------------------
 // Asking questions of the model
 // ---------------------------------------------------------------------------

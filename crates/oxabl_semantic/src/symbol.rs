@@ -218,10 +218,15 @@ pub struct Supertypes {
 pub enum ClassLookup {
     /// The index found it, in this file.
     Linked(IndexedFileId),
-    /// Searched on the configured paths and genuinely absent — or located and
-    /// unusable, which [`IndexAnswer::NotFound`](crate::IndexAnswer::NotFound)
-    /// folds in for the reason KTD4 gives.
+    /// Searched on the configured paths and genuinely absent.
     Absent,
+    /// A file that would declare it was located, and could not be read or
+    /// parsed. Separate from [`Self::Absent`] because the envelope's dependency
+    /// section is where a user goes to find out *why* a member did not resolve,
+    /// and "the file is right there and oxabl could not read it" is a different
+    /// answer from "no file declares it" — the first is a gap in oxabl, the
+    /// second a fact about the workspace.
+    Unusable,
     /// The index declined to choose between candidates.
     Unknowable,
 }
@@ -345,6 +350,11 @@ pub struct SymbolTable {
 /// what lets the box be created lazily without any caller knowing.
 #[derive(Debug, Default)]
 struct SymbolSideMaps {
+    /// Canonical parameter signatures for locally declared methods.
+    method_signatures: FxHashMap<SymbolId, Vec<String>>,
+    /// All declarations sharing an overloaded method name, keyed by the
+    /// symbol retained in the scope binding map.
+    method_overloads: FxHashMap<SymbolId, Vec<SymbolId>>,
     /// The supertypes each `Class` / `Interface` symbol's header named, recorded
     /// by the declare pass and consumed by the resolve pass's chain walk.
     ///
@@ -357,6 +367,9 @@ struct SymbolSideMaps {
     /// of symbols and nothing on the hot path reads this, so the map is entirely
     /// absent from the common file.
     supertypes: FxHashMap<SymbolId, Supertypes>,
+    /// Supertype identities resolved by the resolve pass. The authored names
+    /// above remain for diagnostics; assignability consumes these edges.
+    resolved_supertypes: FxHashMap<SymbolId, Vec<SymbolId>>,
     /// The indexed file that supplies each synthesized external-program symbol —
     /// the file a literal `RUN` target resolved to.
     ///
@@ -382,46 +395,6 @@ struct SymbolSideMaps {
     /// merely has a counterpart elsewhere. One map would force a consumer to
     /// re-derive which of the two it was looking at.
     shared_producers: FxHashMap<SymbolId, IndexedFileId>,
-    /// The declared type of each synthesized **inherited-member** symbol — the
-    /// return type of a method, or the type of a property, that a superclass or
-    /// implemented interface in another file contributes to the class under
-    /// analysis.
-    ///
-    /// **This map exists so the type is observable without being usable.** The
-    /// obvious home for it is `Symbol::data_type`, and that is precisely what it
-    /// must not be: two independent readers pick a symbol's `data_type` up and
-    /// feed it straight into the type lattice —
-    ///
-    /// * `check.rs::type_from_reference`'s fallback arm, whose class/interface
-    ///   firewall only intercepts `SymbolKind::Class | SymbolKind::Interface`
-    ///   and therefore lets a `Function` or `Property` symbol through;
-    /// * `type_mismatch_assignment::target_type`, which reads `symbol.data_type`
-    ///   directly and so bypasses `check.rs` altogether.
-    ///
-    /// Either one turns a resolved inherited member into a real
-    /// `ResolvedType`, and LINT0004 then reports assignments it is silent about
-    /// today — `DEFINE VARIABLE v-flag AS LOGICAL. v-flag = calc-total().` where
-    /// `calc-total` is an inherited `INTEGER` method goes from zero findings to
-    /// one purely by attaching an index. New findings, even correct ones, break
-    /// this phase's central property: attaching a workspace index must not change
-    /// any rule's behavior on any input.
-    ///
-    /// A `SymbolFlags` bit would not do the job — it would have to be honored at
-    /// *both* read sites above, and a third reader added later would silently
-    /// ignore it. A side map cannot be read by accident: nothing reaches the type
-    /// except through [`SymbolTable::inherited_member_type`].
-    ///
-    /// **The follow-up that turns the lint rules onto the cross-file population
-    /// owns promoting this onto `Symbol::data_type`** — the same unit that owns
-    /// removing `check.rs`'s synthesized-class arm. Until then the type lives
-    /// here, where a consumer that genuinely wants it (an LSP hover, a test
-    /// asserting the member resolved with its declared type) can ask, and the
-    /// lattice cannot.
-    ///
-    /// A side map also for the reason [`Self::supertypes`] documents: eight more
-    /// bytes on `Symbol` cost the declare pass 17–25%, and this map is absent
-    /// entirely from a run with no index attached.
-    inherited_member_types: FxHashMap<SymbolId, ResolvedType>,
     /// Every class name the resolve pass's chain walk asked the index about, and
     /// what came back. Keyed by the **folded** class name, since that is the
     /// index's own identity for a name and two spellings of one class must not
@@ -502,6 +475,87 @@ impl SymbolTable {
         self.side.as_deref()?.supertypes.get(&sym)
     }
 
+    pub fn record_resolved_supertypes(&mut self, sym: SymbolId, parents: Vec<SymbolId>) {
+        if !parents.is_empty() {
+            self.side_mut().resolved_supertypes.insert(sym, parents);
+        }
+    }
+
+    pub fn resolved_supertypes(&self, sym: SymbolId) -> &[SymbolId] {
+        self.side
+            .as_deref()
+            .and_then(|side| side.resolved_supertypes.get(&sym))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn record_method_signature(&mut self, sym: SymbolId, signature: Vec<String>) {
+        self.side_mut().method_signatures.insert(sym, signature);
+    }
+
+    pub(crate) fn method_signature(&self, sym: SymbolId) -> Option<&[String]> {
+        self.side
+            .as_deref()?
+            .method_signatures
+            .get(&sym)
+            .map(Vec::as_slice)
+    }
+
+    pub(crate) fn record_method_overload(&mut self, anchor: SymbolId, member: SymbolId) {
+        let members = self
+            .side_mut()
+            .method_overloads
+            .entry(anchor)
+            .or_insert_with(|| vec![anchor]);
+        members.push(member);
+    }
+
+    pub fn method_overloads(&self, anchor: SymbolId) -> Option<&[SymbolId]> {
+        self.side
+            .as_deref()?
+            .method_overloads
+            .get(&anchor)
+            .map(Vec::as_slice)
+    }
+
+    pub fn is_overloaded_method(&self, anchor: SymbolId) -> bool {
+        self.method_overloads(anchor)
+            .is_some_and(|members| members.len() > 1)
+    }
+
+    /// The return type an overload set can be judged by, or `None` when `anchor`
+    /// names no overload set at all and the caller should read the symbol's own
+    /// type as usual.
+    ///
+    /// Overload *selection* is not modelled — oxabl matches no argument list
+    /// against a signature — so a set whose members return **different** types
+    /// yields [`ResolvedType::Unknown`], the lattice bottom, leaving the
+    /// expression unjudged rather than judged by an arbitrary candidate. A set
+    /// whose members all return the **same** type needs no selection: whichever
+    /// candidate the AVM picks, the value has that type, so the ordinary
+    /// widening ladder still applies. That keeps the common ABL idiom of
+    /// overloading on parameters alone judgeable, which an unconditional
+    /// `Unknown` silently gave up.
+    pub fn overload_set_data_type(&self, anchor: SymbolId) -> Option<ResolvedType> {
+        let members = self.method_overloads(anchor)?;
+        if members.len() <= 1 {
+            return None;
+        }
+        let mut folded: Option<&ResolvedType> = None;
+        for member in members {
+            // A member with no declared type is `VOID` or names no type; it
+            // cannot agree with a typed sibling, so the set is unknowable.
+            let Some(ty) = self.get(*member).data_type.as_ref() else {
+                return Some(ResolvedType::Unknown);
+            };
+            match folded {
+                None => folded = Some(ty),
+                Some(seen) if seen == ty => {}
+                Some(_) => return Some(ResolvedType::Unknown),
+            }
+        }
+        Some(folded.cloned().unwrap_or(ResolvedType::Unknown))
+    }
+
     /// Record that synthesized program symbol `sym` is supplied by indexed file
     /// `file`. Only the resolve pass calls this, and only for a symbol it
     /// synthesized from a resolved literal `RUN` target.
@@ -532,38 +586,6 @@ impl SymbolTable {
     /// business, not the symbol table's.
     pub fn shared_producer(&self, sym: SymbolId) -> Option<IndexedFileId> {
         self.side.as_deref()?.shared_producers.get(&sym).copied()
-    }
-
-    /// Record the declared type of synthesized inherited-member symbol `sym`.
-    /// Only the resolve pass calls this, and only for a member it synthesized
-    /// from the workspace index. See [`SymbolSideMaps::inherited_member_types`] for
-    /// why the
-    /// type is *not* written to `sym`'s `data_type`.
-    pub fn record_inherited_member_type(&mut self, sym: SymbolId, ty: ResolvedType) {
-        self.side_mut().inherited_member_types.insert(sym, ty);
-    }
-
-    /// The declared type of synthesized inherited-member symbol `sym` — a
-    /// method's return type or a property's type, as the file declaring it wrote
-    /// it.
-    ///
-    /// **Read this instead of `sym`'s `data_type`, which is deliberately
-    /// `None`.** The type is held off the symbol so it cannot reach the type
-    /// lattice: `check.rs::type_from_reference`'s fallback arm and
-    /// `type_mismatch_assignment::target_type` both read `Symbol::data_type`
-    /// directly, and a real type there makes LINT0004 report assignments it says
-    /// nothing about without an index — which is exactly the property this phase
-    /// must hold. The full argument is on
-    /// [`SymbolSideMaps::inherited_member_types`]; the follow-up that turns the lint
-    /// rules
-    /// onto the cross-file population owns promoting it.
-    ///
-    /// `None` covers three different situations, none of which is a type: `sym`
-    /// is not a synthesized inherited member at all; it is one whose form names
-    /// no type (`VOID`, or a method declared without one); or no index was
-    /// attached, so nothing was synthesized.
-    pub fn inherited_member_type(&self, sym: SymbolId) -> Option<&ResolvedType> {
-        self.side.as_deref()?.inherited_member_types.get(&sym)
     }
 
     /// Record what the index answered for class name `name`. Only the resolve

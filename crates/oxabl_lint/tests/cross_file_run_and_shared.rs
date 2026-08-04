@@ -18,9 +18,12 @@
 //!    a counter.
 //! 3. **A wrong link is poison.** One name matching two path entries declines
 //!    rather than taking the first match.
-//! 4. **No new finding, ever.** Where a test says "produces no finding" it also
-//!    asserts a sibling shape where the finding genuinely does fire, so the
-//!    assertion cannot pass by the rule being inert.
+//! 4. **A finding is stated, not assumed away.** Where a test says "produces no
+//!    finding" it also asserts a sibling shape where the finding genuinely does
+//!    fire, so the assertion cannot pass by the rule being inert. One shape in
+//!    this file *does* produce a finding: a literal `RUN` target no configured
+//!    path supplies is an `undefined-symbol`, since ABL cannot run a program that
+//!    is not on the PROPATH.
 //!
 //! # The `shared_producer` precondition, stated once
 //!
@@ -34,6 +37,8 @@
 //! already-tracked work.
 
 mod support;
+
+use oxabl_lint::LINT0001;
 
 use oxabl_ast::{RunTarget, Statement, StatementKind};
 use oxabl_common::FileId;
@@ -134,7 +139,7 @@ impl WorkspaceIndex for RunHostileIndex {
 fn run_value_records_unknowable_and_produces_no_undefined_symbol_finding() {
     // AE2. `RUN VALUE(<expr>)` is the canonical statically-undecidable target:
     // no amount of indexing resolves it, so it is `Unknowable` rather than
-    // `NotFoundInWorkspace`, and no rule may report it.
+    // `AbsentFromWorkspace`, and no rule may report it.
     let source = "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\n\
                   c-name = \"post-order.p\".\n\
                   RUN VALUE(c-name).\n";
@@ -265,7 +270,7 @@ fn one_name_on_two_path_entries_is_unknowable_not_the_first_match() {
 }
 
 #[test]
-fn a_name_no_file_on_the_paths_matches_is_not_found_in_the_workspace() {
+fn a_name_no_file_on_the_paths_matches_is_absent_from_the_workspace() {
     let source = "RUN never-shipped.p.\n";
     let (stmts, sem) = with_index(source, &WORKSPACE);
 
@@ -273,15 +278,30 @@ fn a_name_no_file_on_the_paths_matches_is_not_found_in_the_workspace() {
         run_resolution(&stmts, &sem),
         Some(Resolution::Unresolved {
             name: OxablAtom::from("never-shipped.p"),
-            reason: UnresolvedReason::NotFoundInWorkspace,
+            reason: UnresolvedReason::AbsentFromWorkspace,
         }),
         "an index was attached and it looked: that is a fact about the \
          workspace, not a missing capability"
     );
+    // And it is reported. ABL cannot `RUN` a program that is not on the PROPATH,
+    // so a literal target no configured path supplies is genuinely undefined —
+    // reported on the target's own span, with the help line that names the
+    // search-path configuration, because a misconfigured project is the other way
+    // to arrive here.
+    let found = lint0001_with_index(source, &WORKSPACE);
+    assert_eq!(found.len(), 1, "one finding: {found:?}");
+    assert!(found[0].message.contains("never-shipped.p"));
     assert!(
-        lint0001_with_index(source, &WORKSPACE).is_empty(),
-        "the new reason stays in the suppressed position `External` occupies"
+        found[0]
+            .help
+            .as_deref()
+            .is_some_and(|h| h.contains("include_paths")),
+        "the remediation names the configuration: {:?}",
+        found[0].help
     );
+    // With no index attached the same source says nothing at all: the reason is
+    // the difference, and the reason is a property of whether anything looked.
+    assert!(lint0001_without_index(source).is_empty());
 }
 
 #[test]
@@ -497,10 +517,13 @@ fn a_resolved_target_called_with_the_wrong_argument_count_produces_no_finding() 
 }
 
 #[test]
-fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
-    // The R11 firewall, swept over every fixture in this file at once: the
-    // diagnostic set is identical with and without an index. A new finding
-    // arriving from cross-file resolution shows up here first.
+fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
+    // Swept over every fixture in this file at once. One shape gains a finding: a
+    // literal target no configured path supplies, which `undefined-symbol` reports
+    // now. Everything else stays silent — a resolved target and a linked `SHARED`
+    // producer contribute a symbol and a reference, not a type, so nothing here
+    // reaches the type lattice.
+    let judged = ["RUN never-shipped.p.\n"];
     for source in [
         "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n",
         "RUN post-order.p (INPUT 1).\n",
@@ -510,22 +533,24 @@ fn attaching_an_index_adds_no_diagnostic_to_any_scenario() {
         "PROCEDURE post-order:\nMESSAGE \"local\".\nEND PROCEDURE.\nRUN post-order.\n",
         SHARED_CONSUMER,
     ] {
+        // Exact rather than per-rule counts: a finding moving from one code to
+        // another, or from one span to another, is a behavior change the old
+        // count comparison would have absorbed.
+        let expected = if judged.contains(&source) {
+            vec![LINT0001]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            codes_added_by_index(source, &WORKSPACE),
+            expected,
+            "the findings an index adds for: {source}"
+        );
         let (_, with) = with_index(source, &WORKSPACE);
         let (_, without) = without_index(source);
         assert_eq!(
-            with.diagnostics.len(),
-            without.diagnostics.len(),
+            with.diagnostics, without.diagnostics,
             "semantic diagnostics differ for: {source}"
-        );
-        assert_eq!(
-            lint0001_with_index(source, &WORKSPACE).len(),
-            lint0001_without_index(source).len(),
-            "LINT0001 differs for: {source}"
-        );
-        assert_eq!(
-            lint0004_with_index(source, &WORKSPACE).len(),
-            lint0004_without_index(source).len(),
-            "LINT0004 differs for: {source}"
         );
     }
 }

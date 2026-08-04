@@ -781,8 +781,12 @@ mod tests {
         }
 
         /// The *exported* entry point is file-less, so a cross-file row reaches it
-        /// with nothing to resolve against and reports the withheld-siblings
-        /// answer.
+        /// with nothing to resolve against **and no search path configured** — and
+        /// those are two different things. Nothing to resolve against explains why
+        /// no cross-file resolution happens; no search path explains why the misses
+        /// stay `External` rather than becoming `undefined-symbol` findings, which
+        /// is R17 and is what keeps this leg from claiming a name is absent from a
+        /// workspace it was never shown.
         ///
         /// Asserted rather than assumed, because this is the boundary that keeps
         /// the seam honest: if the export ever grows a way to supply files, this
@@ -791,7 +795,7 @@ mod tests {
         #[test]
         fn the_exported_entry_point_supplies_no_files() {
             for fixture in FIXTURES.iter().filter(|f| f.is_cross_file()) {
-                fixture.assert_diagnostics_without_siblings(
+                fixture.assert_diagnostics_with_no_search_path(
                     "browser export (no filesystem)",
                     observed_through_the_export(fixture.source),
                 );

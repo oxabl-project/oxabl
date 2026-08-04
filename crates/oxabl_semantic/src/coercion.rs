@@ -16,10 +16,9 @@
 //!
 //! See plan §Coercion catalog for the authoritative rule set.
 
-use oxabl_lexer::oxabl_atom::OxablAtom;
 use smallvec::SmallVec;
 
-use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::{PrimitiveTy, ResolvedType};
 
 /// How many levels of an inheritance chain fit without touching the heap.
@@ -83,26 +82,7 @@ impl<'a> ClassLattice<'a> {
         // Depth-first: the question is reachability, so visit order is
         // immaterial, and a stack keeps both containers the same shape.
         while let Some(current) = stack.pop() {
-            // A class whose header named no supertype has no entry at all —
-            // which is what makes "declares no parent" distinguishable from
-            // "declares one that resolved to nothing".
-            let Some(supers) = self.symbols.supertypes(current) else {
-                continue;
-            };
-            // `inherits` and `implements` are walked as one sequence: an
-            // interface reached through `IMPLEMENTS` contributes assignability
-            // exactly as a superclass reached through `INHERITS` does, and an
-            // interface's own supertypes are recorded in `implements` too. So
-            // there is no separate interface arm to keep in step.
-            for supertype in supers.inherits.iter().chain(&supers.implements) {
-                let Some(ancestor) = self.class_named(supertype.name.as_atom()) else {
-                    // A supertype no symbol in this table stands for: nothing to
-                    // compare against and nothing to climb through. Not an
-                    // error here — whether an unresolvable parent deserves a
-                    // diagnostic is a rule's decision, not a coercion
-                    // predicate's.
-                    continue;
-                };
+            for &ancestor in self.symbols.resolved_supertypes(current) {
                 if ancestor == to {
                     return true;
                 }
@@ -113,33 +93,6 @@ impl<'a> ClassLattice<'a> {
             }
         }
         false
-    }
-
-    /// The class or interface symbol carrying the folded name `folded`, if the
-    /// table holds one.
-    ///
-    /// A linear scan, deliberately. A supertype is recorded as a *name* (that is
-    /// what a header spells, and resolving it at declare time would make the
-    /// declare pass depend on the index), so identity has to be recovered from
-    /// the name somewhere. The scan is affordable because it only ever runs on
-    /// the chain-walk path — reached when two *different* class symbols meet at
-    /// one assignment, which is rare — never on the per-assignment fast path.
-    ///
-    /// Matching is on the folded atom, so `Parent` and `PARENT` are one class,
-    /// as everywhere else in the symbol table. A name spelled differently from
-    /// the symbol it should reach (a simple name under a `USING` import, whose
-    /// synthesized symbol carries the *qualified* spelling) finds nothing and
-    /// simply does not widen — conservative in the safe direction, and moot
-    /// while the `check.rs` firewall keeps index-synthesized classes at
-    /// `Unknown`. Recording resolved supertype ids at resolve time is the fix,
-    /// and it belongs with the unit that lifts that firewall.
-    fn class_named(self, folded: &OxablAtom) -> Option<SymbolId> {
-        self.symbols
-            .iter()
-            .find(|(_, s)| {
-                matches!(s.kind, SymbolKind::Class | SymbolKind::Interface) && &s.name == folded
-            })
-            .map(|(id, _)| id)
     }
 }
 
@@ -442,7 +395,7 @@ mod tests {
     // chain (a qualified name, a parent symbol with no declaration node) is
     // really asserted instead of inferred.
 
-    use crate::SymbolFlags;
+    use crate::{SymbolFlags, SymbolKind};
 
     /// One class or interface symbol, wired the way the declare pass wires one.
     /// `indexed` reproduces the index-synthesized shape — no declaration node in
@@ -486,6 +439,18 @@ mod tests {
                 implements: implements.iter().copied().map(sref).collect(),
             },
         );
+        let resolved = inherits
+            .into_iter()
+            .chain(implements.iter().copied())
+            .filter_map(|name| {
+                let atom = IndexName::new(name);
+                table
+                    .iter()
+                    .find(|(_, symbol)| symbol.name == *atom.as_atom())
+                    .map(|(id, _)| id)
+            })
+            .collect();
+        table.record_resolved_supertypes(sym, resolved);
     }
 
     fn lattice_of(table: &SymbolTable) -> ClassLattice<'_> {

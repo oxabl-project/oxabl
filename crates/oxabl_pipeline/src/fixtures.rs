@@ -170,7 +170,34 @@ pub enum CrossFileEffect {
     /// diagnostic channel: the finding below fires when the siblings are
     /// **withheld** and must not fire when they are supplied. This is the
     /// subclass-to-parent false positive cross-file resolution removes.
+    ///
+    /// The withheld-half finding here is one the *single-file* run produces on its
+    /// own — an inherited call is `NotInScope` when nothing resolves it — so it
+    /// arrives whether or not a search path is configured. Contrast
+    /// [`Self::ResolvedFromWorkspaceMiss`].
     Resolved(ExpectedDiagnostic),
+    /// A sibling supplies the name, and withholding it produces a finding **only
+    /// because a path was searched**: the name is reported as absent from the
+    /// workspace, which requires somewhere to have looked.
+    ///
+    /// Split from [`Self::Resolved`] for the browser's exported entry point, which
+    /// configures no search path at all. There a miss stays `External` and no
+    /// absence is claimed, so this finding does not arrive — while a
+    /// [`Self::Resolved`] one still does. Folding the two together would force one
+    /// of the legs to assert an answer it cannot produce.
+    ResolvedFromWorkspaceMiss(ExpectedDiagnostic),
+    /// A sibling supplies a *type*, and the resolution makes a finding **appear**:
+    /// the diagnostic fires when the siblings are supplied and does not fire when
+    /// they are withheld.
+    ///
+    /// The opposite direction from [`Self::Resolved`], and the only arm that runs
+    /// that way. It became reachable when an inherited member's declared type was
+    /// promoted onto its symbol: withheld, the call resolves to nothing and there
+    /// is no type to compare; supplied, the mismatch is the one the declaring
+    /// file's own reader would see. A row using this arm is asserting that all
+    /// four clients agree about a *finding* produced from a cross-file type, which
+    /// is a stronger claim than agreeing about a silence.
+    Judged(ExpectedDiagnostic),
     /// A sibling supplies the name, but the resolution is not observable in the
     /// diagnostic channel — it lands in the semantic model's reference entries,
     /// which only `analyze`'s envelope renders and no parity leg can see. What
@@ -251,16 +278,22 @@ impl ParityFixture {
     }
 
     /// Whether withholding the siblings changes the diagnostic set — i.e. whether
-    /// any resolution is [`CrossFileEffect::Resolved`].
+    /// any resolution is [`CrossFileEffect::Resolved`] or
+    /// [`CrossFileEffect::Judged`].
     ///
     /// What the "no siblings supplied is inert, with them supplied is not" pair
     /// keys off: for a row where every effect is silent, unresolvable, or
     /// unknowable, the two answers are *equal* by design and the pair asserts
     /// that instead.
     pub fn siblings_change_the_answer(&self) -> bool {
-        self.resolutions
-            .iter()
-            .any(|r| matches!(r.effect, CrossFileEffect::Resolved(_)))
+        self.resolutions.iter().any(|r| {
+            matches!(
+                r.effect,
+                CrossFileEffect::Resolved(_)
+                    | CrossFileEffect::ResolvedFromWorkspaceMiss(_)
+                    | CrossFileEffect::Judged(_)
+            )
+        })
     }
 
     /// Where a leg rooted at `root` puts the root source.
@@ -325,33 +358,120 @@ impl ParityFixture {
     }
 
     /// The expected set when the siblings are **withheld**: this row's own
-    /// diagnostics plus every finding a [`CrossFileEffect::Resolved`] arm says
-    /// cross-file resolution removes.
+    /// diagnostics, plus every finding a [`CrossFileEffect::Resolved`] arm says
+    /// cross-file resolution removes, minus every finding a
+    /// [`CrossFileEffect::Judged`] arm says it produces.
     ///
-    /// Strictly a superset of [`Self::expected`], and that direction is the R11
-    /// firewall stated as data: attaching an index removes `undefined-symbol`
-    /// findings on inherited members and must never add one, so the file-less
-    /// answer can only be louder.
+    /// No longer a superset of [`Self::expected`], and that is the change worth
+    /// reading. It used to be one, because attaching an index could only ever
+    /// remove an `undefined-symbol` false positive; a cross-file *type* now
+    /// reaches the lattice, so a row can also gain a finding, and the table has to
+    /// be able to say which direction a given name moves. `undefined-symbol`
+    /// itself still only ever moves the removing direction.
     pub fn expected_without_siblings(&self) -> Vec<ObservedDiagnostic> {
         let mut expected = self.expected();
         for resolution in self.resolutions {
             match resolution.effect {
-                CrossFileEffect::Resolved(finding) => expected.push(ObservedDiagnostic {
-                    code: finding.code.to_string(),
-                    severity: finding.severity,
-                    source: finding.source,
-                    start: finding.start,
-                    end: finding.end,
-                }),
+                CrossFileEffect::Resolved(finding)
+                | CrossFileEffect::ResolvedFromWorkspaceMiss(finding) => {
+                    expected.push(ObservedDiagnostic {
+                        code: finding.code.to_string(),
+                        severity: finding.severity,
+                        source: finding.source,
+                        start: finding.start,
+                        end: finding.end,
+                    })
+                }
+                // A finding the siblings *produce* is absent without them, so it
+                // comes back out of the expectation. Removed by value rather than
+                // by position: the row's own `diagnostics` list is the
+                // with-siblings answer and carries it exactly once.
+                CrossFileEffect::Judged(finding) => {
+                    let target = ObservedDiagnostic {
+                        code: finding.code.to_string(),
+                        severity: finding.severity,
+                        source: finding.source,
+                        start: finding.start,
+                        end: finding.end,
+                    };
+                    let at = expected
+                        .iter()
+                        .position(|d| *d == target)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "fixture `{}` declares a Judged finding its `diagnostics` \
+                             list does not contain: {target:?}",
+                                self.name
+                            )
+                        });
+                    expected.remove(at);
+                }
                 // The other three arms are silent by construction — see
                 // `CrossFileEffect`. Explicit arms rather than a catch-all so a
-                // fifth effect cannot silently default to "changes nothing".
+                // sixth effect cannot silently default to "changes nothing".
                 CrossFileEffect::ResolvedSilently
                 | CrossFileEffect::Unresolvable
                 | CrossFileEffect::Unknowable => {}
             }
         }
         normalize(expected)
+    }
+
+    /// The expected set for a run with **no search path at all** — the browser's
+    /// exported entry point, which supplies no filesystem and therefore configures
+    /// nowhere to look.
+    ///
+    /// Distinct from [`Self::expected_without_siblings`], and the distinction is
+    /// R17: withholding the siblings leaves the include path configured, so a miss
+    /// there is a searched-and-absent fact and `undefined-symbol` reports it.
+    /// Configuring *no* path means nothing was ever looked at, the reason stays
+    /// `External`, and no absence is claimed. So this answer carries neither the
+    /// findings a resolution produces nor the findings that only exist because a
+    /// path was searched. What it *does* carry is the plain single-file answer: a
+    /// `Resolved` finding comes back, because that one is a `NotInScope` miss the
+    /// file produces on its own.
+    pub fn expected_with_no_search_path(&self) -> Vec<ObservedDiagnostic> {
+        let mut expected = self.expected();
+        let row = |finding: ExpectedDiagnostic| ObservedDiagnostic {
+            code: finding.code.to_string(),
+            severity: finding.severity,
+            source: finding.source,
+            start: finding.start,
+            end: finding.end,
+        };
+        for resolution in self.resolutions {
+            match resolution.effect {
+                // Nothing resolved, so the single-file finding is back.
+                CrossFileEffect::Resolved(finding) => expected.push(row(finding)),
+                // Nothing resolved *and* nothing was searched, so neither the
+                // absence claim nor the type verdict exists.
+                CrossFileEffect::ResolvedFromWorkspaceMiss(_) => {}
+                CrossFileEffect::Judged(finding) => {
+                    let target = row(finding);
+                    if let Some(at) = expected.iter().position(|d| *d == target) {
+                        expected.remove(at);
+                    }
+                }
+                CrossFileEffect::ResolvedSilently
+                | CrossFileEffect::Unresolvable
+                | CrossFileEffect::Unknowable => {}
+            }
+        }
+        normalize(expected)
+    }
+
+    /// Assert an observed set equals [`Self::expected_with_no_search_path`].
+    pub fn assert_diagnostics_with_no_search_path(
+        &self,
+        leg: &str,
+        observed: Vec<ObservedDiagnostic>,
+    ) {
+        assert_eq!(
+            normalize(observed),
+            self.expected_with_no_search_path(),
+            "{leg} diverged on fixture `{}` with no search path configured",
+            self.name
+        );
     }
 
     /// Assert an observed set equals what this row must produce with its siblings
@@ -932,13 +1052,66 @@ pub const FIXTURES: &[ParityFixture] = &[
     },
     // A `USING` import of a sibling class, then that class as a declared type, a
     // `NEW` target, and a member-call receiver. Every one of those resolves
-    // through the index, and none of them is visible in the diagnostic channel:
-    // the R11 firewall keeps an index-synthesized class at `ResolvedType::Unknown`
-    // precisely so a cross-file type cannot start driving type diagnostics. So
-    // the shared claim here is an agreed silence — four clients resolve the
-    // import and not one of them invents a finding out of it.
+    // through the index, and the row is still silent — but for a reason worth
+    // stating precisely, since the class *does* type as itself now: the declared
+    // type and the `NEW` name are the same class, so the assignment is legal, and
+    // the member call is `:`-qualified, which nothing types yet. So the shared
+    // claim is an agreed silence over correct code — four clients resolve the
+    // import and not one of them invents a finding out of it. The row below is the
+    // one that pins the opposite direction.
     ParityFixture {
         name: "cross_file_using",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-base.cls",
+            source: CALC_BASE,
+        }],
+        // Two of the three spellings are now observable in the diagnostic
+        // channel: the `USING` and the `NEW` both name a class, and with the
+        // sibling withheld each one is a name no configured path supplies. The
+        // declared type is the third spelling and stays silent — `DataType::Class`
+        // is a bare `String` with no span to underline, which is why the
+        // declaration form is deliberately out of scope.
+        resolutions: &[
+            CrossFileResolution {
+                name: "USING orders.calc-base",
+                effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 6,
+                    end: 22,
+                }),
+            },
+            CrossFileResolution {
+                name: "NEW orders.calc-base()",
+                effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 91,
+                    end: 113,
+                }),
+            },
+        ],
+        source: "USING orders.calc-base.\n\
+                 DEFINE VARIABLE v-calc AS CLASS orders.calc-base NO-UNDO.\n\
+                 v-calc = NEW orders.calc-base().\n\
+                 MESSAGE v-calc:calc-total().\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+    },
+    // The one cross-file resolution still invisible in the shared diagnostic
+    // channel, and it is invisible for a documented reason rather than by
+    // accident: the class is named *only* by an `AS CLASS` declaration, and
+    // `DataType::Class` is a bare `String` with no span, so there is nothing for
+    // `undefined-symbol` to underline when the class is missing. Supplying the
+    // sibling resolves the declaration's type and the member call through it; both
+    // halves are silent, which is what makes this the row that covers an agreed
+    // silence.
+    ParityFixture {
+        name: "cross_file_declared_type",
         root_file: "report.p",
         siblings: &[SiblingFile {
             path: "orders/calc-base.cls",
@@ -948,11 +1121,66 @@ pub const FIXTURES: &[ParityFixture] = &[
             name: "orders.calc-base",
             effect: CrossFileEffect::ResolvedSilently,
         }],
-        source: "USING orders.calc-base.\n\
-                 DEFINE VARIABLE v-calc AS CLASS orders.calc-base NO-UNDO.\n\
-                 v-calc = NEW orders.calc-base().\n\
+        source: "DEFINE VARIABLE v-calc AS CLASS orders.calc-base NO-UNDO.\n\
                  MESSAGE v-calc:calc-total().\n",
         diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+    },
+    // The direction cross-file resolution could not produce until an inherited
+    // member's declared type reached the type lattice: supplying the sibling makes
+    // a finding **appear**. Withheld, `calc-total()` resolves to nothing and there
+    // is no type to compare, so the row is clean; supplied, the parent's declared
+    // `INTEGER` is assigned into a `LOGICAL` and every client must say so — same
+    // code, same severity, same byte span in the root buffer.
+    ParityFixture {
+        name: "cross_file_judged_type",
+        root_file: "orders/mismatch.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-base.cls",
+            source: CALC_BASE,
+        }],
+        // One name, both directions — which is the whole shape of this row. With
+        // the sibling withheld the call resolves to nothing and is an
+        // `undefined-symbol`; with it supplied that finding goes away and a type
+        // mismatch takes its place. A resolver that quietly stopped resolving
+        // would trip the first arm, and one that resolved without typing would
+        // trip the second.
+        resolutions: &[
+            CrossFileResolution {
+                name: "calc-total",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 150,
+                    end: 160,
+                }),
+            },
+            CrossFileResolution {
+                name: "calc-total",
+                effect: CrossFileEffect::Judged(ExpectedDiagnostic {
+                    code: "LINT0004",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Lint,
+                    start: 141,
+                    end: 147,
+                }),
+            },
+        ],
+        source: "CLASS orders.mismatch INHERITS orders.calc-base:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n        \
+                 v-flag = calc-total().\n        \
+                 MESSAGE v-flag.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0004",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Lint,
+            start: 141,
+            end: 147,
+        }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
     },
