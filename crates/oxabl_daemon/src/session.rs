@@ -127,6 +127,7 @@ pub(crate) struct WorkspaceSnapshot {
     pub config: Arc<PipelineConfig>,
     pub buffer_generation: u64,
     pub pass_millis: u64,
+    pub graph_bytes: u64,
 }
 
 #[derive(Clone)]

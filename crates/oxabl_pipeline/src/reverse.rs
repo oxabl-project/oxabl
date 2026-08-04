@@ -278,6 +278,62 @@ pub struct ReverseGraph {
 }
 
 impl ReverseGraph {
+    /// Estimated heap bytes owned by this graph.
+    ///
+    /// This includes collection capacities and owned path and string bytes.
+    /// Allocator metadata is not observable and is therefore excluded.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let subject_bytes = |subject: &Subject| match subject {
+            Subject::File(path) => path.to_string_lossy().len(),
+            Subject::Table(name) => name.capacity(),
+        };
+        let dependent_bytes = |row: &Dependent| row.file.to_string_lossy().len();
+        let unresolved_bytes =
+            |row: &UnresolvedRow| row.file.to_string_lossy().len() + row.reference.name.capacity();
+
+        std::mem::size_of::<Self>()
+            + self.dependents.capacity()
+                * (std::mem::size_of::<Subject>() + std::mem::size_of::<Vec<Dependent>>())
+            + self
+                .dependents
+                .iter()
+                .map(|(subject, rows)| {
+                    subject_bytes(subject)
+                        + rows.capacity() * std::mem::size_of::<Dependent>()
+                        + rows.iter().map(dependent_bytes).sum::<usize>()
+                })
+                .sum::<usize>()
+            + self.unresolved_by_name.capacity()
+                * (std::mem::size_of::<String>() + std::mem::size_of::<Vec<UnresolvedRow>>())
+            + self
+                .unresolved_by_name
+                .iter()
+                .map(|(name, rows)| {
+                    name.capacity()
+                        + rows.capacity() * std::mem::size_of::<UnresolvedRow>()
+                        + rows.iter().map(unresolved_bytes).sum::<usize>()
+                })
+                .sum::<usize>()
+            + self.unanalysed.capacity() * std::mem::size_of::<Unanalysed>()
+            + self
+                .unanalysed
+                .iter()
+                .map(|row| row.file.to_string_lossy().len() + row.reason.capacity())
+                .sum::<usize>()
+            + self.files.capacity() * std::mem::size_of::<PathBuf>()
+            + self
+                .files
+                .iter()
+                .map(|path| path.to_string_lossy().len())
+                .sum::<usize>()
+            + self.include_roots.capacity() * std::mem::size_of::<PathBuf>()
+            + self
+                .include_roots
+                .iter()
+                .map(|path| path.to_string_lossy().len())
+                .sum::<usize>()
+    }
+
     /// Build the graph by analysing every file in `files` through `pipeline`.
     ///
     /// `pipeline` must be the **run** handle: a per-file handle is derived inside,

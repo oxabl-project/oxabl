@@ -569,3 +569,13 @@ fn an_unreadable_file_is_recorded_rather_than_treated_as_empty() {
         unanalysed[0].reason
     );
 }
+
+#[test]
+fn graph_size_includes_owned_rows_and_paths() {
+    let ws = Workspace::new(&[
+        ("base.i", "DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n"),
+        ("user.p", "{base.i}\nMESSAGE v-base.\n"),
+    ]);
+    let graph = ws.graph(&ws.config());
+    assert!(graph.estimated_heap_bytes() > std::mem::size_of_val(&graph));
+}

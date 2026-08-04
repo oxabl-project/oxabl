@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 /// Bump on any shape change to a type in this crate. There is no negotiation and
 /// no compatibility window: both products are pre-1.0 and are built together, so a
 /// mismatch means one side is stale and should be told so rather than accommodated.
-pub const CONTRACT_VERSION: u32 = 1;
+pub const CONTRACT_VERSION: u32 = 2;
 
 /// The `oxabl/*` method names, as they travel.
 pub mod method {
@@ -474,6 +474,8 @@ pub struct ReindexResponse {
     pub freshness: Freshness,
     /// How long the pass took, which is the cold-start number worth tracking.
     pub pass_millis: u64,
+    /// Estimated heap bytes owned by the completed reverse graph.
+    pub graph_bytes: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +671,7 @@ mod tests {
         let reindex = ReindexResponse {
             freshness: freshness(),
             pass_millis: 40_100,
+            graph_bytes: 8_000_000,
         };
         assert_eq!(roundtrip(&reindex), reindex);
 

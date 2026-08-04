@@ -225,6 +225,7 @@ fn reindex(
     serde_json::to_value(ReindexResponse {
         freshness: workspace_freshness(&workspace),
         pass_millis: workspace.pass_millis,
+        graph_bytes: workspace.graph_bytes,
     })
     .map_err(MethodError::internal)
 }
@@ -329,6 +330,7 @@ fn build_workspace(
     symbols.dedup_by(|left, right| left.id == right.id);
 
     let tracked_files = graph.tracked_files();
+    let graph_bytes = graph.estimated_heap_bytes() as u64;
     Ok(WorkspaceSnapshot {
         graph: Arc::new(graph),
         symbols: Arc::new(symbols),
@@ -336,6 +338,7 @@ fn build_workspace(
         config: Arc::new(config),
         buffer_generation,
         pass_millis: started.elapsed().as_millis() as u64,
+        graph_bytes,
     })
 }
 
