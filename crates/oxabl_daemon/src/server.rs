@@ -16,14 +16,14 @@ use lsp_server::{Connection, Message, Response};
 use serde_json::Value;
 
 use crate::dispatch::Dispatch;
-use crate::session::Sessions;
+use crate::session::SessionHost;
 
 /// Serve `connection` until the peer disconnects or asks to shut down.
 ///
 /// Returns whether the shutdown was clean — the peer sent `shutdown` before it
 /// stopped talking — so a caller can distinguish an orderly close from a client that
 /// died mid-session.
-pub fn serve(connection: &Connection, dispatch: &Dispatch, sessions: &mut Sessions) -> bool {
+pub fn serve(connection: &Connection, dispatch: &Dispatch, host: &SessionHost) -> bool {
     let mut shutdown_requested = false;
     for message in &connection.receiver {
         match message {
@@ -36,7 +36,7 @@ pub fn serve(connection: &Connection, dispatch: &Dispatch, sessions: &mut Sessio
                     continue;
                 }
                 let params = request.params;
-                let response = match dispatch.call(sessions, &request.method, params) {
+                let response = match dispatch.call(host, &request.method, params) {
                     Ok(result) => Response::new_ok(request.id, result),
                     // A reported failure, not a dropped request: a client waiting on
                     // a response that never arrives is the one outcome worse than an
@@ -51,7 +51,7 @@ pub fn serve(connection: &Connection, dispatch: &Dispatch, sessions: &mut Sessio
                 }
                 // A notification has no id, so there is nowhere to report a failure
                 // to. Unknown ones are ignored, which is what the protocol requires.
-                let _ = dispatch.call(sessions, &notification.method, notification.params);
+                let _ = dispatch.call(host, &notification.method, notification.params);
             }
             // The daemon issues no requests of its own yet, so a response is
             // something no peer should be sending.
@@ -65,9 +65,9 @@ pub fn serve(connection: &Connection, dispatch: &Dispatch, sessions: &mut Sessio
 ///
 /// Joins the framing threads before returning, so a caller that exits immediately
 /// afterwards does not truncate the last response.
-pub fn serve_stdio(dispatch: &Dispatch, sessions: &mut Sessions) -> anyhow::Result<bool> {
+pub fn serve_stdio(dispatch: &Dispatch, host: &SessionHost) -> anyhow::Result<bool> {
     let (connection, io_threads) = Connection::stdio();
-    let clean = serve(&connection, dispatch, sessions);
+    let clean = serve(&connection, dispatch, host);
     io_threads.join()?;
     Ok(clean)
 }

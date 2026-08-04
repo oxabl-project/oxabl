@@ -43,13 +43,19 @@
 
 pub mod db;
 pub mod dispatch;
+#[cfg(unix)]
+pub mod listener;
+pub mod registry;
 pub mod server;
 pub mod session;
 
 pub use dispatch::{Dispatch, MethodError, MethodResult};
+#[cfg(unix)]
+pub use listener::{Listener, Stopper, connection_over};
+pub use registry::{Discovery, discover, register, socket_path_for, unregister};
 pub use server::{serve, serve_stdio};
 pub use session::{
-    Analysis, CompletedWork, Disposition, Session, Sessions, analyze_guarded, dispose,
+    Analysis, CompletedWork, Disposition, Session, SessionHost, Sessions, analyze_guarded, dispose,
 };
 
 /// This build's version, reported at the handshake so a human reading a contract

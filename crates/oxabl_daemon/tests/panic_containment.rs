@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use oxabl_daemon::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle};
 use oxabl_daemon::dispatch::{Dispatch, MethodError};
-use oxabl_daemon::{CompletedWork, Disposition, Sessions, analyze_guarded, dispose};
+use oxabl_daemon::{CompletedWork, Disposition, SessionHost, analyze_guarded, dispose};
 use oxabl_workspace::InMemoryFileSystem;
 use serde_json::{Value, json};
 
@@ -113,30 +113,34 @@ fn the_guard_passes_a_healthy_buffer_through() {
 fn a_panicking_request_leaves_the_daemon_and_other_sessions_working() {
     let mut dispatch = Dispatch::new();
     dispatch.register("oxabl/boom", |_, _| panic!("deliberate"));
-    dispatch.register("oxabl/count", |sessions: &mut Sessions, _| {
-        Ok(json!(sessions.len()))
+    dispatch.register("oxabl/count", |host: &SessionHost, _| {
+        Ok(json!(host.with(|sessions| sessions.len())))
     });
 
-    let mut sessions = Sessions::new();
-    sessions.for_root("/proj/alpha").attach(true);
-    sessions.for_root("/proj/beta").attach(false);
+    let host = SessionHost::new();
+    host.with(|sessions| {
+        sessions.for_root("/proj/alpha").attach(true);
+        sessions.for_root("/proj/beta").attach(false);
+    });
 
     let error: MethodError = quietly(|| {
         dispatch
-            .call(&mut sessions, "oxabl/boom", Value::Null)
+            .call(&host, "oxabl/boom", Value::Null)
             .expect_err("the panicking request must fail")
     });
     assert!(error.message.contains("deliberate"), "got {error}");
 
     assert_eq!(
-        dispatch.call(&mut sessions, "oxabl/count", Value::Null),
+        dispatch.call(&host, "oxabl/count", Value::Null),
         Ok(json!(2)),
         "both sessions must survive one request's panic"
     );
-    let alpha = sessions.get("/proj/alpha").expect("alpha survives");
-    assert_eq!(
-        alpha.clients(),
-        1,
-        "the other client's session is untouched"
-    );
+    host.with(|sessions| {
+        let alpha = sessions.get("/proj/alpha").expect("alpha survives");
+        assert_eq!(
+            alpha.clients(),
+            1,
+            "the other client's session is untouched"
+        );
+    });
 }

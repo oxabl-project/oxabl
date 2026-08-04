@@ -263,6 +263,51 @@ impl Sessions {
     }
 }
 
+/// The sessions, shared by every connected client.
+///
+/// # The locking rule
+///
+/// Hold the lock to **write** — open a buffer, install a configuration, bump a
+/// revision — or to **clone a snapshot**. Never hold it across a query. That is the
+/// same write-on-main / read-on-snapshot discipline the substrate already documents,
+/// and here it is also what keeps one client's slow answer from stalling another: a
+/// handler that clones a snapshot and releases the lock leaves every other client
+/// free, while one that queries under the lock serialises the whole daemon.
+///
+/// A handler therefore receives this host rather than `&mut Sessions`, so the shape
+/// of the borrow is visible in the handler itself.
+pub struct SessionHost {
+    sessions: std::sync::Mutex<Sessions>,
+}
+
+impl Default for SessionHost {
+    fn default() -> Self {
+        SessionHost::new()
+    }
+}
+
+impl SessionHost {
+    pub fn new() -> Self {
+        SessionHost {
+            sessions: std::sync::Mutex::new(Sessions::new()),
+        }
+    }
+
+    /// Run `body` with the sessions locked.
+    ///
+    /// Keep the body short: take what is needed and get out. Poisoning is recovered
+    /// from rather than propagated — a handler that unwound while holding the lock
+    /// has already had its request failed, and the sessions behind it are a cache of
+    /// per-root state that a partial update leaves usable.
+    pub fn with<T>(&self, body: impl FnOnce(&mut Sessions) -> T) -> T {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        body(&mut sessions)
+    }
+}
+
 /// The outcome of one guarded analysis.
 ///
 /// Both `Option`s carry one contract: `None` means **no trustworthy answer**, from
