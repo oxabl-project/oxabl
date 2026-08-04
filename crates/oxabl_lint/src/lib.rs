@@ -51,21 +51,26 @@ pub fn lint_file(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -
     run_rule(&mut diags, LINT0001, ctx, || {
         undefined_symbol::run(program, sem, ctx)
     });
-    run_rule(&mut diags, LINT0002, ctx, || {
-        unused_variable::run(program, sem, ctx)
-    });
+    let counts_are_complete = !ctx.source_context.is_include_fragment();
+    if counts_are_complete {
+        run_rule(&mut diags, LINT0002, ctx, || {
+            unused_variable::run(program, sem, ctx)
+        });
+    }
     run_rule(&mut diags, LINT0003, ctx, || {
         unknown_table_or_field::run(program, sem, ctx)
     });
     run_rule(&mut diags, LINT0004, ctx, || {
         type_mismatch_assignment::run(program, sem, ctx)
     });
-    run_rule(&mut diags, LINT0005, ctx, || {
-        block_var_used_outside::run(program, sem, ctx)
-    });
-    run_rule(&mut diags, LINT0006, ctx, || {
-        assigned_but_never_read::run(program, sem, ctx)
-    });
+    if counts_are_complete {
+        run_rule(&mut diags, LINT0005, ctx, || {
+            block_var_used_outside::run(program, sem, ctx)
+        });
+        run_rule(&mut diags, LINT0006, ctx, || {
+            assigned_but_never_read::run(program, sem, ctx)
+        });
+    }
     diags
 }
 

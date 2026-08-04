@@ -828,6 +828,20 @@ mod tests {
             );
         }
 
+        /// Root file identity is unavailable too: the export receives source
+        /// bytes only, so it cannot know that the same bytes came from an `.i`.
+        #[test]
+        fn root_file_identity_is_an_unavailable_capability() {
+            let fixture = fixtures::fixture(fixtures::INCLUDE_FRAGMENT_FIXTURE);
+            assert!(fixture.needs_capability(Capability::RootFileIdentity));
+            assert!(!fixture.browser_comparable());
+            assert_ne!(
+                observed_through_the_export(fixture.source),
+                fixture.expected(),
+                "an anonymous browser buffer must keep compilation-unit behavior"
+            );
+        }
+
         /// A schema is an unavailable capability for the same reason, so
         /// `unknown-table-or-field` is inert in the browser.
         #[test]

@@ -51,6 +51,32 @@ pub use types::{AblType, PrimitiveTy, ResolvedType};
 use oxabl_common::{Diagnostic, FileId, LintSeverityMap, VirtualSpan};
 use oxabl_schema::{Schema, SchemaRevision};
 
+/// What kind of source is being analyzed as the root buffer.
+///
+/// Include fragments are textual splices whose surrounding declarations and
+/// usage counts live in an includer that is absent when the fragment is opened
+/// directly. The default remains a complete compilation unit so callers with
+/// no path identity keep the established behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SourceContext {
+    #[default]
+    CompilationUnit,
+    IncludeFragment,
+}
+
+impl SourceContext {
+    pub fn is_include_fragment(self) -> bool {
+        self == Self::IncludeFragment
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CompilationUnit => "compilation_unit",
+            Self::IncludeFragment => "include_fragment",
+        }
+    }
+}
+
 /// Input to [`analyze_file`] and the per-pass entry points.
 ///
 /// The context never takes ownership of any data — the caller holds the AST,
@@ -91,6 +117,9 @@ pub struct AnalysisContext<'a> {
     /// consults this to skip *off* rules and remap emitted severities (KTD6);
     /// the semantic passes themselves ignore it.
     pub lint_severities: LintSeverityMap,
+    /// Whether the root is a complete compilation unit or an include fragment
+    /// opened without its textual includer.
+    pub source_context: SourceContext,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -110,12 +139,19 @@ impl<'a> AnalysisContext<'a> {
             index_loaded: false,
             index_searches_paths: false,
             lint_severities: LintSeverityMap::new(),
+            source_context: SourceContext::CompilationUnit,
         }
     }
 
     /// Attach resolved lint severity overrides to this context (builder-style).
     pub fn with_lint_severities(mut self, severities: LintSeverityMap) -> Self {
         self.lint_severities = severities;
+        self
+    }
+
+    /// Classify the root buffer for resolution and lint coverage.
+    pub fn with_source_context(mut self, source_context: SourceContext) -> Self {
+        self.source_context = source_context;
         self
     }
 
@@ -153,6 +189,8 @@ pub struct Semantic {
     /// output itself.
     pub index_revision: IndexRevision,
     pub diagnostics: Vec<Diagnostic>,
+    /// The root-source classification this model was analyzed under.
+    pub source_context: SourceContext,
 }
 
 /// Run every semantic pass over `program` and return a [`Semantic`]. v1
@@ -161,9 +199,12 @@ pub struct Semantic {
 /// scope tree, symbol table, reference map, and type map.
 pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> Semantic {
     let (scope_tree, mut symbols, mut diagnostics, declare_revision) = declare_pass(program, ctx);
-    let (references, mut types, resolve_diags) =
+    let (mut references, mut types, resolve_diags) =
         resolve_pass(program, ctx, &scope_tree, &mut symbols, declare_revision);
     diagnostics.extend(resolve_diags);
+    if ctx.source_context.is_include_fragment() {
+        soften_includer_dependent_misses(&mut references);
+    }
     let check_diags = check_pass(program, ctx, &scope_tree, &symbols, &references, &mut types);
     diagnostics.extend(check_diags);
     Semantic {
@@ -174,6 +215,26 @@ pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> 
         schema_revision: ctx.schema.revision(),
         index_revision: ctx.index.revision(),
         diagnostics,
+        source_context: ctx.source_context,
+    }
+}
+
+/// Reclassify only misses whose answer could change when this fragment is
+/// textually spliced into its includer.
+///
+/// A local miss is always context-dependent. An unqualified workspace miss may
+/// be changed by a `USING` import in the includer. Qualified names and
+/// file-shaped `RUN missing.p` targets remain hard workspace facts.
+fn soften_includer_dependent_misses(references: &mut NodeIndexVec<Resolution>) {
+    for (_, resolution) in references.iter_mut() {
+        let Resolution::Unresolved { name, reason } = resolution else {
+            continue;
+        };
+        let includer_dependent = *reason == UnresolvedReason::NotInScope
+            || (*reason == UnresolvedReason::AbsentFromWorkspace && !name.as_ref().contains('.'));
+        if includer_dependent {
+            *reason = UnresolvedReason::External;
+        }
     }
 }
 
@@ -251,6 +312,47 @@ mod tests {
         let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         assert!(!ctx.index_loaded);
         assert_eq!(ctx.index.revision(), IndexRevision::ABSENT);
+    }
+
+    #[test]
+    fn fragment_context_softens_local_misses_before_checking() {
+        let schema = Schema::empty();
+        let source = "MESSAGE missing.";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+
+        let unit = analyze_file(
+            &program.statements,
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema),
+        );
+        assert!(unit.references.iter().any(|(_, resolution)| matches!(
+            resolution,
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NotInScope,
+                ..
+            }
+        )));
+
+        let fragment = analyze_file(
+            &program.statements,
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+                .with_source_context(SourceContext::IncludeFragment),
+        );
+        assert!(fragment.source_context.is_include_fragment());
+        assert!(fragment.references.iter().any(|(_, resolution)| matches!(
+            resolution,
+            Resolution::Unresolved {
+                reason: UnresolvedReason::External,
+                ..
+            }
+        )));
+        assert!(!fragment.references.iter().any(|(_, resolution)| matches!(
+            resolution,
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NotInScope,
+                ..
+            }
+        )));
     }
 
     #[test]

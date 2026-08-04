@@ -351,6 +351,22 @@ fn surface_unjudged_symbols(sem: &oxabl_semantic::Semantic) -> usize {
     n
 }
 
+/// Say when root-fragment analysis withheld whole-unit lint questions.
+///
+/// This is coverage, not a finding: it never changes the exit code. The note is
+/// emitted only for an explicitly analyzed `.i`, so ordinary project walks do
+/// not grow a line users would learn to ignore.
+fn surface_source_context(sem: &oxabl_semantic::Semantic) -> bool {
+    if !sem.source_context.is_include_fragment() {
+        return false;
+    }
+    eprintln!(
+        "note: include fragment analyzed without an includer — unresolved local names were \
+         treated as external, and unused-variable, dead-store and block-variable rules stayed silent."
+    );
+    true
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -664,6 +680,10 @@ struct CheckJsonReport {
     format: CheckJsonFormat,
     preproc: Vec<CheckJsonDiagnostic>,
     unjudged_symbols: usize,
+    /// Explicit include-fragment roots whose whole-unit lint rules were
+    /// withheld. Omitted for ordinary walks to keep their JSON stable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fragment_roots: Vec<String>,
     failures: Vec<CheckJsonFailure>,
 }
 
@@ -867,6 +887,7 @@ fn run_check(
     let mut failures: Vec<CheckJsonFailure> = Vec::new();
     let mut drifted: Vec<String> = Vec::new();
     let mut unjudged = 0usize;
+    let mut fragment_roots = Vec::new();
 
     for (file, indexed_path) in files.iter().zip(&indexed) {
         let display = file.display().to_string();
@@ -950,7 +971,11 @@ fn run_check(
             // rules'* coverage, so it has nothing to qualify when those findings
             // are suppressed.
             if !no_lint && let Some(sem) = result.semantic() {
-                unjudged += surface_unjudged_symbols(sem);
+                if surface_source_context(sem) {
+                    fragment_roots.push(display.clone());
+                } else {
+                    unjudged += surface_unjudged_symbols(sem);
+                }
             }
         }
 
@@ -998,6 +1023,7 @@ fn run_check(
             },
             preproc,
             unjudged_symbols: unjudged,
+            fragment_roots,
             failures,
         };
         match serde_json::to_string_pretty(&report) {
@@ -1201,7 +1227,9 @@ fn run_analyze(
     // saying how much of the file the count-gated rules could not judge. The
     // envelope carries both facts as well; neither replaces the other.
     surface_collected_preproc(path, &source, &collected);
-    surface_unjudged_symbols(sem);
+    if !surface_source_context(sem) {
+        surface_unjudged_symbols(sem);
+    }
 
     match format {
         "json" => {

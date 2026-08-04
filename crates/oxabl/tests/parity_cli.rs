@@ -199,6 +199,23 @@ fn the_clean_fixture_reports_nothing_and_exits_zero() {
     assert_eq!(code, Some(0));
 }
 
+#[test]
+fn an_explicit_include_root_reports_its_reduced_coverage() {
+    let fixture = fixtures::fixture(fixtures::INCLUDE_FRAGMENT_FIXTURE);
+    let case = case(fixture);
+    let (report, _code, stderr) = check_json(&case, &["--no-format"]);
+
+    fixture.assert_diagnostics("cli fragment coverage", observed(&report));
+    assert_eq!(
+        report["fragment_roots"][0],
+        case.source.display().to_string()
+    );
+    assert!(
+        stderr.contains("include fragment analyzed without an includer"),
+        "got: {stderr}"
+    );
+}
+
 /// The parse-error fixture's *recovered* set survives the CLI: the parse error is
 /// reported and the lint pass still ran over the recovered tree.
 #[test]

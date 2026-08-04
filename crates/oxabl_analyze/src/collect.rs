@@ -39,7 +39,9 @@ use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{Preprocessor, SpanNode};
 use oxabl_schema::Schema;
-use oxabl_semantic::{AnalysisContext, NullIndex, Semantic, WorkspaceIndex, analyze_file};
+use oxabl_semantic::{
+    AnalysisContext, NullIndex, Semantic, SourceContext, WorkspaceIndex, analyze_file,
+};
 use oxabl_workspace::FileSystem;
 
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
@@ -345,6 +347,29 @@ pub fn collect_from_expanded(
     lint_severities: &LintSeverityMap,
     index: &dyn WorkspaceIndex,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    collect_from_expanded_with_source_context(
+        expanded,
+        schema,
+        schema_loaded,
+        lint_severities,
+        index,
+        SourceContext::CompilationUnit,
+    )
+}
+
+/// [`collect_from_expanded`] with an explicit root-source classification.
+///
+/// The compatibility entry point above keeps compilation-unit behavior for
+/// callers without a root path. The shared pipeline uses this entry point when
+/// it knows that an explicitly opened root is an include fragment.
+pub fn collect_from_expanded_with_source_context(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+) -> (Option<Semantic>, CollectedDiagnostics) {
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
 
@@ -378,7 +403,8 @@ pub fn collect_from_expanded(
     // caller's explicit answer, which is the whole point of the flag.
     let mut ctx = AnalysisContext::new(root, &expanded.text, schema)
         .with_lint_severities(lint_severities.clone())
-        .with_index(index);
+        .with_index(index)
+        .with_source_context(source_context);
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 

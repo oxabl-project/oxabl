@@ -40,7 +40,7 @@
 //!     "references": 2,
 //!     "diagnostics": 1,
 //!     "preproc": 1,
-//!     "coverage": 1,
+//!     "coverage": 2,
 //!     "dependencies": 2
 //!   },
 //!   "schema_revision": 0,
@@ -65,7 +65,8 @@ mod collect;
 
 pub use collect::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile, collect_diagnostics,
-    collect_from_expanded, collect_with_model, expand_source, is_loud,
+    collect_from_expanded, collect_from_expanded_with_source_context, collect_with_model,
+    expand_source, is_loud,
 };
 
 use oxabl_ast::{NodeId, Statement};
@@ -108,6 +109,8 @@ pub const ENVELOPE_VERSION: u32 = 1;
 ///   resolved to, so a cross-file resolution is distinguishable from a local one.
 /// * `preproc` 1, `coverage` 1 — sections promoted from keys the CLI used to
 ///   splice in after the fact.
+/// * `coverage` 2 — fragment roots add `source_context: "include_fragment"`
+///   because their count-gated lint rules deliberately do not run.
 /// * `dependencies` 1 — cross-file *index* state: which files the run consulted
 ///   and which class lookups came back empty. Its own section because it is a
 ///   property of neither a symbol nor a reference.
@@ -123,7 +126,7 @@ fn section_versions() -> Value {
     sections.insert("references".into(), json!(2));
     sections.insert("diagnostics".into(), json!(1));
     sections.insert("preproc".into(), json!(1));
-    sections.insert("coverage".into(), json!(1));
+    sections.insert("coverage".into(), json!(2));
     sections.insert("dependencies".into(), json!(2));
     Value::Object(sections)
 }
@@ -287,6 +290,9 @@ fn write_coverage(out: &mut String, sem: &Semantic) {
     use std::fmt::Write;
     writeln!(out, "\n=== Coverage ===").ok();
     writeln!(out, "  unjudged symbols: {}", unjudged_symbol_count(sem)).ok();
+    if sem.source_context.is_include_fragment() {
+        writeln!(out, "  source context: include_fragment").ok();
+    }
 }
 
 /// The `dependencies` section's text form: the run's cross-file index state.
@@ -743,7 +749,12 @@ fn preproc_json(collected: &CollectedDiagnostics) -> Value {
 /// finished document, and a second such fact would have meant a second splice —
 /// which is the pattern this section exists to end.
 fn coverage_json(sem: &Semantic) -> Value {
-    json!({ "unjudged_symbols": unjudged_symbol_count(sem) })
+    let mut coverage = Map::new();
+    coverage.insert("unjudged_symbols".into(), json!(unjudged_symbol_count(sem)));
+    if sem.source_context.is_include_fragment() {
+        coverage.insert("source_context".into(), json!(sem.source_context.as_str()));
+    }
+    Value::Object(coverage)
 }
 
 /// One other file this run consulted, and what linked it.
@@ -1094,7 +1105,7 @@ mod tests {
     use oxabl_ast::{DataType, Identifier, Span, Statement, StatementKind, TypeSource};
     use oxabl_common::FileId;
     use oxabl_schema::Schema;
-    use oxabl_semantic::analyze_file;
+    use oxabl_semantic::{SourceContext, analyze_file};
 
     fn ident(n: &str) -> Identifier {
         Identifier {
@@ -1570,7 +1581,7 @@ mod tests {
             ("types", 1),
             ("diagnostics", 1),
             ("preproc", 1),
-            ("coverage", 1),
+            ("coverage", 2),
         ] {
             assert_eq!(sections[name], version, "{name} must not have moved");
         }
@@ -1592,6 +1603,20 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn fragment_context_is_an_explicit_coverage_fact() {
+        let schema = Schema::empty();
+        let statements = vec![var_decl("x", DataType::Integer)];
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema)
+            .with_source_context(SourceContext::IncludeFragment);
+        let sem = analyze_file(&statements, &ctx);
+        let json = dump_json(&statements, &sem, &ctx, true);
+        let text = dump_text(&statements, &sem, &ctx);
+
+        assert_eq!(json["coverage"]["source_context"], "include_fragment");
+        assert!(text.contains("source context: include_fragment"));
     }
 
     /// Both text siblings render the section. `preproc` and `coverage` were

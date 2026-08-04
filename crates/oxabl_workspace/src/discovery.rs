@@ -46,6 +46,17 @@ use std::path::{Path, PathBuf};
 /// absent (R9, see the module docs).
 pub const ROOT_EXTENSIONS: &[&str] = &["p", "w", "cls", "v"];
 
+/// Whether `path` names an ABL include fragment.
+///
+/// Kept beside [`is_root_file`] so every client uses the same case-insensitive
+/// extension policy when deciding whether a root buffer is a compilation unit
+/// or a textual fragment opened out of its including context.
+pub fn is_include_fragment(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("i"))
+}
+
 /// Whether `path`'s extension makes it an ABL root (R8).
 ///
 /// Case-insensitive: `.CLS` and `.cls` are the same root kind. ABL extensions
@@ -215,6 +226,22 @@ mod tests {
         assert!(!is_root_file(Path::new("notes.txt")));
         assert!(!is_root_file(Path::new("Makefile")));
         assert!(!is_root_file(Path::new("no_extension")));
+    }
+
+    #[test]
+    fn include_fragment_policy_is_case_insensitive_and_specific() {
+        for name in ["fragment.i", "fragment.I"] {
+            assert!(is_include_fragment(Path::new(name)), "{name}");
+        }
+        for name in [
+            "program.p",
+            "window.w",
+            "class.cls",
+            "legacy.v",
+            "notes.txt",
+        ] {
+            assert!(!is_include_fragment(Path::new(name)), "{name}");
+        }
     }
 
     #[test]

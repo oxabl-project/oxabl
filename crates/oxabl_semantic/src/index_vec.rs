@@ -71,6 +71,14 @@ impl<T> NodeIndexVec<T> {
             .enumerate()
             .filter_map(|(i, slot)| slot.as_ref().map(|t| (NodeId::from_u32(i as u32), t)))
     }
+
+    /// Iterate mutably over populated `(NodeId, value)` pairs.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (NodeId, &mut T)> {
+        self.inner
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_mut().map(|t| (NodeId::from_u32(i as u32), t)))
+    }
 }
 
 #[cfg(test)]
@@ -101,5 +109,18 @@ mod tests {
         v.insert(NodeId::from_u32(4), 40);
         let collected: Vec<_> = v.iter().map(|(id, t)| (id.as_u32(), *t)).collect();
         assert_eq!(collected, vec![(1, 10), (4, 40)]);
+    }
+
+    #[test]
+    fn iter_mut_updates_only_populated_slots() {
+        let mut v = NodeIndexVec::new();
+        v.insert(NodeId::from_u32(1), 10);
+        v.insert(NodeId::from_u32(4), 40);
+        for (_, value) in v.iter_mut() {
+            *value += 1;
+        }
+        assert_eq!(v.get(NodeId::from_u32(1)), Some(&11));
+        assert_eq!(v.get(NodeId::from_u32(4)), Some(&41));
+        assert!(v.get(NodeId::from_u32(2)).is_none());
     }
 }
