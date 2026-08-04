@@ -24,9 +24,29 @@ use crate::session::SessionHost;
 /// stopped talking — so a caller can distinguish an orderly close from a client that
 /// died mid-session.
 pub fn serve(connection: &Connection, dispatch: &Dispatch, host: &SessionHost) -> bool {
+    serve_messages(connection, dispatch, host, None)
+}
+
+/// Serve a connection after its first frame has already been read by a protocol
+/// router.
+pub fn serve_with_first(
+    connection: &Connection,
+    dispatch: &Dispatch,
+    host: &SessionHost,
+    first: Message,
+) -> bool {
+    serve_messages(connection, dispatch, host, Some(first))
+}
+
+fn serve_messages(
+    connection: &Connection,
+    dispatch: &Dispatch,
+    host: &SessionHost,
+    first: Option<Message>,
+) -> bool {
     let mut shutdown_requested = false;
     let mut context = ClientContext::default();
-    for message in &connection.receiver {
+    for message in first.into_iter().chain(connection.receiver.iter()) {
         match message {
             Message::Request(request) => {
                 if request.method == "shutdown" {

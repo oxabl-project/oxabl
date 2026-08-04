@@ -97,6 +97,11 @@ impl DocumentStore {
         self.docs.get(uri)
     }
 
+    /// Every currently open document URI.
+    pub fn uris(&self) -> impl Iterator<Item = &Uri> {
+        self.docs.keys()
+    }
+
     /// Number of open documents.
     pub fn len(&self) -> usize {
         self.docs.len()

@@ -253,6 +253,21 @@ impl Session {
         }
     }
 
+    /// Force an open buffer's incremental queries to re-read external inputs.
+    ///
+    /// The text is intentionally written back unchanged. This is for an include
+    /// or search-path change, where the buffer bytes stayed put but expansion did
+    /// not. Ordinary [`set_buffer`](Self::set_buffer) keeps its byte-identical
+    /// early cut-off.
+    pub fn retrigger_buffer(&mut self, key: &str) -> bool {
+        let Some(buffer) = self.buffers.get(key).copied() else {
+            return false;
+        };
+        let text = buffer.text(&self.db).clone();
+        buffer.set_text(&mut self.db).to(text);
+        true
+    }
+
     /// Every open buffer's key.
     pub fn buffer_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.buffers.keys().cloned().collect();
@@ -275,6 +290,7 @@ impl Session {
             index: Arc::clone(&previous.index),
         });
         self.config_generation += 1;
+        self.workspace = None;
     }
 
     /// Replace the whole analysis configuration, for a caller that owns the
@@ -282,12 +298,14 @@ impl Session {
     pub fn install_analysis_config(&mut self, config: AnalysisConfig) {
         self.db.set_config(config);
         self.config_generation += 1;
+        self.workspace = None;
     }
 
     /// Bump the schema revision, invalidating every buffer's diagnostics.
     pub fn bump_schema(&mut self) {
         let revision = self.schema.revision(&self.db).wrapping_add(1);
         self.schema.set_revision(&mut self.db).to(revision);
+        self.workspace = None;
     }
 }
 
@@ -359,7 +377,15 @@ impl Sessions {
 /// A handler therefore receives this host rather than `&mut Sessions`, so the shape
 /// of the borrow is visible in the handler itself.
 pub struct SessionHost {
-    sessions: std::sync::Mutex<Sessions>,
+    sessions: Arc<std::sync::Mutex<Sessions>>,
+}
+
+impl Clone for SessionHost {
+    fn clone(&self) -> Self {
+        SessionHost {
+            sessions: Arc::clone(&self.sessions),
+        }
+    }
 }
 
 impl Default for SessionHost {
@@ -371,7 +397,7 @@ impl Default for SessionHost {
 impl SessionHost {
     pub fn new() -> Self {
         SessionHost {
-            sessions: std::sync::Mutex::new(Sessions::new()),
+            sessions: Arc::new(std::sync::Mutex::new(Sessions::new())),
         }
     }
 

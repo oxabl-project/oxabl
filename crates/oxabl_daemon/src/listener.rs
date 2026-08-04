@@ -36,6 +36,9 @@ use crate::registry;
 use crate::server;
 use crate::session::SessionHost;
 
+/// One routed client service behind the shared listener.
+pub type ConnectionService = dyn Fn(&Connection, &SessionHost) + Send + Sync;
+
 /// A bound listener for one workspace root, with its registration written.
 pub struct Listener {
     listener: UnixListener,
@@ -110,6 +113,24 @@ impl Listener {
     /// send fails, the loop over its receiver ends, and the session it was using stays
     /// exactly as it was for every other client.
     pub fn accept_loop(&self, dispatch: Arc<Dispatch>, host: Arc<SessionHost>) -> io::Result<()> {
+        self.accept_loop_with(
+            Arc::new(move |connection, host| {
+                server::serve(connection, &dispatch, host);
+            }),
+            host,
+        )
+    }
+
+    /// Accept clients and pass each complete framed connection to `serve`.
+    ///
+    /// The umbrella binary uses this hook to route an LSP `initialize` frame to
+    /// the editor frontend and an `oxabl/handshake` frame to the query dispatch,
+    /// while both routes retain this listener's one-client-per-thread isolation.
+    pub fn accept_loop_with(
+        &self,
+        serve: Arc<ConnectionService>,
+        host: Arc<SessionHost>,
+    ) -> io::Result<()> {
         let mut clients = Vec::new();
         for stream in self.listener.incoming() {
             if self.stopping.load(Ordering::SeqCst) {
@@ -121,11 +142,11 @@ impl Listener {
                 // already connected.
                 Err(_) => continue,
             };
-            let dispatch = Arc::clone(&dispatch);
+            let serve = Arc::clone(&serve);
             let host = Arc::clone(&host);
             clients.push(thread::spawn(move || {
                 let (connection, threads) = connection_over(stream);
-                server::serve(&connection, &dispatch, &host);
+                serve(&connection, &host);
                 // Dropping the sender lets the writer thread finish.
                 drop(connection);
                 threads.shutdown();

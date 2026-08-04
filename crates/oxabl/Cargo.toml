@@ -31,6 +31,7 @@ oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.1" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 clap = { version = "4", features = ["derive"], optional = true }
 indicatif = { version = "0.17", optional = true }
+lsp-server = { version = "0.7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 schemars = { version = "0.8", optional = true }
@@ -49,6 +50,7 @@ cli = [
     "serde",
     "dep:clap",
     "dep:indicatif",
+    "dep:lsp-server",
     "dep:oxabl_lsp",
     "dep:oxabl_daemon",
     "dep:schemars",

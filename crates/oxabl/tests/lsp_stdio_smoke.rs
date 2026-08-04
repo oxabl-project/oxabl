@@ -10,6 +10,9 @@
 //! by hand (`Content-Length` header + JSON body) with only `serde_json`, which
 //! the `oxabl` crate already depends on. No LSP client crate is pulled in.
 
+#![cfg(unix)]
+
+use oxabl_daemon_protocol::{Registration, registration_path};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -30,10 +33,22 @@ fn frame(body: &str) -> Vec<u8> {
 
 #[test]
 fn lsp_stdio_initialize_handshake_returns_capabilities() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+    unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
+    let daemon_registration = registration_path(root.path());
+    unsafe {
+        match previous_cache {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+    }
     // Exactly the argv the VS Code extension uses: a single `lsp` arg, nothing
     // else. No `--stdio`, no other flags.
     let mut child = Command::new(OXABL_BIN)
         .arg("lsp")
+        .env("XDG_CACHE_HOME", cache.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -50,7 +65,7 @@ fn lsp_stdio_initialize_handshake_returns_capabilities() {
         "method": "initialize",
         "params": {
             "processId": null,
-            "rootUri": null,
+            "rootUri": format!("file://{}", root.path().display()),
             "capabilities": {}
         }
     });
@@ -99,6 +114,22 @@ fn lsp_stdio_initialize_handshake_returns_capabilities() {
         msg["result"]["capabilities"].is_object(),
         "initialize result must contain a capabilities object; got: {msg}"
     );
+
+    let registration: Registration = serde_json::from_slice(
+        &std::fs::read(daemon_registration).expect("the shim starts a daemon"),
+    )
+    .expect("the daemon registration is valid");
+    stop_process(registration.pid);
+}
+
+#[cfg(unix)]
+fn stop_process(pid: u32) {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    // SIGTERM. This is only the child daemon registered under the test's private
+    // cache and workspace roots.
+    let _ = unsafe { kill(pid as i32, 15) };
 }
 
 #[test]

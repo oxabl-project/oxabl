@@ -24,7 +24,11 @@ pub mod formatting;
 pub mod position;
 
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
@@ -40,8 +44,6 @@ use lsp_types::{
     TextEdit, Uri,
 };
 use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
-use oxabl_workspace::RealFileSystem;
-use salsa::Setter;
 
 use crate::capabilities::{negotiate_position_encoding, server_capabilities};
 // The salsa substrate and the supersession disciplines live in `oxabl_daemon`
@@ -49,8 +51,7 @@ use crate::capabilities::{negotiate_position_encoding, server_capabilities};
 // own a second copy of either.
 use crate::diagnostics::to_lsp_diagnostics;
 use crate::document::DocumentStore;
-use oxabl_daemon::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle};
-use oxabl_daemon::{CompletedWork, Disposition, analyze_guarded, dispose};
+use oxabl_daemon::{CompletedWork, Disposition, SessionHost, analyze_guarded, dispose};
 
 /// Entry point invoked by the `oxabl lsp` subcommand. Owns the stdio
 /// connection, runs the handshake and main loop, and joins the I/O threads.
@@ -60,12 +61,115 @@ use oxabl_daemon::{CompletedWork, Disposition, analyze_guarded, dispose};
 /// [`ExitCode`](std::process::ExitCode).
 pub fn run() -> Result<()> {
     let (connection, io_threads) = Connection::stdio();
-    let clean = serve(&connection)?;
+    let result = proxy_to_daemon(&connection);
+    drop(connection);
+    // The stdio reader can be blocked in the editor's still-open input pipe. On
+    // a daemon failure there will never be another useful frame, so return and
+    // let process exit close it instead of waiting forever to join it.
+    result?;
     io_threads.join().context("joining LSP I/O threads")?;
-    if clean {
-        Ok(())
-    } else {
-        anyhow::bail!("`exit` received without a prior `shutdown`");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn proxy_to_daemon(connection: &Connection) -> Result<()> {
+    let first = connection
+        .receiver
+        .recv()
+        .context("waiting for LSP initialize")?;
+    let Message::Request(initialize) = &first else {
+        anyhow::bail!("the first LSP frame was not an initialize request");
+    };
+    if initialize.method != "initialize" {
+        anyhow::bail!(
+            "the first LSP request was `{}`, not `initialize`",
+            initialize.method
+        );
+    }
+    let init: InitializeParams = serde_json::from_value(initialize.params.clone())
+        .context("deserializing InitializeParams")?;
+    let workspace_root = declared_workspace_root(&init)
+        .or_else(|| std::env::current_dir().ok())
+        .context("finding a workspace root for the daemon")?;
+    let registration = find_or_start_daemon(&workspace_root)?;
+    let stream = UnixStream::connect(&registration.socket_path).with_context(|| {
+        format!(
+            "connecting to the oxabl daemon: {}",
+            registration.socket_path
+        )
+    })?;
+    let (daemon, daemon_threads) = oxabl_daemon::connection_over(stream);
+    daemon
+        .sender
+        .send(first)
+        .context("forwarding LSP initialize to the daemon")?;
+
+    let outcome = proxy_messages(connection, &daemon);
+    drop(daemon);
+    daemon_threads.shutdown();
+    outcome
+}
+
+#[cfg(not(unix))]
+fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
+    anyhow::bail!("the oxabl daemon currently requires Unix sockets")
+}
+
+#[cfg(unix)]
+fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registration> {
+    match oxabl_daemon::discover(root) {
+        oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
+        oxabl_daemon::Discovery::VersionMismatch(registration) => anyhow::bail!(
+            "the running oxabl daemon uses contract {}, but this client uses {}",
+            registration.contract_version,
+            oxabl_daemon_protocol::CONTRACT_VERSION,
+        ),
+        oxabl_daemon::Discovery::Absent => {}
+    }
+
+    let executable = std::env::current_exe().context("locating the oxabl executable")?;
+    Command::new(executable)
+        .arg("daemon")
+        .arg(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("starting the oxabl daemon")?;
+
+    for _ in 0..100 {
+        match oxabl_daemon::discover(root) {
+            oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
+            oxabl_daemon::Discovery::VersionMismatch(registration) => anyhow::bail!(
+                "the started oxabl daemon uses contract {}, but this client uses {}",
+                registration.contract_version,
+                oxabl_daemon_protocol::CONTRACT_VERSION,
+            ),
+            oxabl_daemon::Discovery::Absent => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+    anyhow::bail!("the oxabl daemon did not become ready within two seconds")
+}
+
+#[cfg(unix)]
+fn proxy_messages(editor: &Connection, daemon: &Connection) -> Result<()> {
+    loop {
+        crossbeam_channel::select! {
+            recv(editor.receiver) -> message => {
+                let message = message.context("the editor connection closed")?;
+                let exiting = matches!(&message, Message::Notification(notification) if notification.method == "exit");
+                daemon.sender.send(message).context("the daemon exited during the editor session")?;
+                if exiting {
+                    return Ok(());
+                }
+            }
+            recv(daemon.receiver) -> message => {
+                let message = message.context("the daemon exited during the editor session")?;
+                editor.sender.send(message).context("the editor connection closed")?;
+            }
+        }
     }
 }
 
@@ -79,8 +183,64 @@ pub fn serve(connection: &Connection) -> Result<bool> {
 /// [`serve`] with an explicit debounce window (used by tests to run fast).
 pub fn serve_with(connection: &Connection, debounce_window: std::time::Duration) -> Result<bool> {
     let (encoding, workspace_root) = handshake(connection)?;
-    let mut server = Server::new(connection, encoding, debounce_window, workspace_root);
-    server.main_loop()
+    let host = SessionHost::new();
+    serve_initialized(
+        connection,
+        debounce_window,
+        encoding,
+        workspace_root,
+        host,
+        false,
+    )
+}
+
+/// Serve an LSP socket after the daemon's protocol router consumed its initialize
+/// request. The supplied host is the daemon's shared per-workspace session map.
+pub fn serve_with_first(
+    connection: &Connection,
+    debounce_window: std::time::Duration,
+    first: Request,
+    host: SessionHost,
+) -> Result<bool> {
+    let init: InitializeParams =
+        serde_json::from_value(first.params.clone()).context("deserializing InitializeParams")?;
+    let session_root = declared_workspace_root(&init)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    host.with(|sessions| sessions.for_root(&session_root).attach(true));
+    let (encoding, workspace_root) = match finish_handshake(connection, first.id, first.params) {
+        Ok(handshake) => handshake,
+        Err(error) => {
+            host.with(|sessions| sessions.for_root(&session_root).detach(true));
+            return Err(error);
+        }
+    };
+    serve_initialized(
+        connection,
+        debounce_window,
+        encoding,
+        workspace_root,
+        host,
+        true,
+    )
+}
+
+fn serve_initialized(
+    connection: &Connection,
+    debounce_window: std::time::Duration,
+    encoding: PositionEncodingKind,
+    workspace_root: Option<PathBuf>,
+    host: SessionHost,
+    already_attached: bool,
+) -> Result<bool> {
+    let mut server = Server::new(connection, encoding, debounce_window, workspace_root, host);
+    if !already_attached {
+        server.host.with(|sessions| {
+            sessions.for_root(&server.session_root).attach(true);
+        });
+    }
+    let result = server.main_loop();
+    server.detach();
+    result
 }
 
 /// Perform the initialize handshake, negotiating the position encoding from the
@@ -94,6 +254,14 @@ fn handshake(connection: &Connection) -> Result<(PositionEncodingKind, Option<Pa
     let (id, params) = connection
         .initialize_start()
         .context("LSP initialize_start")?;
+    finish_handshake(connection, id, params)
+}
+
+fn finish_handshake(
+    connection: &Connection,
+    id: RequestId,
+    params: serde_json::Value,
+) -> Result<(PositionEncodingKind, Option<PathBuf>)> {
     let init: InitializeParams =
         serde_json::from_value(params).context("deserializing InitializeParams")?;
 
@@ -143,12 +311,10 @@ struct Server<'c> {
     encoding: PositionEncodingKind,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
-    /// Coarse salsa substrate (write-on-main).
-    db: AnalysisDatabase,
-    /// Per-URI salsa input handles for open buffers.
-    buffers: HashMap<Uri, Buffer>,
-    /// Schema revision handle (bumped on `.df` change, R16).
-    schema: SchemaHandle,
+    /// The daemon's one session map. No analysis state lives in this client.
+    host: SessionHost,
+    /// The session this LSP connection shares with every other client.
+    session_root: PathBuf,
     /// Whether the db configuration (include paths, schema) has been resolved
     /// from a workspace yet. Resolved lazily from the first opened document.
     config_resolved: bool,
@@ -167,10 +333,6 @@ struct Server<'c> {
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
-    /// Bumped every time a configuration is installed. Workers carry the
-    /// generation they read so a result computed under a configuration the user
-    /// has since replaced is not published (see [`Server::handle_result`]).
-    config_generation: u64,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -202,25 +364,24 @@ impl<'c> Server<'c> {
         encoding: PositionEncodingKind,
         debounce_window: std::time::Duration,
         workspace_root: Option<PathBuf>,
+        host: SessionHost,
     ) -> Self {
-        let config = AnalysisConfig::default();
-        let formatter = FormatPipeline::new(config.pipeline.style.clone());
-        let db = AnalysisDatabase::new(config);
-        let schema = SchemaHandle::new(&db, 0);
+        let session_root = workspace_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         Server {
             connection,
             encoding,
             documents: DocumentStore::new(),
-            db,
-            buffers: HashMap::new(),
-            schema,
+            host,
+            session_root,
             config_resolved: false,
             workspace_anchor: None,
             workspace_root,
             formatter,
             dependencies: HashMap::new(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
-            config_generation: 0,
         }
     }
 
@@ -296,14 +457,21 @@ impl<'c> Server<'c> {
     fn fire_due_debounces(&mut self, result_tx: &crossbeam_channel::Sender<ComputeResult>) {
         let now = std::time::Instant::now();
         for uri in self.debouncer.take_due(now) {
-            let (Some(&buffer), Some(doc)) = (self.buffers.get(&uri), self.documents.get(&uri))
-            else {
+            let Some(doc) = self.documents.get(&uri) else {
                 continue;
             };
             let version = doc.version;
-            let snapshot = self.db.clone();
-            let schema = self.schema;
-            let config_generation = self.config_generation;
+            let Some((buffer, snapshot, schema, config_generation)) = self.host.with(|sessions| {
+                let session = sessions.get(&self.session_root)?;
+                Some((
+                    session.buffer(uri.as_str())?,
+                    session.database().clone(),
+                    session.schema_handle(),
+                    session.config_generation(),
+                ))
+            }) else {
+                continue;
+            };
             let tx = result_tx.clone();
             std::thread::spawn(move || {
                 // The guard is inside `analyze_guarded`, so the send below is
@@ -341,7 +509,7 @@ impl<'c> Server<'c> {
             read_version: res.version,
             current_version: self.documents.get(&res.uri).map(|doc| doc.version),
             read_generation: res.config_generation,
-            current_generation: self.config_generation,
+            current_generation: self.config_generation(),
             has_diagnostics: res.diagnostics.is_some(),
             panicked: res.panicked,
         };
@@ -385,8 +553,13 @@ impl<'c> Server<'c> {
                     // own lookups, since the buffer is the unsaved text while
                     // the index answers from disk.
                     let path = uri_to_path(&doc.uri);
-                    let buffer = Buffer::new(&self.db, doc.text, path);
-                    self.buffers.insert(doc.uri.clone(), buffer);
+                    self.host.with(|sessions| {
+                        sessions.for_root(&self.session_root).set_buffer(
+                            doc.uri.as_str(),
+                            doc.text,
+                            path,
+                        );
+                    });
                     // Open shows diagnostics right away (no debounce).
                     self.compute_and_publish(&doc.uri);
                 }
@@ -406,10 +579,15 @@ impl<'c> Server<'c> {
                     // Mirror the new text into the salsa input (write on main).
                     // This cancels any in-flight snapshot read for a superseded
                     // version via salsa's `Cancelled` unwind (KTD7).
-                    if let (Some(&buffer), Some(doc)) =
-                        (self.buffers.get(&uri), self.documents.get(&uri))
-                    {
-                        buffer.set_text(&mut self.db).to(doc.text());
+                    if let Some(doc) = self.documents.get(&uri) {
+                        let text = doc.text();
+                        self.host.with(|sessions| {
+                            sessions.for_root(&self.session_root).set_buffer(
+                                uri.as_str(),
+                                text,
+                                uri_to_path(&uri),
+                            );
+                        });
                     }
                     // Collapse the edit burst to a single debounced recompute.
                     self.debouncer.schedule(uri, std::time::Instant::now());
@@ -435,7 +613,11 @@ impl<'c> Server<'c> {
                 {
                     let uri = params.text_document.uri;
                     self.documents.close(&uri);
-                    self.buffers.remove(&uri);
+                    self.host.with(|sessions| {
+                        sessions
+                            .for_root(&self.session_root)
+                            .close_buffer(uri.as_str());
+                    });
                     self.dependencies.remove(&uri);
                     self.debouncer.cancel(&uri);
                     // Clear the client's diagnostics for the closed buffer.
@@ -579,14 +761,11 @@ impl<'c> Server<'c> {
     fn install_config(&mut self, resolved: PipelineConfig) {
         // Every install moves the generation, so any worker still running against
         // the previous configuration is identifiable when its result lands.
-        self.config_generation = self.config_generation.wrapping_add(1);
         self.formatter = FormatPipeline::new(resolved.style.clone());
-        let index = std::sync::Arc::clone(&self.db.config().index);
-        self.db.set_config(AnalysisConfig {
-            fs: std::sync::Arc::new(RealFileSystem),
-            pipeline: std::sync::Arc::new(resolved),
-            preprocess: true,
-            index,
+        self.host.with(|sessions| {
+            sessions
+                .for_root(&self.session_root)
+                .install_config(resolved);
         });
     }
 
@@ -621,16 +800,22 @@ impl<'c> Server<'c> {
     /// (the immediate open path). The snapshot is dropped before returning so
     /// a subsequent write never blocks.
     fn compute_and_publish(&mut self, uri: &Uri) {
-        let (Some(&buffer), Some(version)) = (
-            self.buffers.get(uri),
-            self.documents.get(uri).map(|d| d.version),
-        ) else {
+        let Some(version) = self.documents.get(uri).map(|d| d.version) else {
             return;
         };
-        let snapshot = self.db.clone();
+        let Some((buffer, snapshot, schema)) = self.host.with(|sessions| {
+            let session = sessions.get(&self.session_root)?;
+            Some((
+                session.buffer(uri.as_str())?,
+                session.database().clone(),
+                session.schema_handle(),
+            ))
+        }) else {
+            return;
+        };
         // Guarded (R8): this runs on the main loop, so an unguarded panic here
         // takes the whole server down.
-        let analysis = analyze_guarded(&snapshot, buffer, self.schema, uri.as_str());
+        let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
         self.record_dependencies(uri, analysis.dependencies);
         let Some(collected) = analysis.diagnostics else {
             // A cancellation is not expected on this path (nothing writes to the
@@ -753,19 +938,23 @@ impl<'c> Server<'c> {
     /// case — a file no lookup has ever reached cannot be anyone's dependency, so
     /// nothing is scheduled at all.
     fn invalidate_indexed_sources(&mut self, changed: &[PathBuf], now: std::time::Instant) {
-        let index = std::sync::Arc::clone(&self.db.config().index);
-        let mut any = false;
-        for path in changed {
-            // Both spellings, because a watcher's URI and the path the index
-            // search resolved need not agree on symlinks or `.` components — the
-            // same reason `buffers_depending_on` canonicalizes.
-            any |= index.bump(&mut self.db, path);
-            if let Ok(canonical) = std::fs::canonicalize(path)
-                && canonical != *path
-            {
-                any |= index.bump(&mut self.db, &canonical);
+        let any = self.host.with(|sessions| {
+            let session = sessions.for_root(&self.session_root);
+            let index = std::sync::Arc::clone(&session.database().config().index);
+            let mut any = false;
+            for path in changed {
+                // Both spellings, because a watcher's URI and the path the index
+                // search resolved need not agree on symlinks or `.` components — the
+                // same reason `buffers_depending_on` canonicalizes.
+                any |= index.bump(session.database_mut(), path);
+                if let Ok(canonical) = std::fs::canonicalize(path)
+                    && canonical != *path
+                {
+                    any |= index.bump(session.database_mut(), &canonical);
+                }
             }
-        }
+            any
+        });
         if !any {
             return;
         }
@@ -777,8 +966,9 @@ impl<'c> Server<'c> {
     /// Bump the shared config/schema revision input so the diagnostics query is
     /// invalidated and recomputes with the current (untracked) db config.
     fn bump_config_revision(&mut self) {
-        let next = self.schema.revision(&self.db).wrapping_add(1);
-        self.schema.set_revision(&mut self.db).to(next);
+        self.host.with(|sessions| {
+            sessions.for_root(&self.session_root).bump_schema();
+        });
     }
 
     /// Record a buffer's include dependency set, **keeping the previous one when
@@ -816,7 +1006,7 @@ impl<'c> Server<'c> {
     }
 
     fn open_uris(&self) -> Vec<Uri> {
-        self.buffers.keys().cloned().collect()
+        self.documents.uris().cloned().collect()
     }
 
     fn retrigger_all(&mut self, now: std::time::Instant) {
@@ -828,12 +1018,37 @@ impl<'c> Server<'c> {
     /// Bump a buffer's salsa input to its current text (invalidating the coarse
     /// expansion memo so it re-reads includes) and schedule a recompute.
     fn retrigger(&mut self, uri: &Uri, now: std::time::Instant) {
-        let buffer = self.buffers.get(uri).copied();
-        let text = self.documents.get(uri).map(|d| d.text());
-        if let (Some(buffer), Some(text)) = (buffer, text) {
-            buffer.set_text(&mut self.db).to(text);
+        if self.documents.get(uri).is_some() {
+            self.host.with(|sessions| {
+                sessions
+                    .for_root(&self.session_root)
+                    .retrigger_buffer(uri.as_str());
+            });
         }
         self.debouncer.schedule(uri.clone(), now);
+    }
+
+    fn config_generation(&self) -> u64 {
+        self.host.with(|sessions| {
+            sessions
+                .get(&self.session_root)
+                .map_or(0, |session| session.config_generation())
+        })
+    }
+
+    fn detach(&mut self) {
+        let keys: Vec<String> = self
+            .documents
+            .uris()
+            .map(|uri| uri.as_str().to_string())
+            .collect();
+        self.host.with(|sessions| {
+            let session = sessions.for_root(&self.session_root);
+            for key in keys {
+                session.close_buffer(&key);
+            }
+            session.detach(true);
+        });
     }
 
     /// Send a `textDocument/publishDiagnostics` notification.
@@ -947,6 +1162,7 @@ mod tests {
             PositionEncodingKind::UTF8,
             std::time::Duration::from_millis(10),
             None,
+            SessionHost::new(),
         )
     }
 
@@ -1078,10 +1294,11 @@ mod tests {
         let uri = Uri::from_str("file:///main.p").unwrap();
         server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
 
-        let stale = server.config_generation;
+        let stale = server.config_generation();
         server.install_config(PipelineConfig::default());
         assert_ne!(
-            stale, server.config_generation,
+            stale,
+            server.config_generation(),
             "installing a configuration must move the generation"
         );
 
@@ -1116,9 +1333,9 @@ mod tests {
         let uri = Uri::from_str("file:///main.p").unwrap();
         server.documents.open(uri.clone(), 1, "MESSAGE \"hi\".\n");
 
-        let stale = server.config_generation;
+        let stale = server.config_generation();
         server.install_config(PipelineConfig::default());
-        assert_ne!(stale, server.config_generation);
+        assert_ne!(stale, server.config_generation());
 
         server.handle_result(ComputeResult {
             uri: uri.clone(),
@@ -1154,7 +1371,7 @@ mod tests {
             diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
             dependencies: None,
             panicked: false,
-            config_generation: server.config_generation,
+            config_generation: server.config_generation(),
         });
 
         let message = client.receiver.try_recv().expect("a publish was sent");

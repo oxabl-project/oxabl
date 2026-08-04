@@ -219,6 +219,7 @@ enum Cli {
     /// Run the language server over stdio (LSP), publishing live diagnostics.
     Lsp,
     /// Serve one workspace through the shared oxabl daemon.
+    #[command(hide = true)]
     Daemon {
         /// Workspace root this daemon owns.
         workspace_root: PathBuf,
@@ -481,7 +482,29 @@ fn run_daemon(workspace_root: &Path) -> ExitCode {
     };
     let dispatch = std::sync::Arc::new(oxabl_daemon::default_dispatch());
     let host = std::sync::Arc::new(oxabl_daemon::SessionHost::new());
-    match listener.accept_loop(dispatch, host) {
+    let serve = std::sync::Arc::new(
+        move |connection: &lsp_server::Connection, host: &oxabl_daemon::SessionHost| {
+            let Ok(first) = connection.receiver.recv() else {
+                return;
+            };
+            match first {
+                lsp_server::Message::Request(request) if request.method == "initialize" => {
+                    if let Err(error) = oxabl_lsp::serve_with_first(
+                        connection,
+                        oxabl_lsp::debounce::DEFAULT_WINDOW,
+                        request,
+                        host.clone(),
+                    ) {
+                        eprintln!("oxabl daemon: LSP client failed: {error}");
+                    }
+                }
+                first => {
+                    oxabl_daemon::serve_with_first(connection, &dispatch, host, first);
+                }
+            }
+        },
+    );
+    match listener.accept_loop_with(serve, host) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("oxabl daemon: {error}");
