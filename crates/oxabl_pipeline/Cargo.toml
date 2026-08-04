@@ -8,16 +8,16 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_pipeline"
 
 # NOTE (KTD1/KTD6): this crate sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the
 # `oxabl` umbrella, so it must depend on none of them. It must also never gain a
-# `salsa` dependency: the umbrella re-exports this crate unconditionally, and the
-# browser bundle goes through the umbrella, so a `salsa` edge here would land in
+# incremental-database dependency: the umbrella re-exports this crate unconditionally, and the
+# browser bundle goes through the umbrella, so that edge would land in
 # the WASM payload.
 #
 # That rule extends transitively to everything this crate pulls in, and
 # `oxabl_index` is the newest such edge: it is the batch cross-file index every
-# non-incremental client resolves through, it must stay `salsa`-free for exactly
+# non-incremental client resolves through, it must stay free of that engine for exactly
 # the reason above, and it carries the mirror of this note at the head of its own
 # manifest. The language server's incremental index implements the same
-# `WorkspaceIndex` seam *above* this crate, which is what keeps `salsa` on the one
+# `WorkspaceIndex` seam *above* this crate, which keeps the engine on the one
 # side of the seam the browser never reaches.
 [dependencies]
 # For `Span`: a dependency edge carries the offsets in the dependent file where the

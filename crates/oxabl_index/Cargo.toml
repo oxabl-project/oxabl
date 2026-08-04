@@ -8,12 +8,12 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_index"
 
 # NOTE (KTD1/KTD6): this crate sits *beneath* `oxabl_pipeline`, so it must depend
 # on none of `oxabl_pipeline`, `oxabl_lsp`, `oxabl_wasm`, or the `oxabl` umbrella.
-# It must also never gain a `salsa` dependency: the pipeline depends on this
+# It must also never gain an incremental-database dependency: the pipeline depends on this
 # crate, the umbrella re-exports the pipeline unconditionally, and the browser
-# bundle goes through the umbrella — so a `salsa` edge here would land in the
+# bundle goes through the umbrella — so that edge would land in the
 # WASM payload. The language server's incremental cache implements
 # `WorkspaceIndex` *above* this crate, and it is the only implementation that may
-# know about salsa; the routine both caches share (`index_file`) lives here so
+# know about the incremental engine; the routine both caches share (`index_file`) lives here so
 # neither can drift from the other.
 [dependencies]
 oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
