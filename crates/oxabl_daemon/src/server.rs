@@ -15,7 +15,7 @@
 use lsp_server::{Connection, Message, Response};
 use serde_json::Value;
 
-use crate::dispatch::Dispatch;
+use crate::dispatch::{ClientContext, Dispatch};
 use crate::session::SessionHost;
 
 /// Serve `connection` until the peer disconnects or asks to shut down.
@@ -25,6 +25,7 @@ use crate::session::SessionHost;
 /// died mid-session.
 pub fn serve(connection: &Connection, dispatch: &Dispatch, host: &SessionHost) -> bool {
     let mut shutdown_requested = false;
+    let mut context = ClientContext::default();
     for message in &connection.receiver {
         match message {
             Message::Request(request) => {
@@ -36,7 +37,7 @@ pub fn serve(connection: &Connection, dispatch: &Dispatch, host: &SessionHost) -
                     continue;
                 }
                 let params = request.params;
-                let response = match dispatch.call(host, &request.method, params) {
+                let response = match dispatch.call(host, &mut context, &request.method, params) {
                     Ok(result) => Response::new_ok(request.id, result),
                     // A reported failure, not a dropped request: a client waiting on
                     // a response that never arrives is the one outcome worse than an
@@ -47,17 +48,23 @@ pub fn serve(connection: &Connection, dispatch: &Dispatch, host: &SessionHost) -
             }
             Message::Notification(notification) => {
                 if notification.method == "exit" {
-                    return shutdown_requested;
+                    break;
                 }
                 // A notification has no id, so there is nowhere to report a failure
                 // to. Unknown ones are ignored, which is what the protocol requires.
-                let _ = dispatch.call(host, &notification.method, notification.params);
+                let _ = dispatch.call(
+                    host,
+                    &mut context,
+                    &notification.method,
+                    notification.params,
+                );
             }
             // The daemon issues no requests of its own yet, so a response is
             // something no peer should be sending.
             Message::Response(_) => {}
         }
     }
+    context.detach(host);
     shutdown_requested
 }
 

@@ -112,8 +112,8 @@ fn the_guard_passes_a_healthy_buffer_through() {
 #[test]
 fn a_panicking_request_leaves_the_daemon_and_other_sessions_working() {
     let mut dispatch = Dispatch::new();
-    dispatch.register("oxabl/boom", |_, _| panic!("deliberate"));
-    dispatch.register("oxabl/count", |host: &SessionHost, _| {
+    dispatch.register("oxabl/boom", |_, _, _| panic!("deliberate"));
+    dispatch.register("oxabl/count", |host: &SessionHost, _, _| {
         Ok(json!(host.with(|sessions| sessions.len())))
     });
 
@@ -125,13 +125,23 @@ fn a_panicking_request_leaves_the_daemon_and_other_sessions_working() {
 
     let error: MethodError = quietly(|| {
         dispatch
-            .call(&host, "oxabl/boom", Value::Null)
+            .call(
+                &host,
+                &mut oxabl_daemon::ClientContext::default(),
+                "oxabl/boom",
+                Value::Null,
+            )
             .expect_err("the panicking request must fail")
     });
     assert!(error.message.contains("deliberate"), "got {error}");
 
     assert_eq!(
-        dispatch.call(&host, "oxabl/count", Value::Null),
+        dispatch.call(
+            &host,
+            &mut oxabl_daemon::ClientContext::default(),
+            "oxabl/count",
+            Value::Null,
+        ),
         Ok(json!(2)),
         "both sessions must survive one request's panic"
     );

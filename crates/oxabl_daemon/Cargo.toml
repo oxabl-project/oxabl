@@ -15,6 +15,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_daemon"
 # Absent from `release-please-config.json`, like the other client-layer crates.
 [dependencies]
 oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
 oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.1.0" }
 oxabl_index = { path = "../oxabl_index", version = "0.1.0" }

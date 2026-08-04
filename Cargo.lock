@@ -1041,6 +1041,7 @@ dependencies = [
  "crossbeam-channel",
  "lsp-server",
  "oxabl_analyze",
+ "oxabl_ast",
  "oxabl_common",
  "oxabl_daemon_protocol",
  "oxabl_index",

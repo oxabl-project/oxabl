@@ -11,7 +11,9 @@
 //! that contains a panic and reports it as *that request's* failure.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
+use oxabl_daemon_protocol::ClientKind;
 use serde_json::Value;
 
 use crate::session::SessionHost;
@@ -44,6 +46,14 @@ impl MethodError {
         }
     }
 
+    /// JSON-RPC `InvalidRequest`.
+    pub fn invalid_request(detail: impl std::fmt::Display) -> Self {
+        MethodError {
+            code: -32600,
+            message: format!("oxabl: invalid request: {detail}"),
+        }
+    }
+
     /// JSON-RPC `InternalError`.
     pub fn internal(detail: impl std::fmt::Display) -> Self {
         MethodError {
@@ -72,7 +82,49 @@ pub type MethodResult = Result<Value, MethodError>;
 /// stalls every other client.
 ///
 /// `Send + Sync` because the table is shared by a thread per connected client.
-pub type Handler = Box<dyn Fn(&SessionHost, Value) -> MethodResult + Send + Sync>;
+pub type Handler =
+    Box<dyn Fn(&SessionHost, &mut ClientContext, Value) -> MethodResult + Send + Sync>;
+
+/// State established by one connection's successful handshake.
+#[derive(Debug, Default)]
+pub struct ClientContext {
+    workspace_root: Option<PathBuf>,
+    client_kind: Option<ClientKind>,
+}
+
+impl ClientContext {
+    pub fn workspace_root(&self) -> Result<&Path, MethodError> {
+        self.workspace_root
+            .as_deref()
+            .ok_or_else(|| MethodError::invalid_request("handshake is required first"))
+    }
+
+    pub fn client_kind(&self) -> Option<ClientKind> {
+        self.client_kind
+    }
+
+    pub(crate) fn bind(&mut self, root: PathBuf, kind: ClientKind) -> Result<(), MethodError> {
+        if self.workspace_root.is_some() {
+            return Err(MethodError::invalid_request(
+                "this connection already completed its handshake",
+            ));
+        }
+        self.workspace_root = Some(root);
+        self.client_kind = Some(kind);
+        Ok(())
+    }
+
+    pub(crate) fn detach(&mut self, host: &SessionHost) {
+        let (Some(root), Some(kind)) = (self.workspace_root.take(), self.client_kind.take()) else {
+            return;
+        };
+        host.with(|sessions| {
+            if let Some(session) = sessions.get_mut(root) {
+                session.detach(matches!(kind, ClientKind::Editor));
+            }
+        });
+    }
+}
 
 /// Every method the daemon serves, by name.
 #[derive(Default)]
@@ -94,7 +146,10 @@ impl Dispatch {
     pub fn register(
         &mut self,
         method: &str,
-        handler: impl Fn(&SessionHost, Value) -> MethodResult + Send + Sync + 'static,
+        handler: impl Fn(&SessionHost, &mut ClientContext, Value) -> MethodResult
+        + Send
+        + Sync
+        + 'static,
     ) {
         let previous = self.handlers.insert(method.to_string(), Box::new(handler));
         assert!(
@@ -123,11 +178,19 @@ impl Dispatch {
     /// of the daemon and every client on it. A `salsa::Cancelled` must never reach
     /// this guard — the queries catch their own, because converting a cancellation
     /// into a reported error would turn every concurrent edit into a visible failure.
-    pub fn call(&self, host: &SessionHost, method: &str, params: Value) -> MethodResult {
+    pub fn call(
+        &self,
+        host: &SessionHost,
+        context: &mut ClientContext,
+        method: &str,
+        params: Value,
+    ) -> MethodResult {
         let Some(handler) = self.handlers.get(method) else {
             return Err(MethodError::unknown_method(method));
         };
-        match oxabl_common::catch_panic(std::panic::AssertUnwindSafe(|| handler(host, params))) {
+        match oxabl_common::catch_panic(std::panic::AssertUnwindSafe(|| {
+            handler(host, context, params)
+        })) {
             Ok(result) => result,
             Err(panic) => Err(MethodError::internal(format!(
                 "request `{method}` panicked: {panic}"
@@ -148,10 +211,15 @@ mod tests {
     #[test]
     fn a_registered_method_answers() {
         let mut dispatch = Dispatch::new();
-        dispatch.register("oxabl/echo", |_, params| Ok(params));
+        dispatch.register("oxabl/echo", |_, _, params| Ok(params));
         assert!(dispatch.handles("oxabl/echo"));
         assert_eq!(
-            dispatch.call(&host(), "oxabl/echo", json!({"a": 1})),
+            dispatch.call(
+                &host(),
+                &mut ClientContext::default(),
+                "oxabl/echo",
+                json!({"a": 1}),
+            ),
             Ok(json!({"a": 1}))
         );
     }
@@ -160,7 +228,12 @@ mod tests {
     fn an_unknown_method_is_reported_not_ignored() {
         let dispatch = Dispatch::new();
         let error = dispatch
-            .call(&host(), "oxabl/nope", Value::Null)
+            .call(
+                &host(),
+                &mut ClientContext::default(),
+                "oxabl/nope",
+                Value::Null,
+            )
             .expect_err("an unknown method must be reported");
         assert_eq!(error.code, -32601);
         assert!(error.message.contains("oxabl/nope"), "got {error}");
@@ -171,21 +244,31 @@ mod tests {
     #[test]
     fn a_panicking_handler_fails_only_its_own_request() {
         let mut dispatch = Dispatch::new();
-        dispatch.register("oxabl/boom", |_, _| panic!("deliberate"));
-        dispatch.register("oxabl/fine", |_, _| Ok(json!("ok")));
+        dispatch.register("oxabl/boom", |_, _, _| panic!("deliberate"));
+        dispatch.register("oxabl/fine", |_, _, _| Ok(json!("ok")));
 
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let host = host();
         let error = dispatch
-            .call(&host, "oxabl/boom", Value::Null)
+            .call(
+                &host,
+                &mut ClientContext::default(),
+                "oxabl/boom",
+                Value::Null,
+            )
             .expect_err("a panicking handler must fail its request");
         std::panic::set_hook(previous);
 
         assert_eq!(error.code, -32603);
         assert!(error.message.contains("deliberate"), "got {error}");
         assert_eq!(
-            dispatch.call(&host, "oxabl/fine", Value::Null),
+            dispatch.call(
+                &host,
+                &mut ClientContext::default(),
+                "oxabl/fine",
+                Value::Null,
+            ),
             Ok(json!("ok")),
             "the table must keep serving after a contained panic"
         );
@@ -195,7 +278,7 @@ mod tests {
     #[should_panic(expected = "registered twice")]
     fn registering_one_method_twice_fails_loudly() {
         let mut dispatch = Dispatch::new();
-        dispatch.register("oxabl/one", |_, _| Ok(Value::Null));
-        dispatch.register("oxabl/one", |_, _| Ok(Value::Null));
+        dispatch.register("oxabl/one", |_, _, _| Ok(Value::Null));
+        dispatch.register("oxabl/one", |_, _, _| Ok(Value::Null));
     }
 }

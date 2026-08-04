@@ -35,13 +35,16 @@
 //! drifting is publishing a stale answer.
 
 use std::collections::HashMap;
+use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_common::catch_panic;
+use oxabl_daemon_protocol::SymbolRow;
 use oxabl_index::search::normalize_lexically;
-use oxabl_pipeline::PipelineConfig;
+use oxabl_pipeline::{PipelineConfig, ReverseGraph};
 use salsa::Setter;
 
 use crate::db::{
@@ -76,6 +79,46 @@ pub struct Session {
     /// How many attached clients contribute unsaved buffers, so an answer can state
     /// whether it measured disk or a working tree.
     editor_clients: u32,
+    /// Bumped when an open buffer changes. Disk changes do not touch it: those
+    /// make the stored graph stale until the user requests a reindex (KTD7).
+    buffer_generation: u64,
+    /// The last completed whole-workspace pass, shared by every client.
+    workspace: Option<WorkspaceSnapshot>,
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkspaceSnapshot {
+    pub graph: Arc<ReverseGraph>,
+    pub symbols: Arc<Vec<SymbolRow>>,
+    pub files: Arc<Vec<FileStamp>>,
+    pub config: Arc<PipelineConfig>,
+    pub buffer_generation: u64,
+    pub pass_millis: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct FileStamp {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileStamp {
+    pub fn capture(path: PathBuf) -> Self {
+        let metadata = std::fs::metadata(&path).ok();
+        FileStamp {
+            path,
+            len: metadata.as_ref().map_or(0, Metadata::len),
+            modified: metadata.and_then(|value| value.modified().ok()),
+        }
+    }
+
+    pub fn changed(&self) -> bool {
+        let Ok(metadata) = std::fs::metadata(&self.path) else {
+            return true;
+        };
+        metadata.len() != self.len || metadata.modified().ok() != self.modified
+    }
 }
 
 impl Session {
@@ -95,6 +138,8 @@ impl Session {
             config_generation: 0,
             clients: 0,
             editor_clients: 0,
+            buffer_generation: 0,
+            workspace: None,
         }
     }
 
@@ -132,6 +177,32 @@ impl Session {
         self.buffers.len() as u32
     }
 
+    pub fn buffer_generation(&self) -> u64 {
+        self.buffer_generation
+    }
+
+    pub(crate) fn workspace(&self) -> Option<WorkspaceSnapshot> {
+        self.workspace.clone()
+    }
+
+    pub(crate) fn install_workspace(&mut self, workspace: WorkspaceSnapshot) {
+        self.workspace = Some(workspace);
+    }
+
+    /// Unsaved file buffers, keyed by their workspace path.
+    pub(crate) fn buffer_overlay(&self) -> HashMap<PathBuf, Arc<str>> {
+        self.buffers
+            .values()
+            .filter_map(|buffer| {
+                let path = buffer.path(&self.db).as_ref()?;
+                Some((
+                    normalize_lexically(path),
+                    Arc::from(buffer.text(&self.db).as_str()),
+                ))
+            })
+            .collect()
+    }
+
     /// Record a client attaching. `contributes_buffers` is true for an editor,
     /// whose unsaved text becomes part of what every answer measures.
     pub fn attach(&mut self, contributes_buffers: bool) {
@@ -159,12 +230,16 @@ impl Session {
     pub fn set_buffer(&mut self, key: &str, text: String, path: Option<PathBuf>) -> Buffer {
         match self.buffers.get(key).copied() {
             Some(buffer) => {
-                buffer.set_text(&mut self.db).to(text);
+                if buffer.text(&self.db).as_str() != text {
+                    buffer.set_text(&mut self.db).to(text);
+                    self.buffer_generation = self.buffer_generation.wrapping_add(1);
+                }
                 buffer
             }
             None => {
                 let buffer = Buffer::new(&self.db, text, path);
                 self.buffers.insert(key.to_string(), buffer);
+                self.buffer_generation = self.buffer_generation.wrapping_add(1);
                 buffer
             }
         }
@@ -173,7 +248,9 @@ impl Session {
     /// Close a buffer. Its salsa input stays allocated — salsa has no removal — but
     /// nothing reads it again.
     pub fn close_buffer(&mut self, key: &str) {
-        self.buffers.remove(key);
+        if self.buffers.remove(key).is_some() {
+            self.buffer_generation = self.buffer_generation.wrapping_add(1);
+        }
     }
 
     /// Every open buffer's key.
@@ -244,6 +321,11 @@ impl Sessions {
     /// The session for `root`, if one exists.
     pub fn get(&self, root: impl AsRef<Path>) -> Option<&Session> {
         self.by_root.get(&normalize_lexically(root.as_ref()))
+    }
+
+    /// The mutable session for `root`, if one exists.
+    pub fn get_mut(&mut self, root: impl AsRef<Path>) -> Option<&mut Session> {
+        self.by_root.get_mut(&normalize_lexically(root.as_ref()))
     }
 
     /// How many sessions exist. Two clients on one root must leave this at one.

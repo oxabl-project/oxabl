@@ -46,14 +46,16 @@ pub mod dispatch;
 pub mod handshake;
 #[cfg(unix)]
 pub mod listener;
+pub mod methods;
 pub mod registry;
 pub mod server;
 pub mod session;
 
-pub use dispatch::{Dispatch, MethodError, MethodResult};
+pub use dispatch::{ClientContext, Dispatch, MethodError, MethodResult};
 pub use handshake::{default_dispatch, register_handshake};
 #[cfg(unix)]
 pub use listener::{Listener, Stopper, connection_over};
+pub use methods::register_methods;
 pub use registry::{Discovery, discover, register, socket_path_for, unregister};
 pub use server::{serve, serve_stdio};
 pub use session::{

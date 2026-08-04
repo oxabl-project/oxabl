@@ -55,15 +55,15 @@ fn with_cache_home<T>(body: impl FnOnce() -> T) -> T {
 fn dispatch(slow_calls: Arc<AtomicU32>) -> Arc<Dispatch> {
     let mut dispatch = Dispatch::new();
     register_handshake(&mut dispatch);
-    dispatch.register("oxabl/sessionCount", |host: &SessionHost, _| {
+    dispatch.register("oxabl/sessionCount", |host: &SessionHost, _, _| {
         Ok(json!(host.with(|sessions| sessions.len())))
     });
-    dispatch.register("oxabl/slow", move |_host: &SessionHost, _| {
+    dispatch.register("oxabl/slow", move |_host: &SessionHost, _, _| {
         slow_calls.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(300));
         Ok(json!("slow done"))
     });
-    dispatch.register("oxabl/boom", |_, _| panic!("deliberate"));
+    dispatch.register("oxabl/boom", |_, _, _| panic!("deliberate"));
     Arc::new(dispatch)
 }
 

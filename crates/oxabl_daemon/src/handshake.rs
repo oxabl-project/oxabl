@@ -13,12 +13,13 @@ use crate::{DAEMON_VERSION, Dispatch, MethodError, SessionHost};
 pub fn default_dispatch() -> Dispatch {
     let mut dispatch = Dispatch::new();
     register_handshake(&mut dispatch);
+    crate::methods::register_methods(&mut dispatch);
     dispatch
 }
 
 /// Register the contract handshake on `dispatch`.
 pub fn register_handshake(dispatch: &mut Dispatch) {
-    dispatch.register(method::HANDSHAKE, |host: &SessionHost, params| {
+    dispatch.register(method::HANDSHAKE, |host: &SessionHost, context, params| {
         let request: HandshakeRequest =
             serde_json::from_value(params).map_err(MethodError::invalid_params)?;
         if request.contract_version != CONTRACT_VERSION {
@@ -32,11 +33,19 @@ pub fn register_handshake(dispatch: &mut Dispatch) {
             });
         }
 
-        let clients = host.with(|sessions| {
+        let (root, clients) = host.with(|sessions| {
             let session = sessions.for_root(&request.workspace_root);
             session.attach(matches!(request.client, ClientKind::Editor));
-            session.clients()
+            (session.root().to_path_buf(), session.clients())
         });
+        if let Err(error) = context.bind(root, request.client) {
+            host.with(|sessions| {
+                sessions
+                    .for_root(&request.workspace_root)
+                    .detach(matches!(request.client, ClientKind::Editor));
+            });
+            return Err(error);
+        }
         serde_json::to_value(HandshakeResponse {
             contract_version: CONTRACT_VERSION,
             workspace_root: request.workspace_root,
@@ -66,6 +75,7 @@ mod tests {
         let error = dispatch
             .call(
                 &host,
+                &mut crate::ClientContext::default(),
                 method::HANDSHAKE,
                 serde_json::to_value(request).unwrap(),
             )

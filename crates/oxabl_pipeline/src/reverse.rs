@@ -288,6 +288,19 @@ impl ReverseGraph {
     /// `oxabl_workspace`, and a graph that walked the filesystem itself could not
     /// be asked about a subset.
     pub fn build(pipeline: &LintPipeline<'_>, files: &[PathBuf]) -> Self {
+        Self::build_with(pipeline, files, |_, _, _| {})
+    }
+
+    /// Build the graph and inspect each successful file analysis once.
+    ///
+    /// `inspect` is for workspace products derived from the same pass, such as the
+    /// daemon's symbol-search rows. It avoids a second parse and semantic run per
+    /// file while keeping graph ownership in this layer.
+    pub fn build_with(
+        pipeline: &LintPipeline<'_>,
+        files: &[PathBuf],
+        mut inspect: impl FnMut(&Path, &crate::Expansion, &crate::LintResult),
+    ) -> Self {
         let mut graph = ReverseGraph {
             dependents: HashMap::new(),
             unresolved_by_name: HashMap::new(),
@@ -319,7 +332,9 @@ impl ReverseGraph {
             };
 
             let file_pipeline = pipeline.with_file(path.clone());
-            let edges = match file_pipeline.edge_set(&source) {
+            let edges = match file_pipeline.edge_set_with(&source, |expansion, result| {
+                inspect(&normalised, expansion, result);
+            }) {
                 Ok(edges) => edges,
                 Err(reason) => {
                     graph.unanalysed.push(Unanalysed {
@@ -576,6 +591,22 @@ impl ReverseGraph {
     /// How many files the pass covered.
     pub fn file_count(&self) -> usize {
         self.files.len()
+    }
+
+    /// Every file whose disk contents the graph records or depends on.
+    ///
+    /// This includes compilation roots and file subjects such as include files.
+    /// A freshness check that watched roots only would miss the most important
+    /// change in this product: editing a shared `.i` file.
+    pub fn tracked_files(&self) -> Vec<PathBuf> {
+        let mut files = self.files.clone();
+        files.extend(self.dependents.keys().filter_map(|subject| match subject {
+            Subject::File(path) => Some(path.clone()),
+            Subject::Table(_) => None,
+        }));
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Resolved edges across the whole workspace.
