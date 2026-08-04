@@ -630,6 +630,20 @@ impl<'a> LintPipeline<'a> {
             (expansion, result)
         });
         let (expansion, result) = outcome.map_err(|panic| format!("analysis panicked: {panic}"))?;
+        self.edges_of(&expansion, &result)
+    }
+
+    /// The edge set for an expansion and result this handle already produced.
+    ///
+    /// For a caller that has run the two phases for its own reasons — the CLI
+    /// `analyze` dump needs the model *and* the edges — so it pays for one analysis
+    /// rather than two. Unguarded, like the phases it takes: a caller holding a
+    /// result has already decided how it contains failure.
+    pub fn edges_of(
+        &self,
+        expansion: &Expansion,
+        result: &LintResult,
+    ) -> Result<oxabl_index::DependencyEdges, String> {
         let expanded = expansion
             .expanded()
             .ok_or_else(|| "preprocessing failed fatally".to_string())?;

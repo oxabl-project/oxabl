@@ -1161,7 +1161,22 @@ fn run_analyze(
     // it must be spelled the way a name lookup spells a candidate, or the file
     // fails to exclude itself.
     let analysed = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let result = run.with_file(analysed).run(&source);
+    let file_run = run.with_file(analysed);
+    // The two phases by hand rather than `run`, so the dependency section is built
+    // from *this* expansion and model instead of costing a second analysis. The
+    // guard `run` would have applied is applied here.
+    let phases = oxabl_common::catch_panic(|| {
+        let expansion = file_run.expand(&source);
+        let collected = file_run.collect(&expansion);
+        (expansion, collected)
+    });
+    let (expansion, result) = match phases {
+        Ok(phases) => phases,
+        Err(panic) => {
+            eprintln!("error: analysis failed on {}: {panic}", path.display());
+            return ExitCode::from(4);
+        }
+    };
     if let Some(panic) = result.failure() {
         eprintln!("error: analysis failed on {}: {panic}", path.display());
         return ExitCode::from(4);
@@ -1203,9 +1218,17 @@ fn run_analyze(
     surface_collected_preproc(path, &source, &collected);
     surface_unjudged_symbols(sem);
 
+    // The typed dependency edges for this file. An edge set the analysis could not
+    // produce yields an empty section rather than a missing key: `index revision:
+    // 0` is how the document says nothing was looked at.
+    let dependencies = file_run
+        .edges_of(&expansion, &result)
+        .map(|edges| oxabl_pipeline::dependency_section(&edges, sem.index_revision.raw()))
+        .unwrap_or_default();
+
     match format {
         "json" => {
-            let v = dump_json_with_diagnostics(sem, &collected);
+            let v = dump_json_with_diagnostics(sem, &collected, &dependencies);
             match serde_json::to_string_pretty(&v) {
                 Ok(s) => println!("{s}"),
                 Err(e) => {
@@ -1215,7 +1238,10 @@ fn run_analyze(
             }
         }
         "text" => {
-            print!("{}", dump_text_with_diagnostics(sem, &collected));
+            print!(
+                "{}",
+                dump_text_with_diagnostics(sem, &collected, &dependencies)
+            );
         }
         other => {
             eprintln!("error: unsupported format `{other}` (use `json` or `text`)");

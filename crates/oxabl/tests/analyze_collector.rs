@@ -261,7 +261,7 @@ fn a_cross_file_child_reports_its_inherited_member_in_both_formats() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|f| f["via"] == "class" && f["name"] == "orders.calc-base"),
+            .any(|f| f["via"] == "class" && f["target"] == "orders.calc-base"),
         "the parent's file is a consulted dependency: {}",
         v["dependencies"]
     );

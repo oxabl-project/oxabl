@@ -71,7 +71,9 @@ pub use lint::{Expansion, LintPipeline, LintResult};
 pub use position::{
     Position, ResolvedSpan, resolve_diagnostic, resolve_file_span, resolve_offset, resolve_offsets,
 };
-pub use reverse::{Dependent, Dependents, ReverseGraph, Subject, Unanalysed, UnresolvedRow};
+pub use reverse::{
+    Dependent, Dependents, ReverseGraph, Subject, Unanalysed, UnresolvedRow, dependency_section,
+};
 // Re-exported so a consumer of the reverse query need not also depend on
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference};

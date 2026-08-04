@@ -44,6 +44,11 @@ test-support = ["oxabl_schema/test-support"]
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"
+# The envelope-section test drives a parse directly, so it can assert the version
+# map on a document this crate produced end to end.
+oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
 # NOTE: no self `oxabl_pipeline = { path = "." }` entry here. Feature-enabling a
 # crate for its own `tests/` target needs one, and Cargo accepts it, but
 # release-please's `cargo-workspace` plugin reads the `path = "."` edge as a

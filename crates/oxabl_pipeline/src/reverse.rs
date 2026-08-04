@@ -29,12 +29,57 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use oxabl_analyze::{
+    DependencyEdgeRow, DependencySection, LookupSpanRow, UnresolvedEdgeRow, unresolved_reason_str,
+};
 use oxabl_ast::Span;
 use oxabl_index::{
     DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference, search::normalize_lexically,
 };
 
 use crate::LintPipeline;
+
+/// Convert one file's edge set into the envelope's `dependencies` section.
+///
+/// The conversion lives here because this is the only crate that depends on both
+/// sides: `oxabl_analyze` owns the document and must not depend on `oxabl_index`,
+/// and `oxabl_index` sits beneath the analysis crate. So the derivation stays in
+/// one place and the document's producer only serialises what it is handed.
+pub fn dependency_section(edges: &DependencyEdges, index_revision: u32) -> DependencySection {
+    DependencySection {
+        index_revision,
+        edges: edges
+            .edges()
+            .iter()
+            .map(|edge| DependencyEdgeRow {
+                via: edge.kind.as_str().to_string(),
+                target: edge.target.key().to_string(),
+                file: match &edge.target {
+                    EdgeTarget::IndexedFile { file, .. } => Some(file.raw()),
+                    // An include mints no index id, and a table has no file.
+                    EdgeTarget::IncludePath(_) | EdgeTarget::SchemaTable(_) => None,
+                },
+                span: edge.span.map(|span| LookupSpanRow {
+                    start: span.start,
+                    end: span.end,
+                }),
+            })
+            .collect(),
+        unresolved: edges
+            .unresolved()
+            .iter()
+            .map(|row| UnresolvedEdgeRow {
+                via: row.kind.as_str().to_string(),
+                name: row.name.clone(),
+                reason: unresolved_reason_str(row.reason).to_string(),
+                span: row.span.map(|span| LookupSpanRow {
+                    start: span.start,
+                    end: span.end,
+                }),
+            })
+            .collect(),
+    }
+}
 
 /// What an impact query is asked about.
 ///
