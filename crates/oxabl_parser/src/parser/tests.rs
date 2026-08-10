@@ -10932,6 +10932,7 @@ fn expr_span_postfix_method_chain() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "out of source order")]
 fn u4_out_of_order_sibling_statements_trip_assert() {
     let mut a = Statement::new(StatementKind::Empty);
