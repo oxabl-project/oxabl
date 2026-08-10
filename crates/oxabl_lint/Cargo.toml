@@ -1,26 +1,26 @@
 [package]
 name = "oxabl_lint"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "Lint rules for Progress ABL built on the oxabl_semantic model"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lint"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
-oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.0" }
 rustc-hash = "2"
 
 [dev-dependencies]
 # The batch workspace index, for the cross-file resolution tests: they build a
 # real `BatchIndex` over an `InMemoryFileSystem` rather than a hand-written stub,
 # so what they pin is the resolution every client gets.
-oxabl_index = { path = "../oxabl_index", version = "0.1.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = ["test-support"] }
-oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
-oxabl_parser = { path = "../oxabl_parser", version = "0.6.0" }
-oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+oxabl_index = { path = "../oxabl_index", version = "0.1.1" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.0", features = ["test-support"] }
+oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.0" }
+oxabl_parser = { path = "../oxabl_parser", version = "1.0.0" }
+oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.4.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
 rust_decimal = "1.40.0"
 smallvec = { version = "1", features = ["union"] }

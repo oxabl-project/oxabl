@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v0.5.0...oxabl_ast-v1.0.0) (2026-08-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* `SymbolTable::inherited_member_type` and `record_inherited_member_type` are removed; read `Symbol::data_type`.
+* **semantic:** UnresolvedReason gains NotFoundInWorkspace and Unknowable. An exhaustive match on it will no longer compile. Both are skip-listed by every lint rule, so no diagnostic changes.
+
+### Features
+
+* **api:** diagnostic renderer, Display, and serde on the diagnostic family ([#55](https://github.com/oxabl-project/oxabl/issues/55)) ([#114](https://github.com/oxabl-project/oxabl/issues/114)) ([0681257](https://github.com/oxabl-project/oxabl/commit/068125785a379b1ba5d0a5ec59b71138841d5312))
+* **ast:** add NodeId to Expression via wrapper struct (phase 1b) ([be6abe4](https://github.com/oxabl-project/oxabl/commit/be6abe4b9e2febd53ac6b74649b55a094fbf87b8))
+* **ast:** add NodeId to Statement via wrapper struct (Phase 1a) ([ad6ac60](https://github.com/oxabl-project/oxabl/commit/ad6ac60178f96be72783c0b36dabc6e8989fae8b))
+* **ast:** comment side-table on Program + blank-line detection ([#92](https://github.com/oxabl-project/oxabl/issues/92)) ([2d6b92e](https://github.com/oxabl-project/oxabl/commit/2d6b92e9f4e4770cbb5bdef70778345760d8d459))
+* **ast:** full-fidelity spans on AST wrapper nodes ([#91](https://github.com/oxabl-project/oxabl/issues/91)) ([2e774b1](https://github.com/oxabl-project/oxabl/commit/2e774b1338bd9c9ff0db014e2cdc238db10801a7))
+* capture SHARED/NEW SHARED flags on variable, temp-table, and buffer defines ([04abd6c](https://github.com/oxabl-project/oxabl/commit/04abd6c4860d6b3c0049a08c258b65c044b6e3b5))
+* capture SHARED/NEW SHARED flags on variable, temp-table, and buffer defines ([2be6087](https://github.com/oxabl-project/oxabl/commit/2be60876efbe135278129e0f282e99794f3de1b9))
+* close residual LINT0001 language-coverage gaps ([#58](https://github.com/oxabl-project/oxabl/issues/58)) ([b3124fd](https://github.com/oxabl-project/oxabl/commit/b3124fdf3fe6c60472e94e5d6fa4f63b3e84d1a1))
+* judge the cross-file population, and drain the top of the unmodelled-statement suppression ([#153](https://github.com/oxabl-project/oxabl/issues/153)) ([a1e03e6](https://github.com/oxabl-project/oxabl/commit/a1e03e6e1484ebd1bf3a7e6b194c74df8affbc4b))
+* **semantic:** the cross-file resolution seam, with the rules held still ([#146](https://github.com/oxabl-project/oxabl/issues/146)) ([3cee2c0](https://github.com/oxabl-project/oxabl/commit/3cee2c0a032c3e9d8176ca2740ed9c065e84824e))
+
+
+### Bug Fixes
+
+* credit table reads in buffer, empty-table, and query forms ([#130](https://github.com/oxabl-project/oxabl/issues/130)) ([#138](https://github.com/oxabl-project/oxabl/issues/138)) ([6e39138](https://github.com/oxabl-project/oxabl/commit/6e3913885f513af727b1aee14973ff7936518132))
+* stop three lint rules reporting variables that unmodelled statements touch ([#137](https://github.com/oxabl-project/oxabl/issues/137)) ([28c0a1e](https://github.com/oxabl-project/oxabl/commit/28c0a1e92950596d815acbb654c871036c4ed6b1))
+
 ## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v0.4.0...oxabl_ast-v0.5.0) (2026-04-13)
 
 

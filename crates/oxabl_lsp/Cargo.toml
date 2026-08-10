@@ -1,14 +1,14 @@
 [package]
 name = "oxabl_lsp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "stdio LSP server surfacing oxabl parse/lint/preprocessor diagnostics live in an editor"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lsp"
 
 [dependencies]
-oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
-oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
 # The server reaches the lexer, parser, preprocessor, formatter, and schema
 # loader *through* `oxabl_pipeline` and `oxabl_analyze` — it names none of them
 # directly. Keep it that way: a direct edge back to a layer beneath the shared
@@ -17,11 +17,11 @@ oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
 # The shared fact extraction and the shared name-to-path search. This crate
 # supplies only the *memoization* (salsa, per file); the questions and the
 # resolution policy stay in one place (R7, KTD2).
-oxabl_index = { path = "../oxabl_index", version = "0.1.0" }
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "0.1.0" }
+oxabl_index = { path = "../oxabl_index", version = "0.1.1" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
 anyhow = "1"
 crossbeam-channel = "0.5"
 lsp-server = "0.7"
@@ -33,16 +33,16 @@ salsa = "=0.28.1"
 serde_json = "1"
 
 [dev-dependencies]
-oxabl_analyze = { path = "../oxabl_analyze", version = "0.1.0" }
-oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.1.0", features = ["test-support"] }
-oxabl_common = { path = "../oxabl_common", version = "0.5.0", features = [
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.0", features = ["test-support"] }
+oxabl_common = { path = "../oxabl_common", version = "1.0.0", features = [
     "test-panics",
 ] }
-oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
 # The shared cross-client parity fixture table (R19). A dev-dependency feature
 # only; the server itself takes `oxabl_pipeline` without it.
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "0.1.0", features = [
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0", features = [
     "test-support",
 ] }
 lsp-server = "0.7"
