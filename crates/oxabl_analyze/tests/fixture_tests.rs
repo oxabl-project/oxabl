@@ -102,7 +102,7 @@ fn assert_envelope_sane(dump: &Value) {
     );
     assert_eq!(dump["dependencies"]["index_revision"], 0);
     assert_eq!(
-        dump["dependencies"]["files"].as_array().map(Vec::len),
+        dump["dependencies"]["edges"].as_array().map(Vec::len),
         Some(0)
     );
     assert_eq!(

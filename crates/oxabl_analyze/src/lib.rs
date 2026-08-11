@@ -51,7 +51,7 @@
 //!   "diagnostics": [ ... ],
 //!   "preproc": [ ... ],
 //!   "coverage": { "unjudged_symbols": 0 },
-//!   "dependencies": { "index_revision": 0, "files": [], "unresolved": [] }
+//!   "dependencies": { "index_revision": 0, "edges": [], "unresolved": [] }
 //! }
 //! ```
 //!
@@ -119,7 +119,8 @@ pub const ENVELOPE_VERSION: u32 = 1;
 ///   such file) and `present_but_unusable` (located, unreadable or unparseable),
 ///   because only the first licenses telling a user the name does not exist.
 /// * `dependencies` 3 — a row is now a **typed dependency edge**, not just a
-///   consulted file. `via` widens from three values to the six edge kinds
+///   consulted file, and the array is `edges` rather than `files` to say so: a
+///   schema-table row has no file. `via` widens from three values to the six edge kinds
 ///   (`direct_include`, `transitive_include`, `schema_table`, `class`, `program`,
 ///   `shared_producer`); `name` becomes `target`, whose value is a resolved path
 ///   for an include and a folded name otherwise; `file` is now optional, since an
@@ -328,7 +329,7 @@ fn write_coverage(out: &mut String, sem: &Semantic) {
 fn write_dependencies(out: &mut String, dependencies: &DependencySection) {
     use std::fmt::Write;
     let deps = dependencies_json(dependencies);
-    let files = deps["files"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let edges = deps["edges"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let unresolved = deps["unresolved"]
         .as_array()
         .map(Vec::as_slice)
@@ -341,8 +342,8 @@ fn write_dependencies(out: &mut String, dependencies: &DependencySection) {
         deps["index_revision"].as_u64().unwrap_or(0)
     )
     .ok();
-    writeln!(out, "  files consulted ({}):", files.len()).ok();
-    for f in files {
+    writeln!(out, "  dependency edges ({}):", edges.len()).ok();
+    for f in edges {
         writeln!(
             out,
             "    [{}] {} {}",
@@ -861,14 +862,16 @@ pub struct LookupSpanRow {
 /// * `index_revision` — `0` when no index was attached. That distinction matters
 ///   before either array is read: with no index, an empty `unresolved` means
 ///   *nothing was looked at*, not *everything resolved*.
-/// * `files` — every dependency edge, each carrying the reason for it. A change to
-///   any target can change this file's answers.
+/// * `edges` — every dependency edge, each carrying the reason for it. A change to
+///   any target can change this file's answers. Named for what a row is rather
+///   than for a file: a row's target may be a schema table, which has no file at
+///   all and reports `file: null`.
 /// * `unresolved` — every reference that came back empty, with its reason. Kept out
-///   of `files` so a consumer cannot count a gap as a dependency.
+///   of `edges` so a consumer cannot count a gap as a dependency.
 fn dependencies_json(section: &DependencySection) -> Value {
     json!({
         "index_revision": section.index_revision,
-        "files": section.edges,
+        "edges": section.edges,
         "unresolved": section.unresolved,
     })
 }
@@ -1498,7 +1501,7 @@ mod tests {
         let v = run_dump(vec![var_decl("x", DataType::Integer)]);
         assert!(v["dependencies"].is_object());
         assert_eq!(v["dependencies"]["index_revision"], 0);
-        assert!(v["dependencies"]["files"].as_array().unwrap().is_empty());
+        assert!(v["dependencies"]["edges"].as_array().unwrap().is_empty());
         assert!(
             v["dependencies"]["unresolved"]
                 .as_array()

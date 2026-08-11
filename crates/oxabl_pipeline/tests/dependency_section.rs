@@ -234,8 +234,15 @@ fn a_file_with_no_cross_file_dependencies_still_emits_the_section() {
     let collected = result.diagnostics().clone();
     let v: Value = oxabl_analyze::dump_json_with_diagnostics(sem, &collected, &section);
     assert!(
-        v["dependencies"]["files"].is_array(),
+        v["dependencies"]["edges"].is_array(),
         "the key is present and empty, not missing"
+    );
+    // Version 2 spelled this array `files`. A partial revert that left both on the
+    // wire would be worse than either spelling alone, so the old name must be gone
+    // rather than merely unused.
+    assert!(
+        v["dependencies"]["files"].is_null(),
+        "the version 2 key must not survive alongside the version 3 one"
     );
     assert!(v["dependencies"]["unresolved"].is_array());
     assert_eq!(v["dependencies"]["index_revision"], 0);
