@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v0.4.1...oxabl_lexer-v1.0.0) (2026-08-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* `SymbolTable::inherited_member_type` and `record_inherited_member_type` are removed; read `Symbol::data_type`.
+
+### Features
+
+* **api:** format_source() convenience and a streaming lexer iterator ([#55](https://github.com/oxabl-project/oxabl/issues/55)) ([#116](https://github.com/oxabl-project/oxabl/issues/116)) ([f285ca0](https://github.com/oxabl-project/oxabl/commit/f285ca096b6575df560b3216d3f2f4a855101c61))
+* **ast:** full-fidelity spans on AST wrapper nodes ([#91](https://github.com/oxabl-project/oxabl/issues/91)) ([2e774b1](https://github.com/oxabl-project/oxabl/commit/2e774b1338bd9c9ff0db014e2cdc238db10801a7))
+* close residual LINT0001 language-coverage gaps ([#58](https://github.com/oxabl-project/oxabl/issues/58)) ([b3124fd](https://github.com/oxabl-project/oxabl/commit/b3124fdf3fe6c60472e94e5d6fa4f63b3e84d1a1))
+* judge the cross-file population, and drain the top of the unmodelled-statement suppression ([#153](https://github.com/oxabl-project/oxabl/issues/153)) ([a1e03e6](https://github.com/oxabl-project/oxabl/commit/a1e03e6e1484ebd1bf3a7e6b194c74df8affbc4b))
+* **oxabl_schema:** add .df parser and Schema loader (Phase 2) ([52ef860](https://github.com/oxabl-project/oxabl/commit/52ef860c853a60e544cafbf057574efe340cff74))
+* **oxabl_schema:** add .df parser and Schema loader (Phase 2) ([3e22f9e](https://github.com/oxabl-project/oxabl/commit/3e22f9e08a071648b1d4f4dd2e17b0196882e7c7))
+* resolve abbreviated built-in function calls in undefined-symbol lint ([3f45edd](https://github.com/oxabl-project/oxabl/commit/3f45edd11e2f33f6c924a14d1d43c772ae8bcd47))
+* resolve abbreviated built-in function calls in undefined-symbol lint ([7f763a3](https://github.com/oxabl-project/oxabl/commit/7f763a39c99d66e8f1e45d5e598ab9d18f197f66))
+
+
+### Bug Fixes
+
+* ADM2 mid-line &IF ([#65](https://github.com/oxabl-project/oxabl/issues/65)) and xp-property BUFFER-FIELD path ([#66](https://github.com/oxabl-project/oxabl/issues/66)) ([#67](https://github.com/oxabl-project/oxabl/issues/67)) ([872c741](https://github.com/oxabl-project/oxabl/commit/872c7411bdd0d9d8a91a695993fbc390f159ebe6))
+* lex TERM as an abbreviation of TERMINAL ([8cd524f](https://github.com/oxabl-project/oxabl/commit/8cd524f2e1c5ff59c2e8af423b287e78059931c8))
+* resolve built-in ABL functions in undefined-symbol lint ([c47b55a](https://github.com/oxabl-project/oxabl/commit/c47b55a694ec62297359d96b3bd36881965abc43)), closes [#58](https://github.com/oxabl-project/oxabl/issues/58)
+* silence LINT0001 for MAX/MIN/ABS/VALUE, NO-APPLY, lock method args ([1e997d2](https://github.com/oxabl-project/oxabl/commit/1e997d201e9d42a0240ca9958523c9c98085e4f4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 0.5.0 to 1.0.0
+
 ## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v0.4.0...oxabl_lexer-v0.4.1) (2026-04-16)
 
 

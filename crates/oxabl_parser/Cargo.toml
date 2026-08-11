@@ -1,15 +1,15 @@
 [package]
 name = "oxabl_parser"
-version = "0.6.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "Parser for Progress ABL source code"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_parser"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "0.5.0" }
-oxabl_common = { path = "../oxabl_common", version = "0.5.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "0.4.1" }
+oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.0" }
 rust_decimal = "1.40.0"
 smallvec = { version = "1", features = ["union"] }
 serde = { version = "1", optional = true, features = ["derive"] }
@@ -21,8 +21,8 @@ serde = ["dep:serde", "oxabl_ast/serde"]
 
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
-oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.3.1" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "0.4.0" }
+oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.4.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
 serde_json = "1"
 
 [[bench]]
