@@ -623,6 +623,15 @@ impl<'a> LintPipeline<'a> {
     /// panicking file out of fourteen thousand must cost that file's edges and
     /// nothing else. `Err` carries a short reason so the caller can record the file
     /// as unanalysed rather than as depending on nothing.
+    ///
+    /// The guard contains a *panic*. It does not contain a cancellation: this
+    /// crate cannot depend on the incremental engine (see the manifest note), so
+    /// it cannot place that engine's own catch inside this guard. Instead
+    /// [`oxabl_common::catch_panic`] re-raises a payload it cannot describe, and a
+    /// cancelled recompute travels out of here to the caller that understands it.
+    /// A caller driving this from a cancellable index owns that catch. Containing
+    /// one would file the cancelled file as unanalysed — permanently, for that
+    /// pass — which is the confident wrong answer this type exists to avoid.
     pub fn edge_set(&self, source: &str) -> Result<oxabl_index::DependencyEdges, String> {
         let outcome = catch_panic(|| {
             let expansion = self.expand(source);
@@ -772,6 +781,12 @@ impl<'a> LintPipeline<'a> {
     /// A contained panic becomes [`LintResult::failed_run`] carrying the message,
     /// never an unwind past the caller. The guard is
     /// [`oxabl_common::catch_panic`], called directly (KTD6, R20).
+    ///
+    /// A cancellation is not a panic and is not contained here. The guard
+    /// re-raises a payload it cannot describe, so a caller driving this from a
+    /// cancellable index sees the unwind and owns the catch for it — see
+    /// [`edge_set`](Self::edge_set), which carries the same contract for the same
+    /// reason.
     ///
     /// # Platform caveat
     ///
