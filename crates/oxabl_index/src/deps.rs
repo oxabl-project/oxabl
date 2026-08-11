@@ -30,6 +30,9 @@
 
 use std::path::{Path, PathBuf};
 
+use rustc_hash::FxHashSet;
+
+use crate::search::normalize_lexically;
 use oxabl_ast::Span;
 use oxabl_common::VirtualSpan;
 use oxabl_schema::Schema;
@@ -84,6 +87,11 @@ impl EdgeKind {
 pub enum EdgeTarget {
     /// An include, by the path the preprocessor resolved it to. The preprocessor
     /// works in paths and mints no index id, so there is none to report.
+    ///
+    /// Lexically normalised, so one file has one identity here however the
+    /// resolver spelled it. The reverse query normalises again on its own side;
+    /// emitting the normalised form makes the two agree by construction rather
+    /// than by coincidence.
     IncludePath(PathBuf),
     /// A workspace file the index reached, by the id the index minted, plus the
     /// name that reached it. Only the index that minted the id can map it to a
@@ -272,20 +280,32 @@ fn unresolved_order(u: &UnresolvedReference) -> (EdgeKind, &str, bool, u32, u32)
 /// them, and reporting one path twice would double every include's weight in an
 /// impact answer.
 fn include_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
+    // Both sides are normalized, and the direct set is built once rather than
+    // rescanned per transitive path. `/proj/./shared.i` and `/proj/shared.i` name
+    // one file, and a textual comparison would call them two — emitting the same
+    // include as direct *and* transitive, which is the double count the invariant
+    // above exists to prevent.
+    let direct_paths: FxHashSet<PathBuf> = inputs
+        .direct_includes
+        .iter()
+        .map(|direct| normalize_lexically(direct.path))
+        .collect();
+
     for direct in inputs.direct_includes {
         out.push(DependencyEdge {
             kind: EdgeKind::DirectInclude,
-            target: EdgeTarget::IncludePath(direct.path.to_path_buf()),
+            target: EdgeTarget::IncludePath(normalize_lexically(direct.path)),
             span: Some(direct.site),
         });
     }
     for path in inputs.transitive_includes {
-        if inputs.direct_includes.iter().any(|d| d.path == path) {
+        let normalized = normalize_lexically(path);
+        if direct_paths.contains(&normalized) {
             continue;
         }
         out.push(DependencyEdge {
             kind: EdgeKind::TransitiveInclude,
-            target: EdgeTarget::IncludePath(path.clone()),
+            target: EdgeTarget::IncludePath(normalized),
             // Named in an intermediate file, so this file has no site for it.
             span: None,
         });

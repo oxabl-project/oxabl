@@ -100,6 +100,51 @@ fn targets(kind: EdgeKind, edges: &oxabl_index::DependencyEdges) -> Vec<String> 
         .collect()
 }
 
+// One file is one dependency however the resolver spelled it. `Path` equality
+// compares components, so it already sees through a `.`; it keeps a `..` as a real
+// component, so `/proj/sub/../shared.i` and `/proj/shared.i` compared unequal and
+// the same include was emitted as direct *and* transitive — doubling its weight in
+// an impact answer.
+#[test]
+fn one_include_spelled_two_ways_is_one_edge() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let direct = [DirectIncludeInput {
+        path: Path::new("/proj/shared.i"),
+        site: Span { start: 0, end: 9 },
+    }];
+    let transitive = dirs(&["/proj/sub/../shared.i"]);
+    let edges = build_edge_set(&inputs(&semantic, &schema, &direct, &transitive, &[]));
+
+    assert_eq!(
+        targets(EdgeKind::DirectInclude, &edges),
+        vec!["/proj/shared.i"]
+    );
+    assert!(
+        targets(EdgeKind::TransitiveInclude, &edges).is_empty(),
+        "the same file must not also be transitive, got {:?}",
+        targets(EdgeKind::TransitiveInclude, &edges)
+    );
+}
+
+// And the emitted target carries the normalised spelling, so a consumer keying on
+// it agrees with the reverse query by construction.
+#[test]
+fn an_include_target_is_emitted_normalised() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let direct = [DirectIncludeInput {
+        path: Path::new("/proj/sub/../shared.i"),
+        site: Span { start: 0, end: 9 },
+    }];
+    let edges = build_edge_set(&inputs(&semantic, &schema, &direct, &[], &[]));
+
+    assert_eq!(
+        targets(EdgeKind::DirectInclude, &edges),
+        vec!["/proj/shared.i"]
+    );
+}
+
 #[test]
 fn direct_and_transitive_includes_are_not_confused() {
     let schema = Schema::empty();
