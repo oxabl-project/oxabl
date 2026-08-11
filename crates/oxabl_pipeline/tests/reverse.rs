@@ -306,6 +306,44 @@ fn unresolved_references_survive_into_the_result_with_their_reasons() {
     assert!(graph.unresolved_ratio() > 0.0);
 }
 
+// An include root spelled with `..` still yields the dotted name a class is
+// referenced by. Configuration keeps roots literal on purpose, because include
+// resolution asks the filesystem and a collapsed `..` can cross a symlink. The
+// prefix arithmetic here is pure, so an unnormalised root would simply never
+// match a normalised subject and the dotted candidate would vanish.
+#[test]
+fn a_dotted_class_name_survives_an_include_root_spelled_with_dot_dot() {
+    // The child calls a method it does not define, which is what makes the run
+    // walk the supertype chain and record the lookup.
+    let ws = Workspace::new(&[(
+        "pkg/child.cls",
+        "CLASS pkg.child INHERITS pkg.thing:\n\
+         METHOD PUBLIC VOID go():\n\
+         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n\
+         v-total = calc-total().\n\
+         MESSAGE v-total.\n\
+         END METHOD.\n\
+         END CLASS.\n",
+    )]);
+
+    for root in ["/proj", "/proj/sub/.."] {
+        let config = PipelineConfig {
+            include_paths: vec![PathBuf::from(root)],
+            ..PipelineConfig::default()
+        };
+        let graph = ws.graph(&config);
+
+        // The parent is not in the workspace, so the reference is unresolved. It
+        // can only be tied back to the file it *would* have named through the
+        // dotted spelling, which is derived by stripping the root off the subject.
+        let answer = graph.dependents(&Subject::file(proj("pkg/thing.cls")));
+        let rows = answer.unresolved();
+        assert_eq!(rows.len(), 1, "root {root} got {rows:?}");
+        assert_eq!(rows[0].reference.name, "pkg.thing");
+        assert!(rows[0].file.ends_with("child.cls"));
+    }
+}
+
 // A file removed from the supplied list stops appearing as a dependent. The graph
 // answers about the files it was given, not about whatever is on disk.
 #[test]

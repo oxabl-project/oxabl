@@ -204,6 +204,13 @@ pub struct ReverseGraph {
     unresolved_count: usize,
     /// The run's configured include roots, for deriving the dotted name a class or
     /// `RUN` target would have spelled a file under.
+    ///
+    /// Normalised here even though the configuration deliberately does not
+    /// normalise them. Include *resolution* joins a root to a name and asks the
+    /// filesystem, so it must keep the literal spelling — collapsing `..` across a
+    /// symlink would name a different directory. [`Self::candidate_names`] does the
+    /// opposite: pure prefix arithmetic against subjects that are already
+    /// normalised, where an unnormalised root simply never matches.
     include_roots: Vec<PathBuf>,
 }
 
@@ -225,7 +232,12 @@ impl ReverseGraph {
             files: files.iter().map(|p| normalize_lexically(p)).collect(),
             edge_count: 0,
             unresolved_count: 0,
-            include_roots: pipeline.config().include_paths.clone(),
+            include_roots: pipeline
+                .config()
+                .include_paths
+                .iter()
+                .map(|root| normalize_lexically(root))
+                .collect(),
         };
 
         for path in files {
