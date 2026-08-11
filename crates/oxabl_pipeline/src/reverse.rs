@@ -211,6 +211,35 @@ impl Dependents {
     }
 }
 
+/// Which unresolved references one candidate spelling of a subject can match.
+///
+/// An unresolved reference has no target, so the only tie back to a subject is the
+/// name it wrote. Name equality alone is too weak: a file name and a bare stem
+/// differ only by an extension, and the two are written by different kinds of
+/// reference. Pairing each candidate with the shape that produced it keeps a class
+/// reference from claiming an include, and the reverse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NameShape {
+    /// A file name carrying its extension — how the preprocessor spells an
+    /// include, and how nothing else spells anything.
+    Include,
+    /// A bare stem or a dotted path — how a class or a `RUN` target is written.
+    Reference,
+    /// A folded table name, which no other vocabulary collides with.
+    Table,
+}
+
+impl NameShape {
+    /// Whether a reference of `kind` could have written this spelling.
+    fn admits(self, kind: EdgeKind) -> bool {
+        match self {
+            NameShape::Include => kind.is_include(),
+            NameShape::Reference => !kind.is_include(),
+            NameShape::Table => true,
+        }
+    }
+}
+
 /// The whole workspace's edges, inverted.
 pub struct ReverseGraph {
     /// Subject → the files that depend on it.
@@ -225,6 +254,13 @@ pub struct ReverseGraph {
     unnameable: Vec<UnnameableEdge>,
     /// Normalised paths of every file the pass covered.
     files: Vec<PathBuf>,
+    /// Folded stems that two or more covered files share, computed once per pass.
+    ///
+    /// A bare stem is how ABL spells an unqualified `RUN` target or class
+    /// reference, so it has to be a candidate. It stops being usable evidence the
+    /// moment two files answer to it: the reference genuinely may name either, and
+    /// attributing it to both invents a dependent for one of them.
+    ambiguous_stems: HashSet<String>,
     /// Total resolved edges, for the ratio below.
     edge_count: usize,
     /// Total unresolved references.
@@ -258,6 +294,7 @@ impl ReverseGraph {
             unanalysed: Vec::new(),
             unnameable: Vec::new(),
             files: files.iter().map(|p| normalize_lexically(p)).collect(),
+            ambiguous_stems: HashSet::new(),
             edge_count: 0,
             unresolved_count: 0,
             include_roots: pipeline
@@ -373,6 +410,18 @@ impl ReverseGraph {
         self.unnameable.dedup();
         self.files.sort();
         self.files.dedup();
+
+        // Once per pass, not once per query: a query only asks whether one stem is
+        // in the set.
+        let mut seen: HashSet<String> = HashSet::new();
+        for path in &self.files {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let folded = stem.to_ascii_lowercase();
+                if !seen.insert(folded.clone()) {
+                    self.ambiguous_stems.insert(folded);
+                }
+            }
+        }
     }
 
     /// Every file whose compilation can change when `subject` changes (R1).
@@ -394,10 +443,21 @@ impl ReverseGraph {
     /// `RUN` target would spell.
     fn unresolved_naming(&self, subject: &Subject) -> Vec<UnresolvedRow> {
         let mut rows = Vec::new();
-        for candidate in self.candidate_names(subject) {
-            if let Some(found) = self.unresolved_by_name.get(&candidate) {
-                rows.extend(found.iter().cloned());
-            }
+        for (candidate, shape) in self.candidate_names(subject) {
+            let Some(found) = self.unresolved_by_name.get(&candidate) else {
+                continue;
+            };
+            // A spelling only counts against the kind of reference that could have
+            // written it. An include is spelled with its extension by the
+            // preprocessor; a class or `RUN` target never is. Matching on the
+            // string alone lets `thing.cls` claim an unresolved include and
+            // `thing` claim one that never named this file at all.
+            rows.extend(
+                found
+                    .iter()
+                    .filter(|row| shape.admits(row.reference.kind))
+                    .cloned(),
+            );
         }
         rows.sort_by(|a, b| {
             (a.file.as_path(), a.reference.name.as_str())
@@ -407,17 +467,23 @@ impl ReverseGraph {
         rows
     }
 
-    /// Every folded name a subject could have been referenced by.
-    fn candidate_names(&self, subject: &Subject) -> Vec<String> {
+    /// Every folded name a subject could have been referenced by, each paired with
+    /// the kind of reference that spelling could have come from.
+    fn candidate_names(&self, subject: &Subject) -> Vec<(String, NameShape)> {
         match subject {
-            Subject::Table(name) => vec![name.clone()],
+            Subject::Table(name) => vec![(name.clone(), NameShape::Table)],
             Subject::File(path) => {
                 let mut names = Vec::new();
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    names.push(name.to_ascii_lowercase());
+                    names.push((name.to_ascii_lowercase(), NameShape::Include));
                 }
                 if let Some(stem) = path.file_stem().and_then(|n| n.to_str()) {
-                    names.push(stem.to_ascii_lowercase());
+                    let folded = stem.to_ascii_lowercase();
+                    // Dropped when two covered files share it — see
+                    // `ambiguous_stems`.
+                    if !self.ambiguous_stems.contains(&folded) {
+                        names.push((folded, NameShape::Reference));
+                    }
                 }
                 // The dotted spelling a qualified class or `RUN` target uses, for
                 // each configured root this file sits under.
@@ -431,7 +497,7 @@ impl ReverseGraph {
                             let stem = last.rsplit_once('.').map_or(last.as_str(), |(s, _)| s);
                             let mut joined = head.to_vec();
                             joined.push(stem.to_string());
-                            names.push(joined.join("."));
+                            names.push((joined.join("."), NameShape::Reference));
                         }
                     }
                 }

@@ -401,6 +401,115 @@ fn an_edge_whose_target_cannot_be_named_is_reported_rather_than_dropped() {
     assert!(graph.unnameable_ratio() > 0.0);
 }
 
+/// A class that inherits `parent` unqualified and calls an inherited method, which
+/// is what makes the run record the lookup.
+fn caller_inheriting(parent: &str) -> String {
+    format!(
+        "CLASS caller INHERITS {parent}:\n\
+         METHOD PUBLIC VOID go():\n\
+         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n\
+         v-total = calc-total().\n\
+         MESSAGE v-total.\n\
+         END METHOD.\n\
+         END CLASS.\n"
+    )
+}
+
+/// A class with the one method the caller above calls. Nested under a package, so
+/// an unqualified reference cannot resolve to it and the lookup stays a gap.
+const LEAF: &str = "CLASS leaf:\n\
+                    METHOD PUBLIC INTEGER calc-total():\n\
+                    RETURN 0.\n\
+                    END METHOD.\n\
+                    END CLASS.\n";
+
+// A stem two files answer to stops being evidence. An unqualified `utils` genuinely
+// may name either file, so attributing it to both invents a dependent for one.
+#[test]
+fn an_ambiguous_stem_claims_no_unresolved_reference() {
+    let ws = Workspace::new(&[
+        ("a/utils.cls", LEAF),
+        ("b/utils.cls", LEAF),
+        ("caller.cls", &caller_inheriting("utils")),
+    ]);
+    let config = ws.config();
+    let graph = ws.graph(&config);
+
+    // The reference is unresolved and stays visible at the workspace level: the
+    // tightening hides the guess, never the gap.
+    assert!(
+        graph
+            .all_unresolved()
+            .iter()
+            .any(|row| row.reference.name == "utils"),
+        "the gap itself must not disappear, got {:?}",
+        graph.all_unresolved()
+    );
+
+    // But neither candidate claims it.
+    for candidate in ["a/utils.cls", "b/utils.cls"] {
+        let answer = graph.dependents(&Subject::file(proj(candidate)));
+        assert!(
+            answer.unresolved().is_empty(),
+            "{candidate} claimed an ambiguous stem: {:?}",
+            answer.unresolved()
+        );
+    }
+}
+
+// The tightening above must not cost a genuine match. One file carries the stem, so
+// the reference is attributed exactly as before.
+#[test]
+fn an_unambiguous_stem_still_claims_its_reference() {
+    let ws = Workspace::new(&[
+        ("pkg/helper.cls", LEAF),
+        ("caller.cls", &caller_inheriting("helper")),
+    ]);
+    let config = ws.config();
+    let graph = ws.graph(&config);
+
+    let answer = graph.dependents(&Subject::file(proj("pkg/helper.cls")));
+    let rows = answer.unresolved();
+    assert_eq!(rows.len(), 1, "got {rows:?}");
+    assert_eq!(rows[0].reference.name, "helper");
+    assert!(rows[0].file.ends_with("caller.cls"));
+}
+
+// A spelling only counts against the kind of reference that could have written it.
+// An unresolved include is spelled with its extension, so the stem of a same-named
+// file must not claim it.
+#[test]
+fn a_reference_spelling_does_not_claim_an_unresolved_include() {
+    // The include is written without an extension, so its name collides exactly
+    // with the stem of an unrelated class. Only the kinds tell them apart.
+    let ws = Workspace::new(&[("caller.p", "{thing}\nMESSAGE \"x\".\n")]);
+    let config = ws.config();
+    let graph = ws.graph(&config);
+
+    assert!(
+        graph
+            .all_unresolved()
+            .iter()
+            .any(|row| row.reference.name == "thing" && row.reference.kind.is_include()),
+        "expected an unresolved include named `thing`, got {:?}",
+        graph.all_unresolved()
+    );
+
+    // A file named exactly that still matches it: an include is spelled by file
+    // name, and this is one.
+    let by_name = graph.dependents(&Subject::file(proj("thing")));
+    assert_eq!(by_name.unresolved().len(), 1, "the include still matches");
+
+    // A class whose *stem* is that string does not. Nothing writes a class
+    // reference that way, so a match here would be a coincidence of spelling.
+    let by_stem = graph.dependents(&Subject::file(proj("pkg/thing.cls")));
+    assert!(
+        by_stem.unresolved().is_empty(),
+        "a class stem must not claim an unresolved include, got {:?}",
+        by_stem.unresolved()
+    );
+}
+
 // A file removed from the supplied list stops appearing as a dependent. The graph
 // answers about the files it was given, not about whatever is on disk.
 #[test]
