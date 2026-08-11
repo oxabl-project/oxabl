@@ -344,6 +344,63 @@ fn a_dotted_class_name_survives_an_include_root_spelled_with_dot_dot() {
     }
 }
 
+// An edge the pass cannot name is recorded, not dropped. A supplied index mints
+// its own file ids, and only the index that minted one can map it to a path — so a
+// pass answering through a foreign index resolves the edge and still cannot say
+// which file it points at. That is a real gap and it is reported as its own kind,
+// never as an unresolved reference: the workspace supplied the target perfectly
+// well.
+#[test]
+fn an_edge_whose_target_cannot_be_named_is_reported_rather_than_dropped() {
+    let ws = Workspace::new(&[
+        (
+            "orders/calc-base.cls",
+            "CLASS orders.calc-base:\n\
+             METHOD PUBLIC INTEGER calc-total():\n\
+             RETURN 0.\n\
+             END METHOD.\n\
+             END CLASS.\n",
+        ),
+        (
+            "orders/child.cls",
+            "CLASS orders.child INHERITS orders.calc-base:\n\
+             METHOD PUBLIC VOID go():\n\
+             DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n\
+             v-total = calc-total().\n\
+             MESSAGE v-total.\n\
+             END METHOD.\n\
+             END CLASS.\n",
+        ),
+    ]);
+
+    // The handle's own configuration can resolve nothing, so any edge that appears
+    // came from the supplied index and carries that index's file id.
+    let searchable = vec![PathBuf::from("/proj")];
+    let supplied = oxabl_index::BatchIndex::new(&ws.fs, &searchable);
+    let nowhere = PipelineConfig::default();
+    let child = vec![proj("orders/child.cls")];
+    let pipeline = LintPipeline::new(&nowhere, &ws.fs).with_index(&supplied);
+    let graph = ReverseGraph::build(&pipeline, &child);
+
+    let rows = graph.unnameable();
+    assert_eq!(rows.len(), 1, "got {rows:?}");
+    assert_eq!(rows[0].kind, EdgeKind::ClassReference);
+    assert_eq!(rows[0].target, "orders.calc-base");
+    assert!(rows[0].file.ends_with("child.cls"));
+
+    // It is not silently promoted into either of the honest collections.
+    assert!(graph.all_unresolved().is_empty(), "not a workspace gap");
+    assert!(
+        graph
+            .dependents(&Subject::file(proj("orders/calc-base.cls")))
+            .is_empty(),
+        "an unnameable edge is not a dependent"
+    );
+
+    // And it moves a number a reader can see.
+    assert!(graph.unnameable_ratio() > 0.0);
+}
+
 // A file removed from the supplied list stops appearing as a dependent. The graph
 // answers about the files it was given, not about whatever is on disk.
 #[test]

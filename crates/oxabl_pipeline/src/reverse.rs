@@ -25,6 +25,13 @@
 //! not abort the pass and it is never silently counted as "depends on nothing" —
 //! that distinction is the difference between an honest impact answer and one that
 //! under-reports.
+//!
+//! The same rule covers a narrower third failure. An edge can resolve and still be
+//! unnameable here, when its target is an index file id this pass cannot map back
+//! to a path — the id belongs to an index it does not own. Those are recorded in
+//! [`ReverseGraph::unnameable`] and counted in the ratios, rather than dropped.
+//! They are a different fact from an unresolved reference and are never merged
+//! with one.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -128,6 +135,23 @@ pub struct UnresolvedRow {
     pub reference: UnresolvedReference,
 }
 
+/// An edge whose target this pass could not name.
+///
+/// Distinct from an unresolved reference, and never folded into one. An
+/// unresolved reference is a name the *workspace* failed to supply. An unnameable
+/// edge resolved perfectly well — the workspace supplied it — and this pass simply
+/// cannot map the index's own file id back to a path, because the id was minted by
+/// an index it cannot ask. Reporting one as the other would claim a workspace gap
+/// that does not exist.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnnameableEdge {
+    /// The file that writes the edge.
+    pub file: PathBuf,
+    pub kind: EdgeKind,
+    /// The target's key, which is all the pass could recover of its identity.
+    pub target: String,
+}
+
 /// A file the pass could not analyse, and why.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Unanalysed {
@@ -196,6 +220,9 @@ pub struct ReverseGraph {
     unresolved_by_name: HashMap<String, Vec<UnresolvedRow>>,
     /// Files the pass could not analyse at all.
     unanalysed: Vec<Unanalysed>,
+    /// Edges whose target this pass could not name. Empty for a pass over its own
+    /// batch index, which is every pass today.
+    unnameable: Vec<UnnameableEdge>,
     /// Normalised paths of every file the pass covered.
     files: Vec<PathBuf>,
     /// Total resolved edges, for the ratio below.
@@ -229,6 +256,7 @@ impl ReverseGraph {
             dependents: HashMap::new(),
             unresolved_by_name: HashMap::new(),
             unanalysed: Vec::new(),
+            unnameable: Vec::new(),
             files: files.iter().map(|p| normalize_lexically(p)).collect(),
             edge_count: 0,
             unresolved_count: 0,
@@ -275,6 +303,14 @@ impl ReverseGraph {
     fn absorb(&mut self, dependent: &Path, edges: &DependencyEdges, pipeline: &LintPipeline<'_>) {
         for edge in edges.edges() {
             let Some(subject) = self.subject_of(&edge.target, pipeline) else {
+                // Recorded, not dropped. The pass promises never to present a
+                // failure as "depends on nothing", and an edge that vanished here
+                // would do exactly that while moving no number a reader could see.
+                self.unnameable.push(UnnameableEdge {
+                    file: dependent.to_path_buf(),
+                    kind: edge.kind,
+                    target: edge.target.key().to_string(),
+                });
                 continue;
             };
             self.edge_count += 1;
@@ -333,6 +369,8 @@ impl ReverseGraph {
         }
         self.unanalysed.sort();
         self.unanalysed.dedup();
+        self.unnameable.sort();
+        self.unnameable.dedup();
         self.files.sort();
         self.files.dedup();
     }
@@ -450,6 +488,15 @@ impl ReverseGraph {
         &self.unanalysed
     }
 
+    /// Edges whose target the pass could not name, so a consumer can say the
+    /// dependent set is short rather than presenting it as complete.
+    ///
+    /// Never folded into [`all_unresolved`](Self::all_unresolved): see
+    /// [`UnnameableEdge`] for why the two are different facts.
+    pub fn unnameable(&self) -> &[UnnameableEdge] {
+        &self.unnameable
+    }
+
     /// Every unresolved reference in the workspace, whatever it named.
     pub fn all_unresolved(&self) -> Vec<&UnresolvedRow> {
         let mut rows: Vec<&UnresolvedRow> = self.unresolved_by_name.values().flatten().collect();
@@ -479,11 +526,30 @@ impl ReverseGraph {
     ///
     /// The number that makes an impact answer's trustworthiness legible instead of
     /// assumed. `0.0` when the pass attempted nothing at all.
+    ///
+    /// The denominator is everything attempted, which includes the unnameable
+    /// edges below. Excluding them would shrink the denominator and flatter the
+    /// ratio for a pass that in fact knew less.
     pub fn unresolved_ratio(&self) -> f64 {
-        let total = self.edge_count + self.unresolved_count;
+        self.share(self.unresolved_count)
+    }
+
+    /// Unnameable edges as a share of every reference the pass attempted.
+    ///
+    /// Separate from [`unresolved_ratio`](Self::unresolved_ratio) over the same
+    /// denominator, because the two describe different gaps and one number cannot
+    /// say which is which.
+    pub fn unnameable_ratio(&self) -> f64 {
+        self.share(self.unnameable.len())
+    }
+
+    /// `part` as a share of everything the pass tried to turn into an edge.
+    /// `0.0` when it attempted nothing at all.
+    fn share(&self, part: usize) -> f64 {
+        let total = self.edge_count + self.unresolved_count + self.unnameable.len();
         if total == 0 {
             return 0.0;
         }
-        self.unresolved_count as f64 / total as f64
+        part as f64 / total as f64
     }
 }
