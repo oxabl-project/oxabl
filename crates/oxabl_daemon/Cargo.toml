@@ -32,6 +32,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.2.0", features = [
     "test-support",
 ] }
@@ -46,3 +47,7 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0", features = [
     "test-support",
 ] }
 tempfile = "3"
+
+[[bench]]
+name = "daemon_cycle_bench"
+harness = false
