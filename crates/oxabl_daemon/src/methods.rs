@@ -136,11 +136,13 @@ fn freshness(
     let _: FreshnessRequest =
         serde_json::from_value(params).map_err(MethodError::invalid_params)?;
     let root = context.workspace_root()?;
-    let state = host.with(|sessions| {
-        let session = sessions
-            .get(root)
-            .expect("a successful handshake creates its session");
-        session
+    // Reading the state and claiming the pass are one step. Split in two, a second
+    // call that arrives before the first spawned thread claims anything reads
+    // `None` as well and spawns again — and the loser then exists only to wait for
+    // a result it discards.
+    let (state, claimed) = host.with(|sessions| {
+        let session = sessions.for_root(root);
+        let state = session
             .workspace()
             .map(|workspace| {
                 let provenance = provenance(session);
@@ -148,16 +150,25 @@ fn freshness(
                 (workspace, provenance, freshness)
             })
             .map(EitherFreshness::Ready)
-            .or_else(|| session.workspace_progress().map(EitherFreshness::Indexing))
+            .or_else(|| session.workspace_progress().map(EitherFreshness::Indexing));
+        let claimed = if state.is_none() {
+            session.claim_workspace_pass()
+        } else {
+            None
+        };
+        (state, claimed)
     });
 
-    if state.is_none() {
+    // Starting the pass on first query is the feature; racing to start it is not.
+    // This call already answers immediately either way — the `None` arm below
+    // reports `Indexing` rather than blocking.
+    if let Some(progress) = claimed {
         let host = host.clone();
         let root = root.to_path_buf();
         std::thread::Builder::new()
             .name("oxabl-workspace-pass".to_string())
             .spawn(move || {
-                if let Err(error) = ensure_workspace(&host, &root, false) {
+                if let Err(error) = run_claimed_workspace_pass(&host, &root, progress) {
                     eprintln!("oxabl daemon: workspace pass failed: {error}");
                 }
             })
@@ -244,10 +255,13 @@ fn ensure_workspace(
                 && let Some(workspace) = session.workspace()
                 && workspace.buffer_generation == session.buffer_generation()
             {
-                return WorkspacePreparation::Ready;
+                // The snapshot travels out of the critical section that checked it.
+                // Re-reading it afterwards was a second lock acquisition guarded by
+                // an `expect` on a condition the first one had already left behind.
+                return WorkspacePreparation::Ready(workspace);
             }
-            if session.workspace_progress().is_some() {
-                return WorkspacePreparation::Wait;
+            if let Some(running) = session.workspace_progress() {
+                return WorkspacePreparation::Wait(running);
             }
             let progress = session.begin_workspace_pass();
             WorkspacePreparation::Build(
@@ -259,51 +273,101 @@ fn ensure_workspace(
         });
 
         match prepared {
-            WorkspacePreparation::Ready => {
-                return Ok(host.with(|sessions| {
-                    sessions
-                        .get(root)
-                        .and_then(|session| session.workspace())
-                        .expect("the checked workspace remains installed")
-                }));
-            }
-            WorkspacePreparation::Wait => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            WorkspacePreparation::Ready(workspace) => return Ok(workspace),
+            WorkspacePreparation::Wait(running) => {
+                // Parked on the running pass rather than polling for it. The loop
+                // still re-checks on wake: a spurious wake, and a pass that
+                // installed nothing because the buffers moved under it, both need
+                // one.
+                running.wait_until_finished(WORKSPACE_WAIT_TIMEOUT);
                 continue;
             }
             WorkspacePreparation::Build(root, overlay, generation, progress) => {
-                let workspace = match build_workspace(&root, overlay, generation, &progress) {
-                    Ok(workspace) => workspace,
-                    Err(error) => {
-                        host.with(|sessions| {
-                            if let Some(session) = sessions.get_mut(&root) {
-                                session.clear_workspace_progress();
-                            }
-                        });
-                        return Err(error);
-                    }
-                };
-                progress.complete();
-                let installed = host.with(|sessions| {
-                    let session = sessions.for_root(&root);
-                    if session.buffer_generation() != generation {
-                        return false;
-                    }
-                    session.install_config((*workspace.config).clone());
-                    session.install_workspace(workspace.clone());
-                    true
-                });
-                if installed {
-                    return Ok(workspace);
+                match run_claimed_pass(host, &root, overlay, generation, progress)? {
+                    Some(workspace) => return Ok(workspace),
+                    None => continue,
                 }
             }
         }
     }
 }
 
+/// Run one pass against a progress slot this caller already claimed, and signal
+/// every waiter when it ends.
+///
+/// Whoever claims the slot owns finishing it. Both claim sites route through here
+/// so there is one signal point rather than one per caller, and `Ok(None)` means
+/// the pass completed but the buffers moved under it, so nothing was installed.
+fn run_claimed_pass(
+    host: &SessionHost,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    generation: u64,
+    progress: WorkspaceProgress,
+) -> Result<Option<WorkspaceSnapshot>, MethodError> {
+    let outcome = match build_workspace(root, overlay, generation, &progress) {
+        Ok(workspace) => {
+            progress.complete();
+            host.with(|sessions| {
+                let session = sessions.for_root(root);
+                if session.buffer_generation() != generation {
+                    // Stale before it landed. Nothing to install, and the caller's
+                    // loop will start another pass.
+                    session.clear_workspace_progress();
+                    return Ok(None);
+                }
+                session.install_config((*workspace.config).clone());
+                session.install_workspace(workspace.clone());
+                Ok(Some(workspace))
+            })
+        }
+        Err(error) => {
+            host.with(|sessions| {
+                if let Some(session) = sessions.get_mut(root) {
+                    session.clear_workspace_progress();
+                }
+            });
+            Err(error)
+        }
+    };
+
+    // One signal, covering all three outcomes. A waiter not woken on the failure
+    // path would hang, which is worse than the polling this replaced — so there is
+    // exactly one place it can be forgotten.
+    progress.finish();
+    outcome
+}
+
+/// Run a pass claimed by a caller that has no overlay in hand, reading the
+/// session's own state for it.
+fn run_claimed_workspace_pass(
+    host: &SessionHost,
+    root: &Path,
+    progress: WorkspaceProgress,
+) -> Result<Option<WorkspaceSnapshot>, MethodError> {
+    let (owned_root, overlay, generation) = host.with(|sessions| {
+        let session = sessions.for_root(root);
+        (
+            session.root().to_path_buf(),
+            session.buffer_overlay(),
+            session.buffer_generation(),
+        )
+    });
+    run_claimed_pass(host, &owned_root, overlay, generation, progress)
+}
+
+/// How long a waiter parks before re-checking on its own.
+///
+/// A backstop, not the mechanism. The signal is what wakes a waiter; this only
+/// bounds the damage if one is ever missed, turning a hung daemon into a slow
+/// re-check.
+const WORKSPACE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 enum WorkspacePreparation {
-    Ready,
-    Wait,
+    /// A current snapshot, carried out of the critical section that checked it.
+    Ready(WorkspaceSnapshot),
+    /// Another pass is already running; wait on its completion signal.
+    Wait(WorkspaceProgress),
     Build(PathBuf, HashMap<PathBuf, Arc<str>>, u64, WorkspaceProgress),
 }
 
@@ -456,8 +520,13 @@ fn session_stamps(
     root: &Path,
     workspace: &WorkspaceSnapshot,
 ) -> (Provenance, Freshness) {
+    // `for_root` rather than an `expect` on `get`. The session does exist —
+    // a handshake created it and nothing removes one — but that is an argument
+    // from the absence of eviction code, not from a type or a lock, and it would
+    // stop holding the day sessions are reclaimed. Reaching for the session the
+    // ordinary way costs nothing and cannot become a contained panic in a log.
     host.with(|sessions| {
-        let session = sessions.get(root).expect("the workspace session exists");
+        let session = sessions.for_root(root);
         (provenance(session), workspace_freshness(workspace))
     })
 }

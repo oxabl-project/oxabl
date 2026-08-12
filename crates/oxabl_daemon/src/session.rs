@@ -91,10 +91,20 @@ pub struct Session {
     workspace_progress: Option<WorkspaceProgress>,
 }
 
+/// Live counters for one whole-workspace pass, plus the signal that it ended.
+///
+/// The signal lives here rather than beside the session state on purpose. A waiter
+/// clones this out from under the session lock, releases that lock, and blocks on
+/// the condvar — so waiting costs nothing and, more importantly, does not contend
+/// with the pass it is waiting for. Polling the session lock did: every wake took
+/// the same lock the running pass needs to install its result.
 #[derive(Clone, Default)]
 pub(crate) struct WorkspaceProgress {
     indexed: Arc<AtomicU32>,
     total: Arc<AtomicU32>,
+    /// Set once when the pass ends, **however** it ends. A waiter that is not woken
+    /// on the failure path hangs, which is worse than the polling this replaces.
+    finished: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 }
 
 impl WorkspaceProgress {
@@ -116,6 +126,32 @@ impl WorkspaceProgress {
     pub fn complete(&self) {
         let total = self.total.load(Ordering::Relaxed);
         self.indexed.store(total, Ordering::Relaxed);
+    }
+
+    /// Mark the pass ended and wake every waiter.
+    ///
+    /// Idempotent, and called on success, on a discarded stale result, and on
+    /// failure alike — one call site covering all three, because three would be
+    /// three chances to forget one.
+    pub fn finish(&self) {
+        let (lock, condvar) = &*self.finished;
+        let mut finished = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *finished = true;
+        condvar.notify_all();
+    }
+
+    /// Block until the pass ends, or until `timeout` elapses.
+    ///
+    /// The timeout is a backstop, not the mechanism: a missed wake becomes a slow
+    /// re-check rather than a hung daemon, which is the failure mode condvar code
+    /// is worth defending against.
+    pub fn wait_until_finished(&self, timeout: std::time::Duration) {
+        let (lock, condvar) = &*self.finished;
+        let finished = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *finished {
+            return;
+        }
+        let _ = condvar.wait_timeout(finished, timeout);
     }
 }
 
@@ -233,6 +269,19 @@ impl Session {
         let progress = WorkspaceProgress::default();
         self.workspace_progress = Some(progress.clone());
         progress
+    }
+
+    /// Claim the right to run a pass, or report that one is already running.
+    ///
+    /// Reading the state and claiming it has to be one step. Split across two, a
+    /// caller that decides to start a pass because it saw none can be beaten to it
+    /// by another caller doing the same — and the loser exists only to wait for a
+    /// result it then discards.
+    pub(crate) fn claim_workspace_pass(&mut self) -> Option<WorkspaceProgress> {
+        if self.workspace_progress.is_some() {
+            return None;
+        }
+        Some(self.begin_workspace_pass())
     }
 
     pub(crate) fn clear_workspace_progress(&mut self) {
@@ -707,4 +756,86 @@ fn workspace_progress_advances_and_completes() {
     assert_eq!(progress.values(), (1, 3));
     progress.complete();
     assert_eq!(progress.values(), (3, 3));
+}
+
+/// A waiter parks on the running pass instead of polling for it.
+///
+/// The polling this replaced woke about a hundred times a second and took the
+/// session lock on every wake — the same lock the running pass needs to install
+/// its result, so waiting contended with the work being waited for. Asserted here
+/// as the property that matters: a waiter makes no progress until the pass ends,
+/// and then returns promptly.
+///
+/// Scoped to the primitive rather than driven through a slow workspace pass:
+/// `build_workspace` constructs its filesystem inline, so there is no seam to park
+/// a real pass on without adding one.
+#[test]
+fn a_waiter_parks_until_the_pass_finishes() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    let progress = WorkspaceProgress::default();
+    let returned = Arc::new(AtomicBool::new(false));
+
+    let waiter = {
+        let progress = progress.clone();
+        let returned = Arc::clone(&returned);
+        std::thread::spawn(move || {
+            progress.wait_until_finished(Duration::from_secs(30));
+            returned.store(true, Ordering::SeqCst);
+        })
+    };
+
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !returned.load(Ordering::SeqCst),
+        "the waiter must stay parked while the pass runs"
+    );
+
+    progress.finish();
+    waiter.join().expect("the waiter wakes and returns");
+    assert!(returned.load(Ordering::SeqCst));
+}
+
+/// The signal fires however the pass ended, and a waiter that arrives after it is
+/// not left parked for a wake that already happened.
+#[test]
+fn a_finished_pass_releases_a_late_waiter_immediately() {
+    use std::time::{Duration, Instant};
+
+    let progress = WorkspaceProgress::default();
+    // The failure path finishes without ever calling `complete`, so a waiter must
+    // be released by `finish` alone. Missing that wake is a hang, which is worse
+    // than the polling this replaced.
+    progress.finish();
+
+    let started = Instant::now();
+    progress.wait_until_finished(Duration::from_secs(30));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "a waiter arriving after the signal must not block"
+    );
+}
+
+/// Only one caller can claim a pass, so the loser never starts a second one.
+///
+/// Reading the state and claiming it used to be two steps, and between them a
+/// second caller could read "no pass running" and spawn a thread whose only work
+/// was to wait for a result it then discarded.
+#[test]
+fn only_one_caller_can_claim_a_pass() {
+    let mut session = Session::new("/proj");
+
+    let first = session.claim_workspace_pass();
+    assert!(first.is_some(), "the first caller claims the pass");
+    assert!(
+        session.claim_workspace_pass().is_none(),
+        "a second caller must not start its own pass"
+    );
+
+    session.clear_workspace_progress();
+    assert!(
+        session.claim_workspace_pass().is_some(),
+        "the slot is claimable again once the pass ends"
+    );
 }
