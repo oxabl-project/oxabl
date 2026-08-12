@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 /// Bump on any shape change to a type in this crate. There is no negotiation and
 /// no compatibility window: both products are pre-1.0 and are built together, so a
 /// mismatch means one side is stale and should be told so rather than accommodated.
-pub const CONTRACT_VERSION: u32 = 2;
+pub const CONTRACT_VERSION: u32 = 3;
 
 /// The `oxabl/*` method names, as they travel.
 pub mod method {
@@ -253,6 +253,15 @@ pub struct Freshness {
     /// Unresolved references as a share of every reference the pass attempted,
     /// so an answer's trustworthiness is legible rather than assumed.
     pub unresolved_ratio: f64,
+    /// Edges the pass resolved but could not name a file for, because the id came
+    /// from an index it does not own.
+    ///
+    /// Reported separately from `unresolved_ratio` because the two are different
+    /// gaps: an unresolved reference is a name the workspace failed to supply,
+    /// while these resolved and only lost their path. One number could not say
+    /// which had happened, and folding them would claim a workspace gap that does
+    /// not exist.
+    pub unnameable_edges: u32,
     /// How long the last completed pass took.
     pub last_pass_millis: Sourced<u64>,
 }
@@ -687,6 +696,7 @@ mod tests {
             indexed_files: 14_015,
             unanalysed_files: 2,
             unresolved_ratio: 0.07,
+            unnameable_edges: 0,
             last_pass_millis: Sourced::Available { value: 41_000 },
         }
     }

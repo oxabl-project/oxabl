@@ -238,6 +238,12 @@ pub struct EdgeInputs<'a> {
 /// this workspace `salsa::Cancelled` travels as a panic payload, so a guard here
 /// would turn a cancelled recompute into a silently empty edge set — an impact
 /// answer that says "nothing depends on this" because the query was interrupted.
+///
+/// `LintPipeline::edge_set_with` does span this call with
+/// [`oxabl_common::catch_panic`], and that is consistent rather than an exception:
+/// the guard re-raises any payload it cannot describe, so a cancellation still
+/// travels out to the layer that understands it. The rule above is about what a
+/// guard may *swallow*, not about which calls one may enclose.
 pub fn build_edge_set(inputs: &EdgeInputs<'_>) -> DependencyEdges {
     let mut edges = Vec::new();
     let mut unresolved = Vec::new();

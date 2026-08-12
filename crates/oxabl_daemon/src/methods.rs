@@ -189,6 +189,7 @@ fn freshness(
                     indexed_files: indexed,
                     unanalysed_files: 0,
                     unresolved_ratio: 0.0,
+                    unnameable_edges: 0,
                     last_pass_millis: Sourced::unavailable("no workspace pass has completed"),
                 },
                 schema: SchemaIdentity {
@@ -208,6 +209,7 @@ fn freshness(
                 indexed_files: 0,
                 unanalysed_files: 0,
                 unresolved_ratio: 0.0,
+                unnameable_edges: 0,
                 last_pass_millis: Sourced::unavailable("no workspace pass has completed"),
             },
             schema: SchemaIdentity {
@@ -553,6 +555,7 @@ fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
         indexed_files: workspace.graph.file_count() as u32,
         unanalysed_files: workspace.graph.unanalysed().len() as u32,
         unresolved_ratio: workspace.graph.unresolved_ratio(),
+        unnameable_edges: workspace.graph.unnameable().len() as u32,
         last_pass_millis: Sourced::Available {
             value: workspace.pass_millis,
         },
