@@ -5,8 +5,20 @@
 //!
 //! One file per workspace root, under the XDG cache directory, recording the
 //! daemon's pid, its socket path, and the contract it speaks. No port to allocate
-//! and no registry service to keep alive; filesystem permissions do the access
-//! control. The location and the file's shape live in
+//! and no registry service to keep alive.
+//!
+//! Filesystem permissions do the access control, and they are applied rather than
+//! assumed: [`ensure_registration_dir`] makes the leaf directory 0700 and repairs
+//! one an earlier build left at 0755, the registration is opened 0600, and the
+//! socket is bound inside that directory. The directory is the load-bearing
+//! control, because it leaves no window in which the socket exists and is
+//! reachable. The mode on each file is the backstop.
+//!
+//! The unit of access is a uid, not a person. Two humans sharing one account share
+//! one daemon; that is the same trust boundary every other file in the cache
+//! directory has.
+//!
+//! The location and the file's shape live in
 //! [`oxabl_daemon_protocol`](oxabl_daemon_protocol::Registration), because both the
 //! daemon that writes it and every client that reads it must agree — and a client
 //! must not pull the whole analysis stack in to read a small JSON file.
@@ -25,7 +37,80 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use oxabl_daemon_protocol::{CONTRACT_VERSION, Registration, registration_path};
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+
+use oxabl_daemon_protocol::{
+    CONTRACT_VERSION, Registration, registration_dir, registration_path, temp_dir_fallback_in_use,
+};
+
+/// Create the registration directory, owned by this user and reachable by nobody
+/// else.
+///
+/// The access control this module claims is a directory mode, so it has to be
+/// applied where the directory is made — and in one place, because two call sites
+/// spelling the intent twice is how one of them drifts.
+///
+/// Both steps are needed. `DirBuilder::mode` sets the mode at creation, leaving no
+/// window in which the directory exists and is reachable. It does nothing for a
+/// directory that already exists, and a developer who ran an earlier build already
+/// has a 0755 one — so the mode is also set unconditionally afterwards.
+///
+/// Only the leaf is tightened. A 0700 leaf already blocks traversal, so the
+/// intermediate `oxabl` directory can keep the umask default.
+pub fn ensure_registration_dir() -> io::Result<PathBuf> {
+    let dir = registration_dir();
+
+    #[cfg(unix)]
+    {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .or_else(|error| match error.kind() {
+                io::ErrorKind::AlreadyExists => Ok(()),
+                _ => Err(error),
+            })?;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+        verify_owned_when_shared(&dir)?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(&dir)?;
+
+    Ok(dir)
+}
+
+/// Refuse a registration directory in a shared parent that is not ours.
+///
+/// With neither `XDG_CACHE_HOME` nor `HOME` set, the directory lands under the
+/// system temp directory — a world-writable parent, where another user can create
+/// `oxabl/daemon` first and `create_dir_all` will adopt it, symlink included. That
+/// is an integrity problem rather than a confidentiality one, and a mode cannot fix
+/// it: the directory is already someone else's.
+///
+/// Checked only on that branch. Under a home directory the parent is already the
+/// user's own.
+#[cfg(unix)]
+fn verify_owned_when_shared(dir: &Path) -> io::Result<()> {
+    if !temp_dir_fallback_in_use() {
+        return Ok(());
+    }
+    let metadata = fs::metadata(dir)?;
+    // SAFETY: `getuid` reads the calling process's real user id. It takes no
+    // arguments, touches no memory, and cannot fail.
+    let uid = unsafe { libc_getuid() };
+    if metadata.uid() != uid || metadata.mode() & 0o777 != 0o700 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to use {}: it is in a shared directory and is not a \
+                 private directory owned by this user. Set XDG_CACHE_HOME or HOME.",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
 
 /// What a client found when it looked for a daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,11 +156,14 @@ pub fn discover(workspace_root: &Path) -> Discovery {
 /// Written to a temporary file and renamed, so a client reading concurrently sees
 /// either the old registration or the new one and never a half-written file that
 /// parses as neither.
+///
+/// The staging name carries the writer's pid. `rename` is atomic, but the write
+/// into the staging file is not — so a staging path shared between two writers let
+/// one of them rename a body the other was still writing, which is the torn read
+/// this design exists to prevent. A per-writer name makes the guarantee real.
 pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Result<PathBuf> {
     let path = registration_path(workspace_root);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_registration_dir()?;
     let registration = Registration {
         pid,
         socket_path: socket_path.to_string_lossy().into_owned(),
@@ -84,10 +172,43 @@ pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Resu
     };
     let body = serde_json::to_string_pretty(&registration)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let staged = path.with_extension("json.tmp");
-    fs::write(&staged, body)?;
-    fs::rename(&staged, &path)?;
-    Ok(path)
+
+    let staged = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    write_private(&staged, body.as_bytes())?;
+    // Renaming onto the destination replaces it atomically; the staging file is
+    // removed by the rename itself, so a failure before this point is what leaves
+    // one behind.
+    match fs::rename(&staged, &path) {
+        Ok(()) => Ok(path),
+        Err(error) => {
+            let _ = fs::remove_file(&staged);
+            Err(error)
+        }
+    }
+}
+
+/// Write `body` to `path`, readable by this user only.
+///
+/// `fs::write` cannot set a mode, so the file would exist world-readable for the
+/// moment before any chmod. Opening with the mode closes that window. `create_new`
+/// makes a colliding staging path an error rather than a silent overwrite — which
+/// is safe precisely because the name above carries the writer's pid.
+fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    // A staging file left by a previous run that died between write and rename
+    // would otherwise block every later registration.
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    let mut file = options.open(path)?;
+    file.write_all(body)?;
+    file.sync_all()
 }
 
 /// Remove the registration for `workspace_root`, on an orderly shutdown.
@@ -105,8 +226,9 @@ pub fn unregister(workspace_root: &Path) -> io::Result<()> {
 /// The socket path a daemon for `workspace_root` listens on.
 ///
 /// Beside the registration rather than in a temp directory, so the two share a
-/// lifetime and a permission model: whoever can read the registration can reach the
-/// socket, and nothing else can.
+/// lifetime and a permission model: both sit in the 0700 directory
+/// [`ensure_registration_dir`] guarantees, so whoever can read the registration can
+/// reach the socket and nobody else can traverse to either.
 ///
 /// Built by swapping the extension explicitly rather than with
 /// `Path::with_extension`. A flattened root contains dots of its own, so
@@ -160,6 +282,9 @@ fn process_is_alive(_pid: u32) -> bool {
 unsafe extern "C" {
     #[link_name = "kill"]
     fn libc_kill(pid: i32, sig: i32) -> i32;
+
+    #[link_name = "getuid"]
+    fn libc_getuid() -> u32;
 }
 
 #[cfg(test)]
@@ -188,6 +313,54 @@ mod tests {
             }
         }
         out
+    }
+
+    // The access control is a mode, so it is asserted as one. A directory an
+    // earlier build left world-readable is repaired rather than accepted, which is
+    // the case `create_dir_all` alone silently gets wrong.
+    #[cfg(unix)]
+    #[test]
+    fn the_registration_directory_and_file_are_private() {
+        with_cache_home(|cache| {
+            let dir = cache.join("oxabl").join("daemon");
+            fs::create_dir_all(&dir).expect("a pre-existing directory");
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755))
+                .expect("leave it as an earlier build would");
+
+            let root = Path::new("/proj/private");
+            let path = register(root, &socket_path_for(root), std::process::id())
+                .expect("registration writes");
+
+            assert_eq!(
+                fs::metadata(&dir).expect("the directory").mode() & 0o777,
+                0o700,
+                "an existing loose directory must be repaired, not accepted"
+            );
+            assert_eq!(
+                fs::metadata(&path).expect("the registration").mode() & 0o777,
+                0o600,
+            );
+        });
+    }
+
+    // Two registrations for one root must not share a staging path. The rename is
+    // atomic; the write into the staging file is not, so a shared name lets one
+    // writer publish a body the other is still writing.
+    #[test]
+    fn a_staging_path_is_per_writer() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/staged");
+            let path = register(root, &socket_path_for(root), std::process::id())
+                .expect("registration writes");
+            let staged = path.with_extension(format!("json.{}.tmp", std::process::id()));
+
+            assert!(!staged.exists(), "the rename consumes the staging file");
+            assert!(
+                staged.file_name().expect("a name")
+                    != path.with_extension("json.tmp").file_name().expect("a name"),
+                "the staging name must carry the writer's identity"
+            );
+        });
     }
 
     #[test]

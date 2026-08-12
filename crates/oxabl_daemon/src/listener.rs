@@ -10,8 +10,11 @@
 //!
 //! # Why a Unix socket
 //!
-//! No port to allocate, and filesystem permissions do the access control. Windows
-//! named pipes are deferred; the desktop app targets Linux first.
+//! No port to allocate, and filesystem permissions do the access control: the
+//! socket is bound inside the 0700 registration directory and chmodded 0600, so it
+//! is reachable only by the uid that owns it. See `registry` for why the directory
+//! rather than the file mode is the load-bearing half. Windows named pipes are
+//! deferred; the desktop app targets Linux first.
 //!
 //! # One client's slowness is one client's slowness
 //!
@@ -78,12 +81,21 @@ impl Listener {
         // `ENAMETOOLONG` from `bind` with neither.
         oxabl_daemon_protocol::check_socket_path_fits(&socket_path)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        if let Some(parent) = socket_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        // A 0700 directory is the access control, and it is the race-free half:
+        // the socket is unreachable from the moment it exists, because nobody else
+        // can traverse into the directory to reach it.
+        registry::ensure_registration_dir()?;
         // The previous owner is not alive, so its socket file is debris.
         let _ = std::fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path)?;
+        // Belt and braces. On Linux the connect permission is the socket's write
+        // bit, and `bind` takes the ambient umask — so this is the control that
+        // still holds if the directory's mode is ever loosened from outside.
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(
+            &socket_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        );
         registry::register(&workspace_root, &socket_path, std::process::id())?;
 
         Ok(Listener {

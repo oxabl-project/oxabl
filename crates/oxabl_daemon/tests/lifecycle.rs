@@ -128,3 +128,35 @@ fn installing_a_configuration_bumps_the_generation() {
     session.install_config(oxabl_pipeline::PipelineConfig::default());
     assert_eq!(session.config_generation(), 2);
 }
+
+// The socket a real listener binds is reachable by this uid and nobody else. The
+// directory is the load-bearing control, so both are asserted: a 0600 socket inside
+// a 0755 directory would still be a weaker guarantee than the docs claim.
+#[cfg(unix)]
+#[test]
+fn a_bound_socket_and_its_directory_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cache = tempfile::tempdir().expect("a cache directory");
+    let root = tempfile::tempdir().expect("a workspace root");
+    // SAFETY: this test binary mutates the environment only here, and the listener
+    // resolves the directory during `bind` below.
+    unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
+
+    let listener = oxabl_daemon::Listener::bind(root.path()).expect("bind a listener");
+    let socket = listener.socket_path().to_path_buf();
+
+    let mode = |path: &Path| {
+        std::fs::metadata(path)
+            .expect("the path exists")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&socket), 0o600, "the socket is private");
+    assert_eq!(
+        mode(&cache.path().join("oxabl").join("daemon")),
+        0o700,
+        "the directory nobody else can traverse is the real control"
+    );
+}

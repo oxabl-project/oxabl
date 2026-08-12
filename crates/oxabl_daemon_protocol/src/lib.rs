@@ -513,6 +513,17 @@ pub fn registration_dir() -> PathBuf {
     std::env::temp_dir().join("oxabl").join("daemon")
 }
 
+/// Whether [`registration_dir`] is resolving through the temp-directory fallback.
+///
+/// That branch puts the registration under a world-writable parent, where another
+/// user can create the directory first and have it adopted. A caller that creates
+/// the directory has to check ownership there and nowhere else, and only this
+/// function knows which branch was taken.
+pub fn temp_dir_fallback_in_use() -> bool {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    !set("XDG_CACHE_HOME") && !set("HOME")
+}
+
 /// The longest socket path a Unix domain socket can carry.
 ///
 /// `sun_path` is 108 bytes on Linux and the kernel needs the terminating NUL, so
