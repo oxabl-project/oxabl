@@ -8,18 +8,21 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_pipeline"
 
 # NOTE (KTD1/KTD6): this crate sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the
 # `oxabl` umbrella, so it must depend on none of them. It must also never gain a
-# `salsa` dependency: the umbrella re-exports this crate unconditionally, and the
-# browser bundle goes through the umbrella, so a `salsa` edge here would land in
+# incremental-database dependency: the umbrella re-exports this crate unconditionally, and the
+# browser bundle goes through the umbrella, so that edge would land in
 # the WASM payload.
 #
 # That rule extends transitively to everything this crate pulls in, and
 # `oxabl_index` is the newest such edge: it is the batch cross-file index every
-# non-incremental client resolves through, it must stay `salsa`-free for exactly
+# non-incremental client resolves through, it must stay free of that engine for exactly
 # the reason above, and it carries the mirror of this note at the head of its own
 # manifest. The language server's incremental index implements the same
-# `WorkspaceIndex` seam *above* this crate, which is what keeps `salsa` on the one
+# `WorkspaceIndex` seam *above* this crate, which keeps the engine on the one
 # side of the seam the browser never reaches.
 [dependencies]
+# For `Span`: a dependency edge carries the offsets in the dependent file where the
+# dependency is written, and `src/reverse.rs` hands them to a client.
+oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
 oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.1" }
@@ -41,14 +44,17 @@ test-support = ["oxabl_schema/test-support"]
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"
+# The envelope-section test drives a parse directly, so it can assert the version
+# map on a document this crate produced end to end.
+oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.0" }
+oxabl_parser = { path = "../oxabl_parser", version = "1.0.0" }
 # NOTE: no self `oxabl_pipeline = { path = "." }` entry here. Feature-enabling a
 # crate for its own `tests/` target needs one, and Cargo accepts it, but
 # release-please's `cargo-workspace` plugin reads the `path = "."` edge as a
 # dependency cycle and fails the release run outright. This crate's parity leg
 # therefore lives in `src/parity.rs` under `#[cfg(test)]`, where the fixture
 # table is in scope without a feature; see `src/fixtures.rs`.
-# Only for `Span` inside a fabricated `FileSpan` — see the fatal-expansion test.
-oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
 # Arms `panic_if_injected` so a source carrying an `OXABL-TEST-PANIC:<site>`
 # marker panics at the guarded site. No ABL input panics today, so this is the
 # only way to test that `LintPipeline::run` contains a panic while `expand` and

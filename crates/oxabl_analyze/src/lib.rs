@@ -51,7 +51,7 @@
 //!   "diagnostics": [ ... ],
 //!   "preproc": [ ... ],
 //!   "coverage": { "unjudged_symbols": 0 },
-//!   "dependencies": { "index_revision": 0, "files": [], "unresolved": [] }
+//!   "dependencies": { "index_revision": 0, "edges": [], "unresolved": [] }
 //! }
 //! ```
 //!
@@ -64,9 +64,12 @@
 mod collect;
 
 pub use collect::{
-    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile, collect_diagnostics,
-    collect_from_expanded, collect_with_model, expand_source, is_loud,
+    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
+    collect_diagnostics, collect_from_expanded, collect_with_model, expand_source, is_loud,
 };
+// Re-exported so a consumer of an expansion need not also depend on the
+// preprocessor just to name the unresolved-include rows the expansion carries.
+pub use oxabl_preprocessor::UnresolvedInclude;
 
 use oxabl_ast::{NodeId, Statement};
 use oxabl_common::{Diagnostic, Severity};
@@ -115,6 +118,16 @@ pub const ENVELOPE_VERSION: u32 = 1;
 ///   `not_found_in_workspace` split into `absent_from_workspace` (searched, no
 ///   such file) and `present_but_unusable` (located, unreadable or unparseable),
 ///   because only the first licenses telling a user the name does not exist.
+/// * `dependencies` 3 — a row is now a **typed dependency edge**, not just a
+///   consulted file, and the array is `edges` rather than `files` to say so: a
+///   schema-table row has no file. `via` widens from three values to the six edge kinds
+///   (`direct_include`, `transitive_include`, `schema_table`, `class`, `program`,
+///   `shared_producer`); `name` becomes `target`, whose value is a resolved path
+///   for an include and a folded name otherwise; `file` is now optional, since an
+///   include mints no index id and a schema table has no file at all; and a row
+///   carries the `span` where the analysed file writes the reference, in that
+///   file's **own** bytes rather than the post-expansion coordinates the
+///   `unresolved` rows used to report.
 fn section_versions() -> Value {
     let mut sections = Map::new();
     sections.insert("scopes".into(), json!(1));
@@ -124,7 +137,7 @@ fn section_versions() -> Value {
     sections.insert("diagnostics".into(), json!(1));
     sections.insert("preproc".into(), json!(1));
     sections.insert("coverage".into(), json!(1));
-    sections.insert("dependencies".into(), json!(2));
+    sections.insert("dependencies".into(), json!(3));
     Value::Object(sections)
 }
 
@@ -135,6 +148,7 @@ pub fn dump_json(
     sem: &Semantic,
     ctx: &AnalysisContext,
     include_lint: bool,
+    dependencies: &DependencySection,
 ) -> Value {
     let lint_diags: Vec<Diagnostic> = if include_lint {
         oxabl_lint::lint_file(program, sem, ctx)
@@ -157,7 +171,7 @@ pub fn dump_json(
         // consumer can index it unconditionally.
         "preproc": Value::Array(Vec::new()),
         "coverage": coverage_json(sem),
-        "dependencies": dependencies_json(sem),
+        "dependencies": dependencies_json(dependencies),
     })
 }
 
@@ -176,7 +190,11 @@ pub fn dump_json(
 /// The `coverage` section reports [`unjudged_symbol_count`] for the same reason.
 /// Both used to be keys the CLI spliced in afterwards, which meant every other
 /// caller of this function silently lost them.
-pub fn dump_json_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnostics) -> Value {
+pub fn dump_json_with_diagnostics(
+    sem: &Semantic,
+    collected: &CollectedDiagnostics,
+    dependencies: &DependencySection,
+) -> Value {
     json!({
         "envelope": ENVELOPE_VERSION,
         "sections": section_versions(),
@@ -188,7 +206,7 @@ pub fn dump_json_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnosti
         "diagnostics": collected_diagnostics_json(collected),
         "preproc": preproc_json(collected),
         "coverage": coverage_json(sem),
-        "dependencies": dependencies_json(sem),
+        "dependencies": dependencies_json(dependencies),
     })
 }
 
@@ -218,7 +236,12 @@ pub fn unjudged_symbol_count(sem: &Semantic) -> usize {
 /// Human-oriented text rendering. Compact, not stable across versions — if
 /// you need stability, dump to JSON. Used for interactive `oxabl analyze`
 /// runs without `--format json`.
-pub fn dump_text(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> String {
+pub fn dump_text(
+    program: &[Statement],
+    sem: &Semantic,
+    ctx: &AnalysisContext,
+    dependencies: &DependencySection,
+) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     write_scopes_and_symbols(&mut out, sem);
@@ -238,7 +261,7 @@ pub fn dump_text(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -
     // This entry point never ran a preprocessor, so the `preproc` section has no
     // text counterpart here; coverage and dependencies do.
     write_coverage(&mut out, sem);
-    write_dependencies(&mut out, sem);
+    write_dependencies(&mut out, dependencies);
     out
 }
 
@@ -249,7 +272,11 @@ pub fn dump_text(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -
 /// The preprocessor and coverage sections are rendered here too — they were
 /// JSON-only for as long as the CLI spliced them in, so `--format text` used to
 /// be strictly less informative than `--format json` about the *same* run.
-pub fn dump_text_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnostics) -> String {
+pub fn dump_text_with_diagnostics(
+    sem: &Semantic,
+    collected: &CollectedDiagnostics,
+    dependencies: &DependencySection,
+) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     write_scopes_and_symbols(&mut out, sem);
@@ -274,7 +301,7 @@ pub fn dump_text_with_diagnostics(sem: &Semantic, collected: &CollectedDiagnosti
     }
 
     write_coverage(&mut out, sem);
-    write_dependencies(&mut out, sem);
+    write_dependencies(&mut out, dependencies);
     out
 }
 
@@ -299,10 +326,10 @@ fn write_coverage(out: &mut String, sem: &Semantic) {
 /// Always printed, including when nothing cross-file happened: `index revision: 0`
 /// is the fact that no index was attached, and it is what tells a reader that an
 /// empty unresolved list means nothing was looked at.
-fn write_dependencies(out: &mut String, sem: &Semantic) {
+fn write_dependencies(out: &mut String, dependencies: &DependencySection) {
     use std::fmt::Write;
-    let deps = dependencies_json(sem);
-    let files = deps["files"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let deps = dependencies_json(dependencies);
+    let edges = deps["edges"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let unresolved = deps["unresolved"]
         .as_array()
         .map(Vec::as_slice)
@@ -315,14 +342,16 @@ fn write_dependencies(out: &mut String, sem: &Semantic) {
         deps["index_revision"].as_u64().unwrap_or(0)
     )
     .ok();
-    writeln!(out, "  files consulted ({}):", files.len()).ok();
-    for f in files {
+    writeln!(out, "  dependency edges ({}):", edges.len()).ok();
+    for f in edges {
         writeln!(
             out,
             "    [{}] {} {}",
-            f["file"].as_u64().unwrap_or(0),
+            f["file"]
+                .as_u64()
+                .map_or("-".to_string(), |id| id.to_string()),
             f["via"].as_str().unwrap_or("?"),
-            f["name"].as_str().unwrap_or("?"),
+            f["target"].as_str().unwrap_or("?"),
         )
         .ok();
     }
@@ -746,51 +775,82 @@ fn coverage_json(sem: &Semantic) -> Value {
     json!({ "unjudged_symbols": unjudged_symbol_count(sem) })
 }
 
-/// One other file this run consulted, and what linked it.
-#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
-struct DependencyFileRow {
-    /// The index's own file id — **not** a [`FileId`](oxabl_common::FileId), and
-    /// not a path. Only the index implementation that minted it can map it back
-    /// to one, which is exactly why a diagnostic may not be anchored at it.
-    file: u32,
-    /// Which question reached this file: `class` (a supertype chain walk),
-    /// `program` (a literal `RUN` target), `shared_producer` (the file whose
-    /// `DEFINE NEW [GLOBAL] SHARED` a local `DEFINE SHARED` corresponds to).
-    via: &'static str,
-    /// The name that was looked up, folded — the index's identity for it.
-    name: String,
+/// One typed dependency edge, as the caller assembled it.
+///
+/// # Why this arrives as data
+///
+/// The derivation lives in `oxabl_index`, which sits *above* this crate — it is a
+/// dev-dependency here and must never become a normal one. Deriving the edges a
+/// second time here would put two copies of "what does this file depend on, and
+/// why" in the workspace, and the whole point of one shared derivation is that no
+/// client can drift from another. So this crate serialises the section and does
+/// not compute it. `oxabl_pipeline`, which owns both sides, converts an edge set
+/// into these rows.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DependencyEdgeRow {
+    /// The edge kind: `direct_include`, `transitive_include`, `schema_table`,
+    /// `class`, `program`, or `shared_producer`.
+    pub via: String,
+    /// The target's identity — a resolved path for an include, a folded name for
+    /// everything else.
+    pub target: String,
+    /// The index's own file id, when the target is a workspace file a lookup
+    /// reached. **Not** a [`FileId`](oxabl_common::FileId) and not a path: only the
+    /// index implementation that minted it can map it back, which is why a
+    /// diagnostic may not be anchored at it.
+    ///
+    /// Absent for an include — the preprocessor works in paths and mints no index
+    /// id — and for a schema table, which has no file at all.
+    pub file: Option<u32>,
+    /// Where the analysed file writes the reference, in that file's own bytes.
+    /// Absent when the file does not write it: a transitive include is named in an
+    /// intermediate file, and an ancestor reached through a supertype is named in
+    /// another file's header.
+    pub span: Option<LookupSpanRow>,
 }
 
-/// One cross-file lookup that produced no link.
-#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
-struct UnresolvedLookupRow {
-    /// The question asked. `class` today; a future index question adds a value
-    /// here rather than another section.
-    via: &'static str,
-    name: String,
-    /// The same strings the `references` section's `reason` uses, from the same
-    /// [`unresolved_reason_str`] — a consumer learns one vocabulary, not two.
-    reason: &'static str,
-    /// Where the name is written in the file under analysis, when the file
-    /// writes it at all. `None` for an *ancestor* reached through a supertype:
-    /// that name appears in another file's header, and inventing a span in this
-    /// one would point at unrelated bytes.
-    span: Option<LookupSpanRow>,
+/// One cross-file reference that produced no link.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnresolvedEdgeRow {
+    /// Which question was asked, from the same six-value vocabulary as
+    /// [`DependencyEdgeRow::via`].
+    pub via: String,
+    pub name: String,
+    /// The same strings the `references` section's `reason` uses — a consumer
+    /// learns one vocabulary, not two.
+    pub reason: String,
+    /// Where the analysed file names it, when it names it in its own bytes.
+    pub span: Option<LookupSpanRow>,
 }
 
-/// A span inside the file under analysis. Deliberately not the `diagnostics`
-/// section's [`SpanRow`]: that carries a `file` because a diagnostic can be
-/// anchored anywhere, while this is always the analysed file — and these offsets
-/// are the model's own **virtual** (post-expansion) coordinates, not the
-/// root-resolved ones a diagnostic row carries. This section is a dump of index
-/// state, not a finding to render.
-#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
-struct LookupSpanRow {
-    start: u32,
-    end: u32,
+/// The whole `dependencies` section, assembled by the caller.
+///
+/// [`Default`] is the honest empty state for a caller with no index and no
+/// expansion: `index_revision` 0 says nothing was looked at, which is a different
+/// fact from everything resolving.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct DependencySection {
+    /// The generation of the index this result was computed under, `0` when no
+    /// index was attached at all.
+    pub index_revision: u32,
+    /// Every resolved edge, sorted by the caller.
+    pub edges: Vec<DependencyEdgeRow>,
+    /// Every reference that resolved to nothing. Never folded into `edges`.
+    pub unresolved: Vec<UnresolvedEdgeRow>,
 }
 
-/// Build the `dependencies` section: the run's cross-file index state.
+/// A span inside the file under analysis.
+///
+/// Deliberately not the `diagnostics` section's [`SpanRow`]: that carries a `file`
+/// because a diagnostic can be anchored anywhere, while this is always the
+/// analysed file.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LookupSpanRow {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Build the `dependencies` section: the run's typed dependency edges.
 ///
 /// An **object**, for the reason `coverage` is one: the next index fact should be
 /// an added key here, not a ninth section.
@@ -799,105 +859,20 @@ struct LookupSpanRow {
 /// and a file with nothing cross-file about it gets empty arrays rather than
 /// missing keys:
 ///
-/// * `index_revision` — the generation of the index this result was computed
-///   under, `0` when no index was attached at all. That distinction matters
+/// * `index_revision` — `0` when no index was attached. That distinction matters
 ///   before either array is read: with no index, an empty `unresolved` means
 ///   *nothing was looked at*, not *everything resolved*.
-/// * `files` — every other file a lookup reached. This is the conservative
-///   dependency edge set: a change to one of these files can change this file's
-///   answers.
-/// * `unresolved` — every lookup that came back empty, with the reason and, where
-///   the analysed file spells the name, its span. This is what makes an absent
-///   parent observable: a supertype that resolves mints no symbol of its own, so
-///   the resolved and absent cases are otherwise identical in this document.
-///
-/// Both arrays are **sorted**, because both are built from hash maps and an
-/// unstable order would make two dumps of one file differ.
-fn dependencies_json(sem: &Semantic) -> Value {
-    let mut files: Vec<DependencyFileRow> = Vec::new();
-    let mut unresolved: Vec<UnresolvedLookupRow> = Vec::new();
-
-    for (name, lookup) in sem.symbols.class_lookups() {
-        match lookup {
-            oxabl_semantic::ClassLookup::Linked(file) => files.push(DependencyFileRow {
-                file: file.raw(),
-                via: "class",
-                name: name.as_ref().to_string(),
-            }),
-            oxabl_semantic::ClassLookup::Absent => unresolved.push(UnresolvedLookupRow {
-                via: "class",
-                name: name.as_ref().to_string(),
-                reason: unresolved_reason_str(UnresolvedReason::AbsentFromWorkspace),
-                span: supertype_span(sem, name),
-            }),
-            oxabl_semantic::ClassLookup::Unusable => unresolved.push(UnresolvedLookupRow {
-                via: "class",
-                name: name.as_ref().to_string(),
-                reason: unresolved_reason_str(UnresolvedReason::PresentButUnusable),
-                span: supertype_span(sem, name),
-            }),
-            oxabl_semantic::ClassLookup::Unknowable => unresolved.push(UnresolvedLookupRow {
-                via: "class",
-                name: name.as_ref().to_string(),
-                reason: unresolved_reason_str(UnresolvedReason::Unknowable),
-                span: supertype_span(sem, name),
-            }),
-        }
-    }
-
-    // The two symbol-linked file facts. Walked over the symbol table rather than
-    // over a map of their own because that is the only access the model offers,
-    // and the population is a handful of symbols per file at most.
-    for (id, _) in sem.symbols.iter() {
-        if let Some(file) = sem.symbols.program_file(id) {
-            files.push(DependencyFileRow {
-                file: file.raw(),
-                via: "program",
-                name: sem.symbols.get(id).name.as_ref().to_string(),
-            });
-        }
-        if let Some(file) = sem.symbols.shared_producer(id) {
-            files.push(DependencyFileRow {
-                file: file.raw(),
-                via: "shared_producer",
-                name: sem.symbols.get(id).name.as_ref().to_string(),
-            });
-        }
-    }
-
-    files.sort();
-    files.dedup();
-    unresolved.sort();
-    unresolved.dedup();
-
+/// * `edges` — every dependency edge, each carrying the reason for it. A change to
+///   any target can change this file's answers. Named for what a row is rather
+///   than for a file: a row's target may be a schema table, which has no file at
+///   all and reports `file: null`.
+/// * `unresolved` — every reference that came back empty, with its reason. Kept out
+///   of `edges` so a consumer cannot count a gap as a dependency.
+fn dependencies_json(section: &DependencySection) -> Value {
     json!({
-        "index_revision": sem.index_revision.raw(),
-        "files": files,
-        "unresolved": unresolved,
-    })
-}
-
-/// The span of `folded` in a class or interface header in the file under
-/// analysis, if any header names it.
-///
-/// A linear scan over the symbol table, the way `ClassLattice::class_named`
-/// recovers a supertype's identity from its name: this runs once per *failed*
-/// cross-file class lookup, which is a handful of names at most.
-fn supertype_span(
-    sem: &Semantic,
-    folded: &oxabl_lexer::oxabl_atom::OxablAtom,
-) -> Option<LookupSpanRow> {
-    sem.symbols.iter().find_map(|(id, _)| {
-        let supers = sem.symbols.supertypes(id)?;
-        supers
-            .inherits
-            .iter()
-            .chain(&supers.implements)
-            .find(|r| r.name.as_atom() == folded)
-            .map(|r| LookupSpanRow {
-                start: r.name_span.start,
-                end: r.name_span.end,
-            })
+        "index_revision": section.index_revision,
+        "edges": section.edges,
+        "unresolved": section.unresolved,
     })
 }
 
@@ -1045,7 +1020,12 @@ fn symbol_flags_list(f: oxabl_semantic::SymbolFlags) -> Vec<&'static str> {
     out
 }
 
-fn unresolved_reason_str(r: UnresolvedReason) -> &'static str {
+/// The stable snake-case tag for an unresolved reason.
+///
+/// Public because the `dependencies` section is assembled a layer up (see
+/// [`DependencySection`]) and must spell a reason exactly the way the `references`
+/// section does. One function, so the two vocabularies cannot drift.
+pub fn unresolved_reason_str(r: UnresolvedReason) -> &'static str {
     match r {
         UnresolvedReason::NotInScope => "not_in_scope",
         UnresolvedReason::External => "external",
@@ -1123,7 +1103,7 @@ mod tests {
         let schema = Schema::empty();
         let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         let sem = analyze_file(&stmts, &ctx);
-        dump_json(&stmts, &sem, &ctx, true)
+        dump_json(&stmts, &sem, &ctx, true, &DependencySection::default())
     }
 
     #[test]
@@ -1232,7 +1212,7 @@ mod tests {
         let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         let stmts = vec![var_decl("x", DataType::Integer)];
         let sem = analyze_file(&stmts, &ctx);
-        let text = dump_text(&stmts, &sem, &ctx);
+        let text = dump_text(&stmts, &sem, &ctx, &DependencySection::default());
         assert!(text.contains("=== Scopes"));
         assert!(text.contains("=== Symbols"));
         assert!(text.contains("=== Diagnostics"));
@@ -1299,7 +1279,7 @@ mod tests {
             ),
         ];
         let sem = analyze_file(&stmts, &ctx);
-        let v = dump_json(&stmts, &sem, &ctx, true);
+        let v = dump_json(&stmts, &sem, &ctx, true, &DependencySection::default());
 
         assert_eq!(v["sections"]["symbols"], 4);
         let symbols = v["symbols"].as_array().unwrap();
@@ -1382,8 +1362,19 @@ mod tests {
         let ctx = AnalysisContext::new(FileId::new(1), source, &schema).with_index(&index);
         let sem = analyze_file(&program.statements, &ctx);
         (
-            dump_json(&program.statements, &sem, &ctx, true),
-            dump_text(&program.statements, &sem, &ctx),
+            dump_json(
+                &program.statements,
+                &sem,
+                &ctx,
+                true,
+                &DependencySection::default(),
+            ),
+            dump_text(
+                &program.statements,
+                &sem,
+                &ctx,
+                &DependencySection::default(),
+            ),
         )
     }
 
@@ -1434,25 +1425,6 @@ mod tests {
             .expect("the class itself");
         assert_eq!(class["supertypes"][0]["relation"], "inherits");
         assert_eq!(class["supertypes"][0]["name"], "orders.calc-base");
-
-        // The consulted file is a dependency edge: a change to it can change
-        // this file's answers.
-        let files = rows(&v, "dependencies").into_iter().collect::<Vec<_>>();
-        assert!(files.is_empty(), "dependencies is an object, not an array");
-        let consulted = v["dependencies"]["files"].as_array().unwrap();
-        assert!(
-            consulted
-                .iter()
-                .any(|f| f["via"] == "class" && f["name"] == "orders.calc-base"),
-            "the parent's file must appear as consulted, got {consulted:?}"
-        );
-        assert!(
-            v["dependencies"]["unresolved"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        assert!(v["dependencies"]["index_revision"].as_u64().unwrap() > 0);
     }
 
     /// A local declaration keeps saying so: `origin` must not turn every row
@@ -1475,44 +1447,6 @@ mod tests {
         assert_eq!(read["origin"], "declared");
     }
 
-    /// AE3. The parent no file declares is the case the new section exists for:
-    /// a supertype that *resolves* mints no symbol of its own, so without this
-    /// row the resolved and absent cases look identical in the document.
-    #[test]
-    fn an_absent_parent_appears_in_the_dependency_section_with_its_span() {
-        // Same child, empty workspace: the index looks on `/src` and finds nothing.
-        let (v, _) = dump_with_index(CHILD, &[]);
-
-        let unresolved = v["dependencies"]["unresolved"].as_array().unwrap();
-        let parent = unresolved
-            .iter()
-            .find(|u| u["name"] == "orders.calc-base")
-            .unwrap_or_else(|| panic!("absent parent must be reported, got {unresolved:?}"));
-        assert_eq!(parent["via"], "class");
-        assert_eq!(
-            parent["reason"], "absent_from_workspace",
-            "an index was attached and it searched, so a miss is a fact about the \
-             workspace — as distinct from a file it located and could not read"
-        );
-        // The span points at the name inside the header — computed from the
-        // fixture rather than hard-coded, so it stays true if the fixture moves.
-        let start = CHILD.find("orders.calc-base").expect("name in header") as u64;
-        assert_eq!(parent["span"]["start"], start);
-        assert_eq!(
-            parent["span"]["end"],
-            start + "orders.calc-base".len() as u64
-        );
-        // Nothing was linked, so there is no dependency edge to report.
-        assert!(v["dependencies"]["files"].as_array().unwrap().is_empty());
-        // And the member never resolved: no cross-file symbol was synthesized.
-        assert!(
-            !rows(&v, "symbols")
-                .iter()
-                .any(|s| s["name"] == "calc-total"),
-            "nothing is synthesized from a parent that does not exist"
-        );
-    }
-
     /// AE2. A run-time-computed `RUN` target is *unknowable*, not merely absent —
     /// the distinction R5 requires so a consumer can widen conservatively rather
     /// than reporting a missing program.
@@ -1525,24 +1459,6 @@ mod tests {
         assert!(
             reasons.contains(&"unknowable"),
             "a computed RUN target must be unknowable, got {reasons:?}"
-        );
-    }
-
-    /// A literal `RUN` target that resolves is a dependency edge too, under its
-    /// own `via` — the section reports *which question* reached a file, because a
-    /// program dependency and an inheritance dependency invalidate differently.
-    #[test]
-    fn a_resolved_literal_run_target_is_a_consulted_file() {
-        let (v, _) = dump_with_index(
-            "RUN post-order.p.\n",
-            &[("/src/post-order.p", "MESSAGE \"posted\".\n")],
-        );
-        let files = v["dependencies"]["files"].as_array().unwrap();
-        assert!(
-            files
-                .iter()
-                .any(|f| f["via"] == "program" && f["name"] == "post-order.p"),
-            "got {files:?}"
         );
     }
 
@@ -1562,7 +1478,7 @@ mod tests {
             sections["references"], 2,
             "bumped for the resolved row's origin"
         );
-        assert_eq!(sections["dependencies"], 2, "the new section");
+        assert_eq!(sections["dependencies"], 3, "bumped for the typed edge row");
         // The untouched five keep their numbers: a bump is a claim about a
         // section's shape, and claiming one falsely is as bad as missing one.
         for (name, version) in [
@@ -1585,7 +1501,7 @@ mod tests {
         let v = run_dump(vec![var_decl("x", DataType::Integer)]);
         assert!(v["dependencies"].is_object());
         assert_eq!(v["dependencies"]["index_revision"], 0);
-        assert!(v["dependencies"]["files"].as_array().unwrap().is_empty());
+        assert!(v["dependencies"]["edges"].as_array().unwrap().is_empty());
         assert!(
             v["dependencies"]["unresolved"]
                 .as_array()
@@ -1602,7 +1518,6 @@ mod tests {
     fn both_text_dumps_contain_the_dependency_section() {
         let (_, text) = dump_with_index(CHILD, &[(CALC_BASE_PATH, CALC_BASE)]);
         assert!(text.contains("=== Dependencies ==="), "got:\n{text}");
-        assert!(text.contains("class orders.calc-base"), "got:\n{text}");
         // The inherited member's type must show here too, from the same helper
         // the JSON row uses.
         assert!(text.contains("integer(inherited)"), "got:\n{text}");
@@ -1612,7 +1527,7 @@ mod tests {
         let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         let sem = analyze_file(&stmts, &ctx);
         let collected = CollectedDiagnostics::default();
-        let text = dump_text_with_diagnostics(&sem, &collected);
+        let text = dump_text_with_diagnostics(&sem, &collected, &DependencySection::default());
         assert!(text.contains("=== Dependencies ==="), "got:\n{text}");
         assert!(text.contains("index revision: 0"), "got:\n{text}");
     }

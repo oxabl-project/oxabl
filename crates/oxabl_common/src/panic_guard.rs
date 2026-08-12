@@ -48,13 +48,25 @@ impl fmt::Display for InternalPanic {
 
 impl std::error::Error for InternalPanic {}
 
-/// The message used when a panic payload is neither `&str` nor `String`. Only
-/// reachable where the guard can actually catch, so `cfg`-gated to keep a wasm
-/// build free of dead-code warnings.
-#[cfg(not(target_arch = "wasm32"))]
-const OPAQUE_PAYLOAD: &str = "panicked with a non-string payload";
-
 /// Run `f`, converting a panic into `Err(`[`InternalPanic`]`)`.
+///
+/// # Contract caveat: a payload this guard cannot describe travels through
+///
+/// The guard contains a panic whose payload is a `&str` or a `String` — which
+/// is every panic oxabl raises itself. A payload of any other type is
+/// **re-raised** with [`std::panic::resume_unwind`] instead of being reported
+/// as `Err`.
+///
+/// A guard that cannot say what happened must not claim to have handled it. In
+/// this workspace the rule is load-bearing rather than tidy: a cancelled
+/// incremental recompute unwinds with a payload of its own type, and a guard
+/// that swallowed one would turn an abandoned race into a confident wrong
+/// answer — an empty result published as fact. Cancellation therefore travels
+/// out of every guard built on this function and is caught at the layer that
+/// understands it, which is the only layer that can tell it apart from a bug.
+///
+/// So a caller must not assume this contains everything. A caller that runs on
+/// a cancellable substrate owns a catch of its own, placed *inside* this guard.
 ///
 /// # Platform caveat: inert on `wasm32-unknown-unknown`
 ///
@@ -85,21 +97,25 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-            .map_err(|payload| InternalPanic::new(payload_message(payload.as_ref())))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|payload| {
+            match payload_message(payload.as_ref()) {
+                Some(message) => InternalPanic::new(message),
+                // Not ours to describe, so not ours to contain. See the contract
+                // caveat above.
+                None => std::panic::resume_unwind(payload),
+            }
+        })
     }
 }
 
-/// Extract a message from a panic payload, falling back to a fixed string for
-/// payloads that are not `&str` or `String`.
+/// The message a panic payload carries, or `None` when it is neither `&str` nor
+/// `String` and the guard therefore must not report it as contained.
 #[cfg(not(target_arch = "wasm32"))]
-fn payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+fn payload_message(payload: &(dyn std::any::Any + Send)) -> Option<String> {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
+        Some((*s).to_string())
     } else {
-        OPAQUE_PAYLOAD.to_string()
+        payload.downcast_ref::<String>().cloned()
     }
 }
 
@@ -193,10 +209,26 @@ mod tests {
         assert_eq!(err.message(), "boom 42");
     }
 
+    // A payload the guard cannot describe travels through it intact, rather than
+    // being reported as a contained `Err`. This is the mechanism a cancelled
+    // recompute relies on to reach the layer that can tell it apart from a bug —
+    // proven here with a plain type, so this crate needs no such substrate.
     #[test]
-    fn maps_a_non_string_payload_without_panicking_itself() {
-        let err = quietly(|| catch_panic(|| std::panic::panic_any(7u32)).unwrap_err());
-        assert_eq!(err.message(), OPAQUE_PAYLOAD);
+    fn a_non_string_payload_is_re_raised_rather_than_contained() {
+        struct NotAString(u32);
+
+        let escaped = quietly(|| {
+            std::panic::catch_unwind(|| catch_panic(|| std::panic::panic_any(NotAString(7))))
+        });
+
+        let payload = escaped.expect_err("the guard must not contain a payload it cannot describe");
+        assert_eq!(
+            payload
+                .downcast_ref::<NotAString>()
+                .expect("the original payload arrives intact")
+                .0,
+            7,
+        );
     }
 
     #[test]

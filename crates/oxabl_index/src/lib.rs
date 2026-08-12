@@ -29,6 +29,7 @@
 //! by the R11 firewall produces no finding.
 
 mod batch;
+mod deps;
 mod facts;
 // Public because a second cache lives outside this crate: the language server's
 // salsa-backed index does its own memoization but must use the *same*
@@ -39,6 +40,10 @@ mod facts;
 pub mod search;
 
 pub use batch::{BatchIndex, ExcludingFile};
+pub use deps::{
+    DependencyEdge, DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget,
+    UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
+};
 pub use facts::{ClassFacts, FileFacts};
 
 use std::sync::Arc;

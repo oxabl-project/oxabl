@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use oxabl_ast::Span;
@@ -19,6 +20,15 @@ pub enum SpanNode {
     Include {
         /// The span in the *parent* file where `{file.i}` appeared.
         site: FileSpan,
+        /// The resolved path of the included file, when this node is a real
+        /// `{file.i}` expansion.
+        ///
+        /// `None` for a `{&var}` or `{N}` argument substitution. Those share this
+        /// variant because they splice foreign text into the parent the same way,
+        /// but their content is synthetic and has no file on disk. A consumer
+        /// asking "which files does this one include" must therefore filter on
+        /// this field rather than counting `Include` nodes.
+        path: Option<PathBuf>,
         /// The content of the included file, itself a span tree.
         children: Vec<SpanNode>,
     },
@@ -34,6 +44,20 @@ impl SpanNode {
     }
 }
 
+/// An include reference that named no file the preprocessor could locate.
+///
+/// Kept as data, not only as a PREPROC007 diagnostic, because a dependency edge
+/// set has to be able to say "there is an edge here I could not follow". A
+/// missing edge that nobody mentions is the failure mode that ends trust in an
+/// impact answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedInclude {
+    /// The include as written, after `{&var}` pre-expansion.
+    pub name: String,
+    /// The `{...}` site, in the coordinates of the file that wrote it.
+    pub site: FileSpan,
+}
+
 /// The preprocessed representation of a source file.
 ///
 /// Contains the virtual span tree, the preprocessor variable state after
@@ -47,6 +71,8 @@ pub struct PreprocessedFile {
     pub vars: PreprocVarTable,
     /// All include files transitively referenced (for change tracking).
     pub dependencies: Vec<FileId>,
+    /// Every include reference, at any depth, that resolved to no file.
+    pub unresolved_includes: Vec<UnresolvedInclude>,
     /// Non-fatal diagnostics accumulated during preprocessing.
     ///
     /// Fatal diagnostics bail out with `Err` from [`crate::Preprocessor::process`].
@@ -64,6 +90,7 @@ impl PreprocessedFile {
         tree: Vec<SpanNode>,
         vars: PreprocVarTable,
         dependencies: Vec<FileId>,
+        unresolved_includes: Vec<UnresolvedInclude>,
         sources: Vec<(FileId, Arc<str>)>,
         diagnostics: Vec<Diagnostic>,
     ) -> Self {
@@ -71,6 +98,7 @@ impl PreprocessedFile {
             tree,
             vars,
             dependencies,
+            unresolved_includes,
             diagnostics,
             sources,
         }
@@ -180,6 +208,7 @@ mod tests {
             }],
             PreprocVarTable::new(),
             vec![],
+            Vec::new(),
             make_sources(&[(file, source)]),
             vec![],
         );
@@ -205,6 +234,7 @@ mod tests {
                     file: parent_id,
                     span: Span { start: 7, end: 14 }, // "{inc.i}"
                 },
+                path: Some(PathBuf::from("/proj/inc.i")),
                 children: vec![SpanNode::Chunk {
                     file: child_id,
                     start: 0,
@@ -222,6 +252,7 @@ mod tests {
             tree,
             PreprocVarTable::new(),
             vec![child_id],
+            Vec::new(),
             make_sources(&[(parent_id, parent_src), (child_id, child_src)]),
             vec![],
         );
@@ -241,6 +272,7 @@ mod tests {
             }],
             PreprocVarTable::new(),
             vec![],
+            Vec::new(),
             make_sources(&[(file, source)]),
             vec![],
         );
@@ -267,6 +299,7 @@ mod tests {
                     file: parent_id,
                     span: Span { start: 2, end: 10 },
                 },
+                path: Some(PathBuf::from("/proj/inc.i")),
                 children: vec![SpanNode::Chunk {
                     file: child_id,
                     start: 0,
@@ -284,6 +317,7 @@ mod tests {
             tree,
             PreprocVarTable::new(),
             vec![child_id],
+            Vec::new(),
             make_sources(&[(parent_id, "AB--------EF"), (child_id, "CD")]),
             vec![],
         );
@@ -319,6 +353,7 @@ mod tests {
             }],
             PreprocVarTable::new(),
             vec![],
+            Vec::new(),
             make_sources(&[(FileId::new(1), "HELLO")]),
             vec![],
         );
@@ -334,6 +369,7 @@ mod tests {
                 file: FileId::new(1),
                 span: Span { start: 0, end: 10 },
             },
+            path: Some(PathBuf::from("/proj/inc.i")),
             children: vec![
                 SpanNode::Chunk {
                     file: FileId::new(2),

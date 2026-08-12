@@ -78,13 +78,16 @@
 use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
-    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile,
-    collect_from_expanded, expand_source,
+    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
+    UnresolvedInclude, collect_from_expanded, expand_source,
 };
+
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
-use oxabl_index::BatchIndex;
+use oxabl_index::{
+    BatchIndex, DirectIncludeInput, EdgeInputs, UnresolvedIncludeInput, build_edge_set,
+};
 use oxabl_semantic::{Semantic, WorkspaceIndex};
 use oxabl_workspace::FileSystem;
 
@@ -114,6 +117,29 @@ impl Expansion {
     pub fn dependency_paths(&self) -> &[PathBuf] {
         match &self.inner {
             Ok(expanded) => expanded.dependency_paths(),
+            Err(_) => &[],
+        }
+    }
+
+    /// The includes the root file names itself — include depth 1, with the site
+    /// of each `{...}` in the root file's own bytes.
+    ///
+    /// Their paths are a subset of [`Expansion::dependency_paths`], which is
+    /// transitive. The difference between the two is what lets a dependency edge
+    /// distinguish a direct include from one pulled in several levels down. Empty
+    /// when preprocessing was off or failed fatally.
+    pub fn direct_includes(&self) -> &[DirectInclude] {
+        match &self.inner {
+            Ok(expanded) => expanded.direct_includes(),
+            Err(_) => &[],
+        }
+    }
+
+    /// Root-origin include references that resolved to no file, so a consumer can
+    /// report the edges it could not follow rather than silently missing them.
+    pub fn unresolved_includes(&self) -> &[UnresolvedInclude] {
+        match &self.inner {
+            Ok(expanded) => expanded.unresolved_includes(),
             Err(_) => &[],
         }
     }
@@ -569,6 +595,106 @@ impl<'a> LintPipeline<'a> {
         self.file.as_deref()
     }
 
+    /// The filesystem this run reads through, so a walk over this run's own index
+    /// reads files the same way its includes are read.
+    pub fn file_system(&self) -> &'a dyn FileSystem {
+        self.fs
+    }
+
+    /// The path this run's index assigned to `id`, or `None` when the id came from
+    /// somewhere this run cannot ask.
+    ///
+    /// An [`IndexedFileId`](oxabl_semantic::IndexedFileId) on a dependency edge is
+    /// opaque outside the index that minted it. A run answering from a supplied
+    /// index — the language server's cache — has no mapping to offer, and inventing
+    /// one would name the wrong file.
+    pub fn indexed_path(&self, id: oxabl_semantic::IndexedFileId) -> Option<PathBuf> {
+        match &self.index {
+            RunIndex::Owned(index) => index.indexed_path(id),
+            RunIndex::Shared(index) => index.indexed_path(id),
+            RunIndex::External(_) => None,
+        }
+    }
+
+    /// The typed dependency edge set for `source`, analysed as this handle's file.
+    ///
+    /// The whole-workspace reverse pass calls this per file. Guarded, unlike
+    /// [`expand`](Self::expand) and [`collect`](Self::collect): one unparseable or
+    /// panicking file out of fourteen thousand must cost that file's edges and
+    /// nothing else. `Err` carries a short reason so the caller can record the file
+    /// as unanalysed rather than as depending on nothing.
+    ///
+    /// The guard contains a *panic*. It does not contain a cancellation: this
+    /// crate cannot depend on the incremental engine (see the manifest note), so
+    /// it cannot place that engine's own catch inside this guard. Instead
+    /// [`oxabl_common::catch_panic`] re-raises a payload it cannot describe, and a
+    /// cancelled recompute travels out of here to the caller that understands it.
+    /// A caller driving this from a cancellable index owns that catch. Containing
+    /// one would file the cancelled file as unanalysed — permanently, for that
+    /// pass — which is the confident wrong answer this type exists to avoid.
+    pub fn edge_set(&self, source: &str) -> Result<oxabl_index::DependencyEdges, String> {
+        let outcome = catch_panic(|| {
+            let expansion = self.expand(source);
+            let result = self.collect(&expansion);
+            (expansion, result)
+        });
+        let (expansion, result) = outcome.map_err(|panic| format!("analysis panicked: {panic}"))?;
+        self.edges_of(&expansion, &result)
+    }
+
+    /// The edge set for an expansion and result this handle already produced.
+    ///
+    /// For a caller that has run the two phases for its own reasons — the CLI
+    /// `analyze` dump needs the model *and* the edges — so it pays for one analysis
+    /// rather than two. Unguarded, like the phases it takes: a caller holding a
+    /// result has already decided how it contains failure.
+    pub fn edges_of(
+        &self,
+        expansion: &Expansion,
+        result: &LintResult,
+    ) -> Result<oxabl_index::DependencyEdges, String> {
+        let expanded = expansion
+            .expanded()
+            .ok_or_else(|| "preprocessing failed fatally".to_string())?;
+        let semantic = result
+            .semantic()
+            .ok_or_else(|| "no semantic model was produced".to_string())?;
+
+        let direct: Vec<DirectIncludeInput<'_>> = expanded
+            .direct_includes()
+            .iter()
+            .map(|include| DirectIncludeInput {
+                path: include.path.as_path(),
+                site: include.site,
+            })
+            .collect();
+        let unresolved_includes: Vec<UnresolvedIncludeInput<'_>> = expanded
+            .unresolved_includes()
+            .iter()
+            .map(|include| UnresolvedIncludeInput {
+                name: include.name.as_str(),
+                site: include.site.span,
+            })
+            .collect();
+        // The model's spans are post-expansion; an edge must carry the dependent
+        // file's own bytes, and only the expansion knows the mapping.
+        let resolve_span = |span: oxabl_common::VirtualSpan| {
+            expanded.resolve_root_span(oxabl_ast::Span {
+                start: span.start,
+                end: span.end,
+            })
+        };
+
+        Ok(build_edge_set(&EdgeInputs {
+            semantic,
+            schema: &self.config.schema,
+            direct_includes: &direct,
+            transitive_includes: expansion.dependency_paths(),
+            unresolved_includes: &unresolved_includes,
+            resolve_span: &resolve_span,
+        }))
+    }
+
     /// Run `with` against this handle's index, viewed as the file being analysed.
     ///
     /// The three arms differ only in where the index lives and who applies the
@@ -655,6 +781,12 @@ impl<'a> LintPipeline<'a> {
     /// A contained panic becomes [`LintResult::failed_run`] carrying the message,
     /// never an unwind past the caller. The guard is
     /// [`oxabl_common::catch_panic`], called directly (KTD6, R20).
+    ///
+    /// A cancellation is not a panic and is not contained here. The guard
+    /// re-raises a payload it cannot describe, so a caller driving this from a
+    /// cancellable index sees the unwind and owns the catch for it — see
+    /// [`edge_set`](Self::edge_set), which carries the same contract for the same
+    /// reason.
     ///
     /// # Platform caveat
     ///
@@ -847,6 +979,36 @@ mod tests {
         // expansion alive just to answer the watcher.
         assert_eq!(
             pipeline.collect(&expansion).dependency_paths(),
+            expansion.dependency_paths()
+        );
+    }
+
+    // The direct set names only what the root file includes itself, while the
+    // transitive set names everything the expansion read.
+    #[test]
+    fn direct_dependency_paths_stop_at_depth_one() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert("/proj/outer.i".into(), "{inner.i}\nMESSAGE \"outer\".\n");
+        fs.insert("/proj/inner.i".into(), "MESSAGE \"inner\".\n");
+        let config = PipelineConfig {
+            include_paths: vec!["/proj".into()],
+            ..PipelineConfig::default()
+        };
+        let pipeline = LintPipeline::new(&config, &fs);
+
+        let expansion = pipeline.expand("{outer.i}\nMESSAGE \"root\".\n");
+        assert_eq!(expansion.direct_includes().len(), 1);
+        assert!(
+            expansion.direct_includes()[0].path.ends_with("outer.i"),
+            "got {:?}",
+            expansion.direct_includes()
+        );
+        assert!(
+            expansion
+                .dependency_paths()
+                .iter()
+                .any(|p| p.ends_with("inner.i")),
+            "the nested include must still be transitive, got {:?}",
             expansion.dependency_paths()
         );
     }

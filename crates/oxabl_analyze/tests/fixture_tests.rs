@@ -29,7 +29,13 @@ fn dump_fixture(name: &str) -> Value {
     let schema = Schema::empty();
     let ctx = AnalysisContext::new(FileId::new(1), &source, &schema);
     let sem = analyze_file(&program, &ctx);
-    dump_json(&program, &sem, &ctx, true)
+    dump_json(
+        &program,
+        &sem,
+        &ctx,
+        true,
+        &oxabl_analyze::DependencySection::default(),
+    )
 }
 
 fn symbol_names(dump: &Value) -> Vec<String> {
@@ -96,7 +102,7 @@ fn assert_envelope_sane(dump: &Value) {
     );
     assert_eq!(dump["dependencies"]["index_revision"], 0);
     assert_eq!(
-        dump["dependencies"]["files"].as_array().map(Vec::len),
+        dump["dependencies"]["edges"].as_array().map(Vec::len),
         Some(0)
     );
     assert_eq!(

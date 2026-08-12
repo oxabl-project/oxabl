@@ -73,7 +73,7 @@ fn parse_success_envelope_shape_preserved() {
     assert!(v["sections"]["dependencies"].is_number());
     assert!(v["dependencies"].is_object());
     assert!(v["dependencies"]["index_revision"].is_u64());
-    assert!(v["dependencies"]["files"].as_array().unwrap().is_empty());
+    assert!(v["dependencies"]["edges"].as_array().unwrap().is_empty());
     assert!(
         v["dependencies"]["unresolved"]
             .as_array()
@@ -257,11 +257,11 @@ fn a_cross_file_child_reports_its_inherited_member_in_both_formats() {
         "the call site must resolve cross-file"
     );
     assert!(
-        v["dependencies"]["files"]
+        v["dependencies"]["edges"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|f| f["via"] == "class" && f["name"] == "orders.calc-base"),
+            .any(|f| f["via"] == "class" && f["target"] == "orders.calc-base"),
         "the parent's file is a consulted dependency: {}",
         v["dependencies"]
     );
