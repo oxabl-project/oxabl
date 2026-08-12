@@ -265,4 +265,4 @@ Commands write generated files directly to their target locations. Generated fil
 
 # License
 
-[MIT[(https://github.com/oxabl-project/oxabl/blob/master/LICENSE)
+[MIT](https://github.com/oxabl-project/oxabl/blob/master/LICENSE)
