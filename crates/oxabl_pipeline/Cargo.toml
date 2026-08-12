@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_pipeline"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "MIT"
 description = "Shared lint and format pipelines over one resolved oxabl configuration"
@@ -23,14 +23,14 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_pipeline"
 # For `Span`: a dependency edge carries the offsets in the dependent file where the
 # dependency is written, and `src/reverse.rs` hands them to a client.
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
-oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
-oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
-oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.1" }
-oxabl_index = { path = "../oxabl_index", version = "0.1.1" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.2.0" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.0" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.1.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
+oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.2" }
+oxabl_index = { path = "../oxabl_index", version = "0.1.2" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.1" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.1" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.1" }
 
 [features]
 # The cross-client parity fixture table (`src/fixtures.rs`), shared by the four
@@ -47,8 +47,8 @@ tempfile = "3"
 serde_json = "1"
 # The envelope-section test drives a parse directly, so it can assert the version
 # map on a document this crate produced end to end.
-oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.0" }
-oxabl_parser = { path = "../oxabl_parser", version = "1.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "1.0.1" }
 # NOTE: no self `oxabl_pipeline = { path = "." }` entry here. Feature-enabling a
 # crate for its own `tests/` target needs one, and Cargo accepts it, but
 # release-please's `cargo-workspace` plugin reads the `path = "."` edge as a
@@ -60,11 +60,11 @@ oxabl_parser = { path = "../oxabl_parser", version = "1.0.0" }
 # only way to test that `LintPipeline::run` contains a panic while `expand` and
 # `collect` deliberately do not (KTD6, R20). Dev-only, so it is never armed in a
 # real build.
-oxabl_common = { path = "../oxabl_common", version = "1.0.0", features = [
+oxabl_common = { path = "../oxabl_common", version = "1.1.0", features = [
     "test-panics",
 ] }
 # The shared `Customer(CustNum, Name)` fixture, so the schema-gated lint tests
 # assert against the same schema every other crate's tests use.
-oxabl_schema = { path = "../oxabl_schema", version = "0.2.0", features = [
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.1", features = [
     "test-support",
 ] }

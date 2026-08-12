@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.0.0...oxabl_common-v1.1.0) (2026-08-12)
+
+
+### Features
+
+* answer who depends on this, and what must rebuild ([#164](https://github.com/oxabl-project/oxabl/issues/164)) ([9284e18](https://github.com/oxabl-project/oxabl/commit/9284e1887efb00788532209495108d750b1a97b8))
+
 ## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v0.5.0...oxabl_common-v1.0.0) (2026-08-04)
 
 
