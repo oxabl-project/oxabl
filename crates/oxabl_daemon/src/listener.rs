@@ -50,6 +50,11 @@ pub struct Listener {
     /// Set when the loop should stop accepting, so a test — or a shutdown request —
     /// can end the loop without killing the process.
     stopping: Arc<AtomicBool>,
+    /// Exclusive ownership of this root, held for exactly as long as the listener.
+    ///
+    /// Never read. It exists to be dropped: releasing it is what lets the next
+    /// daemon start, and the kernel does that for us if this process is killed.
+    _lock: registry::RootLock,
 }
 
 impl Listener {
@@ -63,16 +68,33 @@ impl Listener {
     /// stolen.
     pub fn bind(workspace_root: impl AsRef<Path>) -> io::Result<Self> {
         let workspace_root = workspace_root.as_ref().to_path_buf();
-        if let registry::Discovery::Live(existing) = registry::discover(&workspace_root) {
+
+        // The lock, before anything observable is touched. `discover` alone is a
+        // check without a claim: two daemons could both see `Absent`, both unlink
+        // the socket path, and — because unlinking makes `EADDRINUSE` impossible —
+        // both bind. One would then be orphaned, and on exit its unconditional
+        // cleanup would delete the winner's registration and socket, leaving a live
+        // daemon nothing could reach and a client that starts a third.
+        //
+        // Holding the lock for the listener's lifetime makes the rest of this
+        // function safe: no rival can be between the unlink and the bind.
+        let Some(lock) = registry::acquire_root_lock(&workspace_root)? else {
+            // The holder's registration still names it, so the refusal can say who
+            // — the same message this returned when discovery was the only gate.
+            // A holder that has taken the lock but not yet written its registration
+            // is mid-start, and there is no pid to report yet.
+            let holder = match registry::discover(&workspace_root) {
+                registry::Discovery::Live(existing) => format!(" (pid {})", existing.pid),
+                _ => String::new(),
+            };
             return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
                 format!(
-                    "a daemon (pid {}) already serves {}",
-                    existing.pid,
+                    "a daemon{holder} already serves {}",
                     workspace_root.display()
                 ),
             ));
-        }
+        };
 
         let socket_path = registry::socket_path_for(&workspace_root);
         // The naming rule budgets for `sun_path`, so a failure here means the
@@ -103,6 +125,7 @@ impl Listener {
             socket_path,
             workspace_root,
             stopping: Arc::new(AtomicBool::new(false)),
+            _lock: lock,
         })
     }
 

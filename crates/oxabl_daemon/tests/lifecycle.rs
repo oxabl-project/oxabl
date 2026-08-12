@@ -137,26 +137,108 @@ fn installing_a_configuration_bumps_the_generation() {
 fn a_bound_socket_and_its_directory_are_private() {
     use std::os::unix::fs::PermissionsExt;
 
+    with_cache_home(|cache| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let listener = oxabl_daemon::Listener::bind(root.path()).expect("bind a listener");
+        let socket = listener.socket_path().to_path_buf();
+
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("the path exists")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&socket), 0o600, "the socket is private");
+        assert_eq!(
+            mode(&cache.join("oxabl").join("daemon")),
+            0o700,
+            "the directory nobody else can traverse is the real control"
+        );
+    });
+}
+
+/// A second daemon for one root is refused while the first holds it.
+///
+/// The bind never settled this: `Listener::bind` unlinks a stale socket path
+/// first, so `bind` cannot return `EADDRINUSE` and both racers would have
+/// succeeded. The lock is what admits exactly one.
+#[cfg(unix)]
+#[test]
+fn a_second_daemon_for_one_root_is_refused() {
+    with_cache_home(|_| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let first = oxabl_daemon::Listener::bind(root.path()).expect("the first daemon binds");
+
+        let second = oxabl_daemon::Listener::bind(root.path());
+        let error = match second {
+            Ok(_) => panic!("a second daemon on one root must be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+
+        // And the refusal costs the winner nothing. A loser that cleaned up on its way
+        // out used to delete the winner's registration and socket, leaving a live
+        // daemon nothing could reach — which is what turned a startup race into a
+        // persistent fault.
+        assert!(first.socket_path().exists(), "the winner keeps its socket");
+        assert!(
+            matches!(
+                oxabl_daemon::registry::discover(root.path()),
+                oxabl_daemon::registry::Discovery::Live(_)
+            ),
+            "the winner keeps its registration"
+        );
+
+        // Releasing it lets the next daemon start.
+        drop(first);
+        let next = oxabl_daemon::Listener::bind(root.path()).expect("the root is free again");
+        drop(next);
+    });
+}
+
+/// A registration written without the lock is dead, however alive its pid looks.
+///
+/// This is the recycled-pid case: after a crash the number can be handed to any
+/// unrelated process, and a client that trusted it would connect to a socket
+/// nobody holds and wait. Here the pid is this very process, so the pid check
+/// passes and only the lock can tell the truth.
+#[cfg(unix)]
+#[test]
+fn a_registration_without_the_lock_is_absent_even_with_a_live_pid() {
+    with_cache_home(|_| {
+        let root = Path::new("/proj/recycled-pid");
+
+        let socket = oxabl_daemon::registry::socket_path_for(root);
+        oxabl_daemon::registry::register(root, &socket, std::process::id())
+            .expect("write a registration nobody holds");
+
+        assert_eq!(
+            oxabl_daemon::registry::discover(root),
+            oxabl_daemon::registry::Discovery::Absent,
+            "a live pid is not a live daemon"
+        );
+    });
+}
+
+/// Run `body` with the registration directory pointed at a private temporary one.
+///
+/// `XDG_CACHE_HOME` is process-wide and these tests run on threads of one binary,
+/// so the lock is what keeps one test's cache directory from becoming another's.
+#[cfg(unix)]
+fn with_cache_home<T>(body: impl FnOnce(&Path) -> T) -> T {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let cache = tempfile::tempdir().expect("a cache directory");
-    let root = tempfile::tempdir().expect("a workspace root");
-    // SAFETY: this test binary mutates the environment only here, and the listener
-    // resolves the directory during `bind` below.
+    let previous = std::env::var_os("XDG_CACHE_HOME");
+    // SAFETY: the lock above makes this the only thread mutating the environment.
     unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
-
-    let listener = oxabl_daemon::Listener::bind(root.path()).expect("bind a listener");
-    let socket = listener.socket_path().to_path_buf();
-
-    let mode = |path: &Path| {
-        std::fs::metadata(path)
-            .expect("the path exists")
-            .permissions()
-            .mode()
-            & 0o777
-    };
-    assert_eq!(mode(&socket), 0o600, "the socket is private");
-    assert_eq!(
-        mode(&cache.path().join("oxabl").join("daemon")),
-        0o700,
-        "the directory nobody else can traverse is the real control"
-    );
+    let out = body(cache.path());
+    unsafe {
+        match previous {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+    }
+    out
 }

@@ -137,7 +137,17 @@ pub fn discover(workspace_root: &Path) -> Discovery {
     let Ok(registration) = serde_json::from_str::<Registration>(&contents) else {
         return Discovery::Absent;
     };
-    if !process_is_alive(registration.pid) {
+    // Two signals, and a registration is live only when both agree.
+    //
+    // The lock is the authoritative one: the kernel drops it when the holder dies
+    // by any means, so no dead daemon can look alive and a recycled pid cannot
+    // resurrect one. The pid check is secondary — it costs one syscall, and it
+    // still catches a registration written by a build that predates the lock.
+    //
+    // Keeping both matters because `flock` is unreliable on older NFS servers, and
+    // a home directory on NFS is plausible. Where the lock cannot be trusted this
+    // degrades to the previous behaviour rather than to something worse.
+    if !a_daemon_holds_the_lock(workspace_root) || !process_is_alive(registration.pid) {
         return Discovery::Absent;
     }
     if registration.contract_version != CONTRACT_VERSION {
@@ -150,8 +160,12 @@ pub fn discover(workspace_root: &Path) -> Discovery {
 ///
 /// Replaces whatever was there. A client only ever reaches this point after finding
 /// the previous registration absent or dead, and two daemons racing to serve one
-/// root is a race the socket bind settles — the loser fails to bind and exits, so
-/// the last writer here is the one that owns the socket.
+/// root is settled before either reaches this point: [`acquire_root_lock`] admits
+/// exactly one, and the loser exits without binding or writing.
+///
+/// The bind does **not** settle that race and never did. `Listener::bind` unlinks
+/// a stale socket path before binding, so `bind` cannot return `EADDRINUSE` and two
+/// racing daemons would both have succeeded.
 ///
 /// Written to a temporary file and renamed, so a client reading concurrently sees
 /// either the old registration or the new one and never a half-written file that
@@ -211,6 +225,26 @@ fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Take the root lock and write the registration, returning the guard.
+///
+/// The pairing a real daemon has: [`Listener::bind`](crate::Listener::bind) holds
+/// the lock for its whole life, and the registration means nothing once the lock is
+/// gone. A caller that writes a registration without holding the lock produces one
+/// [`discover`] correctly reports as dead.
+///
+/// Returns `None` when a daemon already holds the root.
+pub fn register_locked(
+    workspace_root: &Path,
+    socket_path: &Path,
+    pid: u32,
+) -> io::Result<Option<(PathBuf, RootLock)>> {
+    let Some(lock) = acquire_root_lock(workspace_root)? else {
+        return Ok(None);
+    };
+    let path = register(workspace_root, socket_path, pid)?;
+    Ok(Some((path, lock)))
+}
+
 /// Remove the registration for `workspace_root`, on an orderly shutdown.
 ///
 /// Best-effort: a missing file is success, because the goal is "no live-looking
@@ -251,9 +285,14 @@ pub fn socket_path_for(workspace_root: &Path) -> PathBuf {
 /// Whether a process with `pid` exists.
 ///
 /// `kill(pid, 0)` is the portable question on Unix: it performs the permission check
-/// and the existence check and sends nothing. An `EPERM` answer means the process
-/// exists and belongs to somebody else, which is still "alive" — and still a reason
-/// not to steal its registration.
+/// and the existence check and sends nothing.
+///
+/// **Secondary to the lock**, and no longer load-bearing on its own. It answers
+/// "does some process have this number", which stopped being the same question as
+/// "is this daemon running" the moment a pid could be recycled. `EPERM` is counted
+/// as alive because a process owned by another user is a process; under the lock
+/// that arm can no longer pin a dead registration on its own, since the lock has
+/// to agree.
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
     if pid == 0 {
@@ -285,6 +324,103 @@ unsafe extern "C" {
 
     #[link_name = "getuid"]
     fn libc_getuid() -> u32;
+
+    #[link_name = "flock"]
+    fn libc_flock(fd: i32, operation: i32) -> i32;
+}
+
+#[cfg(unix)]
+const LOCK_EX: i32 = 2;
+#[cfg(unix)]
+const LOCK_NB: i32 = 4;
+
+/// The lock file that says a daemon owns this root.
+///
+/// Never unlinked. Deleting it would let two daemons hold locks on two different
+/// inodes for one root, which is the race the lock exists to prevent — so the file
+/// outlives every daemon and costs one empty inode per workspace.
+pub fn lock_path_for(workspace_root: &Path) -> PathBuf {
+    let registration = registration_path(workspace_root);
+    let mut name = registration
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    debug_assert!(name.ends_with(".json"));
+    name.truncate(name.len() - ".json".len());
+    name.push_str(".lock");
+    registration.with_file_name(name)
+}
+
+/// Exclusive ownership of one workspace root, held for a daemon's lifetime.
+///
+/// The lock is what makes "a daemon serves this root" a fact rather than an
+/// inference. The kernel releases it when the holding process dies **by any
+/// means**, including `SIGKILL`, where no cleanup code runs — so liveness stops
+/// depending on a pid that the operating system is free to hand to somebody else.
+#[derive(Debug)]
+pub struct RootLock {
+    /// Held, never read. Closing this descriptor is what releases the lock, so the
+    /// value exists purely for its `Drop`.
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    file: fs::File,
+}
+
+/// Take the lock for `workspace_root`, or report that a daemon already holds it.
+///
+/// Non-blocking on purpose: a second daemon must fail immediately and exit, not
+/// queue behind the first.
+pub fn acquire_root_lock(workspace_root: &Path) -> io::Result<Option<RootLock>> {
+    ensure_registration_dir()?;
+    let path = lock_path_for(workspace_root);
+
+    #[cfg(unix)]
+    {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)?;
+        // SAFETY: `flock` takes a valid descriptor this function owns and an
+        // operation constant. It mutates no memory and the descriptor outlives the
+        // call.
+        let taken =
+            unsafe { libc_flock(std::os::fd::AsRawFd::as_raw_fd(&file), LOCK_EX | LOCK_NB) };
+        if taken == 0 {
+            return Ok(Some(RootLock { file }));
+        }
+        let error = io::Error::last_os_error();
+        // `EWOULDBLOCK`/`EAGAIN` is the answer we asked for: somebody holds it.
+        match error.raw_os_error() {
+            Some(11) | Some(35) => Ok(None),
+            _ => Err(error),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(Some(RootLock {}))
+    }
+}
+
+/// Whether a daemon currently holds the lock for `workspace_root`.
+///
+/// Takes the lock and drops it again, so the answer is "somebody else holds it"
+/// rather than "I hold it". Returns a plain `bool` and releases inside, because a
+/// caller that accidentally held this would block the next daemon start.
+fn a_daemon_holds_the_lock(workspace_root: &Path) -> bool {
+    match acquire_root_lock(workspace_root) {
+        // We took it, so nobody held it.
+        Ok(Some(lock)) => {
+            drop(lock);
+            false
+        }
+        Ok(None) => true,
+        // The lock file could not be opened at all. Say nothing rather than
+        // claiming a daemon is absent; the pid check below still applies.
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -375,8 +511,11 @@ mod tests {
         with_cache_home(|_| {
             let root = Path::new("/proj/alpha");
             let socket = socket_path_for(root);
-            // This process is alive by construction, which is the point.
-            register(root, &socket, std::process::id()).expect("registration writes");
+            // Alive by construction: this process holds the lock and its pid is
+            // its own, which is what a real daemon has.
+            let (_path, _lock) = register_locked(root, &socket, std::process::id())
+                .expect("registration writes")
+                .expect("no daemon holds this root");
 
             match discover(root) {
                 Discovery::Live(registration) => {
@@ -417,6 +556,9 @@ mod tests {
                 workspace_root: root.to_string_lossy().into_owned(),
             };
             fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("write");
+            let _lock = acquire_root_lock(root)
+                .expect("lock the root")
+                .expect("nothing holds it");
 
             match discover(root) {
                 Discovery::VersionMismatch(found) => {
@@ -443,8 +585,14 @@ mod tests {
         with_cache_home(|_| {
             let alpha = Path::new("/proj/alpha");
             let beta = Path::new("/proj/beta");
-            register(alpha, &socket_path_for(alpha), std::process::id()).expect("alpha");
-            register(beta, &socket_path_for(beta), std::process::id()).expect("beta");
+            let (_a, _alpha_lock) =
+                register_locked(alpha, &socket_path_for(alpha), std::process::id())
+                    .expect("alpha")
+                    .expect("nothing holds alpha");
+            let (_b, _beta_lock) =
+                register_locked(beta, &socket_path_for(beta), std::process::id())
+                    .expect("beta")
+                    .expect("nothing holds beta");
 
             assert_ne!(registration_path(alpha), registration_path(beta));
             assert_ne!(socket_path_for(alpha), socket_path_for(beta));
@@ -458,7 +606,10 @@ mod tests {
         with_cache_home(|_| {
             let root = Path::new("/proj/replaced");
             register(root, Path::new("/tmp/old.sock"), u32::MAX - 1).expect("first");
-            register(root, Path::new("/tmp/new.sock"), std::process::id()).expect("second");
+            let (_path, _lock) =
+                register_locked(root, Path::new("/tmp/new.sock"), std::process::id())
+                    .expect("second")
+                    .expect("nothing holds it");
 
             match discover(root) {
                 Discovery::Live(found) => assert_eq!(found.socket_path, "/tmp/new.sock"),
