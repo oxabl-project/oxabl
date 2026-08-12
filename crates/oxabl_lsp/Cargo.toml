@@ -14,12 +14,11 @@ oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
 # directly. Keep it that way: a direct edge back to a layer beneath the shared
 # run is how a client starts assembling its own.
 #
-# The shared fact extraction and the shared name-to-path search. This crate
-# supplies only the *memoization* (salsa, per file); the questions and the
-# resolution policy stay in one place (R7, KTD2).
-oxabl_index = { path = "../oxabl_index", version = "0.1.1" }
+# The session core: the incremental substrate and supersession disciplines. This
+# crate keeps the LSP framing and rendering; it owns no second copy of either.
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.1.0" }
+oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.1.0" }
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.0" }
 anyhow = "1"
@@ -27,12 +26,11 @@ crossbeam-channel = "0.5"
 lsp-server = "0.7"
 lsp-types = "0.97"
 ropey = "1.6"
-# Pinned exact patch: the write-on-main / read-on-snapshot / `Cancelled`
-# threading discipline (KTD7) is verified against this salsa release.
-salsa = "=0.28.1"
 serde_json = "1"
 
 [dev-dependencies]
+# Some parity fixtures drive the session core directly.
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.1.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.2.0", features = ["test-support"] }
@@ -48,11 +46,5 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0", features = [
 lsp-server = "0.7"
 lsp-types = "0.97"
 ropey = "1.6"
-salsa = "=0.28.1"
 serde_json = "1"
 tempfile = "3"
-criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
-
-[[bench]]
-name = "lsp_cycle_bench"
-harness = false

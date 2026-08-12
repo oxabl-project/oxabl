@@ -278,6 +278,62 @@ pub struct ReverseGraph {
 }
 
 impl ReverseGraph {
+    /// Estimated heap bytes owned by this graph.
+    ///
+    /// This includes collection capacities and owned path and string bytes.
+    /// Allocator metadata is not observable and is therefore excluded.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let subject_bytes = |subject: &Subject| match subject {
+            Subject::File(path) => path.to_string_lossy().len(),
+            Subject::Table(name) => name.capacity(),
+        };
+        let dependent_bytes = |row: &Dependent| row.file.to_string_lossy().len();
+        let unresolved_bytes =
+            |row: &UnresolvedRow| row.file.to_string_lossy().len() + row.reference.name.capacity();
+
+        std::mem::size_of::<Self>()
+            + self.dependents.capacity()
+                * (std::mem::size_of::<Subject>() + std::mem::size_of::<Vec<Dependent>>())
+            + self
+                .dependents
+                .iter()
+                .map(|(subject, rows)| {
+                    subject_bytes(subject)
+                        + rows.capacity() * std::mem::size_of::<Dependent>()
+                        + rows.iter().map(dependent_bytes).sum::<usize>()
+                })
+                .sum::<usize>()
+            + self.unresolved_by_name.capacity()
+                * (std::mem::size_of::<String>() + std::mem::size_of::<Vec<UnresolvedRow>>())
+            + self
+                .unresolved_by_name
+                .iter()
+                .map(|(name, rows)| {
+                    name.capacity()
+                        + rows.capacity() * std::mem::size_of::<UnresolvedRow>()
+                        + rows.iter().map(unresolved_bytes).sum::<usize>()
+                })
+                .sum::<usize>()
+            + self.unanalysed.capacity() * std::mem::size_of::<Unanalysed>()
+            + self
+                .unanalysed
+                .iter()
+                .map(|row| row.file.to_string_lossy().len() + row.reason.capacity())
+                .sum::<usize>()
+            + self.files.capacity() * std::mem::size_of::<PathBuf>()
+            + self
+                .files
+                .iter()
+                .map(|path| path.to_string_lossy().len())
+                .sum::<usize>()
+            + self.include_roots.capacity() * std::mem::size_of::<PathBuf>()
+            + self
+                .include_roots
+                .iter()
+                .map(|path| path.to_string_lossy().len())
+                .sum::<usize>()
+    }
+
     /// Build the graph by analysing every file in `files` through `pipeline`.
     ///
     /// `pipeline` must be the **run** handle: a per-file handle is derived inside,
@@ -288,6 +344,19 @@ impl ReverseGraph {
     /// `oxabl_workspace`, and a graph that walked the filesystem itself could not
     /// be asked about a subset.
     pub fn build(pipeline: &LintPipeline<'_>, files: &[PathBuf]) -> Self {
+        Self::build_with(pipeline, files, |_, _, _| {})
+    }
+
+    /// Build the graph and inspect each successful file analysis once.
+    ///
+    /// `inspect` is for workspace products derived from the same pass, such as the
+    /// daemon's symbol-search rows. It avoids a second parse and semantic run per
+    /// file while keeping graph ownership in this layer.
+    pub fn build_with(
+        pipeline: &LintPipeline<'_>,
+        files: &[PathBuf],
+        mut inspect: impl FnMut(&Path, &crate::Expansion, &crate::LintResult),
+    ) -> Self {
         let mut graph = ReverseGraph {
             dependents: HashMap::new(),
             unresolved_by_name: HashMap::new(),
@@ -319,7 +388,9 @@ impl ReverseGraph {
             };
 
             let file_pipeline = pipeline.with_file(path.clone());
-            let edges = match file_pipeline.edge_set(&source) {
+            let edges = match file_pipeline.edge_set_with(&source, |expansion, result| {
+                inspect(&normalised, expansion, result);
+            }) {
                 Ok(edges) => edges,
                 Err(reason) => {
                     graph.unanalysed.push(Unanalysed {
@@ -576,6 +647,22 @@ impl ReverseGraph {
     /// How many files the pass covered.
     pub fn file_count(&self) -> usize {
         self.files.len()
+    }
+
+    /// Every file whose disk contents the graph records or depends on.
+    ///
+    /// This includes compilation roots and file subjects such as include files.
+    /// A freshness check that watched roots only would miss the most important
+    /// change in this product: editing a shared `.i` file.
+    pub fn tracked_files(&self) -> Vec<PathBuf> {
+        let mut files = self.files.clone();
+        files.extend(self.dependents.keys().filter_map(|subject| match subject {
+            Subject::File(path) => Some(path.clone()),
+            Subject::Table(_) => None,
+        }));
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Resolved edges across the whole workspace.

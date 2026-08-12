@@ -1,0 +1,21 @@
+[package]
+name = "oxabl_daemon_protocol"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Wire types and contract version for the oxabl daemon's oxabl/* methods"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_daemon_protocol"
+
+# NOTE: serde and nothing else, on purpose. The desktop client depends on this
+# crate to name a request type, and it must not pull salsa, the pipeline, or the
+# analysis stack in to do so — that is the entire reason the wire lives in its own
+# crate rather than in `oxabl_daemon`. Adding any `oxabl_*` dependency here
+# defeats it.
+#
+# Absent from `release-please-config.json` for the same reason `oxabl_lsp` and
+# `oxabl_wasm` are: client-layer crates are not published.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

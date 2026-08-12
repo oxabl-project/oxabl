@@ -15,6 +15,8 @@ members = [
     "crates/oxabl_analyze",
     "crates/oxabl_pipeline",
     "crates/oxabl_style",
+    "crates/oxabl_daemon",
+    "crates/oxabl_daemon_protocol",
     "crates/oxabl_lsp",
     "crates/oxabl_formatter",
     "crates/oxabl_wasm",

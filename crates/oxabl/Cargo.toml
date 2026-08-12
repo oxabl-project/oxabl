@@ -26,10 +26,12 @@ oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.0.0" }
 oxabl_lint = { path = "../oxabl_lint", version = "1.0.0" }
 oxabl_lsp = { path = "../oxabl_lsp", version = "0.1.1", optional = true }
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.1.0", optional = true }
 oxabl_formatter = { path = "../oxabl_formatter", version = "0.1.1" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 clap = { version = "4", features = ["derive"], optional = true }
 indicatif = { version = "0.17", optional = true }
+lsp-server = { version = "0.7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 schemars = { version = "0.8", optional = true }
@@ -48,13 +50,16 @@ cli = [
     "serde",
     "dep:clap",
     "dep:indicatif",
+    "dep:lsp-server",
     "dep:oxabl_lsp",
+    "dep:oxabl_daemon",
     "dep:schemars",
     "dep:serde_json",
 ]
 
 [dev-dependencies]
 tempfile = "3"
+oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.1.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "1.0.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.0.0", features = [
     "test-panics",

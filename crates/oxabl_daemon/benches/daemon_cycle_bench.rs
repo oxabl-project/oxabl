@@ -1,4 +1,4 @@
-//! LSP diagnostics-cycle perf gates (U8, R14).
+//! Daemon diagnostics-cycle and request-routing perf gates (U8, R14).
 //!
 //! Two gates over a synthetic real-disk fixture (`resources/lsp_bench.p` +
 //! includes), driven through the real salsa substrate and shared collector:
@@ -20,13 +20,21 @@
 //! real file — which could let the real file regress past 50ms behind a green
 //! gate — is caught: if this bench drops far below the ~ms range, re-grow the
 //! fixture toward the ~15ms band before trusting the gate.
+//!
+//! **Not a release configuration.** This crate's dev-dependencies enable
+//! `oxabl_common/test-panics`, and dev-dependency features apply to benches too,
+//! so the `panic_if_injected` marker scan is armed while these run. It is a
+//! substring check rather than a hot path, but the numbers are not bit-identical
+//! to a release build — recorded here so a future reader does not chase the gap.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use oxabl_lsp::db::{AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics};
+use oxabl_daemon::db::{
+    AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, compute_diagnostics,
+};
 use oxabl_pipeline::PipelineConfig;
 use oxabl_workspace::RealFileSystem;
 use salsa::Setter;
@@ -61,9 +69,9 @@ fn bench_config() -> AnalysisConfig {
     }
 }
 
-fn lsp_cycle_benchmarks(c: &mut Criterion) {
+fn daemon_cycle_benchmarks(c: &mut Criterion) {
     let source = fixture_source();
-    let mut group = c.benchmark_group("lsp_cycle");
+    let mut group = c.benchmark_group("daemon_cycle");
 
     // ---- WARM: steady-state single-edit full cycle -----------------------
     {
@@ -113,5 +121,48 @@ fn lsp_cycle_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, lsp_cycle_benchmarks);
+/// The routing hop, which is this crate's own new cost.
+///
+/// The cycle gates above measure the substrate, and it is unchanged — but a
+/// request now travels through a dispatch table and serde before it reaches a
+/// handler, and nothing measured that. Timed in process: `Dispatch::call` covers
+/// routing, the handler, and both serde directions, without the socket and
+/// thread-scheduling variance that would make this a poor CodSpeed gate.
+///
+/// The full socket round trip is deliberately not benchmarked. It is Unix-only,
+/// needs the cache directory redirected, and its variance would swamp the signal.
+fn daemon_request_benchmarks(c: &mut Criterion) {
+    use oxabl_daemon::{ClientContext, SessionHost, default_dispatch};
+    use oxabl_daemon_protocol::{ClientKind, HandshakeRequest, method};
+
+    let mut group = c.benchmark_group("daemon_request");
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+
+    let start = Instant::now();
+    group.bench_function("handshake_round_trip", |bencher| {
+        bencher.iter_batched(
+            || {
+                let params = serde_json::to_value(HandshakeRequest::new(
+                    ClientKind::Desktop,
+                    "/proj/bench".to_string(),
+                ))
+                .expect("the request serialises");
+                (ClientContext::default(), params)
+            },
+            |(mut context, params)| {
+                // Unwrapped rather than discarded: a benchmark that quietly times
+                // an error path reports a number that means nothing.
+                let response = dispatch.call(&host, &mut context, method::HANDSHAKE, params);
+                black_box(response.expect("the handshake succeeds"));
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    eprintln!("handshake_round_trip finished in {:?}", start.elapsed());
+
+    group.finish();
+}
+
+criterion_group!(benches, daemon_cycle_benchmarks, daemon_request_benchmarks);
 criterion_main!(benches);

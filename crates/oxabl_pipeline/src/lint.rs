@@ -633,13 +633,27 @@ impl<'a> LintPipeline<'a> {
     /// one would file the cancelled file as unanalysed — permanently, for that
     /// pass — which is the confident wrong answer this type exists to avoid.
     pub fn edge_set(&self, source: &str) -> Result<oxabl_index::DependencyEdges, String> {
+        self.edge_set_with(source, |_, _| ())
+    }
+
+    /// Build the edge set and let a workspace pass inspect the same analysis.
+    ///
+    /// The callback runs inside the per-file panic guard. This lets the daemon
+    /// collect searchable declarations without analysing every workspace file a
+    /// second time, while one bad file still costs only that file's rows.
+    pub fn edge_set_with(
+        &self,
+        source: &str,
+        inspect: impl FnOnce(&Expansion, &LintResult),
+    ) -> Result<oxabl_index::DependencyEdges, String> {
         let outcome = catch_panic(|| {
             let expansion = self.expand(source);
             let result = self.collect(&expansion);
-            (expansion, result)
+            let edges = self.edges_of(&expansion, &result)?;
+            inspect(&expansion, &result);
+            Ok(edges)
         });
-        let (expansion, result) = outcome.map_err(|panic| format!("analysis panicked: {panic}"))?;
-        self.edges_of(&expansion, &result)
+        outcome.map_err(|panic| format!("analysis panicked: {panic}"))?
     }
 
     /// The edge set for an expansion and result this handle already produced.
