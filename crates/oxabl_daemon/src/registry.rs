@@ -107,8 +107,23 @@ pub fn unregister(workspace_root: &Path) -> io::Result<()> {
 /// Beside the registration rather than in a temp directory, so the two share a
 /// lifetime and a permission model: whoever can read the registration can reach the
 /// socket, and nothing else can.
+///
+/// Built by swapping the extension explicitly rather than with
+/// `Path::with_extension`. A flattened root contains dots of its own, so
+/// `with_extension` was correct only because the registration always ends in
+/// `.json` — an invariant spread across three functions and stated by none of
+/// them. The naming rule also budgets the socket path against `sun_path`, so the
+/// two spellings must stay in step.
 pub fn socket_path_for(workspace_root: &Path) -> PathBuf {
-    registration_path(workspace_root).with_extension("sock")
+    let registration = registration_path(workspace_root);
+    let mut name = registration
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    debug_assert!(name.ends_with(".json"));
+    name.truncate(name.len() - ".json".len());
+    name.push_str(".sock");
+    registration.with_file_name(name)
 }
 
 /// Whether a process with `pid` exists.

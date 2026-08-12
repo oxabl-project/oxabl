@@ -72,6 +72,12 @@ impl Listener {
         }
 
         let socket_path = registry::socket_path_for(&workspace_root);
+        // The naming rule budgets for `sun_path`, so a failure here means the
+        // registration directory itself is too long — which no name can rescue.
+        // Reported with the limit and the path, rather than as a bare
+        // `ENAMETOOLONG` from `bind` with neither.
+        oxabl_daemon_protocol::check_socket_path_fits(&socket_path)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         if let Some(parent) = socket_path.parent() {
             std::fs::create_dir_all(parent)?;
         }

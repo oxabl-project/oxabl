@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use oxabl_daemon_protocol::{
     CONTRACT_VERSION, ClientKind, HandshakeRequest, HandshakeResponse, Registration, method,
-    registration_path,
 };
 
 const OXABL_BIN: &str = env!("CARGO_BIN_EXE_oxabl");
@@ -262,22 +261,14 @@ fn wait_for_registration(path: &std::path::Path) -> Registration {
         .expect("the registration is valid JSON")
 }
 
+/// The registration path a daemon under `cache` writes for `root`.
+///
+/// Calls the protocol crate's own naming rule with the directory supplied, so this
+/// test cannot drift from it. It used to reach the same rule by setting
+/// `XDG_CACHE_HOME` around the call, which needed a lock and two `unsafe` blocks to
+/// keep one process-wide variable from racing every other test in the binary.
 fn registration_path_in(root: &std::path::Path, cache: &std::path::Path) -> std::path::PathBuf {
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let previous = std::env::var_os("XDG_CACHE_HOME");
-    // SAFETY: every environment mutation in this test binary holds ENV_LOCK.
-    unsafe { std::env::set_var("XDG_CACHE_HOME", cache) };
-    let path = registration_path(root);
-    unsafe {
-        match previous {
-            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
-            None => std::env::remove_var("XDG_CACHE_HOME"),
-        }
-    }
-    path
+    oxabl_daemon_protocol::registration_path_in(&cache.join("oxabl").join("daemon"), root)
 }
 
 fn send_handshake(stream: &mut UnixStream, id: u32, root: &std::path::Path) {

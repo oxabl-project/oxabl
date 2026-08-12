@@ -513,14 +513,130 @@ pub fn registration_dir() -> PathBuf {
     std::env::temp_dir().join("oxabl").join("daemon")
 }
 
+/// The longest socket path a Unix domain socket can carry.
+///
+/// `sun_path` is 108 bytes on Linux and the kernel needs the terminating NUL, so
+/// 107 bytes are usable. This is the tighter of the two caps a registration name
+/// has to respect; the other is the 255-byte filename limit most filesystems
+/// impose.
+pub const MAX_SOCKET_PATH: usize = 107;
+
+/// The longest single filename most filesystems accept.
+const MAX_FILE_NAME: usize = 255;
+
 /// The registration file for `workspace_root`.
 ///
 /// The root's path is flattened into the file name rather than hashed, so a human
-/// debugging a stale registration can see which workspace it belongs to. A hash
-/// would also have to stay stable across builds to be usable at all, and no hasher
-/// in `std` promises that.
+/// debugging a stale registration can see which workspace it belongs to.
+///
+/// A hash would have to stay stable across builds to be usable at all, and no
+/// hasher in `std` promises that — which is why the fallback below vendors FNV-1a
+/// rather than reaching for one. `rustc-hash` would not do either: `FxHasher`
+/// makes the same absence of a promise.
+///
+/// The flattened name is kept verbatim whenever it fits, so the common case is
+/// exactly the readable name it always was. It stops fitting because a socket path
+/// is capped at [`MAX_SOCKET_PATH`] and a filename at 255 bytes, and a deep
+/// workspace root passes both — every separator costs a byte in the flattened name
+/// just as it did in the original. A name that does not fit keeps its readable head
+/// and carries a hash of the *whole* root, so two roots sharing a long prefix
+/// cannot collide.
 pub fn registration_path(workspace_root: &Path) -> PathBuf {
-    registration_dir().join(format!("{}.json", flatten_root(workspace_root)))
+    let dir = registration_dir();
+    registration_path_in(&dir, workspace_root)
+}
+
+/// [`registration_path`], with the directory supplied rather than resolved.
+///
+/// Public so a test can exercise the naming rule without setting environment
+/// variables. Two spellings of one naming rule is how they drift.
+pub fn registration_path_in(dir: &Path, workspace_root: &Path) -> PathBuf {
+    dir.join(format!("{}.json", registration_stem(dir, workspace_root)))
+}
+
+/// The file-name stem for `workspace_root`: the flattened root, or a truncated
+/// head plus a hash when the flattened form cannot fit.
+fn registration_stem(dir: &Path, workspace_root: &Path) -> String {
+    let flattened = flatten_root(workspace_root);
+
+    // Budgeted against the socket path, which is the tighter limit and is derived
+    // from this name: `<dir>/<stem>.sock`.
+    let fixed = dir.as_os_str().len() + 1 + ".sock".len();
+    let budget = MAX_SOCKET_PATH
+        .saturating_sub(fixed)
+        .min(MAX_FILE_NAME - ".json".len());
+
+    if flattened.len() <= budget {
+        return flattened;
+    }
+
+    // `~` cannot occur in a flattened name — `flatten_root` emits `%` for a
+    // separator and passes everything else through — so the marker is
+    // unambiguous. The encoding is reversible only on the branch above, which is
+    // exactly the branch a human reads.
+    let suffix = format!("~{:016x}", fnv1a64(flattened.as_bytes()));
+    let head = budget.saturating_sub(suffix.len());
+    let mut stem: String = flattened.chars().take(head).collect();
+    stem.push_str(&suffix);
+    stem
+}
+
+/// FNV-1a, 64-bit, vendored.
+///
+/// Fully specified by a fixed offset basis and prime, so it is deterministic
+/// across builds, platforms, and compiler versions permanently. That is the whole
+/// requirement: a registration name that changed between builds would orphan every
+/// running daemon.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// A socket path that cannot fit in `sun_path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathTooLong {
+    pub path: PathBuf,
+    pub length: usize,
+    pub limit: usize,
+}
+
+impl std::fmt::Display for PathTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the daemon socket path is {} bytes and the limit is {}: {}. \
+             The registration directory alone consumes {} bytes — set XDG_CACHE_HOME \
+             to a shorter path.",
+            self.length,
+            self.limit,
+            self.path.display(),
+            registration_dir().as_os_str().len(),
+        )
+    }
+}
+
+impl std::error::Error for PathTooLong {}
+
+/// Whether `path` fits in a Unix socket address.
+///
+/// The naming rule budgets for this, so a failure here means the registration
+/// directory itself is too long — a deep `XDG_CACHE_HOME`, which no name can
+/// rescue. Checked at bind time so the report names the limit and the path, rather
+/// than surfacing as a bare `ENAMETOOLONG` from the kernel.
+pub fn check_socket_path_fits(path: &Path) -> Result<(), PathTooLong> {
+    let length = path.as_os_str().len();
+    if length <= MAX_SOCKET_PATH {
+        return Ok(());
+    }
+    Err(PathTooLong {
+        path: path.to_path_buf(),
+        length,
+        limit: MAX_SOCKET_PATH,
+    })
 }
 
 /// Flatten a path into one file-name component, reversibly enough to read.
@@ -766,6 +882,76 @@ mod tests {
             registration_path(Path::new("%a%b")),
             "a literal percent must not encode to a separator"
         );
+    }
+
+    // A short root keeps the readable name it always had. Pinned so a later
+    // refactor cannot start hashing everything and cost the debuggability the
+    // flattening exists for.
+    #[test]
+    fn a_short_root_keeps_its_readable_name() {
+        let dir = Path::new("/home/dev/.cache/oxabl/daemon");
+        let path = registration_path_in(dir, Path::new("/home/dev/alpha"));
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "%home%dev%alpha.json"
+        );
+    }
+
+    // A root deep enough to overflow `sun_path` still yields a socket path that
+    // fits. The budget is computed against the socket, so the registration name is
+    // what has to give.
+    #[test]
+    fn a_deep_root_yields_a_socket_path_that_fits() {
+        let dir = Path::new("/home/dev/.cache/oxabl/daemon");
+        let root = PathBuf::from(format!("/home/dev/{}", "nested/".repeat(40)));
+        let registration = registration_path_in(dir, &root);
+        let socket = registration.with_extension("sock");
+
+        assert!(
+            socket.as_os_str().len() <= MAX_SOCKET_PATH,
+            "socket path is {} bytes: {}",
+            socket.as_os_str().len(),
+            socket.display()
+        );
+        assert!(check_socket_path_fits(&socket).is_ok());
+    }
+
+    // Two deep roots sharing a long prefix must not collide. Truncation alone
+    // would map them to one name, which is the whole reason the hash covers the
+    // untruncated root rather than the truncated head.
+    #[test]
+    fn two_deep_roots_sharing_a_prefix_do_not_collide() {
+        let dir = Path::new("/home/dev/.cache/oxabl/daemon");
+        let prefix = "a".repeat(200);
+        let one = registration_path_in(dir, &PathBuf::from(format!("/{prefix}/one")));
+        let two = registration_path_in(dir, &PathBuf::from(format!("/{prefix}/two")));
+
+        assert_ne!(one, two, "a shared prefix must not become a shared name");
+        for path in [&one, &two] {
+            assert!(path.with_extension("sock").as_os_str().len() <= MAX_SOCKET_PATH);
+        }
+    }
+
+    // The hash is a fixed specification, not whatever the toolchain provides. A
+    // value that moved between builds would orphan every running daemon.
+    #[test]
+    fn the_vendored_hash_matches_the_fnv1a_specification() {
+        // The published FNV-1a 64-bit vector for "a".
+        assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+    }
+
+    // A registration directory long enough to exhaust the budget is reported with
+    // the limit and the path, rather than as a bare kernel error at bind time.
+    #[test]
+    fn an_unusable_directory_is_reported_with_the_limit() {
+        let dir = PathBuf::from(format!("/{}", "d".repeat(200)));
+        let socket = registration_path_in(&dir, Path::new("/proj")).with_extension("sock");
+
+        let error = check_socket_path_fits(&socket).expect_err("this cannot fit");
+        assert_eq!(error.limit, MAX_SOCKET_PATH);
+        assert!(error.length > MAX_SOCKET_PATH);
+        assert!(error.to_string().contains("limit is 107"));
     }
 
     // The directory follows XDG when it is set and falls back when it is not. The
