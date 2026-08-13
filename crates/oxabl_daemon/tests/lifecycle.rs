@@ -209,7 +209,7 @@ fn a_registration_without_the_lock_is_absent_even_with_a_live_pid() {
     with_cache_home(|_| {
         let root = Path::new("/proj/recycled-pid");
 
-        let socket = oxabl_daemon::registry::socket_path_for(root);
+        let socket = oxabl_daemon::registry::socket_path_for(root).expect("a socket path");
         oxabl_daemon::registry::register(root, &socket, std::process::id())
             .expect("write a registration nobody holds");
 
@@ -284,7 +284,7 @@ fn two_clients_probing_one_root_start_exactly_one_daemon() {
 fn a_crashed_daemons_leftover_socket_is_cleaned_up_by_the_next_daemon() {
     with_cache_home(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
-        let socket = oxabl_daemon::registry::socket_path_for(root.path());
+        let socket = oxabl_daemon::registry::socket_path_for(root.path()).expect("a socket path");
         oxabl_daemon::registry::ensure_registration_dir().expect("the directory");
         // Bound and then closed without unlinking: exactly what `SIGKILL` leaves.
         drop(std::os::unix::net::UnixListener::bind(&socket).expect("a socket to abandon"));
@@ -312,7 +312,7 @@ fn a_crashed_daemons_leftover_socket_is_cleaned_up_by_the_next_daemon() {
 fn a_regular_file_at_the_socket_path_is_refused_rather_than_removed() {
     with_cache_home(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
-        let socket = oxabl_daemon::registry::socket_path_for(root.path());
+        let socket = oxabl_daemon::registry::socket_path_for(root.path()).expect("a socket path");
         oxabl_daemon::registry::ensure_registration_dir().expect("the directory");
         std::fs::write(&socket, b"precious").expect("a file where the socket goes");
 
@@ -327,6 +327,46 @@ fn a_regular_file_at_the_socket_path_is_refused_rather_than_removed() {
             std::fs::read(&socket).expect("still there"),
             b"precious",
             "the daemon must not have removed it"
+        );
+    });
+}
+
+/// A start that fails after the socket exists leaves no socket behind.
+///
+/// The socket file is created by `bind` and removed by `Drop for Listener`, so a
+/// failure between the two used to leak it: the guard was constructed last, so an
+/// early return skipped its `Drop` entirely. The leak was sticky, too — the next start
+/// finds a socket that answers nothing, and the daemon refuses to unlink a socket it
+/// cannot prove is debris.
+///
+/// Driven through the one step after the bind that can still fail: a workspace root
+/// whose bytes are not UTF-8 cannot be published in a registration, so `register`
+/// refuses it. Nothing has to be faked to reach the window.
+#[cfg(unix)]
+#[test]
+fn a_start_that_fails_after_the_bind_leaves_no_socket_behind() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    with_cache_home(|_| {
+        let root = PathBuf::from(OsStr::from_bytes(b"/proj/not-utf8-\xff"));
+        let socket = oxabl_daemon::registry::socket_path_for(&root).expect("a socket path");
+
+        let error = oxabl_daemon::Listener::bind(&root)
+            .err()
+            .expect("a root that cannot be registered must not start a daemon");
+        assert!(
+            error.to_string().contains("UTF-8"),
+            "the refusal must name the reason: {error}"
+        );
+        assert!(
+            !socket.exists(),
+            "a failed start must not leave {} behind for the next one to trip over",
+            socket.display()
+        );
+        assert!(
+            !oxabl_daemon_protocol::registration_path(&root).exists(),
+            "and it must not leave a registration either"
         );
     });
 }
@@ -368,7 +408,7 @@ fn a_client_probe_does_not_prevent_a_daemon_from_starting() {
             // A registration on disk is what makes every probe reach the lock: a
             // client with nothing registered answers "absent" without looking. A
             // crashed daemon leaves exactly this behind.
-            let socket = oxabl_daemon::registry::socket_path_for(&path);
+            let socket = oxabl_daemon::registry::socket_path_for(&path).expect("a socket path");
             oxabl_daemon::registry::register(&path, &socket, 999_999)
                 .expect("a stale registration");
             match oxabl_daemon::Listener::bind(&path) {

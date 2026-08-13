@@ -775,18 +775,33 @@ pub fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
 /// into the staging file is not — so a staging path shared between two writers let
 /// one of them rename a body the other was still writing, which is the torn read
 /// this design exists to prevent. A per-writer name makes the guarantee real.
+/// Cleaning up after a writer that died is a separate job, and a pid-agnostic one:
+/// see [`sweep_stale_staging`].
+///
+/// # Why a path that is not UTF-8 is refused rather than converted (R14)
+///
+/// Both paths used to be published through `to_string_lossy`. The bind and the lock
+/// use the real bytes, so under a non-UTF-8 `XDG_CACHE_HOME` the daemon listened on
+/// one path and advertised another: every client then reported connecting to a socket
+/// that was never named that, and no restart could fix it, because the mangling is
+/// deterministic. `Registration` carries `String`, so the two choices are refuse at
+/// this boundary or change the wire to carry bytes. It refuses: the failure is named
+/// once, at the moment the daemon would otherwise publish a lie, and the alternative
+/// buys a shape change to the protocol for a locale nobody has asked for. A user in
+/// that position gets a message naming the path and the fix.
 pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Result<PathBuf> {
     let path = registration_path(workspace_root);
     ensure_registration_dir()?;
     let registration = Registration {
         pid,
-        socket_path: socket_path.to_string_lossy().into_owned(),
+        socket_path: advertisable(socket_path, "the daemon socket")?,
         contract_version: CONTRACT_VERSION,
-        workspace_root: workspace_root.to_string_lossy().into_owned(),
+        workspace_root: advertisable(workspace_root, "the workspace root")?,
     };
     let body = serde_json::to_string_pretty(&registration)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
 
+    sweep_stale_staging(&path);
     let staged = path.with_extension(format!("json.{}.tmp", std::process::id()));
     write_private(&staged, body.as_bytes())?;
     // Renaming onto the destination replaces it atomically; the staging file is
@@ -801,12 +816,79 @@ pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Resu
     }
 }
 
+/// A path as a client will read it, or a refusal naming what could not be published.
+///
+/// See [`register`] for why a lossy conversion is not on the menu.
+fn advertisable(path: &Path, what: &str) -> io::Result<String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to register {} for {what}: the path is not valid UTF-8, and a \
+                 registration carries text — publishing a converted path would \
+                 advertise a socket nobody bound. Set XDG_CACHE_HOME, and name the \
+                 workspace, with paths that are valid UTF-8.",
+                path.display()
+            ),
+        )
+    })
+}
+
+/// Remove staging files for `path` that no writer will ever finish.
+///
+/// Cleanup that does not depend on who is doing it. The sweep used to be a
+/// remove-if-exists on *this* writer's staging path, so a daemon killed between the
+/// write and the rename left a `…json.<its pid>.tmp` that no later run — running under
+/// a different pid — would ever look at. One dead start therefore leaked one file per
+/// workspace root, permanently, in a directory the daemon otherwise keeps to three
+/// entries.
+///
+/// A live writer's staging file is left alone. Removing one would not corrupt anything
+/// published — `rename` is what publishes, and the other writer's open descriptor
+/// keeps writing to an unlinked inode — but its rename would then fail with `ENOENT`
+/// and a daemon that was starting normally would report an error it did not earn. So
+/// the pid in the name is read for exactly one question: is that process still there.
+/// Two cases sweep: a pid no live process has, and this process's own, whose leftover
+/// belongs to an earlier registration by this same daemon.
+///
+/// Best-effort, and deliberately not fatal. The goal is that debris does not
+/// accumulate; a debris file that could not be removed must not stop the registration
+/// this call is here to write. Pid reuse can hand a stale pid to an unrelated live
+/// process, which leaves one file behind until the next sweep after that process
+/// exits — a leak the old code had unconditionally.
+fn sweep_stale_staging(path: &Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    // `<stem>.json` + `.` + `<pid>` + `.tmp`, which is what `register` stages under.
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let candidate = entry.file_name();
+        let Some(pid) = candidate
+            .to_str()
+            .and_then(|candidate| candidate.strip_prefix(&prefix))
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != std::process::id() && process_is_alive(pid) {
+            continue;
+        }
+        let _ = fs::remove_file(dir.join(&candidate));
+    }
+}
+
 /// Write `body` to `path`, readable by this user only.
 ///
 /// `fs::write` cannot set a mode, so the file would exist world-readable for the
 /// moment before any chmod. Opening with the mode closes that window. `create_new`
-/// makes a colliding staging path an error rather than a silent overwrite — which
-/// is safe precisely because the name above carries the writer's pid.
+/// makes a colliding staging path an error rather than a silent overwrite — which is
+/// safe precisely because the name above carries the writer's pid, and because
+/// [`sweep_stale_staging`] has already removed this writer's own leftover.
 fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
     use std::io::Write;
 
@@ -815,11 +897,6 @@ fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
     options.mode(0o600);
 
-    // A staging file left by a previous run that died between write and rename
-    // would otherwise block every later registration.
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
     let mut file = options.open(path)?;
     file.write_all(body)?;
     file.sync_all()
@@ -870,16 +947,45 @@ pub fn unregister(workspace_root: &Path) -> io::Result<()> {
 /// `.json` — an invariant spread across three functions and stated by none of
 /// them. The naming rule also budgets the socket path against `sun_path`, so the
 /// two spellings must stay in step.
-pub fn socket_path_for(workspace_root: &Path) -> PathBuf {
-    let registration = registration_path(workspace_root);
-    let mut name = registration
+pub fn socket_path_for(workspace_root: &Path) -> io::Result<PathBuf> {
+    sibling_of_registration(&registration_path(workspace_root), ".sock")
+}
+
+/// The path beside a registration that ends in `extension` instead of `.json`.
+///
+/// The one place the `.json` invariant is checked, and it is checked rather than
+/// asserted (R14). The two accessors used to read the name, `debug_assert!` that it
+/// ended in `.json`, and then subtract five bytes from its length. A name that does
+/// not end in `.json` therefore panicked on the subtraction in a debug build — in code
+/// whose `unwrap_or_default` was chosen to avoid panicking — and in a release build,
+/// where the workspace leaves overflow checks off, did something worse than panic: the
+/// difference wrapped to `usize::MAX`, `String::truncate` treats a length past the end
+/// as a no-op, and the accessor returned the bare `.sock` and `.lock` names. Every
+/// workspace root would have shared one socket and one lock, silently, which is the
+/// duplication the lock exists to prevent. `strip_suffix` cannot underflow: the
+/// invariant either holds or it is a named error the caller can report.
+///
+/// Unreachable through [`registration_path`], which builds the name with a `.json`
+/// suffix. That is the argument for checking it here rather than trusting it: the
+/// invariant lives in another crate, and a `debug_assert` does not hold it in the
+/// build that ships.
+fn sibling_of_registration(registration: &Path, extension: &str) -> io::Result<PathBuf> {
+    let name = registration
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    debug_assert!(name.ends_with(".json"));
-    name.truncate(name.len() - ".json".len());
-    name.push_str(".sock");
-    registration.with_file_name(name)
+    let stem = name.strip_suffix(".json").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to derive the daemon's {extension} path from {}: a \
+                 registration file name must end in .json, and this one is {name:?}. \
+                 Set XDG_CACHE_HOME to a directory you own and start again.",
+                registration.display()
+            ),
+        )
+    })?;
+    Ok(registration.with_file_name(format!("{stem}{extension}")))
 }
 
 /// A process id read from disk, or `None` when the number cannot be one (R15).
@@ -951,16 +1057,8 @@ const LOCK_NB: i32 = 4;
 /// Never unlinked. Deleting it would let two daemons hold locks on two different
 /// inodes for one root, which is the race the lock exists to prevent — so the file
 /// outlives every daemon and costs one empty inode per workspace.
-pub fn lock_path_for(workspace_root: &Path) -> PathBuf {
-    let registration = registration_path(workspace_root);
-    let mut name = registration
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    debug_assert!(name.ends_with(".json"));
-    name.truncate(name.len() - ".json".len());
-    name.push_str(".lock");
-    registration.with_file_name(name)
+pub fn lock_path_for(workspace_root: &Path) -> io::Result<PathBuf> {
+    sibling_of_registration(&registration_path(workspace_root), ".lock")
 }
 
 /// Exclusive ownership of one workspace root, held for a daemon's lifetime.
@@ -984,7 +1082,7 @@ pub struct RootLock {
 /// queue behind the first.
 pub fn acquire_root_lock(workspace_root: &Path) -> io::Result<Option<RootLock>> {
     ensure_registration_dir()?;
-    let path = lock_path_for(workspace_root);
+    let path = lock_path_for(workspace_root)?;
 
     #[cfg(unix)]
     {
@@ -1049,6 +1147,15 @@ mod tests {
         out
     }
 
+    /// The socket path for `root`, for the tests that are not about the naming rule.
+    ///
+    /// The accessor reports a registration name it cannot derive a sibling from (R14),
+    /// and every caller here supplies a name it can, so the check is unwrapped once
+    /// rather than at twenty call sites.
+    fn socket_for(root: &Path) -> PathBuf {
+        socket_path_for(root).expect("a socket path")
+    }
+
     // The access control is a mode, so it is asserted as one. A directory the
     // daemon creates itself is 0700 from the moment it exists, and the
     // registration inside it is 0600.
@@ -1058,8 +1165,8 @@ mod tests {
         with_cache_home(|cache| {
             let dir = cache.join("oxabl").join("daemon");
             let root = Path::new("/proj/private");
-            let path = register(root, &socket_path_for(root), std::process::id())
-                .expect("registration writes");
+            let path =
+                register(root, &socket_for(root), std::process::id()).expect("registration writes");
 
             assert_eq!(
                 fs::metadata(&dir).expect("the directory").mode() & 0o777,
@@ -1087,7 +1194,7 @@ mod tests {
                 .expect("leave it as an earlier build would");
 
             let root = Path::new("/proj/private");
-            let error = register(root, &socket_path_for(root), std::process::id())
+            let error = register(root, &socket_for(root), std::process::id())
                 .expect_err("a loose directory must be refused");
 
             assert_eq!(
@@ -1123,7 +1230,7 @@ mod tests {
             std::os::unix::fs::symlink(&target, middle.join("daemon")).expect("the planted link");
 
             let root = Path::new("/proj/hijacked");
-            let error = register(root, &socket_path_for(root), std::process::id())
+            let error = register(root, &socket_for(root), std::process::id())
                 .expect_err("a symlinked leaf must be refused");
 
             assert!(
@@ -1155,8 +1262,7 @@ mod tests {
             let before = fs::metadata(&dir).expect("the directory");
 
             let root = Path::new("/proj/existing");
-            register(root, &socket_path_for(root), std::process::id())
-                .expect("registration writes");
+            register(root, &socket_for(root), std::process::id()).expect("registration writes");
 
             let after = fs::metadata(&dir).expect("the directory");
             assert_eq!(after.mode() & 0o777, 0o700);
@@ -1180,7 +1286,7 @@ mod tests {
             std::os::unix::fs::symlink(&target, cache.join("oxabl")).expect("the planted link");
 
             let root = Path::new("/proj/redirected");
-            let error = register(root, &socket_path_for(root), std::process::id())
+            let error = register(root, &socket_for(root), std::process::id())
                 .expect_err("a symlinked intermediate must be refused");
 
             assert!(
@@ -1206,7 +1312,7 @@ mod tests {
             fs::write(middle.join("daemon"), b"not a directory").expect("the planted file");
 
             let root = Path::new("/proj/filed");
-            let error = register(root, &socket_path_for(root), std::process::id())
+            let error = register(root, &socket_for(root), std::process::id())
                 .expect_err("a leaf that is a file must be refused");
             assert!(
                 error.to_string().contains("not a directory"),
@@ -1233,7 +1339,7 @@ mod tests {
             .expect("the planted fifo");
 
             let root = Path::new("/proj/piped");
-            let error = register(root, &socket_path_for(root), std::process::id())
+            let error = register(root, &socket_for(root), std::process::id())
                 .expect_err("a leaf that is a fifo must be refused");
             assert!(
                 error.to_string().contains("not a directory"),
@@ -1253,7 +1359,7 @@ mod tests {
                 .expect("a shared parent with no sticky bit");
 
             let root = Path::new("/proj/exposed");
-            let error = register(root, &socket_path_for(root), std::process::id())
+            let error = register(root, &socket_for(root), std::process::id())
                 .expect_err("a world-writable parent must be refused");
 
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
@@ -1297,8 +1403,8 @@ mod tests {
     fn a_staging_path_is_per_writer() {
         with_cache_home(|_| {
             let root = Path::new("/proj/staged");
-            let path = register(root, &socket_path_for(root), std::process::id())
-                .expect("registration writes");
+            let path =
+                register(root, &socket_for(root), std::process::id()).expect("registration writes");
             let staged = path.with_extension(format!("json.{}.tmp", std::process::id()));
 
             assert!(!staged.exists(), "the rename consumes the staging file");
@@ -1307,6 +1413,174 @@ mod tests {
                     != path.with_extension("json.tmp").file_name().expect("a name"),
                 "the staging name must carry the writer's identity"
             );
+        });
+    }
+
+    /// A staging file is debris the moment its writer is gone, whoever that was. The
+    /// old cleanup only ever removed *this* process's staging path, so a daemon killed
+    /// between the write and the rename left a file every later run — running under a
+    /// different pid — walked straight past.
+    #[cfg(unix)]
+    #[test]
+    fn a_staging_file_left_by_a_dead_process_is_swept_by_a_later_run() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/swept");
+            let other_root = Path::new("/proj/not-swept");
+            ensure_registration_dir().expect("the directory");
+            let path = registration_path(root);
+
+            let staging = |registration: &Path, pid: u32| {
+                registration.with_extension(format!("json.{pid}.tmp"))
+            };
+            // A pid in range that no process has: the sweep must read it as gone.
+            let dead = staging(&path, i32::MAX as u32);
+            // A pid that is unmistakably alive and is not this process. Its writer
+            // would rename this file, and removing it would fail a start that was
+            // going to succeed.
+            let live_pid = rustix::process::getppid()
+                .expect("a parent process")
+                .as_raw_nonzero()
+                .get() as u32;
+            let live = staging(&path, live_pid);
+            // Another root's staging file is another registration's business.
+            let foreign = staging(&registration_path(other_root), i32::MAX as u32);
+            for debris in [&dead, &live, &foreign] {
+                fs::write(debris, b"{}").expect("a staging file to leave behind");
+            }
+
+            register(root, &socket_for(root), std::process::id()).expect("registration writes");
+
+            assert!(
+                !dead.exists(),
+                "a staging file whose writer is gone must be swept, whatever pid it \
+                 names: {}",
+                dead.display()
+            );
+            assert!(
+                live.exists(),
+                "a live writer's staging file must be left alone, or its rename fails \
+                 and a starting daemon reports an error it did not earn"
+            );
+            assert!(
+                foreign.exists(),
+                "the sweep is scoped to the registration being written"
+            );
+        });
+    }
+
+    /// And this process's own leftover is swept too, so a rename that failed earlier in
+    /// the same run cannot block every later registration through `create_new`.
+    #[test]
+    fn a_staging_file_left_by_this_process_does_not_block_a_later_registration() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/own-leftover");
+            ensure_registration_dir().expect("the directory");
+            let staged =
+                registration_path(root).with_extension(format!("json.{}.tmp", std::process::id()));
+            fs::write(&staged, b"half a body").expect("our own leftover");
+
+            register(root, &socket_for(root), std::process::id())
+                .expect("a leftover of our own must not block the registration");
+            assert!(!staged.exists(), "the rename consumes the staging file");
+        });
+    }
+
+    /// A path that is not UTF-8 is refused rather than published in a converted form
+    /// (R14). The bind uses the real bytes, so a converted registration would advertise
+    /// a socket nobody bound — and would do it identically on every restart.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_utf8_is_refused_rather_than_converted() {
+        use std::os::unix::ffi::OsStrExt;
+
+        with_cache_home(|_| {
+            let root = PathBuf::from(OsStr::from_bytes(b"/proj/not-utf8-\xff"));
+            let socket = socket_for(&root);
+
+            let error = register(&root, &socket, std::process::id())
+                .expect_err("a path that cannot be published must be refused");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(
+                error.to_string().contains("UTF-8"),
+                "the message must name what it refused and why: {error}"
+            );
+            assert!(
+                !registration_path(&root).exists(),
+                "nothing may be published when the paths cannot be published faithfully"
+            );
+        });
+    }
+
+    /// The formerly `debug_assert`-guarded subtraction. A name that does not end in
+    /// `.json` used to underflow `name.len() - 5` and panic in a release build — in the
+    /// two accessors that chose `unwrap_or_default` precisely to avoid panicking.
+    #[test]
+    fn a_registration_name_that_is_not_json_is_an_error_rather_than_a_panic() {
+        for name in ["registration", "registration.jsonx", ".json.bak", ""] {
+            let error = sibling_of_registration(&PathBuf::from(name), ".sock")
+                .expect_err("a name that is not a registration cannot name a socket");
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::InvalidInput,
+                "{name:?} must be refused as input, not panic on a length subtraction"
+            );
+        }
+        assert_eq!(
+            sibling_of_registration(Path::new("/c/oxabl/daemon/%proj.json"), ".lock")
+                .expect("a real registration name"),
+            PathBuf::from("/c/oxabl/daemon/%proj.lock"),
+            "the ordinary name still yields its sibling"
+        );
+    }
+
+    /// A base directory variable that is not absolute is ignored, and the next
+    /// candidate is used (R16). Resolved against the working directory instead, the
+    /// registration, the lock and the socket would differ per process — two daemons on
+    /// one root, and a client connecting to a path that means nothing where it stands.
+    ///
+    /// Inside `with_cache_home` for its lock: `HOME` decides the answer once
+    /// `XDG_CACHE_HOME` is refused, and mutating either is a race against every other
+    /// test in this binary.
+    #[test]
+    fn a_relative_base_directory_variable_is_ignored() {
+        with_cache_home(|_| {
+            let home = tempfile::tempdir().expect("a stand-in home");
+            let previous_home = std::env::var_os("HOME");
+            // SAFETY: `with_cache_home` holds the environment lock for this closure.
+            unsafe {
+                std::env::set_var("XDG_CACHE_HOME", "relative-cache");
+                std::env::set_var("HOME", home.path());
+            }
+
+            let dir = registration_dir();
+            assert_eq!(
+                dir,
+                home.path().join(".cache").join("oxabl").join("daemon"),
+                "a relative XDG_CACHE_HOME must be ignored, not joined to the working \
+                 directory"
+            );
+
+            // With neither variable usable, the temp-directory fallback is what is
+            // left — the same branch an unset variable takes.
+            unsafe { std::env::set_var("HOME", "relative-home") };
+            let dir = registration_dir();
+            assert!(
+                dir.is_absolute() && dir.starts_with(std::env::temp_dir()),
+                "with no usable variable the fallback must be the temp directory, got \
+                 {dir:?}"
+            );
+            assert!(
+                oxabl_daemon_protocol::temp_dir_fallback_in_use(),
+                "and the caller that checks ownership for that branch must be told it \
+                 is the branch in use"
+            );
+
+            unsafe {
+                match previous_home {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
         });
     }
 
@@ -1326,7 +1600,7 @@ mod tests {
     #[cfg(unix)]
     fn serving(root: &Path) -> std::os::unix::net::UnixListener {
         ensure_registration_dir().expect("the registration directory");
-        let socket = socket_path_for(root);
+        let socket = socket_for(root);
         let _ = fs::remove_file(&socket);
         std::os::unix::net::UnixListener::bind(&socket).expect("a listening socket")
     }
@@ -1335,7 +1609,7 @@ mod tests {
     fn a_live_registration_is_found() {
         with_cache_home(|_| {
             let root = Path::new("/proj/alpha");
-            let socket = socket_path_for(root);
+            let socket = socket_for(root);
             // Alive by construction: something is listening on the socket the
             // registration names, which is what a real daemon has.
             let _listening = serving(root);
@@ -1362,8 +1636,7 @@ mod tests {
     fn a_registration_nobody_answers_is_absent() {
         with_cache_home(|_| {
             let root = Path::new("/proj/crashed");
-            register(root, &socket_path_for(root), std::process::id())
-                .expect("registration writes");
+            register(root, &socket_for(root), std::process::id()).expect("registration writes");
             assert_eq!(
                 discover(root),
                 Discovery::Absent,
@@ -1408,7 +1681,7 @@ mod tests {
         with_cache_home(|_| {
             let root = Path::new("/proj/impossible-pid");
             let _listening = serving(root);
-            register(root, &socket_path_for(root), u32::MAX).expect("registration writes");
+            register(root, &socket_for(root), u32::MAX).expect("registration writes");
 
             assert_eq!(
                 discover(root),
@@ -1455,7 +1728,7 @@ mod tests {
     fn a_crashed_daemons_socket_is_unanswered_and_then_removed() {
         with_cache_home(|_| {
             let root = Path::new("/proj/left-behind");
-            let socket = socket_path_for(root);
+            let socket = socket_for(root);
             // Dropping a `UnixListener` closes it and leaves the file, which is what a
             // killed daemon leaves behind.
             drop(serving(root));
@@ -1487,7 +1760,7 @@ mod tests {
         with_cache_home(|_| {
             let root = Path::new("/proj/not-a-socket");
             ensure_registration_dir().expect("the directory");
-            let socket = socket_path_for(root);
+            let socket = socket_for(root);
             fs::write(&socket, b"precious").expect("a regular file where the socket goes");
 
             let error = remove_stale_socket(&socket).expect_err("a file is not debris");
@@ -1528,7 +1801,7 @@ mod tests {
         with_cache_home(|_| {
             let root = Path::new("/proj/busy");
             ensure_registration_dir().expect("the directory");
-            let socket = socket_path_for(root);
+            let socket = socket_for(root);
 
             let listening = rustix::net::socket_with(
                 rustix::net::AddressFamily::UNIX,
@@ -1574,10 +1847,9 @@ mod tests {
         with_cache_home(|_| {
             let root = Path::new("/proj/locked-out");
             let _listening = serving(root);
-            register(root, &socket_path_for(root), std::process::id())
-                .expect("registration writes");
+            register(root, &socket_for(root), std::process::id()).expect("registration writes");
 
-            let lock = lock_path_for(root);
+            let lock = lock_path_for(root).expect("a lock path");
             fs::write(&lock, b"").expect("the lock file");
             fs::set_permissions(&lock, fs::Permissions::from_mode(0o000))
                 .expect("a lock nothing can open");
@@ -1591,18 +1863,46 @@ mod tests {
         });
     }
 
-    /// The read path answers a question; it must not make a directory to answer it
-    /// (R25). Creating one here is also what used to be the *only* place a client
-    /// checked the directory's ownership, which is why the check is now explicit.
+    /// The read path answers a question; it must not make a directory, a lock file or
+    /// anything else to answer it (R25). Creating one here is also what used to be the
+    /// *only* place a client checked the directory's ownership, which is why the check
+    /// is now explicit.
+    ///
+    /// Asserted as "the base location is unchanged" rather than as a list of names,
+    /// because the failure this guards against is a probe with *any* side effect: the
+    /// old lock-based liveness check created the directory and an empty lock file per
+    /// root, so every `oxabl` invocation in a tree with no daemon left artifacts.
     #[cfg(unix)]
     #[test]
     fn discovery_creates_nothing() {
         with_cache_home(|cache| {
-            assert_eq!(discover(Path::new("/proj/nothing-here")), Discovery::Absent);
-            assert!(
-                !cache.join("oxabl").exists(),
-                "a client that finds no daemon must leave no directory behind"
+            let root = Path::new("/proj/nothing-here");
+            assert_eq!(discover(root), Discovery::Absent);
+            // The finer state machine is a second entry point into the same read path.
+            assert_eq!(daemon_state(root), DaemonState::Absent);
+            assert_eq!(
+                fs::read_dir(cache)
+                    .expect("the base location")
+                    .flatten()
+                    .map(|entry| entry.file_name())
+                    .collect::<Vec<_>>(),
+                Vec::<std::ffi::OsString>::new(),
+                "a client that finds no daemon must leave the base location untouched: \
+                 no directory, no lock file, nothing"
             );
+            // Named individually too, so a failure says which artifact came back.
+            for artifact in [
+                registration_dir(),
+                registration_path(root),
+                lock_path_for(root).expect("a lock path"),
+                socket_for(root),
+            ] {
+                assert!(
+                    !artifact.exists(),
+                    "a probe must not create {}",
+                    artifact.display()
+                );
+            }
         });
     }
 
@@ -1619,8 +1919,7 @@ mod tests {
             let root = Path::new("/proj/loose-directory");
             let dir = cache.join("oxabl").join("daemon");
             let _listening = serving(root);
-            register(root, &socket_path_for(root), std::process::id())
-                .expect("registration writes");
+            register(root, &socket_for(root), std::process::id()).expect("registration writes");
             // Loosened after the fact, the way something that is not this daemon
             // would have left it.
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("widen it");
@@ -1651,7 +1950,7 @@ mod tests {
             ensure_registration_dir().expect("the directory");
             let stale = Registration {
                 pid: std::process::id(),
-                socket_path: socket_path_for(root).to_string_lossy().into_owned(),
+                socket_path: socket_for(root).to_string_lossy().into_owned(),
                 contract_version: CONTRACT_VERSION + 7,
                 workspace_root: root.to_string_lossy().into_owned(),
             };
@@ -1686,17 +1985,15 @@ mod tests {
             let beta = Path::new("/proj/beta");
             let _alpha_listening = serving(alpha);
             let _beta_listening = serving(beta);
-            let (_a, _alpha_lock) =
-                register_locked(alpha, &socket_path_for(alpha), std::process::id())
-                    .expect("alpha")
-                    .expect("nothing holds alpha");
-            let (_b, _beta_lock) =
-                register_locked(beta, &socket_path_for(beta), std::process::id())
-                    .expect("beta")
-                    .expect("nothing holds beta");
+            let (_a, _alpha_lock) = register_locked(alpha, &socket_for(alpha), std::process::id())
+                .expect("alpha")
+                .expect("nothing holds alpha");
+            let (_b, _beta_lock) = register_locked(beta, &socket_for(beta), std::process::id())
+                .expect("beta")
+                .expect("nothing holds beta");
 
             assert_ne!(registration_path(alpha), registration_path(beta));
-            assert_ne!(socket_path_for(alpha), socket_path_for(beta));
+            assert_ne!(socket_for(alpha), socket_for(beta));
             assert!(matches!(discover(alpha), Discovery::Live(_)));
             assert!(matches!(discover(beta), Discovery::Live(_)));
         });
@@ -1713,7 +2010,7 @@ mod tests {
     fn registering_replaces_a_previous_registration() {
         with_cache_home(|_| {
             let root = Path::new("/proj/replaced");
-            let socket = socket_path_for(root);
+            let socket = socket_for(root);
             register(root, &socket, 999_999).expect("first");
 
             let _listening = serving(root);
@@ -1742,7 +2039,7 @@ mod tests {
     fn unregistering_removes_the_registration() {
         with_cache_home(|_| {
             let root = Path::new("/proj/leaving");
-            register(root, &socket_path_for(root), std::process::id()).expect("registration");
+            register(root, &socket_for(root), std::process::id()).expect("registration");
             unregister(root).expect("removal");
             assert_eq!(discover(root), Discovery::Absent);
         });

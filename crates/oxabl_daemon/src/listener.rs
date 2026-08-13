@@ -109,13 +109,19 @@ impl Listener {
                      registered a daemon yet. Wait for it, or remove {} if you are \
                      sure nothing is starting.",
                     workspace_root.display(),
-                    registry::lock_path_for(&workspace_root).display()
+                    // Only a sentence is at stake here: `acquire_root_lock` resolved
+                    // this same path a moment ago to open the lock it just found held,
+                    // so the error arm is unreachable — and a refusal must not be
+                    // replaced by a second, unrelated failure over a message.
+                    registry::lock_path_for(&workspace_root)
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|error| error.to_string())
                 ),
             };
             return Err(io::Error::new(io::ErrorKind::AddrInUse, refusal));
         };
 
-        let socket_path = registry::socket_path_for(&workspace_root);
+        let socket_path = registry::socket_path_for(&workspace_root)?;
         // The naming rule budgets for `sun_path`, so a failure here means the
         // registration directory itself is too long — which no name can rescue.
         // Reported with the limit and the path, rather than as a bare
@@ -147,24 +153,36 @@ impl Listener {
         // debris. Removed through the checked path, which refuses to unlink anything
         // that is not a socket sitting in the verified registration directory.
         registry::remove_stale_socket(&socket_path)?;
-        let listener = UnixListener::bind(&socket_path)?;
+        // The `Listener` is built the moment the socket file exists, before any step
+        // that can still fail — because `Drop for Listener` is what unlinks it. When
+        // the registration below was written first and the guard second, an early
+        // return from a failing `register` left a bound socket nothing owned: the next
+        // start found a socket that answers no connection, and the daemon refuses to
+        // unlink a socket rather than steal a live one, so the failure was sticky and
+        // the fix was a manual `rm`. Now the `?` on the last step drops the guard,
+        // which removes the socket, releases the lock and clears a stale registration.
+        let listener = Listener {
+            listener: UnixListener::bind(&socket_path)?,
+            socket_path,
+            workspace_root,
+            stopping: Arc::new(AtomicBool::new(false)),
+            _lock: lock,
+        };
         // Belt and braces. On Linux the connect permission is the socket's write
         // bit, and `bind` takes the ambient umask — so this is the control that
         // still holds if the directory's mode is ever loosened from outside.
         #[cfg(unix)]
         let _ = std::fs::set_permissions(
-            &socket_path,
+            listener.socket_path(),
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         );
-        registry::register(&workspace_root, &socket_path, std::process::id())?;
+        registry::register(
+            listener.workspace_root(),
+            listener.socket_path(),
+            std::process::id(),
+        )?;
 
-        Ok(Listener {
-            listener,
-            socket_path,
-            workspace_root,
-            stopping: Arc::new(AtomicBool::new(false)),
-            _lock: lock,
-        })
+        Ok(listener)
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -248,6 +266,13 @@ impl Listener {
 impl Drop for Listener {
     /// Remove the socket and the registration, so a crashed-looking registration is
     /// not left behind by an orderly exit.
+    ///
+    /// This is also the cleanup for a start that fails *after* the bind: `bind`
+    /// constructs the guard as soon as the socket file exists, so a later failure
+    /// unwinds through here rather than leaving a socket nobody listens on. Removing a
+    /// registration on that path is safe because the lock this guard holds is what
+    /// admits one daemon per root — anything registered under it is debris from a
+    /// daemon that is already gone.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = registry::unregister(&self.workspace_root);
