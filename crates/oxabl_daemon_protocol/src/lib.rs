@@ -553,9 +553,15 @@ fn usable_base(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 /// Whether [`registration_dir`] is resolving through the temp-directory fallback.
 ///
 /// That branch puts the registration under a world-writable parent, where another
-/// user can create the directory first and have it adopted. A caller that creates
-/// the directory has to check ownership there and nowhere else, and only this
-/// function knows which branch was taken.
+/// user can create the directory first and have it adopted.
+///
+/// This reports which branch was taken; it does not gate anything. It used to:
+/// ownership was verified only when this returned true, on the theory that the
+/// other branches were private by construction. They are not — a home directory
+/// can be group-writable, and an `XDG_CACHE_HOME` can point anywhere — so the
+/// daemon now verifies ownership and the sticky bit on every parent it walks,
+/// whichever branch produced it. Nothing should reintroduce a check conditioned
+/// on this answer.
 pub fn temp_dir_fallback_in_use() -> bool {
     base_dir("XDG_CACHE_HOME").is_none() && base_dir("HOME").is_none()
 }
