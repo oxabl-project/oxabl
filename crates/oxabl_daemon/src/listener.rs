@@ -60,12 +60,13 @@ pub struct Listener {
 impl Listener {
     /// Bind the socket for `workspace_root` and register this process as its daemon.
     ///
-    /// A leftover socket file is removed first, but **only after discovery says no
-    /// live daemon holds it**: a socket file whose owner is alive belongs to that
+    /// A leftover socket file is removed first, but **only after the socket itself
+    /// says nobody is listening on it**: a socket whose owner is alive belongs to that
     /// daemon, and unlinking it would leave the running daemon unreachable while this
     /// one served a second index over the same workspace — exactly the duplication
-    /// the daemon exists to prevent. So a live registration is refused rather than
-    /// stolen.
+    /// the daemon exists to prevent. So a socket that answers is refused rather than
+    /// stolen, and the check is made *after* the lock is held, because the lock is
+    /// what stops a rival from binding between the probe and the bind.
     pub fn bind(workspace_root: impl AsRef<Path>) -> io::Result<Self> {
         let workspace_root = workspace_root.as_ref().to_path_buf();
 
@@ -78,22 +79,40 @@ impl Listener {
         //
         // Holding the lock for the listener's lifetime makes the rest of this
         // function safe: no rival can be between the unlink and the bind.
+        // A lock this call could not *open* is a different failure from a lock
+        // somebody holds, and `acquire_root_lock` keeps them apart: only the second
+        // is `Ok(None)`. So the refusal below is never printed over a transient lock
+        // failure — that one propagates with its own cause.
         let Some(lock) = registry::acquire_root_lock(&workspace_root)? else {
-            // The holder's registration still names it, so the refusal can say who
-            // — the same message this returned when discovery was the only gate.
-            // A holder that has taken the lock but not yet written its registration
-            // is mid-start, and there is no pid to report yet.
-            let holder = match registry::discover(&workspace_root) {
-                registry::Discovery::Live(existing) => format!(" (pid {})", existing.pid),
-                _ => String::new(),
-            };
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!(
-                    "a daemon{holder} already serves {}",
+            // The lock says somebody holds the root. It does not say they are serving
+            // yet, and the two are different sentences: a refusal that claims a daemon
+            // already serves the workspace sends its reader looking for a daemon that
+            // may still be binding. So the state is probed and reported as observed.
+            let refusal = match registry::daemon_state(&workspace_root) {
+                registry::DaemonState::Running(existing)
+                | registry::DaemonState::Saturated(existing)
+                | registry::DaemonState::Undecided(existing) => format!(
+                    "a daemon (pid {}) already serves {}",
+                    existing.pid,
                     workspace_root.display()
                 ),
-            ));
+                registry::DaemonState::Starting(existing) => format!(
+                    "a daemon (pid {}) is starting for {} and holds the start lock. \
+                     Wait for it rather than starting a second one.",
+                    existing.pid,
+                    workspace_root.display()
+                ),
+                // The holder has the lock and has registered nothing readable yet, so
+                // there is no pid to name and claiming one would be a guess.
+                registry::DaemonState::Crashed(_) | registry::DaemonState::Absent => format!(
+                    "another process holds the start lock for {} and has not \
+                     registered a daemon yet. Wait for it, or remove {} if you are \
+                     sure nothing is starting.",
+                    workspace_root.display(),
+                    registry::lock_path_for(&workspace_root).display()
+                ),
+            };
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, refusal));
         };
 
         let socket_path = registry::socket_path_for(&workspace_root);
@@ -107,8 +126,27 @@ impl Listener {
         // the socket is unreachable from the moment it exists, because nobody else
         // can traverse into the directory to reach it.
         registry::ensure_registration_dir()?;
-        // The previous owner is not alive, so its socket file is debris.
-        let _ = std::fs::remove_file(&socket_path);
+        // The lock is ours, and it is still not a licence to unlink: between a
+        // client's probe and its lock another process can take the lock, bind, start
+        // serving and release nothing — and a socket bound by anything that skipped
+        // the lock answers too. Unlinking one that answers would leave a live server
+        // unreachable, so the socket is probed once more and a live one is refused.
+        if registry::socket_is_answering(&socket_path) {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "something is already listening on {}, although no daemon holds \
+                     the start lock for {}. Refusing to unlink a socket that answers: \
+                     stop whatever owns it first.",
+                    socket_path.display(),
+                    workspace_root.display()
+                ),
+            ));
+        }
+        // Nothing answers it, so the previous owner is gone and its socket file is
+        // debris. Removed through the checked path, which refuses to unlink anything
+        // that is not a socket sitting in the verified registration directory.
+        registry::remove_stale_socket(&socket_path)?;
         let listener = UnixListener::bind(&socket_path)?;
         // Belt and braces. On Linux the connect permission is the socket's write
         // bit, and `bind` takes the ambient umask — so this is the control that
@@ -183,6 +221,12 @@ impl Listener {
                 // already connected.
                 Err(_) => continue,
             };
+            // Every liveness probe is a real accepted connection that disconnects at
+            // once (see `registry::socket_is_answering`), and a client poll loop makes
+            // one every 20ms. Without this the finished handles accumulate for the
+            // daemon's whole life — thousands of them for an editor that polled while
+            // starting. The join below still waits for whatever is still serving.
+            clients.retain(|client: &thread::JoinHandle<()>| !client.is_finished());
             let serve = Arc::clone(&serve);
             let host = Arc::clone(&host);
             clients.push(thread::spawn(move || {

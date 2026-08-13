@@ -197,12 +197,12 @@ fn a_second_daemon_for_one_root_is_refused() {
     });
 }
 
-/// A registration written without the lock is dead, however alive its pid looks.
+/// A registration nothing serves is dead, however alive its pid looks.
 ///
 /// This is the recycled-pid case: after a crash the number can be handed to any
 /// unrelated process, and a client that trusted it would connect to a socket
-/// nobody holds and wait. Here the pid is this very process, so the pid check
-/// passes and only the lock can tell the truth.
+/// nobody holds and wait. Here the pid is this very process, so a pid check passes
+/// and only the socket can tell the truth.
 #[cfg(unix)]
 #[test]
 fn a_registration_without_the_lock_is_absent_even_with_a_live_pid() {
@@ -217,6 +217,175 @@ fn a_registration_without_the_lock_is_absent_even_with_a_live_pid() {
             oxabl_daemon::registry::discover(root),
             oxabl_daemon::registry::Discovery::Absent,
             "a live pid is not a live daemon"
+        );
+    });
+}
+
+/// Two clients probing one root at the same time: exactly one daemon ends up serving
+/// it, and the loser's refusal names the state it actually found.
+#[cfg(unix)]
+#[test]
+fn two_clients_probing_one_root_start_exactly_one_daemon() {
+    use std::sync::mpsc;
+
+    with_cache_home(|_| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let (report, results) = mpsc::channel();
+
+        let starters: Vec<_> = (0..2)
+            .map(|_| {
+                let path = root.path().to_path_buf();
+                let report = report.clone();
+                std::thread::spawn(move || {
+                    // What a client does: probe, and start a daemon only if nothing is
+                    // there. Both may well see nothing — the lock is what settles it.
+                    let _ = oxabl_daemon::registry::discover(&path);
+                    let outcome = oxabl_daemon::Listener::bind(&path);
+                    let started = outcome.is_ok();
+                    report
+                        .send(outcome.err().map(|error| error.to_string()))
+                        .expect("report the outcome");
+                    // Hold the listener until both have tried, so the winner cannot
+                    // release the root and let the loser succeed too.
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    started
+                })
+            })
+            .collect();
+        drop(report);
+
+        let outcomes: Vec<_> = results.iter().collect();
+        let started = starters
+            .into_iter()
+            .map(|handle| handle.join().expect("a starter finishes"))
+            .filter(|started| *started)
+            .count();
+
+        assert_eq!(started, 1, "exactly one daemon may serve one root");
+        let refusal = outcomes
+            .iter()
+            .flatten()
+            .next()
+            .expect("the loser reports why");
+        assert!(
+            refusal.contains("already serves")
+                || refusal.contains("is starting")
+                || refusal.contains("start lock"),
+            "the refusal must name the state it found, got {refusal}"
+        );
+    });
+}
+
+/// A crashed daemon leaves a socket file behind. The next daemon finds it refuses
+/// connections, cleans it up, and binds — which is the whole point of proving death
+/// by an acquirable lock plus an unanswered connect.
+#[cfg(unix)]
+#[test]
+fn a_crashed_daemons_leftover_socket_is_cleaned_up_by_the_next_daemon() {
+    with_cache_home(|_| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let socket = oxabl_daemon::registry::socket_path_for(root.path());
+        oxabl_daemon::registry::ensure_registration_dir().expect("the directory");
+        // Bound and then closed without unlinking: exactly what `SIGKILL` leaves.
+        drop(std::os::unix::net::UnixListener::bind(&socket).expect("a socket to abandon"));
+        oxabl_daemon::registry::register(root.path(), &socket, std::process::id())
+            .expect("the crashed daemon's registration");
+        assert!(socket.exists(), "the debris is there to be cleaned up");
+
+        let listener = oxabl_daemon::Listener::bind(root.path())
+            .expect("a crashed daemon's socket must not block the next one");
+        assert_eq!(listener.socket_path(), socket);
+        assert!(
+            matches!(
+                oxabl_daemon::registry::discover(root.path()),
+                oxabl_daemon::registry::Discovery::Live(_)
+            ),
+            "and the replacement is discoverable"
+        );
+    });
+}
+
+/// The cleanup is a delete, so it refuses to be aimed at anything but a socket. A
+/// regular file at the socket path fails the start loudly instead of being removed.
+#[cfg(unix)]
+#[test]
+fn a_regular_file_at_the_socket_path_is_refused_rather_than_removed() {
+    with_cache_home(|_| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let socket = oxabl_daemon::registry::socket_path_for(root.path());
+        oxabl_daemon::registry::ensure_registration_dir().expect("the directory");
+        std::fs::write(&socket, b"precious").expect("a file where the socket goes");
+
+        let Err(error) = oxabl_daemon::Listener::bind(root.path()) else {
+            panic!("a file that is not a socket must not be deleted");
+        };
+        assert!(
+            error.to_string().contains("not a socket"),
+            "the message must say what it refused: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&socket).expect("still there"),
+            b"precious",
+            "the daemon must not have removed it"
+        );
+    });
+}
+
+/// Probing whether a daemon is running must not disturb the lock a starting daemon
+/// needs (R12, KTD6).
+///
+/// The reported bug, and the one the in-process double-bind test above cannot see:
+/// that one binds twice and never runs a probe, so the probe window is untested. A
+/// probe that takes the lock — even to release it one syscall later — makes a
+/// concurrent `bind` fail with `EWOULDBLOCK`, and the daemon then reports that
+/// another daemon serves the root when nothing does.
+#[cfg(unix)]
+#[test]
+fn a_client_probe_does_not_prevent_a_daemon_from_starting() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    with_cache_home(|_| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let path = root.path().to_path_buf();
+        let probing = Arc::new(AtomicBool::new(true));
+        let probes = Arc::new(AtomicU32::new(0));
+
+        let prober = {
+            let probing = Arc::clone(&probing);
+            let probes = Arc::clone(&probes);
+            let path = path.clone();
+            std::thread::spawn(move || {
+                while probing.load(Ordering::SeqCst) {
+                    let _ = oxabl_daemon::registry::discover(&path);
+                    probes.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+
+        let mut refusals = Vec::new();
+        for _ in 0..200 {
+            // A registration on disk is what makes every probe reach the lock: a
+            // client with nothing registered answers "absent" without looking. A
+            // crashed daemon leaves exactly this behind.
+            let socket = oxabl_daemon::registry::socket_path_for(&path);
+            oxabl_daemon::registry::register(&path, &socket, 999_999)
+                .expect("a stale registration");
+            match oxabl_daemon::Listener::bind(&path) {
+                Ok(listener) => drop(listener),
+                Err(error) => refusals.push(error.to_string()),
+            }
+        }
+        probing.store(false, Ordering::SeqCst);
+        prober.join().expect("the probe thread finishes");
+
+        assert!(
+            probes.load(Ordering::SeqCst) > 0,
+            "the probe loop must actually have run, or this test proves nothing"
+        );
+        assert!(
+            refusals.is_empty(),
+            "a probe must not refuse a starting daemon, got {refusals:?}"
         );
     });
 }

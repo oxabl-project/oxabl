@@ -54,15 +54,53 @@
 //! daemon that writes it and every client that reads it must agree — and a client
 //! must not pull the whole analysis stack in to read a small JSON file.
 //!
-//! # A dead registration is an absent one
+//! # Why liveness is a connect, and never a lock query (KTD6)
 //!
 //! A daemon that crashed leaves its file behind. A client that trusted it would
 //! connect to a socket nobody is listening on and wait, which is the one failure a
-//! discovery mechanism must not have. So a registration whose pid is not alive is
-//! treated as absent and replaced. Checking liveness rather than trying the socket
-//! is deliberate: a stale socket file can accept a connection that is then never
-//! answered, and no timeout is short enough to be right for both a cold start and a
-//! busy pass.
+//! discovery mechanism must not have. So the question "is a daemon there" is asked by
+//! **connecting to the socket**, and it is never asked by taking the lock.
+//!
+//! Taking the lock to answer it is what this module used to do, and it broke the
+//! thing it was asking about: the probe held the lock for the moment between acquire
+//! and release, and a daemon starting in that moment got `EWOULDBLOCK` and refused
+//! itself with "a daemon already serves this workspace" when nothing did. A client
+//! poll loop asks every 20ms, so the window is hit in practice, not in theory. Nor is
+//! there a non-disturbing version to reach for: `flock` locks and `fcntl` record locks
+//! are separate lock spaces on local Linux filesystems (`fcntl_locking(2)`: "Since
+//! Linux 2.0, there is no interaction between the types of lock placed by flock(2)
+//! and fcntl()"), so a lock *query* cannot see an `flock` at all — it would answer
+//! "nobody holds it" while a daemon held it.
+//!
+//! An earlier version of this doc argued the opposite, that trying the socket is the
+//! unreliable half, because a stale socket can accept a connection nobody ever
+//! answers and no timeout is right for both a cold start and a busy pass. That
+//! objection is real and it is answered by never making the connect decisive on its
+//! own:
+//!
+//! * A daemon that is alive but wedged reads as **saturated** — a full backlog or a
+//!   timed-out connect is a live server, and the answer is "do not start a second
+//!   one", so no timeout has to be tuned.
+//! * "Crashed" is proved by an **acquirable lock**, not by a timeout expiring. The
+//!   daemon holds the lock for its whole lifetime ([`RootLock`] is a field of
+//!   `Listener`), and the kernel releases it however the process dies — so a lock
+//!   that can be taken plus a socket that refuses a connection is proof that no live
+//!   owner exists. The lock stays, but only as the start-serialisation mutex.
+//!
+//! The start path owes itself one more probe: another process can take the lock,
+//! start a daemon, and be serving by the time we look, so the socket is probed again
+//! *after* the lock is held and a socket that answers is refused rather than
+//! unlinked. `tmux` sequences connect, lock, reconnect for the same reason, and
+//! `sccache` probes by connecting only.
+//!
+//! The read path validates the registration directory the same way the write path
+//! does, and refuses a registration that names a socket outside it. Discovery used to
+//! reach [`ensure_registration_dir`] by accident, through the lock the probe took; a
+//! connect-based probe touches no lock, so the check is made on purpose, by a walk
+//! that inspects and never creates. Without it a client
+//! resolving the shared fallback location would read a registration another local
+//! user planted, connect to that user's socket, hand over buffer contents and take
+//! fabricated diagnostics back.
 
 use std::fs;
 use std::io;
@@ -135,8 +173,42 @@ pub fn ensure_registration_dir() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Whether a walk down to the registration directory may create what is missing.
+///
+/// The write path creates; the read path must not. A client that discovers a daemon
+/// answers a question, and answering it by making a directory would mean every
+/// `oxabl` invocation in a tree with no daemon left one behind — and, worse, that the
+/// only ownership check on the registration lived on the daemon's write path.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    /// Create each owned component that is not there yet.
+    Create,
+    /// Refuse: report the missing component and change nothing.
+    Refuse,
+}
+
+/// Verify the registration directory without creating or modifying any part of it,
+/// and return a descriptor for the leaf.
+///
+/// The check discovery makes before it reads a registration (R25). Same walk, same
+/// ownership and mode rules, no `mkdir` and no `chmod`: a directory that is not there
+/// is `NotFound`, which for a caller means "no daemon has ever registered here".
+#[cfg(unix)]
+fn verify_existing_dir(dir: &Path) -> io::Result<OwnedFd> {
+    walk_registration_dir(dir, Missing::Refuse)
+}
+
 /// Walk down to the registration directory, creating what is missing and verifying
 /// what is not, and return a descriptor for the leaf.
+///
+#[cfg(unix)]
+fn create_and_verify_dir(dir: &Path) -> io::Result<OwnedFd> {
+    walk_registration_dir(dir, Missing::Create)
+}
+
+/// The walk both of the above are, with one difference: whether a missing component
+/// is created or refused.
 ///
 /// Descriptor-relative on purpose. A single `create_dir_all` resolves the whole path
 /// again on every call, so a symlink planted at *any* component is followed — and
@@ -152,7 +224,7 @@ pub fn ensure_registration_dir() -> io::Result<PathBuf> {
 /// `/home`. It is not trusted blindly: the descriptor it resolves to is verified
 /// before anything is created inside it.
 #[cfg(unix)]
-fn create_and_verify_dir(dir: &Path) -> io::Result<OwnedFd> {
+fn walk_registration_dir(dir: &Path, missing: Missing) -> io::Result<OwnedFd> {
     let prefix = dir.ancestors().nth(OWNED_COMPONENTS).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -177,7 +249,9 @@ fn create_and_verify_dir(dir: &Path) -> io::Result<OwnedFd> {
         prefix
     };
 
-    fs::create_dir_all(base)?;
+    if missing == Missing::Create {
+        fs::create_dir_all(base)?;
+    }
     let mut parent = open_dir_by_path(base)?;
     verify_usable_parent(&parent, base)?;
 
@@ -203,10 +277,17 @@ fn create_and_verify_dir(dir: &Path) -> io::Result<OwnedFd> {
         // daemon failing on a directory it made itself.
         let mode = if leaf { 0o700 } else { 0o755 };
 
-        let existed = match rustix::fs::mkdirat(&parent, name, Mode::from_bits_truncate(mode)) {
-            Ok(()) => false,
-            Err(Errno::EXIST) => true,
-            Err(errno) => return Err(refuse(&walked, "it could not be created", errno)),
+        let existed = match missing {
+            // Nothing is created on the read path, so whatever is there was made by
+            // somebody else and goes through the stricter arm below.
+            Missing::Refuse => true,
+            Missing::Create => {
+                match rustix::fs::mkdirat(&parent, name, Mode::from_bits_truncate(mode)) {
+                    Ok(()) => false,
+                    Err(Errno::EXIST) => true,
+                    Err(errno) => return Err(refuse(&walked, "it could not be created", errno)),
+                }
+            }
         };
         parent = open_dir_below(&parent, name, &walked)?;
 
@@ -382,40 +463,297 @@ pub enum Discovery {
     /// A daemon is running and speaks a different contract. Reported rather than
     /// connected to, so the mismatch is named before a request is attempted.
     VersionMismatch(Registration),
-    /// No daemon is registered, or the registration belongs to a dead process.
+    /// No daemon is registered, or nothing answers the socket the registration names.
+    Absent,
+}
+
+/// The state a registration and a connect attempt together report (R13).
+///
+/// Finer than [`Discovery`], because a caller deciding whether to *start* a daemon
+/// needs a distinction a caller deciding whether to *connect* does not: a daemon that
+/// crashed and left artifacts behind, one that is mid-start, and one that is serving
+/// are three different situations, and a refusal that names the wrong one sends its
+/// reader looking for a daemon that is not there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonState {
+    /// The socket accepted a connection.
+    Running(Registration),
+    /// The socket is bound and its backlog is full, or the connect timed out. A busy
+    /// server is a **live** server: reading this as dead is what starts a second
+    /// daemon on a workspace one already owns.
+    Saturated(Registration),
+    /// A registration exists, nothing answers its socket, and the process that wrote
+    /// it is still there: a daemon between taking the lock and serving.
+    Starting(Registration),
+    /// A registration exists, nothing answers its socket, and its process is gone.
+    /// The artifacts are debris — but only the lock proves it, so cleaning up is the
+    /// start path's job and not a client's.
+    Crashed(Registration),
+    /// The connect failed for a reason that says nothing about the owner (a
+    /// descriptor limit, a permission the socket's mode should not have had).
+    /// Reported apart from `Absent`, because "no daemon" is the one answer that
+    /// starts a second one.
+    Undecided(Registration),
+    /// Nothing is registered, or what is registered cannot be trusted.
     Absent,
 }
 
 /// Look for a daemon serving `workspace_root`.
 ///
-/// An unreadable or unparsable registration is [`Discovery::Absent`] rather than an
-/// error: a corrupt file is indistinguishable from no file for every purpose a
-/// caller has, and the next daemon to start replaces it.
+/// An unreadable, unparsable or untrustworthy registration is [`Discovery::Absent`]
+/// rather than an error: a corrupt file is indistinguishable from no file for every
+/// purpose a caller has, and the next daemon to start replaces it.
+///
+/// Liveness is a connect and never a lock — see the module doc for why a lock query
+/// cannot answer this and a lock *acquire* breaks the daemon it is asking about.
 pub fn discover(workspace_root: &Path) -> Discovery {
+    match daemon_state(workspace_root) {
+        // Answering, busy, or unreadable-for-unrelated-reasons: all three mean a
+        // client must not start a second daemon.
+        DaemonState::Running(registration)
+        | DaemonState::Saturated(registration)
+        | DaemonState::Undecided(registration) => {
+            if registration.contract_version != CONTRACT_VERSION {
+                Discovery::VersionMismatch(registration)
+            } else {
+                Discovery::Live(registration)
+            }
+        }
+        // Mid-start and crashed are both "nothing to connect to yet". The caller
+        // starts a daemon, and the lock — not this answer — decides which of the two
+        // it turns out to have been.
+        DaemonState::Starting(_) | DaemonState::Crashed(_) | DaemonState::Absent => {
+            Discovery::Absent
+        }
+    }
+}
+
+/// The state machine behind [`discover`]: read the registration, then connect.
+pub fn daemon_state(workspace_root: &Path) -> DaemonState {
+    let Some(registration) = read_registration(workspace_root) else {
+        return DaemonState::Absent;
+    };
+
+    #[cfg(unix)]
+    {
+        match probe_socket(Path::new(&registration.socket_path)) {
+            Liveness::Answering => DaemonState::Running(registration),
+            Liveness::Saturated => DaemonState::Saturated(registration),
+            Liveness::Undecided => DaemonState::Undecided(registration),
+            // Nothing is listening. Whether that is a crash or a start in progress
+            // is the one place the pid still earns its syscall — it decides which
+            // sentence a refusal prints, and nothing else.
+            Liveness::Gone | Liveness::Unanswered => {
+                if process_is_alive(registration.pid) {
+                    DaemonState::Starting(registration)
+                } else {
+                    DaemonState::Crashed(registration)
+                }
+            }
+        }
+    }
+    // Windows named pipes are deferred and `Listener` is Unix-only, so there is no
+    // socket to probe and no daemon to find. Deliberate degradation: a client
+    // reports no daemon rather than guessing one is there.
+    #[cfg(not(unix))]
+    {
+        let _ = &registration;
+        DaemonState::Absent
+    }
+}
+
+/// Read the registration for `workspace_root`, or report that there is nothing worth
+/// connecting to.
+///
+/// Three refusals before the contents are believed, all of them on the read path
+/// because the read path is where a client acts on somebody else's file (R25):
+///
+/// 1. The registration directory is verified — this user's, 0700, no symlink at any
+///    component — and **not** created or repaired. Discovery used to reach that check
+///    by accident, through the lock the old probe took.
+/// 2. The pid is range-checked, so no value from disk reaches `kill`.
+/// 3. The socket path must resolve inside the verified directory. A registration that
+///    names a socket somewhere else is a planted one, and connecting to it would hand
+///    a local attacker the buffers this client is about to send.
+fn read_registration(workspace_root: &Path) -> Option<Registration> {
+    let dir = registration_dir();
+
+    #[cfg(unix)]
+    if let Err(error) = verify_existing_dir(&dir) {
+        // A directory that is not there is the ordinary case — no daemon has ever
+        // run for this cache home — and saying so on every poll would bury the
+        // refusals that matter.
+        if error.kind() != io::ErrorKind::NotFound {
+            eprintln!("oxabl: ignoring any daemon registration: {error}");
+        }
+        return None;
+    }
+
     let path = registration_path(workspace_root);
-    let Ok(contents) = fs::read_to_string(&path) else {
-        return Discovery::Absent;
-    };
-    let Ok(registration) = serde_json::from_str::<Registration>(&contents) else {
-        return Discovery::Absent;
-    };
-    // Two signals, and a registration is live only when both agree.
-    //
-    // The lock is the authoritative one: the kernel drops it when the holder dies
-    // by any means, so no dead daemon can look alive and a recycled pid cannot
-    // resurrect one. The pid check is secondary — it costs one syscall, and it
-    // still catches a registration written by a build that predates the lock.
-    //
-    // Keeping both matters because `flock` is unreliable on older NFS servers, and
-    // a home directory on NFS is plausible. Where the lock cannot be trusted this
-    // degrades to the previous behaviour rather than to something worse.
-    if !a_daemon_holds_the_lock(workspace_root) || !process_is_alive(registration.pid) {
-        return Discovery::Absent;
+    let registration =
+        serde_json::from_str::<Registration>(&fs::read_to_string(&path).ok()?).ok()?;
+
+    if checked_pid(registration.pid).is_none() {
+        eprintln!(
+            "oxabl: refusing the daemon registration {}: {} is not a process id. \
+             Remove the file.",
+            path.display(),
+            registration.pid
+        );
+        return None;
     }
-    if registration.contract_version != CONTRACT_VERSION {
-        return Discovery::VersionMismatch(registration);
+
+    let socket = Path::new(&registration.socket_path);
+    if socket.parent() != Some(dir.as_path()) {
+        eprintln!(
+            "oxabl: refusing the daemon registration {}: it names the socket {}, \
+             which is not inside {}. Not connecting to it. Remove the file, or set \
+             XDG_CACHE_HOME to a directory you own.",
+            path.display(),
+            socket.display(),
+            dir.display()
+        );
+        return None;
     }
-    Discovery::Live(registration)
+
+    Some(registration)
+}
+
+/// What a connect to a registered socket said about its owner (KTD6).
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Liveness {
+    /// The connection was accepted, or queued for a listener that exists.
+    Answering,
+    /// A live listener that could not take it now.
+    Saturated,
+    /// There is no socket at the path.
+    Gone,
+    /// The socket file is there and nobody is listening on it.
+    Unanswered,
+    /// The attempt failed for a reason that is about this process, not the owner.
+    Undecided,
+}
+
+/// Ask the socket itself whether a daemon is behind it.
+///
+/// Non-blocking, and that is the whole reason this is not `UnixStream::connect`: a
+/// listener whose backlog is full makes a blocking connect wait, so the probe that
+/// exists to avoid stalling a client would stall it. Non-blocking turns that case
+/// into `EAGAIN`, which is a *statement about the server* — alive and busy.
+///
+/// The connection is dropped immediately. It reaches the daemon as a real accepted
+/// client that disconnects at once, which is why `accept_loop_with` reaps finished
+/// client threads on every pass.
+#[cfg(unix)]
+fn probe_socket(path: &Path) -> Liveness {
+    let Ok(address) = rustix::net::SocketAddrUnix::new(path) else {
+        // Too long for `sun_path`, or holding a NUL. Nothing could have bound it.
+        return Liveness::Gone;
+    };
+    let socket = match rustix::net::socket_with(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::STREAM,
+        rustix::net::SocketFlags::CLOEXEC | rustix::net::SocketFlags::NONBLOCK,
+        None,
+    ) {
+        Ok(socket) => socket,
+        // We could not even make a socket, which says nothing about the daemon.
+        Err(_) => return Liveness::Undecided,
+    };
+    match rustix::net::connect(&socket, &address) {
+        Ok(()) => Liveness::Answering,
+        Err(errno) => classify_connect_failure(errno),
+    }
+}
+
+/// Read a failed connect as a statement about the owner of the socket.
+///
+/// The arms are the whole correctness of the probe, so they are separate from the
+/// syscall and named one by one.
+#[cfg(unix)]
+fn classify_connect_failure(errno: Errno) -> Liveness {
+    match errno {
+        // Nothing at the path at all.
+        Errno::NOENT => Liveness::Gone,
+        // The one arm that means "stale artifact": the file exists, and the kernel
+        // has no listener to hand the connection to.
+        Errno::CONNREFUSED => Liveness::Unanswered,
+        // `EAGAIN` (`EWOULDBLOCK` is the same value) is a full accept queue and
+        // `ETIMEDOUT` is a server too slow to answer — both are live servers.
+        // `EINPROGRESS` means the connection is being set up, which needs a listener
+        // to be set up with, and `EINTR` left it in progress too.
+        Errno::AGAIN | Errno::TIMEDOUT | Errno::INPROGRESS | Errno::INTR => Liveness::Saturated,
+        // Everything else — `EACCES`, `EMFILE`, `ENOMEM` — is about this process.
+        // Reported as undecided, never as absent: absent is what starts a rival
+        // daemon, and a descriptor limit is no reason to do that.
+        _ => Liveness::Undecided,
+    }
+}
+
+/// Whether something is listening on `socket_path` right now.
+///
+/// The re-probe the start path owes itself (KTD6). Between a client's connect and
+/// its lock another process can take the lock, start a daemon and begin serving, so
+/// holding the lock is not on its own a licence to unlink the socket file — the
+/// unlink would leave a live daemon unreachable.
+///
+/// Deliberately generous: anything but a clear "nobody is there" counts as
+/// answering, because the caller is about to delete a file and the conservative
+/// direction for a delete is to leave it alone.
+#[cfg(unix)]
+pub fn socket_is_answering(socket_path: &Path) -> bool {
+    match probe_socket(socket_path) {
+        Liveness::Answering | Liveness::Saturated | Liveness::Undecided => true,
+        Liveness::Gone | Liveness::Unanswered => false,
+    }
+}
+
+/// Remove a socket file whose owner is gone, and refuse to remove anything else.
+///
+/// Cleanup is a delete, which makes it the operation worth steering, so the unlink is
+/// fenced three ways: the path must sit directly inside the verified registration
+/// directory, the entry is looked up **relative to that directory's descriptor**
+/// rather than by path again, and it must be a socket — not a file, not a directory,
+/// and not a symlink to somebody's data.
+///
+/// A path that is already gone is success: the goal is "no stale socket remains".
+#[cfg(unix)]
+pub fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
+    let dir = registration_dir();
+    let name = match (socket_path.parent(), socket_path.file_name()) {
+        (Some(parent), Some(name)) if parent == dir.as_path() => name,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing to remove {}: only a socket directly inside {} is the \
+                     daemon's to clean up.",
+                    socket_path.display(),
+                    dir.display()
+                ),
+            ));
+        }
+    };
+    let parent = verify_existing_dir(&dir)?;
+
+    let stat = match rustix::fs::statat(&parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(Errno::NOENT) => return Ok(()),
+        Err(errno) => return Err(refuse(socket_path, "it could not be inspected", errno)),
+    };
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Socket {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to remove {}: it is not a socket, and the daemon only \
+                 cleans up a socket left by a daemon that died. Move it aside.",
+                socket_path.display()
+            ),
+        ));
+    }
+    rustix::fs::unlinkat(&parent, name, rustix::fs::AtFlags::empty())
+        .map_err(|errno| refuse(socket_path, "it could not be removed", errno))
 }
 
 /// Write the registration for a daemon now serving `workspace_root`.
@@ -489,10 +827,10 @@ fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
 
 /// Take the root lock and write the registration, returning the guard.
 ///
-/// The pairing a real daemon has: [`Listener::bind`](crate::Listener::bind) holds
-/// the lock for its whole life, and the registration means nothing once the lock is
-/// gone. A caller that writes a registration without holding the lock produces one
-/// [`discover`] correctly reports as dead.
+/// The pairing a real daemon has: [`Listener::bind`](crate::Listener::bind) holds the
+/// lock for its whole life, so exactly one daemon per root reaches the bind. The lock
+/// is not what [`discover`] reads — a registration is live because its socket answers
+/// — but it is what stops two daemons from both having a socket to answer with.
 ///
 /// Returns `None` when a daemon already holds the root.
 pub fn register_locked(
@@ -544,25 +882,40 @@ pub fn socket_path_for(workspace_root: &Path) -> PathBuf {
     registration.with_file_name(name)
 }
 
+/// A process id read from disk, or `None` when the number cannot be one (R15).
+///
+/// `kill` overloads the sign, and a `u32` from a JSON file can carry values no pid
+/// ever has. `0` targets our own process group; a negative value targets a process
+/// group; and `u32::MAX as i32` is `-1`, which targets *every* process this user may
+/// signal and therefore succeeds — so an unchecked `u32::MAX` reported a daemon alive
+/// unconditionally. The range check is what keeps the sign out of the syscall: the
+/// value must be strictly positive and must fit the signed type `kill` actually
+/// takes.
+fn checked_pid(pid: u32) -> Option<i32> {
+    match i32::try_from(pid) {
+        Ok(pid) if pid > 0 => Some(pid),
+        _ => None,
+    }
+}
+
 /// Whether a process with `pid` exists.
 ///
 /// `kill(pid, 0)` is the portable question on Unix: it performs the permission check
 /// and the existence check and sends nothing.
 ///
-/// **Secondary to the lock**, and no longer load-bearing on its own. It answers
-/// "does some process have this number", which stopped being the same question as
-/// "is this daemon running" the moment a pid could be recycled. `EPERM` is counted
-/// as alive because a process owned by another user is a process; under the lock
-/// that arm can no longer pin a dead registration on its own, since the lock has
-/// to agree.
+/// **Never the liveness answer.** Liveness is the connect (KTD6); this decides only
+/// whether a registration nobody answers belongs to a daemon that is still starting
+/// or to one that crashed, which is a difference in the sentence a refusal prints.
+/// `EPERM` counts as alive because a process owned by another user is a process.
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
-    if pid == 0 {
+    let Some(pid) = checked_pid(pid) else {
         return false;
-    }
+    };
     // SAFETY: `kill` with signal 0 sends no signal. It only reports whether the
-    // process exists and whether we could signal it, and cannot affect it.
-    let result = unsafe { libc_kill(pid as i32, 0) };
+    // process exists and whether we could signal it, and cannot affect it. `pid` is
+    // range-checked strictly positive above, so this cannot address a process group.
+    let result = unsafe { libc_kill(pid, 0) };
     if result == 0 {
         return true;
     }
@@ -660,25 +1013,6 @@ pub fn acquire_root_lock(workspace_root: &Path) -> io::Result<Option<RootLock>> 
     {
         let _ = path;
         Ok(Some(RootLock {}))
-    }
-}
-
-/// Whether a daemon currently holds the lock for `workspace_root`.
-///
-/// Takes the lock and drops it again, so the answer is "somebody else holds it"
-/// rather than "I hold it". Returns a plain `bool` and releases inside, because a
-/// caller that accidentally held this would block the next daemon start.
-fn a_daemon_holds_the_lock(workspace_root: &Path) -> bool {
-    match acquire_root_lock(workspace_root) {
-        // We took it, so nobody held it.
-        Ok(Some(lock)) => {
-            drop(lock);
-            false
-        }
-        Ok(None) => true,
-        // The lock file could not be opened at all. Say nothing rather than
-        // claiming a daemon is absent; the pid check below still applies.
-        Err(_) => false,
     }
 }
 
@@ -983,13 +1317,28 @@ mod tests {
         });
     }
 
+    /// Bind the socket a real daemon for `root` would bind, so a probe of its
+    /// registration finds something listening.
+    ///
+    /// A listener with nothing accepting still answers: the kernel completes the
+    /// connection into the backlog, which is exactly the state a daemon is in between
+    /// `bind` and its first `accept`.
+    #[cfg(unix)]
+    fn serving(root: &Path) -> std::os::unix::net::UnixListener {
+        ensure_registration_dir().expect("the registration directory");
+        let socket = socket_path_for(root);
+        let _ = fs::remove_file(&socket);
+        std::os::unix::net::UnixListener::bind(&socket).expect("a listening socket")
+    }
+
     #[test]
     fn a_live_registration_is_found() {
         with_cache_home(|_| {
             let root = Path::new("/proj/alpha");
             let socket = socket_path_for(root);
-            // Alive by construction: this process holds the lock and its pid is
-            // its own, which is what a real daemon has.
+            // Alive by construction: something is listening on the socket the
+            // registration names, which is what a real daemon has.
+            let _listening = serving(root);
             let (_path, _lock) = register_locked(root, &socket, std::process::id())
                 .expect("registration writes")
                 .expect("no daemon holds this root");
@@ -1007,16 +1356,288 @@ mod tests {
     }
 
     /// The rule that keeps a crashed daemon from stranding a client: a registration
-    /// whose pid is dead is absent, so the client starts a daemon instead of
+    /// whose socket nobody answers is absent, so the client starts a daemon instead of
     /// connecting to a socket nobody holds.
     #[test]
-    fn a_registration_whose_pid_is_dead_is_absent() {
+    fn a_registration_nobody_answers_is_absent() {
         with_cache_home(|_| {
             let root = Path::new("/proj/crashed");
-            // A pid that cannot be running: pid 1 is init, and this is well past any
-            // plausible live pid on a test machine.
-            register(root, &socket_path_for(root), u32::MAX - 1).expect("registration writes");
+            register(root, &socket_path_for(root), std::process::id())
+                .expect("registration writes");
+            assert_eq!(
+                discover(root),
+                Discovery::Absent,
+                "a registration with no listener behind it is not a daemon"
+            );
+        });
+    }
+
+    /// A number from a file is not a pid until it has been checked (R15).
+    ///
+    /// `kill` overloads the sign, and `u32::MAX as i32` is `-1`: unchecked, it asks
+    /// "may I signal every process I own", which succeeds — so the worst possible
+    /// value reported a daemon alive. The old dead-pid sentinel `u32::MAX - 1` passed
+    /// only by luck, because it wraps to `-2` and process group 2 happens not to
+    /// exist on this machine.
+    #[cfg(unix)]
+    #[test]
+    fn a_number_that_cannot_be_a_process_id_is_never_reported_alive() {
+        for pid in [0, u32::MAX, u32::MAX - 1, i32::MAX as u32 + 1] {
+            assert!(
+                checked_pid(pid).is_none(),
+                "{pid} is not a process id and must be refused before `kill` sees it"
+            );
+            assert!(
+                !process_is_alive(pid),
+                "{pid} must never be reported alive: it addresses a process group, \
+                 not a process"
+            );
+        }
+        assert!(
+            process_is_alive(std::process::id()),
+            "this process is alive, so the check must not refuse every value"
+        );
+    }
+
+    /// The range check runs before the registration is believed, so a pid no process
+    /// can have makes the whole file untrustworthy — even with a live socket behind
+    /// it.
+    #[cfg(unix)]
+    #[test]
+    fn a_registration_whose_process_id_is_out_of_range_is_absent() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/impossible-pid");
+            let _listening = serving(root);
+            register(root, &socket_path_for(root), u32::MAX).expect("registration writes");
+
+            assert_eq!(
+                discover(root),
+                Discovery::Absent,
+                "a pid that cannot exist makes the registration untrustworthy"
+            );
+        });
+    }
+
+    /// A socket path outside the verified directory is a planted registration: a local
+    /// attacker's socket, which a client would otherwise hand its buffers to.
+    #[cfg(unix)]
+    #[test]
+    fn a_registration_naming_a_socket_outside_the_directory_is_refused() {
+        with_cache_home(|_| {
+            let elsewhere = tempfile::tempdir().expect("somebody else's directory");
+            let planted = elsewhere.path().join("theirs.sock");
+            let listening = std::os::unix::net::UnixListener::bind(&planted)
+                .expect("the attacker's listening socket");
+            listening
+                .set_nonblocking(true)
+                .expect("so the accept below cannot block");
+
+            let root = Path::new("/proj/planted");
+            register(root, &planted, std::process::id()).expect("the planted registration");
+
+            assert_eq!(
+                discover(root),
+                Discovery::Absent,
+                "a socket outside the verified directory must not be trusted"
+            );
+            assert_eq!(
+                listening.accept().map(|_| ()).map_err(|e| e.kind()),
+                Err(io::ErrorKind::WouldBlock),
+                "the refusal must come before any connection is attempted"
+            );
+        });
+    }
+
+    /// The stale-artifact arm: a socket file whose daemon is gone refuses the
+    /// connection, which is the one connect outcome that means "debris".
+    #[cfg(unix)]
+    #[test]
+    fn a_crashed_daemons_socket_is_unanswered_and_then_removed() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/left-behind");
+            let socket = socket_path_for(root);
+            // Dropping a `UnixListener` closes it and leaves the file, which is what a
+            // killed daemon leaves behind.
+            drop(serving(root));
+            assert!(socket.exists(), "the socket file outlives its listener");
+            assert_eq!(
+                probe_socket(&socket),
+                Liveness::Unanswered,
+                "a socket with no listener refuses the connection"
+            );
+
+            register(root, &socket, std::process::id()).expect("the crashed registration");
             assert_eq!(discover(root), Discovery::Absent);
+
+            remove_stale_socket(&socket).expect("debris is removable");
+            assert!(!socket.exists(), "the stale socket is cleaned up");
+            assert_eq!(
+                probe_socket(&socket),
+                Liveness::Gone,
+                "and then there is nothing at the path at all"
+            );
+        });
+    }
+
+    /// Cleanup is a delete, so it must not be steerable. Anything that is not a
+    /// socket is refused and left alone, however it got there.
+    #[cfg(unix)]
+    #[test]
+    fn stale_socket_cleanup_refuses_anything_that_is_not_a_socket() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/not-a-socket");
+            ensure_registration_dir().expect("the directory");
+            let socket = socket_path_for(root);
+            fs::write(&socket, b"precious").expect("a regular file where the socket goes");
+
+            let error = remove_stale_socket(&socket).expect_err("a file is not debris");
+            assert!(
+                error.to_string().contains("not a socket"),
+                "the message must say what it refused: {error}"
+            );
+            assert_eq!(
+                fs::read(&socket).expect("still there"),
+                b"precious",
+                "a refused path must not be removed"
+            );
+        });
+    }
+
+    /// And a path outside the verified directory is refused before it is even
+    /// inspected, so a planted registration cannot aim the cleanup at other data.
+    #[cfg(unix)]
+    #[test]
+    fn stale_socket_cleanup_refuses_a_path_outside_the_registration_directory() {
+        with_cache_home(|_| {
+            let elsewhere = tempfile::tempdir().expect("somebody else's directory");
+            let target = elsewhere.path().join("theirs.sock");
+            let _listening = std::os::unix::net::UnixListener::bind(&target).expect("their socket");
+
+            let error =
+                remove_stale_socket(&target).expect_err("a foreign path is not ours to remove");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(target.exists(), "a refused path must not be removed");
+        });
+    }
+
+    /// A full accept queue is a **live** server. Reading it as dead is the classic
+    /// failure in this pattern: the client respawns onto a workspace a daemon owns.
+    #[cfg(unix)]
+    #[test]
+    fn a_saturated_daemon_is_reported_running_rather_than_respawned() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/busy");
+            ensure_registration_dir().expect("the directory");
+            let socket = socket_path_for(root);
+
+            let listening = rustix::net::socket_with(
+                rustix::net::AddressFamily::UNIX,
+                rustix::net::SocketType::STREAM,
+                rustix::net::SocketFlags::CLOEXEC,
+                None,
+            )
+            .expect("a socket");
+            let address = rustix::net::SocketAddrUnix::new(&socket).expect("an address");
+            rustix::net::bind(&listening, &address).expect("bind");
+            // The shortest queue the kernel will give, so it fills in a few connects.
+            rustix::net::listen(&listening, 1).expect("listen");
+            register(root, &socket, std::process::id()).expect("registration writes");
+
+            // Each probe leaves a queued connection behind, so probing is also how the
+            // queue is filled. Nothing accepts, so it never drains.
+            let mut saturated = false;
+            for _ in 0..256 {
+                match probe_socket(&socket) {
+                    Liveness::Answering => continue,
+                    Liveness::Saturated => {
+                        saturated = true;
+                        break;
+                    }
+                    other => panic!("a bound socket must not report {other:?}"),
+                }
+            }
+            assert!(saturated, "the accept queue must have filled up");
+            assert!(
+                matches!(discover(root), Discovery::Live(_)),
+                "a busy daemon is a running daemon"
+            );
+        });
+    }
+
+    /// The inverted arm this unit removed: the old probe returned `false` on an
+    /// unopenable lock file, and the caller's `||` short-circuited, so a **live**
+    /// daemon was reported absent — the opposite of what the comment claimed. Nothing
+    /// on the read path opens the lock now, so the answer comes from the socket.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_file_that_cannot_be_opened_does_not_hide_a_live_daemon() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/locked-out");
+            let _listening = serving(root);
+            register(root, &socket_path_for(root), std::process::id())
+                .expect("registration writes");
+
+            let lock = lock_path_for(root);
+            fs::write(&lock, b"").expect("the lock file");
+            fs::set_permissions(&lock, fs::Permissions::from_mode(0o000))
+                .expect("a lock nothing can open");
+
+            assert!(
+                matches!(discover(root), Discovery::Live(_)),
+                "an unopenable lock file must not turn a live daemon into an absent one"
+            );
+
+            fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).expect("restore");
+        });
+    }
+
+    /// The read path answers a question; it must not make a directory to answer it
+    /// (R25). Creating one here is also what used to be the *only* place a client
+    /// checked the directory's ownership, which is why the check is now explicit.
+    #[cfg(unix)]
+    #[test]
+    fn discovery_creates_nothing() {
+        with_cache_home(|cache| {
+            assert_eq!(discover(Path::new("/proj/nothing-here")), Discovery::Absent);
+            assert!(
+                !cache.join("oxabl").exists(),
+                "a client that finds no daemon must leave no directory behind"
+            );
+        });
+    }
+
+    /// A registration directory this user did not make at 0700 is refused on the read
+    /// path too, and refused without touching it.
+    ///
+    /// The wrong-*mode* case is the testable half. A directory owned by another user
+    /// cannot be created without privileges, so that arm of the same check is
+    /// unreachable from a test — stated rather than faked.
+    #[cfg(unix)]
+    #[test]
+    fn a_registration_directory_with_a_wider_mode_is_refused_on_the_read_path() {
+        with_cache_home(|cache| {
+            let root = Path::new("/proj/loose-directory");
+            let dir = cache.join("oxabl").join("daemon");
+            let _listening = serving(root);
+            register(root, &socket_path_for(root), std::process::id())
+                .expect("registration writes");
+            // Loosened after the fact, the way something that is not this daemon
+            // would have left it.
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("widen it");
+
+            assert_eq!(
+                discover(root),
+                Discovery::Absent,
+                "a directory the daemon would not have created is not trusted to hold \
+                 a registration"
+            );
+            assert_eq!(
+                fs::metadata(&dir).expect("the directory").mode() & 0o777,
+                0o755,
+                "a refused directory must not be repaired by a reader"
+            );
+
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("restore");
         });
     }
 
@@ -1035,9 +1656,8 @@ mod tests {
                 workspace_root: root.to_string_lossy().into_owned(),
             };
             fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("write");
-            let _lock = acquire_root_lock(root)
-                .expect("lock the root")
-                .expect("nothing holds it");
+            // A daemon of the wrong contract is still a daemon: it answers.
+            let _listening = serving(root);
 
             match discover(root) {
                 Discovery::VersionMismatch(found) => {
@@ -1064,6 +1684,8 @@ mod tests {
         with_cache_home(|_| {
             let alpha = Path::new("/proj/alpha");
             let beta = Path::new("/proj/beta");
+            let _alpha_listening = serving(alpha);
+            let _beta_listening = serving(beta);
             let (_a, _alpha_lock) =
                 register_locked(alpha, &socket_path_for(alpha), std::process::id())
                     .expect("alpha")
@@ -1080,18 +1702,30 @@ mod tests {
         });
     }
 
+    /// A registration is replaced rather than merged, so the crashed daemon's pid does
+    /// not survive into the live one's file.
+    ///
+    /// Both spellings name the same socket, because the socket has to live inside the
+    /// verified registration directory — a registration naming anything else is
+    /// refused. The pid is what tells the two apart.
+    #[cfg(unix)]
     #[test]
     fn registering_replaces_a_previous_registration() {
         with_cache_home(|_| {
             let root = Path::new("/proj/replaced");
-            register(root, Path::new("/tmp/old.sock"), u32::MAX - 1).expect("first");
-            let (_path, _lock) =
-                register_locked(root, Path::new("/tmp/new.sock"), std::process::id())
-                    .expect("second")
-                    .expect("nothing holds it");
+            let socket = socket_path_for(root);
+            register(root, &socket, 999_999).expect("first");
+
+            let _listening = serving(root);
+            let (_path, _lock) = register_locked(root, &socket, std::process::id())
+                .expect("second")
+                .expect("nothing holds it");
 
             match discover(root) {
-                Discovery::Live(found) => assert_eq!(found.socket_path, "/tmp/new.sock"),
+                Discovery::Live(found) => {
+                    assert_eq!(found.pid, std::process::id());
+                    assert_eq!(found.socket_path, socket.to_string_lossy());
+                }
                 other => panic!("expected the replacement, got {other:?}"),
             }
         });
