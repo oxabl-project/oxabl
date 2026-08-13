@@ -78,9 +78,13 @@
 //! objection is real and it is answered by never making the connect decisive on its
 //! own:
 //!
-//! * A daemon that is alive but wedged reads as **saturated** — a full backlog or a
-//!   timed-out connect is a live server, and the answer is "do not start a second
-//!   one", so no timeout has to be tuned.
+//! * A daemon that is alive but wedged still reads as **live**, and that is the
+//!   answer the caller needs: a wedged accept loop leaves a bound socket, so the
+//!   kernel completes the connection into the backlog and the probe reports
+//!   `Answering` until the backlog fills, and `Saturated` after it does. Both mean
+//!   "do not start a second one", so no timeout has to be tuned. What the probe does
+//!   *not* do is distinguish wedged from working — a hung daemon reads as a running
+//!   one, and it is the handshake, not discovery, that would notice.
 //! * "Crashed" is proved by an **acquirable lock**, not by a timeout expiring. The
 //!   daemon holds the lock for its whole lifetime ([`RootLock`] is a field of
 //!   `Listener`), and the kernel releases it however the process dies — so a lock
@@ -155,8 +159,9 @@ const STICKY: u32 = 0o1000;
 ///
 /// One consequence of taking the mode from `mkdir` and never fixing it up: a umask
 /// that strips owner bits (`0177` and the like) makes the created leaf narrower than
-/// 0700, and the next call refuses it. That is a loud, named failure with the mode in
-/// the message, which is the right way for an unusable umask to surface.
+/// 0700, and the run that created it is the run that refuses it. That is a loud, named
+/// failure with the mode in the message, which is the right way for an unusable umask
+/// to surface — and it is why the leaf is verified whether it was found or just made.
 pub fn ensure_registration_dir() -> io::Result<PathBuf> {
     let dir = registration_dir();
 
@@ -218,11 +223,22 @@ fn create_and_verify_dir(dir: &Path) -> io::Result<OwnedFd> {
 /// refusing symlinks, so nothing above the leaf can be substituted between the
 /// create and the use.
 ///
-/// The prefix above [`OWNED_COMPONENTS`] is resolved by path, symlinks included. It
-/// is the location the user named, and refusing a symlink there would refuse
-/// legitimate setups — a `~/.cache` pointing at another volume, or a symlinked
-/// `/home`. It is not trusted blindly: the descriptor it resolves to is verified
-/// before anything is created inside it.
+/// The prefix above [`OWNED_COMPONENTS`] is resolved by path, symlinks included, and
+/// on the create path it is also *made* by path, by a `create_dir_all` that runs
+/// before any descriptor is opened. Both are deliberate: the prefix is the location
+/// the user named, and refusing — or refusing to create through — a symlink there
+/// would refuse legitimate setups, a `~/.cache` pointing at another volume or a
+/// symlinked `/home`. So the prefix is not verified before it is created; it is
+/// verified after, on the descriptor the path resolved to, and nothing is created
+/// *inside* it until that check has passed.
+///
+/// What that costs is bounded by what the prefix is. Creating a directory through a
+/// symlink a local attacker planted would put the prefix somewhere we did not choose
+/// — but the leaf inside it is then created 0700 below a verified descriptor, and a
+/// prefix whose owner or mode is wrong is refused before the leaf is touched. The
+/// branch where a hostile prefix is plausible at all is the shared-temp fallback, and
+/// there `create_dir_all` creates nothing: its base is the temp directory, which
+/// already exists.
 #[cfg(unix)]
 fn walk_registration_dir(dir: &Path, missing: Missing) -> io::Result<OwnedFd> {
     let prefix = dir.ancestors().nth(OWNED_COMPONENTS).ok_or_else(|| {
@@ -277,23 +293,28 @@ fn walk_registration_dir(dir: &Path, missing: Missing) -> io::Result<OwnedFd> {
         // daemon failing on a directory it made itself.
         let mode = if leaf { 0o700 } else { 0o755 };
 
-        let existed = match missing {
-            // Nothing is created on the read path, so whatever is there was made by
-            // somebody else and goes through the stricter arm below.
-            Missing::Refuse => true,
+        match missing {
+            // Nothing is created on the read path: whatever is there was made by
+            // somebody else, and the checks below are the same either way.
+            Missing::Refuse => {}
             Missing::Create => {
                 match rustix::fs::mkdirat(&parent, name, Mode::from_bits_truncate(mode)) {
-                    Ok(()) => false,
-                    Err(Errno::EXIST) => true,
+                    Ok(()) | Err(Errno::EXIST) => {}
                     Err(errno) => return Err(refuse(&walked, "it could not be created", errno)),
                 }
             }
-        };
+        }
         parent = open_dir_below(&parent, name, &walked)?;
 
-        if leaf && existed {
-            // The one case where the mode was not set by us. Verify it or refuse it;
-            // do not repair it.
+        // The leaf is checked strictly whether we just created it or found it. Asking
+        // only when it already existed made a create the one path that never checked:
+        // `mkdirat` applies `mode & ~umask`, so a umask stripping owner-execute turns
+        // the 0700 request into a 0600 directory the owner cannot traverse. The
+        // parent-grade check accepts that — it is neither world-writable nor foreign —
+        // so the creating run carried on, the lock-file open below it failed with a
+        // bare `EACCES`, and every later run refused the directory with the named
+        // message the first run should have printed.
+        if leaf {
             verify_private_leaf(&parent, &walked)?;
         } else {
             verify_usable_parent(&parent, &walked)?;
@@ -371,6 +392,19 @@ fn open_dir_below(parent: &OwnedFd, name: &OsStr, path: &Path) -> io::Result<Own
 /// there, so a correct mode on the leaf would prove nothing. `/tmp` is the case this
 /// admits: root-owned and sticky, which is exactly the configuration that makes the
 /// temp-directory fallback usable at all.
+///
+/// # Why a group-writable parent is accepted rather than refused
+///
+/// The mask is `0o002`, so `drwxrwx--- user user` passes. That is a residual, and it is
+/// accepted knowingly: a member of the group can rename the leaf out from under the
+/// daemon exactly as a world-writable parent's users could. It is accepted because the
+/// check cannot tell the two apart. On every distribution that uses per-user private
+/// groups, `umask 002` produces a group-writable home directory whose group has one
+/// member — the owner — and `st_gid` does not say whether a group is private or
+/// shared. Widening the mask would therefore refuse an ordinary desktop account to
+/// close a hole only a shared-group account has. A user in the second position closes
+/// it by pointing `XDG_CACHE_HOME` at a directory whose group is not shared; the leaf's
+/// own 0700 still keeps the group out of the socket and the registration.
 #[cfg(unix)]
 fn verify_usable_parent(dir: &OwnedFd, path: &Path) -> io::Result<()> {
     let stat =
@@ -406,12 +440,18 @@ fn verify_usable_parent(dir: &OwnedFd, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Verify a leaf directory that already existed: this user's, and already 0700.
+/// Verify the leaf directory: this user's, and exactly 0700.
 ///
-/// Refused rather than repaired (KTD8). The daemon only ever creates this directory
-/// at 0700, so one that is not 0700 is not one the daemon made, and a `chmod` would
-/// turn "somebody else's directory" into "somebody else's directory that now looks
-/// like ours".
+/// Applied to every leaf, one this call just created as much as one it found. A
+/// directory that is wider was made by something that is not this daemon; one that is
+/// narrower is a directory the owner cannot traverse, which `mkdirat` produces from a
+/// 0700 request under a umask that strips owner bits. Both are refused here, so the
+/// failure is named once with the mode in it rather than surfacing later as an
+/// `EACCES` from opening the lock file.
+///
+/// Refused rather than repaired (KTD8). A `chmod` would turn "somebody else's
+/// directory" into "somebody else's directory that now looks like ours", and on a leaf
+/// replaced by a symlink it would tighten the attacker's directory and carry on.
 #[cfg(unix)]
 fn verify_private_leaf(dir: &OwnedFd, path: &Path) -> io::Result<()> {
     let stat =
@@ -422,11 +462,12 @@ fn verify_private_leaf(dir: &OwnedFd, path: &Path) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "refusing to use {}: it already exists with mode {mode:04o} owned by \
-                 uid {}, and the daemon requires mode 0700 owned by this user (uid \
-                 {uid}). It is refused rather than changed, because the daemon never \
-                 creates it any other way. Remove it, or set XDG_CACHE_HOME to a \
-                 directory you own.",
+                "refusing to use {}: it has mode {mode:04o} owned by uid {}, and the \
+                 daemon requires mode 0700 owned by this user (uid {uid}). It is \
+                 refused rather than changed, because the daemon never creates it any \
+                 other way. Remove it, or set XDG_CACHE_HOME to a directory you own — \
+                 and if the mode is narrower than 0700, loosen a umask that is \
+                 stripping the owner bits the daemon needs.",
                 path.display(),
                 stat.st_uid
             ),
@@ -463,6 +504,17 @@ pub enum Discovery {
     /// A daemon is running and speaks a different contract. Reported rather than
     /// connected to, so the mismatch is named before a request is attempted.
     VersionMismatch(Registration),
+    /// The question could not be answered, and the reason says nothing about whether a
+    /// daemon is there: the registration could not be read for a reason that is not
+    /// "it is not there", or the probe could not be made at all. Carries that reason,
+    /// so a client that eventually gives up names the cause instead of a timeout.
+    ///
+    /// **Not** a synonym for either neighbour. Reported as `Absent` it starts a rival
+    /// daemon on a workspace that may already have one; reported as `Live` it sends the
+    /// client into a `connect` that fails, and the editor's server dies without any
+    /// daemon ever being started. The only correct response is to keep polling, so
+    /// this variant exists to say exactly that.
+    Undecided(String),
     /// No daemon is registered, or nothing answers the socket the registration names.
     Absent,
 }
@@ -482,8 +534,18 @@ pub enum DaemonState {
     /// server is a **live** server: reading this as dead is what starts a second
     /// daemon on a workspace one already owns.
     Saturated(Registration),
-    /// A registration exists, nothing answers its socket, and the process that wrote
-    /// it is still there: a daemon between taking the lock and serving.
+    /// A daemon is mid-start: the registration on disk is not yet the registration the
+    /// daemon that will serve this root is going to write.
+    ///
+    /// Two shapes reach here. The plain one is a registration whose socket nobody
+    /// answers and whose writer is still alive — a daemon between taking the lock and
+    /// serving. The other is a socket that *does* answer while the pid in the
+    /// registration is gone, which is a stale body being read next to a fresh daemon's
+    /// socket: a killed daemon's file still on disk, and its replacement bound but not
+    /// yet registered. Both mean "keep polling", and neither may be reported as
+    /// `Running`, because the registration a client would act on — its contract
+    /// version above all — belongs to the dead process rather than to the one
+    /// answering.
     Starting(Registration),
     /// A registration exists, nothing answers its socket, and its process is gone.
     /// The artifacts are debris — but only the lock proves it, so cleaning up is the
@@ -494,31 +556,53 @@ pub enum DaemonState {
     /// Reported apart from `Absent`, because "no daemon" is the one answer that
     /// starts a second one.
     Undecided(Registration),
+    /// The registration could not be read for a reason that is not "there is none":
+    /// a directory this daemon would not have created, or an unreadable file. Carries
+    /// the refusal, because it is the sentence a client should print when it gives up.
+    Unreadable(String),
     /// Nothing is registered, or what is registered cannot be trusted.
     Absent,
 }
 
 /// Look for a daemon serving `workspace_root`.
 ///
-/// An unreadable, unparsable or untrustworthy registration is [`Discovery::Absent`]
-/// rather than an error: a corrupt file is indistinguishable from no file for every
-/// purpose a caller has, and the next daemon to start replaces it.
+/// An unparsable or untrustworthy registration is [`Discovery::Absent`] rather than an
+/// error: a corrupt file is indistinguishable from no file for every purpose a caller
+/// has, and the next daemon to start replaces it. A registration that could not be
+/// *read* is different, and it is [`Discovery::Undecided`] — see that variant for why
+/// collapsing the two starts a second daemon over a permission problem.
 ///
 /// Liveness is a connect and never a lock — see the module doc for why a lock query
 /// cannot answer this and a lock *acquire* breaks the daemon it is asking about.
 pub fn discover(workspace_root: &Path) -> Discovery {
-    match daemon_state(workspace_root) {
-        // Answering, busy, or unreadable-for-unrelated-reasons: all three mean a
-        // client must not start a second daemon.
-        DaemonState::Running(registration)
-        | DaemonState::Saturated(registration)
-        | DaemonState::Undecided(registration) => {
+    classify(daemon_state(workspace_root))
+}
+
+/// The mapping from the finer state to the answer a client acts on.
+///
+/// Split from [`discover`] because it is the part that decides whether a client starts
+/// a rival daemon, connects, or waits — and a mapping that needs a real daemon, a real
+/// socket and a real descriptor limit to exercise is a mapping that goes untested.
+/// Given a state, it takes no syscall to check.
+fn classify(state: DaemonState) -> Discovery {
+    match state {
+        // Answering or busy: both mean a client must not start a second daemon, and
+        // both mean the registration in hand belongs to the process answering.
+        DaemonState::Running(registration) | DaemonState::Saturated(registration) => {
             if registration.contract_version != CONTRACT_VERSION {
                 Discovery::VersionMismatch(registration)
             } else {
                 Discovery::Live(registration)
             }
         }
+        // A probe that never happened is not a daemon that is not there. Reported as
+        // live it used to send the client into a `connect` that fails — the socket may
+        // be as stale as the registration — so it keeps polling instead.
+        DaemonState::Undecided(registration) => Discovery::Undecided(format!(
+            "the daemon registered at {} could not be probed on this attempt",
+            registration.socket_path
+        )),
+        DaemonState::Unreadable(reason) => Discovery::Undecided(reason),
         // Mid-start and crashed are both "nothing to connect to yet". The caller
         // starts a daemon, and the lock — not this answer — decides which of the two
         // it turns out to have been.
@@ -530,19 +614,35 @@ pub fn discover(workspace_root: &Path) -> Discovery {
 
 /// The state machine behind [`discover`]: read the registration, then connect.
 pub fn daemon_state(workspace_root: &Path) -> DaemonState {
-    let Some(registration) = read_registration(workspace_root) else {
-        return DaemonState::Absent;
+    let registration = match read_registration(workspace_root) {
+        RegistrationRead::Found(registration) => registration,
+        RegistrationRead::Refused(reason) => return DaemonState::Unreadable(reason),
+        RegistrationRead::Absent => return DaemonState::Absent,
     };
 
     #[cfg(unix)]
     {
-        match probe_socket(Path::new(&registration.socket_path)) {
+        // A socket that answers proves something is listening. It does not prove that
+        // the something wrote the registration just read, and the two come apart in an
+        // ordinary upgrade: a `SIGKILL`ed daemon leaves a file naming a dead pid and an
+        // older contract, its replacement binds the socket *before* it registers, and a
+        // poll landing in that window would pair the new socket with the old body. That
+        // pairing reported `Running`, which a client turns into a contract mismatch and
+        // exits on — a live daemon of the right version killing the editor's server. So
+        // a registration whose writer is gone is never `Running`, whatever the socket
+        // says: it is a start in progress, and the client polls until the fresh
+        // registration lands.
+        let answered = probe_socket(Path::new(&registration.socket_path));
+        match answered {
+            Liveness::Answering | Liveness::Saturated if !process_is_alive(registration.pid) => {
+                DaemonState::Starting(registration)
+            }
             Liveness::Answering => DaemonState::Running(registration),
             Liveness::Saturated => DaemonState::Saturated(registration),
-            Liveness::Undecided => DaemonState::Undecided(registration),
+            Liveness::Undecided(_) => DaemonState::Undecided(registration),
             // Nothing is listening. Whether that is a crash or a start in progress
-            // is the one place the pid still earns its syscall — it decides which
-            // sentence a refusal prints, and nothing else.
+            // is decided by the same pid question as above — it chooses which sentence
+            // a refusal prints, and nothing else.
             Liveness::Gone | Liveness::Unanswered => {
                 if process_is_alive(registration.pid) {
                     DaemonState::Starting(registration)
@@ -562,6 +662,23 @@ pub fn daemon_state(workspace_root: &Path) -> DaemonState {
     }
 }
 
+/// What the read path found on disk.
+///
+/// `Absent` and `Refused` are kept apart because only one of them may start a daemon.
+/// "There is no registration" is the ordinary cold start; "the registration is there
+/// and something stopped us reading it" is a permission or resource problem, and a
+/// client that reads it as absent spawns a rival daemon that will hit the same problem.
+enum RegistrationRead {
+    /// A registration that passed every check below.
+    Found(Registration),
+    /// Nothing is registered, or what is registered is not trustworthy: a corrupt
+    /// body, an impossible pid, a socket outside the verified directory.
+    Absent,
+    /// The registration could not be read, for a reason that is not "it is not there".
+    /// Carries the refusal, for a caller that has to explain why it gave up.
+    Refused(String),
+}
+
 /// Read the registration for `workspace_root`, or report that there is nothing worth
 /// connecting to.
 ///
@@ -575,7 +692,12 @@ pub fn daemon_state(workspace_root: &Path) -> DaemonState {
 /// 3. The socket path must resolve inside the verified directory. A registration that
 ///    names a socket somewhere else is a planted one, and connecting to it would hand
 ///    a local attacker the buffers this client is about to send.
-fn read_registration(workspace_root: &Path) -> Option<Registration> {
+///
+/// Refusals 2 and 3 are `Absent`: the file is there and is not to be believed, and the
+/// next daemon to start replaces it. A directory refusal, and any read error that is
+/// not `NotFound`, are `Refused` instead — they say nothing about whether a daemon
+/// exists, and answering "absent" to them starts a second daemon over a mode bit.
+fn read_registration(workspace_root: &Path) -> RegistrationRead {
     let dir = registration_dir();
 
     #[cfg(unix)]
@@ -583,40 +705,90 @@ fn read_registration(workspace_root: &Path) -> Option<Registration> {
         // A directory that is not there is the ordinary case — no daemon has ever
         // run for this cache home — and saying so on every poll would bury the
         // refusals that matter.
-        if error.kind() != io::ErrorKind::NotFound {
-            eprintln!("oxabl: ignoring any daemon registration: {error}");
+        if error.kind() == io::ErrorKind::NotFound {
+            return RegistrationRead::Absent;
         }
-        return None;
+        let refusal = format!("ignoring any daemon registration: {error}");
+        report_once(&refusal);
+        return RegistrationRead::Refused(refusal);
     }
 
     let path = registration_path(workspace_root);
-    let registration =
-        serde_json::from_str::<Registration>(&fs::read_to_string(&path).ok()?).ok()?;
+    let body = match fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return RegistrationRead::Absent;
+        }
+        // A descriptor limit, a permission the 0600 mode should have granted, an I/O
+        // error: none of them is evidence that no daemon is running.
+        Err(error) => {
+            let refusal = format!(
+                "the daemon registration {} could not be read: {error}",
+                path.display()
+            );
+            report_once(&refusal);
+            return RegistrationRead::Refused(refusal);
+        }
+    };
+    // A body that does not parse is a file no caller can use, and it is replaced by
+    // the next daemon to start — so it is absent rather than undecided.
+    let Ok(registration) = serde_json::from_str::<Registration>(&body) else {
+        return RegistrationRead::Absent;
+    };
 
     if checked_pid(registration.pid).is_none() {
-        eprintln!(
-            "oxabl: refusing the daemon registration {}: {} is not a process id. \
-             Remove the file.",
+        report_once(&format!(
+            "refusing the daemon registration {}: {} is not a process id. Remove the \
+             file.",
             path.display(),
             registration.pid
-        );
-        return None;
+        ));
+        return RegistrationRead::Absent;
     }
 
     let socket = Path::new(&registration.socket_path);
     if socket.parent() != Some(dir.as_path()) {
-        eprintln!(
-            "oxabl: refusing the daemon registration {}: it names the socket {}, \
-             which is not inside {}. Not connecting to it. Remove the file, or set \
-             XDG_CACHE_HOME to a directory you own.",
+        report_once(&format!(
+            "refusing the daemon registration {}: it names the socket {}, which is not \
+             inside {}. Not connecting to it. Remove the file, or set XDG_CACHE_HOME to \
+             a directory you own.",
             path.display(),
             socket.display(),
             dir.display()
-        );
-        return None;
+        ));
+        return RegistrationRead::Absent;
     }
 
-    Some(registration)
+    RegistrationRead::Found(registration)
+}
+
+/// Print a refusal to stderr the first time this process has it to say.
+///
+/// The read path is polled, not called: a client asks up to a hundred times at 20ms
+/// while it waits for a daemon, so an unconditional `eprintln!` turns one persistently
+/// refused directory into a hundred near-identical lines in two seconds, and buries the
+/// one line that mattered. Latching keys on the whole message, so a *different* refusal
+/// still prints — the noise this suppresses is repetition, not detail.
+///
+/// The set is bounded by the number of distinct refusals a process can produce, which
+/// is bounded by the workspace roots it looks at.
+///
+/// Returns whether it printed, so the latch itself is a property a test can assert
+/// rather than something to be read off stderr.
+fn report_once(message: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static REPORTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let reported = REPORTED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut reported = reported
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if reported.insert(message.to_owned()) {
+        eprintln!("oxabl: {message}");
+        return true;
+    }
+    false
 }
 
 /// What a connect to a registered socket said about its owner (KTD6).
@@ -631,8 +803,11 @@ enum Liveness {
     Gone,
     /// The socket file is there and nobody is listening on it.
     Unanswered,
-    /// The attempt failed for a reason that is about this process, not the owner.
-    Undecided,
+    /// The attempt failed for a reason that is about this process, not the owner. The
+    /// errno is carried because it is the only thing a caller can tell the user: the
+    /// refusal it prints has to name a descriptor limit as a descriptor limit rather
+    /// than as a claim about the socket.
+    Undecided(Errno),
 }
 
 /// Ask the socket itself whether a daemon is behind it.
@@ -658,8 +833,9 @@ fn probe_socket(path: &Path) -> Liveness {
         None,
     ) {
         Ok(socket) => socket,
-        // We could not even make a socket, which says nothing about the daemon.
-        Err(_) => return Liveness::Undecided,
+        // We could not even make a socket, which says nothing about the daemon — and
+        // in particular says nothing about whether anything exists at `path`.
+        Err(errno) => return Liveness::Undecided(errno),
     };
     match rustix::net::connect(&socket, &address) {
         Ok(()) => Liveness::Answering,
@@ -687,25 +863,49 @@ fn classify_connect_failure(errno: Errno) -> Liveness {
         // Everything else — `EACCES`, `EMFILE`, `ENOMEM` — is about this process.
         // Reported as undecided, never as absent: absent is what starts a rival
         // daemon, and a descriptor limit is no reason to do that.
-        _ => Liveness::Undecided,
+        _ => Liveness::Undecided(errno),
     }
 }
 
-/// Whether something is listening on `socket_path` right now.
+/// What the start path found at a registered socket path, for the one decision that
+/// needs more than "leave it alone or not".
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketOwner {
+    /// Something is listening, or is live enough to be listening. Refuse; do not
+    /// unlink.
+    Answering,
+    /// Nothing is listening on a path that may or may not exist. The file, if there is
+    /// one, is a dead daemon's debris.
+    Debris,
+    /// The probe never reached a verdict, because making the socket or the connect
+    /// failed for a reason about this process. Leave the path alone, and say so with
+    /// the errno rather than claiming anything about what is there.
+    Unprobeable(Errno),
+}
+
+/// Ask what owns `socket_path` before the start path decides whether to unlink it.
 ///
 /// The re-probe the start path owes itself (KTD6). Between a client's connect and
 /// its lock another process can take the lock, start a daemon and begin serving, so
 /// holding the lock is not on its own a licence to unlink the socket file — the
 /// unlink would leave a live daemon unreachable.
 ///
-/// Deliberately generous: anything but a clear "nobody is there" counts as
-/// answering, because the caller is about to delete a file and the conservative
-/// direction for a delete is to leave it alone.
+/// Three answers rather than a boolean, and that is the fix for a real refusal. The
+/// old `socket_is_answering` folded "could not probe" in with "is answering", which is
+/// the right generosity for the *delete* — the conservative direction for a delete is
+/// to leave the file alone — but it made the caller's refusal a lie: `probe_socket`
+/// reports `Undecided` when socket *creation* fails, before any connect, so a low
+/// `RLIMIT_NOFILE` made the daemon refuse to start with "something is already listening
+/// on this path" for a path that may not exist at all. The generosity is kept, in
+/// [`SocketOwner::Unprobeable`]; only the sentence is now the one the caller can
+/// defend.
 #[cfg(unix)]
-pub fn socket_is_answering(socket_path: &Path) -> bool {
+pub fn socket_owner(socket_path: &Path) -> SocketOwner {
     match probe_socket(socket_path) {
-        Liveness::Answering | Liveness::Saturated | Liveness::Undecided => true,
-        Liveness::Gone | Liveness::Unanswered => false,
+        Liveness::Answering | Liveness::Saturated => SocketOwner::Answering,
+        Liveness::Gone | Liveness::Unanswered => SocketOwner::Debris,
+        Liveness::Undecided(errno) => SocketOwner::Unprobeable(errno),
     }
 }
 
@@ -762,6 +962,12 @@ pub fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
 /// the previous registration absent or dead, and two daemons racing to serve one
 /// root is settled before either reaches this point: [`acquire_root_lock`] admits
 /// exactly one, and the loser exits without binding or writing.
+///
+/// **Call this under the root lock.** Every caller in this crate does, and
+/// [`sweep_stale_staging`] relies on it: it removes this process's own staging file
+/// without checking whether a writer still has it open, which is only correct while one
+/// process has at most one same-root registration in flight. A caller outside the lock
+/// must serialise same-root writers itself.
 ///
 /// The bind does **not** settle that race and never did. `Listener::bind` unlinks
 /// a stale socket path before binding, so `bind` cannot return `EADDRINUSE` and two
@@ -851,6 +1057,23 @@ fn advertisable(path: &Path, what: &str) -> io::Result<String> {
 /// Two cases sweep: a pid no live process has, and this process's own, whose leftover
 /// belongs to an earlier registration by this same daemon.
 ///
+/// # The invariant the own-pid arm depends on
+///
+/// This process's own staging file is removed **unconditionally**, without asking
+/// whether a writer is using it, and that is only safe because one process never has
+/// two registrations for one root in flight at once: [`register`] is reached under the
+/// root lock — through [`register_locked`], or from `Listener::bind`, which holds the
+/// lock for the listener's whole life — and the lock admits one holder per root. Two
+/// concurrent `register` calls for one root inside one process would break it: the
+/// second sweep would delete the first's staging file, and the first's `rename` would
+/// then fail with `ENOENT` and refuse a start that was going to succeed.
+///
+/// `register` is `pub`, so that invariant is stated here rather than assumed. A caller
+/// that wants to register outside the lock must serialise same-root writers itself, or
+/// this arm has to learn to leave a file whose writer is *this* process alone — which
+/// costs a second piece of per-writer identity in the name, because a pid is no longer
+/// enough to tell "mine, finished" from "mine, in progress".
+///
 /// Best-effort, and deliberately not fatal. The goal is that debris does not
 /// accumulate; a debris file that could not be removed must not stop the registration
 /// this call is here to write. Pid reuse can hand a stale pid to an unrelated live
@@ -907,7 +1130,8 @@ fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
 /// The pairing a real daemon has: [`Listener::bind`](crate::Listener::bind) holds the
 /// lock for its whole life, so exactly one daemon per root reaches the bind. The lock
 /// is not what [`discover`] reads — a registration is live because its socket answers
-/// — but it is what stops two daemons from both having a socket to answer with.
+/// *and* the process that wrote it is still there — but it is what stops two daemons
+/// from both having a socket to answer with.
 ///
 /// Returns `None` when a daemon already holds the root.
 pub fn register_locked(
@@ -1396,6 +1620,48 @@ mod tests {
         });
     }
 
+    // The leaf is verified whether it was found or just made. A umask that strips
+    // owner-execute turns the 0700 request into a 0600 directory the owner cannot
+    // traverse, and the parent-grade check accepted that: the creating run carried on
+    // into an `EACCES` from the lock-file open, and every run after it refused the
+    // directory with the message the first run should have printed.
+    //
+    // The intermediate is made first, under the ordinary umask, so the umask below bites
+    // on the leaf alone — otherwise the walk fails one component earlier, on a
+    // `mkdirat` into a directory it cannot traverse, and this arm is never reached.
+    //
+    // `umask` is process-global, so this runs under the same lock the environment
+    // mutations do, and restores it before asserting.
+    #[cfg(unix)]
+    #[test]
+    fn a_leaf_created_under_a_umask_that_strips_owner_bits_is_refused_on_the_creating_run() {
+        with_cache_home(|cache| {
+            fs::create_dir_all(cache.join("oxabl")).expect("the intermediate directory");
+            let dir = cache.join("oxabl").join("daemon");
+
+            let previous = rustix::process::umask(Mode::from_bits_truncate(0o177));
+            let outcome = create_and_verify_dir(&dir);
+            rustix::process::umask(previous);
+
+            let error = outcome
+                .expect_err("a leaf the owner cannot traverse must be refused when it is made");
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "a directory the daemon cannot use is a permission failure: {error}"
+            );
+            assert!(
+                error.to_string().contains("0600") && error.to_string().contains("0700"),
+                "the message must name the mode it got and the mode it needs: {error}"
+            );
+            assert_eq!(
+                fs::metadata(&dir).expect("the directory").mode() & 0o777,
+                0o600,
+                "and it must be refused rather than repaired"
+            );
+        });
+    }
+
     // Two registrations for one root must not share a staging path. The rename is
     // atomic; the write into the staging file is not, so a shared name lets one
     // writer publish a body the other is still writing.
@@ -1837,6 +2103,195 @@ mod tests {
         });
     }
 
+    /// An answering socket says something is listening. It does not say that the
+    /// something wrote the registration beside it, and pairing the two is a regression
+    /// that kills an editor's language server on an ordinary upgrade: daemon A is
+    /// `SIGKILL`ed leaving a file with a dead pid and an older contract, oxabl is
+    /// upgraded, daemon B binds the socket and has not registered yet, and a poll in
+    /// that window read the new socket with A's body — `Running`, then
+    /// `VersionMismatch`, then the client exits.
+    #[cfg(unix)]
+    #[test]
+    fn an_answering_socket_does_not_lend_its_registration_to_a_dead_process() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/upgraded");
+            ensure_registration_dir().expect("the directory");
+            // A pid in range that no process has: the killed daemon's.
+            let dead_pid = i32::MAX as u32;
+            assert!(
+                !process_is_alive(dead_pid),
+                "the test needs a pid nothing owns"
+            );
+            let stale = Registration {
+                pid: dead_pid,
+                socket_path: socket_for(root).to_string_lossy().into_owned(),
+                contract_version: CONTRACT_VERSION + 7,
+                workspace_root: root.to_string_lossy().into_owned(),
+            };
+            fs::write(
+                registration_path(root),
+                serde_json::to_string(&stale).expect("json"),
+            )
+            .expect("the killed daemon's registration");
+            // The replacement, bound and not yet registered.
+            let _listening = serving(root);
+
+            assert_eq!(
+                daemon_state(root),
+                DaemonState::Starting(stale),
+                "an answering socket beside a dead writer's registration is a start in \
+                 progress, not a running daemon"
+            );
+            assert_eq!(
+                discover(root),
+                Discovery::Absent,
+                "and the client must keep going rather than report the dead daemon's \
+                 contract as the live one's"
+            );
+        });
+    }
+
+    /// A registration that could not be *read* is not a registration that is not
+    /// there. Answering `Absent` to it starts a rival daemon, which is the one answer a
+    /// permission or resource failure must never produce.
+    ///
+    /// Driven with a directory where the registration file goes: `read_to_string` then
+    /// fails `EISDIR`, which is an error and is not `NotFound`, on any uid.
+    #[cfg(unix)]
+    #[test]
+    fn a_registration_that_cannot_be_read_is_undecided_rather_than_absent() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/unreadable");
+            ensure_registration_dir().expect("the directory");
+            fs::create_dir(registration_path(root)).expect("something that is not a file");
+
+            match daemon_state(root) {
+                DaemonState::Unreadable(reason) => assert!(
+                    reason.contains("could not be read"),
+                    "the state must carry the cause: {reason}"
+                ),
+                other => panic!("expected an unreadable registration, got {other:?}"),
+            }
+            match discover(root) {
+                Discovery::Undecided(reason) => assert!(
+                    reason.contains(&registration_path(root).display().to_string()),
+                    "the reason a client prints must name the file it could not read: \
+                     {reason}"
+                ),
+                other => panic!("a read failure must not be reported as {other:?}"),
+            }
+        });
+    }
+
+    /// The mapping every client's next move depends on, exercised as the pure function
+    /// it is. Reaching `Undecided` for real needs a descriptor limit, which a test
+    /// cannot impose on a threaded binary without breaking every other test in it.
+    ///
+    /// The arm that matters is the middle one. `Undecided` used to map to `Live`, so a
+    /// client whose probe failed returned a registration it had never reached, and the
+    /// `connect` that followed failed `ECONNREFUSED` — the editor's server died and no
+    /// daemon was ever started.
+    #[test]
+    fn a_state_that_proves_nothing_is_undecided_rather_than_live_or_absent() {
+        let registration = Registration {
+            pid: std::process::id(),
+            socket_path: "/c/oxabl/daemon/%proj.sock".to_string(),
+            contract_version: CONTRACT_VERSION,
+            workspace_root: "/proj".to_string(),
+        };
+
+        assert!(matches!(
+            classify(DaemonState::Running(registration.clone())),
+            Discovery::Live(_)
+        ));
+        assert!(matches!(
+            classify(DaemonState::Saturated(registration.clone())),
+            Discovery::Live(_)
+        ));
+        match classify(DaemonState::Undecided(registration.clone())) {
+            Discovery::Undecided(reason) => assert!(
+                reason.contains(&registration.socket_path),
+                "the reason must name the socket it could not probe: {reason}"
+            ),
+            other => panic!(
+                "a probe that never happened must not be reported as {other:?}: absent \
+                 starts a rival daemon and live sends the client into a failing connect"
+            ),
+        }
+        assert_eq!(
+            classify(DaemonState::Unreadable("the cause".to_string())),
+            Discovery::Undecided("the cause".to_string()),
+            "an unreadable registration carries its cause out to the client"
+        );
+        for absent in [
+            DaemonState::Starting(registration.clone()),
+            DaemonState::Crashed(registration),
+            DaemonState::Absent,
+        ] {
+            assert_eq!(
+                classify(absent.clone()),
+                Discovery::Absent,
+                "{absent:?} is the caller's cue to start a daemon"
+            );
+        }
+    }
+
+    /// A refusal prints once, however often the read path is polled. A client asks up
+    /// to a hundred times at 20ms, and the author had already suppressed exactly this
+    /// for the `NotFound` case — the unconditional branch beside it was the defect.
+    #[test]
+    fn a_refusal_is_printed_once_per_process_however_often_it_is_polled() {
+        let refusal = format!(
+            "a refusal only this test produces: {:?}",
+            std::time::SystemTime::now()
+        );
+        assert!(report_once(&refusal), "the first one is worth printing");
+        for _ in 0..100 {
+            assert!(
+                !report_once(&refusal),
+                "a poll loop must not print a hundred copies of one refusal"
+            );
+        }
+        assert!(
+            report_once(&format!("{refusal} and another")),
+            "a different refusal is still printed: the latch suppresses repetition, \
+             not detail"
+        );
+    }
+
+    /// What the start path needs from a probe before it unlinks anything: three
+    /// answers, not two. The `Unprobeable` arm needs a failure to *make* a socket —
+    /// a descriptor limit — so it is not reachable from a test; what is testable is
+    /// that a live socket and a dead one are told apart, which is the pair the delete
+    /// decision turns on.
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_with_no_listener_is_debris_and_a_live_one_answers() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/owner");
+            let socket = socket_for(root);
+            ensure_registration_dir().expect("the directory");
+
+            assert_eq!(
+                socket_owner(&socket),
+                SocketOwner::Debris,
+                "nothing at the path is nothing to preserve"
+            );
+            let listening = serving(root);
+            assert_eq!(
+                socket_owner(&socket),
+                SocketOwner::Answering,
+                "a bound socket must be refused rather than unlinked"
+            );
+            drop(listening);
+            assert_eq!(
+                socket_owner(&socket),
+                SocketOwner::Debris,
+                "and a file its listener left behind is debris again"
+            );
+        });
+    }
+
     /// The inverted arm this unit removed: the old probe returned `false` on an
     /// unopenable lock file, and the caller's `||` short-circuited, so a **live**
     /// daemon was reported absent — the opposite of what the comment claimed. Nothing
@@ -1909,6 +2364,13 @@ mod tests {
     /// A registration directory this user did not make at 0700 is refused on the read
     /// path too, and refused without touching it.
     ///
+    /// Refused, and reported as [`Discovery::Undecided`] rather than as `Absent`. The
+    /// registration is not trusted either way — that is the property this test is for —
+    /// but `Absent` is the answer that makes a client *start a daemon*, and a directory
+    /// mode is no reason to start a second daemon: the new one walks the same directory
+    /// and refuses it identically. Undecided keeps the client polling and hands it the
+    /// sentence to print when it gives up.
+    ///
     /// The wrong-*mode* case is the testable half. A directory owned by another user
     /// cannot be created without privileges, so that arm of the same check is
     /// unreachable from a test — stated rather than faked.
@@ -1924,12 +2386,17 @@ mod tests {
             // would have left it.
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("widen it");
 
-            assert_eq!(
-                discover(root),
-                Discovery::Absent,
-                "a directory the daemon would not have created is not trusted to hold \
-                 a registration"
-            );
+            match discover(root) {
+                Discovery::Undecided(reason) => assert!(
+                    reason.contains(&dir.display().to_string()),
+                    "a directory the daemon would not have created is not trusted to \
+                     hold a registration, and the refusal must name it: {reason}"
+                ),
+                other => panic!(
+                    "a refused directory must not be reported as {other:?}: absent \
+                     starts a rival daemon that will refuse the same directory"
+                ),
+            }
             assert_eq!(
                 fs::metadata(&dir).expect("the directory").mode() & 0o777,
                 0o755,

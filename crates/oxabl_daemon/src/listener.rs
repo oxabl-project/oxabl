@@ -102,6 +102,14 @@ impl Listener {
                     existing.pid,
                     workspace_root.display()
                 ),
+                // The registration is there and could not be read, which is a fault of
+                // its own and not evidence about the holder. Reported as it was found,
+                // because the cause the reader needs is the one the read path named.
+                registry::DaemonState::Unreadable(reason) => format!(
+                    "another process holds the start lock for {}, and its registration \
+                     could not be read: {reason}. Fix that cause and start again.",
+                    workspace_root.display()
+                ),
                 // The holder has the lock and has registered nothing readable yet, so
                 // there is no pid to name and claiming one would be a guess.
                 registry::DaemonState::Crashed(_) | registry::DaemonState::Absent => format!(
@@ -137,22 +145,46 @@ impl Listener {
         // serving and release nothing — and a socket bound by anything that skipped
         // the lock answers too. Unlinking one that answers would leave a live server
         // unreachable, so the socket is probed once more and a live one is refused.
-        if registry::socket_is_answering(&socket_path) {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!(
-                    "something is already listening on {}, although no daemon holds \
-                     the start lock for {}. Refusing to unlink a socket that answers: \
-                     stop whatever owns it first.",
-                    socket_path.display(),
-                    workspace_root.display()
-                ),
-            ));
+        //
+        // Three answers, not two. A probe that could not be *made* used to be folded in
+        // with a probe that answered, so a low descriptor limit refused the start with
+        // "something is already listening on this path" for a path that may not exist —
+        // sending its reader to hunt for a daemon over an `EMFILE`. The generosity is
+        // kept (nothing is unlinked when the answer is unknown); only the sentence
+        // changes.
+        match registry::socket_owner(&socket_path) {
+            registry::SocketOwner::Answering => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!(
+                        "something is already listening on {}, although no daemon holds \
+                         the start lock for {}. Refusing to unlink a socket that \
+                         answers: stop whatever owns it first.",
+                        socket_path.display(),
+                        workspace_root.display()
+                    ),
+                ));
+            }
+            registry::SocketOwner::Unprobeable(errno) => {
+                let cause = io::Error::from(errno);
+                return Err(io::Error::new(
+                    cause.kind(),
+                    format!(
+                        "the socket {} could not be probed ({cause}), so the daemon for \
+                         {} will not start: it is leaving that path alone rather than \
+                         unlinking a socket that may still be serving. Clear the cause \
+                         — a descriptor limit is the usual one — and start again.",
+                        socket_path.display(),
+                        workspace_root.display()
+                    ),
+                ));
+            }
+            // Nothing answers it, so the previous owner is gone and its socket file is
+            // debris. Removed through the checked path, which refuses to unlink
+            // anything that is not a socket sitting in the verified registration
+            // directory.
+            registry::SocketOwner::Debris => registry::remove_stale_socket(&socket_path)?,
         }
-        // Nothing answers it, so the previous owner is gone and its socket file is
-        // debris. Removed through the checked path, which refuses to unlink anything
-        // that is not a socket sitting in the verified registration directory.
-        registry::remove_stale_socket(&socket_path)?;
         // The `Listener` is built the moment the socket file exists, before any step
         // that can still fail — because `Drop for Listener` is what unlinks it. When
         // the registration below was written first and the guard second, an early
@@ -229,6 +261,7 @@ impl Listener {
         host: Arc<SessionHost>,
     ) -> io::Result<()> {
         let mut clients = Vec::new();
+        let mut reported_spawn_failure = false;
         for stream in self.listener.incoming() {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
@@ -240,20 +273,46 @@ impl Listener {
                 Err(_) => continue,
             };
             // Every liveness probe is a real accepted connection that disconnects at
-            // once (see `registry::socket_is_answering`), and a client poll loop makes
+            // once (see `registry::socket_owner`), and a client poll loop makes
             // one every 20ms. Without this the finished handles accumulate for the
             // daemon's whole life — thousands of them for an editor that polled while
             // starting. The join below still waits for whatever is still serving.
             clients.retain(|client: &thread::JoinHandle<()>| !client.is_finished());
             let serve = Arc::clone(&serve);
             let host = Arc::clone(&host);
-            clients.push(thread::spawn(move || {
+            // `thread::spawn` **panics** when the thread cannot be created, and that is
+            // reachable here rather than theoretical: every liveness probe is a real
+            // accepted connection, so a container `pids.max` is met by a client polling
+            // every 20ms. The panic unwound the accept loop, `Drop for Listener` cleared
+            // the socket, the registration and the lock, every client then discovered
+            // `Absent` and started a daemon, and the new daemon met the same probe
+            // traffic — a restart loop out of one thread that could not be made. One
+            // client we cannot serve is one client: the stream is dropped, which the
+            // peer sees as a disconnect, and the loop keeps serving everybody else.
+            let client = thread::Builder::new().spawn(move || {
                 let (connection, threads) = connection_over(stream);
                 serve(&connection, &host);
                 // Dropping the sender lets the writer thread finish.
                 drop(connection);
                 threads.shutdown();
-            }));
+            });
+            match client {
+                Ok(client) => clients.push(client),
+                Err(error) => {
+                    // Once per loop, not once per refused client: the condition lasts as
+                    // long as the pressure that caused it, and a line per rejected probe
+                    // would be the flood the daemon is already under.
+                    if !reported_spawn_failure {
+                        reported_spawn_failure = true;
+                        eprintln!(
+                            "oxabl daemon: refusing a client on {} because a thread \
+                             could not be started ({error}). Still serving the clients \
+                             already connected; raise the process or thread limit.",
+                            self.socket_path.display()
+                        );
+                    }
+                }
+            }
         }
         // Let every client finish in flight rather than cutting responses off.
         for client in clients {

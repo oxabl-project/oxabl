@@ -557,11 +557,16 @@ fn usable_base(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 ///
 /// This reports which branch was taken; it does not gate anything. It used to:
 /// ownership was verified only when this returned true, on the theory that the
-/// other branches were private by construction. They are not — a home directory
-/// can be group-writable, and an `XDG_CACHE_HOME` can point anywhere — so the
-/// daemon now verifies ownership and the sticky bit on every parent it walks,
-/// whichever branch produced it. Nothing should reintroduce a check conditioned
-/// on this answer.
+/// other branches were private by construction. They are not — an `XDG_CACHE_HOME`
+/// can point anywhere, including at a directory another user owns — so the daemon
+/// now verifies ownership and the sticky bit on every parent it walks, whichever
+/// branch produced it. Nothing should reintroduce a check conditioned on this
+/// answer.
+///
+/// What that walk checks for is ownership plus world-write without the sticky bit. A
+/// group-writable parent is accepted, deliberately: a private per-user group makes
+/// `drwxrwx---` an ordinary home directory, and `st_gid` cannot tell a private group
+/// from a shared one. See `oxabl_daemon::registry` for that trade-off in full.
 pub fn temp_dir_fallback_in_use() -> bool {
     base_dir("XDG_CACHE_HOME").is_none() && base_dir("HOME").is_none()
 }

@@ -430,6 +430,106 @@ fn a_client_probe_does_not_prevent_a_daemon_from_starting() {
     });
 }
 
+/// The lock-held arm with nothing registered: the refusal names the lock file, and
+/// does not invent a pid it cannot know.
+///
+/// Reached deterministically by holding the lock without binding. Until now this arm and
+/// the one below were reachable only through a real start race, which decides for itself
+/// which sentence gets printed — so a refusal that named the wrong state would not have
+/// failed anything.
+#[cfg(unix)]
+#[test]
+fn a_held_start_lock_with_no_registration_names_the_lock_rather_than_a_daemon() {
+    with_cache_home(|_| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        while_the_root_lock_is_held(root.path(), || {
+            let error = oxabl_daemon::Listener::bind(root.path())
+                .err()
+                .expect("a root another holder owns must be refused");
+
+            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+            let message = error.to_string();
+            assert!(
+                message.contains("has not registered a daemon yet"),
+                "the refusal must report the state it found, not a daemon: {message}"
+            );
+            assert!(
+                message.contains(
+                    &oxabl_daemon::registry::lock_path_for(root.path())
+                        .expect("a lock path")
+                        .display()
+                        .to_string()
+                ),
+                "and it must name the file to remove if nothing is really starting: \
+                 {message}"
+            );
+        });
+    });
+}
+
+/// The lock-held arm with a registration whose writer is alive: a daemon between the
+/// lock and its socket. The refusal must say "wait", and must name that pid — telling a
+/// user to remove a lock file a live daemon holds is the wrong instruction.
+#[cfg(unix)]
+#[test]
+fn a_held_start_lock_with_a_live_registration_reports_a_daemon_that_is_starting() {
+    with_cache_home(|_| {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let socket = oxabl_daemon::registry::socket_path_for(root.path()).expect("a socket path");
+        while_the_root_lock_is_held(root.path(), || {
+            // What a daemon has written by the time it holds the lock and has not yet
+            // bound: a registration, no socket. The pid is this process, which is alive.
+            oxabl_daemon::registry::register(root.path(), &socket, std::process::id())
+                .expect("the starting daemon's registration");
+            assert!(!socket.exists(), "and nothing is listening yet");
+
+            let error = oxabl_daemon::Listener::bind(root.path())
+                .err()
+                .expect("a root another holder owns must be refused");
+
+            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+            let message = error.to_string();
+            assert!(
+                message.contains("is starting"),
+                "the refusal must name a start in progress: {message}"
+            );
+            assert!(
+                message.contains(&std::process::id().to_string()),
+                "and must name the pid to wait for: {message}"
+            );
+        });
+    });
+}
+
+/// Run `body` while another thread holds the root lock for `root`.
+///
+/// Another thread rather than this one, because that is what the situation being tested
+/// is: a separate starting daemon. `flock` grants per open file description, so a lock
+/// taken here would conflict with `bind`'s too — but a background holder keeps the test
+/// honest about which code is under test, and the lock is released before it returns.
+#[cfg(unix)]
+fn while_the_root_lock_is_held(root: &Path, body: impl FnOnce()) {
+    use std::sync::mpsc;
+
+    let (held, holding) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let lock = oxabl_daemon::registry::acquire_root_lock(root)
+                .expect("the lock file opens")
+                .expect("nothing else holds this root");
+            held.send(()).expect("report that the lock is held");
+            let _ = released.recv();
+            drop(lock);
+        });
+        holding
+            .recv()
+            .expect("the lock is held before the test runs");
+        body();
+        let _ = release.send(());
+    });
+}
+
 /// Run `body` with the registration directory pointed at a private temporary one.
 ///
 /// `XDG_CACHE_HOME` is process-wide and these tests run on threads of one binary,
