@@ -167,12 +167,28 @@ pub(crate) struct WorkspaceSnapshot {
     /// Why this snapshot was already behind the moment it landed, if it was.
     ///
     /// The carrier for a staleness the file stamps cannot see. A pass installed
-    /// after its attempt budget ran out describes buffers that have since moved,
-    /// while every file it stamped is untouched on disk — so freshness computed
-    /// from stamps alone would call it `Ready`. `None` is a snapshot that landed
+    /// after its attempt budget ran out was built against buffers, a schema
+    /// revision, or a configuration the session has since replaced, while every
+    /// file it stamped is untouched on disk — so freshness computed from stamps
+    /// alone would call it `Ready`. `None` is a snapshot that landed
     /// current; it is not an absent measurement, so it is an `Option` rather than
     /// a `Sourced`.
     pub superseded: Option<SupersededPass>,
+}
+
+/// The session state a whole-workspace pass is judged against, captured when the
+/// pass was claimed and compared again when it completes (R3).
+///
+/// Three counters rather than one, because they move for different reasons and
+/// only together do they cover what can invalidate a pass: the text, the rules the
+/// text is read under, and the schema the text is resolved against. Two of them
+/// change without any buffer moving, so the buffer generation alone cannot see
+/// them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionGenerations {
+    pub buffers: u64,
+    pub config: u64,
+    pub schema: u32,
 }
 
 /// A pass that completed but was already out of date when it was installed.
@@ -267,6 +283,27 @@ impl Session {
 
     pub fn buffer_generation(&self) -> u64 {
         self.buffer_generation
+    }
+
+    /// The schema revision every diagnostics query reads. Bumped by
+    /// [`bump_schema`](Self::bump_schema), so it doubles as the schema's own
+    /// generation counter — a second counter beside it could only disagree with
+    /// the revision that actually invalidated the queries.
+    pub fn schema_revision(&self) -> u32 {
+        *self.schema.revision(&self.db)
+    }
+
+    /// Everything a completed pass is judged against, read in one place.
+    ///
+    /// Read as a set rather than one counter at a time so a caller cannot capture
+    /// two of the three and silently leave the workspace pass unguarded against
+    /// the third.
+    pub(crate) fn generations(&self) -> SessionGenerations {
+        SessionGenerations {
+            buffers: self.buffer_generation,
+            config: self.config_generation,
+            schema: self.schema_revision(),
+        }
     }
 
     pub(crate) fn workspace(&self) -> Option<WorkspaceSnapshot> {

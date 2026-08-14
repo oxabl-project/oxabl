@@ -529,6 +529,208 @@ fn a_quiet_pass_still_installs_and_reports_ready() {
     assert_eq!(repeat.freshness.state, IndexState::Ready);
 }
 
+/// Keeps changing one piece of session state for as long as it is held (R3).
+///
+/// The same shape as [`Typist`], and a tight loop for the same reason: the pass
+/// holds no session lock while it runs, so a sleeping mutator can leave a whole
+/// pass unobserved and a request that then answered `Ready` would pass by luck.
+struct Mutator {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Mutator {
+    fn start(
+        host: &SessionHost,
+        root: &Path,
+        mut change: impl FnMut(&mut oxabl_daemon::Session) + Send + 'static,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (host, stop, root) = (host.clone(), stop.clone(), root.to_path_buf());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    host.with(|sessions| change(sessions.for_root(&root)));
+                }
+            })
+        };
+        Mutator {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn schema(host: &SessionHost, root: &Path) -> Self {
+        Mutator::start(host, root, |session| session.bump_schema())
+    }
+
+    fn configuration(host: &SessionHost, root: &Path) -> Self {
+        Mutator::start(host, root, |session| {
+            session.install_config(oxabl_pipeline::PipelineConfig::default())
+        })
+    }
+}
+
+impl Drop for Mutator {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Make one pass long enough that a change landing mid-pass is certain to be
+/// seen. A pass over the bare fixture finishes in well under a millisecond.
+fn widen(fixture: &Fixture) {
+    for index in 0..200 {
+        fs::write(
+            fixture.root().join(format!("widen-{index}.p")),
+            "{base.i}\nMESSAGE fromBase.\n",
+        )
+        .unwrap();
+    }
+}
+
+fn freshness(dispatch: &Dispatch, host: &SessionHost, client: &mut ClientContext) -> IndexState {
+    let answer: FreshnessResponse = call(
+        dispatch,
+        host,
+        client,
+        method::FRESHNESS,
+        &FreshnessRequest {},
+    );
+    answer.freshness.state
+}
+
+fn wait_for_ready(dispatch: &Dispatch, host: &SessionHost, client: &mut ClientContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while freshness(dispatch, host, client) != IndexState::Ready {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pass never landed once the session settled"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// A schema change that lands while a pass runs must not be overwritten by that
+/// pass's result (R3).
+///
+/// Driven through the freshness-started pass, which never spends a final attempt:
+/// every pass it runs is superseded and installs nothing, so a poll that ever
+/// answered `Ready` would be reporting a graph built under a schema the session
+/// has already replaced.
+#[test]
+fn a_schema_change_during_a_pass_is_not_installed_by_it() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    widen(&fixture);
+
+    let mutator = Mutator::schema(&host, fixture.root());
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while std::time::Instant::now() < until {
+        let state = freshness(&dispatch, &host, &mut client);
+        assert_ne!(
+            state,
+            IndexState::Ready,
+            "a pass the schema moved under reported itself current"
+        );
+    }
+    drop(mutator);
+
+    // The refusal is scoped to the change, not a permanent one: once the schema
+    // settles, the next pass installs.
+    wait_for_ready(&dispatch, &host, &mut client);
+}
+
+/// The same for a configuration change (R3). The buffer generation cannot catch
+/// this one either: no text moved, only the rules did.
+#[test]
+fn a_configuration_change_during_a_pass_is_not_installed_by_it() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    widen(&fixture);
+
+    let mutator = Mutator::configuration(&host, fixture.root());
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while std::time::Instant::now() < until {
+        let state = freshness(&dispatch, &host, &mut client);
+        assert_ne!(
+            state,
+            IndexState::Ready,
+            "a pass the configuration moved under reported itself current"
+        );
+    }
+    drop(mutator);
+
+    wait_for_ready(&dispatch, &host, &mut client);
+}
+
+/// A schema changed on every attempt spends the same bounded budget as a moving
+/// buffer, and answers with a result labelled for what actually moved (R3, R4,
+/// R6).
+#[test]
+fn a_schema_changed_on_every_attempt_answers_within_the_attempt_cap() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    widen(&fixture);
+
+    let mutator = Mutator::schema(&host, fixture.root());
+    let answer = reindex(&dispatch, &host, &mut client);
+    drop(mutator);
+
+    match answer.freshness.state {
+        IndexState::Superseded { cause, attempts } => {
+            assert_eq!(
+                cause,
+                StalenessCause::SchemaChanged,
+                "the label names the schema, not the buffers"
+            );
+            assert!(
+                (1..=4).contains(&attempts),
+                "the request answered after {attempts} passes, outside the cap"
+            );
+        }
+        other => panic!("a pass the schema moved under answered as {other:?}"),
+    }
+    assert!(
+        answer.freshness.indexed_files > 0,
+        "the answer is populated"
+    );
+
+    let quiet = reindex(&dispatch, &host, &mut client);
+    assert_eq!(quiet.freshness.state, IndexState::Ready);
+}
+
+/// A schema change with no pass in flight still invalidates the stored pass, so
+/// the mid-pass check adds a case rather than replacing the ordinary one.
+#[test]
+fn a_schema_change_with_no_pass_in_flight_still_invalidates() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    assert_eq!(
+        reindex(&dispatch, &host, &mut client).freshness.state,
+        IndexState::Ready
+    );
+
+    host.with(|sessions| sessions.for_root(fixture.root()).bump_schema());
+    assert_ne!(
+        freshness(&dispatch, &host, &mut client),
+        IndexState::Ready,
+        "the stored pass survived a schema change"
+    );
+    wait_for_ready(&dispatch, &host, &mut client);
+}
+
 #[test]
 fn freshness_starts_the_first_workspace_pass() {
     let fixture = Fixture::new();

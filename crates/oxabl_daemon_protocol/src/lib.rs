@@ -229,16 +229,24 @@ pub struct SchemaIdentity {
 
 /// Why a completed workspace pass never landed as current (R6).
 ///
-/// One variant today, and a variant rather than a message because the client has
-/// to be able to tell the causes apart without reading prose. Every cause here
-/// describes state the daemon itself changed while the pass ran, which is why
-/// none of them can be inferred from a file on disk.
+/// A variant rather than a message because the client has to be able to tell the
+/// causes apart without reading prose, and they do not share a remedy: a moving
+/// buffer settles when the user stops typing, while changed rules stay changed
+/// until the workspace is indexed under them. Every cause here describes state
+/// the daemon itself changed while the pass ran, which is why none of them can be
+/// inferred from a file on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StalenessCause {
     /// Unsaved buffers changed while the pass ran, so the answer describes source
     /// the editor has already moved past.
     BuffersMoved,
+    /// The schema revision was bumped while the pass ran, so the answer resolves
+    /// table references against a schema the session has already replaced (R3).
+    SchemaChanged,
+    /// A configuration was installed while the pass ran, so the answer was built
+    /// under include paths or severities the session no longer holds (R3).
+    ConfigurationChanged,
 }
 
 /// How current the index is (R20).
@@ -931,6 +939,26 @@ mod tests {
         assert_eq!(json["state"], "superseded");
         assert_eq!(json["cause"], "buffers_moved");
         assert_eq!(json["attempts"], 4);
+
+        // Every cause is a distinct wire name, so a client can route on the one
+        // it received rather than on prose. The two rule changes do not collapse
+        // into the buffer case: neither settles on its own (R3).
+        for (cause, name) in [
+            (StalenessCause::SchemaChanged, "schema_changed"),
+            (
+                StalenessCause::ConfigurationChanged,
+                "configuration_changed",
+            ),
+        ] {
+            let state = IndexState::Superseded { cause, attempts: 4 };
+            assert_eq!(roundtrip(&state), state);
+            assert_ne!(state, IndexState::Ready);
+            assert_ne!(state, superseded);
+            assert_eq!(
+                serde_json::to_value(&state).expect("serialises")["cause"],
+                name
+            );
+        }
     }
 
     #[test]

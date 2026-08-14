@@ -20,7 +20,8 @@ use oxabl_workspace::{FileSystem, RealFileSystem, discover_path};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
 use crate::session::{
-    FileStamp, SessionHost, SupersededPass, WorkspaceProgress, WorkspaceSnapshot,
+    FileStamp, SessionGenerations, SessionHost, SupersededPass, WorkspaceProgress,
+    WorkspaceSnapshot,
 };
 
 /// Register every non-LSP method. No handler checks the client kind: the daemon
@@ -271,12 +272,12 @@ fn reindex(
 ///
 /// # Why this terminates
 ///
-/// A pass whose buffers moved under it installs nothing and the loop runs
-/// another. Typing bumps the buffer generation on every keystroke, so an
-/// unbounded loop rescans the whole tree for as long as the user types and the
-/// request never returns (R4). The bound is
+/// A pass the session moved under installs nothing and the loop runs another —
+/// see [`superseding_cause`] for what counts as moving. Typing bumps the buffer
+/// generation on every keystroke, so an unbounded loop rescans the whole tree for
+/// as long as the user types and the request never returns (R4). The bound is
 /// [`MAX_WORKSPACE_PASS_ATTEMPTS`] passes: on the last one the pass installs and
-/// answers whatever it built, labelled [`StalenessCause::BuffersMoved`], so the
+/// answers whatever it built, labelled with the cause that superseded it, so the
 /// caller gets a populated answer that says out loud it is behind (R6).
 ///
 /// Waiting on another caller's pass is not an attempt. That caller carries its
@@ -309,7 +310,7 @@ fn ensure_workspace(
             WorkspacePreparation::Build(
                 session.root().to_path_buf(),
                 session.buffer_overlay(),
-                session.buffer_generation(),
+                session.generations(),
                 progress,
             )
         });
@@ -324,14 +325,14 @@ fn ensure_workspace(
                 running.wait_until_finished(WORKSPACE_WAIT_TIMEOUT);
                 parked = true;
             }
-            WorkspacePreparation::Build(root, overlay, generation, progress) => {
+            WorkspacePreparation::Build(root, overlay, generations, progress) => {
                 attempts += 1;
                 let attempt = PassAttempt {
                     number: attempts,
                     is_final: attempts >= MAX_WORKSPACE_PASS_ATTEMPTS,
                 };
                 if let Some(workspace) =
-                    run_claimed_pass(host, &root, overlay, generation, progress, attempt)?
+                    run_claimed_pass(host, &root, overlay, generations, progress, attempt)?
                 {
                     return Ok(workspace);
                 }
@@ -386,16 +387,16 @@ fn run_claimed_pass(
     host: &SessionHost,
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
-    generation: u64,
+    generations: SessionGenerations,
     progress: WorkspaceProgress,
     attempt: PassAttempt,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let outcome = match build_workspace(root, overlay, generation, &progress) {
+    let outcome = match build_workspace(root, overlay, generations.buffers, &progress) {
         Ok(mut workspace) => {
             progress.complete();
             host.with(|sessions| {
                 let session = sessions.for_root(root);
-                match superseding_cause(session, generation) {
+                match superseding_cause(session, generations) {
                     // Superseded with attempts still to spend: install nothing and
                     // let the caller's loop run another pass.
                     Some(_) if !attempt.is_final => {
@@ -448,9 +449,31 @@ fn run_claimed_pass(
 /// One place, so every reason a pass may be superseded is compared together and
 /// named the same way, rather than a second discard-and-loop growing beside the
 /// first. The session state read here is state the daemon itself changed while
-/// the pass ran, which is why none of it can be recovered from the file stamps.
-fn superseding_cause(session: &crate::Session, generation: u64) -> Option<StalenessCause> {
-    (session.buffer_generation() != generation).then_some(StalenessCause::BuffersMoved)
+/// the pass ran, which is why none of it can be recovered from the file stamps:
+/// the stamps cover the files this pass tracked, and neither the schema source
+/// nor the configuration file need be among them — a schema loaded from a `.df`
+/// outside the workspace leaves every stamp clean while changing what the pass
+/// would have resolved (R3).
+///
+/// The order is the order of remedies, not of likelihood. When several moved
+/// together the caller is told about the one it cannot wait out: a buffer settles
+/// when the user stops typing, while a replaced schema or configuration stays
+/// replaced until the workspace is indexed under it.
+fn superseding_cause(
+    session: &crate::Session,
+    claimed: SessionGenerations,
+) -> Option<StalenessCause> {
+    let current = session.generations();
+    if current.schema != claimed.schema {
+        return Some(StalenessCause::SchemaChanged);
+    }
+    if current.config != claimed.config {
+        return Some(StalenessCause::ConfigurationChanged);
+    }
+    if current.buffers != claimed.buffers {
+        return Some(StalenessCause::BuffersMoved);
+    }
+    None
 }
 
 /// Run a pass claimed by a caller that has no overlay in hand, reading the
@@ -460,12 +483,12 @@ fn run_claimed_workspace_pass(
     root: &Path,
     progress: WorkspaceProgress,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let (owned_root, overlay, generation) = host.with(|sessions| {
+    let (owned_root, overlay, generations) = host.with(|sessions| {
         let session = sessions.for_root(root);
         (
             session.root().to_path_buf(),
             session.buffer_overlay(),
-            session.buffer_generation(),
+            session.generations(),
         )
     });
     // Never the final attempt. This pass is started by a freshness poll and
@@ -476,7 +499,7 @@ fn run_claimed_workspace_pass(
         host,
         &owned_root,
         overlay,
-        generation,
+        generations,
         progress,
         PassAttempt {
             number: 1,
@@ -497,7 +520,12 @@ enum WorkspacePreparation {
     Ready(WorkspaceSnapshot),
     /// Another pass is already running; wait on its completion signal.
     Wait(WorkspaceProgress),
-    Build(PathBuf, HashMap<PathBuf, Arc<str>>, u64, WorkspaceProgress),
+    Build(
+        PathBuf,
+        HashMap<PathBuf, Arc<str>>,
+        SessionGenerations,
+        WorkspaceProgress,
+    ),
 }
 
 fn build_workspace(
@@ -677,12 +705,14 @@ fn provenance(session: &crate::Session) -> Provenance {
 /// Report how current a snapshot is, preferring what the daemon knows about the
 /// pass over what the files say.
 ///
-/// The two are not alternatives with the same evidence. A pass superseded because
-/// the buffers moved under it leaves every stamped file untouched on disk, so the
-/// stamp-derived state for it is `Ready` — a populated answer, unflagged, reading
-/// as all-clear while it describes source the editor has already moved past
-/// (R6). The stamps cannot see that, and no amount of file metadata could: the
-/// state that moved was the daemon's own. So the carried cause wins outright, and
+/// The two are not alternatives with the same evidence. A superseded pass leaves
+/// every stamped file untouched on disk — the buffers, the schema revision, and
+/// the installed configuration all live in the session, not in the tracked files —
+/// so the stamp-derived state for it is `Ready`: a populated answer, unflagged,
+/// reading as all-clear while it describes source or rules the session has already
+/// moved past (R3, R6). The stamps cannot see that, and no amount of file metadata
+/// could: the state that moved was the daemon's own. So the carried cause wins
+/// outright, and
 /// the stamp count is not folded in beside it — a superseded answer that also
 /// named a file count would invite the reader to treat the file count as the
 /// whole story.
