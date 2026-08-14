@@ -8,12 +8,19 @@
     "crates/oxabl_ast": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_common": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_codegen": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_style": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_workspace": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_preprocessor": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_schema": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_semantic": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_lint": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_formatter": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_index": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_analyze": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
-    "crates/oxabl_pipeline": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
+    "crates/oxabl_pipeline": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_daemon_protocol": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_daemon": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_lsp": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_wasm": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
   }
 }

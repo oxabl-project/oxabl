@@ -5,6 +5,7 @@
   "crates/oxabl_ast": "1.0.0",
   "crates/oxabl_common": "1.1.0",
   "crates/oxabl_codegen": "0.5.0",
+  "crates/oxabl_style": "0.1.0",
   "crates/oxabl_workspace": "1.0.1",
   "crates/oxabl_preprocessor": "0.5.0",
   "crates/oxabl_schema": "0.2.1",
@@ -16,5 +17,6 @@
   "crates/oxabl_index": "0.1.2",
   "crates/oxabl_lsp": "0.1.2",
   "crates/oxabl_wasm": "0.1.2",
+  "crates/oxabl_daemon_protocol": "0.1.0",
   "crates/oxabl_daemon": "0.1.1"
 }

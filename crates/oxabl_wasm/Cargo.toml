@@ -5,7 +5,6 @@ edition = "2024"
 license = "MIT"
 description = "Thin WebAssembly client for the shared Oxabl analysis and formatting pipelines"
 repository = "https://github.com/oxabl-project/oxabl"
-publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

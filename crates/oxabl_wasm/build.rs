@@ -1,12 +1,9 @@
 //! Emit a build identifier for the browser artifact.
 //!
-//! `oxabl_wasm` is absent from `release-please-config.json`'s package list and
-//! from `.release-please-manifest.json`, so its `CARGO_PKG_VERSION` never moves
-//! off `0.1.0`. A crash report carrying only the crate version would therefore
-//! identify nothing, and the artifact is **vendored by hand** into the website
-//! (`scripts/build-wasm.sh` output copied to `[web] src/wasm/`) with nothing
-//! recording which commit produced it. A short git SHA baked in at build time
-//! survives that copy and makes two vendored copies distinguishable.
+//! The browser artifact is **vendored by hand** into the website
+//! (`scripts/build-wasm.sh` output copied to `[web] src/wasm/`). Its crate
+//! version does not identify that copy. A short git SHA baked in at build time
+//! survives the copy and makes two vendored copies distinguishable.
 
 use std::process::Command;
 
