@@ -523,7 +523,18 @@ fn impact_on(
     let value = dispatch
         .call(host, context, oxabl_daemon_protocol::method::IMPACT, params)
         .expect("impact answers");
-    serde_json::from_value(value).unwrap()
+    available(serde_json::from_value(value).unwrap())
+}
+
+/// Unwrap an answer a cross-file method may refuse (R22). Every root here is
+/// configured, so a refusal is a test failure that names its own cause.
+fn available<T>(answer: oxabl_daemon_protocol::Sourced<T>) -> T {
+    match answer {
+        oxabl_daemon_protocol::Sourced::Available { value } => value,
+        oxabl_daemon_protocol::Sourced::Unavailable { reason } => {
+            panic!("the daemon refused the question: {reason}")
+        }
+    }
 }
 
 /// Ask `oxabl/freshness`.
@@ -540,7 +551,7 @@ fn freshness_of(
             serde_json::json!({}),
         )
         .expect("freshness answers");
-    serde_json::from_value(value).unwrap()
+    available(serde_json::from_value(value).unwrap())
 }
 
 /// Open (or re-type) the editor's buffer, returning its salsa input.

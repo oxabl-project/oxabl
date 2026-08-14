@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use oxabl_daemon::{ClientContext, Dispatch, SessionHost, default_dispatch};
+use oxabl_daemon::{ClientContext, Dispatch, SessionHost, analyze_guarded, default_dispatch};
 use oxabl_daemon_protocol::{
     ClientKind, FreshnessRequest, FreshnessResponse, HandshakeRequest, ImpactRequest,
-    ImpactResponse, IndexState, Provenance, ReindexRequest, ReindexResponse, StalenessCause,
-    Subject, SymbolSearchRequest, SymbolSearchResponse, method,
+    ImpactResponse, IndexState, Provenance, ReindexRequest, ReindexResponse, Sourced,
+    StalenessCause, Subject, SymbolSearchRequest, SymbolSearchResponse, method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -23,12 +23,28 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().expect("a workspace");
-        fs::write(
-            root.path().join("oxabl.toml"),
+        Fixture::build(Some(
             "[workspace]\nname = \"methods\"\n[workspace.sources]\ninclude_paths = [\".\"]\n",
-        )
-        .unwrap();
+        ))
+    }
+
+    /// The same sources with no `oxabl.toml` at all, so nothing resolves an
+    /// include path (R22).
+    fn without_configuration() -> Self {
+        Fixture::build(None)
+    }
+
+    /// The same sources under a configuration that exists and names no include
+    /// path — the second way a workspace ends up with nothing to resolve against.
+    fn with_configuration(config: &str) -> Self {
+        Fixture::build(Some(config))
+    }
+
+    fn build(config: Option<&str>) -> Self {
+        let root = tempfile::tempdir().expect("a workspace");
+        if let Some(config) = config {
+            fs::write(root.path().join("oxabl.toml"), config).unwrap();
+        }
         let base = root.path().join("base.i");
         let mid = root.path().join("mid.i");
         let direct = root.path().join("direct.p");
@@ -96,12 +112,23 @@ fn reindex(
     call(dispatch, host, context, method::REINDEX, &ReindexRequest {})
 }
 
-fn impact(
+/// The value a cross-file method answered with, or a failure naming its refusal.
+///
+/// Every test that expects an answer goes through this, so a test that starts
+/// getting refused fails saying why rather than failing to deserialize (R22).
+fn expect_available<T>(answer: Sourced<T>) -> T {
+    match answer {
+        Sourced::Available { value } => value,
+        Sourced::Unavailable { reason } => panic!("the daemon refused the question: {reason}"),
+    }
+}
+
+fn impact_answer(
     dispatch: &Dispatch,
     host: &SessionHost,
     context: &mut ClientContext,
     subject: Subject,
-) -> ImpactResponse {
+) -> Sourced<ImpactResponse> {
     call(
         dispatch,
         host,
@@ -109,6 +136,37 @@ fn impact(
         method::IMPACT,
         &ImpactRequest { subject },
     )
+}
+
+fn impact(
+    dispatch: &Dispatch,
+    host: &SessionHost,
+    context: &mut ClientContext,
+    subject: Subject,
+) -> ImpactResponse {
+    expect_available(impact_answer(dispatch, host, context, subject))
+}
+
+fn freshness_answer(
+    dispatch: &Dispatch,
+    host: &SessionHost,
+    context: &mut ClientContext,
+) -> Sourced<FreshnessResponse> {
+    call(
+        dispatch,
+        host,
+        context,
+        method::FRESHNESS,
+        &FreshnessRequest {},
+    )
+}
+
+fn freshness_response(
+    dispatch: &Dispatch,
+    host: &SessionHost,
+    context: &mut ClientContext,
+) -> FreshnessResponse {
+    expect_available(freshness_answer(dispatch, host, context))
 }
 
 #[test]
@@ -247,13 +305,7 @@ fn reindex_replaces_a_stale_graph_and_marks_the_next_answer_fresh() {
     reindex(&dispatch, &host, &mut client);
     fs::write(&fixture.direct, "MESSAGE \"changed and longer\".\n").unwrap();
 
-    let stale: FreshnessResponse = call(
-        &dispatch,
-        &host,
-        &mut client,
-        method::FRESHNESS,
-        &FreshnessRequest {},
-    );
+    let stale = freshness_response(&dispatch, &host, &mut client);
     assert!(matches!(stale.freshness.state, IndexState::Stale { .. }));
     let rebuilt = reindex(&dispatch, &host, &mut client);
     assert_eq!(rebuilt.freshness.state, IndexState::Ready);
@@ -282,13 +334,7 @@ fn changing_a_shared_include_marks_the_graph_stale() {
     )
     .unwrap();
 
-    let freshness: FreshnessResponse = call(
-        &dispatch,
-        &host,
-        &mut client,
-        method::FRESHNESS,
-        &FreshnessRequest {},
-    );
+    let freshness = freshness_response(&dispatch, &host, &mut client);
     assert!(matches!(
         freshness.freshness.state,
         IndexState::Stale { changed_files: 1 }
@@ -593,13 +639,7 @@ fn widen(fixture: &Fixture) {
 }
 
 fn freshness(dispatch: &Dispatch, host: &SessionHost, client: &mut ClientContext) -> IndexState {
-    let answer: FreshnessResponse = call(
-        dispatch,
-        host,
-        client,
-        method::FRESHNESS,
-        &FreshnessRequest {},
-    );
+    let answer = freshness_response(dispatch, host, client);
     answer.freshness.state
 }
 
@@ -738,24 +778,12 @@ fn freshness_starts_the_first_workspace_pass() {
     let host = SessionHost::new();
     let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
 
-    let first: FreshnessResponse = call(
-        &dispatch,
-        &host,
-        &mut client,
-        method::FRESHNESS,
-        &FreshnessRequest {},
-    );
+    let first = freshness_response(&dispatch, &host, &mut client);
     assert!(matches!(first.freshness.state, IndexState::Indexing { .. }));
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        let current: FreshnessResponse = call(
-            &dispatch,
-            &host,
-            &mut client,
-            method::FRESHNESS,
-            &FreshnessRequest {},
-        );
+        let current = freshness_response(&dispatch, &host, &mut client);
         if current.freshness.state == IndexState::Ready {
             break;
         }
@@ -765,4 +793,204 @@ fn freshness_starts_the_first_workspace_pass() {
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+// ---------------------------------------------------------------------------
+// A workspace that resolves no include path (R22, R23, KTD13)
+// ---------------------------------------------------------------------------
+
+/// The remedy every refusal has to name, so a test fails when the message stops
+/// telling the reader what to do about it.
+const REMEDY: &str = "[workspace.sources]";
+
+fn refusal(answer: &Sourced<impl std::fmt::Debug>) -> &str {
+    match answer {
+        Sourced::Available { value } => {
+            panic!("the daemon answered instead of refusing: {value:?}")
+        }
+        Sourced::Unavailable { reason } => reason,
+    }
+}
+
+#[test]
+fn impact_is_refused_when_no_include_configuration_resolves() {
+    let fixture = Fixture::without_configuration();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+
+    let answer = impact_answer(
+        &dispatch,
+        &host,
+        &mut client,
+        Subject::File {
+            path: fixture.base.to_string_lossy().into_owned(),
+        },
+    );
+
+    let reason = refusal(&answer);
+    assert!(
+        reason.contains("no include path resolved"),
+        "the refusal names the cause: {reason}"
+    );
+    assert!(
+        reason.contains(REMEDY) && reason.contains("oxabl.toml"),
+        "the refusal names the remedy: {reason}"
+    );
+}
+
+#[test]
+fn freshness_is_refused_rather_than_reporting_ready_without_a_configuration() {
+    let fixture = Fixture::without_configuration();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+
+    // Twice: the first call is the one that would otherwise start a pass, and the
+    // second is the one that would otherwise report `Ready` once it finished.
+    for _ in 0..2 {
+        let answer = freshness_answer(&dispatch, &host, &mut client);
+        let reason = refusal(&answer);
+        assert!(reason.contains(REMEDY), "the refusal names the remedy");
+    }
+}
+
+#[test]
+fn a_configuration_naming_no_include_path_is_refused_the_same_way() {
+    let unconfigured = Fixture::without_configuration();
+    let no_sources = Fixture::with_configuration("[workspace]\nname = \"no-sources\"\n");
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+
+    let mut absent = handshake(&dispatch, &host, unconfigured.root(), ClientKind::Desktop);
+    let mut empty = handshake(&dispatch, &host, no_sources.root(), ClientKind::Desktop);
+
+    let from_absent = freshness_answer(&dispatch, &host, &mut absent);
+    let from_empty = freshness_answer(&dispatch, &host, &mut empty);
+    assert_eq!(
+        refusal(&from_absent),
+        refusal(&from_empty),
+        "a configuration that resolves nothing is the same situation as none"
+    );
+}
+
+#[test]
+fn a_refusal_is_distinguishable_from_a_genuinely_empty_answer() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    reindex(&dispatch, &host, &mut client);
+
+    // A configured workspace whose file nothing includes. The answer is empty and
+    // it is still an answer — the two must not share a shape (R22).
+    let answer = impact_answer(
+        &dispatch,
+        &host,
+        &mut client,
+        Subject::File {
+            path: fixture
+                .root()
+                .join("symbols.p")
+                .to_string_lossy()
+                .into_owned(),
+        },
+    );
+    let value = expect_available(answer);
+    assert!(value.groups.is_empty());
+    assert_eq!(value.direct_reference_count, 0);
+    assert_eq!(value.freshness.state, IndexState::Ready);
+}
+
+#[test]
+fn symbol_search_still_answers_without_an_include_configuration() {
+    let fixture = Fixture::without_configuration();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+
+    // Its rows come from each file's own semantic model and from the schema, not
+    // from the dependency graph, so a missing include configuration leaves them
+    // populated. Refusing here would remove an answer that still works (R23).
+    let found: SymbolSearchResponse = call(
+        &dispatch,
+        &host,
+        &mut client,
+        method::SYMBOL_SEARCH,
+        &SymbolSearchRequest {
+            query: "calc".to_string(),
+            limit: 20,
+        },
+    );
+    assert_eq!(found.total_matches, 1);
+    assert_eq!(found.symbols[0].name, "Calculate");
+
+    let files: SymbolSearchResponse = call(
+        &dispatch,
+        &host,
+        &mut client,
+        method::SYMBOL_SEARCH,
+        &SymbolSearchRequest {
+            query: "direct".to_string(),
+            limit: 20,
+        },
+    );
+    assert!(
+        files.symbols.iter().any(|row| row.name == "direct"),
+        "the file rows survive an unconfigured workspace"
+    );
+}
+
+#[test]
+fn single_file_analysis_still_runs_without_an_include_configuration() {
+    let fixture = Fixture::without_configuration();
+    let host = SessionHost::new();
+    let key = fixture.direct.to_string_lossy().into_owned();
+    host.with(|sessions| {
+        sessions.for_root(fixture.root()).set_buffer(
+            &key,
+            "MESSAGE fromBase.\n".to_string(),
+            Some(fixture.direct.clone()),
+        );
+    });
+
+    let (snapshot, buffer, schema) = host.with(|sessions| {
+        let session = sessions.get(fixture.root()).expect("the session exists");
+        (
+            session.database().clone(),
+            session.buffer(&key).expect("the buffer is open"),
+            session.schema_handle(),
+        )
+    });
+    let analysis = analyze_guarded(&snapshot, buffer, schema, &key);
+    assert!(
+        analysis.diagnostics.is_some(),
+        "a single file is analysed without any include configuration (R23)"
+    );
+    assert!(!analysis.panicked);
+}
+
+#[test]
+fn a_configured_workspace_is_unaffected_by_the_refusal() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    reindex(&dispatch, &host, &mut client);
+
+    let answer = impact(
+        &dispatch,
+        &host,
+        &mut client,
+        Subject::File {
+            path: fixture.base.to_string_lossy().into_owned(),
+        },
+    );
+    assert_eq!(answer.direct_reference_count, 2);
+    assert_eq!(
+        freshness_response(&dispatch, &host, &mut client)
+            .freshness
+            .state,
+        IndexState::Ready
+    );
 }

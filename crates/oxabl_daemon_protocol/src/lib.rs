@@ -25,6 +25,15 @@
 //! invites `unwrap_or_default`, and a plausible fabricated zero is a worse failure
 //! than an honest gap. Under-reporting impact is the failure mode this product
 //! cannot survive.
+//!
+//! A whole answer can be unsourceable for the same reason, so `oxabl/impact` and
+//! `oxabl/freshness` return [`Sourced<ImpactResponse>`](Sourced) and
+//! [`Sourced<FreshnessResponse>`](Sourced) rather than the bare response. A
+//! workspace with no include configuration can populate no dependency graph, and
+//! the empty answer it would otherwise give is indistinguishable from the true
+//! answer for a file nothing references (R22, KTD13). The same type carries the
+//! refusal that carries a missing field, so a client has one thing to render, and
+//! the reason names the remedy.
 
 use std::path::{Path, PathBuf};
 
@@ -415,6 +424,12 @@ pub struct UnresolvedReference {
     pub span: Option<ByteSpan>,
 }
 
+/// An impact answer.
+///
+/// Travels as [`Sourced<ImpactResponse>`](Sourced): the daemon refuses the
+/// question outright when no include configuration resolves, because the empty
+/// answer it could otherwise give is the same shape as the true answer for a file
+/// nothing references (R22).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpactResponse {
     pub subject: Subject,
@@ -510,6 +525,12 @@ pub struct SymbolSearchResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FreshnessRequest {}
 
+/// How current the dependency graph is.
+///
+/// Travels as [`Sourced<FreshnessResponse>`](Sourced) for the reason
+/// [`ImpactResponse`] does. A workspace that resolves no include path has no
+/// graph to be fresh about, and every [`IndexState`] here would misreport it —
+/// `Ready` most of all (R6, R22).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FreshnessResponse {
     pub freshness: Freshness,

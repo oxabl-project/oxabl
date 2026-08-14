@@ -1,4 +1,26 @@
-//! The public `oxabl/*` query surface (R7, R8, R19, R20).
+//! The public `oxabl/*` query surface (R7, R8, R19, R20, R22, R23).
+//!
+//! ## Why a cross-file question is refused rather than answered emptily
+//!
+//! An include reference is resolved against the include paths a configuration
+//! names. With none, every include in the workspace fails to resolve, the reverse
+//! graph has no edges to hold, and an impact query answers "nothing depends on
+//! this" — populated, unflagged, and `Ready`. That answer is not merely
+//! incomplete. It is the same shape as the true answer for a file nothing
+//! references, so a caller cannot tell the two apart, and the one thing this
+//! product must never do is under-report a blast radius while looking confident.
+//! There is also nowhere to look for the missing files, so the daemon cannot
+//! narrow the gap: the answer is fabricated rather than partial. So the
+//! graph-dependent methods refuse, and the refusal names the remedy (R22, KTD13).
+//!
+//! ## Why only the graph-dependent methods
+//!
+//! The refusal covers `oxabl/impact` and `oxabl/freshness`, which report on the
+//! dependency graph and nothing else. `oxabl/symbolSearch` funnels through the
+//! same workspace pass, but its rows come from each file's own semantic model and
+//! from the schema, both of which are populated without a single include path;
+//! single-file analysis is likewise unaffected (R23). Refusing those would remove
+//! an answer that still works, which R22 does not ask for.
 
 use std::collections::HashMap;
 use std::io;
@@ -64,6 +86,13 @@ fn impact(
     let request: ImpactRequest =
         serde_json::from_value(params).map_err(MethodError::invalid_params)?;
     let root = context.workspace_root()?.to_path_buf();
+    // Checked before the pass, not after it: a pass run here would resolve no
+    // include and be discarded, so the refusal would cost a full tree scan to
+    // reach.
+    if let Some(reason) = cross_file_refusal(&root) {
+        return serde_json::to_value(Sourced::<ImpactResponse>::unavailable(reason))
+            .map_err(MethodError::internal);
+    }
     let workspace = ensure_workspace(host, &root, false)?;
     let subject = pipeline_subject(&request.subject);
     let dependents = workspace.graph.dependents(&subject);
@@ -112,8 +141,44 @@ fn impact(
         estimated_build_seconds: Sourced::unavailable("no build daemon supplies this value"),
         query_millis: started.elapsed().as_millis() as u64,
     };
-    serde_json::to_value(response).map_err(MethodError::internal)
+    serde_json::to_value(Sourced::Available { value: response }).map_err(MethodError::internal)
 }
+
+/// Why this workspace cannot answer a cross-file question, if it cannot (R22).
+///
+/// ## Why this reads the configuration itself rather than a completed pass
+///
+/// Both callers refuse *before* running a pass. A pass over an unconfigured
+/// workspace scans the whole tree to build a graph with no edges in it, and the
+/// answer is thrown away — so reading the configuration first is what keeps a
+/// refusal cheap on a path an editor polls.
+///
+/// [`PipelineConfig::resolve_style_only`] rather than
+/// [`PipelineConfig::resolve`](oxabl_pipeline::PipelineConfig::resolve) for the
+/// same reason, and only because the question here is exclusively about include
+/// paths: both resolvers derive `include_paths` identically, and skipping the
+/// schema step means this check opens no `.df` file. Nothing downstream of this
+/// function reads `schema` or `schema_loaded`, which is the misuse that
+/// resolver's documentation warns about.
+fn cross_file_refusal(root: &Path) -> Option<String> {
+    let (config, _warnings) = oxabl_pipeline::PipelineConfig::resolve_style_only(
+        root,
+        &oxabl_pipeline::ConfigOverrides::default(),
+    );
+    config
+        .include_paths
+        .is_empty()
+        .then(|| NO_INCLUDE_CONFIGURATION.to_string())
+}
+
+/// What a refused cross-file question says: what was refused, why, and the remedy.
+///
+/// One constant, so `oxabl/impact` and `oxabl/freshness` refuse in identical
+/// words — a client that renders the reason shows the same remedy whichever
+/// method it asked.
+const NO_INCLUDE_CONFIGURATION: &str = "no include path resolved for this workspace, so a \
+     cross-file answer would come from a dependency graph nothing could populate; name include \
+     paths under [workspace.sources] in an oxabl.toml at the workspace root";
 
 fn symbol_search(
     host: &SessionHost,
@@ -160,6 +225,12 @@ fn freshness(
 ) -> Result<serde_json::Value, MethodError> {
     let _: FreshnessRequest = no_argument_params(params)?;
     let root = context.workspace_root()?;
+    // Refused before the pass is claimed, so an unconfigured workspace does not
+    // rescan its tree once per poll to report on a graph it cannot populate.
+    if let Some(reason) = cross_file_refusal(root) {
+        return serde_json::to_value(Sourced::<FreshnessResponse>::unavailable(reason))
+            .map_err(MethodError::internal);
+    }
     // Reading the state and claiming the pass are one step. Split in two, a second
     // call that arrives before the first spawned thread claims anything reads
     // `None` as well and spawns again — and the loser then exists only to wait for
@@ -244,7 +315,7 @@ fn freshness(
             provenance: Provenance::Disk,
         },
     };
-    serde_json::to_value(response).map_err(MethodError::internal)
+    serde_json::to_value(Sourced::Available { value: response }).map_err(MethodError::internal)
 }
 
 enum EitherFreshness {
