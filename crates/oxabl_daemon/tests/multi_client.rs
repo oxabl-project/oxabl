@@ -422,3 +422,338 @@ fn an_orderly_shutdown_removes_the_registration() {
         );
     });
 }
+
+// ---- A query is read-only with respect to shared session state (R1) ---------
+//
+// These drive the dispatch in-process rather than over the socket: the claim is
+// about what a handler writes into the shared session, and a socket between the
+// caller and that session would only hide it.
+
+/// A workspace whose own `oxabl.toml` puts the include search path at the root,
+/// while an editor client resolved a different one for itself — the subdirectory.
+///
+/// The two configurations have to be genuinely different, or a query that
+/// overwrote the session's configuration would install the same bytes and the
+/// tests would pass by coincidence.
+struct SharedRoot {
+    dir: tempfile::TempDir,
+}
+
+/// The buffer the editor client holds open. It resolves under the editor's include
+/// path and under no other.
+const EDITOR_BUFFER: &str = "{shared.i}\nMESSAGE shared.\n";
+
+/// The same buffer after one keystroke, to force a recompute that cannot be served
+/// from the memo.
+const EDITOR_BUFFER_EDITED: &str = "{shared.i}\nMESSAGE shared.\nMESSAGE \"typed\".\n";
+
+impl SharedRoot {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("a workspace root");
+        std::fs::write(
+            dir.path().join("oxabl.toml"),
+            "[workspace]\nname = \"shared\"\n[workspace.sources]\ninclude_paths = [\".\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("inc")).unwrap();
+        std::fs::write(
+            dir.path().join("inc").join("shared.i"),
+            "DEFINE VARIABLE shared AS INTEGER NO-UNDO.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("base.i"),
+            "DEFINE VARIABLE fromBase AS INTEGER NO-UNDO.\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("direct.p"), "{base.i}\nMESSAGE fromBase.\n").unwrap();
+        std::fs::write(dir.path().join("main.p"), EDITOR_BUFFER).unwrap();
+        SharedRoot { dir }
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn main_path(&self) -> std::path::PathBuf {
+        self.path().join("main.p")
+    }
+
+    /// The configuration the editor client resolved for itself.
+    fn editor_config(&self) -> oxabl_pipeline::PipelineConfig {
+        oxabl_pipeline::PipelineConfig {
+            include_paths: vec![self.path().join("inc")],
+            ..oxabl_pipeline::PipelineConfig::default()
+        }
+    }
+}
+
+/// Attach an in-process client to `root` and return its context.
+fn attach(
+    dispatch: &oxabl_daemon::Dispatch,
+    host: &SessionHost,
+    root: &Path,
+    kind: ClientKind,
+) -> oxabl_daemon::ClientContext {
+    let mut context = oxabl_daemon::ClientContext::default();
+    dispatch
+        .call(
+            host,
+            &mut context,
+            oxabl_daemon_protocol::method::HANDSHAKE,
+            serde_json::to_value(HandshakeRequest::new(kind, root.to_string_lossy())).unwrap(),
+        )
+        .expect("the handshake is accepted");
+    context
+}
+
+/// Ask `oxabl/impact` about one file.
+fn impact_on(
+    dispatch: &oxabl_daemon::Dispatch,
+    host: &SessionHost,
+    context: &mut oxabl_daemon::ClientContext,
+    file: &Path,
+) -> oxabl_daemon_protocol::ImpactResponse {
+    let params = serde_json::to_value(oxabl_daemon_protocol::ImpactRequest {
+        subject: oxabl_daemon_protocol::Subject::File {
+            path: file.to_string_lossy().into_owned(),
+        },
+    })
+    .unwrap();
+    let value = dispatch
+        .call(host, context, oxabl_daemon_protocol::method::IMPACT, params)
+        .expect("impact answers");
+    serde_json::from_value(value).unwrap()
+}
+
+/// Ask `oxabl/freshness`.
+fn freshness_of(
+    dispatch: &oxabl_daemon::Dispatch,
+    host: &SessionHost,
+    context: &mut oxabl_daemon::ClientContext,
+) -> oxabl_daemon_protocol::FreshnessResponse {
+    let value = dispatch
+        .call(
+            host,
+            context,
+            oxabl_daemon_protocol::method::FRESHNESS,
+            serde_json::json!({}),
+        )
+        .expect("freshness answers");
+    serde_json::from_value(value).unwrap()
+}
+
+/// Open (or re-type) the editor's buffer, returning its salsa input.
+fn type_buffer(host: &SessionHost, workspace: &SharedRoot, text: &str) -> oxabl_daemon::db::Buffer {
+    host.with(|sessions| {
+        sessions.for_root(workspace.path()).set_buffer(
+            "main.p",
+            text.to_string(),
+            Some(workspace.main_path()),
+        )
+    })
+}
+
+/// Whether the buffer's diagnostics report an include the preprocessor could not
+/// find — the observable difference between the two configurations.
+fn include_unresolved(host: &SessionHost, root: &Path, buffer: oxabl_daemon::db::Buffer) -> bool {
+    host.with(|sessions| {
+        let session = sessions.for_root(root);
+        let schema = session.schema_handle();
+        let snapshot = session.database().clone();
+        oxabl_daemon::db::compute_diagnostics(&snapshot, buffer, schema)
+            .expect("nothing is writing, so the read completes")
+            .all()
+            .any(|carried| carried.diagnostic.code.0 == "PREPROC007")
+    })
+}
+
+/// A read query must leave the configuration another client resolved in place.
+///
+/// The recompute after the query is the point. The configuration is a plain field,
+/// not a salsa input, so a query that overwrote it corrupts nothing that is already
+/// memoized — the first wrong answer is the next one computed, which here is the
+/// one after a keystroke.
+#[test]
+fn a_query_leaves_another_clients_configuration_installed() {
+    let workspace = SharedRoot::new();
+    let dispatch = oxabl_daemon::default_dispatch();
+    let host = SessionHost::new();
+
+    let mut editor = attach(&dispatch, &host, workspace.path(), ClientKind::Editor);
+    host.with(|sessions| {
+        sessions
+            .for_root(workspace.path())
+            .install_config(workspace.editor_config())
+    });
+    let buffer = type_buffer(&host, &workspace, EDITOR_BUFFER);
+    assert!(
+        !include_unresolved(&host, workspace.path(), buffer),
+        "the editor's own include path resolves the include"
+    );
+
+    let mut desktop = attach(&dispatch, &host, workspace.path(), ClientKind::Desktop);
+    impact_on(
+        &dispatch,
+        &host,
+        &mut desktop,
+        &workspace.path().join("base.i"),
+    );
+
+    let edited = type_buffer(&host, &workspace, EDITOR_BUFFER_EDITED);
+    assert!(
+        !include_unresolved(&host, workspace.path(), edited),
+        "the editor's next recompute must still run under the configuration it resolved"
+    );
+
+    // And nothing about the editor's own session moved under it.
+    let _ = freshness_of(&dispatch, &host, &mut editor);
+}
+
+/// A read query must not bump the configuration generation.
+///
+/// The generation is a gate: an in-flight worker discards its result when the
+/// generation it started under is gone. A query that bumped it would throw away
+/// work nobody asked to redo and force a republish.
+#[test]
+fn a_query_does_not_bump_the_configuration_generation() {
+    let workspace = SharedRoot::new();
+    let dispatch = oxabl_daemon::default_dispatch();
+    let host = SessionHost::new();
+
+    host.with(|sessions| {
+        sessions
+            .for_root(workspace.path())
+            .install_config(workspace.editor_config())
+    });
+    let before = host.with(|sessions| sessions.for_root(workspace.path()).config_generation());
+
+    let mut desktop = attach(&dispatch, &host, workspace.path(), ClientKind::Desktop);
+    impact_on(
+        &dispatch,
+        &host,
+        &mut desktop,
+        &workspace.path().join("base.i"),
+    );
+
+    let after = host.with(|sessions| sessions.for_root(workspace.path()).config_generation());
+    assert_eq!(
+        before, after,
+        "a read query must not look like a configuration change"
+    );
+}
+
+/// A read query must leave the built workspace standing.
+///
+/// Dropping it is a configuration change's job. A query that dropped it would make
+/// the next client's freshness answer report indexing on a workspace that is built.
+///
+/// Paired with the configuration-change test below, which asserts the drop *does*
+/// happen there: together they place the drop where it belongs. This half holds
+/// whichever way the query is written — a pass that dropped the workspace put its
+/// own back on the next line — so it pins the invariant rather than a difference.
+#[test]
+fn a_query_leaves_the_built_workspace_in_place() {
+    let workspace = SharedRoot::new();
+    let dispatch = oxabl_daemon::default_dispatch();
+    let host = SessionHost::new();
+
+    let mut desktop = attach(&dispatch, &host, workspace.path(), ClientKind::Desktop);
+    impact_on(
+        &dispatch,
+        &host,
+        &mut desktop,
+        &workspace.path().join("base.i"),
+    );
+
+    let answer = freshness_of(&dispatch, &host, &mut desktop);
+    assert!(
+        !matches!(
+            answer.freshness.state,
+            oxabl_daemon_protocol::IndexState::Indexing { .. }
+        ),
+        "the query built a workspace and must have left it installed, got {:?}",
+        answer.freshness.state
+    );
+}
+
+/// A genuine configuration change still installs, still bumps the generation, and
+/// still drops the workspace — this narrowed the write rather than removing it.
+#[test]
+fn a_configuration_change_still_installs_and_still_invalidates() {
+    let workspace = SharedRoot::new();
+    let dispatch = oxabl_daemon::default_dispatch();
+    let host = SessionHost::new();
+
+    let mut desktop = attach(&dispatch, &host, workspace.path(), ClientKind::Desktop);
+    impact_on(
+        &dispatch,
+        &host,
+        &mut desktop,
+        &workspace.path().join("base.i"),
+    );
+    let before = host.with(|sessions| sessions.for_root(workspace.path()).config_generation());
+
+    host.with(|sessions| {
+        sessions
+            .for_root(workspace.path())
+            .install_config(workspace.editor_config())
+    });
+
+    let (generation, installed) = host.with(|sessions| {
+        let session = sessions.for_root(workspace.path());
+        (
+            session.config_generation(),
+            session.database().config().pipeline.include_paths.clone(),
+        )
+    });
+    assert_eq!(generation, before + 1, "the change bumped the generation");
+    assert_eq!(
+        installed,
+        vec![workspace.path().join("inc")],
+        "the change installed the configuration it carried"
+    );
+
+    let answer = freshness_of(&dispatch, &host, &mut desktop);
+    assert!(
+        matches!(
+            answer.freshness.state,
+            oxabl_daemon_protocol::IndexState::Indexing { .. }
+        ),
+        "the change dropped the workspace, so the next answer is indexing again, got {:?}",
+        answer.freshness.state
+    );
+}
+
+/// The same question gets the same answer whether or not another client attached
+/// first — a second client shares the session, it does not change what it reports.
+#[test]
+fn impact_answers_the_same_with_or_without_an_earlier_client() {
+    let workspace = SharedRoot::new();
+    let subject = workspace.path().join("base.i");
+
+    let alone = {
+        let dispatch = oxabl_daemon::default_dispatch();
+        let host = SessionHost::new();
+        let mut desktop = attach(&dispatch, &host, workspace.path(), ClientKind::Desktop);
+        impact_on(&dispatch, &host, &mut desktop, &subject)
+    };
+
+    let shared = {
+        let dispatch = oxabl_daemon::default_dispatch();
+        let host = SessionHost::new();
+        let _editor = attach(&dispatch, &host, workspace.path(), ClientKind::Editor);
+        host.with(|sessions| {
+            sessions
+                .for_root(workspace.path())
+                .install_config(workspace.editor_config())
+        });
+        type_buffer(&host, &workspace, EDITOR_BUFFER);
+        let mut desktop = attach(&dispatch, &host, workspace.path(), ClientKind::Desktop);
+        impact_on(&dispatch, &host, &mut desktop, &subject)
+    };
+
+    assert_eq!(alone.direct_reference_count, shared.direct_reference_count);
+    assert_eq!(alone.groups, shared.groups);
+    assert_eq!(alone.rebuild_set, shared.rebuild_set);
+}

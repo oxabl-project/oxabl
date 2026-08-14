@@ -339,7 +339,12 @@ fn run_claimed_pass(
                     session.clear_workspace_progress();
                     return Ok(None);
                 }
-                session.install_config((*workspace.config).clone());
+                // The configuration this pass resolved stays local to the pass. It
+                // already reached the pipeline that built the snapshot, so nothing
+                // here reads it, and installing it would let one client's query
+                // replace the configuration another client resolved — silently,
+                // because the memoized diagnostics stay valid across the write and
+                // the next recompute is the first to use the wrong rules.
                 session.install_workspace(workspace.clone());
                 Ok(Some(workspace))
             })

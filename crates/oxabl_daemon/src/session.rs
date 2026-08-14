@@ -374,7 +374,23 @@ impl Session {
         keys
     }
 
-    /// Install a re-resolved configuration and bump the generation.
+    /// Install a re-resolved configuration, bump the generation, and drop the
+    /// stored workspace.
+    ///
+    /// # Who may call this
+    ///
+    /// Only a caller acting on a genuine configuration change — a client that has
+    /// re-resolved its own settings, or a watcher that saw `oxabl.toml` or a schema
+    /// file change. A **query handler must never call it**. The session is shared by
+    /// every client on the root, so a query that installed the configuration it had
+    /// resolved for its own pass would replace the configuration another client
+    /// resolved, and answer that client's next request under rules it never chose.
+    ///
+    /// The write is invisible at the moment it lands, which is what makes the rule
+    /// worth stating: the configuration is a plain field rather than a salsa input,
+    /// so every memoized result stays valid and keeps being served. The first wrong
+    /// answer arrives later, at the next recompute, with nothing to connect it to
+    /// the query that caused it.
     ///
     /// The index registry is carried forward deliberately: the per-file salsa inputs
     /// live in the database and this map is the only way back to them, so a fresh
