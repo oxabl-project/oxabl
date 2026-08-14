@@ -227,6 +227,20 @@ pub struct SchemaIdentity {
     pub loaded: bool,
 }
 
+/// Why a completed workspace pass never landed as current (R6).
+///
+/// One variant today, and a variant rather than a message because the client has
+/// to be able to tell the causes apart without reading prose. Every cause here
+/// describes state the daemon itself changed while the pass ran, which is why
+/// none of them can be inferred from a file on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StalenessCause {
+    /// Unsaved buffers changed while the pass ran, so the answer describes source
+    /// the editor has already moved past.
+    BuffersMoved,
+}
+
 /// How current the index is (R20).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -238,6 +252,20 @@ pub enum IndexState {
     /// Files changed after the last pass. An answer computed now is stale and must
     /// be presented as such.
     Stale { changed_files: u32 },
+    /// The daemon ran its whole attempt budget and every pass was superseded before
+    /// it landed, so the answer comes from the last pass that completed (R4, R6).
+    ///
+    /// Separate from `Stale` because the two have different remedies and different
+    /// evidence. `Stale` counts files that moved on disk and is answered by
+    /// `oxabl/reindex`; this one counts attempts, carries no file count because the
+    /// disk never moved, and is answered by asking again once the buffers settle.
+    /// It must never be collapsed into `Ready`: the answer is populated, so an
+    /// unflagged one would read as all-clear.
+    Superseded {
+        cause: StalenessCause,
+        /// Passes the daemon ran before it answered with the one it had.
+        attempts: u32,
+    },
 }
 
 /// Index freshness, and the pass's own numbers.
@@ -887,6 +915,24 @@ mod tests {
     }
 
     // The contract version is compared by value, not by matching a string shape.
+    // A superseded answer must be legible as not-current from the wire alone
+    // (R6). A client that only knew `ready` and `stale` would have to guess, and
+    // the safe guess is the wrong one.
+    #[test]
+    fn a_superseded_state_names_its_cause_and_never_reads_as_ready() {
+        let superseded = IndexState::Superseded {
+            cause: StalenessCause::BuffersMoved,
+            attempts: 4,
+        };
+        assert_eq!(roundtrip(&superseded), superseded);
+        assert_ne!(superseded, IndexState::Ready);
+
+        let json = serde_json::to_value(&superseded).expect("serialises");
+        assert_eq!(json["state"], "superseded");
+        assert_eq!(json["cause"], "buffers_moved");
+        assert_eq!(json["attempts"], 4);
+    }
+
     #[test]
     fn the_contract_version_is_a_number_compared_by_value() {
         let older = HandshakeRequest {

@@ -11,7 +11,7 @@ use oxabl_ast::NodeId;
 use oxabl_daemon_protocol::{
     AffectedFile, AffectedGroup, ByteSpan, Cause, Freshness, FreshnessRequest, FreshnessResponse,
     ImpactRequest, ImpactResponse, IndexState, Provenance, ReindexRequest, ReindexResponse,
-    SchemaIdentity, Sourced, Subject, SymbolKind, SymbolRow, SymbolSearchRequest,
+    SchemaIdentity, Sourced, StalenessCause, Subject, SymbolKind, SymbolRow, SymbolSearchRequest,
     SymbolSearchResponse, method,
 };
 use oxabl_pipeline::{EdgeKind, Expansion, LintPipeline, LintResult, ReverseGraph};
@@ -19,7 +19,9 @@ use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
 use oxabl_workspace::{FileSystem, RealFileSystem, discover_path};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
-use crate::session::{FileStamp, SessionHost, WorkspaceProgress, WorkspaceSnapshot};
+use crate::session::{
+    FileStamp, SessionHost, SupersededPass, WorkspaceProgress, WorkspaceSnapshot,
+};
 
 /// Register every non-LSP method. No handler checks the client kind: the daemon
 /// exposes the same capability to the editor and desktop clients (KTD5).
@@ -266,12 +268,29 @@ fn reindex(
 
 /// Return a graph at the current buffer generation. Disk changes never cause an
 /// automatic rebuild; they only make the result stale until `oxabl/reindex`.
+///
+/// # Why this terminates
+///
+/// A pass whose buffers moved under it installs nothing and the loop runs
+/// another. Typing bumps the buffer generation on every keystroke, so an
+/// unbounded loop rescans the whole tree for as long as the user types and the
+/// request never returns (R4). The bound is
+/// [`MAX_WORKSPACE_PASS_ATTEMPTS`] passes: on the last one the pass installs and
+/// answers whatever it built, labelled [`StalenessCause::BuffersMoved`], so the
+/// caller gets a populated answer that says out loud it is behind (R6).
+///
+/// Waiting on another caller's pass is not an attempt. That caller carries its
+/// own budget and installs when it is spent, so the wait ends on its result
+/// rather than on a race this one could lose forever.
 fn ensure_workspace(
     host: &SessionHost,
     root: &Path,
     force: bool,
 ) -> Result<WorkspaceSnapshot, MethodError> {
+    let mut attempts: u32 = 0;
     loop {
+        let attempts_before = attempts;
+        let mut parked = false;
         let prepared = host.with(|sessions| {
             let session = sessions.for_root(root);
             if !force
@@ -303,16 +322,57 @@ fn ensure_workspace(
                 // installed nothing because the buffers moved under it, both need
                 // one.
                 running.wait_until_finished(WORKSPACE_WAIT_TIMEOUT);
-                continue;
+                parked = true;
             }
             WorkspacePreparation::Build(root, overlay, generation, progress) => {
-                match run_claimed_pass(host, &root, overlay, generation, progress)? {
-                    Some(workspace) => return Ok(workspace),
-                    None => continue,
+                attempts += 1;
+                let attempt = PassAttempt {
+                    number: attempts,
+                    is_final: attempts >= MAX_WORKSPACE_PASS_ATTEMPTS,
+                };
+                if let Some(workspace) =
+                    run_claimed_pass(host, &root, overlay, generation, progress, attempt)?
+                {
+                    return Ok(workspace);
                 }
             }
         }
+
+        // Forward progress, asserted rather than read off the loop's shape. Every
+        // iteration must either return, spend an attempt, or park on a pass
+        // somebody else owns; one that did none of those spins. The captured
+        // learning from the parser's sync-token loop is that this assertion belongs
+        // at the tail of any loop claiming to advance, because the shape is exactly
+        // what stops being true when a branch is added later.
+        debug_assert!(
+            attempts > attempts_before || parked,
+            "a workspace-pass iteration neither ran a pass nor waited on one"
+        );
+        debug_assert!(
+            attempts <= MAX_WORKSPACE_PASS_ATTEMPTS,
+            "the retry ran {attempts} passes against a cap of {MAX_WORKSPACE_PASS_ATTEMPTS}"
+        );
     }
+}
+
+/// How many passes one request may run before it answers with the pass it has.
+///
+/// A constant rather than a deadline, so the bound is the same on a loaded CI
+/// runner as on a developer's machine and a test can assert it. Four, because a
+/// request that has already rebuilt the workspace three times has lost the race
+/// against a typist and a fourth will not win it either — while a caller that
+/// merely collided with one stray keystroke still gets a current answer. It also
+/// bounds the worst case at four passes of latency, which is the real cost this
+/// number buys.
+const MAX_WORKSPACE_PASS_ATTEMPTS: u32 = 4;
+
+/// Where one pass sits in its caller's bounded sequence.
+#[derive(Clone, Copy)]
+struct PassAttempt {
+    number: u32,
+    /// The caller has no attempt left after this one, so a superseded result is
+    /// installed and labelled rather than thrown away (R4, R6).
+    is_final: bool,
 }
 
 /// Run one pass against a progress slot this caller already claimed, and signal
@@ -320,24 +380,41 @@ fn ensure_workspace(
 ///
 /// Whoever claims the slot owns finishing it. Both claim sites route through here
 /// so there is one signal point rather than one per caller, and `Ok(None)` means
-/// the pass completed but the buffers moved under it, so nothing was installed.
+/// the pass completed but was superseded before it landed, so nothing was
+/// installed and the caller has an attempt left to spend.
 fn run_claimed_pass(
     host: &SessionHost,
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
     generation: u64,
     progress: WorkspaceProgress,
+    attempt: PassAttempt,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
     let outcome = match build_workspace(root, overlay, generation, &progress) {
-        Ok(workspace) => {
+        Ok(mut workspace) => {
             progress.complete();
             host.with(|sessions| {
                 let session = sessions.for_root(root);
-                if session.buffer_generation() != generation {
-                    // Stale before it landed. Nothing to install, and the caller's
-                    // loop will start another pass.
-                    session.clear_workspace_progress();
-                    return Ok(None);
+                match superseding_cause(session, generation) {
+                    // Superseded with attempts still to spend: install nothing and
+                    // let the caller's loop run another pass.
+                    Some(_) if !attempt.is_final => {
+                        session.clear_workspace_progress();
+                        return Ok(None);
+                    }
+                    // Superseded on the last attempt. This installs and answers
+                    // rather than looping again or failing: an error and an empty
+                    // answer both lose the graph the pass did build, and an empty
+                    // answer additionally reads as all-clear. The label is what
+                    // makes it honest, and it clears the progress slot, so the next
+                    // request starts a pass of its own.
+                    Some(cause) => {
+                        workspace.superseded = Some(SupersededPass {
+                            cause,
+                            attempts: attempt.number,
+                        });
+                    }
+                    None => {}
                 }
                 // The configuration this pass resolved stays local to the pass. It
                 // already reached the pipeline that built the snapshot, so nothing
@@ -366,6 +443,16 @@ fn run_claimed_pass(
     outcome
 }
 
+/// Why a completed pass is already out of date, if it is.
+///
+/// One place, so every reason a pass may be superseded is compared together and
+/// named the same way, rather than a second discard-and-loop growing beside the
+/// first. The session state read here is state the daemon itself changed while
+/// the pass ran, which is why none of it can be recovered from the file stamps.
+fn superseding_cause(session: &crate::Session, generation: u64) -> Option<StalenessCause> {
+    (session.buffer_generation() != generation).then_some(StalenessCause::BuffersMoved)
+}
+
 /// Run a pass claimed by a caller that has no overlay in hand, reading the
 /// session's own state for it.
 fn run_claimed_workspace_pass(
@@ -381,7 +468,21 @@ fn run_claimed_workspace_pass(
             session.buffer_generation(),
         )
     });
-    run_claimed_pass(host, &owned_root, overlay, generation, progress)
+    // Never the final attempt. This pass is started by a freshness poll and
+    // nobody is blocked on its result, so a superseded one is dropped rather than
+    // installed: the client's next poll claims a fresh pass, and the attempt cap
+    // belongs to a request that has to answer.
+    run_claimed_pass(
+        host,
+        &owned_root,
+        overlay,
+        generation,
+        progress,
+        PassAttempt {
+            number: 1,
+            is_final: false,
+        },
+    )
 }
 
 /// How long a waiter parks before re-checking on its own.
@@ -431,6 +532,9 @@ fn build_workspace(
         buffer_generation,
         pass_millis: started.elapsed().as_millis() as u64,
         graph_bytes,
+        // Set by whoever installs it, which is the only place that can know
+        // whether the session moved while this ran.
+        superseded: None,
     })
 }
 
@@ -570,13 +674,36 @@ fn provenance(session: &crate::Session) -> Provenance {
     }
 }
 
+/// Report how current a snapshot is, preferring what the daemon knows about the
+/// pass over what the files say.
+///
+/// The two are not alternatives with the same evidence. A pass superseded because
+/// the buffers moved under it leaves every stamped file untouched on disk, so the
+/// stamp-derived state for it is `Ready` — a populated answer, unflagged, reading
+/// as all-clear while it describes source the editor has already moved past
+/// (R6). The stamps cannot see that, and no amount of file metadata could: the
+/// state that moved was the daemon's own. So the carried cause wins outright, and
+/// the stamp count is not folded in beside it — a superseded answer that also
+/// named a file count would invite the reader to treat the file count as the
+/// whole story.
 fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
-    let changed_files = workspace.files.iter().filter(|file| file.changed()).count() as u32;
     Freshness {
-        state: if changed_files == 0 {
-            IndexState::Ready
-        } else {
-            IndexState::Stale { changed_files }
+        state: match workspace.superseded {
+            Some(superseded) => IndexState::Superseded {
+                cause: superseded.cause,
+                attempts: superseded.attempts,
+            },
+            // The stamp sweep runs only here. It cannot change the answer above,
+            // and it is a `stat` per tracked file on a path an editor polls.
+            None => {
+                let changed_files =
+                    workspace.files.iter().filter(|file| file.changed()).count() as u32;
+                if changed_files == 0 {
+                    IndexState::Ready
+                } else {
+                    IndexState::Stale { changed_files }
+                }
+            }
         },
         indexed_files: workspace.graph.file_count() as u32,
         unanalysed_files: workspace.graph.unanalysed().len() as u32,

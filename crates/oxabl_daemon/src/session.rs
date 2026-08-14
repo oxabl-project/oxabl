@@ -45,7 +45,7 @@ use std::time::SystemTime;
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_common::catch_panic;
-use oxabl_daemon_protocol::SymbolRow;
+use oxabl_daemon_protocol::{StalenessCause, SymbolRow};
 use oxabl_index::search::normalize_lexically;
 use oxabl_pipeline::{PipelineConfig, ReverseGraph};
 use salsa::Setter;
@@ -164,6 +164,23 @@ pub(crate) struct WorkspaceSnapshot {
     pub buffer_generation: u64,
     pub pass_millis: u64,
     pub graph_bytes: u64,
+    /// Why this snapshot was already behind the moment it landed, if it was.
+    ///
+    /// The carrier for a staleness the file stamps cannot see. A pass installed
+    /// after its attempt budget ran out describes buffers that have since moved,
+    /// while every file it stamped is untouched on disk — so freshness computed
+    /// from stamps alone would call it `Ready`. `None` is a snapshot that landed
+    /// current; it is not an absent measurement, so it is an `Option` rather than
+    /// a `Sourced`.
+    pub superseded: Option<SupersededPass>,
+}
+
+/// A pass that completed but was already out of date when it was installed.
+#[derive(Clone, Copy)]
+pub(crate) struct SupersededPass {
+    pub cause: StalenessCause,
+    /// Passes the request ran before it answered with the one it had.
+    pub attempts: u32,
 }
 
 #[derive(Clone)]

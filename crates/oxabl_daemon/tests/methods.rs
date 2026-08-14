@@ -2,12 +2,14 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use oxabl_daemon::{ClientContext, Dispatch, SessionHost, default_dispatch};
 use oxabl_daemon_protocol::{
     ClientKind, FreshnessRequest, FreshnessResponse, HandshakeRequest, ImpactRequest,
-    ImpactResponse, IndexState, Provenance, ReindexRequest, ReindexResponse, Subject,
-    SymbolSearchRequest, SymbolSearchResponse, method,
+    ImpactResponse, IndexState, Provenance, ReindexRequest, ReindexResponse, StalenessCause,
+    Subject, SymbolSearchRequest, SymbolSearchResponse, method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -390,6 +392,141 @@ fn a_no_argument_method_accepts_omitted_null_or_empty_params() {
                 .unwrap_or_else(|error| panic!("{name} with params {params}: {error}"));
         }
     }
+}
+
+/// Keeps one buffer changing for as long as it is held (R4).
+///
+/// The bumps are a tight loop rather than a timer. The pass holds no session lock
+/// while it runs, so a sleeping mutator can leave a whole pass unobserved — and a
+/// request that then answers `Ready` would pass this test by luck rather than by
+/// the bound it exists to pin.
+struct Typist {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Typist {
+    fn start(host: &SessionHost, root: &Path, path: &Path) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (host, stop) = (host.clone(), stop.clone());
+            let (root, path) = (root.to_path_buf(), path.to_path_buf());
+            std::thread::spawn(move || {
+                let mut keystroke = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    keystroke += 1;
+                    host.with(|sessions| {
+                        sessions.for_root(&root).set_buffer(
+                            "overlay.p",
+                            format!("MESSAGE \"typing {keystroke}\".\n"),
+                            Some(path.clone()),
+                        );
+                    });
+                }
+            })
+        };
+        Typist {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Typist {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+// A request must return within a bounded number of workspace-pass attempts even
+// while an open buffer changes continuously (R4), and it must say so by type
+// rather than by an empty answer (R6).
+#[test]
+fn a_continuously_changing_buffer_answers_within_the_attempt_cap() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let _editor = handshake(&dispatch, &host, fixture.root(), ClientKind::Editor);
+    let mut desktop = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+
+    // A pass over the bare fixture finishes in well under a millisecond, so one
+    // can slip whole between two keystrokes and land current by luck. Widening
+    // the workspace makes every attempt long enough that the typist is certain to
+    // be seen — the test then measures the bound rather than a coin toss.
+    for index in 0..200 {
+        fs::write(
+            fixture.root().join(format!("typed-{index}.p")),
+            "{base.i}\nMESSAGE fromBase.\n",
+        )
+        .unwrap();
+    }
+
+    let typist = Typist::start(&host, fixture.root(), &fixture.overlay);
+    let answer = reindex(&dispatch, &host, &mut desktop);
+    drop(typist);
+
+    match answer.freshness.state {
+        IndexState::Superseded { cause, attempts } => {
+            assert_eq!(
+                cause,
+                StalenessCause::BuffersMoved,
+                "the label names the buffers, not a generic failure"
+            );
+            assert!(
+                (1..=4).contains(&attempts),
+                "the request answered after {attempts} passes, outside the cap"
+            );
+        }
+        other => panic!("a pass the buffers moved under answered as {other:?}"),
+    }
+    // Distinguishable by type, not by an empty collection: the answer still
+    // carries the graph the completed pass built.
+    assert!(
+        answer.freshness.indexed_files > 0,
+        "the answer is populated"
+    );
+    assert!(answer.graph_bytes > 0, "the answer is populated");
+
+    // Exhausting the cap leaves no progress slot claimed, so a following request
+    // still starts a pass — and with the typist stopped it lands cleanly.
+    let quiet = reindex(&dispatch, &host, &mut desktop);
+    assert_eq!(quiet.freshness.state, IndexState::Ready);
+}
+
+// The bound must not turn an ordinary pass into a stale one: with nothing moving
+// under it, one pass installs and answers `Ready`.
+#[test]
+fn a_quiet_pass_still_installs_and_reports_ready() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let _editor = handshake(&dispatch, &host, fixture.root(), ClientKind::Editor);
+    let mut desktop = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    host.with(|sessions| {
+        sessions.for_root(fixture.root()).set_buffer(
+            "overlay.p",
+            "{base.i}\nMESSAGE fromBase.\n".to_string(),
+            Some(fixture.overlay.clone()),
+        );
+    });
+
+    let answer = reindex(&dispatch, &host, &mut desktop);
+    assert_eq!(answer.freshness.state, IndexState::Ready);
+
+    // Installed, not merely returned: the next query answers from the same pass
+    // rather than running another.
+    let repeat = impact(
+        &dispatch,
+        &host,
+        &mut desktop,
+        Subject::File {
+            path: fixture.base.to_string_lossy().into_owned(),
+        },
+    );
+    assert_eq!(repeat.freshness.state, IndexState::Ready);
 }
 
 #[test]
