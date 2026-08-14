@@ -175,8 +175,10 @@ impl Listener {
         // The listener is the only place that knows which root this daemon was
         // started for, and the handshake is the only place that can refuse one. So
         // the root is carried across here, once, before the first client is
-        // accepted (R26).
-        host.bind_root(&self.workspace_root);
+        // accepted (R26). A root that will not resolve fails the loop rather than
+        // starting one: an unresolvable bound root matches no handshake, so the
+        // daemon would hold this root's lock and refuse every client of it.
+        host.bind_root(&self.workspace_root)?;
         let mut clients = Vec::new();
         for stream in self.listener.incoming() {
             if self.stopping.load(Ordering::SeqCst) {

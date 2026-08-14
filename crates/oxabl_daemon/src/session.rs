@@ -127,6 +127,16 @@ pub struct Session {
     /// Open buffers by document key (a URI for an editor, a path for anything
     /// else).
     buffers: HashMap<String, Buffer>,
+    /// Each open buffer's workspace path, resolved once by [`canonical_path`] when
+    /// the buffer was opened.
+    ///
+    /// Cached rather than resolved on demand because the only reader is
+    /// [`buffer_overlay`](Self::buffer_overlay), which runs under the shared
+    /// sessions lock on every claimed pass. Resolving there is a `realpath` call
+    /// per open buffer inside the one lock every client of the daemon needs, so a
+    /// caller with a dozen files open would serialise every other client behind
+    /// its own filesystem I/O.
+    buffer_paths: HashMap<String, PathBuf>,
     /// Bumped every time a configuration is installed. A computation carries the
     /// generation it read, so one that finished under rules the user has since
     /// replaced is not published — the buffer version cannot catch that, because
@@ -144,7 +154,18 @@ pub struct Session {
     buffer_generation: u64,
     /// The last completed whole-workspace pass, shared by every client.
     workspace: Option<WorkspaceSnapshot>,
-    /// Live counters for the one whole-workspace pass now running.
+    /// Live counters for the whole-workspace pass that currently holds the slot.
+    ///
+    /// The slot is what makes "one pass at a time" true, so it has an owner: only
+    /// the pass whose handle is stored here may retire it. A pass can be displaced
+    /// while it runs — a caller out of parks claims the slot from under it — and a
+    /// displaced pass still finishes, so an unconditional clear would null a slot
+    /// that now belongs to somebody else. A later caller would then read "no pass
+    /// running" and start a second concurrent one, which is a whole recursive
+    /// workspace scan spent to reintroduce exactly the race the slot exists to
+    /// prevent. [`WorkspaceProgress::is_same_pass`] is the check, and both
+    /// [`Session::clear_workspace_progress`] and [`Session::install_workspace`]
+    /// apply it.
     workspace_progress: Option<WorkspaceProgress>,
 }
 
@@ -197,6 +218,17 @@ impl WorkspaceProgress {
         condvar.notify_all();
     }
 
+    /// Whether both handles describe the same pass.
+    ///
+    /// Identity rather than value. Two distinct passes are both at 0 of 0 the
+    /// instant they start, so a counter comparison would report a displaced pass as
+    /// the owner of the slot that displaced it — and the caller of this is deciding
+    /// whether it may null that slot. Every field is an `Arc` the pass clones from
+    /// one original, so pointer identity is the pass's identity.
+    pub fn is_same_pass(&self, other: &WorkspaceProgress) -> bool {
+        Arc::ptr_eq(&self.finished, &other.finished)
+    }
+
     /// Block until the pass ends, or until `timeout` elapses.
     ///
     /// The timeout is a backstop, not the mechanism: a missed wake becomes a slow
@@ -218,7 +250,14 @@ pub(crate) struct WorkspaceSnapshot {
     pub symbols: Arc<Vec<SymbolRow>>,
     pub files: Arc<Vec<FileStamp>>,
     pub config: Arc<PipelineConfig>,
-    pub buffer_generation: u64,
+    /// The session state this pass was built against, kept whole.
+    ///
+    /// Whole rather than the buffer counter alone, because this is what decides
+    /// whether the stored snapshot is still current. A snapshot judged by its
+    /// buffer generation only would keep being served after a schema or a
+    /// configuration change: those two move without any buffer moving, so the
+    /// comparison would match forever and no later query would ever rebuild (R3).
+    pub generations: SessionGenerations,
     pub pass_millis: u64,
     pub graph_bytes: u64,
     /// Why this snapshot was already behind the moment it landed, if it was.
@@ -241,11 +280,30 @@ pub(crate) struct WorkspaceSnapshot {
 /// text is read under, and the schema the text is resolved against. Two of them
 /// change without any buffer moving, so the buffer generation alone cannot see
 /// them.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionGenerations {
     pub buffers: u64,
     pub config: u64,
     pub schema: u32,
+}
+
+impl SessionGenerations {
+    /// Whether these generations are no older than `other` in every counter.
+    ///
+    /// Every counter only ever goes up, so this orders two snapshots by how much of
+    /// the session's history each one saw. It is what stops a displaced pass
+    /// installing over a fresher one: a pass claimed before a schema change lands
+    /// after the pass claimed behind it, and without this the older, superseded
+    /// result would overwrite the current snapshot the newer pass had already
+    /// stored.
+    ///
+    /// Not `PartialOrd`, because the counters move independently and two passes can
+    /// each be ahead on a different one. That case is genuinely unordered, and
+    /// answering `false` for it is the safe reading: the incoming pass missed
+    /// something the stored one saw.
+    pub(crate) fn is_at_least(&self, other: &SessionGenerations) -> bool {
+        self.buffers >= other.buffers && self.config >= other.config && self.schema >= other.schema
+    }
 }
 
 /// A pass that completed but was already out of date when it was installed.
@@ -295,6 +353,7 @@ impl Session {
             db,
             schema,
             buffers: HashMap::new(),
+            buffer_paths: HashMap::new(),
             config_generation: 0,
             clients: 0,
             editor_clients: 0,
@@ -367,9 +426,34 @@ impl Session {
         self.workspace.clone()
     }
 
-    pub(crate) fn install_workspace(&mut self, workspace: WorkspaceSnapshot) {
-        self.workspace = Some(workspace);
-        self.workspace_progress = None;
+    /// Store a completed pass's snapshot, and retire the progress slot if this pass
+    /// still holds it.
+    ///
+    /// The two halves are separate on purpose. A displaced pass did real work, so it
+    /// still installs — throwing the graph away would spend a whole recursive scan
+    /// for nothing. What it must not do is null a slot that now belongs to the pass
+    /// which displaced it, because the next caller would read "no pass running" and
+    /// start a second concurrent scan.
+    ///
+    /// The install itself is guarded by [`SessionGenerations::is_at_least`] rather
+    /// than by the slot. Ordering by arrival would let a pass claimed before a
+    /// schema change land after the pass claimed behind it and overwrite a current
+    /// snapshot with a superseded one — which [`Session::workspace`]'s callers
+    /// cannot detect, since they compare the stored snapshot's generations against
+    /// the session's and a stale install carries the generations it was claimed at.
+    pub(crate) fn install_workspace(
+        &mut self,
+        workspace: WorkspaceSnapshot,
+        pass: &WorkspaceProgress,
+    ) {
+        let replaces = self
+            .workspace
+            .as_ref()
+            .is_none_or(|stored| workspace.generations.is_at_least(&stored.generations));
+        if replaces {
+            self.workspace = Some(workspace);
+        }
+        self.clear_workspace_progress(pass);
     }
 
     pub(crate) fn workspace_progress(&self) -> Option<WorkspaceProgress> {
@@ -395,8 +479,20 @@ impl Session {
         Some(self.begin_workspace_pass())
     }
 
-    pub(crate) fn clear_workspace_progress(&mut self) {
-        self.workspace_progress = None;
+    /// Retire the progress slot, but only if `pass` is the pass that holds it.
+    ///
+    /// A pass that was displaced while it ran clears nothing here. Clearing
+    /// unconditionally nulls the replacement's slot, and the next caller reads that
+    /// as "no pass running" and starts one concurrently with a pass that is already
+    /// scanning the same tree.
+    pub(crate) fn clear_workspace_progress(&mut self, pass: &WorkspaceProgress) {
+        if self
+            .workspace_progress
+            .as_ref()
+            .is_some_and(|held| held.is_same_pass(pass))
+        {
+            self.workspace_progress = None;
+        }
     }
 
     /// Unsaved file buffers, keyed by their workspace path.
@@ -405,15 +501,16 @@ impl Session {
     /// the handshake. A pass discovers files under the canonical root, so a key in
     /// the client's own spelling would match nothing and the pass would read the
     /// saved copy of every open file while still reporting a working tree.
+    ///
+    /// The resolution happened when the buffer was opened, so this is a pure map
+    /// over cached values. It has to be: every caller runs it under the sessions
+    /// lock, and that lock is shared by every workspace root the daemon serves.
     pub(crate) fn buffer_overlay(&self) -> HashMap<PathBuf, Arc<str>> {
-        self.buffers
-            .values()
-            .filter_map(|buffer| {
-                let path = buffer.path(&self.db).as_ref()?;
-                Some((
-                    canonical_path(path),
-                    Arc::from(buffer.text(&self.db).as_str()),
-                ))
+        self.buffer_paths
+            .iter()
+            .filter_map(|(key, path)| {
+                let buffer = self.buffers.get(key)?;
+                Some((path.clone(), Arc::from(buffer.text(&self.db).as_str())))
             })
             .collect()
     }
@@ -442,7 +539,18 @@ impl Session {
     }
 
     /// Open or replace a buffer's text.
+    ///
+    /// `path` is resolved here, once, and only for a key this session has not seen
+    /// before — the resolution is filesystem I/O and this runs on every keystroke.
+    /// A later call for an open key keeps the path the buffer was opened with,
+    /// which is the rule the salsa input already followed.
     pub fn set_buffer(&mut self, key: &str, text: String, path: Option<PathBuf>) -> Buffer {
+        if let Some(path) = path.as_deref()
+            && !self.buffer_paths.contains_key(key)
+        {
+            self.buffer_paths
+                .insert(key.to_string(), canonical_path(path));
+        }
         match self.buffers.get(key).copied() {
             Some(buffer) => {
                 if buffer.text(&self.db).as_str() != text {
@@ -463,6 +571,7 @@ impl Session {
     /// Close a buffer. Its salsa input stays allocated — salsa has no removal — but
     /// nothing reads it again.
     pub fn close_buffer(&mut self, key: &str) {
+        self.buffer_paths.remove(key);
         if self.buffers.remove(key).is_some() {
             self.buffer_generation = self.buffer_generation.wrapping_add(1);
         }
@@ -660,11 +769,21 @@ impl SessionHost {
 
     /// Record the one workspace root this host serves (R26).
     ///
-    /// Resolved here rather than by the caller, so the bound root and the root a
-    /// handshake resolves are produced by one function and cannot drift apart. The
-    /// first binding wins: a host already bound keeps the root it was started for.
-    pub fn bind_root(&self, root: impl AsRef<Path>) {
-        let _ = self.bound_root.set(canonical_path(root.as_ref()));
+    /// Resolved here by [`canonical_root`] — the same function the handshake uses —
+    /// rather than by the caller, so the bound root and the root a handshake
+    /// resolves cannot drift apart. The first binding wins: a host already bound
+    /// keeps the root it was started for.
+    ///
+    /// A root that does not resolve fails here rather than binding leniently. The
+    /// lenient resolution would leave the daemon holding its root lock while every
+    /// handshake compared a client's canonical root against a spelling no
+    /// canonicalisation produces — so it would serve nobody, including a client
+    /// naming its own root, and the only symptom would be a refusal that names two
+    /// paths a reader cannot tell apart.
+    pub fn bind_root(&self, root: impl AsRef<Path>) -> std::io::Result<()> {
+        let root = canonical_root(root.as_ref())?;
+        let _ = self.bound_root.set(root);
+        Ok(())
     }
 
     /// The root this host is bound to, or `None` when it serves any root a client
@@ -1006,9 +1125,49 @@ fn only_one_caller_can_claim_a_pass() {
         "a second caller must not start its own pass"
     );
 
-    session.clear_workspace_progress();
+    session.clear_workspace_progress(&first.expect("the claimed pass"));
     assert!(
         session.claim_workspace_pass().is_some(),
         "the slot is claimable again once the pass ends"
+    );
+}
+
+/// A pass displaced while it ran must not retire the slot that replaced it.
+///
+/// A caller out of parks claims the slot from under a running pass on purpose, and
+/// the displaced pass keeps going. If its ending nulls the slot unconditionally,
+/// the slot the replacement holds disappears, and the next caller reads "no pass
+/// running" and starts a second pass concurrent with the replacement — a whole
+/// recursive workspace scan spent to reintroduce the race the slot exists to
+/// prevent.
+#[test]
+fn a_displaced_pass_does_not_retire_the_slot_that_replaced_it() {
+    let mut session = Session::new("/proj/alpha");
+
+    let displaced = session.begin_workspace_pass();
+    let replacement = session.begin_workspace_pass();
+    assert!(
+        !displaced.is_same_pass(&replacement),
+        "displacing a pass installs a different progress handle"
+    );
+
+    // The displaced pass ends the way a superseded one does. That must leave the
+    // replacement holding the slot.
+    session.clear_workspace_progress(&displaced);
+    assert!(
+        session
+            .workspace_progress()
+            .is_some_and(|held| held.is_same_pass(&replacement)),
+        "a displaced pass cleared the slot the replacement holds"
+    );
+    assert!(
+        session.claim_workspace_pass().is_none(),
+        "a later caller must still see a pass running"
+    );
+
+    session.clear_workspace_progress(&replacement);
+    assert!(
+        session.workspace_progress().is_none(),
+        "the pass that holds the slot retires it"
     );
 }

@@ -161,7 +161,8 @@ fn a_root_other_than_the_bound_one_is_refused_and_creates_no_session() {
 
     let dispatch = default_dispatch();
     let host = SessionHost::new();
-    host.bind_root(served.path());
+    host.bind_root(served.path())
+        .expect("the served root resolves");
 
     let error = handshake(&dispatch, &host, &other.path().to_string_lossy())
         .expect_err("a foreign root is refused");
@@ -183,6 +184,29 @@ fn a_root_other_than_the_bound_one_is_refused_and_creates_no_session() {
     );
 }
 
+/// A root that does not resolve is refused at bind time rather than bound
+/// leniently (R26).
+///
+/// Bound leniently, the daemon starts, takes the root lock, and then compares
+/// every handshake's canonical root against a spelling no canonicalisation
+/// produces — so it serves nobody, including a client naming the very root it was
+/// started for, and says only that two paths differ.
+#[test]
+fn a_root_that_does_not_resolve_is_refused_at_bind_time() {
+    let parent = tempfile::tempdir().expect("a directory to hold the missing root");
+    let missing = parent.path().join("absent").join("workspace");
+
+    let host = SessionHost::new();
+    let error = host
+        .bind_root(&missing)
+        .expect_err("a root that is not on disk cannot be bound");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(
+        host.bound_root().is_none(),
+        "a failed binding must leave the host unbound"
+    );
+}
+
 /// The bound root is a workspace, not a spelling: the same tree reached through a
 /// symlink is the daemon's own root and is accepted (R26).
 #[cfg(unix)]
@@ -195,7 +219,7 @@ fn another_spelling_of_the_bound_root_is_accepted() {
 
     let dispatch = default_dispatch();
     let host = SessionHost::new();
-    host.bind_root(&link);
+    host.bind_root(&link).expect("the link resolves");
 
     handshake(&dispatch, &host, &served.path().to_string_lossy())
         .expect("the bound root under another spelling is accepted");

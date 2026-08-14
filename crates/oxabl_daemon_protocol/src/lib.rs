@@ -350,6 +350,14 @@ impl HandshakeRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandshakeResponse {
     pub contract_version: u32,
+    /// The root the daemon resolved, which need not be the spelling the client
+    /// sent.
+    ///
+    /// The daemon keys one session per resolved root, so a client that reached the
+    /// tree through a symlink or a relative path is answered with the resolved
+    /// form. A client that compares this against what it sent will see them differ
+    /// and must not read that as a different workspace: it is the same tree, named
+    /// the way every later answer from this daemon names it.
     pub workspace_root: String,
     /// The daemon's own version string, for a human reading a mismatch report.
     pub daemon_version: String,

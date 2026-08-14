@@ -104,12 +104,20 @@ fn call<P: Serialize, R: DeserializeOwned>(
     serde_json::from_value(value).unwrap()
 }
 
+fn reindex_answer(
+    dispatch: &Dispatch,
+    host: &SessionHost,
+    context: &mut ClientContext,
+) -> Sourced<ReindexResponse> {
+    call(dispatch, host, context, method::REINDEX, &ReindexRequest {})
+}
+
 fn reindex(
     dispatch: &Dispatch,
     host: &SessionHost,
     context: &mut ClientContext,
 ) -> ReindexResponse {
-    call(dispatch, host, context, method::REINDEX, &ReindexRequest {})
+    expect_available(reindex_answer(dispatch, host, context))
 }
 
 /// The value a cross-file method answered with, or a failure naming its refusal.
@@ -504,53 +512,6 @@ fn a_no_argument_method_accepts_omitted_null_or_empty_params() {
     }
 }
 
-/// Keeps one buffer changing for as long as it is held (R4).
-///
-/// The bumps are a tight loop rather than a timer. The pass holds no session lock
-/// while it runs, so a sleeping mutator can leave a whole pass unobserved — and a
-/// request that then answers `Ready` would pass this test by luck rather than by
-/// the bound it exists to pin.
-struct Typist {
-    stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Typist {
-    fn start(host: &SessionHost, root: &Path, path: &Path) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = {
-            let (host, stop) = (host.clone(), stop.clone());
-            let (root, path) = (root.to_path_buf(), path.to_path_buf());
-            std::thread::spawn(move || {
-                let mut keystroke = 0u64;
-                while !stop.load(Ordering::Relaxed) {
-                    keystroke += 1;
-                    host.with(|sessions| {
-                        sessions.for_root(&root).set_buffer(
-                            "overlay.p",
-                            format!("MESSAGE \"typing {keystroke}\".\n"),
-                            Some(path.clone()),
-                        );
-                    });
-                }
-            })
-        };
-        Typist {
-            stop,
-            thread: Some(thread),
-        }
-    }
-}
-
-impl Drop for Typist {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
 // A request must return within a bounded number of workspace-pass attempts even
 // while an open buffer changes continuously (R4), and it must say so by type
 // rather than by an empty answer (R6).
@@ -574,7 +535,7 @@ fn a_continuously_changing_buffer_answers_within_the_attempt_cap() {
         .unwrap();
     }
 
-    let typist = Typist::start(&host, fixture.root(), &fixture.overlay);
+    let typist = Mutator::typist(&host, fixture.root(), &fixture.overlay);
     let answer = reindex(&dispatch, &host, &mut desktop);
     drop(typist);
 
@@ -639,11 +600,16 @@ fn a_quiet_pass_still_installs_and_reports_ready() {
     assert_eq!(repeat.freshness.state, IndexState::Ready);
 }
 
-/// Keeps changing one piece of session state for as long as it is held (R3).
+/// Keeps changing one piece of session state for as long as it is held (R3, R4).
 ///
-/// The same shape as [`Typist`], and a tight loop for the same reason: the pass
-/// holds no session lock while it runs, so a sleeping mutator can leave a whole
-/// pass unobserved and a request that then answered `Ready` would pass by luck.
+/// One mover for every kind of change — a typed buffer, a reloaded schema, a
+/// replaced configuration — because the three differ only in the line they run,
+/// and two copies of this thread machinery drift apart the first time one of them
+/// is fixed.
+///
+/// A tight loop rather than a timer: the pass holds no session lock while it runs,
+/// so a sleeping mutator can leave a whole pass unobserved and a request that then
+/// answered `Ready` would pass by luck rather than by the property under test.
 struct Mutator {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -668,6 +634,20 @@ impl Mutator {
             stop,
             thread: Some(thread),
         }
+    }
+
+    /// Keeps one open buffer changing, the way a user typing into it does.
+    fn typist(host: &SessionHost, root: &Path, path: &Path) -> Self {
+        let path = path.to_path_buf();
+        let mut keystroke = 0u64;
+        Mutator::start(host, root, move |session| {
+            keystroke += 1;
+            session.set_buffer(
+                "overlay.p",
+                format!("MESSAGE \"typing {keystroke}\".\n"),
+                Some(path.clone()),
+            );
+        })
     }
 
     fn schema(host: &SessionHost, root: &Path) -> Self {
@@ -917,6 +897,33 @@ fn freshness_is_refused_rather_than_reporting_ready_without_a_configuration() {
         let reason = refusal(&answer);
         assert!(reason.contains(REMEDY), "the refusal names the remedy");
     }
+}
+
+/// `oxabl/reindex` refuses in the same words as the two methods that read the
+/// graph it builds (R22).
+///
+/// Ungated, it answered `Ready` over a populated file count for a graph no include
+/// could reach — so a client that reindexed and then asked for freshness was told
+/// the workspace was current and then told the question could not be answered.
+#[test]
+fn reindex_is_refused_when_no_include_configuration_resolves() {
+    let fixture = Fixture::without_configuration();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+
+    let rebuilt = reindex_answer(&dispatch, &host, &mut client);
+    let asked = freshness_answer(&dispatch, &host, &mut client);
+    assert_eq!(
+        refusal(&rebuilt),
+        refusal(&asked),
+        "reindex and freshness must refuse the same workspace in the same words"
+    );
+    assert!(
+        refusal(&rebuilt).contains(REMEDY),
+        "the refusal names the remedy: {}",
+        refusal(&rebuilt)
+    );
 }
 
 #[test]

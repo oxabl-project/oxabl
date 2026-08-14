@@ -15,12 +15,20 @@
 //!
 //! ## Why only the graph-dependent methods
 //!
-//! The refusal covers `oxabl/impact` and `oxabl/freshness`, which report on the
-//! dependency graph and nothing else. `oxabl/symbolSearch` funnels through the
-//! same workspace pass, but its rows come from each file's own semantic model and
-//! from the schema, both of which are populated without a single include path;
-//! single-file analysis is likewise unaffected (R23). Refusing those would remove
-//! an answer that still works, which R22 does not ask for.
+//! The refusal covers `oxabl/impact`, `oxabl/freshness`, and `oxabl/reindex` —
+//! every method whose answer is a report on the dependency graph. `oxabl/reindex`
+//! belongs with the other two even though it builds rather than reads: its whole
+//! response is the graph's freshness and size, so an unconfigured workspace makes
+//! it report `Ready` over a file count that no include contributed to. A client
+//! that reindexed and then asked for freshness would be told the workspace is
+//! current and then told the question cannot be answered, which is worse than
+//! either answer alone.
+//!
+//! `oxabl/symbolSearch` funnels through the same workspace pass, but its rows come
+//! from each file's own semantic model and from the schema, both of which are
+//! populated without a single include path; single-file analysis is likewise
+//! unaffected (R23). Refusing those would remove an answer that still works, which
+//! R22 does not ask for.
 
 use std::collections::HashMap;
 use std::io;
@@ -173,9 +181,9 @@ fn cross_file_refusal(root: &Path) -> Option<String> {
 
 /// What a refused cross-file question says: what was refused, why, and the remedy.
 ///
-/// One constant, so `oxabl/impact` and `oxabl/freshness` refuse in identical
-/// words — a client that renders the reason shows the same remedy whichever
-/// method it asked.
+/// One constant, so `oxabl/impact`, `oxabl/freshness`, and `oxabl/reindex` refuse
+/// in identical words — a client that renders the reason shows the same remedy
+/// whichever method it asked.
 const NO_INCLUDE_CONFIGURATION: &str = "no include path resolved for this workspace, so a \
      cross-file answer would come from a dependency graph nothing could populate; name include \
      paths under [workspace.sources] in an oxabl.toml at the workspace root";
@@ -329,11 +337,22 @@ fn reindex(
     params: serde_json::Value,
 ) -> Result<serde_json::Value, MethodError> {
     let _: ReindexRequest = no_argument_params(params)?;
-    let workspace = ensure_workspace(host, context.workspace_root()?, true)?;
-    serde_json::to_value(ReindexResponse {
-        freshness: workspace_freshness(&workspace),
-        pass_millis: workspace.pass_millis,
-        graph_bytes: workspace.graph_bytes,
+    let root = context.workspace_root()?.to_path_buf();
+    // Refused before the pass, like its two siblings. A reindex over a workspace
+    // that resolves no include path would scan the whole tree to build a graph with
+    // no edges, then report that graph as `Ready` over a populated file count — the
+    // confident-but-fabricated answer R22 exists to remove.
+    if let Some(reason) = cross_file_refusal(&root) {
+        return serde_json::to_value(Sourced::<ReindexResponse>::unavailable(reason))
+            .map_err(MethodError::internal);
+    }
+    let workspace = ensure_workspace(host, &root, true)?;
+    serde_json::to_value(Sourced::Available {
+        value: ReindexResponse {
+            freshness: workspace_freshness(&workspace),
+            pass_millis: workspace.pass_millis,
+            graph_bytes: workspace.graph_bytes,
+        },
     })
     .map_err(MethodError::internal)
 }
@@ -346,37 +365,56 @@ fn reindex(
 /// A pass the session moved under installs nothing and the loop runs another —
 /// see [`superseding_cause`] for what counts as moving. Typing bumps the buffer
 /// generation on every keystroke, so an unbounded loop rescans the whole tree for
-/// as long as the user types and the request never returns (R4). The bound is
-/// [`MAX_WORKSPACE_PASS_ATTEMPTS`] passes: on the last one the pass installs and
-/// answers whatever it built, labelled with the cause that superseded it, so the
-/// caller gets a populated answer that says out loud it is behind (R6).
+/// as long as the user types and the request never returns (R4).
 ///
-/// Waiting on another caller's pass is not an attempt. That caller carries its
-/// own budget and installs when it is spent, so the wait ends on its result
-/// rather than on a race this one could lose forever.
+/// Two budgets bound it, both of [`MAX_WORKSPACE_PASS_ATTEMPTS`]. Passes this
+/// request ran: on the last one [`run_claimed_pass`] cannot answer `Ok(None)` at
+/// all — the only arm that returns it is guarded by `!attempt.is_final` — so the
+/// final attempt either installs a snapshot and returns it or fails. That is
+/// structural, and it is the whole guarantee; the `debug_assert!` at the tail of
+/// the loop is a debug-build backstop that catches a later branch breaking the
+/// shape, not the thing that stops the loop, because it compiles out in release.
+/// The installed snapshot carries the cause that superseded it, so the caller gets
+/// a populated answer that says out loud it is behind (R6).
+///
+/// Times this request parked on somebody else's pass. A park spends no attempt,
+/// which is right when the pass being waited on will install — but a pass started
+/// by a freshness poll never spends a final attempt, so it discards every
+/// superseded result and frees the slot immediately. A client polling in a loop
+/// can therefore keep winning the claim race while this request parks, and the
+/// attempt budget is never touched. So parks are counted too, and a request that
+/// has spent them stops waiting and claims the next pass itself, which puts it
+/// back on the bounded path above.
 fn ensure_workspace(
     host: &SessionHost,
     root: &Path,
     force: bool,
 ) -> Result<WorkspaceSnapshot, MethodError> {
     let mut attempts: u32 = 0;
+    let mut parks: u32 = 0;
     loop {
         let attempts_before = attempts;
         let mut parked = false;
+        let may_park = parks < MAX_WORKSPACE_PASS_ATTEMPTS;
         let prepared = host.with(|sessions| {
             let session = sessions.for_root(root);
             if !force
                 && let Some(workspace) = session.workspace()
-                && workspace.buffer_generation == session.buffer_generation()
+                && workspace.generations == session.generations()
             {
                 // The snapshot travels out of the critical section that checked it.
                 // Re-reading it afterwards was a second lock acquisition guarded by
                 // an `expect` on a condition the first one had already left behind.
                 return WorkspacePreparation::Ready(workspace);
             }
-            if let Some(running) = session.workspace_progress() {
+            if may_park && let Some(running) = session.workspace_progress() {
                 return WorkspacePreparation::Wait(running);
             }
+            // Out of parks: claim the slot from under the running pass rather than
+            // wait for a result this request has already watched not arrive. The
+            // displaced pass still finishes, still signals its own waiters, and
+            // installs or discards as it would have; what it no longer does is keep
+            // this request waiting on a slot a poller can re-win forever.
             let progress = session.begin_workspace_pass();
             WorkspacePreparation::Build(
                 session.root().to_path_buf(),
@@ -395,6 +433,7 @@ fn ensure_workspace(
                 // one.
                 running.wait_until_finished(WORKSPACE_WAIT_TIMEOUT);
                 parked = true;
+                parks += 1;
             }
             WorkspacePreparation::Build(root, overlay, generations, progress) => {
                 attempts += 1;
@@ -423,6 +462,10 @@ fn ensure_workspace(
         debug_assert!(
             attempts <= MAX_WORKSPACE_PASS_ATTEMPTS,
             "the retry ran {attempts} passes against a cap of {MAX_WORKSPACE_PASS_ATTEMPTS}"
+        );
+        debug_assert!(
+            parks <= MAX_WORKSPACE_PASS_ATTEMPTS,
+            "the retry parked {parks} times against a cap of {MAX_WORKSPACE_PASS_ATTEMPTS}"
         );
     }
 }
@@ -454,6 +497,14 @@ struct PassAttempt {
 /// so there is one signal point rather than one per caller, and `Ok(None)` means
 /// the pass completed but was superseded before it landed, so nothing was
 /// installed and the caller has an attempt left to spend.
+///
+/// Owning the slot is not the same as still holding it. Every exit here hands its
+/// own `progress` to the session so the retire is identity-checked: this pass may
+/// have been displaced while it ran, and clearing then would null the slot of the
+/// pass that displaced it, leaving a later caller to read "no pass running" and
+/// start a third scan of the same tree. `progress.finish()` needs no such check —
+/// it signals through this pass's own `Arc`, so it reaches this pass's waiters and
+/// nobody else's.
 fn run_claimed_pass(
     host: &SessionHost,
     root: &Path,
@@ -462,7 +513,7 @@ fn run_claimed_pass(
     progress: WorkspaceProgress,
     attempt: PassAttempt,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let outcome = match build_workspace(root, overlay, generations.buffers, &progress) {
+    let outcome = match build_workspace(root, overlay, generations, &progress) {
         Ok(mut workspace) => {
             progress.complete();
             host.with(|sessions| {
@@ -471,15 +522,16 @@ fn run_claimed_pass(
                     // Superseded with attempts still to spend: install nothing and
                     // let the caller's loop run another pass.
                     Some(_) if !attempt.is_final => {
-                        session.clear_workspace_progress();
+                        session.clear_workspace_progress(&progress);
                         return Ok(None);
                     }
                     // Superseded on the last attempt. This installs and answers
                     // rather than looping again or failing: an error and an empty
                     // answer both lose the graph the pass did build, and an empty
                     // answer additionally reads as all-clear. The label is what
-                    // makes it honest, and it clears the progress slot, so the next
-                    // request starts a pass of its own.
+                    // makes it honest. It frees the progress slot too — but only if
+                    // this pass still holds it, since a pass displaced while it ran
+                    // would otherwise free the slot of the pass that displaced it.
                     Some(cause) => {
                         workspace.superseded = Some(SupersededPass {
                             cause,
@@ -494,14 +546,14 @@ fn run_claimed_pass(
                 // replace the configuration another client resolved — silently,
                 // because the memoized diagnostics stay valid across the write and
                 // the next recompute is the first to use the wrong rules.
-                session.install_workspace(workspace.clone());
+                session.install_workspace(workspace.clone(), &progress);
                 Ok(Some(workspace))
             })
         }
         Err(error) => {
             host.with(|sessions| {
                 if let Some(session) = sessions.get_mut(root) {
-                    session.clear_workspace_progress();
+                    session.clear_workspace_progress(&progress);
                 }
             });
             Err(error)
@@ -602,7 +654,7 @@ enum WorkspacePreparation {
 fn build_workspace(
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
-    buffer_generation: u64,
+    generations: SessionGenerations,
     progress: &WorkspaceProgress,
 ) -> Result<WorkspaceSnapshot, MethodError> {
     let started = Instant::now();
@@ -628,7 +680,7 @@ fn build_workspace(
         symbols: Arc::new(symbols),
         files: Arc::new(tracked_files.into_iter().map(FileStamp::capture).collect()),
         config: Arc::new(config),
-        buffer_generation,
+        generations,
         pass_millis: started.elapsed().as_millis() as u64,
         graph_bytes,
         // Set by whoever installs it, which is the only place that can know
@@ -783,10 +835,9 @@ fn provenance(session: &crate::Session) -> Provenance {
 /// reading as all-clear while it describes source or rules the session has already
 /// moved past (R3, R6). The stamps cannot see that, and no amount of file metadata
 /// could: the state that moved was the daemon's own. So the carried cause wins
-/// outright, and
-/// the stamp count is not folded in beside it — a superseded answer that also
-/// named a file count would invite the reader to treat the file count as the
-/// whole story.
+/// outright, and the stamp count is not folded in beside it — a superseded answer
+/// that also named a file count would invite the reader to treat the file count as
+/// the whole story.
 fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
     Freshness {
         state: match workspace.superseded {
@@ -846,5 +897,179 @@ fn span(value: oxabl_ast::Span) -> ByteSpan {
     ByteSpan {
         start: value.start,
         end: value.end,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::Sessions;
+
+    /// A workspace with one file, enough to build a real snapshot against.
+    fn workspace_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("a workspace");
+        std::fs::write(root.path().join("only.p"), "MESSAGE \"only\".\n").expect("a source file");
+        root
+    }
+
+    /// A snapshot installed while superseded must not be served by every later
+    /// query (R3).
+    ///
+    /// The pass that lands on the final attempt is labelled, which the cap tests
+    /// pin — but it is also *stored*, and [`ensure_workspace`] decides on every
+    /// non-forcing query whether the stored one is still current. Judged by the
+    /// buffer counter alone that comparison matched forever after a schema change:
+    /// no buffer moved, so the snapshot kept looking current and the workspace was
+    /// never rebuilt under the schema that replaced it — the answer served
+    /// indefinitely under rules the session had already dropped.
+    ///
+    /// Built here rather than raced through a mutator thread on purpose. A thread
+    /// that keeps bumping the schema also keeps clearing the stored snapshot, so
+    /// the state this defect needs — a stale snapshot stored and then left alone —
+    /// is the one ordering such a test cannot pin.
+    #[test]
+    fn a_stored_snapshot_behind_the_schema_is_rebuilt_by_a_non_forcing_query() {
+        let root = workspace_root();
+        let root = root.path();
+        let host = SessionHost::new();
+
+        let generations = host.with(|sessions| sessions.for_root(root).generations());
+        let mut stale = build_workspace(
+            root,
+            HashMap::new(),
+            generations,
+            &WorkspaceProgress::default(),
+        )
+        .expect("a first pass");
+        stale.superseded = Some(SupersededPass {
+            cause: StalenessCause::SchemaChanged,
+            attempts: MAX_WORKSPACE_PASS_ATTEMPTS,
+        });
+        // The order a superseded install produces: the schema moved while the pass
+        // ran, and the pass landed after it with the generations it was claimed at.
+        host.with(|sessions| {
+            let session = sessions.for_root(root);
+            session.bump_schema();
+            session.install_workspace(stale, &WorkspaceProgress::default());
+        });
+
+        let answer = ensure_workspace(&host, root, false).expect("the query answers");
+        assert!(
+            answer.superseded.is_none(),
+            "the stored snapshot was served again under a schema the session had replaced"
+        );
+        assert_eq!(
+            answer.generations,
+            host.with(|sessions: &mut Sessions| sessions.for_root(root).generations()),
+            "the rebuilt snapshot is judged against the state the session holds now"
+        );
+    }
+
+    /// A displaced pass installs its graph but must not retire the slot that
+    /// replaced it (R4).
+    ///
+    /// A caller out of parks claims the slot from under a running pass on purpose,
+    /// and the displaced pass keeps going to completion. Installing is right — the
+    /// graph is real work. Freeing the slot is not: the replacement is still
+    /// scanning, and the next caller would read "no pass running" and start a
+    /// second recursive scan concurrent with it, which is the race the slot exists
+    /// to prevent.
+    #[test]
+    fn a_displaced_pass_installs_without_retiring_the_replacement_slot() {
+        let root = workspace_root();
+        let root = root.path();
+        let host = SessionHost::new();
+
+        let (displaced, replacement, generations) = host.with(|sessions| {
+            let session = sessions.for_root(root);
+            let displaced = session.begin_workspace_pass();
+            // The caller that ran out of parks claims the slot from under it.
+            let replacement = session.begin_workspace_pass();
+            (displaced, replacement, session.generations())
+        });
+
+        let workspace = build_workspace(root, HashMap::new(), generations, &displaced)
+            .expect("the displaced pass still completes");
+        host.with(|sessions| {
+            sessions
+                .for_root(root)
+                .install_workspace(workspace, &displaced);
+        });
+
+        host.with(|sessions| {
+            let session = sessions.for_root(root);
+            assert!(
+                session
+                    .workspace_progress()
+                    .is_some_and(|held| held.is_same_pass(&replacement)),
+                "the displaced pass retired the slot the replacement holds"
+            );
+            assert!(
+                session.workspace().is_some(),
+                "the displaced pass threw away the graph it had already built"
+            );
+        });
+    }
+
+    /// A caller parked on somebody else's pass must return even when the progress
+    /// slot is re-claimed under it forever (R4).
+    ///
+    /// A park spends no attempt, which is right when the pass being waited on will
+    /// install. But a pass a freshness poll starts never spends a final attempt:
+    /// it discards a superseded result and frees the slot at once, so a client
+    /// polling in a loop keeps re-winning the claim race. The waiter's budget is
+    /// never touched, and the request is bounded in passes run while unbounded in
+    /// wall clock.
+    ///
+    /// The competitor here re-occupies the slot the moment it is free and signals
+    /// each occupancy finished, which is the poller's behaviour with the timing
+    /// taken out: every park wakes at once and finds the slot taken again. Before
+    /// parks were counted this loop had no exit, so the assertion is that the call
+    /// returns at all.
+    #[test]
+    fn a_parked_caller_stops_waiting_once_its_parks_are_spent() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = workspace_root();
+        let root = root.path().to_path_buf();
+        let host = SessionHost::new();
+
+        // Occupied before the call under test, so it is certain to park rather than
+        // win the slot outright on its first look.
+        host.with(|sessions| sessions.for_root(&root).claim_workspace_pass())
+            .expect("the slot is free to begin with")
+            .finish();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let competitor = {
+            let (host, root, stop) = (host.clone(), root.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    host.with(|sessions| {
+                        if let Some(progress) = sessions.for_root(&root).claim_workspace_pass() {
+                            progress.finish();
+                        }
+                    });
+                }
+            })
+        };
+
+        // Off this thread, so a request that never returns fails the test rather
+        // than hanging it.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let parked = {
+            let (host, root) = (host.clone(), root.clone());
+            std::thread::spawn(move || {
+                let _ = sender.send(ensure_workspace(&host, &root, false).map(|_| ()));
+            })
+        };
+
+        let answered = receiver.recv_timeout(std::time::Duration::from_secs(60));
+        stop.store(true, Ordering::Relaxed);
+        let _ = competitor.join();
+        answered
+            .expect("a caller parked behind a re-claimed slot never returned")
+            .expect("the pass it finally ran succeeded");
+        let _ = parked.join();
     }
 }
