@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_formatter"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 description = "Layout-only formatting engine for Progress ABL, built on the oxabl fidelity substrate"
@@ -8,9 +8,9 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_formatter"
 
 [dependencies]
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
-oxabl_common = { path = "../oxabl_common", version = "1.0.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.0" }
-oxabl_parser = { path = "../oxabl_parser", version = "1.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "1.0.1" }
 oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
 
 [dev-dependencies]

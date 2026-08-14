@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.4.0...oxabl_preprocessor-v0.5.0) (2026-08-12)
+
+
+### Features
+
+* answer who depends on this, and what must rebuild ([#164](https://github.com/oxabl-project/oxabl/issues/164)) ([9284e18](https://github.com/oxabl-project/oxabl/commit/9284e1887efb00788532209495108d750b1a97b8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.0.0 to 1.1.0
+    * oxabl_workspace bumped from 1.0.0 to 1.0.1
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.3.1...oxabl_preprocessor-v0.4.0) (2026-08-04)
 
 

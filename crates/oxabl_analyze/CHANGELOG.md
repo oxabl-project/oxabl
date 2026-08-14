@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v1.0.0...oxabl_analyze-v1.1.0) (2026-08-12)
+
+
+### Features
+
+* answer who depends on this, and what must rebuild ([#164](https://github.com/oxabl-project/oxabl/issues/164)) ([9284e18](https://github.com/oxabl-project/oxabl/commit/9284e1887efb00788532209495108d750b1a97b8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.0.0 to 1.1.0
+    * oxabl_lexer bumped from 1.0.0 to 1.0.1
+    * oxabl_lint bumped from 1.0.0 to 1.0.1
+    * oxabl_parser bumped from 1.0.0 to 1.0.1
+    * oxabl_preprocessor bumped from 0.4.0 to 0.5.0
+    * oxabl_schema bumped from 0.2.0 to 0.2.1
+    * oxabl_semantic bumped from 1.0.0 to 1.0.1
+    * oxabl_workspace bumped from 1.0.0 to 1.0.1
+  * dev-dependencies
+    * oxabl_index bumped from 0.1.1 to 0.1.2
+    * oxabl_schema bumped from 0.2.0 to 0.2.1
+
 ## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v0.1.0...oxabl_analyze-v1.0.0) (2026-08-04)
 
 
