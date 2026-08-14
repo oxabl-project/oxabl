@@ -363,6 +363,35 @@ fn a_query_before_handshake_is_refused() {
     assert_eq!(error.code, -32600);
 }
 
+// A method that takes no arguments must accept every spelling of "no arguments"
+// (R20). A JSON-RPC caller may omit `params` altogether, and the transport hands
+// an omitted member over as null — which a struct deserializer refuses unless the
+// handler substitutes for it.
+#[test]
+fn a_no_argument_method_accepts_omitted_null_or_empty_params() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+
+    // The omitted case, taken from a real request rather than asserted about: a
+    // message with no `params` member is what the transport reads as null.
+    let request: serde_json::Value =
+        serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"oxabl/freshness"}"#).unwrap();
+    let omitted = request
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    for params in [omitted, serde_json::Value::Null, serde_json::json!({})] {
+        for name in [method::FRESHNESS, method::REINDEX] {
+            dispatch
+                .call(&host, &mut client, name, params.clone())
+                .unwrap_or_else(|error| panic!("{name} with params {params}: {error}"));
+        }
+    }
+}
+
 #[test]
 fn freshness_starts_the_first_workspace_pass() {
     let fixture = Fixture::new();

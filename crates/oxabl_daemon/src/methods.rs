@@ -30,6 +30,28 @@ pub fn register_methods(dispatch: &mut Dispatch) {
     dispatch.register(method::REINDEX, reindex);
 }
 
+/// Read the params of a method that takes no arguments (R20).
+///
+/// JSON-RPC lets a caller omit `params` entirely, and the transport reads an
+/// omitted member as null. A struct deserializer rejects null, so a well-formed
+/// request would be answered with `invalid params` for saying nothing where there
+/// was nothing to say. Substituting an empty object first accepts all three
+/// spellings — omitted, null, and `{}`.
+///
+/// Done here rather than by making the request types unit structs:
+/// `deserialize_unit_struct` accepts only null and *rejects* `{}`, which is the
+/// shape every existing caller sends. That would move the defect rather than fix
+/// it.
+fn no_argument_params<T: serde::de::DeserializeOwned>(
+    params: serde_json::Value,
+) -> Result<T, MethodError> {
+    let params = match params {
+        serde_json::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
+        given => given,
+    };
+    serde_json::from_value(params).map_err(MethodError::invalid_params)
+}
+
 fn impact(
     host: &SessionHost,
     context: &mut ClientContext,
@@ -133,8 +155,7 @@ fn freshness(
     context: &mut ClientContext,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, MethodError> {
-    let _: FreshnessRequest =
-        serde_json::from_value(params).map_err(MethodError::invalid_params)?;
+    let _: FreshnessRequest = no_argument_params(params)?;
     let root = context.workspace_root()?;
     // Reading the state and claiming the pass are one step. Split in two, a second
     // call that arrives before the first spawned thread claims anything reads
@@ -233,7 +254,7 @@ fn reindex(
     context: &mut ClientContext,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, MethodError> {
-    let _: ReindexRequest = serde_json::from_value(params).map_err(MethodError::invalid_params)?;
+    let _: ReindexRequest = no_argument_params(params)?;
     let workspace = ensure_workspace(host, context.workspace_root()?, true)?;
     serde_json::to_value(ReindexResponse {
         freshness: workspace_freshness(&workspace),
