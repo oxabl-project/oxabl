@@ -725,11 +725,13 @@ impl Sessions {
 /// # Which roots this host will serve
 ///
 /// A host behind a socket serves exactly the root its daemon was bound to, recorded
-/// by [`bind_root`](SessionHost::bind_root) and enforced at the handshake (R26).
-/// Without that bound, any connected client could name any directory — a home
-/// directory, or the filesystem root — and drive a shared daemon into a full pass
-/// over an unrelated tree, which every other client of that daemon pays for in
-/// memory and latency.
+/// by [`bind_root`](SessionHost::bind_root) and enforced at **every** entrance onto
+/// that socket (R26): the `oxabl/handshake` method, and the LSP `initialize` an
+/// editor sends instead. Without that bound, any connected client could name any
+/// directory — a home directory, or the filesystem root — and drive a shared daemon
+/// into a full pass over an unrelated tree, which every other client of that daemon
+/// pays for in memory and latency. One entrance left unchecked is the whole rule
+/// unenforced, because a client picks which door it knocks on.
 ///
 /// An unbound host serves whatever root a client names. That is the in-process case
 /// — the language server and the tests — where the caller and the client are the
