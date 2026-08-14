@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_workspace"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 license = "MIT"
 description = "Workspace configuration, file system abstraction, and file discovery for the Oxabl ABL tooling suite"
@@ -9,7 +9,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_workspace"
 [dependencies]
 oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
-oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
+oxabl_style = { path = "../oxabl_style", version = "0.2.0" }
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
 toml = "0.8"
