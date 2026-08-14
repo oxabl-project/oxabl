@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_index"
-version = "0.1.2"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "Cross-file fact extraction and the batch workspace index for oxabl"
@@ -19,20 +19,20 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_index"
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.1" }
-oxabl_parser = { path = "../oxabl_parser", version = "1.0.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "1.0.2" }
 # For the empty `Schema` the declare pass is handed: a referenced file's facts
 # (classes, routines, `SHARED` definitions) do not depend on the database schema,
 # and every diagnostic the pass emits is discarded, so there is nothing for a
 # real schema to change. `AnalysisContext` takes a borrow, not an `Option`.
-oxabl_schema = { path = "../oxabl_schema", version = "0.2.1" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.1" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.1" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.2" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "1.0.2" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.2" }
 rustc-hash = "2"
 
 [dev-dependencies]
 # Tests only: the edge-set tests resolve schema table edges against a real
 # `Schema`, which needs the canonical fixture. The normal dependency above is the
 # empty schema the declare pass is handed and must stay feature-free.
-oxabl_schema = { path = "../oxabl_schema", version = "0.2.1", features = [
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.2", features = [
     "test-support",
 ] }

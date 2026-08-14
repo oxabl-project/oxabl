@@ -1,13 +1,13 @@
 [package]
 name = "oxabl_lsp"
-version = "0.1.2"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "stdio LSP server surfacing oxabl parse/lint/preprocessor diagnostics live in an editor"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lsp"
 
 [dependencies]
-oxabl_analyze = { path = "../oxabl_analyze", version = "1.1.0" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.1.1" }
 oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
 # The server reaches the lexer, parser, preprocessor, formatter, and schema
 # loader *through* `oxabl_pipeline` and `oxabl_analyze` — it names none of them
@@ -16,11 +16,11 @@ oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
 #
 # The session core: the incremental substrate and supersession disciplines. This
 # crate keeps the LSP framing and rendering; it owns no second copy of either.
-oxabl_daemon = { path = "../oxabl_daemon", version = "0.1.1" }
-oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.1.0" }
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.1.0" }
-oxabl_style = { path = "../oxabl_style", version = "0.1.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.1" }
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.2.0" }
+oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.2.0" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.1.1" }
+oxabl_style = { path = "../oxabl_style", version = "0.2.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.2" }
 anyhow = "1"
 crossbeam-channel = "0.5"
 lsp-server = "0.7"
@@ -30,17 +30,17 @@ serde_json = "1"
 
 [dev-dependencies]
 # Some parity fixtures drive the session core directly.
-oxabl_daemon = { path = "../oxabl_daemon", version = "0.1.1" }
-oxabl_analyze = { path = "../oxabl_analyze", version = "1.1.0" }
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.2.0" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.1.1" }
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.2.1", features = ["test-support"] }
+oxabl_schema = { path = "../oxabl_schema", version = "0.2.2", features = ["test-support"] }
 oxabl_common = { path = "../oxabl_common", version = "1.1.0", features = [
     "test-panics",
 ] }
-oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.1" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.2" }
 # The shared cross-client parity fixture table (R19). A dev-dependency feature
 # only; the server itself takes `oxabl_pipeline` without it.
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.1.0", features = [
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.1.1", features = [
     "test-support",
 ] }
 lsp-server = "0.7"

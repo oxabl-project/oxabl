@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_schema"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "Progress OpenEdge .df schema parser and model"
@@ -10,7 +10,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_schema"
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.1" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.1" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.2" }
 rustc-hash = "2"
 
 [features]

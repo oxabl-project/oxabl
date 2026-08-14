@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.5.0...oxabl_preprocessor-v0.5.1) (2026-08-14)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 1.0.1 to 1.0.2
+
 ## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.4.0...oxabl_preprocessor-v0.5.0) (2026-08-12)
 
 

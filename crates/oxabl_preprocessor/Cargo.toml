@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_preprocessor"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 license = "MIT"
 description = "Preprocessor for ABL source code: include expansion, &IF evaluation, and preprocessor variable tracking"
@@ -9,7 +9,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_preprocessor"
 [dependencies]
 oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.1" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.2" }
 
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
