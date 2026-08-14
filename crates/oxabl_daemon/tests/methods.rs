@@ -275,6 +275,70 @@ fn an_editor_overlay_changes_edges_and_stamps_the_working_tree() {
     );
 }
 
+/// The overlay is still applied when the client reached the workspace through a
+/// symlink (R2).
+///
+/// The failure this pins is silent and worse than a wrong path: the pass keys the
+/// unsaved text by the client's spelling while discovery yields the canonical one,
+/// so no key matches, every file is read from disk, and the answer still stamps
+/// `WorkingTree`. Here the disk copy of `overlay.p` includes nothing, so the edge
+/// below exists only if the editor's unsaved text was the text that was read.
+#[cfg(unix)]
+#[test]
+fn an_editor_overlay_survives_a_symlinked_workspace_root() {
+    let fixture = Fixture::new();
+    let elsewhere = tempfile::tempdir().expect("a directory to hold the link");
+    let link = elsewhere.path().join("workspace-link");
+    std::os::unix::fs::symlink(fixture.root(), &link).expect("a symlink to the root");
+
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let _editor = handshake(&dispatch, &host, &link, ClientKind::Editor);
+    let mut desktop = handshake(&dispatch, &host, &link, ClientKind::Desktop);
+    assert_eq!(
+        host.with(|sessions| sessions.len()),
+        1,
+        "both clients name one root"
+    );
+
+    // The session is keyed by the canonical root; the buffer path is spelled the
+    // way the client that opened it spells its own workspace.
+    let canonical = fs::canonicalize(fixture.root()).expect("the root resolves");
+    host.with(|sessions| {
+        sessions.for_root(&canonical).set_buffer(
+            "overlay.p",
+            "{base.i}\nMESSAGE fromBase.\n".to_string(),
+            Some(link.join("overlay.p")),
+        );
+    });
+
+    reindex(&dispatch, &host, &mut desktop);
+    let answer = impact(
+        &dispatch,
+        &host,
+        &mut desktop,
+        Subject::File {
+            path: canonical.join("base.i").to_string_lossy().into_owned(),
+        },
+    );
+    assert!(
+        answer.groups.iter().any(|group| {
+            group
+                .files
+                .iter()
+                .any(|row| row.path.ends_with("overlay.p"))
+        }),
+        "the unsaved include edge is missing, so the pass read the disk copy"
+    );
+    assert_eq!(
+        answer.provenance,
+        Provenance::WorkingTree {
+            editor_clients: 1,
+            unsaved_buffers: 1,
+        }
+    );
+}
+
 #[test]
 fn no_editor_means_disk_and_every_answer_names_the_schema_revision() {
     let fixture = Fixture::new();

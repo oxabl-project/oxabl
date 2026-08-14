@@ -59,7 +59,8 @@ pub use methods::register_methods;
 pub use registry::{Discovery, discover, register, socket_path_for, unregister};
 pub use server::{serve, serve_stdio, serve_with_first};
 pub use session::{
-    Analysis, CompletedWork, Disposition, Session, SessionHost, Sessions, analyze_guarded, dispose,
+    Analysis, CompletedWork, Disposition, Session, SessionHost, Sessions, analyze_guarded,
+    canonical_path, canonical_root, dispose,
 };
 
 /// This build's version, reported at the handshake so a human reading a contract

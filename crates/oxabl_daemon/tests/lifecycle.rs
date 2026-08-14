@@ -3,7 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use oxabl_daemon::Sessions;
+use oxabl_daemon::{ClientContext, Dispatch, MethodError, SessionHost, Sessions, default_dispatch};
+use oxabl_daemon_protocol::{ClientKind, HandshakeRequest, method};
 
 #[test]
 fn two_workspace_roots_get_two_sessions() {
@@ -47,6 +48,173 @@ fn two_spellings_of_one_root_are_one_session() {
 
     assert_eq!(sessions.len(), 1, "got {:?}", sessions.roots());
     assert_eq!(sessions.get("/proj").expect("the session").clients(), 2);
+}
+
+/// A handshake for `root`, spelled exactly as a client would spell it.
+fn handshake(
+    dispatch: &Dispatch,
+    host: &SessionHost,
+    root: &str,
+) -> Result<serde_json::Value, MethodError> {
+    dispatch.call(
+        host,
+        &mut ClientContext::default(),
+        method::HANDSHAKE,
+        serde_json::to_value(HandshakeRequest::new(ClientKind::Desktop, root)).unwrap(),
+    )
+}
+
+/// One root reached through a symlink is one session with the root reached
+/// directly (R2).
+///
+/// Lexical normalisation cannot see this: the two spellings share no components,
+/// so the daemon would index one tree twice and hold it twice — the exact cost it
+/// exists to avoid.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_root_and_the_real_root_are_one_session() {
+    let real = tempfile::tempdir().expect("a workspace root");
+    let elsewhere = tempfile::tempdir().expect("a directory to hold the link");
+    let link = elsewhere.path().join("workspace-link");
+    std::os::unix::fs::symlink(real.path(), &link).expect("a symlink to the root");
+
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    handshake(&dispatch, &host, &real.path().to_string_lossy()).expect("the real root is accepted");
+    handshake(&dispatch, &host, &link.to_string_lossy()).expect("the symlinked root is accepted");
+
+    assert_eq!(
+        host.with(|sessions| sessions.len()),
+        1,
+        "a symlink to a root names that root, got {:?}",
+        host.with(|sessions| sessions
+            .roots()
+            .into_iter()
+            .map(Path::to_path_buf)
+            .collect::<Vec<_>>())
+    );
+}
+
+/// A trailing separator is a spelling, not a second workspace (R2).
+#[test]
+fn a_trailing_separator_names_the_same_session() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+
+    handshake(&dispatch, &host, &root.path().to_string_lossy()).expect("the root is accepted");
+    handshake(&dispatch, &host, &format!("{}/", root.path().display()))
+        .expect("the trailing separator is accepted");
+
+    assert_eq!(host.with(|sessions| sessions.len()), 1);
+}
+
+/// A relative root and its absolute equivalent are one session (R2).
+#[test]
+fn a_relative_root_and_its_absolute_equivalent_are_one_session() {
+    let parent = tempfile::tempdir().expect("a directory to work from");
+    let root = parent.path().join("workspace");
+    std::fs::create_dir(&root).expect("a workspace root");
+
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    handshake(&dispatch, &host, &root.to_string_lossy()).expect("the absolute root is accepted");
+    with_current_dir(parent.path(), || {
+        handshake(&dispatch, &host, "workspace").expect("the relative root is accepted")
+    });
+
+    assert_eq!(host.with(|sessions| sessions.len()), 1);
+}
+
+/// A root that is not on disk is refused, and the refusal names it (R2).
+///
+/// Keying on the raw spelling instead would give the client a session whose every
+/// later answer describes a tree that does not exist.
+#[test]
+fn a_root_that_does_not_exist_is_refused_and_names_the_path() {
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+
+    let error = handshake(&dispatch, &host, "/proj/absent")
+        .expect_err("a root that is not on disk is refused");
+
+    assert!(
+        error.message.contains("/proj/absent"),
+        "the refusal must name the path, got {}",
+        error.message
+    );
+    assert_eq!(
+        host.with(|sessions| sessions.len()),
+        0,
+        "a refused handshake creates no session"
+    );
+}
+
+/// A daemon bound to one root refuses a client that names another (R26).
+///
+/// The refusal names both roots, because the client can only fix this by knowing
+/// which daemon it reached.
+#[test]
+fn a_root_other_than_the_bound_one_is_refused_and_creates_no_session() {
+    let served = tempfile::tempdir().expect("the root this daemon serves");
+    let other = tempfile::tempdir().expect("an unrelated tree");
+
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    host.bind_root(served.path());
+
+    let error = handshake(&dispatch, &host, &other.path().to_string_lossy())
+        .expect_err("a foreign root is refused");
+
+    let served = std::fs::canonicalize(served.path()).expect("the served root resolves");
+    let other = std::fs::canonicalize(other.path()).expect("the other root resolves");
+    assert!(
+        error
+            .message
+            .contains(&served.to_string_lossy().to_string())
+            && error.message.contains(&other.to_string_lossy().to_string()),
+        "the refusal must name both roots, got {}",
+        error.message
+    );
+    assert_eq!(
+        host.with(|sessions| sessions.len()),
+        0,
+        "a refused handshake indexes nothing"
+    );
+}
+
+/// The bound root is a workspace, not a spelling: the same tree reached through a
+/// symlink is the daemon's own root and is accepted (R26).
+#[cfg(unix)]
+#[test]
+fn another_spelling_of_the_bound_root_is_accepted() {
+    let served = tempfile::tempdir().expect("the root this daemon serves");
+    let elsewhere = tempfile::tempdir().expect("a directory to hold the link");
+    let link = elsewhere.path().join("workspace-link");
+    std::os::unix::fs::symlink(served.path(), &link).expect("a symlink to the root");
+
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    host.bind_root(&link);
+
+    handshake(&dispatch, &host, &served.path().to_string_lossy())
+        .expect("the bound root under another spelling is accepted");
+    assert_eq!(host.with(|sessions| sessions.len()), 1);
+}
+
+/// Run `body` with the process working directory at `directory`.
+///
+/// The working directory is process-wide and these tests run on threads of one
+/// binary, so the lock is what keeps one test's directory from becoming another's.
+/// No other test here depends on it: every path they use is absolute.
+fn with_current_dir<T>(directory: &Path, body: impl FnOnce() -> T) -> T {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous = std::env::current_dir().expect("a working directory");
+    std::env::set_current_dir(directory).expect("the working directory moves");
+    let out = body();
+    std::env::set_current_dir(previous).expect("the working directory is restored");
+    out
 }
 
 #[test]

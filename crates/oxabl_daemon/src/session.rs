@@ -9,6 +9,26 @@
 //! between them rather than one each, which is the resource sharing the daemon
 //! exists for.
 //!
+//! # How one root becomes one session
+//!
+//! A root is resolved to one spelling by [`canonical_root`] at the handshake, and
+//! the map here is keyed by what the handshake produced. Two clients that name one
+//! tree differently — one through a symlink, one directly — therefore meet in one
+//! session, and the sharing above is a property rather than a hope.
+//!
+//! The resolution is at the handshake rather than in [`Sessions::for_root`] because
+//! only the handshake can refuse. The lookup returns a session, not a result, and it
+//! runs under the sessions lock on every request, so a `realpath` call there would
+//! have nowhere to report a root that is not on disk and would charge every lock
+//! acquisition for the syscall. The handshake resolves once and carries the answer
+//! into every later handler, so the lookup stays lexical and stays cheap.
+//!
+//! Unsaved buffer paths take the same resolution, for the same reason turned around:
+//! a workspace pass discovers files under the canonical root, so an overlay keyed by
+//! the client's spelling would match nothing. The pass would then read every file
+//! from disk while still reporting that it measured a working tree — an answer that
+//! is wrong and says it is trustworthy.
+//!
 //! # The four disciplines
 //!
 //! These are the load-bearing part of the session, not the routing around it. A
@@ -55,11 +75,48 @@ use crate::db::{
     compute_diagnostics,
 };
 
+/// The one spelling of a workspace root every session key and every discovered
+/// path uses.
+///
+/// Resolves symlinks, makes a relative path absolute against the working
+/// directory, and removes `.` and `..` — so a root reached through a link and the
+/// same root reached directly answer as one workspace. Fails when the path is not
+/// on disk, which is the failure the handshake turns into a refusal: keying on a
+/// root that does not exist would give a client a session whose every later answer
+/// describes a tree nobody has.
+pub fn canonical_root(root: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(root.as_ref())
+}
+
+/// The same resolution for a path that need not exist yet.
+///
+/// An editor holds unsaved text for files that were never written, so a strict
+/// resolution would drop exactly the buffers the overlay exists to carry. The
+/// directory is resolved instead and the file name kept, which is what makes a new
+/// file under a symlinked root key the same way its saved neighbours do. A path
+/// whose directory is missing too keeps its lexically normalised spelling — no
+/// worse than the key it had before, and still the key a lexical caller would use.
+pub fn canonical_path(path: &Path) -> PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+            match std::fs::canonicalize(parent) {
+                Ok(parent) => parent.join(name),
+                Err(_) => normalize_lexically(path),
+            }
+        }
+        _ => normalize_lexically(path),
+    }
+}
+
 /// One workspace root's analysis state: one salsa instance, its open buffers, and
 /// the two generations a completed computation is judged against.
 pub struct Session {
-    /// The root this session answers for, lexically normalised so two spellings of
-    /// one root are one session.
+    /// The root this session answers for. The handshake resolves it with
+    /// [`canonical_root`]; the lexical pass here only keeps a directly-constructed
+    /// session (a test, or an in-process client) keyed the way the map keys it.
     root: PathBuf,
     /// The salsa substrate. Writes happen here on the owning thread; each
     /// computation runs on a cloned snapshot.
@@ -343,13 +400,18 @@ impl Session {
     }
 
     /// Unsaved file buffers, keyed by their workspace path.
+    ///
+    /// Keyed by [`canonical_path`], which is the same resolution the root took at
+    /// the handshake. A pass discovers files under the canonical root, so a key in
+    /// the client's own spelling would match nothing and the pass would read the
+    /// saved copy of every open file while still reporting a working tree.
     pub(crate) fn buffer_overlay(&self) -> HashMap<PathBuf, Arc<str>> {
         self.buffers
             .values()
             .filter_map(|buffer| {
                 let path = buffer.path(&self.db).as_ref()?;
                 Some((
-                    normalize_lexically(path),
+                    canonical_path(path),
                     Arc::from(buffer.text(&self.db).as_str()),
                 ))
             })
@@ -484,6 +546,11 @@ impl Session {
 /// the first workspace folder today and its own comment says nothing in it can hold
 /// two, so multi-root is a question of how many sessions exist rather than how much
 /// each one holds.
+///
+/// The keys are lexical, and that is enough because the roots reaching them are
+/// already resolved: the handshake canonicalises before it names a root here. A
+/// caller that reaches this map with a raw client spelling gets one session per
+/// spelling, which is why [`canonical_root`] is the boundary rather than a habit.
 #[derive(Default)]
 pub struct Sessions {
     by_root: HashMap<PathBuf, Session>,
@@ -545,14 +612,34 @@ impl Sessions {
 ///
 /// A handler therefore receives this host rather than `&mut Sessions`, so the shape
 /// of the borrow is visible in the handler itself.
+///
+/// # Which roots this host will serve
+///
+/// A host behind a socket serves exactly the root its daemon was bound to, recorded
+/// by [`bind_root`](SessionHost::bind_root) and enforced at the handshake (R26).
+/// Without that bound, any connected client could name any directory — a home
+/// directory, or the filesystem root — and drive a shared daemon into a full pass
+/// over an unrelated tree, which every other client of that daemon pays for in
+/// memory and latency.
+///
+/// An unbound host serves whatever root a client names. That is the in-process case
+/// — the language server and the tests — where the caller and the client are the
+/// same program and there is no untrusted spelling to constrain.
 pub struct SessionHost {
     sessions: Arc<std::sync::Mutex<Sessions>>,
+    /// The one root this host serves, once a listener has bound one.
+    ///
+    /// A `OnceLock` rather than a constructor argument so the listener that knows
+    /// the root can bind a host it was handed, and so a second binding cannot widen
+    /// what a running daemon accepts.
+    bound_root: Arc<std::sync::OnceLock<PathBuf>>,
 }
 
 impl Clone for SessionHost {
     fn clone(&self) -> Self {
         SessionHost {
             sessions: Arc::clone(&self.sessions),
+            bound_root: Arc::clone(&self.bound_root),
         }
     }
 }
@@ -567,7 +654,23 @@ impl SessionHost {
     pub fn new() -> Self {
         SessionHost {
             sessions: Arc::new(std::sync::Mutex::new(Sessions::new())),
+            bound_root: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Record the one workspace root this host serves (R26).
+    ///
+    /// Resolved here rather than by the caller, so the bound root and the root a
+    /// handshake resolves are produced by one function and cannot drift apart. The
+    /// first binding wins: a host already bound keeps the root it was started for.
+    pub fn bind_root(&self, root: impl AsRef<Path>) {
+        let _ = self.bound_root.set(canonical_path(root.as_ref()));
+    }
+
+    /// The root this host is bound to, or `None` when it serves any root a client
+    /// names.
+    pub fn bound_root(&self) -> Option<&Path> {
+        self.bound_root.get().map(PathBuf::as_path)
     }
 
     /// Run `body` with the sessions locked.
