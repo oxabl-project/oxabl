@@ -25,6 +25,15 @@
 //! invites `unwrap_or_default`, and a plausible fabricated zero is a worse failure
 //! than an honest gap. Under-reporting impact is the failure mode this product
 //! cannot survive.
+//!
+//! A whole answer can be unsourceable for the same reason, so `oxabl/impact` and
+//! `oxabl/freshness` return [`Sourced<ImpactResponse>`](Sourced) and
+//! [`Sourced<FreshnessResponse>`](Sourced) rather than the bare response. A
+//! workspace with no include configuration can populate no dependency graph, and
+//! the empty answer it would otherwise give is indistinguishable from the true
+//! answer for a file nothing references (R22, KTD13). The same type carries the
+//! refusal that carries a missing field, so a client has one thing to render, and
+//! the reason names the remedy.
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Bump on any shape change to a type in this crate. There is no negotiation and
 /// no compatibility window: both products are pre-1.0 and are built together, so a
 /// mismatch means one side is stale and should be told so rather than accommodated.
-pub const CONTRACT_VERSION: u32 = 3;
+pub const CONTRACT_VERSION: u32 = 4;
 
 /// The `oxabl/*` method names, as they travel.
 pub mod method {
@@ -227,6 +236,28 @@ pub struct SchemaIdentity {
     pub loaded: bool,
 }
 
+/// Why a completed workspace pass never landed as current (R6).
+///
+/// A variant rather than a message because the client has to be able to tell the
+/// causes apart without reading prose, and they do not share a remedy: a moving
+/// buffer settles when the user stops typing, while changed rules stay changed
+/// until the workspace is indexed under them. Every cause here describes state
+/// the daemon itself changed while the pass ran, which is why none of them can be
+/// inferred from a file on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StalenessCause {
+    /// Unsaved buffers changed while the pass ran, so the answer describes source
+    /// the editor has already moved past.
+    BuffersMoved,
+    /// The schema revision was bumped while the pass ran, so the answer resolves
+    /// table references against a schema the session has already replaced (R3).
+    SchemaChanged,
+    /// A configuration was installed while the pass ran, so the answer was built
+    /// under include paths or severities the session no longer holds (R3).
+    ConfigurationChanged,
+}
+
 /// How current the index is (R20).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -238,6 +269,20 @@ pub enum IndexState {
     /// Files changed after the last pass. An answer computed now is stale and must
     /// be presented as such.
     Stale { changed_files: u32 },
+    /// The daemon ran its whole attempt budget and every pass was superseded before
+    /// it landed, so the answer comes from the last pass that completed (R4, R6).
+    ///
+    /// Separate from `Stale` because the two have different remedies and different
+    /// evidence. `Stale` counts files that moved on disk and is answered by
+    /// `oxabl/reindex`; this one counts attempts, carries no file count because the
+    /// disk never moved, and is answered by asking again once the buffers settle.
+    /// It must never be collapsed into `Ready`: the answer is populated, so an
+    /// unflagged one would read as all-clear.
+    Superseded {
+        cause: StalenessCause,
+        /// Passes the daemon ran before it answered with the one it had.
+        attempts: u32,
+    },
 }
 
 /// Index freshness, and the pass's own numbers.
@@ -305,6 +350,14 @@ impl HandshakeRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandshakeResponse {
     pub contract_version: u32,
+    /// The root the daemon resolved, which need not be the spelling the client
+    /// sent.
+    ///
+    /// The daemon keys one session per resolved root, so a client that reached the
+    /// tree through a symlink or a relative path is answered with the resolved
+    /// form. A client that compares this against what it sent will see them differ
+    /// and must not read that as a different workspace: it is the same tree, named
+    /// the way every later answer from this daemon names it.
     pub workspace_root: String,
     /// The daemon's own version string, for a human reading a mismatch report.
     pub daemon_version: String,
@@ -379,6 +432,12 @@ pub struct UnresolvedReference {
     pub span: Option<ByteSpan>,
 }
 
+/// An impact answer.
+///
+/// Travels as [`Sourced<ImpactResponse>`](Sourced): the daemon refuses the
+/// question outright when no include configuration resolves, because the empty
+/// answer it could otherwise give is the same shape as the true answer for a file
+/// nothing references (R22).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpactResponse {
     pub subject: Subject,
@@ -464,9 +523,22 @@ pub struct SymbolSearchResponse {
 // oxabl/freshness and oxabl/reindex
 // ---------------------------------------------------------------------------
 
+/// Freshness takes no arguments.
+///
+/// A braced struct rather than a unit struct, so `{}` and an omitted or null
+/// `params` all deserialize. `deserialize_unit_struct` forwards to
+/// `deserialize_unit`, which accepts only `null` and *rejects* `{}` — the shape
+/// every caller already sends. The handler substitutes an empty object for a null
+/// before deserializing, which is where the tolerance lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FreshnessRequest {}
 
+/// How current the dependency graph is.
+///
+/// Travels as [`Sourced<FreshnessResponse>`](Sourced) for the reason
+/// [`ImpactResponse`] does. A workspace that resolves no include path has no
+/// graph to be fresh about, and every [`IndexState`] here would misreport it —
+/// `Ready` most of all (R6, R22).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FreshnessResponse {
     pub freshness: Freshness,
@@ -475,6 +547,10 @@ pub struct FreshnessResponse {
 }
 
 /// Reindex is an explicit act, never a filesystem watcher (KTD7).
+///
+/// Takes no arguments, and is a braced struct for the reason
+/// [`FreshnessRequest`] is: a unit struct would accept `null` and reject `{}`,
+/// which inverts the tolerance instead of adding it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReindexRequest {}
 
@@ -596,7 +672,18 @@ fn registration_stem(dir: &Path, workspace_root: &Path) -> String {
     // exactly the branch a human reads.
     let suffix = format!("~{:016x}", fnv1a64(flattened.as_bytes()));
     let head = budget.saturating_sub(suffix.len());
-    let mut stem: String = flattened.chars().take(head).collect();
+    // The budget is a byte budget, so the head is taken in bytes and stopped at the
+    // last character boundary that fits. Taking `head` *characters* instead spends
+    // up to four bytes per character kept, which overflows `sun_path` on any root
+    // written in a non-ASCII script — and `String` cannot be cut mid-character, so
+    // there is no byte-slice shortcut here.
+    let mut stem = String::with_capacity(budget);
+    for character in flattened.chars() {
+        if stem.len() + character.len_utf8() > head {
+            break;
+        }
+        stem.push(character);
+    }
     stem.push_str(&suffix);
     stem
 }
@@ -616,26 +703,56 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// The shortest name [`registration_stem`] can produce, plus the socket suffix:
+/// the `~` marker, sixteen hex digits, and `.sock`. A directory that leaves less
+/// room than this cannot be rescued by any workspace root.
+const SHORTEST_SOCKET_NAME: usize = 1 + 16 + ".sock".len();
+
+/// Which half of a too-long socket path is the one that overflowed (R21).
+///
+/// Stated rather than assumed, because the two have different remedies and only
+/// one of them is under the user's control at the point the error is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathOverflow {
+    /// The directory leaves too little room for even the shortest name the naming
+    /// rule can emit. No workspace root fits under it.
+    Directory { bytes: usize },
+    /// The directory has room to spare, so the name — and therefore the workspace
+    /// root it was derived from — is what does not fit.
+    WorkspaceName { bytes: usize },
+}
+
 /// A socket path that cannot fit in `sun_path`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathTooLong {
     pub path: PathBuf,
     pub length: usize,
     pub limit: usize,
+    /// Which component actually overflowed, so the message can name it.
+    pub overflow: PathOverflow,
 }
 
 impl std::fmt::Display for PathTooLong {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the daemon socket path is {} bytes and the limit is {}: {}. \
-             The registration directory alone consumes {} bytes — set XDG_CACHE_HOME \
-             to a shorter path.",
+            "the daemon socket path is {} bytes and the limit is {}: {}. ",
             self.length,
             self.limit,
             self.path.display(),
-            registration_dir().as_os_str().len(),
-        )
+        )?;
+        match &self.overflow {
+            PathOverflow::Directory { bytes } => write!(
+                f,
+                "Its directory alone consumes {bytes} bytes, so no registration name \
+                 fits under it — set XDG_CACHE_HOME to a shorter path."
+            ),
+            PathOverflow::WorkspaceName { bytes } => write!(
+                f,
+                "Its directory has room; the {bytes}-byte name derived from the \
+                 workspace root is what does not fit — serve a shorter workspace root."
+            ),
+        }
     }
 }
 
@@ -643,19 +760,32 @@ impl std::error::Error for PathTooLong {}
 
 /// Whether `path` fits in a Unix socket address.
 ///
-/// The naming rule budgets for this, so a failure here means the registration
-/// directory itself is too long — a deep `XDG_CACHE_HOME`, which no name can
-/// rescue. Checked at bind time so the report names the limit and the path, rather
-/// than surfacing as a bare `ENAMETOOLONG` from the kernel.
+/// Measured in bytes, which is what `sun_path` counts. Checked before a bind and
+/// before a registration is written, so the report names the limit, the path, and
+/// the component that overflowed — rather than surfacing as a bare `ENAMETOOLONG`
+/// from the kernel, or as a registration naming a socket no daemon can bind.
+///
+/// The naming rule budgets a *derived* path against this limit, so a derived path
+/// fails only when the directory itself is too deep. A caller may also hand over a
+/// socket path it built itself, and then the name is the plausible cause — which is
+/// why the failure classifies rather than assumes.
 pub fn check_socket_path_fits(path: &Path) -> Result<(), PathTooLong> {
     let length = path.as_os_str().len();
     if length <= MAX_SOCKET_PATH {
         return Ok(());
     }
+    let dir_bytes = path.parent().map_or(0, |dir| dir.as_os_str().len());
+    let name_bytes = path.file_name().map_or(0, |name| name.len());
+    let overflow = if dir_bytes + 1 + SHORTEST_SOCKET_NAME > MAX_SOCKET_PATH {
+        PathOverflow::Directory { bytes: dir_bytes }
+    } else {
+        PathOverflow::WorkspaceName { bytes: name_bytes }
+    };
     Err(PathTooLong {
         path: path.to_path_buf(),
         length,
         limit: MAX_SOCKET_PATH,
+        overflow,
     })
 }
 
@@ -822,6 +952,44 @@ mod tests {
     }
 
     // The contract version is compared by value, not by matching a string shape.
+    // A superseded answer must be legible as not-current from the wire alone
+    // (R6). A client that only knew `ready` and `stale` would have to guess, and
+    // the safe guess is the wrong one.
+    #[test]
+    fn a_superseded_state_names_its_cause_and_never_reads_as_ready() {
+        let superseded = IndexState::Superseded {
+            cause: StalenessCause::BuffersMoved,
+            attempts: 4,
+        };
+        assert_eq!(roundtrip(&superseded), superseded);
+        assert_ne!(superseded, IndexState::Ready);
+
+        let json = serde_json::to_value(&superseded).expect("serialises");
+        assert_eq!(json["state"], "superseded");
+        assert_eq!(json["cause"], "buffers_moved");
+        assert_eq!(json["attempts"], 4);
+
+        // Every cause is a distinct wire name, so a client can route on the one
+        // it received rather than on prose. The two rule changes do not collapse
+        // into the buffer case: neither settles on its own (R3).
+        for (cause, name) in [
+            (StalenessCause::SchemaChanged, "schema_changed"),
+            (
+                StalenessCause::ConfigurationChanged,
+                "configuration_changed",
+            ),
+        ] {
+            let state = IndexState::Superseded { cause, attempts: 4 };
+            assert_eq!(roundtrip(&state), state);
+            assert_ne!(state, IndexState::Ready);
+            assert_ne!(state, superseded);
+            assert_eq!(
+                serde_json::to_value(&state).expect("serialises")["cause"],
+                name
+            );
+        }
+    }
+
     #[test]
     fn the_contract_version_is_a_number_compared_by_value() {
         let older = HandshakeRequest {
@@ -937,6 +1105,30 @@ mod tests {
         assert!(check_socket_path_fits(&socket).is_ok());
     }
 
+    // A root whose components are multi-byte still yields a socket path that
+    // fits. The budget is a byte budget, so a name truncated by character count
+    // overflows it by as much as three bytes per character kept.
+    #[test]
+    fn a_deep_multibyte_root_yields_a_socket_path_that_fits() {
+        let dir = Path::new("/home/dev/.cache/oxabl/daemon");
+        let root = PathBuf::from(format!("/home/dev/{}", "проект/".repeat(40)));
+        let registration = registration_path_in(dir, &root);
+        let socket = registration.with_extension("sock");
+
+        assert!(
+            socket.as_os_str().len() <= MAX_SOCKET_PATH,
+            "socket path is {} bytes: {}",
+            socket.as_os_str().len(),
+            socket.display()
+        );
+        assert!(check_socket_path_fits(&socket).is_ok());
+        assert!(
+            registration.file_name().unwrap().len() <= MAX_FILE_NAME,
+            "registration name is {} bytes",
+            registration.file_name().unwrap().len()
+        );
+    }
+
     // Two deep roots sharing a long prefix must not collide. Truncation alone
     // would map them to one name, which is the whole reason the hash covers the
     // untruncated root rather than the truncated head.
@@ -963,7 +1155,8 @@ mod tests {
     }
 
     // A registration directory long enough to exhaust the budget is reported with
-    // the limit and the path, rather than as a bare kernel error at bind time.
+    // the limit and the path, rather than as a bare kernel error at bind time. The
+    // directory it measures is the failing path's own, not the ambient one.
     #[test]
     fn an_unusable_directory_is_reported_with_the_limit() {
         let dir = PathBuf::from(format!("/{}", "d".repeat(200)));
@@ -972,7 +1165,43 @@ mod tests {
         let error = check_socket_path_fits(&socket).expect_err("this cannot fit");
         assert_eq!(error.limit, MAX_SOCKET_PATH);
         assert!(error.length > MAX_SOCKET_PATH);
-        assert!(error.to_string().contains("limit is 107"));
+        assert_eq!(
+            error.overflow,
+            PathOverflow::Directory {
+                bytes: dir.as_os_str().len()
+            }
+        );
+        let rendered = error.to_string();
+        assert!(rendered.contains("limit is 107"), "got {rendered}");
+        assert!(
+            rendered.contains(&dir.as_os_str().len().to_string()),
+            "the failing path's own directory must be measured, got {rendered}"
+        );
+    }
+
+    // A name too long for a directory that is itself fine blames the name, and so
+    // the workspace root it was derived from — not the directory, which no shorter
+    // XDG_CACHE_HOME would rescue.
+    #[test]
+    fn a_root_that_cannot_fit_is_blamed_rather_than_the_directory() {
+        let dir = Path::new("/c/oxabl/daemon");
+        let socket = dir.join(format!("{}.sock", "r".repeat(200)));
+
+        let error = check_socket_path_fits(&socket).expect_err("this cannot fit");
+        assert_eq!(
+            error.overflow,
+            PathOverflow::WorkspaceName { bytes: 205 },
+            "a directory this short cannot be the cause"
+        );
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("workspace root"),
+            "the message must name the root, got {rendered}"
+        );
+        assert!(
+            !rendered.contains("XDG_CACHE_HOME"),
+            "a shorter cache directory is not the remedy here, got {rendered}"
+        );
     }
 
     // The directory follows XDG when it is set and falls back when it is not. The

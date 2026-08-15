@@ -184,11 +184,13 @@ pub fn serve(connection: &Connection) -> Result<bool> {
 pub fn serve_with(connection: &Connection, debounce_window: std::time::Duration) -> Result<bool> {
     let (encoding, workspace_root) = handshake(connection)?;
     let host = SessionHost::new();
+    let session_root = anchor_or_current_dir(workspace_root.clone());
     serve_initialized(
         connection,
         debounce_window,
         encoding,
         workspace_root,
+        session_root,
         host,
         false,
     )
@@ -196,6 +198,28 @@ pub fn serve_with(connection: &Connection, debounce_window: std::time::Duration)
 
 /// Serve an LSP socket after the daemon's protocol router consumed its initialize
 /// request. The supplied host is the daemon's shared per-workspace session map.
+///
+/// ## Why the bound root is checked here rather than only at `oxabl/handshake`
+///
+/// `initialize` is a second entrance onto the same socket, and it carries a
+/// client-chosen workspace root just as the handshake does. Checking only the
+/// handshake would leave the rule unenforced on the route editors actually take:
+/// a client could connect to a daemon bound to one project, name a home directory
+/// or the filesystem root, and drive a full recursive pass over that tree — which
+/// every other client of the shared daemon pays for in memory and latency, and
+/// which reads that tree's contents into the daemon's index (R26).
+///
+/// The declared root is resolved before it keys anything, so one tree is one
+/// session however the client spelled it (R2) — [`Sessions`] keys lexically and
+/// trusts its callers to have resolved first — and a root that is not on disk is
+/// refused rather than keyed on and answered about later.
+///
+/// ## Why an unbound host still serves whatever root arrives
+///
+/// An unbound host is the in-process server: `oxabl lsp` and the tests, where the
+/// client and the server are the same program and there is no untrusted spelling
+/// to constrain. Refusing there would break ordinary editor integration, which
+/// declares its own root by design.
 pub fn serve_with_first(
     connection: &Connection,
     debounce_window: std::time::Duration,
@@ -204,24 +228,93 @@ pub fn serve_with_first(
 ) -> Result<bool> {
     let init: InitializeParams =
         serde_json::from_value(first.params.clone()).context("deserializing InitializeParams")?;
-    let session_root = declared_workspace_root(&init)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let declared = declared_workspace_root(&init);
+    let requested = anchor_or_current_dir(declared.clone());
+
+    let mut workspace_root = declared;
+    let session_root = match host.bound_root() {
+        Some(bound) => {
+            let resolved = match oxabl_daemon::canonical_root(&requested) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return Err(refuse_initialize(
+                        connection,
+                        first.id,
+                        format!(
+                            "workspace root {} cannot be resolved: {error}",
+                            requested.display()
+                        ),
+                    ));
+                }
+            };
+            if resolved != bound {
+                return Err(refuse_initialize(
+                    connection,
+                    first.id,
+                    format!(
+                        "this daemon serves {}, not {}",
+                        bound.display(),
+                        resolved.display()
+                    ),
+                ));
+            }
+            // The anchor follows the key, so the configuration and the file watch
+            // describe the tree the session is actually keyed on.
+            if workspace_root.is_some() {
+                workspace_root = Some(resolved.clone());
+            }
+            resolved
+        }
+        None => requested,
+    };
+
     host.with(|sessions| sessions.for_root(&session_root).attach(true));
-    let (encoding, workspace_root) = match finish_handshake(connection, first.id, first.params) {
+    let (encoding, negotiated_root) = match finish_handshake(connection, first.id, first.params) {
         Ok(handshake) => handshake,
         Err(error) => {
             host.with(|sessions| sessions.for_root(&session_root).detach(true));
             return Err(error);
         }
     };
+    // A bound host has already resolved the anchor above; an unbound one keeps the
+    // spelling the client sent.
+    if host.bound_root().is_none() {
+        workspace_root = negotiated_root;
+    }
     serve_initialized(
         connection,
         debounce_window,
         encoding,
         workspace_root,
+        session_root,
         host,
         true,
     )
+}
+
+/// Answer an `initialize` this server will not serve, in the one way the LSP
+/// transport has: an error response to the request itself (R26).
+///
+/// The code is JSON-RPC `InvalidRequest`, the same code the daemon's handshake
+/// returns for the same refusal, and the message repeats its wording — a client
+/// that reaches the daemon by either door reads the same sentence. The `Err` this
+/// returns ends the connection: there is no session to serve on it.
+fn refuse_initialize(connection: &Connection, id: RequestId, detail: String) -> anyhow::Error {
+    let message = format!("oxabl: invalid request: {detail}");
+    if let Err(error) = connection.sender.send(Message::Response(Response::new_err(
+        id,
+        ErrorCode::InvalidRequest as i32,
+        message.clone(),
+    ))) {
+        return anyhow::Error::new(error).context(message);
+    }
+    anyhow::anyhow!(message)
+}
+
+/// The root a session keys on when the client declared one, else the working
+/// directory — the anchor the server has always fallen back to.
+fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
+    declared.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 fn serve_initialized(
@@ -229,10 +322,18 @@ fn serve_initialized(
     debounce_window: std::time::Duration,
     encoding: PositionEncodingKind,
     workspace_root: Option<PathBuf>,
+    session_root: PathBuf,
     host: SessionHost,
     already_attached: bool,
 ) -> Result<bool> {
-    let mut server = Server::new(connection, encoding, debounce_window, workspace_root, host);
+    let mut server = Server::new(
+        connection,
+        encoding,
+        debounce_window,
+        workspace_root,
+        session_root,
+        host,
+    );
     if !already_attached {
         server.host.with(|sessions| {
             sessions.for_root(&server.session_root).attach(true);
@@ -314,6 +415,11 @@ struct Server<'c> {
     /// The daemon's one session map. No analysis state lives in this client.
     host: SessionHost,
     /// The session this LSP connection shares with every other client.
+    ///
+    /// Resolved by the caller, not here: on a bound daemon socket
+    /// [`serve_with_first`] canonicalises the declared root before it keys
+    /// anything, because [`oxabl_daemon`]'s session map keys lexically and one
+    /// tree reached by two spellings must still be one session (R2).
     session_root: PathBuf,
     /// Whether the db configuration (include paths, schema) has been resolved
     /// from a workspace yet. Resolved lazily from the first opened document.
@@ -364,11 +470,9 @@ impl<'c> Server<'c> {
         encoding: PositionEncodingKind,
         debounce_window: std::time::Duration,
         workspace_root: Option<PathBuf>,
+        session_root: PathBuf,
         host: SessionHost,
     ) -> Self {
-        let session_root = workspace_root
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         Server {
             connection,
@@ -1162,6 +1266,7 @@ mod tests {
             PositionEncodingKind::UTF8,
             std::time::Duration::from_millis(10),
             None,
+            anchor_or_current_dir(None),
             SessionHost::new(),
         )
     }
