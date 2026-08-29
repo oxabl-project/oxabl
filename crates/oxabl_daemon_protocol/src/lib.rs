@@ -510,27 +510,65 @@ pub struct Registration {
 ///
 /// A new convention: neither product reads or writes a cache directory today.
 /// `$XDG_CACHE_HOME/oxabl/daemon`, falling back to `$HOME/.cache/oxabl/daemon`,
-/// and finally to a temp-directory path when neither variable is set — a headless
-/// or sandboxed process still has to be able to register.
+/// and finally to a temp-directory path when neither variable names a usable
+/// directory — a headless or sandboxed process still has to be able to register.
+///
+/// # Why a relative variable is ignored rather than resolved (R16)
+///
+/// A value that is not absolute is not a base directory, and the XDG base directory
+/// specification says such a value is invalid and must be ignored. Resolving one
+/// would make the registration, the lock and the socket relative to each *process's*
+/// current directory: a daemon started from one directory and a client from another
+/// would use two registries, so the lock could not stop two daemons from serving one
+/// workspace root, and the client would get `ENOENT` connecting to a socket path that
+/// means nothing where it stands. Ignoring the value falls through to the next
+/// candidate, which is a location both processes agree on.
 pub fn registration_dir() -> PathBuf {
-    if let Some(cache) = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
-        return Path::new(&cache).join("oxabl").join("daemon");
+    if let Some(cache) = base_dir("XDG_CACHE_HOME") {
+        return cache.join("oxabl").join("daemon");
     }
-    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
-        return Path::new(&home).join(".cache").join("oxabl").join("daemon");
+    if let Some(home) = base_dir("HOME") {
+        return home.join(".cache").join("oxabl").join("daemon");
     }
     std::env::temp_dir().join("oxabl").join("daemon")
+}
+
+/// The absolute directory `name` holds, or `None` when it holds nothing usable.
+///
+/// Split from [`registration_dir`] so the rule is stated once: every caller asking
+/// "did this variable name a base directory" gets the same answer, and so does
+/// [`temp_dir_fallback_in_use`], which would otherwise report the wrong branch for a
+/// variable this function rejects.
+fn base_dir(name: &str) -> Option<PathBuf> {
+    usable_base(std::env::var_os(name))
+}
+
+/// The rule itself, over a value rather than a variable, so it can be exercised
+/// without mutating the environment of a whole test binary.
+fn usable_base(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value.filter(|value| !value.is_empty())?);
+    path.is_absolute().then_some(path)
 }
 
 /// Whether [`registration_dir`] is resolving through the temp-directory fallback.
 ///
 /// That branch puts the registration under a world-writable parent, where another
-/// user can create the directory first and have it adopted. A caller that creates
-/// the directory has to check ownership there and nowhere else, and only this
-/// function knows which branch was taken.
+/// user can create the directory first and have it adopted.
+///
+/// This reports which branch was taken; it does not gate anything. It used to:
+/// ownership was verified only when this returned true, on the theory that the
+/// other branches were private by construction. They are not — an `XDG_CACHE_HOME`
+/// can point anywhere, including at a directory another user owns — so the daemon
+/// now verifies ownership and the sticky bit on every parent it walks, whichever
+/// branch produced it. Nothing should reintroduce a check conditioned on this
+/// answer.
+///
+/// What that walk checks for is ownership plus world-write without the sticky bit. A
+/// group-writable parent is accepted, deliberately: a private per-user group makes
+/// `drwxrwx---` an ordinary home directory, and `st_gid` cannot tell a private group
+/// from a shared one. See `oxabl_daemon::registry` for that trade-off in full.
 pub fn temp_dir_fallback_in_use() -> bool {
-    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
-    !set("XDG_CACHE_HOME") && !set("HOME")
+    base_dir("XDG_CACHE_HOME").is_none() && base_dir("HOME").is_none()
 }
 
 /// The longest socket path a Unix domain socket can carry.
@@ -988,5 +1026,32 @@ mod tests {
             "registrations must live under an oxabl/daemon directory, got {dir:?}"
         );
         assert!(dir.is_absolute(), "got {dir:?}");
+    }
+
+    // A relative value is not a base directory (R16). Exercised over the value
+    // rather than the variable: `set_var` here would race every other test in this
+    // binary that resolves the registration directory, and the composition above it
+    // is two lines with no branch of its own.
+    #[test]
+    fn a_relative_base_directory_is_ignored_rather_than_resolved() {
+        for relative in ["cache", ".cache", "sub/dir", "./cache", "../cache"] {
+            assert_eq!(
+                usable_base(Some(relative.into())),
+                None,
+                "{relative} is relative, so it must be ignored rather than resolved \
+                 against whatever directory a process happens to be in"
+            );
+        }
+        assert_eq!(
+            usable_base(Some("".into())),
+            None,
+            "an empty value names nothing"
+        );
+        assert_eq!(usable_base(None), None);
+        assert_eq!(
+            usable_base(Some("/home/dev/.cache".into())),
+            Some(PathBuf::from("/home/dev/.cache")),
+            "an absolute value is the one a base directory variable may hold"
+        );
     }
 }
