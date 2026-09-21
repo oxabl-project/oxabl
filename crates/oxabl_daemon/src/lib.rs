@@ -56,7 +56,9 @@ pub use handshake::{default_dispatch, register_handshake};
 #[cfg(unix)]
 pub use listener::{Listener, Stopper, connection_over};
 pub use methods::register_methods;
-pub use registry::{Discovery, discover, register, socket_path_for, unregister};
+pub use registry::{
+    DaemonState, Discovery, daemon_state, discover, register, socket_path_for, unregister,
+};
 pub use server::{serve, serve_stdio, serve_with_first};
 pub use session::{
     Analysis, CompletedWork, Disposition, Session, SessionHost, Sessions, analyze_guarded, dispose,

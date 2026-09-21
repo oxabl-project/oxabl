@@ -115,42 +115,71 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
     anyhow::bail!("the oxabl daemon currently requires Unix sockets")
 }
 
+/// Find the daemon serving `root`, starting one if discovery says there is none.
+///
+/// One loop, not a check followed by a loop, because discovery has three answers and
+/// only one of them may start a daemon:
+///
+/// * `Absent` — nothing is registered. Start a daemon, once, and keep polling.
+/// * `Undecided` — the registration could not be read, or the socket could not be
+///   probed. Neither starting a daemon nor connecting is defensible on that answer, so
+///   the loop waits. The reason is kept, because a client that runs out of attempts
+///   over a refused directory must say *that* and not "timed out".
+/// * `Live` / `VersionMismatch` — decided; return or refuse.
 #[cfg(unix)]
 fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registration> {
-    match oxabl_daemon::discover(root) {
-        oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
-        oxabl_daemon::Discovery::VersionMismatch(registration) => anyhow::bail!(
-            "the running oxabl daemon uses contract {}, but this client uses {}",
-            registration.contract_version,
-            oxabl_daemon_protocol::CONTRACT_VERSION,
-        ),
-        oxabl_daemon::Discovery::Absent => {}
-    }
+    // Every 20ms for two seconds. A cold start is far quicker; the budget is for a
+    // machine under load.
+    const ATTEMPTS: u32 = 100;
+    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 
-    let executable = std::env::current_exe().context("locating the oxabl executable")?;
-    Command::new(executable)
-        .arg("daemon")
-        .arg(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("starting the oxabl daemon")?;
-
-    for _ in 0..100 {
+    let mut started = false;
+    let mut refusal: Option<String> = None;
+    for attempt in 0..=ATTEMPTS {
         match oxabl_daemon::discover(root) {
             oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
             oxabl_daemon::Discovery::VersionMismatch(registration) => anyhow::bail!(
-                "the started oxabl daemon uses contract {}, but this client uses {}",
+                "the {} oxabl daemon uses contract {}, but this client uses {}",
+                if started { "started" } else { "running" },
                 registration.contract_version,
                 oxabl_daemon_protocol::CONTRACT_VERSION,
             ),
+            // Keep the latest reason rather than the first: a cause that has cleared
+            // should not be the one reported, and one that has not will be read again
+            // on the next pass.
+            oxabl_daemon::Discovery::Undecided(reason) => refusal = Some(reason),
             oxabl_daemon::Discovery::Absent => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                if !started {
+                    let executable =
+                        std::env::current_exe().context("locating the oxabl executable")?;
+                    Command::new(executable)
+                        .arg("daemon")
+                        .arg(root)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::inherit())
+                        .spawn()
+                        .context("starting the oxabl daemon")?;
+                    started = true;
+                }
             }
         }
+        // Nothing changes between the last poll and the give-up, so it is not waited
+        // for.
+        if attempt < ATTEMPTS {
+            std::thread::sleep(INTERVAL);
+        }
     }
-    anyhow::bail!("the oxabl daemon did not become ready within two seconds")
+
+    match refusal {
+        // The timeout is the symptom; the refusal is the cause, and a message that
+        // reports only the symptom sends its reader looking for a slow machine when the
+        // answer is a directory mode.
+        Some(reason) => {
+            anyhow::bail!("the oxabl daemon did not become ready within two seconds: {reason}")
+        }
+        None => anyhow::bail!("the oxabl daemon did not become ready within two seconds"),
+    }
 }
 
 #[cfg(unix)]
@@ -1441,5 +1470,63 @@ mod tests {
         });
 
         assert!(server.debouncer.next_deadline().is_none());
+    }
+
+    /// Discovery has an answer that means "I do not know", and this is what the client
+    /// owes it: keep polling, and when the attempts run out, report the cause.
+    ///
+    /// Two failures used to share this path. A refused registration directory read as
+    /// absent, so the client started a rival daemon that walked the same directory and
+    /// refused it identically; and whatever the reason, the message the user finally saw
+    /// named a two-second timeout — sending them to look at a slow machine when the
+    /// answer was a mode bit on a directory the error never mentioned.
+    ///
+    /// The wait is the real one, so the loop's give-up path is exercised as it ships.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_that_cannot_read_the_registration_gives_up_naming_the_cause() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `XDG_CACHE_HOME` is process-wide, so this serialises against itself; no other
+        // test in this binary reads it.
+        static ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENVIRONMENT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let cache = tempfile::tempdir().expect("a cache directory");
+        // A registration directory the daemon would never have created: every poll
+        // refuses it, so discovery is undecided on every pass and never absent.
+        let dir = cache.path().join("oxabl").join("daemon");
+        std::fs::create_dir_all(&dir).expect("a registration directory");
+        std::fs::set_permissions(&dir, PermissionsExt::from_mode(0o755)).expect("widen it");
+        let previous = std::env::var_os("XDG_CACHE_HOME");
+        // SAFETY: the lock above makes this the only thread mutating the environment.
+        unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
+
+        let outcome = find_or_start_daemon(Path::new("/proj/refused"));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+        }
+
+        let message = outcome
+            .expect_err("a client that never gets an answer must fail rather than connect")
+            .to_string();
+        assert!(
+            message.contains(&dir.display().to_string()),
+            "the give-up must name the cause it kept seeing, not only the timeout: \
+             {message}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir)
+                .expect("the refused directory")
+                .count(),
+            0,
+            "and an answer that proves nothing must not have started a daemon"
+        );
     }
 }

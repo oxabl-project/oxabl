@@ -28,6 +28,17 @@ lsp-server = "0.7"
 # Pinned exact patch: the write-on-main / read-on-snapshot / `Cancelled` threading
 # discipline is verified against this salsa release.
 salsa = "=0.28.1"
+# The directory setup in `registry` is the one security-sensitive syscall path in
+# this crate, and it deliberately does not use the hand-rolled `unsafe extern "C"`
+# block the rest of the module keeps (KTD7). `rustix` takes `AsFd` and returns
+# `OwnedFd`, so descriptor lifetimes and errno mapping are the library's problem
+# rather than ours, and it is the only candidate that exposes `openat2` with
+# whole-path symlink refusal. Already in the lockfile through `tempfile`, so this
+# is a manifest line rather than build time.
+# `net` for the liveness probe: it must be a *non-blocking* connect, so a daemon
+# whose accept queue is full reads as busy instead of stalling the client, and
+# `UnixStream::connect` has no such mode (KTD6).
+rustix = { version = "1", features = ["fs", "net", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

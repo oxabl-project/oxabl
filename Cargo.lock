@@ -1051,6 +1051,7 @@ dependencies = [
  "oxabl_schema",
  "oxabl_semantic",
  "oxabl_workspace",
+ "rustix",
  "salsa",
  "serde",
  "serde_json",

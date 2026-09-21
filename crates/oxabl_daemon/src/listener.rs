@@ -60,12 +60,13 @@ pub struct Listener {
 impl Listener {
     /// Bind the socket for `workspace_root` and register this process as its daemon.
     ///
-    /// A leftover socket file is removed first, but **only after discovery says no
-    /// live daemon holds it**: a socket file whose owner is alive belongs to that
+    /// A leftover socket file is removed first, but **only after the socket itself
+    /// says nobody is listening on it**: a socket whose owner is alive belongs to that
     /// daemon, and unlinking it would leave the running daemon unreachable while this
     /// one served a second index over the same workspace — exactly the duplication
-    /// the daemon exists to prevent. So a live registration is refused rather than
-    /// stolen.
+    /// the daemon exists to prevent. So a socket that answers is refused rather than
+    /// stolen, and the check is made *after* the lock is held, because the lock is
+    /// what stops a rival from binding between the probe and the bind.
     pub fn bind(workspace_root: impl AsRef<Path>) -> io::Result<Self> {
         let workspace_root = workspace_root.as_ref().to_path_buf();
 
@@ -78,25 +79,57 @@ impl Listener {
         //
         // Holding the lock for the listener's lifetime makes the rest of this
         // function safe: no rival can be between the unlink and the bind.
+        // A lock this call could not *open* is a different failure from a lock
+        // somebody holds, and `acquire_root_lock` keeps them apart: only the second
+        // is `Ok(None)`. So the refusal below is never printed over a transient lock
+        // failure — that one propagates with its own cause.
         let Some(lock) = registry::acquire_root_lock(&workspace_root)? else {
-            // The holder's registration still names it, so the refusal can say who
-            // — the same message this returned when discovery was the only gate.
-            // A holder that has taken the lock but not yet written its registration
-            // is mid-start, and there is no pid to report yet.
-            let holder = match registry::discover(&workspace_root) {
-                registry::Discovery::Live(existing) => format!(" (pid {})", existing.pid),
-                _ => String::new(),
-            };
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!(
-                    "a daemon{holder} already serves {}",
+            // The lock says somebody holds the root. It does not say they are serving
+            // yet, and the two are different sentences: a refusal that claims a daemon
+            // already serves the workspace sends its reader looking for a daemon that
+            // may still be binding. So the state is probed and reported as observed.
+            let refusal = match registry::daemon_state(&workspace_root) {
+                registry::DaemonState::Running(existing)
+                | registry::DaemonState::Saturated(existing)
+                | registry::DaemonState::Undecided(existing) => format!(
+                    "a daemon (pid {}) already serves {}",
+                    existing.pid,
                     workspace_root.display()
                 ),
-            ));
+                registry::DaemonState::Starting(existing) => format!(
+                    "a daemon (pid {}) is starting for {} and holds the start lock. \
+                     Wait for it rather than starting a second one.",
+                    existing.pid,
+                    workspace_root.display()
+                ),
+                // The registration is there and could not be read, which is a fault of
+                // its own and not evidence about the holder. Reported as it was found,
+                // because the cause the reader needs is the one the read path named.
+                registry::DaemonState::Unreadable(reason) => format!(
+                    "another process holds the start lock for {}, and its registration \
+                     could not be read: {reason}. Fix that cause and start again.",
+                    workspace_root.display()
+                ),
+                // The holder has the lock and has registered nothing readable yet, so
+                // there is no pid to name and claiming one would be a guess.
+                registry::DaemonState::Crashed(_) | registry::DaemonState::Absent => format!(
+                    "another process holds the start lock for {} and has not \
+                     registered a daemon yet. Wait for it, or remove {} if you are \
+                     sure nothing is starting.",
+                    workspace_root.display(),
+                    // Only a sentence is at stake here: `acquire_root_lock` resolved
+                    // this same path a moment ago to open the lock it just found held,
+                    // so the error arm is unreachable — and a refusal must not be
+                    // replaced by a second, unrelated failure over a message.
+                    registry::lock_path_for(&workspace_root)
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|error| error.to_string())
+                ),
+            };
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, refusal));
         };
 
-        let socket_path = registry::socket_path_for(&workspace_root);
+        let socket_path = registry::socket_path_for(&workspace_root)?;
         // The naming rule budgets for `sun_path`, so a failure here means the
         // registration directory itself is too long — which no name can rescue.
         // Reported with the limit and the path, rather than as a bare
@@ -107,26 +140,81 @@ impl Listener {
         // the socket is unreachable from the moment it exists, because nobody else
         // can traverse into the directory to reach it.
         registry::ensure_registration_dir()?;
-        // The previous owner is not alive, so its socket file is debris.
-        let _ = std::fs::remove_file(&socket_path);
-        let listener = UnixListener::bind(&socket_path)?;
+        // The lock is ours, and it is still not a licence to unlink: between a
+        // client's probe and its lock another process can take the lock, bind, start
+        // serving and release nothing — and a socket bound by anything that skipped
+        // the lock answers too. Unlinking one that answers would leave a live server
+        // unreachable, so the socket is probed once more and a live one is refused.
+        //
+        // Three answers, not two. A probe that could not be *made* used to be folded in
+        // with a probe that answered, so a low descriptor limit refused the start with
+        // "something is already listening on this path" for a path that may not exist —
+        // sending its reader to hunt for a daemon over an `EMFILE`. The generosity is
+        // kept (nothing is unlinked when the answer is unknown); only the sentence
+        // changes.
+        match registry::socket_owner(&socket_path) {
+            registry::SocketOwner::Answering => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!(
+                        "something is already listening on {}, although no daemon holds \
+                         the start lock for {}. Refusing to unlink a socket that \
+                         answers: stop whatever owns it first.",
+                        socket_path.display(),
+                        workspace_root.display()
+                    ),
+                ));
+            }
+            registry::SocketOwner::Unprobeable(errno) => {
+                let cause = io::Error::from(errno);
+                return Err(io::Error::new(
+                    cause.kind(),
+                    format!(
+                        "the socket {} could not be probed ({cause}), so the daemon for \
+                         {} will not start: it is leaving that path alone rather than \
+                         unlinking a socket that may still be serving. Clear the cause \
+                         — a descriptor limit is the usual one — and start again.",
+                        socket_path.display(),
+                        workspace_root.display()
+                    ),
+                ));
+            }
+            // Nothing answers it, so the previous owner is gone and its socket file is
+            // debris. Removed through the checked path, which refuses to unlink
+            // anything that is not a socket sitting in the verified registration
+            // directory.
+            registry::SocketOwner::Debris => registry::remove_stale_socket(&socket_path)?,
+        }
+        // The `Listener` is built the moment the socket file exists, before any step
+        // that can still fail — because `Drop for Listener` is what unlinks it. When
+        // the registration below was written first and the guard second, an early
+        // return from a failing `register` left a bound socket nothing owned: the next
+        // start found a socket that answers no connection, and the daemon refuses to
+        // unlink a socket rather than steal a live one, so the failure was sticky and
+        // the fix was a manual `rm`. Now the `?` on the last step drops the guard,
+        // which removes the socket, releases the lock and clears a stale registration.
+        let listener = Listener {
+            listener: UnixListener::bind(&socket_path)?,
+            socket_path,
+            workspace_root,
+            stopping: Arc::new(AtomicBool::new(false)),
+            _lock: lock,
+        };
         // Belt and braces. On Linux the connect permission is the socket's write
         // bit, and `bind` takes the ambient umask — so this is the control that
         // still holds if the directory's mode is ever loosened from outside.
         #[cfg(unix)]
         let _ = std::fs::set_permissions(
-            &socket_path,
+            listener.socket_path(),
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         );
-        registry::register(&workspace_root, &socket_path, std::process::id())?;
+        registry::register(
+            listener.workspace_root(),
+            listener.socket_path(),
+            std::process::id(),
+        )?;
 
-        Ok(Listener {
-            listener,
-            socket_path,
-            workspace_root,
-            stopping: Arc::new(AtomicBool::new(false)),
-            _lock: lock,
-        })
+        Ok(listener)
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -173,6 +261,7 @@ impl Listener {
         host: Arc<SessionHost>,
     ) -> io::Result<()> {
         let mut clients = Vec::new();
+        let mut reported_spawn_failure = false;
         for stream in self.listener.incoming() {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
@@ -183,15 +272,47 @@ impl Listener {
                 // already connected.
                 Err(_) => continue,
             };
+            // Every liveness probe is a real accepted connection that disconnects at
+            // once (see `registry::socket_owner`), and a client poll loop makes
+            // one every 20ms. Without this the finished handles accumulate for the
+            // daemon's whole life — thousands of them for an editor that polled while
+            // starting. The join below still waits for whatever is still serving.
+            clients.retain(|client: &thread::JoinHandle<()>| !client.is_finished());
             let serve = Arc::clone(&serve);
             let host = Arc::clone(&host);
-            clients.push(thread::spawn(move || {
+            // `thread::spawn` **panics** when the thread cannot be created, and that is
+            // reachable here rather than theoretical: every liveness probe is a real
+            // accepted connection, so a container `pids.max` is met by a client polling
+            // every 20ms. The panic unwound the accept loop, `Drop for Listener` cleared
+            // the socket, the registration and the lock, every client then discovered
+            // `Absent` and started a daemon, and the new daemon met the same probe
+            // traffic — a restart loop out of one thread that could not be made. One
+            // client we cannot serve is one client: the stream is dropped, which the
+            // peer sees as a disconnect, and the loop keeps serving everybody else.
+            let client = thread::Builder::new().spawn(move || {
                 let (connection, threads) = connection_over(stream);
                 serve(&connection, &host);
                 // Dropping the sender lets the writer thread finish.
                 drop(connection);
                 threads.shutdown();
-            }));
+            });
+            match client {
+                Ok(client) => clients.push(client),
+                Err(error) => {
+                    // Once per loop, not once per refused client: the condition lasts as
+                    // long as the pressure that caused it, and a line per rejected probe
+                    // would be the flood the daemon is already under.
+                    if !reported_spawn_failure {
+                        reported_spawn_failure = true;
+                        eprintln!(
+                            "oxabl daemon: refusing a client on {} because a thread \
+                             could not be started ({error}). Still serving the clients \
+                             already connected; raise the process or thread limit.",
+                            self.socket_path.display()
+                        );
+                    }
+                }
+            }
         }
         // Let every client finish in flight rather than cutting responses off.
         for client in clients {
@@ -204,6 +325,13 @@ impl Listener {
 impl Drop for Listener {
     /// Remove the socket and the registration, so a crashed-looking registration is
     /// not left behind by an orderly exit.
+    ///
+    /// This is also the cleanup for a start that fails *after* the bind: `bind`
+    /// constructs the guard as soon as the socket file exists, so a later failure
+    /// unwinds through here rather than leaving a socket nobody listens on. Removing a
+    /// registration on that path is safe because the lock this guard holds is what
+    /// admits one daemon per root — anything registered under it is debris from a
+    /// daemon that is already gone.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = registry::unregister(&self.workspace_root);
