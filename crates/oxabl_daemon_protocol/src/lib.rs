@@ -18,6 +18,12 @@
 //! other, and the refusal names both numbers so the mismatch is diagnosable from
 //! one message. Bump it whenever a type here changes shape.
 //!
+//! The current contract is 4. It is not compatible with 3: there is no
+//! negotiation step and no window in which the two interoperate, so a client and
+//! a daemon have to be built from the same contract and deployed together. A
+//! client that finds a daemon speaking another contract is refused at the
+//! handshake rather than allowed to proceed on a guess.
+//!
 //! # Unsourceable values
 //!
 //! Some slots have no source yet — a compile-time estimate needs a build daemon
