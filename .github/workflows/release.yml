@@ -47,6 +47,11 @@ jobs:
       - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
+      # The script waits out crates.io rate limits for up to 30 minutes, on top
+      # of however long verifying and uploading every crate takes. This is a
+      # backstop for a run that is stuck rather than waiting, and it has to be
+      # set per step: the runner ignores a job-level timeout.
       - run: ./scripts/publish-workspace.sh
+        timeout-minutes: 75
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
