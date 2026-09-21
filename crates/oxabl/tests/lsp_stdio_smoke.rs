@@ -12,7 +12,7 @@
 
 #![cfg(unix)]
 
-use oxabl_daemon_protocol::{Registration, registration_path};
+use oxabl_daemon_protocol::{Registration, canonical_root, registration_path_in};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -34,21 +34,21 @@ fn frame(body: &str) -> Vec<u8> {
 #[test]
 fn lsp_stdio_initialize_handshake_returns_capabilities() {
     let root = tempfile::tempdir().expect("a workspace root");
-    let cache = tempfile::tempdir().expect("a cache root");
-    let previous_cache = std::env::var_os("XDG_CACHE_HOME");
-    unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
-    let daemon_registration = registration_path(root.path());
-    unsafe {
-        match previous_cache {
-            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
-            None => std::env::remove_var("XDG_CACHE_HOME"),
-        }
-    }
+    let base = tempfile::tempdir().expect("a base directory");
+    // Composed rather than resolved: setting the variables around the call and putting
+    // them back needed a lock and two `unsafe` blocks to keep one process-wide variable
+    // from racing every other test in this binary.
+    let daemon_registration = registration_path_in(
+        &base.path().join("oxabl").join("daemon"),
+        &canonical_root(root.path()).expect("the workspace root exists"),
+    );
     // Exactly the argv the VS Code extension uses: a single `lsp` arg, nothing
     // else. No `--stdio`, no other flags.
     let mut child = Command::new(OXABL_BIN)
         .arg("lsp")
-        .env("XDG_CACHE_HOME", cache.path())
+        .env("XDG_RUNTIME_DIR", base.path())
+        .env("XDG_CACHE_HOME", base.path())
+        .env("HOME", base.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -582,69 +582,224 @@ pub struct Registration {
     pub workspace_root: String,
 }
 
-/// The directory registrations live in.
+/// The directory the daemon's registration, socket and lock live in.
 ///
-/// A new convention: neither product reads or writes a cache directory today.
-/// `$XDG_CACHE_HOME/oxabl/daemon`, falling back to `$HOME/.cache/oxabl/daemon`,
-/// and finally to a temp-directory path when neither variable names a usable
-/// directory — a headless or sandboxed process still has to be able to register.
+/// # Why the runtime directory, and not the cache directory (R9)
 ///
-/// # Why a relative variable is ignored rather than resolved (R16)
+/// `$XDG_RUNTIME_DIR` is the only location the XDG base directory specification
+/// makes promises about that match what a socket and a lock need. The
+/// specification requires it to be owned by the invoking user, to have mode
+/// `0700`, to live on a local filesystem, to support file locking, and to be
+/// removed when the user logs out. A cache directory promises none of those: it
+/// may be a network mount, where advisory locking is unreliable and a lock that
+/// cannot be trusted is worse than no lock, and it is expected to *persist*,
+/// which is wrong for a socket that must not outlive the session that bound it.
 ///
-/// A value that is not absolute is not a base directory, and the XDG base directory
-/// specification says such a value is invalid and must be ignored. Resolving one
-/// would make the registration, the lock and the socket relative to each *process's*
-/// current directory: a daemon started from one directory and a client from another
-/// would use two registries, so the lock could not stop two daemons from serving one
-/// workspace root, and the client would get `ENOENT` connecting to a socket path that
-/// means nothing where it stands. Ignoring the value falls through to the next
-/// candidate, which is a location both processes agree on.
-pub fn registration_dir() -> PathBuf {
-    if let Some(cache) = base_dir("XDG_CACHE_HOME") {
-        return cache.join("oxabl").join("daemon");
+/// The three remaining links are a fallback chain, not equals. Each is less
+/// private than the one above it, and the last is shared with every user on the
+/// machine. [`BaseDirSource::fallback_warning`] carries the warning the
+/// specification requires on each of them.
+///
+/// The fallback does not hand back the privacy the runtime directory gives,
+/// because privacy here is not taken on trust from the location. `oxabl_daemon`'s
+/// registry creates the leaf at `0700` below a descriptor it verified, refuses a
+/// directory whose owner or mode is not ours, and refuses a registration naming a
+/// socket outside that verified directory — on the read path as well as the write
+/// path, whichever link produced the base. Moving to the runtime directory removes
+/// the shared parent; it does not remove the checks that make a shared parent
+/// survivable.
+///
+/// # Why a bad value is refused rather than skipped (R16, R27)
+///
+/// A base-directory variable that is set to something unusable is a *detected
+/// anomaly*, and falling through to the next link would answer it by silently
+/// using a weaker location — which inverts the point of checking. So the chain is
+/// entered only when a variable is unset or empty. A variable that is set and does
+/// not name an absolute path is refused outright, naming the variable and the
+/// value.
+///
+/// The value has to be absolute because it is a base directory for two processes,
+/// not one. A relative value resolves against each *process's* current directory,
+/// so a daemon started from one directory and a client started from another would
+/// use two registries: the lock could not stop two daemons serving one workspace
+/// root, and the client would get `ENOENT` connecting to a socket path that means
+/// nothing where it stands. The specification says such a value is invalid; this
+/// crate says so out loud rather than quietly moving on.
+pub fn registration_dir() -> Result<ResolvedRegistrationDir, BaseDirRefused> {
+    registration_dir_from(&BaseDirEnv::from_env())
+}
+
+/// Which link of the base-directory chain produced a registration directory.
+///
+/// Reported rather than inferred. A caller that needs to know whether it is on the
+/// guaranteed location — to warn, or to say so in a diagnostic — must not have to
+/// re-derive the chain to find out, because a second spelling of the chain is how
+/// the two drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseDirSource {
+    /// `$XDG_RUNTIME_DIR`: private, local, lock-capable, and session-scoped by
+    /// specification. The only link with guarantees.
+    RuntimeDir,
+    /// `$XDG_CACHE_HOME`.
+    CacheHome,
+    /// `$HOME/.cache`.
+    Home,
+    /// The system temp directory, shared with every user on the machine.
+    TempDir,
+}
+
+impl BaseDirSource {
+    /// The environment variable this link reads, or `None` for the temp directory,
+    /// which is resolved rather than named.
+    pub fn variable(self) -> Option<&'static str> {
+        match self {
+            Self::RuntimeDir => Some("XDG_RUNTIME_DIR"),
+            Self::CacheHome => Some("XDG_CACHE_HOME"),
+            Self::Home => Some("HOME"),
+            Self::TempDir => None,
+        }
     }
-    if let Some(home) = base_dir("HOME") {
-        return home.join(".cache").join("oxabl").join("daemon");
+
+    /// Whether this link is a fallback rather than the guaranteed location.
+    pub fn is_fallback(self) -> bool {
+        self != Self::RuntimeDir
     }
-    std::env::temp_dir().join("oxabl").join("daemon")
+
+    /// The warning the XDG specification requires when the runtime directory is
+    /// unavailable, or `None` when it was used.
+    ///
+    /// Returned as text rather than printed: this crate depends on `serde` and
+    /// nothing else, so it has no logger, and the layer that does have one gets to
+    /// decide how often a polling client repeats itself. `oxabl_daemon`'s registry
+    /// latches it to once per process.
+    pub fn fallback_warning(self) -> Option<&'static str> {
+        match self {
+            Self::RuntimeDir => None,
+            Self::CacheHome => Some(
+                "XDG_RUNTIME_DIR is not set, so the daemon socket and lock are under \
+                 XDG_CACHE_HOME instead. That location is not guaranteed to be local, \
+                 private, or lock-capable, and it is not cleared at logout.",
+            ),
+            Self::Home => Some(
+                "XDG_RUNTIME_DIR is not set, so the daemon socket and lock are under \
+                 $HOME/.cache instead. That location is not guaranteed to be local, \
+                 private, or lock-capable, and it is not cleared at logout.",
+            ),
+            Self::TempDir => Some(
+                "neither XDG_RUNTIME_DIR nor a home directory is available, so the \
+                 daemon socket and lock are under the shared temp directory. Its \
+                 parent is writable by every user on this machine; the daemon still \
+                 refuses any registration directory it does not own at mode 0700, so \
+                 a planted one is refused rather than used.",
+            ),
+        }
+    }
 }
 
-/// The absolute directory `name` holds, or `None` when it holds nothing usable.
-///
-/// Split from [`registration_dir`] so the rule is stated once: every caller asking
-/// "did this variable name a base directory" gets the same answer, and so does
-/// [`temp_dir_fallback_in_use`], which would otherwise report the wrong branch for a
-/// variable this function rejects.
-fn base_dir(name: &str) -> Option<PathBuf> {
-    usable_base(std::env::var_os(name))
+/// A registration directory, with the link of the chain that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRegistrationDir {
+    pub path: PathBuf,
+    pub source: BaseDirSource,
 }
 
-/// The rule itself, over a value rather than a variable, so it can be exercised
-/// without mutating the environment of a whole test binary.
-fn usable_base(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let path = PathBuf::from(value.filter(|value| !value.is_empty())?);
-    path.is_absolute().then_some(path)
+/// A base-directory variable that is set to something that is not a base directory.
+///
+/// Carries the variable and the value because the remedy is to change one of them,
+/// and a message that names neither leaves the reader guessing which of three
+/// variables is at fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseDirRefused {
+    pub variable: &'static str,
+    pub value: PathBuf,
 }
 
-/// Whether [`registration_dir`] is resolving through the temp-directory fallback.
+impl std::fmt::Display for BaseDirRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "refusing to use {} for the daemon registration directory: it is set to \
+             {}, which is not an absolute path. A base directory is shared by the \
+             daemon and every client, so a relative one would mean a different \
+             registry per working directory. Set {} to an absolute path, or unset it \
+             to fall back to the next location.",
+            self.variable,
+            self.value.display(),
+            self.variable,
+        )
+    }
+}
+
+impl std::error::Error for BaseDirRefused {}
+
+/// The base-directory values the chain reads, supplied rather than resolved.
 ///
-/// That branch puts the registration under a world-writable parent, where another
-/// user can create the directory first and have it adopted.
+/// The seam the fallback chain is tested through. Mutating the environment to test
+/// a derivation makes the test race every other test in its binary, and this crate
+/// refuses environment mutation outright — so the chain takes its inputs as values
+/// and [`from_env`](Self::from_env) is the only place that reads the process.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BaseDirEnv {
+    pub runtime_dir: Option<std::ffi::OsString>,
+    pub cache_home: Option<std::ffi::OsString>,
+    pub home: Option<std::ffi::OsString>,
+    /// The system temp directory. `None` means the last link is unavailable, which
+    /// only a test constructs.
+    pub temp_dir: Option<PathBuf>,
+}
+
+impl BaseDirEnv {
+    /// The values this process's environment holds.
+    pub fn from_env() -> Self {
+        Self {
+            runtime_dir: std::env::var_os("XDG_RUNTIME_DIR"),
+            cache_home: std::env::var_os("XDG_CACHE_HOME"),
+            home: std::env::var_os("HOME"),
+            temp_dir: Some(std::env::temp_dir()),
+        }
+    }
+}
+
+/// [`registration_dir`], over supplied values rather than the environment.
 ///
-/// This reports which branch was taken; it does not gate anything. It used to:
-/// ownership was verified only when this returned true, on the theory that the
-/// other branches were private by construction. They are not — an `XDG_CACHE_HOME`
-/// can point anywhere, including at a directory another user owns — so the daemon
-/// now verifies ownership and the sticky bit on every parent it walks, whichever
-/// branch produced it. Nothing should reintroduce a check conditioned on this
-/// answer.
-///
-/// What that walk checks for is ownership plus world-write without the sticky bit. A
-/// group-writable parent is accepted, deliberately: a private per-user group makes
-/// `drwxrwx---` an ordinary home directory, and `st_gid` cannot tell a private group
-/// from a shared one. See `oxabl_daemon::registry` for that trade-off in full.
-pub fn temp_dir_fallback_in_use() -> bool {
-    base_dir("XDG_CACHE_HOME").is_none() && base_dir("HOME").is_none()
+/// The chain itself, written once. Every link is `<base>/oxabl/daemon` except the
+/// home link, which adds the `.cache` the XDG default spells out — `oxabl_daemon`'s
+/// registry owns the last two components of whatever comes back, so the shape must
+/// not gain a level without that constant gaining one too.
+pub fn registration_dir_from(env: &BaseDirEnv) -> Result<ResolvedRegistrationDir, BaseDirRefused> {
+    let links: [(BaseDirSource, &Option<std::ffi::OsString>, &Path); 3] = [
+        (BaseDirSource::RuntimeDir, &env.runtime_dir, Path::new("")),
+        (BaseDirSource::CacheHome, &env.cache_home, Path::new("")),
+        (BaseDirSource::Home, &env.home, Path::new(".cache")),
+    ];
+
+    for (source, value, under) in links {
+        let Some(named) = value.clone().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let base = PathBuf::from(named);
+        if !base.is_absolute() {
+            return Err(BaseDirRefused {
+                // Every link that can fail names a variable; the temp directory is
+                // the one that does not, and it is not in this loop.
+                variable: source.variable().unwrap_or("the base directory"),
+                value: base,
+            });
+        }
+        return Ok(ResolvedRegistrationDir {
+            path: base.join(under).join("oxabl").join("daemon"),
+            source,
+        });
+    }
+
+    let temp = env.temp_dir.clone().ok_or(BaseDirRefused {
+        variable: "TMPDIR",
+        value: PathBuf::new(),
+    })?;
+    Ok(ResolvedRegistrationDir {
+        path: temp.join("oxabl").join("daemon"),
+        source: BaseDirSource::TempDir,
+    })
 }
 
 /// The longest socket path a Unix domain socket can carry.
@@ -675,17 +830,49 @@ const MAX_FILE_NAME: usize = 255;
 /// just as it did in the original. A name that does not fit keeps its readable head
 /// and carries a hash of the *whole* root, so two roots sharing a long prefix
 /// cannot collide.
-pub fn registration_path(workspace_root: &Path) -> PathBuf {
-    let dir = registration_dir();
-    registration_path_in(&dir, workspace_root)
-}
-
-/// [`registration_path`], with the directory supplied rather than resolved.
+/// The naming rule, with the directory and the root supplied rather than resolved.
 ///
-/// Public so a test can exercise the naming rule without setting environment
-/// variables. Two spellings of one naming rule is how they drift.
+/// There is deliberately no convenience wrapper that resolves both for you.
+/// Composing a registration path means resolving a base directory, which can be
+/// refused, and canonicalising a root, which can fail — and a wrapper that hid
+/// either would be the second spelling of a rule that must have one. The registry
+/// composes it once; everything else calls this. Two spellings of one naming rule
+/// is how they drift.
+///
+/// `workspace_root` must already be [`canonical_root`]. Passing a raw client
+/// spelling is what made discovery lexical: the same tree reached through a symlink
+/// flattened to a different name, so a client missed the running daemon and started
+/// a second one on the same tree.
 pub fn registration_path_in(dir: &Path, workspace_root: &Path) -> PathBuf {
     dir.join(format!("{}.json", registration_stem(dir, workspace_root)))
+}
+
+/// The spelling of a workspace root that the naming rule keys on.
+///
+/// One tree is one daemon, so the key has to be a property of the tree rather than
+/// of how a client typed it. `fs::canonicalize` resolves every symlink and removes
+/// `.`, `..` and trailing separators, so `/home/dev/proj`, `/home/dev/proj/`,
+/// `/home/dev/./proj` and a symlink pointing at it all produce one name — and
+/// therefore one socket, one lock and one registration.
+///
+/// The handshake already resolves the root the same way before it opens a session
+/// (R2, R26). This is the discovery half of that: without it, a client agrees with
+/// the daemon about which session a root means only once it has found the daemon,
+/// and it looks for the daemon under a different name.
+///
+/// Fails when the root does not exist. That is the honest answer — there is no
+/// canonical name for a tree that is not there — and it is the same refusal the
+/// handshake gives.
+pub fn canonical_root(workspace_root: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(workspace_root).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "cannot resolve the workspace root {}: {error}. The daemon keys its                  socket, lock and registration on a root's canonical path, so a root                  that is not on disk has no name to key on.",
+                workspace_root.display()
+            ),
+        )
+    })
 }
 
 /// The file-name stem for `workspace_root`: the flattened root, or a truncated
@@ -783,7 +970,8 @@ impl std::fmt::Display for PathTooLong {
             PathOverflow::Directory { bytes } => write!(
                 f,
                 "Its directory alone consumes {bytes} bytes, so no registration name \
-                 fits under it — set XDG_CACHE_HOME to a shorter path."
+                 fits under it — point XDG_RUNTIME_DIR, or whichever base directory \
+                 variable is in use, at a shorter path."
             ),
             PathOverflow::WorkspaceName { bytes } => write!(
                 f,
@@ -1099,14 +1287,15 @@ mod tests {
     // collide a path with its own encoding.
     #[test]
     fn a_registration_path_is_per_root_and_collision_free() {
-        let one = registration_path(Path::new("/home/dev/alpha"));
-        let two = registration_path(Path::new("/home/dev/beta"));
+        let dir = Path::new("/run/user/1000/oxabl/daemon");
+        let one = registration_path_in(dir, Path::new("/home/dev/alpha"));
+        let two = registration_path_in(dir, Path::new("/home/dev/beta"));
         assert_ne!(one, two);
         assert_eq!(one.parent(), two.parent());
 
         assert_ne!(
-            registration_path(Path::new("/a/b")),
-            registration_path(Path::new("%a%b")),
+            registration_path_in(dir, Path::new("/a/b")),
+            registration_path_in(dir, Path::new("%a%b")),
             "a literal percent must not encode to a separator"
         );
     }
@@ -1237,50 +1426,195 @@ mod tests {
             "the message must name the root, got {rendered}"
         );
         assert!(
-            !rendered.contains("XDG_CACHE_HOME"),
-            "a shorter cache directory is not the remedy here, got {rendered}"
+            !rendered.contains("XDG_RUNTIME_DIR"),
+            "a shorter base directory is not the remedy here, got {rendered}"
         );
     }
 
-    // The directory follows XDG when it is set and falls back when it is not. The
-    // fallback is the documented behaviour, not an accident.
+    // The runtime directory wins whenever it is set, because it is the only link
+    // whose privacy, locality and lock support are specified rather than hoped for.
     #[test]
-    fn the_registration_directory_prefers_xdg_cache_home() {
-        // Read the ambient environment rather than mutating it: `set_var` is
-        // unsafe in this edition and a test that mutates process-wide state races
-        // every other test in the binary.
-        let dir = registration_dir();
-        assert!(
-            dir.ends_with("oxabl/daemon"),
-            "registrations must live under an oxabl/daemon directory, got {dir:?}"
+    fn the_runtime_directory_is_preferred_over_every_other_link() {
+        let resolved = registration_dir_from(&BaseDirEnv {
+            runtime_dir: Some("/run/user/1000".into()),
+            cache_home: Some("/home/dev/.cache".into()),
+            home: Some("/home/dev".into()),
+            temp_dir: Some(PathBuf::from("/tmp")),
+        })
+        .expect("an absolute runtime directory is usable");
+
+        assert_eq!(
+            resolved.path,
+            PathBuf::from("/run/user/1000/oxabl/daemon"),
+            "the socket and lock must live under the runtime directory"
         );
-        assert!(dir.is_absolute(), "got {dir:?}");
+        assert_eq!(resolved.source, BaseDirSource::RuntimeDir);
+        assert!(!resolved.source.is_fallback());
+        assert_eq!(
+            resolved.source.fallback_warning(),
+            None,
+            "the guaranteed location is not a fallback and must not warn"
+        );
     }
 
-    // A relative value is not a base directory (R16). Exercised over the value
-    // rather than the variable: `set_var` here would race every other test in this
-    // binary that resolves the registration directory, and the composition above it
-    // is two lines with no branch of its own.
+    // Each link down the chain is taken only when the one above it names nothing,
+    // and each one warns, because each one gives up a guarantee the specification
+    // made about the link above.
     #[test]
-    fn a_relative_base_directory_is_ignored_rather_than_resolved() {
-        for relative in ["cache", ".cache", "sub/dir", "./cache", "../cache"] {
-            assert_eq!(
-                usable_base(Some(relative.into())),
-                None,
-                "{relative} is relative, so it must be ignored rather than resolved \
-                 against whatever directory a process happens to be in"
+    fn the_fallback_chain_is_ordered_and_every_link_below_the_first_warns() {
+        let cases = [
+            (
+                BaseDirEnv {
+                    cache_home: Some("/home/dev/.cache".into()),
+                    home: Some("/home/dev".into()),
+                    temp_dir: Some(PathBuf::from("/tmp")),
+                    ..BaseDirEnv::default()
+                },
+                "/home/dev/.cache/oxabl/daemon",
+                BaseDirSource::CacheHome,
+            ),
+            (
+                BaseDirEnv {
+                    home: Some("/home/dev".into()),
+                    temp_dir: Some(PathBuf::from("/tmp")),
+                    ..BaseDirEnv::default()
+                },
+                "/home/dev/.cache/oxabl/daemon",
+                BaseDirSource::Home,
+            ),
+            (
+                BaseDirEnv {
+                    temp_dir: Some(PathBuf::from("/tmp")),
+                    ..BaseDirEnv::default()
+                },
+                "/tmp/oxabl/daemon",
+                BaseDirSource::TempDir,
+            ),
+        ];
+
+        for (env, expected, source) in cases {
+            let resolved = registration_dir_from(&env).expect("a usable fallback");
+            assert_eq!(resolved.path, PathBuf::from(expected));
+            assert_eq!(resolved.source, source);
+            assert!(resolved.source.is_fallback());
+            let warning = resolved
+                .source
+                .fallback_warning()
+                .expect("every fallback link warns, as the specification requires");
+            assert!(
+                warning.contains("XDG_RUNTIME_DIR") || warning.contains("runtime"),
+                "the warning must say which guarantee was given up, got {warning}"
             );
         }
-        assert_eq!(
-            usable_base(Some("".into())),
-            None,
-            "an empty value names nothing"
+    }
+
+    // An unset or empty variable names nothing, so the chain moves on. This is the
+    // only way the chain is entered (R27).
+    #[test]
+    fn an_empty_variable_is_the_same_as_an_unset_one() {
+        let resolved = registration_dir_from(&BaseDirEnv {
+            runtime_dir: Some("".into()),
+            cache_home: Some("/home/dev/.cache".into()),
+            ..BaseDirEnv::default()
+        })
+        .expect("an empty runtime directory names nothing");
+
+        assert_eq!(resolved.source, BaseDirSource::CacheHome);
+    }
+
+    // A variable that is *set* to something unusable is a detected anomaly, and the
+    // answer to a detected anomaly is never to quietly use a weaker location (R27).
+    // The chain below it is fully usable here, so nothing but the refusal policy
+    // could produce this result.
+    #[test]
+    fn a_relative_base_directory_is_refused_rather_than_skipped_or_resolved() {
+        for relative in ["cache", ".cache", "sub/dir", "./cache", "../cache"] {
+            let refused = registration_dir_from(&BaseDirEnv {
+                runtime_dir: Some(relative.into()),
+                cache_home: Some("/home/dev/.cache".into()),
+                home: Some("/home/dev".into()),
+                temp_dir: Some(PathBuf::from("/tmp")),
+            })
+            .expect_err("a relative base directory must be refused");
+
+            assert_eq!(refused.variable, "XDG_RUNTIME_DIR");
+            assert_eq!(refused.value, PathBuf::from(relative));
+            let rendered = refused.to_string();
+            assert!(
+                rendered.contains("XDG_RUNTIME_DIR") && rendered.contains(relative),
+                "the refusal must name the variable and the value, got {rendered}"
+            );
+        }
+    }
+
+    // The refusal is per-variable, not only for the first link: a cache directory
+    // that is set to a relative path is refused too, rather than falling through to
+    // the home directory.
+    #[test]
+    fn a_relative_value_in_a_lower_link_is_refused_the_same_way() {
+        let refused = registration_dir_from(&BaseDirEnv {
+            cache_home: Some("relative/cache".into()),
+            home: Some("/home/dev".into()),
+            temp_dir: Some(PathBuf::from("/tmp")),
+            ..BaseDirEnv::default()
+        })
+        .expect_err("a relative cache directory must be refused");
+
+        assert_eq!(refused.variable, "XDG_CACHE_HOME");
+    }
+
+    // The composition over the real environment is two lines with no branch of its
+    // own, but it is what every caller actually reaches, so its shape is pinned.
+    // Read, never mutated: `set_var` races every other test in this binary.
+    #[test]
+    fn the_ambient_environment_resolves_to_an_absolute_oxabl_daemon_directory() {
+        let resolved = registration_dir().expect("this machine's environment is usable");
+        assert!(
+            resolved.path.ends_with("oxabl/daemon"),
+            "registrations must live under an oxabl/daemon directory, got {:?}",
+            resolved.path
         );
-        assert_eq!(usable_base(None), None);
-        assert_eq!(
-            usable_base(Some("/home/dev/.cache".into())),
-            Some(PathBuf::from("/home/dev/.cache")),
-            "an absolute value is the one a base directory variable may hold"
+        assert!(resolved.path.is_absolute(), "got {:?}", resolved.path);
+    }
+
+    // One tree is one name, however a client spelled it. This is the discovery half
+    // of one-session-per-root: without it a client reaching the tree through a
+    // symlink derives a different socket path and starts a second daemon on it.
+    #[test]
+    fn one_tree_canonicalises_to_one_registration_name_however_it_is_spelled() {
+        let dir = Path::new("/run/user/1000/oxabl/daemon");
+        let tree = tempfile::tempdir().expect("a temporary workspace root");
+        let direct = canonical_root(tree.path()).expect("the root exists");
+
+        let link = tree.path().parent().expect("a parent").join(format!(
+            "link-to-{}",
+            tree.path().file_name().unwrap().to_string_lossy()
+        ));
+        std::os::unix::fs::symlink(tree.path(), &link).expect("a symlink to the root");
+        let through_link = canonical_root(&link).expect("the link resolves");
+        let _ = std::fs::remove_file(&link);
+
+        let trailing = canonical_root(&tree.path().join("")).expect("a trailing separator");
+        let dotted = canonical_root(&tree.path().join(".")).expect("a dot component");
+
+        for spelling in [&through_link, &trailing, &dotted] {
+            assert_eq!(
+                registration_path_in(dir, spelling),
+                registration_path_in(dir, &direct),
+                "every spelling of one tree must name one registration"
+            );
+        }
+    }
+
+    // A root that is not on disk has no canonical name, and the refusal says so
+    // rather than keying on the string the client typed.
+    #[test]
+    fn a_root_that_is_not_on_disk_is_refused_with_its_path_named() {
+        let missing = Path::new("/nonexistent-oxabl-root-b9f1c2");
+        let error = canonical_root(missing).expect_err("this root does not exist");
+        assert!(
+            error.to_string().contains("nonexistent-oxabl-root-b9f1c2"),
+            "the refusal must name the root, got {error}"
         );
     }
 }
