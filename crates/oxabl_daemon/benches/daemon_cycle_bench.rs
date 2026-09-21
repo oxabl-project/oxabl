@@ -138,16 +138,19 @@ fn daemon_request_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("daemon_request");
     let dispatch = default_dispatch();
     let host = SessionHost::new();
+    // A real directory, because the handshake now resolves the root it is given and
+    // refuses one that is not on disk. A synthetic path would time the refusal rather
+    // than the routing hop this gate exists to measure. The resolution is part of the
+    // measured cost on purpose: it is what a real client's handshake now pays.
+    let root = resources_dir().to_string_lossy().into_owned();
 
     let start = Instant::now();
     group.bench_function("handshake_round_trip", |bencher| {
         bencher.iter_batched(
             || {
-                let params = serde_json::to_value(HandshakeRequest::new(
-                    ClientKind::Desktop,
-                    "/proj/bench".to_string(),
-                ))
-                .expect("the request serialises");
+                let params =
+                    serde_json::to_value(HandshakeRequest::new(ClientKind::Desktop, root.clone()))
+                        .expect("the request serialises");
                 (ClientContext::default(), params)
             },
             |(mut context, params)| {
