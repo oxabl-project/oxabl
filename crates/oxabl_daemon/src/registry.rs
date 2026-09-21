@@ -22,6 +22,14 @@
 //! already serving that tree and started a second one on it — one-session-per-root
 //! enforced at the handshake and unenforced at the door.
 //!
+//! Both of those moved: the registration, socket and lock used to live under the
+//! cache directory, and the name used to be derived from the spelling a client
+//! sent. A client built before the move looks in the old location, finds nothing,
+//! and starts a daemon of its own; the daemon already running there is not adopted
+//! and retires on its idle timeout. There is no migration step and none is wanted —
+//! a socket is session state, and the old one is meant not to outlive the session
+//! that bound it.
+//!
 //! Filesystem permissions do the access control, and they are created rather than
 //! assumed or repaired: [`ensure_registration_dir`] makes the leaf directory 0700
 //! at the moment it comes into existence, the registration is opened 0600, and the
