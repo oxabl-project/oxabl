@@ -878,8 +878,19 @@ impl<'a> Walker<'a> {
     /// Case-insensitive schema lookup of a table-name identifier. Returns
     /// `None` when the table is absent from the schema (or no schema is
     /// loaded — an empty schema yields `None` here by construction).
+    ///
+    /// A record phrase may qualify the table with the database it lives in —
+    /// `sports.Customer`, `dictdb._file` — and the parser hands that through
+    /// as one dotted identifier. The database part is stripped and the bare
+    /// table name is what resolves; see [`strip_db_qualifier`].
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
-        self.ctx.schema.table_id(&fold_atom(&table.name))
+        self.ctx
+            .schema
+            .table_id(&fold_atom(&table.name))
+            .or_else(|| {
+                let bare = strip_db_qualifier(&table.name)?;
+                self.ctx.schema.table_id(&fold_atom(bare))
+            })
     }
 
     /// Core insertion routine. Returns the new `SymbolId` on success;
@@ -3805,8 +3816,13 @@ impl<'a> ResolveWalker<'a> {
     ) {
         // The qualifier is typically an Identifier (table/buffer name).
         // Non-identifier qualifiers (e.g. `foo():bar.baz`) are walked
-        // normally; field is External and not recorded.
+        // normally; field is External and not recorded. A three-part
+        // `database.table.field` is the one shape worth unpicking first,
+        // because its qualifier is itself a FieldAccess.
         let ExpressionKind::Identifier(qid) = &qualifier.kind else {
+            if self.resolve_db_qualified_field_access(qualifier, field, expr_id, scope, mode) {
+                return;
+            }
             self.walk_expression(qualifier, scope, AccessMode::Read);
             return;
         };
@@ -3876,6 +3892,127 @@ impl<'a> ResolveWalker<'a> {
                 );
             }
         }
+    }
+
+    /// Resolve the `database.table.field` shape, e.g. `dictdb._file._File-Name`.
+    ///
+    /// In expression position this parses left-associatively, so the outer
+    /// `FieldAccess`'s qualifier is itself a `FieldAccess` whose own
+    /// qualifier is the database name. Without this, `dictdb` was reported as
+    /// an undefined symbol and `_file` as an unknown field of it — two
+    /// findings for a reference that is entirely well-formed.
+    ///
+    /// Returns `true` when it took ownership of the expression.
+    ///
+    /// The database name is accepted without being checked, and recorded as
+    /// [`UnresolvedReason::External`] — the codebase's marker for "we did not
+    /// look". oxabl models one flat table namespace and has no notion of
+    /// which database a table was dumped from, so there is nothing to check
+    /// it against; claiming a bad database name would be a guess. Requiring
+    /// the qualifier to resolve to nothing in scope keeps ordinary chained
+    /// field access (`buffer.field.attribute`) on its existing path.
+    fn resolve_db_qualified_field_access(
+        &mut self,
+        qualifier: &Expression,
+        field: &Identifier,
+        expr_id: NodeId,
+        scope: ScopeId,
+        mode: AccessMode,
+    ) -> bool {
+        if !self.ctx.schema_loaded {
+            return false;
+        }
+        let ExpressionKind::FieldAccess {
+            qualifier: db_expr,
+            field: table,
+        } = &qualifier.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Identifier(db) = &db_expr.kind else {
+            return false;
+        };
+
+        // Someone has already answered for this node, so this is not a fresh
+        // `database.table.field`: it is the tail of a walk that has its own
+        // meaning for the chain. The case that matters is a package-qualified
+        // static type used as a receiver -- `acme.security.Auth:Check()` --
+        // where `walk_receiver` has already softened each package segment to
+        // `External`. Without this check, a package segment that happens to
+        // share a name with a table (`security`) would be read as a table
+        // reference: it would mint a buffer symbol, emit a bogus
+        // `schema_table` dependency edge for a file that never touches that
+        // table, and report the type name as an unknown field of it.
+        if self.references.get(db_expr.id).is_some() {
+            return false;
+        }
+
+        // A name that is bound in this scope is a real symbol, not a
+        // database: `b.field.attribute` must keep its current meaning.
+        let db_atom = fold_atom(&db.name);
+        let bound = [
+            NamespaceId::Buffers,
+            NamespaceId::Tables,
+            NamespaceId::Values,
+        ]
+        .iter()
+        .any(|ns| self.tree.resolve(scope, *ns, &db_atom).is_some());
+        if bound {
+            return false;
+        }
+
+        let table_atom = fold_atom(&table.name);
+        let Some(tid) = self.ctx.schema.table_id(&table_atom) else {
+            return false;
+        };
+
+        // The middle segment naming a table is not enough on its own: a
+        // package-qualified static type (`acme.security.Auth`) has the same
+        // three-part shape, and a package segment can collide with a table
+        // name. Require the *whole* chain to make sense as a table reference
+        // -- the field has to be a real field of that table -- and decline
+        // otherwise, leaving the expression on its existing path.
+        //
+        // This is checked against the schema rather than by minting and
+        // rolling back, because `synth_table_buffer_symbol` would leave a
+        // buffer symbol carrying a `table_id` behind, and the index emits a
+        // schema dependency edge for every such symbol. A file would then
+        // claim to depend on a table it never mentions.
+        //
+        // The cost is that a database-qualified reference to a field that
+        // does *not* exist falls back to the older, noisier diagnostics
+        // rather than one precise unknown-field finding. That only affects
+        // code that is already wrong, and a worse message on broken code is a
+        // better trade than a finding on correct code.
+        let field_is_real = self
+            .ctx
+            .schema
+            .get_by_id(tid)
+            .map(|t| {
+                matches!(
+                    t.resolve_field(&fold_atom(&field.name)),
+                    FieldResolution::Unique(_)
+                )
+            })
+            .unwrap_or(false);
+        if !field_is_real {
+            return false;
+        }
+
+        self.references.insert(
+            db_expr.id,
+            Resolution::Unresolved {
+                name: db_atom,
+                reason: UnresolvedReason::External,
+            },
+        );
+        let bsym = self.synth_table_buffer_symbol(tid, &table_atom, table);
+        self.references
+            .insert(qualifier.id, Resolution::Resolved(bsym));
+        self.bump_count(bsym, AccessMode::Read);
+        let resolution = self.field_resolution(bsym, field, mode);
+        self.references.insert(expr_id, resolution);
+        true
     }
 
     /// Resolve `field` against a resolved qualifier symbol. When the
@@ -4340,6 +4477,27 @@ impl<'a> ResolveWalker<'a> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Strip a leading database qualifier from a dotted table name, returning the
+/// bare table name — `dictdb._file` → `_file`, `sports.Customer` → `Customer`.
+///
+/// ABL lets any table be qualified with the logical name of the database it
+/// lives in, and the record-phrase parser fuses that into a single dotted
+/// identifier. oxabl keys its schema on the table name alone, so the
+/// qualifier is dropped rather than matched: with no model of which databases
+/// are connected there is nothing to match it against, and the alternative —
+/// refusing every qualified reference — is the false positive this exists to
+/// remove.
+///
+/// Returns `None` for anything that is not exactly two non-empty parts, so a
+/// bare name and a longer chain both fall through to the caller's own answer.
+fn strip_db_qualifier(name: &str) -> Option<&str> {
+    let (db, table) = name.split_once('.')?;
+    if db.is_empty() || table.is_empty() || table.contains('.') {
+        return None;
+    }
+    Some(table)
+}
 
 fn identifier_span(id: &Identifier) -> VirtualSpan {
     VirtualSpan::new(id.span.start, id.span.end)
@@ -8382,5 +8540,38 @@ mod tests {
             "and a recorded hit is likewise not handed to the spelling that \
              genuinely misses"
         );
+    }
+}
+
+#[cfg(test)]
+mod db_qualifier_tests {
+    use super::strip_db_qualifier;
+
+    #[test]
+    fn a_two_part_name_loses_its_database() {
+        assert_eq!(strip_db_qualifier("dictdb._file"), Some("_file"));
+        assert_eq!(strip_db_qualifier("sports.Customer"), Some("Customer"));
+    }
+
+    #[test]
+    fn a_bare_name_is_left_alone() {
+        // `None` means "nothing to strip", so the caller's own lookup stands.
+        assert_eq!(strip_db_qualifier("_file"), None);
+        assert_eq!(strip_db_qualifier("Customer"), None);
+    }
+
+    #[test]
+    fn a_longer_chain_is_declined() {
+        // `db.table.field` never reaches a table lookup as one name, and
+        // guessing which part is the table would be worse than declining.
+        assert_eq!(strip_db_qualifier("dictdb._file._File-Name"), None);
+    }
+
+    #[test]
+    fn a_malformed_name_is_declined() {
+        assert_eq!(strip_db_qualifier("."), None);
+        assert_eq!(strip_db_qualifier(".Customer"), None);
+        assert_eq!(strip_db_qualifier("dictdb."), None);
+        assert_eq!(strip_db_qualifier(""), None);
     }
 }

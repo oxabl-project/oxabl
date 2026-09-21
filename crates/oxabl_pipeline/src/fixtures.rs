@@ -1163,6 +1163,35 @@ pub const FIXTURES: &[ParityFixture] = &[
             target: "customer",
         })],
     },
+    // The built-in OpenEdge metaschema, which arrives with any loaded schema
+    // rather than out of the `.df`. Two things have to reach every client
+    // together: `dictdb._file._File-Name` is a well-formed reference and must
+    // be silent — the database qualifier, the table and the field all resolve
+    // — while `_file._NoSuchField` must still be reported, because the catalog
+    // models fields rather than waving the table through. A client that had
+    // only half of this would either spray false positives or stop checking
+    // metaschema fields at all, and neither shows up in a fixture that tests
+    // one of them alone.
+    ParityFixture {
+        name: "metaschema_field",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "MESSAGE dictdb._file._File-Name.\nMESSAGE _file._NoSuchField.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0003",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Lint,
+            start: 47,
+            end: 59,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[EdgeExpectation::Always(ExpectedEdge {
+            via: "schema_table",
+            target: "_file",
+        })],
+    },
     // `counter` is written *and* read, so neither LINT0002 (never referenced)
     // nor LINT0006 (written, never read) can fire — the two halves of that split
     // population must not be tripped by a fixture aimed at LINT0004.

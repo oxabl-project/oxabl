@@ -23,6 +23,7 @@
 mod atom;
 mod diagnostics;
 mod loader;
+mod metaschema;
 mod parser;
 mod schema;
 #[cfg(feature = "test-support")]
@@ -31,6 +32,7 @@ pub mod test_support;
 pub use atom::fold_atom;
 pub use diagnostics::{SCHEMA0001, SCHEMA0010, SCHEMA0011, SCHEMA0012, SCHEMA0030, SCHEMA0031};
 pub use loader::{LOAD_FIELD_CAP, LOAD_TABLE_CAP, SchemaLoader, df_files_in_dir};
+pub use metaschema::{METASCHEMA_DF, metaschema};
 pub use parser::{ParseOutcome, parse_df};
 pub use schema::{
     Field, FieldResolution, Index, IndexField, Schema, SchemaRevision, SchemaType, Table, TableId,

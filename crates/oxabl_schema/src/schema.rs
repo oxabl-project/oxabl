@@ -30,10 +30,22 @@ impl SchemaRevision {
 
 /// Dense identifier for a `Table` within a single `Schema`. Values are stable
 /// within one `Schema` but must not be shared across `SchemaRevision`s.
+///
+/// The top bit distinguishes the two arenas an id can address: the schema's
+/// own tables, and the shared built-in OpenEdge metaschema catalog. That is
+/// what lets a `Schema` expose the catalog without copying it — see
+/// [`Schema::enable_metaschema`]. Both kinds resolve through
+/// [`Schema::get_by_id`], so a holder of a `TableId` never needs to know
+/// which it has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TableId(u32);
 
 impl TableId {
+    /// Marks an id as addressing the built-in metaschema rather than the
+    /// schema's own arena. Table counts are capped far below this
+    /// (`LOAD_TABLE_CAP`), so the bit is never needed for an index.
+    const BUILTIN: u32 = 1 << 31;
+
     #[inline]
     pub const fn new(value: u32) -> Self {
         TableId(value)
@@ -42,6 +54,22 @@ impl TableId {
     #[inline]
     pub const fn raw(self) -> u32 {
         self.0
+    }
+
+    #[inline]
+    const fn builtin(index: u32) -> Self {
+        TableId(index | Self::BUILTIN)
+    }
+
+    #[inline]
+    const fn is_builtin(self) -> bool {
+        self.0 & Self::BUILTIN != 0
+    }
+
+    /// Position within whichever arena this id addresses.
+    #[inline]
+    const fn index(self) -> usize {
+        (self.0 & !Self::BUILTIN) as usize
     }
 }
 
@@ -256,6 +284,10 @@ pub struct Schema {
     revision: SchemaRevision,
     tables: FxHashMap<OxablAtom, TableId>,
     arena: Vec<Table>,
+    /// Whether lookups fall through to the built-in OpenEdge metaschema.
+    /// Off by default, and turned on by the loader only once a `.df` has
+    /// actually contributed tables — see [`Schema::enable_metaschema`].
+    metaschema: bool,
 }
 
 impl Schema {
@@ -267,7 +299,34 @@ impl Schema {
             revision: SchemaRevision::new(0),
             tables: FxHashMap::default(),
             arena: Vec::new(),
+            metaschema: false,
         }
+    }
+
+    /// Make the built-in OpenEdge metaschema visible to this schema's lookups.
+    ///
+    /// The catalog is *borrowed*, not copied: the tables stay in one shared
+    /// static and this schema hands out [`TableId`]s that point at it. A
+    /// schema load therefore costs nothing per metaschema table, which
+    /// matters because the catalog is two orders of magnitude larger than a
+    /// typical application `.df`.
+    ///
+    /// Lookups check this schema's own tables first, so a `.df` that defines
+    /// a table named `_file` — pathological but legal — shadows the
+    /// dictionary's outright.
+    ///
+    /// [`len`](Self::len), [`is_empty`](Self::is_empty) and
+    /// [`tables`](Self::tables) deliberately keep reporting *this* schema's
+    /// tables only. `is_empty` is read elsewhere as "no user schema
+    /// configured", and an always-present catalog must not be what makes a
+    /// schema look configured.
+    pub fn enable_metaschema(&mut self) {
+        self.metaschema = true;
+    }
+
+    /// Whether metaschema fallback is active for this schema.
+    pub fn metaschema_enabled(&self) -> bool {
+        self.metaschema
     }
 
     pub fn revision(&self) -> SchemaRevision {
@@ -282,10 +341,10 @@ impl Schema {
         self.arena.len()
     }
 
-    /// Case-insensitive lookup by folded atom.
+    /// Case-insensitive lookup by folded atom. Falls through to the built-in
+    /// metaschema when [`enable_metaschema`](Self::enable_metaschema) is on.
     pub fn get(&self, name: &OxablAtom) -> Option<&Table> {
-        let id = *self.tables.get(name)?;
-        self.arena.get(id.raw() as usize)
+        self.get_by_id(self.table_id(name)?)
     }
 
     /// `&str` convenience for [`get`](Self::get): folds `name` to an atom
@@ -296,13 +355,41 @@ impl Schema {
     }
 
     /// Lookup by dense id. Returns `None` if `id` was not produced by this
-    /// `Schema`.
+    /// `Schema`. An id into the built-in metaschema resolves against the
+    /// shared catalog rather than this schema's own arena.
     pub fn get_by_id(&self, id: TableId) -> Option<&Table> {
-        self.arena.get(id.raw() as usize)
+        if id.is_builtin() {
+            return crate::metaschema::metaschema().arena.get(id.index());
+        }
+        self.arena.get(id.index())
     }
 
-    pub fn table_id(&self, name: &OxablAtom) -> Option<TableId> {
+    /// Case-insensitive id lookup restricted to this schema's own arena, never
+    /// the built-in catalog.
+    ///
+    /// The loader uses this rather than [`table_id`](Self::table_id): an
+    /// `ADD FIELD "x" OF "_file"` in a user `.df` must create or patch the
+    /// *user's* `_file`, never reach into the shared catalog — which is
+    /// immutable and shared by every schema in the process.
+    pub(crate) fn own_table_id(&self, name: &OxablAtom) -> Option<TableId> {
         self.tables.get(name).copied()
+    }
+
+    /// Case-insensitive id lookup. This schema's own tables win; the built-in
+    /// metaschema is consulted only on a miss, and only when enabled.
+    pub fn table_id(&self, name: &OxablAtom) -> Option<TableId> {
+        if let Some(id) = self.tables.get(name) {
+            return Some(*id);
+        }
+        if !self.metaschema {
+            return None;
+        }
+        // The catalog schema never has the flag set, so this cannot recurse.
+        let builtin = crate::metaschema::metaschema();
+        builtin
+            .tables
+            .get(name)
+            .map(|id| TableId::builtin(id.index() as u32))
     }
 
     pub fn tables(&self) -> impl Iterator<Item = (TableId, &Table)> {
@@ -324,15 +411,16 @@ impl Schema {
     }
 
     pub(crate) fn replace_table(&mut self, id: TableId, table: Table) {
-        let slot = self
-            .arena
-            .get_mut(id.raw() as usize)
-            .expect("valid TableId");
+        // Not a `debug_assert`: masking the flag off in release would write
+        // to an unrelated user table at the masked index, silently.
+        assert!(!id.is_builtin(), "the built-in catalog is immutable");
+        let slot = self.arena.get_mut(id.index()).expect("valid TableId");
         *slot = table;
     }
 
     pub(crate) fn table_mut(&mut self, id: TableId) -> &mut Table {
-        &mut self.arena[id.raw() as usize]
+        assert!(!id.is_builtin(), "the built-in catalog is immutable");
+        &mut self.arena[id.index()]
     }
 }
 

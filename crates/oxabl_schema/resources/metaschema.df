@@ -1,0 +1,6014 @@
+# OpenEdge metaschema and virtual system tables.
+#
+# GENERATED FILE - DO NOT EDIT. Regenerate with scripts/gen-metaschema-df.sh;
+# see crates/oxabl_schema/METASCHEMA.md.
+#
+# Every OpenEdge database carries these tables, so a `.df` dump of an
+# application schema never mentions them. oxabl parses this file once and
+# every loaded schema borrows it, resolving `_file`, `_field` and friends
+# like any other table -- behind the user's own tables, which always win.
+#
+# Names, data types, extents, mandatory flags and index shapes only: no
+# labels, formats, help text or descriptions. Layout as of OpenEdge 12.8.9.
+
+ADD TABLE "_File"
+  FROZEN
+
+ADD FIELD "_File-Name" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Prime-Index" OF "_File" AS recid
+
+ADD FIELD "_File-Number" OF "_File" AS integer
+
+ADD FIELD "_dft-pk" OF "_File" AS logical
+
+ADD FIELD "_numkey" OF "_File" AS integer
+
+ADD FIELD "_numkfld" OF "_File" AS integer
+
+ADD FIELD "_numkcomp" OF "_File" AS integer
+
+ADD FIELD "_Template" OF "_File" AS recid
+
+ADD FIELD "_numfld" OF "_File" AS integer
+
+ADD FIELD "_Can-Create" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Read" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Write" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Delete" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Desc" OF "_File" AS character
+
+ADD FIELD "_Db-recid" OF "_File" AS recid
+  MANDATORY
+
+ADD FIELD "_Valexp" OF "_File" AS character
+
+ADD FIELD "_Valmsg" OF "_File" AS character
+
+ADD FIELD "_Fil-misc1" OF "_File" AS integer
+  EXTENT 8
+
+ADD FIELD "_Fil-misc2" OF "_File" AS character
+  EXTENT 8
+
+ADD FIELD "_Last-change" OF "_File" AS integer
+
+ADD FIELD "_DB-lang" OF "_File" AS integer
+
+ADD FIELD "_Hidden" OF "_File" AS logical
+
+ADD FIELD "_Frozen" OF "_File" AS logical
+
+ADD FIELD "_Dump-name" OF "_File" AS character
+
+ADD FIELD "_CRC" OF "_File" AS integer
+
+ADD FIELD "_Fil-res1" OF "_File" AS integer
+  EXTENT 8
+
+ADD FIELD "_Fil-res2" OF "_File" AS character
+  EXTENT 8
+
+ADD FIELD "_Cache" OF "_File" AS raw
+  MANDATORY
+
+ADD FIELD "_For-Size" OF "_File" AS integer
+
+ADD FIELD "_For-Flag" OF "_File" AS integer
+
+ADD FIELD "_For-Cnt1" OF "_File" AS integer
+
+ADD FIELD "_For-Cnt2" OF "_File" AS integer
+
+ADD FIELD "_For-Name" OF "_File" AS character
+
+ADD FIELD "_For-Owner" OF "_File" AS character
+
+ADD FIELD "_For-Format" OF "_File" AS character
+
+ADD FIELD "_For-Info" OF "_File" AS character
+
+ADD FIELD "_For-Type" OF "_File" AS character
+
+ADD FIELD "_For-Id" OF "_File" AS integer
+
+ADD FIELD "_For-Number" OF "_File" AS integer
+
+ADD FIELD "_File-Label" OF "_File" AS character
+
+ADD FIELD "_Can-Dump" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Load" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Valmsg-SA" OF "_File" AS character
+
+ADD FIELD "_File-Label-SA" OF "_File" AS character
+
+ADD FIELD "_ianum" OF "_File" AS integer
+
+ADD FIELD "_Version" OF "_File" AS integer
+
+ADD FIELD "_Field-map" OF "_File" AS raw
+
+ADD FIELD "_Creator" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Has-Ccnstrs" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Has-Fcnstrs" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Has-Pcnstrs" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Has-Ucnstrs" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Owner" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Rssid" OF "_File" AS integer
+  MANDATORY
+
+ADD FIELD "_Tbl-Status" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Tbl-Type" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_User-Misc" OF "_File" AS character
+
+ADD FIELD "_Last-modified" OF "_File" AS datetime-tz
+
+ADD FIELD "_Mod-sequence" OF "_File" AS integer
+
+ADD FIELD "_File-Attributes" OF "_File" AS logical
+  EXTENT 64
+
+ADD FIELD "_category" OF "_File" AS character
+  MANDATORY
+
+ADD FIELD "_Fil-Misc3" OF "_File" AS integer
+  EXTENT 8
+
+ADD FIELD "_Fil-Misc4" OF "_File" AS character
+  EXTENT 8
+
+ADD FIELD "_Owner-DomainId" OF "_File" AS int64
+  MANDATORY
+
+ADD FIELD "_Creator-DomainId" OF "_File" AS int64
+  MANDATORY
+
+ADD FIELD "_Trigger-Version" OF "_File" AS integer
+
+ADD FIELD "_Dropping" OF "_File" AS logical
+
+ADD INDEX "_Db/File" ON "_File"
+  UNIQUE
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_File-Name" ASCENDING ABBREVIATED
+  INDEX-FIELD "_Owner" ASCENDING
+
+ADD INDEX "_Dump-Name" ON "_File"
+  UNIQUE
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Dump-name" ASCENDING ABBREVIATED
+  INDEX-FIELD "_Owner" ASCENDING
+
+ADD INDEX "_File-Name" ON "_File"
+  PRIMARY
+  INDEX-FIELD "_File-Name" ASCENDING ABBREVIATED
+
+ADD INDEX "_File-Number" ON "_File"
+  INDEX-FIELD "_File-Number" ASCENDING
+
+ADD TABLE "_Field"
+  FROZEN
+
+ADD FIELD "_File-recid" OF "_Field" AS recid
+  MANDATORY
+
+ADD FIELD "_Field-Name" OF "_Field" AS character
+  MANDATORY
+
+ADD FIELD "_Data-Type" OF "_Field" AS character
+  MANDATORY
+
+ADD FIELD "_dtype" OF "_Field" AS integer
+
+ADD FIELD "_Initial" OF "_Field" AS character
+
+ADD FIELD "_Label" OF "_Field" AS character
+
+ADD FIELD "_Mandatory" OF "_Field" AS logical
+  MANDATORY
+
+ADD FIELD "_Format" OF "_Field" AS character
+  MANDATORY
+
+ADD FIELD "_sys-field" OF "_Field" AS logical
+
+ADD FIELD "_field-rpos" OF "_Field" AS integer
+
+ADD FIELD "_Decimals" OF "_Field" AS integer
+
+ADD FIELD "_Order" OF "_Field" AS integer
+  MANDATORY
+
+ADD FIELD "_Can-Read" OF "_Field" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Write" OF "_Field" AS character
+  MANDATORY
+
+ADD FIELD "_Extent" OF "_Field" AS integer
+  MANDATORY
+
+ADD FIELD "_Valexp" OF "_Field" AS character
+
+ADD FIELD "_Valmsg" OF "_Field" AS character
+
+ADD FIELD "_Help" OF "_Field" AS character
+
+ADD FIELD "_Desc" OF "_Field" AS character
+
+ADD FIELD "_Col-label" OF "_Field" AS character
+
+ADD FIELD "_Fld-stdtype" OF "_Field" AS integer
+
+ADD FIELD "_Fld-stlen" OF "_Field" AS integer
+
+ADD FIELD "_Fld-stoff" OF "_Field" AS integer
+
+ADD FIELD "_Fld-misc1" OF "_Field" AS integer
+  EXTENT 8
+
+ADD FIELD "_Fld-misc2" OF "_Field" AS character
+  EXTENT 8
+
+ADD FIELD "_Fld-case" OF "_Field" AS logical
+  MANDATORY
+
+ADD FIELD "_Fld-res1" OF "_Field" AS integer
+  EXTENT 8
+
+ADD FIELD "_Fld-res2" OF "_Field" AS character
+  EXTENT 8
+
+ADD FIELD "_For-Id" OF "_Field" AS integer
+
+ADD FIELD "_For-Primary" OF "_Field" AS integer
+
+ADD FIELD "_For-Spacing" OF "_Field" AS integer
+
+ADD FIELD "_For-Scale" OF "_Field" AS integer
+
+ADD FIELD "_For-Name" OF "_Field" AS character
+
+ADD FIELD "_For-Type" OF "_Field" AS character
+
+ADD FIELD "_For-Itype" OF "_Field" AS integer
+
+ADD FIELD "_For-Xpos" OF "_Field" AS integer
+
+ADD FIELD "_For-Retrieve" OF "_Field" AS logical
+
+ADD FIELD "_For-Separator" OF "_Field" AS character
+
+ADD FIELD "_For-Maxsize" OF "_Field" AS integer
+
+ADD FIELD "_For-Allocated" OF "_Field" AS integer
+
+ADD FIELD "_View-As" OF "_Field" AS character
+
+ADD FIELD "_Initial-SA" OF "_Field" AS character
+
+ADD FIELD "_Label-SA" OF "_Field" AS character
+
+ADD FIELD "_Format-SA" OF "_Field" AS character
+
+ADD FIELD "_Valmsg-SA" OF "_Field" AS character
+
+ADD FIELD "_Help-SA" OF "_Field" AS character
+
+ADD FIELD "_Col-label-SA" OF "_Field" AS character
+
+ADD FIELD "_Charset" OF "_Field" AS character
+
+ADD FIELD "_Collation" OF "_Field" AS character
+
+ADD FIELD "_Fetch-Type" OF "_Field" AS character
+
+ADD FIELD "_Width" OF "_Field" AS integer
+
+ADD FIELD "_Field-Physpos" OF "_Field" AS integer
+
+ADD FIELD "_User-Misc" OF "_Field" AS character
+
+ADD FIELD "_Attributes1" OF "_Field" AS integer
+
+ADD FIELD "_Last-modified" OF "_Field" AS datetime-tz
+
+ADD FIELD "_Mod-sequence" OF "_Field" AS integer
+
+ADD FIELD "_Field-Attributes" OF "_Field" AS logical
+  EXTENT 64
+
+ADD FIELD "_Fld-Misc3" OF "_Field" AS integer
+  EXTENT 8
+
+ADD FIELD "_Fld-Misc4" OF "_Field" AS character
+  EXTENT 8
+
+ADD FIELD "_Dropping" OF "_Field" AS logical
+
+ADD FIELD "_New-Name" OF "_Field" AS character
+
+ADD INDEX "_Field-Name" ON "_Field"
+  UNIQUE
+  INDEX-FIELD "_Field-Name" ASCENDING ABBREVIATED
+  INDEX-FIELD "_File-recid" ASCENDING
+
+ADD INDEX "_Field-Position" ON "_Field"
+  UNIQUE
+  INDEX-FIELD "_File-recid" ASCENDING
+  INDEX-FIELD "_Order" ASCENDING
+
+ADD INDEX "_Fieldphyspos" ON "_Field"
+  UNIQUE
+  INDEX-FIELD "_File-recid" ASCENDING
+  INDEX-FIELD "_Field-Physpos" ASCENDING
+
+ADD INDEX "_File/Field" ON "_Field"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_File-recid" ASCENDING
+  INDEX-FIELD "_Field-Name" ASCENDING ABBREVIATED
+
+ADD TABLE "_Index"
+  FROZEN
+
+ADD FIELD "_File-recid" OF "_Index" AS recid
+  MANDATORY
+
+ADD FIELD "_Index-Name" OF "_Index" AS character
+  MANDATORY
+
+ADD FIELD "_Unique" OF "_Index" AS logical
+  MANDATORY
+
+ADD FIELD "_num-comp" OF "_Index" AS integer
+
+ADD FIELD "_idx-num" OF "_Index" AS integer
+
+ADD FIELD "_I-misc1" OF "_Index" AS integer
+  EXTENT 8
+
+ADD FIELD "_I-misc2" OF "_Index" AS character
+  EXTENT 8
+
+ADD FIELD "_Active" OF "_Index" AS logical
+
+ADD FIELD "_I-res1" OF "_Index" AS integer
+  EXTENT 8
+
+ADD FIELD "_I-res2" OF "_Index" AS character
+  EXTENT 8
+
+ADD FIELD "_Wordidx" OF "_Index" AS integer
+
+ADD FIELD "_Desc" OF "_Index" AS character
+
+ADD FIELD "_For-Name" OF "_Index" AS character
+
+ADD FIELD "_For-Type" OF "_Index" AS character
+
+ADD FIELD "_ianum" OF "_Index" AS integer
+
+ADD FIELD "_Idx-CRC" OF "_Index" AS integer
+
+ADD FIELD "_Idxowner" OF "_Index" AS character
+  MANDATORY
+
+ADD FIELD "_Idxmethod" OF "_Index" AS character
+
+ADD FIELD "_User-Misc" OF "_Index" AS character
+
+ADD FIELD "_Last-modified" OF "_Index" AS datetime-tz
+
+ADD FIELD "_Mod-sequence" OF "_Index" AS integer
+
+ADD FIELD "_Mode" OF "_Index" AS integer
+
+ADD FIELD "_Word-Rules" OF "_Index" AS integer
+
+ADD FIELD "_Index-Attributes" OF "_Index" AS logical
+  EXTENT 64
+
+ADD FIELD "_Owner-DomainId" OF "_Index" AS int64
+  MANDATORY
+
+ADD FIELD "_Dropping" OF "_Index" AS logical
+
+ADD INDEX "_File/Index" ON "_Index"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_File-recid" ASCENDING
+  INDEX-FIELD "_Index-Name" ASCENDING ABBREVIATED
+
+ADD INDEX "_Index-Name" ON "_Index"
+  INDEX-FIELD "_Index-Name" ASCENDING
+
+ADD INDEX "_Index-Number" ON "_Index"
+  INDEX-FIELD "_idx-num" ASCENDING
+
+ADD TABLE "_Index-Field"
+  FROZEN
+
+ADD FIELD "_Index-recid" OF "_Index-Field" AS recid
+  MANDATORY
+
+ADD FIELD "_Index-Seq" OF "_Index-Field" AS integer
+  MANDATORY
+
+ADD FIELD "_Field-recid" OF "_Index-Field" AS recid
+  MANDATORY
+
+ADD FIELD "_Ascending" OF "_Index-Field" AS logical
+  MANDATORY
+
+ADD FIELD "_Abbreviate" OF "_Index-Field" AS logical
+  MANDATORY
+
+ADD FIELD "_Unsorted" OF "_Index-Field" AS logical
+  MANDATORY
+
+ADD FIELD "_If-misc1" OF "_Index-Field" AS integer
+  EXTENT 8
+
+ADD FIELD "_If-misc2" OF "_Index-Field" AS character
+  EXTENT 8
+
+ADD FIELD "_If-res1" OF "_Index-Field" AS integer
+  EXTENT 8
+
+ADD FIELD "_If-res2" OF "_Index-Field" AS character
+  EXTENT 8
+
+ADD FIELD "_User-Misc" OF "_Index-Field" AS character
+
+ADD FIELD "_Last-modified" OF "_Index-Field" AS datetime-tz
+
+ADD FIELD "_Mod-sequence" OF "_Index-Field" AS integer
+
+ADD FIELD "_Collation" OF "_Index-Field" AS character
+
+ADD FIELD "_Coll-Strength" OF "_Index-Field" AS integer
+
+ADD FIELD "_KeyValue-expr" OF "_Index-Field" AS character
+
+ADD FIELD "_If-Attributes" OF "_Index-Field" AS logical
+  EXTENT 64
+
+ADD INDEX "_Field" ON "_Index-Field"
+  INDEX-FIELD "_Field-recid" ASCENDING
+
+ADD INDEX "_Index/Number" ON "_Index-Field"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Index-recid" ASCENDING
+  INDEX-FIELD "_Index-Seq" ASCENDING
+
+ADD TABLE "_User"
+  FROZEN
+
+ADD FIELD "_Userid" OF "_User" AS character
+  MANDATORY
+
+ADD FIELD "_Password" OF "_User" AS character
+  MANDATORY
+
+ADD FIELD "_User-Name" OF "_User" AS character
+
+ADD FIELD "_U-misc1" OF "_User" AS integer
+  EXTENT 8
+
+ADD FIELD "_U-misc2" OF "_User" AS character
+  EXTENT 8
+
+ADD FIELD "_User-Misc" OF "_User" AS character
+
+ADD FIELD "_User_number" OF "_User" AS integer
+
+ADD FIELD "_Group_number" OF "_User" AS integer
+
+ADD FIELD "_Given_name" OF "_User" AS character
+
+ADD FIELD "_Middle_initial" OF "_User" AS character
+
+ADD FIELD "_Surname" OF "_User" AS character
+
+ADD FIELD "_Telephone" OF "_User" AS character
+
+ADD FIELD "_Email" OF "_User" AS character
+
+ADD FIELD "_Description" OF "_User" AS character
+
+ADD FIELD "_Disabled" OF "_User" AS logical
+
+ADD FIELD "_Create_date" OF "_User" AS datetime-tz
+
+ADD FIELD "_Account_expires" OF "_User" AS datetime-tz
+
+ADD FIELD "_Pwd_expires" OF "_User" AS datetime-tz
+
+ADD FIELD "_Pwd_duration" OF "_User" AS integer
+
+ADD FIELD "_Last_login" OF "_User" AS datetime-tz
+
+ADD FIELD "_Logins" OF "_User" AS integer
+
+ADD FIELD "_Max_logins" OF "_User" AS integer
+
+ADD FIELD "_Max_tries" OF "_User" AS integer
+
+ADD FIELD "_Login_failures" OF "_User" AS integer
+
+ADD FIELD "_Spare1" OF "_User" AS integer
+
+ADD FIELD "_Spare2" OF "_User" AS integer
+
+ADD FIELD "_Spare3" OF "_User" AS character
+
+ADD FIELD "_Spare4" OF "_User" AS character
+
+ADD FIELD "_TenantId" OF "_User" AS integer
+  MANDATORY
+
+ADD FIELD "_Domain-Name" OF "_User" AS character
+  MANDATORY
+
+ADD FIELD "_sql-only-user" OF "_User" AS logical
+  MANDATORY
+
+ADD INDEX "_User-domain-name" ON "_User"
+  INDEX-FIELD "_Domain-Name" ASCENDING
+  INDEX-FIELD "_sql-only-user" ASCENDING
+  INDEX-FIELD "_Userid" ASCENDING
+
+ADD INDEX "_User-sql-only-user" ON "_User"
+  INDEX-FIELD "_sql-only-user" ASCENDING
+
+ADD INDEX "_Userid" ON "_User"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Userid" ASCENDING
+  INDEX-FIELD "_Domain-Name" ASCENDING
+
+ADD TABLE "_Db"
+  FROZEN
+
+ADD FIELD "_Db-name" OF "_Db" AS character
+  MANDATORY
+
+ADD FIELD "_Db-addr" OF "_Db" AS character
+
+ADD FIELD "_Db-type" OF "_Db" AS character
+  MANDATORY
+
+ADD FIELD "_Db-comm" OF "_Db" AS character
+  MANDATORY
+
+ADD FIELD "_Db-revision" OF "_Db" AS integer
+
+ADD FIELD "_Db-misc1" OF "_Db" AS integer
+  EXTENT 8
+
+ADD FIELD "_Db-misc2" OF "_Db" AS character
+  EXTENT 8
+
+ADD FIELD "_Db-slave" OF "_Db" AS logical
+  MANDATORY
+
+ADD FIELD "_Db-local" OF "_Db" AS logical
+  MANDATORY
+
+ADD FIELD "_Db-res1" OF "_Db" AS integer
+  EXTENT 8
+
+ADD FIELD "_Db-res2" OF "_Db" AS character
+  EXTENT 8
+
+ADD FIELD "_Db-xlate" OF "_Db" AS raw
+  EXTENT 2
+
+ADD FIELD "_Db-xl-name" OF "_Db" AS character
+
+ADD FIELD "_Db-collate" OF "_Db" AS raw
+  EXTENT 10
+
+ADD FIELD "_Db-coll-name" OF "_Db" AS character
+
+ADD FIELD "_User-Misc" OF "_Db" AS character
+
+ADD FIELD "_Db-guid" OF "_Db" AS character
+
+ADD FIELD "_Db-auth-key" OF "_Db" AS character
+
+ADD INDEX "_Database" ON "_Db"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Db-name" ASCENDING ABBREVIATED
+
+ADD TABLE "_View"
+  FROZEN
+
+ADD FIELD "_Auth-Id" OF "_View" AS character
+
+ADD FIELD "_View-Name" OF "_View" AS character
+  MANDATORY
+
+ADD FIELD "_Base-Tables" OF "_View" AS character
+  MANDATORY
+
+ADD FIELD "_Where-Cls" OF "_View" AS character
+
+ADD FIELD "_Group-By" OF "_View" AS character
+
+ADD FIELD "_View-Def" OF "_View" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Read" OF "_View" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Write" OF "_View" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Create" OF "_View" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Delete" OF "_View" AS character
+  MANDATORY
+
+ADD FIELD "_Updatable" OF "_View" AS logical
+  MANDATORY
+
+ADD FIELD "_Desc" OF "_View" AS character
+
+ADD INDEX "_View-Name" ON "_View"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_View-Name" ASCENDING
+
+ADD TABLE "_View-Col"
+  FROZEN
+
+ADD FIELD "_Auth-Id" OF "_View-Col" AS character
+
+ADD FIELD "_View-Name" OF "_View-Col" AS character
+  MANDATORY
+
+ADD FIELD "_Col-Name" OF "_View-Col" AS character
+  MANDATORY
+
+ADD FIELD "_Base-Col" OF "_View-Col" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Write" OF "_View-Col" AS character
+  MANDATORY
+
+ADD FIELD "_Can-Create" OF "_View-Col" AS character
+  MANDATORY
+
+ADD FIELD "_Vcol-Order" OF "_View-Col" AS integer
+  MANDATORY
+
+ADD INDEX "_Vcol-Position" ON "_View-Col"
+  UNIQUE
+  INDEX-FIELD "_View-Name" ASCENDING
+  INDEX-FIELD "_Vcol-Order" ASCENDING
+
+ADD INDEX "_View-Col" ON "_View-Col"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_View-Name" ASCENDING
+  INDEX-FIELD "_Col-Name" ASCENDING
+
+ADD TABLE "_View-Ref"
+  FROZEN
+
+ADD FIELD "_Auth-Id" OF "_View-Ref" AS character
+
+ADD FIELD "_View-Name" OF "_View-Ref" AS character
+  MANDATORY
+
+ADD FIELD "_Ref-Table" OF "_View-Ref" AS character
+  MANDATORY
+
+ADD FIELD "_Base-Col" OF "_View-Ref" AS character
+
+ADD INDEX "_View-Ref" ON "_View-Ref"
+  PRIMARY
+  INDEX-FIELD "_Ref-Table" ASCENDING
+  INDEX-FIELD "_Base-Col" ASCENDING
+
+ADD INDEX "_Vref-View" ON "_View-Ref"
+  INDEX-FIELD "_View-Name" ASCENDING
+
+ADD TABLE "_File-Trig"
+  FROZEN
+
+ADD FIELD "_File-Recid" OF "_File-Trig" AS recid
+  MANDATORY
+
+ADD FIELD "_Event" OF "_File-Trig" AS character
+  MANDATORY
+
+ADD FIELD "_Proc-Name" OF "_File-Trig" AS character
+  MANDATORY
+
+ADD FIELD "_Override" OF "_File-Trig" AS logical
+  MANDATORY
+
+ADD FIELD "_Trig-Crc" OF "_File-Trig" AS integer
+
+ADD FIELD "_Last-modified" OF "_File-Trig" AS datetime-tz
+
+ADD FIELD "_Mod-sequence" OF "_File-Trig" AS integer
+
+ADD FIELD "_Trigger-Version" OF "_File-Trig" AS integer
+
+ADD FIELD "_DigitalSignature" OF "_File-Trig" AS int64
+
+ADD FIELD "_Rcode" OF "_File-Trig" AS blob
+
+ADD INDEX "_File-Trig" ON "_File-Trig"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_File-Recid" ASCENDING
+  INDEX-FIELD "_Event" ASCENDING ABBREVIATED
+  INDEX-FIELD "_Trigger-Version" ASCENDING
+
+ADD TABLE "_Field-Trig"
+  FROZEN
+
+ADD FIELD "_Field-Recid" OF "_Field-Trig" AS recid
+  MANDATORY
+
+ADD FIELD "_File-Recid" OF "_Field-Trig" AS recid
+  MANDATORY
+
+ADD FIELD "_Field-Rpos" OF "_Field-Trig" AS integer
+
+ADD FIELD "_Event" OF "_Field-Trig" AS character
+  MANDATORY
+
+ADD FIELD "_Proc-Name" OF "_Field-Trig" AS character
+  MANDATORY
+
+ADD FIELD "_Override" OF "_Field-Trig" AS logical
+  MANDATORY
+
+ADD FIELD "_Trig-Crc" OF "_Field-Trig" AS integer
+
+ADD FIELD "_Last-modified" OF "_Field-Trig" AS datetime-tz
+
+ADD FIELD "_Mod-sequence" OF "_Field-Trig" AS integer
+
+ADD FIELD "_Trigger-Version" OF "_Field-Trig" AS integer
+
+ADD FIELD "_DigitalSignature" OF "_Field-Trig" AS int64
+
+ADD FIELD "_Rcode" OF "_Field-Trig" AS blob
+
+ADD INDEX "_Field-Trig-DBK" ON "_Field-Trig"
+  INDEX-FIELD "_Field-Recid" ASCENDING
+
+ADD INDEX "_Field-Trig-Rpos" ON "_Field-Trig"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_File-Recid" ASCENDING
+  INDEX-FIELD "_Field-Rpos" ASCENDING
+  INDEX-FIELD "_Event" ASCENDING ABBREVIATED
+  INDEX-FIELD "_Trigger-Version" ASCENDING
+
+ADD TABLE "_Sequence"
+  FROZEN
+
+ADD FIELD "_Seq-Name" OF "_Sequence" AS character
+  MANDATORY
+
+ADD FIELD "_Seq-Num" OF "_Sequence" AS integer
+
+ADD FIELD "_Seq-Init" OF "_Sequence" AS int64
+  MANDATORY
+
+ADD FIELD "_Seq-Incr" OF "_Sequence" AS int64
+  MANDATORY
+
+ADD FIELD "_Seq-Min" OF "_Sequence" AS int64
+
+ADD FIELD "_Seq-Max" OF "_Sequence" AS int64
+
+ADD FIELD "_Cycle-Ok" OF "_Sequence" AS logical
+  MANDATORY
+
+ADD FIELD "_Seq-Misc" OF "_Sequence" AS character
+  EXTENT 8
+
+ADD FIELD "_Db-recid" OF "_Sequence" AS recid
+  MANDATORY
+
+ADD FIELD "_User-Misc" OF "_Sequence" AS character
+
+ADD FIELD "_Seq-Owner" OF "_Sequence" AS character
+
+ADD FIELD "_Seq-Attributes" OF "_Sequence" AS logical
+  EXTENT 64
+
+ADD FIELD "_Seq-Owner-DomainId" OF "_Sequence" AS int64
+  MANDATORY
+
+ADD FIELD "_Seq-Identifier" OF "_Sequence" AS character
+
+ADD FIELD "_Dropping" OF "_Sequence" AS logical
+
+ADD INDEX "_Seq-Id" ON "_Sequence"
+  UNIQUE
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Seq-Identifier" ASCENDING
+
+ADD INDEX "_Seq-Name" ON "_Sequence"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Seq-Owner" ASCENDING
+  INDEX-FIELD "_Seq-Name" ASCENDING ABBREVIATED
+
+ADD TABLE "_Codepage"
+  FROZEN
+
+ADD FIELD "_Cp-Name" OF "_Codepage" AS character
+
+ADD FIELD "_Cp-Sequence" OF "_Codepage" AS integer
+
+ADD FIELD "_Cp-Dbrecid" OF "_Codepage" AS recid
+
+ADD FIELD "_Cp-Attr" OF "_Codepage" AS raw
+
+ADD INDEX "_Codepage-Name" ON "_Codepage"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Cp-Dbrecid" ASCENDING
+  INDEX-FIELD "_Cp-Name" ASCENDING
+
+ADD INDEX "_Codepage-Seq" ON "_Codepage"
+  UNIQUE
+  INDEX-FIELD "_Cp-Sequence" ASCENDING
+
+ADD TABLE "_Collation"
+  FROZEN
+
+ADD FIELD "_Coll-Name" OF "_Collation" AS character
+
+ADD FIELD "_Coll-Sequence" OF "_Collation" AS integer
+
+ADD FIELD "_Coll-Cp" OF "_Collation" AS integer
+
+ADD FIELD "_Coll-Tran-Version" OF "_Collation" AS integer
+
+ADD FIELD "_Coll-Tran-Subtype" OF "_Collation" AS integer
+
+ADD FIELD "_Coll-Segment" OF "_Collation" AS integer
+
+ADD FIELD "_Coll-Data" OF "_Collation" AS raw
+
+ADD FIELD "_Coll-CSData" OF "_Collation" AS blob
+
+ADD FIELD "_Coll-CIData" OF "_Collation" AS blob
+
+ADD FIELD "_Coll-CXData" OF "_Collation" AS blob
+
+ADD INDEX "_Collation-Name" ON "_Collation"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Coll-Cp" ASCENDING
+  INDEX-FIELD "_Coll-Name" ASCENDING
+  INDEX-FIELD "_Coll-Segment" ASCENDING
+
+ADD INDEX "_Collation-Seq" ON "_Collation"
+  UNIQUE
+  INDEX-FIELD "_Coll-Sequence" ASCENDING
+
+ADD TABLE "_StorageObject"
+  FROZEN
+
+ADD FIELD "_Db-recid" OF "_StorageObject" AS recid
+  MANDATORY
+
+ADD FIELD "_Object-type" OF "_StorageObject" AS integer
+  MANDATORY
+
+ADD FIELD "_Object-number" OF "_StorageObject" AS integer
+  MANDATORY
+
+ADD FIELD "_Object-associate-type" OF "_StorageObject" AS integer
+
+ADD FIELD "_Object-associate" OF "_StorageObject" AS integer
+
+ADD FIELD "_Area-number" OF "_StorageObject" AS integer
+  MANDATORY
+
+ADD FIELD "_Object-block" OF "_StorageObject" AS recid
+
+ADD FIELD "_Object-root" OF "_StorageObject" AS recid
+
+ADD FIELD "_Object-attrib" OF "_StorageObject" AS integer
+
+ADD FIELD "_Object-system" OF "_StorageObject" AS integer
+
+ADD FIELD "_Object-misc" OF "_StorageObject" AS integer
+  EXTENT 8
+
+ADD FIELD "_Create-Limit" OF "_StorageObject" AS integer
+
+ADD FIELD "_Toss-Limit" OF "_StorageObject" AS integer
+
+ADD FIELD "_PartitionId" OF "_StorageObject" AS integer
+  MANDATORY
+
+ADD FIELD "_CollationId" OF "_StorageObject" AS integer
+
+ADD FIELD "_Object-state" OF "_StorageObject" AS integer
+  MANDATORY
+
+ADD INDEX "_Object-Area-Number" ON "_StorageObject"
+  INDEX-FIELD "_Area-number" ASCENDING
+
+ADD INDEX "_Object-Id" ON "_StorageObject"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Object-type" ASCENDING
+  INDEX-FIELD "_Object-number" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_CollationId" ASCENDING
+
+ADD INDEX "_Object-PartitionId" ON "_StorageObject"
+  INDEX-FIELD "_PartitionId" ASCENDING
+
+ADD TABLE "_Area"
+  FROZEN
+
+ADD FIELD "_Area-version" OF "_Area" AS integer
+
+ADD FIELD "_Area-number" OF "_Area" AS integer
+  MANDATORY
+
+ADD FIELD "_Area-name" OF "_Area" AS character
+  MANDATORY
+
+ADD FIELD "_Area-type" OF "_Area" AS integer
+  MANDATORY
+
+ADD FIELD "_Area-block" OF "_Area" AS recid
+
+ADD FIELD "_Area-attrib" OF "_Area" AS integer
+  MANDATORY
+
+ADD FIELD "_Area-clustersize" OF "_Area" AS integer
+
+ADD FIELD "_Area-blocksize" OF "_Area" AS integer
+  MANDATORY
+
+ADD FIELD "_Area-recbits" OF "_Area" AS integer
+
+ADD FIELD "_Area-extents" OF "_Area" AS integer
+
+ADD FIELD "_Area-misc" OF "_Area" AS integer
+  EXTENT 8
+
+ADD INDEX "_Area-Number" ON "_Area"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Area-number" ASCENDING
+
+ADD TABLE "_AreaExtent"
+  FROZEN
+
+ADD FIELD "_Area-recid" OF "_AreaExtent" AS recid
+  MANDATORY
+
+ADD FIELD "_Extent-version" OF "_AreaExtent" AS integer
+
+ADD FIELD "_Extent-number" OF "_AreaExtent" AS integer
+
+ADD FIELD "_Area-number" OF "_AreaExtent" AS integer
+
+ADD FIELD "_Extent-type" OF "_AreaExtent" AS integer
+  MANDATORY
+
+ADD FIELD "_Extent-attrib" OF "_AreaExtent" AS integer
+
+ADD FIELD "_Extent-system" OF "_AreaExtent" AS integer
+
+ADD FIELD "_Extent-size" OF "_AreaExtent" AS integer
+  MANDATORY
+
+ADD FIELD "_Extent-path" OF "_AreaExtent" AS character
+  MANDATORY
+
+ADD FIELD "_Extent-misc" OF "_AreaExtent" AS integer
+  EXTENT 8
+
+ADD INDEX "_AreaExtent-Area" ON "_AreaExtent"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Area-number" ASCENDING
+  INDEX-FIELD "_Extent-number" ASCENDING
+
+ADD TABLE "_Word-rule"
+  FROZEN
+
+ADD FIELD "_Wr-Number" OF "_Word-rule" AS integer
+  MANDATORY
+
+ADD FIELD "_Wr-Name" OF "_Word-rule" AS character
+
+ADD FIELD "_Wr-Cp" OF "_Word-rule" AS integer
+
+ADD FIELD "_Wr-Version" OF "_Word-rule" AS integer
+  MANDATORY
+
+ADD FIELD "_Wr-Type" OF "_Word-rule" AS integer
+
+ADD FIELD "_Wr-Segment" OF "_Word-rule" AS integer
+
+ADD FIELD "_Wr-Attr" OF "_Word-rule" AS raw
+
+ADD INDEX "_Wr-Number" ON "_Word-rule"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Wr-Number" ASCENDING
+  INDEX-FIELD "_Wr-Segment" ASCENDING
+
+ADD TABLE "_Sysviews"
+  FROZEN
+
+ADD FIELD "_Viewname" OF "_Sysviews" AS character
+  MANDATORY
+
+ADD FIELD "_Creator" OF "_Sysviews" AS character
+  MANDATORY
+
+ADD FIELD "_Owner" OF "_Sysviews" AS character
+  MANDATORY
+
+ADD FIELD "_Seq" OF "_Sysviews" AS integer
+  MANDATORY
+
+ADD FIELD "_Viewtext" OF "_Sysviews" AS character
+  MANDATORY
+
+ADD FIELD "_Owner-DomainId" OF "_Sysviews" AS int64
+  MANDATORY
+
+ADD FIELD "_Creator-DomainId" OF "_Sysviews" AS int64
+  MANDATORY
+
+ADD INDEX "_Viewidx" ON "_Sysviews"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Viewname" ASCENDING
+  INDEX-FIELD "_Seq" ASCENDING
+
+ADD TABLE "_Sysdbauth"
+  FROZEN
+
+ADD FIELD "_Grantee" OF "_Sysdbauth" AS character
+  MANDATORY
+
+ADD FIELD "_Dbaacc" OF "_Sysdbauth" AS character
+  MANDATORY
+
+ADD FIELD "_Resacc" OF "_Sysdbauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantee-DomainId" OF "_Sysdbauth" AS int64
+  MANDATORY
+
+ADD FIELD "_AuthMask" OF "_Sysdbauth" AS int64
+  MANDATORY
+
+ADD FIELD "_AuthVer" OF "_Sysdbauth" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysdbauth" ON "_Sysdbauth"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Grantee-DomainId" ASCENDING
+  INDEX-FIELD "_Grantee" ASCENDING
+  INDEX-FIELD "_AuthVer" DESCENDING
+
+ADD TABLE "_Systabauth"
+  FROZEN
+
+ADD FIELD "_Grantor" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantee" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Tblowner" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Tbl" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Ins" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Del" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Upd" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Sel" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Exe" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Ndx" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Alt" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Ref" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantor-DomainId" OF "_Systabauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Grantee-DomainId" OF "_Systabauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Dump" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_Load" OF "_Systabauth" AS character
+  MANDATORY
+
+ADD FIELD "_AuthMask" OF "_Systabauth" AS int64
+  MANDATORY
+
+ADD FIELD "_SnapshotVer" OF "_Systabauth" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsystabauth" ON "_Systabauth"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Tblowner" ASCENDING
+  INDEX-FIELD "_Tbl" ASCENDING
+  INDEX-FIELD "_Grantee-DomainId" ASCENDING
+  INDEX-FIELD "_Grantee" ASCENDING
+  INDEX-FIELD "_Grantor-DomainId" ASCENDING
+  INDEX-FIELD "_Grantor" ASCENDING
+  INDEX-FIELD "_SnapshotVer" ASCENDING
+
+ADD TABLE "_Syscolauth"
+  FROZEN
+
+ADD FIELD "_Grantor" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantee" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Tblowner" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Tbl" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Col" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Upd" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Ref" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Sel" OF "_Syscolauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantor-DomainId" OF "_Syscolauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Grantee-DomainId" OF "_Syscolauth" AS int64
+  MANDATORY
+
+ADD FIELD "_AuthMask" OF "_Syscolauth" AS int64
+  MANDATORY
+
+ADD FIELD "_SnapshotVer" OF "_Syscolauth" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsyscolauth" ON "_Syscolauth"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Tblowner" ASCENDING
+  INDEX-FIELD "_Tbl" ASCENDING
+  INDEX-FIELD "_Grantee-DomainId" ASCENDING
+  INDEX-FIELD "_Grantee" ASCENDING
+  INDEX-FIELD "_Col" ASCENDING
+  INDEX-FIELD "_SnapshotVer" ASCENDING
+
+ADD TABLE "_Syssynonyms"
+  FROZEN
+
+ADD FIELD "_Sname" OF "_Syssynonyms" AS character
+  MANDATORY
+
+ADD FIELD "_Sowner" OF "_Syssynonyms" AS character
+  MANDATORY
+
+ADD FIELD "_Screator" OF "_Syssynonyms" AS character
+  MANDATORY
+
+ADD FIELD "_Stbl" OF "_Syssynonyms" AS character
+  MANDATORY
+
+ADD FIELD "_Stblowner" OF "_Syssynonyms" AS character
+  MANDATORY
+
+ADD FIELD "_Ispublic" OF "_Syssynonyms" AS short
+  MANDATORY
+
+ADD FIELD "_Sremdb" OF "_Syssynonyms" AS character
+
+ADD FIELD "_Sowner-DomainId" OF "_Syssynonyms" AS int64
+  MANDATORY
+
+ADD FIELD "_Screator-DomainId" OF "_Syssynonyms" AS int64
+  MANDATORY
+
+ADD INDEX "_Sysprvsynidx" ON "_Syssynonyms"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Sname" ASCENDING
+  INDEX-FIELD "_Sowner" ASCENDING
+  INDEX-FIELD "_Ispublic" ASCENDING
+
+ADD INDEX "_Syspubsynidx" ON "_Syssynonyms"
+  INDEX-FIELD "_Sname" ASCENDING
+
+ADD TABLE "_Syskeycolusage"
+  FROZEN
+
+ADD FIELD "_Owner" OF "_Syskeycolusage" AS character
+  MANDATORY
+
+ADD FIELD "_Tblname" OF "_Syskeycolusage" AS character
+  MANDATORY
+
+ADD FIELD "_Cnstrname" OF "_Syskeycolusage" AS character
+  MANDATORY
+
+ADD FIELD "_Colname" OF "_Syskeycolusage" AS character
+  MANDATORY
+
+ADD FIELD "_Colposition" OF "_Syskeycolusage" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxkeycolusage" ON "_Syskeycolusage"
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Tblname" ASCENDING
+  INDEX-FIELD "_Cnstrname" ASCENDING
+  INDEX-FIELD "_Colposition" ASCENDING
+
+ADD TABLE "_Sysrefconstrs"
+  FROZEN
+
+ADD FIELD "_Owner" OF "_Sysrefconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Tblname" OF "_Sysrefconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Cnstrname" OF "_Sysrefconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Refowner" OF "_Sysrefconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Reftblname" OF "_Sysrefconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Refcnstrname" OF "_Sysrefconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Deleterule" OF "_Sysrefconstrs" AS character
+  MANDATORY
+
+ADD INDEX "_Idxrefcnstrsref" ON "_Sysrefconstrs"
+  INDEX-FIELD "_Refowner" ASCENDING
+  INDEX-FIELD "_Reftblname" ASCENDING
+  INDEX-FIELD "_Refcnstrname" ASCENDING
+
+ADD INDEX "_Idxrefconstrs" ON "_Sysrefconstrs"
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Tblname" ASCENDING
+  INDEX-FIELD "_Cnstrname" ASCENDING
+
+ADD TABLE "_Syschkconstrs"
+  FROZEN
+
+ADD FIELD "_Owner" OF "_Syschkconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Tblname" OF "_Syschkconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Cnstrname" OF "_Syschkconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Chkseq" OF "_Syschkconstrs" AS integer
+  MANDATORY
+
+ADD FIELD "_Chkclause" OF "_Syschkconstrs" AS character
+  MANDATORY
+
+ADD INDEX "_Idxchkconstrs" ON "_Syschkconstrs"
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Tblname" ASCENDING
+  INDEX-FIELD "_Cnstrname" ASCENDING
+
+ADD TABLE "_Systblconstrs"
+  FROZEN
+
+ADD FIELD "_Owner" OF "_Systblconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Tblname" OF "_Systblconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Cnstrname" OF "_Systblconstrs" AS character
+  MANDATORY
+
+ADD FIELD "_Cnstrtype" OF "_Systblconstrs" AS character
+
+ADD FIELD "_Idxname" OF "_Systblconstrs" AS character
+
+ADD INDEX "_Idxtblconstrs" ON "_Systblconstrs"
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Tblname" ASCENDING
+  INDEX-FIELD "_Cnstrname" ASCENDING
+
+ADD TABLE "_Syschkcolusage"
+  FROZEN
+
+ADD FIELD "_Owner" OF "_Syschkcolusage" AS character
+  MANDATORY
+
+ADD FIELD "_Tblname" OF "_Syschkcolusage" AS character
+  MANDATORY
+
+ADD FIELD "_Cnstrname" OF "_Syschkcolusage" AS character
+  MANDATORY
+
+ADD FIELD "_Colname" OF "_Syschkcolusage" AS character
+  MANDATORY
+
+ADD INDEX "_Idxchkcolcolusage" ON "_Syschkcolusage"
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Tblname" ASCENDING
+  INDEX-FIELD "_Colname" ASCENDING
+
+ADD INDEX "_Idxchkcolusage" ON "_Syschkcolusage"
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Tblname" ASCENDING
+  INDEX-FIELD "_Cnstrname" ASCENDING
+
+ADD TABLE "_Sysdatatypes"
+  FROZEN
+
+ADD FIELD "_Dhtypename" OF "_Sysdatatypes" AS character
+  MANDATORY
+
+ADD FIELD "_Datatype" OF "_Sysdatatypes" AS short
+  MANDATORY
+
+ADD FIELD "_Typeprecision" OF "_Sysdatatypes" AS integer
+
+ADD FIELD "_Literalprefix" OF "_Sysdatatypes" AS character
+
+ADD FIELD "_Literalsuffix" OF "_Sysdatatypes" AS character
+
+ADD FIELD "_Createparams" OF "_Sysdatatypes" AS character
+
+ADD FIELD "_Nullable" OF "_Sysdatatypes" AS short
+
+ADD FIELD "_Casesensitive" OF "_Sysdatatypes" AS short
+
+ADD FIELD "_Searchable" OF "_Sysdatatypes" AS short
+
+ADD FIELD "_Unsignedattr" OF "_Sysdatatypes" AS short
+
+ADD FIELD "_Odbcmoney" OF "_Sysdatatypes" AS short
+
+ADD FIELD "_Autoincr" OF "_Sysdatatypes" AS short
+
+ADD FIELD "_Localtypename" OF "_Sysdatatypes" AS character
+
+ADD INDEX "_Idxsysdatatypes" ON "_Sysdatatypes"
+  PRIMARY
+  INDEX-FIELD "_Datatype" ASCENDING
+
+ADD TABLE "_Syscalctable"
+  FROZEN
+
+ADD FIELD "_Fld" OF "_Syscalctable" AS integer
+
+ADD INDEX "_Idxsyscalctable" ON "_Syscalctable"
+  PRIMARY
+  INDEX-FIELD "_Fld" ASCENDING
+
+ADD TABLE "_Systblstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Systblstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Systblstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Systblstat" AS integer
+
+ADD FIELD "_Value" OF "_Systblstat" AS int64
+
+ADD FIELD "_Val_ts" OF "_Systblstat" AS timestamp
+
+ADD FIELD "_PartitionId" OF "_Systblstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsystblstat" ON "_Systblstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysidxstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysidxstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Idxid" OF "_Sysidxstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysidxstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysidxstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysidxstat" AS int64
+
+ADD FIELD "_Val_ts" OF "_Sysidxstat" AS timestamp
+
+ADD FIELD "_PartitionId" OF "_Sysidxstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysidxstat" ON "_Sysidxstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_Idxid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysprocedures"
+  FROZEN
+
+ADD FIELD "_Procid" OF "_Sysprocedures" AS integer
+  MANDATORY
+
+ADD FIELD "_Procname" OF "_Sysprocedures" AS character
+  MANDATORY
+
+ADD FIELD "_Creator" OF "_Sysprocedures" AS character
+  MANDATORY
+
+ADD FIELD "_Owner" OF "_Sysprocedures" AS character
+  MANDATORY
+
+ADD FIELD "_Rssid" OF "_Sysprocedures" AS integer
+  MANDATORY
+
+ADD FIELD "_Proctype" OF "_Sysprocedures" AS character
+  MANDATORY
+
+ADD FIELD "_Hasresultset" OF "_Sysprocedures" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Hasreturnval" OF "_Sysprocedures" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Lang" OF "_Sysprocedures" AS integer
+
+ADD FIELD "_Owner-DomainId" OF "_Sysprocedures" AS int64
+  MANDATORY
+
+ADD FIELD "_Creator-DomainId" OF "_Sysprocedures" AS int64
+  MANDATORY
+
+ADD INDEX "_Idxsysprocedures" ON "_Sysprocedures"
+  PRIMARY
+  INDEX-FIELD "_Procname" ASCENDING
+
+ADD TABLE "_Sysproccolumns"
+  FROZEN
+
+ADD FIELD "_Id" OF "_Sysproccolumns" AS integer
+  MANDATORY
+
+ADD FIELD "_Col" OF "_Sysproccolumns" AS character
+  MANDATORY
+
+ADD FIELD "_Procid" OF "_Sysproccolumns" AS integer
+  MANDATORY
+
+ADD FIELD "_Rssid" OF "_Sysproccolumns" AS integer
+  MANDATORY
+
+ADD FIELD "_Datatype" OF "_Sysproccolumns" AS character
+  MANDATORY
+
+ADD FIELD "_Argtype" OF "_Sysproccolumns" AS character
+  MANDATORY
+
+ADD FIELD "_Width" OF "_Sysproccolumns" AS integer
+  MANDATORY
+
+ADD FIELD "_Scale" OF "_Sysproccolumns" AS integer
+
+ADD FIELD "_Nullflag" OF "_Sysproccolumns" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Dfltvalue" OF "_Sysproccolumns" AS character
+
+ADD INDEX "_Idxsysproccolumns" ON "_Sysproccolumns"
+  PRIMARY
+  INDEX-FIELD "_Procid" ASCENDING
+
+ADD TABLE "_Systrigger"
+  FROZEN
+
+ADD FIELD "_Triggerid" OF "_Systrigger" AS integer
+
+ADD FIELD "_Triggername" OF "_Systrigger" AS character
+  MANDATORY
+
+ADD FIELD "_Owner" OF "_Systrigger" AS character
+  MANDATORY
+
+ADD FIELD "_Tbl" OF "_Systrigger" AS character
+  MANDATORY
+
+ADD FIELD "_Tblowner" OF "_Systrigger" AS character
+  MANDATORY
+
+ADD FIELD "_Triggertime" OF "_Systrigger" AS character
+  MANDATORY
+
+ADD FIELD "_Triggerevent" OF "_Systrigger" AS character
+  MANDATORY
+
+ADD FIELD "_Referstoold" OF "_Systrigger" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Referstonew" OF "_Systrigger" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Statementorrow" OF "_Systrigger" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Rssid" OF "_Systrigger" AS integer
+  MANDATORY
+
+ADD FIELD "_Fire_4GL" OF "_Systrigger" AS logical
+  MANDATORY
+
+ADD FIELD "_Owner-DomainId" OF "_Systrigger" AS int64
+  MANDATORY
+
+ADD INDEX "_Idxsystrigger" ON "_Systrigger"
+  PRIMARY
+  INDEX-FIELD "_Tbl" ASCENDING
+
+ADD TABLE "_Systrigcols"
+  FROZEN
+
+ADD FIELD "_Triggername" OF "_Systrigcols" AS character
+  MANDATORY
+
+ADD FIELD "_Owner" OF "_Systrigcols" AS character
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Systrigcols" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsystrigcols" ON "_Systrigcols"
+  PRIMARY
+  INDEX-FIELD "_Triggername" ASCENDING
+
+ADD TABLE "_Sysprocbin"
+  FROZEN
+
+ADD FIELD "_Rssid" OF "_Sysprocbin" AS integer
+  MANDATORY
+
+ADD FIELD "_Id" OF "_Sysprocbin" AS integer
+  MANDATORY
+
+ADD FIELD "_Proctype" OF "_Sysprocbin" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Seq" OF "_Sysprocbin" AS integer
+  MANDATORY
+
+ADD FIELD "_Procbin" OF "_Sysprocbin" AS raw
+
+ADD INDEX "_Idxsysprocbin" ON "_Sysprocbin"
+  PRIMARY
+  INDEX-FIELD "_Id" ASCENDING
+  INDEX-FIELD "_Rssid" ASCENDING
+
+ADD TABLE "_Sysproctext"
+  FROZEN
+
+ADD FIELD "_Rssid" OF "_Sysproctext" AS integer
+  MANDATORY
+
+ADD FIELD "_Id" OF "_Sysproctext" AS integer
+  MANDATORY
+
+ADD FIELD "_Proctype" OF "_Sysproctext" AS fixchar
+  MANDATORY
+
+ADD FIELD "_Seq" OF "_Sysproctext" AS integer
+  MANDATORY
+
+ADD FIELD "_Proctext" OF "_Sysproctext" AS character
+
+ADD INDEX "_Idxsysproctext" ON "_Sysproctext"
+  PRIMARY
+  INDEX-FIELD "_Id" ASCENDING
+
+ADD TABLE "_Syscolstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Syscolstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Syscolstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Syscolstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Syscolstat" AS integer
+
+ADD FIELD "_Value" OF "_Syscolstat" AS int64
+
+ADD FIELD "_Val_ts" OF "_Syscolstat" AS timestamp
+
+ADD FIELD "_PartitionId" OF "_Syscolstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsyscolstat" ON "_Syscolstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysvarcharstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysvarcharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysvarcharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysvarcharstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysvarcharstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysvarcharstat" AS character
+
+ADD FIELD "_PartitionId" OF "_Sysvarcharstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysvarcharstat" ON "_Sysvarcharstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Syssmintstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Syssmintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Syssmintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Syssmintstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Syssmintstat" AS integer
+
+ADD FIELD "_Value" OF "_Syssmintstat" AS short
+
+ADD FIELD "_PartitionId" OF "_Syssmintstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsyssmintstat" ON "_Syssmintstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysintstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysintstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysintstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysintstat" AS integer
+
+ADD FIELD "_PartitionId" OF "_Sysintstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysintstat" ON "_Sysintstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysnumstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysnumstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysnumstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysnumstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysnumstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysnumstat" AS decimal
+
+ADD FIELD "_PartitionId" OF "_Sysnumstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysnumstat" ON "_Sysnumstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysdatestat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysdatestat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysdatestat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysdatestat" AS integer
+  MANDATORY
+
+ADD FIELD "_Attribute" OF "_Sysdatestat" AS integer
+
+ADD FIELD "_Value" OF "_Sysdatestat" AS date
+
+ADD FIELD "_PartitionId" OF "_Sysdatestat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysdatestat" ON "_Sysdatestat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysfloatstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysfloatstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysfloatstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysfloatstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysfloatstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysfloatstat" AS double
+
+ADD FIELD "_PartitionId" OF "_Sysfloatstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysfloatstat" ON "_Sysfloatstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Systimestat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Systimestat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Systimestat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Systimestat" AS integer
+
+ADD FIELD "_Attribute" OF "_Systimestat" AS integer
+
+ADD FIELD "_Value" OF "_Systimestat" AS time
+
+ADD FIELD "_PartitionId" OF "_Systimestat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsystimestat" ON "_Systimestat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Syscharstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Syscharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Syscharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Syscharstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Syscharstat" AS integer
+
+ADD FIELD "_Value" OF "_Syscharstat" AS character
+
+ADD FIELD "_PartitionId" OF "_Syscharstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsyscharstat" ON "_Syscharstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysrealstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysrealstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysrealstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysrealstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysrealstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysrealstat" AS float
+
+ADD FIELD "_PartitionId" OF "_Sysrealstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysrealstat" ON "_Sysrealstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Systsstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Systsstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Systsstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Systsstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Systsstat" AS integer
+
+ADD FIELD "_Value" OF "_Systsstat" AS timestamp
+
+ADD FIELD "_PartitionId" OF "_Systsstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsystsstat" ON "_Systsstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Systinyintstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Systinyintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Systinyintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Systinyintstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Systinyintstat" AS integer
+
+ADD FIELD "_Value" OF "_Systinyintstat" AS integer
+
+ADD FIELD "_PartitionId" OF "_Systinyintstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsystinyintstat" ON "_Systinyintstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysbigintstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysbigintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysbigintstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysbigintstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysbigintstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysbigintstat" AS bigint
+
+ADD FIELD "_PartitionId" OF "_Sysbigintstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysbigintstat" ON "_Sysbigintstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysncharstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysncharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysncharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysncharstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysncharstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysncharstat" AS fixchar
+
+ADD FIELD "_PartitionId" OF "_Sysncharstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysncharstat" ON "_Sysncharstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysnvarcharstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Sysnvarcharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Sysnvarcharstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Sysnvarcharstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Sysnvarcharstat" AS integer
+
+ADD FIELD "_Value" OF "_Sysnvarcharstat" AS character
+
+ADD FIELD "_PartitionId" OF "_Sysnvarcharstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysnvarcharstat" ON "_Sysnvarcharstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Syststzstat"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_Syststzstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_Syststzstat" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_Syststzstat" AS integer
+
+ADD FIELD "_Attribute" OF "_Syststzstat" AS integer
+
+ADD FIELD "_Value" OF "_Syststzstat" AS datetime-tz
+
+ADD FIELD "_PartitionId" OF "_Syststzstat" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsyststzstat" ON "_Syststzstat"
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysseqauth"
+  FROZEN
+
+ADD FIELD "_Grantor" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantee" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Seq-Owner" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Seq-Name" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Upd" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Ref" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Sel" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantor-DomainId" OF "_Sysseqauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Grantee-DomainId" OF "_Sysseqauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Dump" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_Load" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_AuthMask" OF "_Sysseqauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Alt" OF "_Sysseqauth" AS character
+  MANDATORY
+
+ADD FIELD "_SnapshotVer" OF "_Sysseqauth" AS integer
+  MANDATORY
+
+ADD INDEX "_Idxsysseqauth" ON "_Sysseqauth"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Seq-Owner" ASCENDING
+  INDEX-FIELD "_Seq-Name" ASCENDING
+  INDEX-FIELD "_Grantee-DomainId" ASCENDING
+  INDEX-FIELD "_Grantee" ASCENDING
+  INDEX-FIELD "_Grantor-DomainId" ASCENDING
+  INDEX-FIELD "_Grantor" ASCENDING
+  INDEX-FIELD "_SnapshotVer" ASCENDING
+
+ADD TABLE "_Sysviews_Name_Map"
+  FROZEN
+
+ADD FIELD "_Owner" OF "_Sysviews_Name_Map" AS character
+  MANDATORY
+
+ADD FIELD "_Viewname" OF "_Sysviews_Name_Map" AS character
+  MANDATORY
+
+ADD FIELD "_Seq" OF "_Sysviews_Name_Map" AS integer
+
+ADD FIELD "_Name_loc" OF "_Sysviews_Name_Map" AS integer
+
+ADD INDEX "_Idxsysviewsnmmap" ON "_Sysviews_Name_Map"
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Viewname" ASCENDING
+  INDEX-FIELD "_Seq" ASCENDING
+
+ADD TABLE "_Syschkconstr_Name_Map"
+  FROZEN
+
+ADD FIELD "_Owner" OF "_Syschkconstr_Name_Map" AS character
+  MANDATORY
+
+ADD FIELD "_Tblname" OF "_Syschkconstr_Name_Map" AS character
+  MANDATORY
+
+ADD FIELD "_Cnstrname" OF "_Syschkconstr_Name_Map" AS character
+  MANDATORY
+
+ADD FIELD "_Seq" OF "_Syschkconstr_Name_Map" AS integer
+
+ADD FIELD "_Name_loc" OF "_Syschkconstr_Name_Map" AS integer
+
+ADD INDEX "_Idxsyschkconstrnmmap" ON "_Syschkconstr_Name_Map"
+  PRIMARY
+  INDEX-FIELD "_Owner" ASCENDING
+  INDEX-FIELD "_Tblname" ASCENDING
+  INDEX-FIELD "_Cnstrname" ASCENDING
+  INDEX-FIELD "_Seq" ASCENDING
+
+ADD TABLE "_Sysroles"
+  FROZEN
+
+ADD FIELD "_Rolename" OF "_Sysroles" AS character
+  MANDATORY
+
+ADD FIELD "_Grantor" OF "_Sysroles" AS character
+  MANDATORY
+
+ADD FIELD "_Grantee" OF "_Sysroles" AS character
+  MANDATORY
+
+ADD FIELD "_Admin" OF "_Sysroles" AS logical
+
+ADD INDEX "_Idxsysroles" ON "_Sysroles"
+  PRIMARY
+  INDEX-FIELD "_Rolename" ASCENDING
+  INDEX-FIELD "_Grantor" ASCENDING
+  INDEX-FIELD "_Grantee" ASCENDING
+
+ADD TABLE "_Sysschemas"
+  FROZEN
+
+ADD FIELD "_Schemaname" OF "_Sysschemas" AS character
+  MANDATORY
+
+ADD FIELD "_Owner" OF "_Sysschemas" AS character
+  MANDATORY
+
+ADD FIELD "_Owner-DomainId" OF "_Sysschemas" AS int64
+  MANDATORY
+
+ADD INDEX "_Idxsysschemas" ON "_Sysschemas"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Schemaname" ASCENDING
+
+ADD TABLE "_SQL_Properties"
+  FROZEN
+
+ADD FIELD "_Property" OF "_SQL_Properties" AS integer
+  MANDATORY
+
+ADD FIELD "_Attribute" OF "_SQL_Properties" AS integer
+
+ADD FIELD "_Value_n" OF "_SQL_Properties" AS integer
+
+ADD FIELD "_Value_ch" OF "_SQL_Properties" AS character
+
+ADD FIELD "_Tblid" OF "_SQL_Properties" AS integer
+  MANDATORY
+
+ADD FIELD "_Value_ts" OF "_SQL_Properties" AS timestamp
+
+ADD INDEX "_Idxsqlproperties" ON "_SQL_Properties"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+  INDEX-FIELD "_Tblid" ASCENDING
+
+ADD TABLE "_Sysautostats"
+  FROZEN
+
+ADD FIELD "_PolicyType" OF "_Sysautostats" AS integer
+  MANDATORY
+
+ADD FIELD "_IntervalType" OF "_Sysautostats" AS integer
+  MANDATORY
+
+ADD FIELD "_IntervalValue" OF "_Sysautostats" AS integer
+  MANDATORY
+
+ADD FIELD "_TableId" OF "_Sysautostats" AS integer
+  MANDATORY
+
+ADD FIELD "_TenantId" OF "_Sysautostats" AS integer
+  MANDATORY
+
+ADD FIELD "_Misc" OF "_Sysautostats" AS clob
+
+ADD INDEX "_Sysautostats-Policy" ON "_Sysautostats"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_PolicyType" ASCENDING
+  INDEX-FIELD "_TenantId" ASCENDING
+  INDEX-FIELD "_TableId" ASCENDING
+
+ADD INDEX "_Sysautostats-Table" ON "_Sysautostats"
+  INDEX-FIELD "_TenantId" ASCENDING
+  INDEX-FIELD "_TableId" ASCENDING
+
+ADD TABLE "_SysStatUse"
+  FROZEN
+
+ADD FIELD "_Tblid" OF "_SysStatUse" AS integer
+  MANDATORY
+
+ADD FIELD "_PartitionId" OF "_SysStatUse" AS integer
+  MANDATORY
+
+ADD FIELD "_Colid" OF "_SysStatUse" AS integer
+  MANDATORY
+
+ADD FIELD "_Property" OF "_SysStatUse" AS integer
+
+ADD FIELD "_Attribute" OF "_SysStatUse" AS integer
+
+ADD FIELD "_History" OF "_SysStatUse" AS integer
+
+ADD FIELD "_Value" OF "_SysStatUse" AS bigint
+
+ADD FIELD "_Value_ts" OF "_SysStatUse" AS timestamp
+
+ADD FIELD "_Misc" OF "_SysStatUse" AS character
+  EXTENT 8
+
+ADD FIELD "_Misc1" OF "_SysStatUse" AS character
+  EXTENT 8
+
+ADD INDEX "_IdxSysStatUse" ON "_SysStatUse"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Tblid" ASCENDING
+  INDEX-FIELD "_PartitionId" ASCENDING
+  INDEX-FIELD "_Colid" ASCENDING
+  INDEX-FIELD "_Property" ASCENDING
+  INDEX-FIELD "_Attribute" ASCENDING
+
+ADD TABLE "_Sysprocauth"
+  FROZEN
+
+ADD FIELD "_Grantor" OF "_Sysprocauth" AS character
+  MANDATORY
+
+ADD FIELD "_Grantee" OF "_Sysprocauth" AS character
+  MANDATORY
+
+ADD FIELD "_Procowner" OF "_Sysprocauth" AS character
+  MANDATORY
+
+ADD FIELD "_Procname" OF "_Sysprocauth" AS character
+  MANDATORY
+
+ADD FIELD "_Exe" OF "_Sysprocauth" AS character
+  MANDATORY
+
+ADD FIELD "_Alt" OF "_Sysprocauth" AS character
+  MANDATORY
+
+ADD FIELD "_AuthMask" OF "_Sysprocauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Grantor-DomainId" OF "_Sysprocauth" AS int64
+  MANDATORY
+
+ADD FIELD "_Grantee-DomainId" OF "_Sysprocauth" AS int64
+  MANDATORY
+
+ADD FIELD "_SnapshotVer" OF "_Sysprocauth" AS integer
+  MANDATORY
+
+ADD INDEX "_IdxSysProcAuth" ON "_Sysprocauth"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Procowner" ASCENDING
+  INDEX-FIELD "_Procname" ASCENDING
+  INDEX-FIELD "_Grantee-DomainId" ASCENDING
+  INDEX-FIELD "_Grantee" ASCENDING
+  INDEX-FIELD "_Grantor-DomainId" ASCENDING
+  INDEX-FIELD "_Grantor" ASCENDING
+  INDEX-FIELD "_SnapshotVer" ASCENDING
+
+ADD TABLE "_Client-Session"
+  FROZEN
+
+ADD FIELD "_Client-session-uuid" OF "_Client-Session" AS character
+
+ADD FIELD "_Client-name" OF "_Client-Session" AS character
+
+ADD FIELD "_User-id" OF "_Client-Session" AS character
+
+ADD FIELD "_Authentication-date-time" OF "_Client-Session" AS datetime-tz
+
+ADD FIELD "_Server-uuid" OF "_Client-Session" AS character
+
+ADD FIELD "_Authentication-domain-type" OF "_Client-Session" AS character
+
+ADD FIELD "_Authentication-domain-name" OF "_Client-Session" AS character
+
+ADD FIELD "_Db-guid" OF "_Client-Session" AS character
+
+ADD FIELD "_Session-custom-detail" OF "_Client-Session" AS character
+
+ADD FIELD "_Audit-data-security-level" OF "_Client-Session" AS integer
+
+ADD FIELD "_Data-seal" OF "_Client-Session" AS character
+
+ADD INDEX "_Auth-time" ON "_Client-Session"
+  INDEX-FIELD "_Authentication-date-time" ASCENDING
+
+ADD INDEX "_Db-guid" ON "_Client-Session"
+  INDEX-FIELD "_Db-guid" ASCENDING
+
+ADD INDEX "_Session-uuid" ON "_Client-Session"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Client-session-uuid" ASCENDING
+
+ADD INDEX "_Userid" ON "_Client-Session"
+  INDEX-FIELD "_User-id" ASCENDING
+
+ADD TABLE "_Db-Detail"
+  FROZEN
+
+ADD FIELD "_Db-guid" OF "_Db-Detail" AS character
+
+ADD FIELD "_Db-description" OF "_Db-Detail" AS character
+
+ADD FIELD "_Db-mac-key" OF "_Db-Detail" AS raw
+
+ADD FIELD "_Db-custom-detail" OF "_Db-Detail" AS character
+
+ADD INDEX "_Db-guid" ON "_Db-Detail"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Db-guid" ASCENDING
+
+ADD TABLE "_Db-Option"
+  FROZEN
+
+ADD FIELD "_Db-recid" OF "_Db-Option" AS recid
+
+ADD FIELD "_Db-option-type" OF "_Db-Option" AS integer
+
+ADD FIELD "_Db-option-code" OF "_Db-Option" AS character
+
+ADD FIELD "_Db-option-description" OF "_Db-Option" AS character
+
+ADD FIELD "_Db-option-value" OF "_Db-Option" AS character
+
+ADD INDEX "_Option-code" ON "_Db-Option"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Db-option-type" ASCENDING
+  INDEX-FIELD "_Db-option-code" ASCENDING
+
+ADD TABLE "_sec-role"
+  FROZEN
+
+ADD FIELD "_Role-name" OF "_sec-role" AS character
+
+ADD FIELD "_Role-description" OF "_sec-role" AS character
+
+ADD FIELD "_Role-creator" OF "_sec-role" AS character
+
+ADD FIELD "_Custom-role-detail" OF "_sec-role" AS character
+
+ADD FIELD "_Role-type" OF "_sec-role" AS int64
+  MANDATORY
+
+ADD FIELD "_Role-attr" OF "_sec-role" AS character
+
+ADD FIELD "_AuthVer" OF "_sec-role" AS integer
+  MANDATORY
+
+ADD INDEX "_Role-creator" ON "_sec-role"
+  INDEX-FIELD "_Role-creator" ASCENDING
+  INDEX-FIELD "_AuthVer" ASCENDING
+
+ADD INDEX "_Role-description" ON "_sec-role"
+  INDEX-FIELD "_Role-description" ASCENDING
+  INDEX-FIELD "_AuthVer" ASCENDING
+
+ADD INDEX "_Role-name" ON "_sec-role"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Role-name" ASCENDING
+  INDEX-FIELD "_AuthVer" ASCENDING
+
+ADD INDEX "_Role-type" ON "_sec-role"
+  UNIQUE
+  INDEX-FIELD "_Role-type" ASCENDING
+  INDEX-FIELD "_Role-name" ASCENDING
+  INDEX-FIELD "_AuthVer" ASCENDING
+
+ADD TABLE "_sec-granted-role"
+  FROZEN
+
+ADD FIELD "_Granted-role-guid" OF "_sec-granted-role" AS character
+
+ADD FIELD "_Grantee" OF "_sec-granted-role" AS character
+
+ADD FIELD "_Role-name" OF "_sec-granted-role" AS character
+
+ADD FIELD "_Grant-rights" OF "_sec-granted-role" AS logical
+
+ADD FIELD "_Grantor" OF "_sec-granted-role" AS character
+
+ADD FIELD "_Custom-grant-detail" OF "_sec-granted-role" AS character
+
+ADD FIELD "_Grantor-DomainId" OF "_sec-granted-role" AS int64
+  MANDATORY
+
+ADD FIELD "_Grantee-DomainId" OF "_sec-granted-role" AS int64
+  MANDATORY
+
+ADD FIELD "_Role-type" OF "_sec-granted-role" AS int64
+  MANDATORY
+
+ADD FIELD "_Role-attr" OF "_sec-granted-role" AS character
+
+ADD FIELD "_SnapshotVer" OF "_sec-granted-role" AS integer
+  MANDATORY
+
+ADD INDEX "_BiGrantee" ON "_sec-granted-role"
+  UNIQUE
+  INDEX-FIELD "_Role-name" ASCENDING
+  INDEX-FIELD "_Grantee-DomainId" ASCENDING
+  INDEX-FIELD "_Grantee" ASCENDING
+  INDEX-FIELD "_Grantor-DomainId" ASCENDING
+  INDEX-FIELD "_Grantor" ASCENDING
+  INDEX-FIELD "_SnapshotVer" ASCENDING
+
+ADD INDEX "_Granted-role-guid" ON "_sec-granted-role"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Granted-role-guid" ASCENDING
+
+ADD INDEX "_Grantee" ON "_sec-granted-role"
+  UNIQUE
+  INDEX-FIELD "_Grantee" ASCENDING
+  INDEX-FIELD "_Role-name" ASCENDING
+  INDEX-FIELD "_Grantor" ASCENDING
+
+ADD INDEX "_Grantor" ON "_sec-granted-role"
+  INDEX-FIELD "_Grantor" ASCENDING
+
+ADD INDEX "_Role-name" ON "_sec-granted-role"
+  INDEX-FIELD "_Role-name" ASCENDING
+
+ADD INDEX "_Role-namtyp" ON "_sec-granted-role"
+  INDEX-FIELD "_Role-name" ASCENDING
+  INDEX-FIELD "_Role-type" ASCENDING
+
+ADD INDEX "_Role-type" ON "_sec-granted-role"
+  INDEX-FIELD "_Role-type" ASCENDING
+  INDEX-FIELD "_Role-name" ASCENDING
+
+ADD TABLE "_sec-granted-role-condition"
+  FROZEN
+
+ADD FIELD "_Granted-role-guid" OF "_sec-granted-role-condition" AS character
+
+ADD FIELD "_Conditional-attribute" OF "_sec-granted-role-condition" AS character
+
+ADD FIELD "_Logical-operator" OF "_sec-granted-role-condition" AS character
+
+ADD FIELD "_Conditional-value" OF "_sec-granted-role-condition" AS character
+
+ADD FIELD "_Custom-condition-detail" OF "_sec-granted-role-condition" AS character
+
+ADD INDEX "_Conditional-attribute" ON "_sec-granted-role-condition"
+  INDEX-FIELD "_Conditional-attribute" ASCENDING
+
+ADD INDEX "_Granted-role-guid" ON "_sec-granted-role-condition"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Granted-role-guid" ASCENDING
+  INDEX-FIELD "_Conditional-attribute" ASCENDING
+  INDEX-FIELD "_Logical-operator" ASCENDING
+  INDEX-FIELD "_Conditional-value" ASCENDING
+
+ADD TABLE "_sec-authentication-system"
+  FROZEN
+
+ADD FIELD "_Domain-type" OF "_sec-authentication-system" AS character
+  MANDATORY
+
+ADD FIELD "_Domain-type-description" OF "_sec-authentication-system" AS character
+
+ADD FIELD "_PAM-plug-in" OF "_sec-authentication-system" AS logical
+
+ADD FIELD "_PAM-module-name" OF "_sec-authentication-system" AS character
+
+ADD FIELD "_PAM-callback-procedure" OF "_sec-authentication-system" AS character
+
+ADD FIELD "_PAM-library-checksum" OF "_sec-authentication-system" AS raw
+
+ADD FIELD "_Key-store-id" OF "_sec-authentication-system" AS character
+
+ADD FIELD "_Custom-detail" OF "_sec-authentication-system" AS character
+
+ADD INDEX "_Domain-type" ON "_sec-authentication-system"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Domain-type" ASCENDING
+
+ADD INDEX "_Domain-type-description" ON "_sec-authentication-system"
+  INDEX-FIELD "_Domain-type-description" ASCENDING
+
+ADD INDEX "_PAM-module-name" ON "_sec-authentication-system"
+  INDEX-FIELD "_PAM-module-name" ASCENDING
+
+ADD TABLE "_sec-authentication-domain"
+  FROZEN
+
+ADD FIELD "_Domain-name" OF "_sec-authentication-domain" AS character
+  MANDATORY
+
+ADD FIELD "_Domain-type" OF "_sec-authentication-domain" AS character
+  MANDATORY
+
+ADD FIELD "_Domain-description" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_Domain-access-code" OF "_sec-authentication-domain" AS character
+  MANDATORY
+
+ADD FIELD "_Auditing-context" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_Domain-runtime-options" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_Domain-enabled" OF "_sec-authentication-domain" AS logical
+
+ADD FIELD "_PAM-actions" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_PAM-control" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_PAM-library-path" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_PAM-options" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_Domain-custom-detail" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_Tenant-Name" OF "_sec-authentication-domain" AS character
+
+ADD FIELD "_Domain-Id" OF "_sec-authentication-domain" AS int64
+  MANDATORY
+
+ADD FIELD "_Domain-category" OF "_sec-authentication-domain" AS integer
+  MANDATORY
+
+ADD INDEX "_Domain-description" ON "_sec-authentication-domain"
+  INDEX-FIELD "_Domain-description" ASCENDING
+
+ADD INDEX "_Domain-enabled" ON "_sec-authentication-domain"
+  INDEX-FIELD "_Domain-enabled" ASCENDING
+
+ADD INDEX "_Domain-Id" ON "_sec-authentication-domain"
+  UNIQUE
+  INDEX-FIELD "_Domain-Id" ASCENDING
+
+ADD INDEX "_Domain-name" ON "_sec-authentication-domain"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Domain-name" ASCENDING
+
+ADD INDEX "_Domain-type" ON "_sec-authentication-domain"
+  INDEX-FIELD "_Domain-type" ASCENDING
+
+ADD INDEX "_Tenant-Name" ON "_sec-authentication-domain"
+  INDEX-FIELD "_Tenant-Name" ASCENDING
+
+ADD TABLE "_KeyEvent"
+  FROZEN
+
+ADD FIELD "_KeyEvent-Date" OF "_KeyEvent" AS datetime-tz
+
+ADD FIELD "_KeyEvent-Procid" OF "_KeyEvent" AS integer
+
+ADD FIELD "_KeyEvent-ThreadId" OF "_KeyEvent" AS integer
+
+ADD FIELD "_KeyEvent-MsgId" OF "_KeyEvent" AS integer
+
+ADD FIELD "_KeyEvent-Usrnum" OF "_KeyEvent" AS integer
+
+ADD FIELD "_KeyEvent-Event" OF "_KeyEvent" AS character
+
+ADD FIELD "_KeyEvent-Spare1" OF "_KeyEvent" AS integer
+
+ADD FIELD "_KeyEvent-Spare2" OF "_KeyEvent" AS character
+
+ADD INDEX "_KeyEvent-Date" ON "_KeyEvent"
+  UNIQUE
+  INDEX-FIELD "_KeyEvent-Date" ASCENDING
+
+ADD INDEX "_KeyEvent-MsgId" ON "_KeyEvent"
+  INDEX-FIELD "_KeyEvent-MsgId" ASCENDING
+
+ADD INDEX "_KeyEvent-Usrnum" ON "_KeyEvent"
+  PRIMARY
+  INDEX-FIELD "_KeyEvent-Usrnum" ASCENDING
+
+ADD TABLE "_sec-auth-tag"
+  FROZEN
+
+ADD FIELD "_Role-name" OF "_sec-auth-tag" AS character
+  MANDATORY
+
+ADD FIELD "_Auth-tag" OF "_sec-auth-tag" AS character
+  MANDATORY
+
+ADD FIELD "_Description" OF "_sec-auth-tag" AS character
+
+ADD FIELD "_Auth-tag-res1" OF "_sec-auth-tag" AS character
+  EXTENT 8
+
+ADD FIELD "_Auth-tag-res2" OF "_sec-auth-tag" AS integer
+  EXTENT 8
+
+ADD INDEX "_IdxSecAuthTagAuthTag" ON "_sec-auth-tag"
+  INDEX-FIELD "_Auth-tag" ASCENDING
+
+ADD INDEX "_IdxSecAuthTagRole" ON "_sec-auth-tag"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Role-name" ASCENDING
+  INDEX-FIELD "_Auth-tag" ASCENDING
+
+ADD TABLE "_Tenant"
+  FROZEN
+
+ADD FIELD "_TenantId" OF "_Tenant" AS integer
+  MANDATORY
+
+ADD FIELD "_Tenant-Name" OF "_Tenant" AS character
+  MANDATORY
+
+ADD FIELD "_Tenant-ExtId" OF "_Tenant" AS character
+
+ADD FIELD "_Tenant-Description" OF "_Tenant" AS character
+
+ADD FIELD "_Tenant-Type" OF "_Tenant" AS integer
+  MANDATORY
+
+ADD FIELD "_Tenant-Attributes" OF "_Tenant" AS logical
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_Tenant-Sequence-Block" OF "_Tenant" AS recid
+  MANDATORY
+
+ADD FIELD "_Tenant-DataArea-default" OF "_Tenant" AS integer
+  MANDATORY
+
+ADD FIELD "_Tenant-IndexArea-default" OF "_Tenant" AS integer
+  MANDATORY
+
+ADD FIELD "_Tenant-LobArea-default" OF "_Tenant" AS integer
+  MANDATORY
+
+ADD FIELD "_Tenant-Allocation-default" OF "_Tenant" AS character
+  MANDATORY
+
+ADD INDEX "_Tenant-Name" ON "_Tenant"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Tenant-Name" ASCENDING
+
+ADD INDEX "_TenantId" ON "_Tenant"
+  UNIQUE
+  INDEX-FIELD "_TenantId" ASCENDING
+
+ADD TABLE "_Partition-Set"
+  FROZEN
+
+ADD FIELD "_Object-Type" OF "_Partition-Set" AS integer
+  MANDATORY
+
+ADD FIELD "_Object-Number" OF "_Partition-Set" AS integer
+  MANDATORY
+
+ADD FIELD "_PSetId" OF "_Partition-Set" AS integer
+  MANDATORY
+
+ADD FIELD "_PSet-Type" OF "_Partition-Set" AS integer
+  MANDATORY
+
+ADD FIELD "_PSet-Name" OF "_Partition-Set" AS character
+  MANDATORY
+
+ADD FIELD "_PSet-Description" OF "_Partition-Set" AS character
+
+ADD FIELD "_PSet-Attributes" OF "_Partition-Set" AS logical
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_PSet-DataArea-default" OF "_Partition-Set" AS integer
+  MANDATORY
+
+ADD FIELD "_PSet-IndexArea-default" OF "_Partition-Set" AS integer
+  MANDATORY
+
+ADD FIELD "_PSet-LobArea-default" OF "_Partition-Set" AS integer
+  MANDATORY
+
+ADD FIELD "_PSet-Allocation-default" OF "_Partition-Set" AS character
+  MANDATORY
+
+ADD INDEX "_Partition-Set-Name" ON "_Partition-Set"
+  UNIQUE
+  INDEX-FIELD "_PSet-Name" ASCENDING
+
+ADD INDEX "_Partition-Set-Object" ON "_Partition-Set"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Object-Type" ASCENDING
+  INDEX-FIELD "_Object-Number" ASCENDING
+  INDEX-FIELD "_PSetId" ASCENDING
+
+ADD INDEX "_Partition-Set-Type" ON "_Partition-Set"
+  INDEX-FIELD "_PSet-Type" ASCENDING
+
+ADD TABLE "_Partition-Set-Detail"
+  FROZEN
+
+ADD FIELD "_Object-Type" OF "_Partition-Set-Detail" AS integer
+  MANDATORY
+
+ADD FIELD "_Object-Number" OF "_Partition-Set-Detail" AS integer
+  MANDATORY
+
+ADD FIELD "_PSetId" OF "_Partition-Set-Detail" AS integer
+  MANDATORY
+
+ADD FIELD "_TenantId" OF "_Partition-Set-Detail" AS integer
+  MANDATORY
+
+ADD FIELD "_Permissions" OF "_Partition-Set-Detail" AS integer
+  MANDATORY
+
+ADD INDEX "_Partition-Set-Object" ON "_Partition-Set-Detail"
+  UNIQUE
+  INDEX-FIELD "_Object-Type" ASCENDING
+  INDEX-FIELD "_Object-Number" ASCENDING
+  INDEX-FIELD "_TenantId" ASCENDING
+  INDEX-FIELD "_PSetId" ASCENDING
+  INDEX-FIELD "_Permissions" ASCENDING
+
+ADD INDEX "_Partition-Set-Tenant" ON "_Partition-Set-Detail"
+  INDEX-FIELD "_TenantId" ASCENDING
+
+ADD INDEX "_Partition-SetId" ON "_Partition-Set-Detail"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Object-Type" ASCENDING
+  INDEX-FIELD "_Object-Number" ASCENDING
+  INDEX-FIELD "_PSetId" ASCENDING
+  INDEX-FIELD "_TenantId" ASCENDING
+  INDEX-FIELD "_Permissions" ASCENDING
+
+ADD TABLE "_Constraint"
+  FROZEN
+
+ADD FIELD "_Con-Active" OF "_Constraint" AS logical
+  MANDATORY
+
+ADD FIELD "_Con-Type" OF "_Constraint" AS character
+  MANDATORY
+
+ADD FIELD "_Con-Status" OF "_Constraint" AS character
+  MANDATORY
+
+ADD FIELD "_Con-num" OF "_Constraint" AS int64
+  MANDATORY
+
+ADD FIELD "_Con-Name" OF "_Constraint" AS character
+  MANDATORY
+
+ADD FIELD "_Con-Desc" OF "_Constraint" AS character
+
+ADD FIELD "_File-recid" OF "_Constraint" AS recid
+  MANDATORY
+
+ADD FIELD "_Db-recid" OF "_Constraint" AS recid
+  MANDATORY
+
+ADD FIELD "_For-Name" OF "_Constraint" AS character
+  MANDATORY
+
+ADD FIELD "_Con-Misc1" OF "_Constraint" AS integer
+  EXTENT 8
+
+ADD FIELD "_Con-Misc2" OF "_Constraint" AS character
+  EXTENT 8
+
+ADD FIELD "_C-Res1" OF "_Constraint" AS integer
+  EXTENT 8
+
+ADD FIELD "_C-Res2" OF "_Constraint" AS character
+  EXTENT 8
+
+ADD FIELD "_Field-Recid" OF "_Constraint" AS recid
+
+ADD FIELD "_Index-recid" OF "_Constraint" AS recid
+
+ADD FIELD "_Index-parent-recid" OF "_Constraint" AS recid
+
+ADD FIELD "_Con-Expr" OF "_Constraint" AS character
+
+ADD INDEX "_Con-dependency" ON "_Constraint"
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Con-Type" ASCENDING
+  INDEX-FIELD "_Index-recid" ASCENDING
+  INDEX-FIELD "_Index-parent-recid" ASCENDING
+
+ADD INDEX "_Con-Migrate" ON "_Constraint"
+  UNIQUE
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Con-Active" ASCENDING
+  INDEX-FIELD "_Con-Status" ASCENDING
+  INDEX-FIELD "_Con-num" ASCENDING
+
+ADD INDEX "_Con-Migration-Seq" ON "_Constraint"
+  UNIQUE
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Con-Active" ASCENDING
+  INDEX-FIELD "_Con-Status" ASCENDING
+  INDEX-FIELD "_Con-Type" ASCENDING
+  INDEX-FIELD "_Con-num" ASCENDING
+
+ADD INDEX "_Con-Num" ON "_Constraint"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Con-num" ASCENDING
+
+ADD INDEX "_Con-Present" ON "_Constraint"
+  UNIQUE
+  INDEX-FIELD "_Db-recid" ASCENDING
+  INDEX-FIELD "_Con-Type" ASCENDING
+  INDEX-FIELD "_Con-Name" ASCENDING
+  INDEX-FIELD "_Con-num" ASCENDING
+
+ADD TABLE "_Constraint-Keys"
+  FROZEN
+
+ADD FIELD "_Con-recid" OF "_Constraint-Keys" AS recid
+  MANDATORY
+
+ADD FIELD "_Con-Misc1" OF "_Constraint-Keys" AS integer
+  EXTENT 8
+
+ADD FIELD "_Con-Misc2" OF "_Constraint-Keys" AS character
+  EXTENT 8
+
+ADD FIELD "_C-Res1" OF "_Constraint-Keys" AS integer
+  EXTENT 8
+
+ADD FIELD "_C-Res2" OF "_Constraint-Keys" AS character
+  EXTENT 8
+
+ADD FIELD "_Field-Recid" OF "_Constraint-Keys" AS recid
+
+ADD FIELD "_Con-Key-Fld-Order" OF "_Constraint-Keys" AS integer
+
+ADD FIELD "_Con-Key-Parent-Ind" OF "_Constraint-Keys" AS logical
+
+ADD FIELD "_Ascending" OF "_Constraint-Keys" AS logical
+
+ADD FIELD "_Con-Key-Con-Recid" OF "_Constraint-Keys" AS recid
+
+ADD INDEX "_Con-Key-Ord" ON "_Constraint-Keys"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Con-recid" ASCENDING
+  INDEX-FIELD "_Con-Key-Parent-Ind" ASCENDING
+  INDEX-FIELD "_Con-Key-Fld-Order" ASCENDING
+
+ADD TABLE "_Connect"
+  FROZEN
+
+ADD FIELD "_Connect-Id" OF "_Connect" AS int64
+  MANDATORY
+
+ADD FIELD "_Connect-Usr" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Type" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-Name" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-Device" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-Time" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-Pid" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Server" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Wait1" OF "_Connect" AS int64
+  MANDATORY
+
+ADD FIELD "_Connect-Wait" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-TransId" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-SemNum" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-semid" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Disconnect" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Resync" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Interrupt" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-2phase" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Batch" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-Misc" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-ClientType" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-IPAddress" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-CachingType" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-CacheLastUpdate" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-CacheInfoType" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-CacheLineNumber" OF "_Connect" AS integer
+  EXTENT 32
+  MANDATORY
+
+ADD FIELD "_Connect-CacheInfo" OF "_Connect" AS character
+  EXTENT 32
+  MANDATORY
+
+ADD FIELD "_Connect-TenantId" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-DomainId" OF "_Connect" AS int64
+  MANDATORY
+
+ADD FIELD "_Connect-Timestamp" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Wait2" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-PartitionId" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-NumSeqBuffers" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-UsedSeqBuffers" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-NumTrans" OF "_Connect" AS int64
+  MANDATORY
+
+ADD FIELD "_Connect-UserMisc" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-NotifyTime" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-LastNotifyCheck" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-Notifications" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-ServerPid" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-ServerTid" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Tid" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-NotifyVers" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-NotifySeq" OF "_Connect" AS int64
+  MANDATORY
+
+ADD FIELD "_Connect-NotifySeqChecked" OF "_Connect" AS int64
+  MANDATORY
+
+ADD FIELD "_Connect-ServerUsrNum" OF "_Connect" AS integer
+  MANDATORY
+
+ADD FIELD "_Connect-Details" OF "_Connect" AS character
+  MANDATORY
+
+ADD FIELD "_Connect-Time-TZ" OF "_Connect" AS datetime-tz
+  MANDATORY
+
+ADD FIELD "_Connect-LastNotifyCheck-TZ" OF "_Connect" AS datetime-tz
+  MANDATORY
+
+ADD FIELD "_Connect-CacheLastUpdate-TZ" OF "_Connect" AS datetime-tz
+  MANDATORY
+
+ADD INDEX "_Connect-Id" ON "_Connect"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Connect-Id" ASCENDING
+
+ADD TABLE "_MstrBlk"
+  FROZEN
+
+ADD FIELD "_MstrBlk-Id" OF "_MstrBlk" AS int64
+  MANDATORY
+
+ADD FIELD "_MstrBlk-dbvers" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-dbstate" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-tainted" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-integrity" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-totblks" OF "_MstrBlk" AS int64
+  MANDATORY
+
+ADD FIELD "_MstrBlk-hiwater" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-biblksize" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-rlclsize" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-aiblksize" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-lasttask" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-cfilnum" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-bistate" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-ibseq" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD FIELD "_MstrBlk-crdate" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-oprdate" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-oppdate" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-fbdate" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-ibdate" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-timestamp" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-biopen" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-rltime" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-biprev" OF "_MstrBlk" AS character
+  MANDATORY
+
+ADD FIELD "_MstrBlk-Misc" OF "_MstrBlk" AS integer
+  MANDATORY
+
+ADD INDEX "_MstrBlk-Id" ON "_MstrBlk"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_MstrBlk-Id" ASCENDING
+
+ADD TABLE "_DbStatus"
+  FROZEN
+
+ADD FIELD "_DbStatus-Id" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-state" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-tainted" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-IntFlags" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-DbBlkSize" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-TotalBlks" OF "_DbStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_DbStatus-EmptyBlks" OF "_DbStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_DbStatus-FreeBlks" OF "_DbStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_DbStatus-RMFreeBlks" OF "_DbStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_DbStatus-LastTran" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-LastTable" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-DbVers" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-DbVersMinor" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-ClVersMinor" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-ShmVers" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-Changed" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-ibSeq" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-Integrity" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-HiWater" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-BiBlkSize" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-BiClSize" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-AiBlkSize" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-starttime" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-LastOpen" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-PrevOpen" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-CacheStamp" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-fbDate" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-ibDate" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-CreateDate" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-BiOpen" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-BiSize" OF "_DbStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_DbStatus-BiTrunc" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-Codepage" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-Collation" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-NumAreas" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-NumLocks" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-MostLocks" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-SharedMemVer" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-NumSems" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-Misc" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-RestrictMode" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-ZeroStatsDate" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-InitiateDiag" OF "_DbStatus" AS logical
+  MANDATORY
+
+ADD FIELD "_DbStatus-lastLgTruncateTime" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-databaseRole" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD FIELD "_DbStatus-ZeroStatsDate-TZ" OF "_DbStatus" AS datetime-tz
+  MANDATORY
+
+ADD FIELD "_DbStatus-lastLgTruncateTime-TZ" OF "_DbStatus" AS datetime-tz
+  MANDATORY
+
+ADD FIELD "_DbStatus-Wordrule-Number" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-Wordrule-CRC" OF "_DbStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_DbStatus-OEVersion" OF "_DbStatus" AS character
+  MANDATORY
+
+ADD INDEX "_DbStatus-Id" ON "_DbStatus"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_DbStatus-Id" ASCENDING
+
+ADD TABLE "_BuffStatus"
+  FROZEN
+
+ADD FIELD "_BfStatus-Id" OF "_BuffStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_BfStatus-TotBufs" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-HashSize" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-UsedBuffs" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-LRU" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-APWQ" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-CKPQ" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-ModBuffs" OF "_BuffStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_BfStatus-CKPMarked" OF "_BuffStatus" AS int64
+  MANDATORY
+
+ADD FIELD "_BfStatus-LastCkpNum" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-Misc" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-LRU2" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-LRU-Skips" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD FIELD "_BfStatus-LRU2-Skips" OF "_BuffStatus" AS integer
+  MANDATORY
+
+ADD INDEX "_BfStatus-Id" ON "_BuffStatus"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_BfStatus-Id" ASCENDING
+
+ADD TABLE "_Logging"
+  FROZEN
+
+ADD FIELD "_Logging-Id" OF "_Logging" AS int64
+  MANDATORY
+
+ADD FIELD "_Logging-CrashProt" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-CommitDelay" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-BiIO" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-BiClAge" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-BiBlkSize" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-BiClSize" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-BiExtents" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-BiLogSize" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-BiBytesFree" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-LastCkp" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-BiBuffs" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-BiFullBuffs" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-AiJournal" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-AiIO" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-AiBegin" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-AiNew" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-AiOpen" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-AiGenNum" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-AiExtents" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-AiCurrExt" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-AiBuffs" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-AiBlkSize" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-AiLogSize" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-2PC" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-2PCNickName" OF "_Logging" AS character
+  MANDATORY
+
+ADD FIELD "_Logging-2PCPriority" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-Misc" OF "_Logging" AS integer
+  MANDATORY
+
+ADD FIELD "_Logging-CurrBiCluster" OF "_Logging" AS int64
+  MANDATORY
+
+ADD FIELD "_Logging-BiClusterHWM" OF "_Logging" AS int64
+  MANDATORY
+
+ADD FIELD "_Logging-AiSequence" OF "_Logging" AS int64
+  MANDATORY
+
+ADD FIELD "_Logging-AiSwitchSchedule" OF "_Logging" AS datetime-tz
+  MANDATORY
+
+ADD FIELD "_Logging-AiArchDir" OF "_Logging" AS character
+  MANDATORY
+
+ADD INDEX "_Logging-Id" ON "_Logging"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Logging-Id" ASCENDING
+
+ADD TABLE "_Segments"
+  FROZEN
+
+ADD FIELD "_Segment-Id" OF "_Segments" AS int64
+  MANDATORY
+
+ADD FIELD "_Segment-SegId" OF "_Segments" AS integer
+  MANDATORY
+
+ADD FIELD "_Segment-SegSize" OF "_Segments" AS int64
+  MANDATORY
+
+ADD FIELD "_Segment-BytesUsed" OF "_Segments" AS int64
+  MANDATORY
+
+ADD FIELD "_Segment-ByteFree" OF "_Segments" AS int64
+  MANDATORY
+
+ADD FIELD "_Segment-Misc" OF "_Segments" AS integer
+  MANDATORY
+
+ADD INDEX "_Segment-Id" ON "_Segments"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Segment-Id" ASCENDING
+
+ADD TABLE "_Servers"
+  FROZEN
+
+ADD FIELD "_Server-Id" OF "_Servers" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-Num" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-Pid" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-Type" OF "_Servers" AS character
+  MANDATORY
+
+ADD FIELD "_Server-Protocol" OF "_Servers" AS character
+  MANDATORY
+
+ADD FIELD "_Server-Logins" OF "_Servers" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-CurrUsers" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-MaxUsers" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-PortNum" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-PendConn" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-Misc" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-Broker-Pid" OF "_Servers" AS integer
+  MANDATORY
+
+ADD FIELD "_SrvParam-Name" OF "_Servers" AS character
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_SrvParam-Value" OF "_Servers" AS character
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_SrvParam-dtype" OF "_Servers" AS integer
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_SrvParam-Desc" OF "_Servers" AS character
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_SrvParam-Msg-Num" OF "_Servers" AS int64
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_SrvParam-Is-Default" OF "_Servers" AS logical
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_SrvParam-Is-Modifiable" OF "_Servers" AS logical
+  EXTENT 64
+  MANDATORY
+
+ADD FIELD "_Server-UsrNum" OF "_Servers" AS integer
+  MANDATORY
+
+ADD INDEX "_Server-Id" ON "_Servers"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Server-Id" ASCENDING
+
+ADD TABLE "_UserLobStat"
+  FROZEN
+
+ADD FIELD "_UserLobStat-Id" OF "_UserLobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserLobStat-Conn" OF "_UserLobStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLobStat-Num" OF "_UserLobStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLobStat-TableNum" OF "_UserLobStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLobStat-read" OF "_UserLobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserLobStat-update" OF "_UserLobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserLobStat-create" OF "_UserLobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserLobStat-delete" OF "_UserLobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserLobStat-TenantId" OF "_UserLobStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLobStat-PartitionId" OF "_UserLobStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLobStat-OsRead" OF "_UserLobStat" AS int64
+  MANDATORY
+
+ADD INDEX "_UserLobStat" ON "_UserLobStat"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_UserLobStat-Id" ASCENDING
+
+ADD TABLE "_Filelist"
+  FROZEN
+
+ADD FIELD "_FileList-Id" OF "_Filelist" AS int64
+  MANDATORY
+
+ADD FIELD "_FileList-Size" OF "_Filelist" AS integer
+  MANDATORY
+
+ADD FIELD "_FileList-Extend" OF "_Filelist" AS integer
+  MANDATORY
+
+ADD FIELD "_FileList-LogicalSz" OF "_Filelist" AS integer
+  MANDATORY
+
+ADD FIELD "_FileList-BlkSize" OF "_Filelist" AS integer
+  MANDATORY
+
+ADD FIELD "_FileList-Openmode" OF "_Filelist" AS character
+  MANDATORY
+
+ADD FIELD "_FileList-Name" OF "_Filelist" AS character
+  MANDATORY
+
+ADD FIELD "_FileList-Misc" OF "_Filelist" AS integer
+  MANDATORY
+
+ADD INDEX "_FileList-Id" ON "_Filelist"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_FileList-Id" ASCENDING
+
+ADD TABLE "_UserLock"
+  FROZEN
+
+ADD FIELD "_UserLock-Id" OF "_UserLock" AS int64
+  MANDATORY
+
+ADD FIELD "_UserLock-Usr" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Name" OF "_UserLock" AS character
+  MANDATORY
+
+ADD FIELD "_UserLock-Recid" OF "_UserLock" AS int64
+  EXTENT 512
+  MANDATORY
+
+ADD FIELD "_UserLock-Type" OF "_UserLock" AS character
+  EXTENT 512
+  MANDATORY
+
+ADD FIELD "_UserLock-Chain" OF "_UserLock" AS integer
+  EXTENT 512
+  MANDATORY
+
+ADD FIELD "_UserLock-Flags" OF "_UserLock" AS character
+  EXTENT 512
+  MANDATORY
+
+ADD FIELD "_UserLock-Misc" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Table" OF "_UserLock" AS integer
+  EXTENT 512
+  MANDATORY
+
+ADD FIELD "_UserLock-TenantId" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-PartitionId" OF "_UserLock" AS integer
+  EXTENT 512
+  MANDATORY
+
+ADD FIELD "_UserLock-Total" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-Record" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-Table" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-Purge" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-RecGet" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-Partition" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-SHR" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-EXCL" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-IS" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-SIX" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-Total-IX" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD FIELD "_UserLock-HWM" OF "_UserLock" AS integer
+  MANDATORY
+
+ADD INDEX "_UserLock-Id" ON "_UserLock"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_UserLock-Id" ASCENDING
+
+ADD TABLE "_ActSummary"
+  FROZEN
+
+ADD FIELD "_Summary-Id" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-Commits" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-Undos" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-RecReads" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-RecUpd" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-RecCreat" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-RecDel" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-RecLock" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-RecWait" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-DbReads" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-DbWrites" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-BiReads" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-BiWrites" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-AiWrites" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-Chkpts" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-Flushed" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-TransComm" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-UpTime" OF "_ActSummary" AS integer
+  MANDATORY
+
+ADD FIELD "_Summary-DbAccesses" OF "_ActSummary" AS int64
+  MANDATORY
+
+ADD FIELD "_Summary-Misc" OF "_ActSummary" AS integer
+  MANDATORY
+
+ADD INDEX "_Summary-Id" ON "_ActSummary"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Summary-Id" ASCENDING
+
+ADD TABLE "_ActServer"
+  FROZEN
+
+ADD FIELD "_Server-Id" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-MsgRec" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-MsgSent" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-ByteRec" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-ByteSent" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-RecRec" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-RecSent" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-QryRec" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-TimeSlice" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-Trans" OF "_ActServer" AS int64
+  MANDATORY
+
+ADD FIELD "_Server-UpTime" OF "_ActServer" AS integer
+  MANDATORY
+
+ADD FIELD "_Server-Misc" OF "_ActServer" AS integer
+  MANDATORY
+
+ADD INDEX "_Server-Id" ON "_ActServer"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Server-Id" ASCENDING
+
+ADD TABLE "_ActBuffer"
+  FROZEN
+
+ADD FIELD "_Buffer-Id" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-LogicRds" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-LogicWrts" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-OSRds" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-OSWrts" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Chkpts" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Marked" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Flushed" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Deferred" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-LRUSkips" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-LRUWrts" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-APWEnq" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Trans" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-UpTime" OF "_ActBuffer" AS integer
+  MANDATORY
+
+ADD FIELD "_Buffer-Misc" OF "_ActBuffer" AS integer
+  MANDATORY
+
+ADD FIELD "_Buffer-LRUEnabled" OF "_ActBuffer" AS logical
+
+ADD FIELD "_Buffer-Active" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Master" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Index" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-RM" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Free" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Seq" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Area" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Object" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-ObjList" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-Control" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-ClusterMap" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-ObjClist" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_Buffer-BlockMap" OF "_ActBuffer" AS int64
+  MANDATORY
+
+ADD INDEX "_Buffer-Id" ON "_ActBuffer"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Buffer-Id" ASCENDING
+
+ADD TABLE "_ActPWs"
+  FROZEN
+
+ADD FIELD "_PW-Id" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-TotDBWrites" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-DBWrites" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-ScanWrites" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-ApwQWrites" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-CkpQWrites" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-ScanCycles" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-BuffsScaned" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-BufsCkp" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-Checkpoints" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-Marked" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-Flushed" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-Trans" OF "_ActPWs" AS int64
+  MANDATORY
+
+ADD FIELD "_PW-UpTime" OF "_ActPWs" AS integer
+  MANDATORY
+
+ADD FIELD "_PW-Misc" OF "_ActPWs" AS integer
+  MANDATORY
+
+ADD INDEX "_PW-Id" ON "_ActPWs"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_PW-Id" ASCENDING
+
+ADD TABLE "_ActBILog"
+  FROZEN
+
+ADD FIELD "_BiLog-Id" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-TotalWrts" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-BIWWrites" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-RecWriten" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-BytesWrtn" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-TotReads" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-RecRead" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-BytesRead" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-ClstrClose" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-BBuffWaits" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-EBuffWaits" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-ForceWaits" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-ForceWrts" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-PartialWrts" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-Trans" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-UpTime" OF "_ActBILog" AS integer
+  MANDATORY
+
+ADD FIELD "_BiLog-Misc" OF "_ActBILog" AS integer
+  MANDATORY
+
+ADD FIELD "_BiLog-InputBufHit" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-OutputBufHit" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-ModBufHit" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-BOBufHit" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-IdleClstrReuse" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-AllocatedTxns" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-ActivatedTxns" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-CommittedTxns" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD FIELD "_BiLog-UndoTxns" OF "_ActBILog" AS int64
+  MANDATORY
+
+ADD INDEX "_BiLog-Id" ON "_ActBILog"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_BiLog-Id" ASCENDING
+
+ADD TABLE "_ActAILog"
+  FROZEN
+
+ADD FIELD "_AiLog-Id" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-TotWrites" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-AIWWrites" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-RecWriten" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-BytesWritn" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-BBuffWaits" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-NoBufAvail" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-PartialWrt" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-ForceWaits" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-Trans" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-UpTime" OF "_ActAILog" AS integer
+  MANDATORY
+
+ADD FIELD "_AiLog-Misc" OF "_ActAILog" AS integer
+  MANDATORY
+
+ADD FIELD "_AiLog-AllocatedTxns" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-ActivatedTxns" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD FIELD "_AiLog-UndoTxns" OF "_ActAILog" AS int64
+  MANDATORY
+
+ADD INDEX "_AiLog-Id" ON "_ActAILog"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_AiLog-Id" ASCENDING
+
+ADD TABLE "_ActLock"
+  FROZEN
+
+ADD FIELD "_Lock-Id" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-ShrReq" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-ExclReq" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-UpgReq" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-RecGetReq" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-ShrLock" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-ExclLock" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-UpgLock" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-RecGetLock" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-ShrWait" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-ExclWait" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-UpgWait" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-RecGetWait" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-CanclReq" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-Downgrade" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-RedReq" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-Trans" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-UpTime" OF "_ActLock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-ExclFind" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-ShrFind" OF "_ActLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-Misc" OF "_ActLock" AS integer
+  MANDATORY
+
+ADD INDEX "_Lock-Id" ON "_ActLock"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Lock-Id" ASCENDING
+
+ADD TABLE "_ActIOType"
+  FROZEN
+
+ADD FIELD "_IOType-Id" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-IdxRds" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-DataReads" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-BiRds" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-AiRds" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-IdxWrts" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-DataWrts" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-BiWrts" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-AiWrts" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-Trans" OF "_ActIOType" AS int64
+  MANDATORY
+
+ADD FIELD "_IOType-UpTime" OF "_ActIOType" AS integer
+  MANDATORY
+
+ADD FIELD "_IOType-Misc" OF "_ActIOType" AS integer
+  MANDATORY
+
+ADD INDEX "_IOType-Id" ON "_ActIOType"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_IOType-Id" ASCENDING
+
+ADD TABLE "_ActIOFile"
+  FROZEN
+
+ADD FIELD "_IOFile-Id" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-FileName" OF "_ActIOFile" AS character
+  MANDATORY
+
+ADD FIELD "_IOFile-Reads" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-Writes" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-Extends" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-Trans" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-BufWrites" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-UbufWrites" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-BufReads" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-UbufReads" OF "_ActIOFile" AS int64
+  MANDATORY
+
+ADD FIELD "_IOFile-UpTime" OF "_ActIOFile" AS integer
+  MANDATORY
+
+ADD FIELD "_IOFile-Misc" OF "_ActIOFile" AS integer
+  MANDATORY
+
+ADD INDEX "_IOFile-Id" ON "_ActIOFile"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_IOFile-Id" ASCENDING
+
+ADD TABLE "_ActSpace"
+  FROZEN
+
+ADD FIELD "_Space-Id" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-DbExd" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-TakeFree" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-RetFree" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-AllocNewRm" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-FromRm" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-FromFree" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-BytesAlloc" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-Examined" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-Removed" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-FrontAdd" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-BackAdd" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-Front2Back" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-Locked" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-Trans" OF "_ActSpace" AS int64
+  MANDATORY
+
+ADD FIELD "_Space-UpTime" OF "_ActSpace" AS integer
+  MANDATORY
+
+ADD FIELD "_Space-Misc" OF "_ActSpace" AS integer
+  MANDATORY
+
+ADD INDEX "_Space-Id" ON "_ActSpace"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Space-Id" ASCENDING
+
+ADD TABLE "_ActIndex"
+  FROZEN
+
+ADD FIELD "_Index-Id" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-Find" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-Create" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-Delete" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-Remove" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-Splits" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-Free" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-Trans" OF "_ActIndex" AS int64
+  MANDATORY
+
+ADD FIELD "_Index-UpTime" OF "_ActIndex" AS integer
+  MANDATORY
+
+ADD FIELD "_Index-Misc" OF "_ActIndex" AS integer
+  MANDATORY
+
+ADD FIELD "_Index-PartitionId" OF "_ActIndex" AS integer
+  MANDATORY
+
+ADD INDEX "_Index-Id" ON "_ActIndex"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Index-Id" ASCENDING
+
+ADD TABLE "_ActRecord"
+  FROZEN
+
+ADD FIELD "_Record-Id" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-RecRead" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-RecUpd" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-RecCreat" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-RecDel" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-FragRead" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-FragCreat" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-FragDel" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-FragUpd" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-BytesRead" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-BytesCreat" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-BytesDel" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-BytesUpd" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-Trans" OF "_ActRecord" AS int64
+  MANDATORY
+
+ADD FIELD "_Record-UpTime" OF "_ActRecord" AS integer
+  MANDATORY
+
+ADD FIELD "_Record-Misc" OF "_ActRecord" AS integer
+  MANDATORY
+
+ADD INDEX "_Record-Id" ON "_ActRecord"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Record-Id" ASCENDING
+
+ADD TABLE "_ActOther"
+  FROZEN
+
+ADD FIELD "_Other-Id" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD FIELD "_Other-Commit" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD FIELD "_Other-Undo" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD FIELD "_Other-Wait" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD FIELD "_Other-FlushMblk" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD FIELD "_Other-Trans" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD FIELD "_Other-UpTime" OF "_ActOther" AS integer
+  MANDATORY
+
+ADD FIELD "_Other-Misc" OF "_ActOther" AS integer
+  MANDATORY
+
+ADD FIELD "_Other-NBWait" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD FIELD "_Other-SemLatWait" OF "_ActOther" AS int64
+  MANDATORY
+
+ADD INDEX "_Other-Id" ON "_ActOther"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Other-Id" ASCENDING
+
+ADD TABLE "_Block"
+  FROZEN
+
+ADD FIELD "_Block-Id" OF "_Block" AS int64
+  MANDATORY
+
+ADD FIELD "_Block-Dbkey" OF "_Block" AS int64
+  MANDATORY
+
+ADD FIELD "_Block-Type" OF "_Block" AS character
+  MANDATORY
+
+ADD FIELD "_Block-ChainType" OF "_Block" AS character
+  MANDATORY
+
+ADD FIELD "_Block-BkupCtr" OF "_Block" AS integer
+  MANDATORY
+
+ADD FIELD "_Block-NextDbkey" OF "_Block" AS int64
+  MANDATORY
+
+ADD FIELD "_Block-Update" OF "_Block" AS integer
+  MANDATORY
+
+ADD FIELD "_Block-Area" OF "_Block" AS integer
+  MANDATORY
+
+ADD FIELD "_Block-Block" OF "_Block" AS character
+  MANDATORY
+
+ADD FIELD "_Block-Misc" OF "_Block" AS integer
+  MANDATORY
+
+ADD INDEX "_Block-Id" ON "_Block"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Block-Id" ASCENDING
+
+ADD TABLE "_UserIO"
+  FROZEN
+
+ADD FIELD "_UserIO-Id" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-Usr" OF "_UserIO" AS integer
+  MANDATORY
+
+ADD FIELD "_UserIO-Name" OF "_UserIO" AS character
+  MANDATORY
+
+ADD FIELD "_UserIO-DbAccess" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-DbRead" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-DbWrite" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-BiRead" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-BiWrite" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-AiRead" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-AiWrite" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-Misc" OF "_UserIO" AS integer
+  MANDATORY
+
+ADD FIELD "_UserIO-TenantId" OF "_UserIO" AS integer
+  MANDATORY
+
+ADD FIELD "_UserIO-BIRecReads" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIO-BIRecWrites" OF "_UserIO" AS int64
+  MANDATORY
+
+ADD INDEX "_UserIO-Id" ON "_UserIO"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_UserIO-Id" ASCENDING
+
+ADD TABLE "_LockReq"
+  FROZEN
+
+ADD FIELD "_LockReq-Id" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-Num" OF "_LockReq" AS integer
+  MANDATORY
+
+ADD FIELD "_LockReq-Name" OF "_LockReq" AS character
+  MANDATORY
+
+ADD FIELD "_LockReq-RecLock" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-RecWait" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-TrnLock" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-TrnWait" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-SchLock" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-SchWait" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-ExclFind" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-ShrFind" OF "_LockReq" AS int64
+  MANDATORY
+
+ADD FIELD "_LockReq-Misc" OF "_LockReq" AS integer
+  MANDATORY
+
+ADD FIELD "_LockReq-TenantId" OF "_LockReq" AS integer
+  MANDATORY
+
+ADD INDEX "_LockReq-Id" ON "_LockReq"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_LockReq-Id" ASCENDING
+
+ADD TABLE "_Checkpoint"
+  FROZEN
+
+ADD FIELD "_Checkpoint-Id" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Time" OF "_Checkpoint" AS character
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Len" OF "_Checkpoint" AS character
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Dirty" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-CptQ" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Scan" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-ApwQ" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Flush" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Misc" OF "_Checkpoint" AS integer
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Duration" OF "_Checkpoint" AS decimal
+  MANDATORY
+
+ADD FIELD "_Checkpoint-SyncTime" OF "_Checkpoint" AS decimal
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Bi-Write-Time" OF "_Checkpoint" AS decimal
+  MANDATORY
+
+ADD FIELD "_Checkpoint-B-Write-Time" OF "_Checkpoint" AS decimal
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Bi-Writes" OF "_Checkpoint" AS integer
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Buffers" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Cluster" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Number" OF "_Checkpoint" AS int64
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Time-TZ" OF "_Checkpoint" AS datetime-tz
+  MANDATORY
+
+ADD FIELD "_Checkpoint-Len-TZ" OF "_Checkpoint" AS datetime-tz
+  MANDATORY
+
+ADD INDEX "_Checkpoint-Id" ON "_Checkpoint"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Checkpoint-Id" ASCENDING
+
+ADD TABLE "_Lock"
+  FROZEN
+
+ADD FIELD "_Lock-Id" OF "_Lock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-Usr" OF "_Lock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-Name" OF "_Lock" AS character
+  MANDATORY
+
+ADD FIELD "_Lock-Type" OF "_Lock" AS character
+  MANDATORY
+
+ADD FIELD "_Lock-Table" OF "_Lock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-RecId" OF "_Lock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-Chain" OF "_Lock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-Flags" OF "_Lock" AS character
+  MANDATORY
+
+ADD FIELD "_Lock-Misc" OF "_Lock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-TenantId" OF "_Lock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-PartitionId" OF "_Lock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-DomainId" OF "_Lock" AS int64
+  MANDATORY
+
+ADD FIELD "_Lock-Tty" OF "_Lock" AS character
+  MANDATORY
+
+ADD FIELD "_Lock-TransId" OF "_Lock" AS integer
+  MANDATORY
+
+ADD FIELD "_Lock-Trans-State" OF "_Lock" AS character
+  MANDATORY
+
+ADD FIELD "_Lock-Trans-Flags" OF "_Lock" AS character
+  MANDATORY
+
+ADD INDEX "_Lock-Id" ON "_Lock"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Lock-Id" ASCENDING
+
+ADD TABLE "_Trans"
+  FROZEN
+
+ADD FIELD "_Trans-Id" OF "_Trans" AS int64
+  MANDATORY
+
+ADD FIELD "_Trans-State" OF "_Trans" AS character
+  MANDATORY
+
+ADD FIELD "_Trans-Flags" OF "_Trans" AS character
+  MANDATORY
+
+ADD FIELD "_Trans-Usrnum" OF "_Trans" AS integer
+  MANDATORY
+
+ADD FIELD "_Trans-Num" OF "_Trans" AS integer
+  MANDATORY
+
+ADD FIELD "_Trans-counter" OF "_Trans" AS integer
+  MANDATORY
+
+ADD FIELD "_Trans-txtime" OF "_Trans" AS character
+  MANDATORY
+
+ADD FIELD "_Trans-Coord" OF "_Trans" AS character
+  MANDATORY
+
+ADD FIELD "_Trans-CoordTx" OF "_Trans" AS integer
+  MANDATORY
+
+ADD FIELD "_Trans-Duration" OF "_Trans" AS integer
+  MANDATORY
+
+ADD FIELD "_Trans-Misc" OF "_Trans" AS integer
+  MANDATORY
+
+ADD FIELD "_Trans-TenantId" OF "_Trans" AS integer
+  MANDATORY
+
+ADD FIELD "_Trans-JTA-State" OF "_Trans" AS character
+  MANDATORY
+
+ADD FIELD "_Trans-JTA-Flags" OF "_Trans" AS character
+  MANDATORY
+
+ADD FIELD "_Trans-XID" OF "_Trans" AS character
+  MANDATORY
+
+ADD FIELD "_Trans-BIRecReads" OF "_Trans" AS int64
+  MANDATORY
+
+ADD FIELD "_Trans-BIRecWrites" OF "_Trans" AS int64
+  MANDATORY
+
+ADD INDEX "_Trans-Id" ON "_Trans"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Trans-Id" ASCENDING
+
+ADD TABLE "_License"
+  FROZEN
+
+ADD FIELD "_Lic-Id" OF "_License" AS int64
+  MANDATORY
+
+ADD FIELD "_Lic-ValidUsers" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-ActiveConns" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-MaxActive" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-MinActive" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-BatchConns" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-MaxBatch" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-MinBatch" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-CurrConns" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-MaxCurrent" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-MinCurrent" OF "_License" AS integer
+  MANDATORY
+
+ADD FIELD "_Lic-Edition" OF "_License" AS character
+  MANDATORY
+
+ADD INDEX "_License" ON "_License"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Lic-Id" ASCENDING
+
+ADD TABLE "_TableStat"
+  FROZEN
+
+ADD FIELD "_TableStat-id" OF "_TableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_TableStat-read" OF "_TableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_TableStat-update" OF "_TableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_TableStat-create" OF "_TableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_TableStat-delete" OF "_TableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_TableStat-OsRead" OF "_TableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_TableStat-PartitionId" OF "_TableStat" AS integer
+  MANDATORY
+
+ADD INDEX "_TableStat" ON "_TableStat"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_TableStat-id" ASCENDING
+
+ADD TABLE "_IndexStat"
+  FROZEN
+
+ADD FIELD "_IndexStat-id" OF "_IndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_IndexStat-read" OF "_IndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_IndexStat-create" OF "_IndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_IndexStat-delete" OF "_IndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_IndexStat-split" OF "_IndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_IndexStat-blockdelete" OF "_IndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_IndexStat-OsRead" OF "_IndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_IndexStat-PartitionId" OF "_IndexStat" AS integer
+  MANDATORY
+
+ADD INDEX "_IndexStat" ON "_IndexStat"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_IndexStat-id" ASCENDING
+
+ADD TABLE "_Latch"
+  FROZEN
+
+ADD FIELD "_Latch-Id" OF "_Latch" AS int64
+  MANDATORY
+
+ADD FIELD "_Latch-Name" OF "_Latch" AS character
+  MANDATORY
+
+ADD FIELD "_Latch-Hold" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-Qhold" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-Type" OF "_Latch" AS character
+  MANDATORY
+
+ADD FIELD "_Latch-Wait" OF "_Latch" AS int64
+  MANDATORY
+
+ADD FIELD "_Latch-Lock" OF "_Latch" AS int64
+  MANDATORY
+
+ADD FIELD "_Latch-Spin" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-Busy" OF "_Latch" AS int64
+  MANDATORY
+
+ADD FIELD "_Latch-LockedT" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-LockT" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-WaitT" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-HoldTenantId" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-QHoldTenantId" OF "_Latch" AS integer
+  MANDATORY
+
+ADD FIELD "_Latch-Owner" OF "_Latch" AS integer
+  MANDATORY
+
+ADD INDEX "_Latch-Id" ON "_Latch"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Latch-Id" ASCENDING
+
+ADD TABLE "_Resrc"
+  FROZEN
+
+ADD FIELD "_Resrc-Id" OF "_Resrc" AS int64
+  MANDATORY
+
+ADD FIELD "_Resrc-Name" OF "_Resrc" AS character
+  MANDATORY
+
+ADD FIELD "_Resrc-lock" OF "_Resrc" AS int64
+  MANDATORY
+
+ADD FIELD "_Resrc-wait" OF "_Resrc" AS int64
+  MANDATORY
+
+ADD FIELD "_Resrc-time" OF "_Resrc" AS int64
+  MANDATORY
+
+ADD INDEX "_Resrc-Id" ON "_Resrc"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Resrc-Id" ASCENDING
+
+ADD TABLE "_TxeLock"
+  FROZEN
+
+ADD FIELD "_Txe-Id" OF "_TxeLock" AS int64
+  MANDATORY
+
+ADD FIELD "_Txe-Type" OF "_TxeLock" AS character
+  EXTENT 9
+  MANDATORY
+
+ADD FIELD "_Txe-Locks" OF "_TxeLock" AS int64
+  EXTENT 9
+  MANDATORY
+
+ADD FIELD "_Txe-Lockss" OF "_TxeLock" AS int64
+  EXTENT 9
+  MANDATORY
+
+ADD FIELD "_Txe-Waits" OF "_TxeLock" AS int64
+  EXTENT 9
+  MANDATORY
+
+ADD FIELD "_Txe-Waitss" OF "_TxeLock" AS int64
+  EXTENT 9
+  MANDATORY
+
+ADD FIELD "_Txe-Time" OF "_TxeLock" AS integer
+  EXTENT 9
+  MANDATORY
+
+ADD FIELD "_Txe-Wait-Time" OF "_TxeLock" AS integer
+  EXTENT 9
+  MANDATORY
+
+ADD INDEX "_Txe-id" ON "_TxeLock"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Txe-Id" ASCENDING
+
+ADD TABLE "_LobStat"
+  FROZEN
+
+ADD FIELD "_LobStat-id" OF "_LobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_LobStat-Table" OF "_LobStat" AS integer
+  MANDATORY
+
+ADD FIELD "_LobStat-read" OF "_LobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_LobStat-update" OF "_LobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_LobStat-create" OF "_LobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_LobStat-delete" OF "_LobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_LobStat-OsRead" OF "_LobStat" AS int64
+  MANDATORY
+
+ADD FIELD "_LobStat-PartitionId" OF "_LobStat" AS integer
+  MANDATORY
+
+ADD INDEX "_LobStat" ON "_LobStat"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_LobStat-id" ASCENDING
+
+ADD TABLE "_UserStatus"
+  FROZEN
+
+ADD FIELD "_UserStatus-UserId" OF "_UserStatus" AS int64
+
+ADD FIELD "_UserStatus-ObjectId" OF "_UserStatus" AS integer
+
+ADD FIELD "_UserStatus-ObjectType" OF "_UserStatus" AS integer
+
+ADD FIELD "_UserStatus-State" OF "_UserStatus" AS integer
+
+ADD FIELD "_UserStatus-Counter" OF "_UserStatus" AS integer
+
+ADD FIELD "_UserStatus-Target" OF "_UserStatus" AS integer
+
+ADD FIELD "_UserStatus-Operation" OF "_UserStatus" AS character
+
+ADD FIELD "_UserStatus-TenantId" OF "_UserStatus" AS integer
+
+ADD INDEX "_UserStatus-UserId" ON "_UserStatus"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_UserStatus-UserId" ASCENDING
+
+ADD TABLE "_MyConnection"
+  FROZEN
+
+ADD FIELD "_MyConn-Id" OF "_MyConnection" AS int64
+
+ADD FIELD "_MyConn-UserId" OF "_MyConnection" AS integer
+
+ADD FIELD "_MyConn-Pid" OF "_MyConnection" AS integer
+
+ADD FIELD "_MyConn-NumSeqBuffers" OF "_MyConnection" AS integer
+
+ADD FIELD "_MyConn-UsedSeqBuffers" OF "_MyConnection" AS integer
+
+ADD FIELD "_MyConn-TenantId" OF "_MyConnection" AS integer
+
+ADD FIELD "_MyConn-UserMisc" OF "_MyConnection" AS character
+
+ADD FIELD "_MyConn-ServerPid" OF "_MyConnection" AS integer
+
+ADD FIELD "_MyConn-ServerTid" OF "_MyConnection" AS integer
+
+ADD FIELD "_MyConn-Tid" OF "_MyConnection" AS integer
+
+ADD INDEX "_MyConnection-Id" ON "_MyConnection"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_MyConn-Id" ASCENDING
+
+ADD TABLE "_AreaStatus"
+  FROZEN
+
+ADD FIELD "_AreaStatus-Id" OF "_AreaStatus" AS int64
+
+ADD FIELD "_AreaStatus-Areaname" OF "_AreaStatus" AS character
+
+ADD FIELD "_AreaStatus-Areanum" OF "_AreaStatus" AS integer
+
+ADD FIELD "_AreaStatus-Totblocks" OF "_AreaStatus" AS int64
+
+ADD FIELD "_AreaStatus-Hiwater" OF "_AreaStatus" AS int64
+
+ADD FIELD "_AreaStatus-Extents" OF "_AreaStatus" AS integer
+
+ADD FIELD "_AreaStatus-Lastextent" OF "_AreaStatus" AS character
+
+ADD FIELD "_AreaStatus-Freenum" OF "_AreaStatus" AS int64
+
+ADD FIELD "_AreaStatus-Rmnum" OF "_AreaStatus" AS int64
+
+ADD FIELD "_AreaStatus-Type" OF "_AreaStatus" AS character
+  MANDATORY
+
+ADD FIELD "_AreaStatus-State" OF "_AreaStatus" AS character
+  MANDATORY
+
+ADD FIELD "_AreaStatus-LastOp" OF "_AreaStatus" AS character
+  MANDATORY
+
+ADD FIELD "_AreaStatus-AIActivated" OF "_AreaStatus" AS character
+  MANDATORY
+
+ADD FIELD "_AreaStatus-AI-Seq" OF "_AreaStatus" AS integer
+
+ADD FIELD "_AreaStatus-LastOp-TZ" OF "_AreaStatus" AS datetime-tz
+  MANDATORY
+
+ADD INDEX "_AreaStatus-Id" ON "_AreaStatus"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_AreaStatus-Id" ASCENDING
+
+ADD TABLE "_Repl-Server"
+  FROZEN
+
+ADD FIELD "_ReplSrv-id" OF "_Repl-Server" AS int64
+
+ADD FIELD "_ReplSrv-AgentCount" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-BlocksSent" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-StartTime" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-LastBlockSentAt" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-Database" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-DatabaseRole" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-ServerState" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-DeferAgentConnUntil" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-DeferAgentExpire" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-NextConnectIn" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-ConnectAttempts" OF "_Repl-Server" AS int64
+
+ADD FIELD "_ReplSrv-AgentsConnected" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-CurDelayInterval" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-MinDelayInterval" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-MaxDelayInterval" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-RecoveryState" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-RecAgentsToRecover" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-RecAgentsConnected" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-AgentsInSync" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-TransitionType" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-TransitionTimeout" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-ReplicationSet" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-TransDatabaseRole" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-TransitionToAgents" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-RestartAfterTrans" OF "_Repl-Server" AS logical
+
+ADD FIELD "_ReplSrv-AutoBeginAI" OF "_Repl-Server" AS logical
+
+ADD FIELD "_ReplSrv-AutoAddAI" OF "_Repl-Server" AS logical
+
+ADD FIELD "_ReplSrv-AIFile" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-BackupMethod" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-ConfiguredAgents" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-ReplKeepAlive" OF "_Repl-Server" AS int64
+
+ADD FIELD "_ReplSrv-SchemaLockAction" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-AgentShutdownAction" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-ReservedChar" OF "_Repl-Server" AS character
+  EXTENT 10
+
+ADD FIELD "_ReplSrv-ReservedInt" OF "_Repl-Server" AS integer
+  EXTENT 10
+
+ADD FIELD "_ReplSrv-TransEndTrigger" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-DRTransitionToAgents" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-TransToDBName" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-TransToDBHost" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-TransToDBPort" OF "_Repl-Server" AS integer
+
+ADD FIELD "_ReplSrv-SSLEnabled" OF "_Repl-Server" AS logical
+  MANDATORY
+
+ADD FIELD "_ReplSrv-SSLNoHostVerify" OF "_Repl-Server" AS logical
+  MANDATORY
+
+ADD FIELD "_ReplSrv-SSLCertStorePath" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-SSLCipherSuites" OF "_Repl-Server" AS character
+
+ADD FIELD "_ReplSrv-SSLProtocols" OF "_Repl-Server" AS character
+
+ADD INDEX "_ReplSrv-id" ON "_Repl-Server"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_ReplSrv-id" ASCENDING
+
+ADD TABLE "_Repl-AgentControl"
+  FROZEN
+
+ADD FIELD "_ReplAgtCtl-AgentID" OF "_Repl-AgentControl" AS int64
+
+ADD FIELD "_ReplAgtCtl-AgentName" OF "_Repl-AgentControl" AS character
+
+ADD FIELD "_ReplAgtCtl-ConnectTime" OF "_Repl-AgentControl" AS character
+
+ADD FIELD "_ReplAgtCtl-RemoteDBName" OF "_Repl-AgentControl" AS character
+
+ADD FIELD "_ReplAgtCtl-RemoteHost" OF "_Repl-AgentControl" AS character
+
+ADD FIELD "_ReplAgtCtl-Port" OF "_Repl-AgentControl" AS integer
+
+ADD FIELD "_ReplAgtCtl-BlocksSent" OF "_Repl-AgentControl" AS integer
+
+ADD FIELD "_ReplAgtCtl-BlocksACK" OF "_Repl-AgentControl" AS integer
+
+ADD FIELD "_ReplAgtCtl-LastBlockSentAt" OF "_Repl-AgentControl" AS character
+
+ADD FIELD "_ReplAgtCtl-Method" OF "_Repl-AgentControl" AS character
+
+ADD FIELD "_ReplAgtCtl-status" OF "_Repl-AgentControl" AS integer
+
+ADD FIELD "_ReplAgtCtl-CommStatus" OF "_Repl-AgentControl" AS integer
+
+ADD FIELD "_ReplAgtCtl-Critical" OF "_Repl-AgentControl" AS integer
+
+ADD FIELD "_ReplAgtCtl-MaxMsgSize" OF "_Repl-AgentControl" AS int64
+
+ADD FIELD "_ReplAgtCtl-ConnectionTimeout" OF "_Repl-AgentControl" AS decimal
+
+ADD FIELD "_ReplAgtCtl-TransitionType" OF "_Repl-AgentControl" AS character
+
+ADD FIELD "_ReplAgtCtl-TimeoutLimit" OF "_Repl-AgentControl" AS integer
+
+ADD FIELD "_ReplAgtCtl-ReservedChar" OF "_Repl-AgentControl" AS character
+  EXTENT 10
+
+ADD FIELD "_ReplAgtCtl-ReservedInt" OF "_Repl-AgentControl" AS integer
+  EXTENT 10
+
+ADD INDEX "_ReplAgtCtl-AgentID" ON "_Repl-AgentControl"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_ReplAgtCtl-AgentID" ASCENDING
+
+ADD TABLE "_Repl-Agent"
+  FROZEN
+
+ADD FIELD "_ReplAgt-AgentID" OF "_Repl-Agent" AS int64
+
+ADD FIELD "_ReplAgt-AgentName" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-ConnectTime" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-DBName" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-ServerHost" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-Port" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-BlocksReceived" OF "_Repl-Agent" AS int64
+
+ADD FIELD "_ReplAgt-BlocksProcessed" OF "_Repl-Agent" AS int64
+
+ADD FIELD "_ReplAgt-BlocksACK" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-NotesProcessed" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-LastTRID" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-Method" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-Status" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-CommStatus" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-DatabaseRole" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-Critical" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-MaxMsgSize" OF "_Repl-Agent" AS int64
+
+ADD FIELD "_ReplAgt-MinDelayInterval" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-MaxDelayInterval" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-TransitionType" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-TimeoutLimit" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-ConnectTimeout" OF "_Repl-Agent" AS int64
+
+ADD FIELD "_ReplAgt-MinPort" OF "_Repl-Agent" AS int64
+
+ADD FIELD "_ReplAgt-MaxPort" OF "_Repl-Agent" AS int64
+
+ADD FIELD "_ReplAgt-ReplicationSet" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-TransDatabaseRole" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-TransitionToAgents" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-RestartAfterTrans" OF "_Repl-Agent" AS logical
+
+ADD FIELD "_ReplAgt-AutoBeginAI" OF "_Repl-Agent" AS logical
+
+ADD FIELD "_ReplAgt-AutoAddAI" OF "_Repl-Agent" AS logical
+
+ADD FIELD "_ReplAgt-AIFile" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-BackupMethod" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-ReservedChar" OF "_Repl-Agent" AS character
+  EXTENT 10
+
+ADD FIELD "_ReplAgt-ReservedInt" OF "_Repl-Agent" AS integer
+  EXTENT 10
+
+ADD FIELD "_ReplAgt-TransEndTrigger" OF "_Repl-Agent" AS integer
+
+ADD FIELD "_ReplAgt-AIStreaming" OF "_Repl-Agent" AS logical
+
+ADD FIELD "_ReplAgt-DRTransitionToAgents" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-ApplyStreamingData" OF "_Repl-Agent" AS logical
+
+ADD FIELD "_ReplAgt-SSLEnabled" OF "_Repl-Agent" AS logical
+  MANDATORY
+
+ADD FIELD "_ReplAgt-SSLKeyAlias" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-SSLKeyAliasPassword" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-SSLKeyStorePath" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-SSLCipherSuites" OF "_Repl-Agent" AS character
+
+ADD FIELD "_ReplAgt-SSLProtocols" OF "_Repl-Agent" AS character
+
+ADD INDEX "_ReplAgt-AgentID" ON "_Repl-Agent"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_ReplAgt-AgentID" ASCENDING
+
+ADD TABLE "_Database-Feature"
+  FROZEN
+
+ADD FIELD "_DBFeature-ID" OF "_Database-Feature" AS int64
+
+ADD FIELD "_DBFeature_Name" OF "_Database-Feature" AS character
+
+ADD FIELD "_DBFeature_Enabled" OF "_Database-Feature" AS character
+
+ADD FIELD "_DBFeature_Active" OF "_Database-Feature" AS character
+
+ADD FIELD "_DBFeature-Res01" OF "_Database-Feature" AS character
+  EXTENT 10
+
+ADD FIELD "_DBFeature-Res02" OF "_Database-Feature" AS integer
+  EXTENT 10
+
+ADD INDEX "_Database-Feature" ON "_Database-Feature"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_DBFeature-ID" ASCENDING
+
+ADD TABLE "_Code-Feature"
+  FROZEN
+
+ADD FIELD "_CodeFeature-ID" OF "_Code-Feature" AS int64
+
+ADD FIELD "_CodeFeature_Name" OF "_Code-Feature" AS character
+
+ADD FIELD "_CodeFeature_Supported" OF "_Code-Feature" AS character
+
+ADD FIELD "_CodeFeature_Required" OF "_Code-Feature" AS character
+
+ADD FIELD "_CodeFeature-Res01" OF "_Code-Feature" AS character
+  EXTENT 10
+
+ADD FIELD "_CodeFeature-Res02" OF "_Code-Feature" AS integer
+  EXTENT 10
+
+ADD INDEX "_Code-Feature" ON "_Code-Feature"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_CodeFeature-ID" ASCENDING
+
+ADD TABLE "_AreaThreshold"
+  FROZEN
+
+ADD FIELD "_AreaThreshold-ID" OF "_AreaThreshold" AS int64
+
+ADD FIELD "_AreaThresholdArea" OF "_AreaThreshold" AS integer
+
+ADD FIELD "_AreaThreshold" OF "_AreaThreshold" AS integer
+
+ADD INDEX "_AreaThreshold" ON "_AreaThreshold"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_AreaThreshold-ID" ASCENDING
+
+ADD TABLE "_UserTableStat"
+  FROZEN
+
+ADD FIELD "_UserTableStat-Id" OF "_UserTableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserTableStat-Conn" OF "_UserTableStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserTableStat-Num" OF "_UserTableStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserTableStat-read" OF "_UserTableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserTableStat-update" OF "_UserTableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserTableStat-create" OF "_UserTableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserTableStat-delete" OF "_UserTableStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserTableStat-PartitionId" OF "_UserTableStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserTableStat-TenantId" OF "_UserTableStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserTableStat-OsRead" OF "_UserTableStat" AS int64
+  MANDATORY
+
+ADD INDEX "_UserTableStat" ON "_UserTableStat"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_UserTableStat-Id" ASCENDING
+
+ADD TABLE "_UserIndexStat"
+  FROZEN
+
+ADD FIELD "_UserIndexStat-Id" OF "_UserIndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-Conn" OF "_UserIndexStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-Num" OF "_UserIndexStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-read" OF "_UserIndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-create" OF "_UserIndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-delete" OF "_UserIndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-split" OF "_UserIndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-blockdelete" OF "_UserIndexStat" AS int64
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-PartitionId" OF "_UserIndexStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-TenantId" OF "_UserIndexStat" AS integer
+  MANDATORY
+
+ADD FIELD "_UserIndexStat-OsRead" OF "_UserIndexStat" AS int64
+  MANDATORY
+
+ADD INDEX "_UserIndexStat" ON "_UserIndexStat"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_UserIndexStat-Id" ASCENDING
+
+ADD TABLE "_DbParams"
+  FROZEN
+
+ADD FIELD "_DbParams-Id" OF "_DbParams" AS int64
+  MANDATORY
+
+ADD FIELD "_DbParams-Name" OF "_DbParams" AS character
+  MANDATORY
+
+ADD FIELD "_DbParams-Value" OF "_DbParams" AS character
+  MANDATORY
+
+ADD FIELD "_DbParams-dtype" OF "_DbParams" AS integer
+  MANDATORY
+
+ADD FIELD "_DbParams-Desc" OF "_DbParams" AS character
+  MANDATORY
+
+ADD FIELD "_DbParams-Msg-Num" OF "_DbParams" AS int64
+  MANDATORY
+
+ADD FIELD "_DbParams-Is-Default" OF "_DbParams" AS logical
+  MANDATORY
+
+ADD FIELD "_DbParams-Is-Modifiable" OF "_DbParams" AS logical
+  MANDATORY
+
+ADD FIELD "_DbParams-Misc" OF "_DbParams" AS character
+  MANDATORY
+
+ADD INDEX "_DbParams" ON "_DbParams"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_DbParams-Id" ASCENDING
+
+ADD TABLE "_Repl-AgentControlActivity"
+  FROZEN
+
+ADD FIELD "_ReplAgtCtlAct-AgentID" OF "_Repl-AgentControlActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-AgentName" OF "_Repl-AgentControlActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-ConnectTime" OF "_Repl-AgentControlActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-BlocksSent" OF "_Repl-AgentControlActivity" AS integer
+
+ADD FIELD "_ReplAgtCtlAct-BlocksACK" OF "_Repl-AgentControlActivity" AS integer
+
+ADD FIELD "_ReplAgtCtlAct-LastBlockSentAt" OF "_Repl-AgentControlActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-Status" OF "_Repl-AgentControlActivity" AS integer
+
+ADD FIELD "_ReplAgtCtlAct-CommStatus" OF "_Repl-AgentControlActivity" AS integer
+
+ADD FIELD "_ReplAgtCtlAct-State" OF "_Repl-AgentControlActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-WaitingFor" OF "_Repl-AgentControlActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-RecoveryState" OF "_Repl-AgentControlActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-SyncPoints" OF "_Repl-AgentControlActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-CurRDBMSSeq" OF "_Repl-AgentControlActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-CurRDBMSBlock" OF "_Repl-AgentControlActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-LastBlockSeq" OF "_Repl-AgentControlActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-LastBlockBlock" OF "_Repl-AgentControlActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-LoadInterval" OF "_Repl-AgentControlActivity" AS integer
+
+ADD FIELD "_ReplAgtCtlAct-LoadChkInt" OF "_Repl-AgentControlActivity" AS decimal
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-LoadChkResp" OF "_Repl-AgentControlActivity" AS decimal
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-LastMsgRecv" OF "_Repl-AgentControlActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtCtlAct-ReservedChar" OF "_Repl-AgentControlActivity" AS character
+  EXTENT 10
+
+ADD FIELD "_ReplAgtCtlAct-ReservedInt" OF "_Repl-AgentControlActivity" AS integer
+  EXTENT 10
+
+ADD INDEX "_ReplAgtCtlAct-Id" ON "_Repl-AgentControlActivity"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_ReplAgtCtlAct-AgentID" ASCENDING
+
+ADD TABLE "_Repl-AgentActivity"
+  FROZEN
+
+ADD FIELD "_ReplAgtAct-AgentID" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-AgentName" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-ConnectTime" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-BlocksReceived" OF "_Repl-AgentActivity" AS int64
+
+ADD FIELD "_ReplAgtAct-BlocksProcessed" OF "_Repl-AgentActivity" AS int64
+
+ADD FIELD "_ReplAgtAct-BlocksACK" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-NotesProcessed" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-LastTRID" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-Status" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-CommStatus" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-State" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-Ready" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-WaitingFor" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-CurDelayInterval" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-TimeToTransition" OF "_Repl-AgentActivity" AS character
+
+ADD FIELD "_ReplAgtAct-LastBlockReceived" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-TransStarted" OF "_Repl-AgentActivity" AS int64
+
+ADD FIELD "_ReplAgtAct-TransEnded" OF "_Repl-AgentActivity" AS int64
+
+ADD FIELD "_ReplAgtAct-SyncPoints" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-SrcRDBMSSeq" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-SrcRDBMSBlock" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-LastRecvBlockSeq" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-LastRecvBlockBlock" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-LastBlockSeq" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-LastBlockBlock" OF "_Repl-AgentActivity" AS int64
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-ServerLag" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-SourceTRID" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-LastSyncTimeTgt" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-LastSyncTimeSrc" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-LastSyncDelta" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-ServerBlocksToSend" OF "_Repl-AgentActivity" AS integer
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-LastBlockCountTime" OF "_Repl-AgentActivity" AS character
+  MANDATORY
+
+ADD FIELD "_ReplAgtAct-BlockProcDelay" OF "_Repl-AgentActivity" AS integer
+
+ADD FIELD "_ReplAgtAct-ReservedChar" OF "_Repl-AgentActivity" AS character
+  EXTENT 10
+
+ADD FIELD "_ReplAgtAct-ReservedInt" OF "_Repl-AgentActivity" AS integer
+  EXTENT 10
+
+ADD INDEX "_ReplAgtAct-Id" ON "_Repl-AgentActivity"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_ReplAgtAct-AgentID" ASCENDING
+
+ADD TABLE "_DbServiceManager"
+  FROZEN
+
+ADD FIELD "_DbSvcMgr-Id" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-CommunicationAreaSize" OF "_DbServiceManager" AS decimal
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-TotalMsgEntries" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-FreeMsgEntries" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-UsedMsgEntries" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-MessageHWM" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-PicaFilled" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-LatchHolder" OF "_DbServiceManager" AS integer
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-AccessCount" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-AccessCollisions" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-LockPID" OF "_DbServiceManager" AS integer
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-LockUserType" OF "_DbServiceManager" AS character
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-LockUserNumber" OF "_DbServiceManager" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgr-ReservedChar" OF "_DbServiceManager" AS character
+  EXTENT 10
+
+ADD FIELD "_DbSvcMgr-ReservedInt" OF "_DbServiceManager" AS integer
+  EXTENT 10
+
+ADD INDEX "_DbSvcMgr-Id" ON "_DbServiceManager"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_DbSvcMgr-Id" ASCENDING
+
+ADD TABLE "_DbServiceManagerObjects"
+  FROZEN
+
+ADD FIELD "_DbSvcMgrObj-Id" OF "_DbServiceManagerObjects" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-Name" OF "_DbServiceManagerObjects" AS character
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-Ready" OF "_DbServiceManagerObjects" AS character
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-Status" OF "_DbServiceManagerObjects" AS character
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-Msgs" OF "_DbServiceManagerObjects" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-LockPID" OF "_DbServiceManagerObjects" AS integer
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-LockUserType" OF "_DbServiceManagerObjects" AS character
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-LockUserNumber" OF "_DbServiceManagerObjects" AS int64
+  MANDATORY
+
+ADD FIELD "_DbSvcMgrObj-ReservedChar" OF "_DbServiceManagerObjects" AS character
+  EXTENT 10
+
+ADD FIELD "_DbSvcMgrObj-ReservedInt" OF "_DbServiceManagerObjects" AS integer
+  EXTENT 10
+
+ADD INDEX "_DbSvcMgrObj-Id" ON "_DbServiceManagerObjects"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_DbSvcMgrObj-Id" ASCENDING
+
+ADD TABLE "_Cache"
+  FROZEN
+
+ADD FIELD "_Cache-Id" OF "_Cache" AS integer
+  MANDATORY
+
+ADD FIELD "_Cache-Name" OF "_Cache" AS character
+  MANDATORY
+
+ADD FIELD "_Cache-Size" OF "_Cache" AS integer
+  MANDATORY
+
+ADD FIELD "_Cache-Entries" OF "_Cache" AS integer
+  MANDATORY
+
+ADD FIELD "_Cache-Hash" OF "_Cache" AS integer
+  MANDATORY
+
+ADD FIELD "_Cache-Hits" OF "_Cache" AS int64
+  MANDATORY
+
+ADD FIELD "_Cache-Misses" OF "_Cache" AS int64
+  MANDATORY
+
+ADD INDEX "_Cache-Id" ON "_Cache"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_Cache-Id" ASCENDING
+
+ADD TABLE "_Repl-InterAgentActivity"
+  FROZEN
+
+ADD FIELD "_ReplIntAgtAct-AgentID" OF "_Repl-InterAgentActivity" AS int64
+
+ADD FIELD "_ReplIntAgtAct-AgentName" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-Host" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-Port" OF "_Repl-InterAgentActivity" AS integer
+
+ADD FIELD "_ReplIntAgtAct-DBName" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-ConnectionState" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-LastMsgSent" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-LastMsgRecv" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-LastPingSent" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-LastPingRecv" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-SentMsgs" OF "_Repl-InterAgentActivity" AS int64
+
+ADD FIELD "_ReplIntAgtAct-RecvMsgs" OF "_Repl-InterAgentActivity" AS int64
+
+ADD FIELD "_ReplIntAgtAct-SyncPoints" OF "_Repl-InterAgentActivity" AS int64
+
+ADD FIELD "_ReplIntAgtAct-RemoteLastBlkSeq" OF "_Repl-InterAgentActivity" AS integer
+
+ADD FIELD "_ReplIntAgtAct-RemoteSourceTRID" OF "_Repl-InterAgentActivity" AS int64
+
+ADD FIELD "_ReplIntAgtAct-ReservedChar" OF "_Repl-InterAgentActivity" AS character
+  EXTENT 10
+
+ADD FIELD "_ReplIntAgtAct-ReservedInt" OF "_Repl-InterAgentActivity" AS integer
+  EXTENT 10
+
+ADD FIELD "_ReplIntAgtAct-SSLEnabled" OF "_Repl-InterAgentActivity" AS logical
+  MANDATORY
+
+ADD FIELD "_ReplIntAgtAct-SSLNoHostVerify" OF "_Repl-InterAgentActivity" AS logical
+  MANDATORY
+
+ADD FIELD "_ReplIntAgtAct-SSLCertStorePath" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-SSLKeyAlias" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-SSLKeyAliasPass" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-SSLKeyStorePath" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-SSLCipherSuites" OF "_Repl-InterAgentActivity" AS character
+
+ADD FIELD "_ReplIntAgtAct-SSLProtocols" OF "_Repl-InterAgentActivity" AS character
+
+ADD INDEX "_ReplIntAgtAct-AgentID" ON "_Repl-InterAgentActivity"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_ReplIntAgtAct-AgentID" ASCENDING
+
+ADD TABLE "_Repl-AgentAIStreaming"
+  FROZEN
+
+ADD FIELD "_ReplAgtAIStr-AgentID" OF "_Repl-AgentAIStreaming" AS int64
+
+ADD FIELD "_ReplAgtAIStr-AgentName" OF "_Repl-AgentAIStreaming" AS character
+
+ADD FIELD "_ReplAgtAIStr-TotalCacheEntries" OF "_Repl-AgentAIStreaming" AS int64
+
+ADD FIELD "_ReplAgtAIStr-FreeCacheEntries" OF "_Repl-AgentAIStreaming" AS int64
+
+ADD FIELD "_ReplAgtAIStr-UsedCacheEntries" OF "_Repl-AgentAIStreaming" AS int64
+
+ADD FIELD "_ReplAgtAIStr-CacheHWM" OF "_Repl-AgentAIStreaming" AS int64
+
+ADD FIELD "_ReplAgtAIStr-TimesCacheFilled" OF "_Repl-AgentAIStreaming" AS int64
+
+ADD FIELD "_ReplAgtAIStr-ReservedChar" OF "_Repl-AgentAIStreaming" AS character
+  EXTENT 10
+
+ADD FIELD "_ReplAgtAIStr-ReservedInt" OF "_Repl-AgentAIStreaming" AS integer
+  EXTENT 10
+
+ADD INDEX "_ReplAgtAIStr-AgentID" ON "_Repl-AgentAIStreaming"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_ReplAgtAIStr-AgentID" ASCENDING
+
+ADD TABLE "_ActPrivBuffer"
+  FROZEN
+
+ADD FIELD "_PrivBuf-Id" OF "_ActPrivBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_PrivBuf-OSRds" OF "_ActPrivBuffer" AS int64
+  MANDATORY
+
+ADD FIELD "_PrivBuf-LogicRds" OF "_ActPrivBuffer" AS int64
+  MANDATORY
+
+ADD INDEX "_PrivBuf-Id" ON "_ActPrivBuffer"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "_PrivBuf-Id" ASCENDING
+
