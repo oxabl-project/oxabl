@@ -45,6 +45,7 @@ impl<'fs> Preprocessor<'fs> {
             sources: vec![(file, Arc::from(source))],
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
+            site_stack: Vec::new(),
             file_id_counter: file.raw() + 1,
         };
 
@@ -88,6 +89,12 @@ struct ProcessContext<'fs> {
     diagnostics: Vec<Diagnostic>,
     /// Stack of currently-being-processed paths for cycle detection.
     include_stack: HashSet<PathBuf>,
+    /// The `{...}` sites currently being expanded, outermost first.
+    ///
+    /// Ordered, unlike [`Self::include_stack`], because its job is attribution
+    /// rather than membership: a failure deep in an include chain has to be
+    /// reportable against the site in the file the caller actually analysed.
+    site_stack: Vec<FileSpan>,
     /// Counter for assigning FileIds to newly discovered include files.
     file_id_counter: u32,
 }
@@ -945,6 +952,7 @@ impl<'fs> ProcessContext<'fs> {
                 self.unresolved_includes.push(UnresolvedInclude {
                     name: include_name.to_string(),
                     site,
+                    via: self.site_stack.clone(),
                 });
                 return None;
             }
@@ -984,8 +992,12 @@ impl<'fs> ProcessContext<'fs> {
             self.vars.define(name, value);
         }
 
-        // Process recursively with positional args scoped to this include
+        // Process recursively with positional args scoped to this include.
+        // The site is on the stack for the duration, so anything unresolvable
+        // below here can name the chain that reached it.
+        self.site_stack.push(site);
         let children = self.process_source(include_file_id, &content, depth + 1, &args.positional);
+        self.site_stack.pop();
 
         // Restore vars (named args don't leak to parent)
         // But preserve any &GLOBAL-DEFINE changes
@@ -1828,6 +1840,66 @@ mod tests {
         assert!(
             d.help.is_some(),
             "PREPROC007 must carry a remediation help line"
+        );
+    }
+
+    // The chain is what lets a consumer attribute a deep failure to a span in
+    // the file it is actually analysing. Without it, the only coordinate on
+    // record belongs to a buffer that consumer never sees.
+    #[test]
+    fn a_nested_unresolved_include_records_the_chain_that_reached_it() {
+        let fs = make_fs(&[("/inc/mid.i", "{deep.i}\n"), ("/inc/deep.i", "{gone.i}\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let root = FileId::new(1);
+        let result = pp.process(root, "{mid.i}\n").unwrap();
+
+        let unresolved = &result.unresolved_includes;
+        assert_eq!(unresolved.len(), 1, "got {unresolved:?}");
+        let miss = &unresolved[0];
+        assert_eq!(miss.name, "gone.i");
+        // Its own site is two levels down, in a buffer the root's reader has no
+        // coordinates for.
+        assert_ne!(miss.site.file, root);
+        // The chain is outermost-first, so the first entry is the one span that
+        // does lie in the root's bytes.
+        assert_eq!(miss.via.len(), 2, "got {:?}", miss.via);
+        assert_eq!(miss.via[0].file, root);
+        assert_eq!((miss.via[0].span.start, miss.via[0].span.end), (0, 7));
+        assert_ne!(miss.via[1].file, root);
+    }
+
+    // A reference written in the file being processed has nothing above it, so
+    // it stays attributable to its own site.
+    #[test]
+    fn a_root_level_unresolved_include_records_an_empty_chain() {
+        let fs = make_fs(&[]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let root = FileId::new(1);
+        let result = pp.process(root, "{gone.i}\n").unwrap();
+
+        let miss = &result.unresolved_includes[0];
+        assert_eq!(miss.site.file, root);
+        assert!(miss.via.is_empty(), "got {:?}", miss.via);
+    }
+
+    // The stack has to unwind: a resolvable include expanded before an
+    // unresolvable sibling must not leave its site on the chain.
+    #[test]
+    fn the_include_chain_unwinds_after_a_sibling_expansion() {
+        let fs = make_fs(&[("/inc/fine.i", "MESSAGE \"ok\".\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let root = FileId::new(1);
+        let result = pp.process(root, "{fine.i}\n{gone.i}\n").unwrap();
+
+        let miss = &result.unresolved_includes[0];
+        assert_eq!(miss.name, "gone.i");
+        assert!(
+            miss.via.is_empty(),
+            "the resolved sibling's site must have been popped: {:?}",
+            miss.via
         );
     }
 

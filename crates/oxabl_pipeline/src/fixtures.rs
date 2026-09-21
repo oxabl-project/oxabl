@@ -1061,6 +1061,9 @@ pub const NON_ASCII_CHARACTER_COLUMN: usize = 30;
 
 // --- The table --------------------------------------------------------------
 
+/// The fixture whose root reaches an unresolvable include through another one.
+pub const NESTED_UNRESOLVABLE_INCLUDE_FIXTURE: &str = "nested_unresolvable_include";
+
 /// Every fixture, shared by all four legs.
 pub const FIXTURES: &[ParityFixture] = &[
     ParityFixture {
@@ -1323,6 +1326,66 @@ pub const FIXTURES: &[ParityFixture] = &[
             name: "missing.i",
             reason: "absent_from_workspace",
         })],
+    },
+    // A nested unresolvable include. The root names `defs/mid.i`, which exists;
+    // the include *it* names does not. The symbols that include would have
+    // declared are elided exactly as a root-origin failure elides them, so the
+    // explanation has to reach this root's reader too.
+    //
+    // This row carries no resolutions deliberately, and that is the assertion:
+    // withholding `defs/mid.i` makes the root's own `{defs/mid.i}` unresolvable
+    // and reports PREPROC007 over the same bytes, so the two answers are equal.
+    // A nested failure that went unreported would break that equality by
+    // dropping the warning only on the arm where the intermediate resolves.
+    ParityFixture {
+        name: NESTED_UNRESOLVABLE_INCLUDE_FIXTURE,
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "defs/mid.i",
+            source: "{defs/nowhere.i}\n",
+        }],
+        resolutions: &[
+            // Supplying `defs/mid.i` resolves the root's include, and yet no
+            // client gets louder or quieter for it: withheld, the root's own
+            // `{defs/mid.i}` is the unresolvable one; supplied, the failure
+            // moves one level down and is re-anchored on the same bytes. That
+            // agreed silence is the fix — before it, supplying the sibling
+            // silently dropped the warning.
+            CrossFileResolution {
+                name: "{defs/mid.i}",
+                effect: CrossFileEffect::ResolvedSilently,
+            },
+            // Nothing supplied declares this name either way, so the finding
+            // that reports it stands on both arms.
+            CrossFileResolution {
+                name: "v-gone",
+                effect: CrossFileEffect::Unresolvable,
+            },
+        ],
+        source: "{defs/mid.i}\nMESSAGE v-gone.\n",
+        diagnostics: &[
+            // Anchored on the root's own include site, not on a span inside
+            // `defs/mid.i` that this file's reader cannot see.
+            ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 12,
+            },
+            // The cascade the warning explains. These findings are correct ABL
+            // and stay; the bug was ever showing them without the explanation.
+            ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 21,
+                end: 27,
+            },
+        ],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[],
     },
     // Real nested includes: the root names `defs/mid.i` itself and reaches
     // `defs/base.i` through it, which is the distinction a rebuild set turns on.

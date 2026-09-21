@@ -56,6 +56,13 @@ pub struct UnresolvedInclude {
     pub name: String,
     /// The `{...}` site, in the coordinates of the file that wrote it.
     pub site: FileSpan,
+    /// The enclosing include sites that led here, outermost first.
+    ///
+    /// Empty when the reference was written in the file being processed. For a
+    /// *nested* reference the first entry is the site in that file — the only
+    /// coordinate a consumer analysing it can render, since [`Self::site`]
+    /// belongs to an include's buffer rather than to the root's bytes.
+    pub via: Vec<FileSpan>,
 }
 
 /// The preprocessed representation of a source file.
