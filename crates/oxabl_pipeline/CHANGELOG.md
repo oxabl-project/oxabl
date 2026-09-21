@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.2](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v1.1.1...oxabl_pipeline-v1.1.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* analyze include roots as fragments ([#166](https://github.com/oxabl-project/oxabl/issues/166)) ([dba8a3c](https://github.com/oxabl-project/oxabl/commit/dba8a3cb0cdea9f753ae6e1161bd36aeb3014409))
+* **preprocessor:** report a nested unresolvable include instead of dropping it ([#177](https://github.com/oxabl-project/oxabl/issues/177)) ([676dafe](https://github.com/oxabl-project/oxabl/commit/676dafe4f3b5b3dc1d98ed43342033f567a7f778))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 1.1.1 to 1.1.2
+    * oxabl_formatter bumped from 1.0.0 to 1.0.1
+    * oxabl_index bumped from 1.0.0 to 1.0.1
+    * oxabl_schema bumped from 0.2.2 to 0.2.3
+    * oxabl_semantic bumped from 1.0.2 to 1.0.3
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+  * dev-dependencies
+    * oxabl_parser bumped from 1.0.2 to 1.0.3
+    * oxabl_schema bumped from 0.2.2 to 0.2.3
+
 ## [1.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v1.1.0...oxabl_pipeline-v1.1.1) (2026-08-14)
 
 

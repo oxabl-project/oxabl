@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v1.0.0...oxabl_formatter-v1.0.1) (2026-09-21)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 1.0.2 to 1.0.3
+
 ## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v0.1.2...oxabl_formatter-v1.0.0) (2026-08-14)
 
 

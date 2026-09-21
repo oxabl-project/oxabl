@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v1.0.0...oxabl_index-v1.0.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **daemon:** detect added files in freshness, and correct span extents and lookup cost ([#187](https://github.com/oxabl-project/oxabl/issues/187)) ([d50be6a](https://github.com/oxabl-project/oxabl/commit/d50be6a897742e622b0c4f281de4a6d1d9c2c355))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 1.0.2 to 1.0.3
+    * oxabl_schema bumped from 0.2.2 to 0.2.3
+    * oxabl_semantic bumped from 1.0.2 to 1.0.3
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+  * dev-dependencies
+    * oxabl_schema bumped from 0.2.2 to 0.2.3
+
 ## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v0.1.2...oxabl_index-v1.0.0) (2026-08-14)
 
 

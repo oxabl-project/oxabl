@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v1.0.2...oxabl_workspace-v1.0.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* analyze include roots as fragments ([#166](https://github.com/oxabl-project/oxabl/issues/166)) ([dba8a3c](https://github.com/oxabl-project/oxabl/commit/dba8a3cb0cdea9f753ae6e1161bd36aeb3014409))
+
 ## [1.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v1.0.1...oxabl_workspace-v1.0.2) (2026-08-14)
 
 

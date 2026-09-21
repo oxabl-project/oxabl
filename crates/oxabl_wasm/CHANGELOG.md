@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.0...oxabl_wasm-v1.0.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* analyze include roots as fragments ([#166](https://github.com/oxabl-project/oxabl/issues/166)) ([dba8a3c](https://github.com/oxabl-project/oxabl/commit/dba8a3cb0cdea9f753ae6e1161bd36aeb3014409))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 1.1.1 to 1.1.2
+    * oxabl_pipeline bumped from 1.1.1 to 1.1.2
+  * dev-dependencies
+    * oxabl_pipeline bumped from 1.1.1 to 1.1.2
+
 ## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v0.1.2...oxabl_wasm-v1.0.0) (2026-08-14)
 
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v1.0.2...oxabl_parser-v1.0.3) (2026-09-21)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.5.1 to 0.5.2
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+
 ## [1.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v1.0.1...oxabl_parser-v1.0.2) (2026-08-14)
 
 
