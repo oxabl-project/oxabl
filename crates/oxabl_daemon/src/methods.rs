@@ -30,11 +30,12 @@
 //! unaffected (R23). Refusing those would remove an answer that still works, which
 //! R22 does not ask for.
 
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use oxabl_analyze::unresolved_reason_str;
 use oxabl_ast::NodeId;
@@ -50,7 +51,7 @@ use oxabl_workspace::{FileSystem, RealFileSystem, discover_path};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
 use crate::session::{
-    FileStamp, SessionGenerations, SessionHost, SupersededPass, WorkspaceProgress,
+    AddedFileWalk, FileStamp, SessionGenerations, SessionHost, SupersededPass, WorkspaceProgress,
     WorkspaceSnapshot,
 };
 
@@ -196,34 +197,155 @@ fn symbol_search(
     let request: SymbolSearchRequest =
         serde_json::from_value(params).map_err(MethodError::invalid_params)?;
     let workspace = ensure_workspace(host, context.workspace_root()?, false)?;
-    let needle = request.query.to_ascii_lowercase();
-    let mut symbols: Vec<SymbolRow> = workspace
-        .symbols
-        .iter()
-        .filter(|row| row.name.to_ascii_lowercase().contains(&needle))
-        .cloned()
-        .collect();
-    symbols.sort_by(|left, right| {
-        let left_prefix = !left.name.to_ascii_lowercase().starts_with(&needle);
-        let right_prefix = !right.name.to_ascii_lowercase().starts_with(&needle);
-        (
-            left_prefix,
-            left.name.to_ascii_lowercase(),
-            left.id.as_str(),
-        )
-            .cmp(&(
-                right_prefix,
-                right.name.to_ascii_lowercase(),
-                right.id.as_str(),
-            ))
-    });
-    let total_matches = symbols.len() as u32;
-    symbols.truncate(request.limit as usize);
+
+    let (symbols, total_matches) =
+        select_symbols(&workspace.symbols, &request.query, request.limit as usize);
+
     serde_json::to_value(SymbolSearchResponse {
         symbols,
         total_matches,
     })
     .map_err(MethodError::internal)
+}
+
+/// The best `limit` matches for `query`, and how many matched in total (R19).
+///
+/// Bounded in the work it does, not only in what it returns. A type-ahead query sends
+/// a character at a time, so the previous shape — lowercase every name into a fresh
+/// `String`, clone every matching row, sort the whole matched set, then throw all but
+/// the first few away — charged the caller for the entire symbol table on every
+/// keystroke to render fifty rows. Three things changed and none of them is the sort
+/// algorithm: the fold stopped allocating, the selection keeps `limit` candidates
+/// instead of all of them, and the clone happens after the selection rather than
+/// before it.
+///
+/// **Truncation is reported, never implied.** The returned count is over every match,
+/// counted before any bound applies, so a client can say "showing 50 of 900" rather
+/// than showing 50 and implying that is all there is. It would have been cheaper to
+/// count only what was kept, and it would have made a truncated answer indistinguishable
+/// from a complete one — the same failure as an empty result that reads as all-clear.
+///
+/// Ranking is unchanged: prefix matches order ahead of substring matches, then by
+/// folded name, then by id.
+fn select_symbols(symbols: &[SymbolRow], query: &str, limit: usize) -> (Vec<SymbolRow>, u32) {
+    // Folded once, for the whole request. Every comparison below reads these bytes
+    // and folds the candidate a byte at a time, so no row allocates.
+    let needle = query.to_ascii_lowercase();
+    let needle = needle.as_bytes();
+
+    // The worst-ranked candidate sits at the top, so the heap sheds the row that
+    // would not have survived the truncation anyway.
+    let mut best: BinaryHeap<Ranked<'_>> = BinaryHeap::with_capacity(limit.min(1024) + 1);
+    let mut total_matches: u32 = 0;
+
+    for row in symbols {
+        if !contains_folded(&row.name, needle) {
+            continue;
+        }
+        total_matches = total_matches.saturating_add(1);
+        if limit == 0 {
+            continue;
+        }
+        best.push(Ranked {
+            not_prefix: !starts_with_folded(&row.name, needle),
+            row,
+        });
+        if best.len() > limit {
+            best.pop();
+        }
+    }
+
+    // Ascending, so the best-ranked row is first. Only the rows that survived
+    // selection are cloned; the rest were compared in place.
+    let selected = best
+        .into_sorted_vec()
+        .into_iter()
+        .map(|ranked| ranked.row.clone())
+        .collect();
+    (selected, total_matches)
+}
+
+/// A matching row and its rank, ordered worst-first so a heap can shed the worst.
+///
+/// Holds a borrow rather than a clone: the whole point of selecting before cloning is
+/// that a single-character query over a large symbol table must not copy every row it
+/// happens to match on its way to returning fifty.
+struct Ranked<'a> {
+    /// `false` for a prefix match, so prefix matches order ahead of substring ones —
+    /// the same key the previous implementation built, kept so ranking is unchanged.
+    not_prefix: bool,
+    row: &'a SymbolRow,
+}
+
+impl Ord for Ranked<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.not_prefix
+            .cmp(&other.not_prefix)
+            .then_with(|| folded_cmp(&self.row.name, &other.row.name))
+            .then_with(|| self.row.id.as_str().cmp(other.row.id.as_str()))
+    }
+}
+
+impl PartialOrd for Ranked<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Ranked<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Ranked<'_> {}
+
+/// Whether `haystack` contains `needle`, which is already ASCII-lowercase.
+///
+/// Folds a byte at a time rather than lowercasing the haystack into a `String`. The
+/// allocation this replaces was per row per request, and it happened three more times
+/// per comparison inside the sort — so a type-ahead query over a large symbol table
+/// spent most of its time in the allocator rather than in the match.
+///
+/// ASCII folding, deliberately: it is exactly what `to_ascii_lowercase` did, so no
+/// match changes. Progress is an ASCII-cased language and this crate's guidance is
+/// that case-insensitive matching folds bytes rather than allocating.
+fn contains_folded(haystack: &str, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let haystack = haystack.as_bytes();
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| folded_eq(window, needle))
+}
+
+/// Whether `haystack` starts with `needle`, which is already ASCII-lowercase.
+fn starts_with_folded(haystack: &str, needle: &[u8]) -> bool {
+    let haystack = haystack.as_bytes();
+    haystack.len() >= needle.len() && folded_eq(&haystack[..needle.len()], needle)
+}
+
+fn folded_eq(left: &[u8], right: &[u8]) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
+/// Order two names as their ASCII-lowercase forms would order.
+///
+/// Byte-for-byte equivalent to comparing `to_ascii_lowercase()` of each, because
+/// lowercasing maps each ASCII byte independently and leaves every other byte alone.
+fn folded_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    for (left, right) in left.iter().zip(right.iter()) {
+        match left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase()) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    left.len().cmp(&right.len())
 }
 
 fn freshness(
@@ -683,6 +805,11 @@ fn build_workspace(
         generations,
         pass_millis: started.elapsed().as_millis() as u64,
         graph_bytes,
+        root: root.to_path_buf(),
+        // The count discovery produced, captured before the pipeline widened it with
+        // include targets from outside the tree.
+        discovered_files: files.len(),
+        added_files: Arc::new(Mutex::new(AddedFileWalk::starting_from(files.len()))),
         // Set by whoever installs it, which is the only place that can know
         // whether the session moved while this ran.
         superseded: None,
@@ -850,10 +977,22 @@ fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
             None => {
                 let changed_files =
                     workspace.files.iter().filter(|file| file.changed()).count() as u32;
-                if changed_files == 0 {
-                    IndexState::Ready
-                } else {
+                if changed_files > 0 {
                     IndexState::Stale { changed_files }
+                } else {
+                    // Every stamp is clean, which is exactly when a file the pass
+                    // never saw is the only thing left that could make the workspace
+                    // stale — it is in no stamp, so no stamp can report it.
+                    match added_since_pass(workspace) {
+                        AddedFiles::None => IndexState::Ready,
+                        AddedFiles::Some(count) => IndexState::Stale {
+                            changed_files: count,
+                        },
+                        // Uncountable is treated as changed, the same way a stamp
+                        // whose file cannot be read reports changed: a workspace this
+                        // daemon cannot enumerate is one it cannot call `Ready`.
+                        AddedFiles::Uncountable => IndexState::Stale { changed_files: 1 },
+                    }
                 }
             }
         },
@@ -864,6 +1003,67 @@ fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
         last_pass_millis: Sourced::Available {
             value: workspace.pass_millis,
         },
+    }
+}
+
+/// How long the added-file walk is allowed to be reused before it runs again.
+///
+/// Short enough that a file added in an editor shows up on the next poll or the one
+/// after, long enough that a client polling at an interactive rate walks the tree
+/// once rather than on every poll. A constant rather than a tuning knob: nothing in
+/// the wire contract exposes it, and a knob would have to be explained.
+const ADDED_FILE_WALK_INTERVAL: Duration = Duration::from_millis(2_000);
+
+/// What a walk of the workspace says about files the pass never saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddedFiles {
+    /// The workspace holds what it held when the pass ran.
+    None,
+    /// It holds a different number of files. The count is the difference.
+    Some(u32),
+    /// The workspace could not be walked, so nothing can be concluded.
+    Uncountable,
+}
+
+/// Whether the workspace has gained (or lost) files since the pass walked it (R5).
+///
+/// Counts rather than compares sets. The set comparison would be exact, but it would
+/// hold a second copy of every path in the workspace for the lifetime of the snapshot
+/// to detect a condition whose remedy — rebuild — is the same whichever file moved.
+/// A count catches every addition and every removal; what it misses is a
+/// simultaneous add and remove of equal size between two polls, and that case is
+/// caught by the stamps, because the removed file was stamped and now reads as
+/// changed.
+///
+/// Rate-limited, and the limit is not an optimisation. The gate above admits this
+/// walk when every stamp is clean, which is the *idle* state an editor polls through
+/// continuously — so without the limit the common case would be a full directory walk
+/// per poll, and the gate would be admitting the walk on exactly the path it was
+/// supposed to protect.
+fn added_since_pass(workspace: &WorkspaceSnapshot) -> AddedFiles {
+    let mut walk = workspace
+        .added_files
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let counted = match walk.last_ran {
+        Some(last) if last.elapsed() < ADDED_FILE_WALK_INTERVAL => walk.last_count,
+        _ => {
+            let Ok(files) = discover_path(&workspace.root) else {
+                // Left un-timestamped on purpose, so the next poll retries rather
+                // than reusing an answer this one never got.
+                return AddedFiles::Uncountable;
+            };
+            walk.last_ran = Some(Instant::now());
+            walk.last_count = files.len();
+            walk.walks += 1;
+            files.len()
+        }
+    };
+
+    match counted.abs_diff(workspace.discovered_files) {
+        0 => AddedFiles::None,
+        difference => AddedFiles::Some(difference.min(u32::MAX as usize) as u32),
     }
 }
 
@@ -910,6 +1110,354 @@ mod tests {
         let root = tempfile::tempdir().expect("a workspace");
         std::fs::write(root.path().join("only.p"), "MESSAGE \"only\".\n").expect("a source file");
         root
+    }
+
+    /// The selection the previous implementation performed, kept as the oracle.
+    ///
+    /// Lowercases into fresh `String`s, clones every match, sorts the whole set, then
+    /// truncates — exactly what shipped. Kept so "ranking is unchanged" is proved
+    /// against the code it replaced rather than against a restatement of it.
+    fn select_symbols_by_sorting(
+        symbols: &[SymbolRow],
+        query: &str,
+        limit: usize,
+    ) -> (Vec<SymbolRow>, u32) {
+        let needle = query.to_ascii_lowercase();
+        let mut matched: Vec<SymbolRow> = symbols
+            .iter()
+            .filter(|row| row.name.to_ascii_lowercase().contains(&needle))
+            .cloned()
+            .collect();
+        matched.sort_by(|left, right| {
+            let left_prefix = !left.name.to_ascii_lowercase().starts_with(&needle);
+            let right_prefix = !right.name.to_ascii_lowercase().starts_with(&needle);
+            (
+                left_prefix,
+                left.name.to_ascii_lowercase(),
+                left.id.as_str(),
+            )
+                .cmp(&(
+                    right_prefix,
+                    right.name.to_ascii_lowercase(),
+                    right.id.as_str(),
+                ))
+        });
+        let total = matched.len() as u32;
+        matched.truncate(limit);
+        (matched, total)
+    }
+
+    fn symbol(id: &str, name: &str) -> SymbolRow {
+        SymbolRow {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kind: SymbolKind::SharedVariable,
+            file: None,
+            span: None,
+            subject: Subject::Table {
+                name: name.to_owned(),
+            },
+        }
+    }
+
+    /// Names chosen to exercise every tie the ranking has to break: prefix against
+    /// substring, one folded name against another, and two rows whose folded names are
+    /// equal so only the id can separate them.
+    fn mixed_case_symbols() -> Vec<SymbolRow> {
+        [
+            ("v:CustomerName", "CustomerName"),
+            ("v:customername", "customername"),
+            ("v:CUSTOMER", "CUSTOMER"),
+            ("v:OrderCustomer", "OrderCustomer"),
+            ("v:custom", "custom"),
+            ("v:xCustomerY", "xCustomerY"),
+            ("v:unrelated", "unrelated"),
+            ("v:Cust", "Cust"),
+            ("v:cUsTomerZ", "cUsTomerZ"),
+            ("v:zzz", "zzz"),
+        ]
+        .into_iter()
+        .map(|(id, name)| symbol(id, name))
+        .collect()
+    }
+
+    /// The bounded selection returns exactly what sorting-then-truncating returned,
+    /// across every query and every limit the fixture can produce.
+    #[test]
+    fn the_bounded_selection_matches_the_sort_it_replaced() {
+        let symbols = mixed_case_symbols();
+
+        for query in ["", "c", "cust", "CUSTOMER", "customerz", "Z", "nothing"] {
+            for limit in [0, 1, 2, 3, 5, 10, 50] {
+                assert_eq!(
+                    select_symbols(&symbols, query, limit),
+                    select_symbols_by_sorting(&symbols, query, limit),
+                    "query {query:?} at limit {limit} must rank and bound identically"
+                );
+            }
+        }
+    }
+
+    /// A bounded answer says how much it left out, so a short list is never mistaken
+    /// for a complete one.
+    ///
+    /// The cheap version of this selection would count only the rows it kept, and then
+    /// a truncated list and a complete list of the same length would be indistinguishable
+    /// — the same failure as an empty result that reads as all-clear. The count is taken
+    /// over every match, before the bound applies.
+    #[test]
+    fn a_truncated_answer_reports_how_many_it_left_out() {
+        let symbols = mixed_case_symbols();
+
+        let (rows, total) = select_symbols(&symbols, "cust", 2);
+        assert_eq!(rows.len(), 2, "the caller asked for two");
+        assert!(
+            total > rows.len() as u32,
+            "the total must exceed the window, or truncation is invisible: {total}"
+        );
+        assert_eq!(
+            total,
+            select_symbols(&symbols, "cust", usize::MAX).1,
+            "the reported total must be the whole match set, not the window"
+        );
+    }
+
+    /// A complete answer is distinguishable from a truncated one by the same field.
+    #[test]
+    fn an_untruncated_answer_reports_a_total_equal_to_what_it_returned() {
+        let symbols = mixed_case_symbols();
+        let (rows, total) = select_symbols(&symbols, "unrelated", 10);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(total, 1);
+    }
+
+    /// An empty query matches everything, and is bounded by the limit rather than
+    /// sorting the whole table — while still reporting the whole table's size.
+    #[test]
+    fn an_empty_query_is_bounded_by_the_limit() {
+        let symbols = mixed_case_symbols();
+        let (rows, total) = select_symbols(&symbols, "", 3);
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(total, symbols.len() as u32);
+    }
+
+    /// Prefix matches still order ahead of substring matches.
+    #[test]
+    fn prefix_matches_still_rank_ahead_of_substring_matches() {
+        let symbols = mixed_case_symbols();
+        let (rows, _) = select_symbols(&symbols, "customer", 3);
+
+        assert!(
+            rows.iter()
+                .all(|row| row.name.to_ascii_lowercase().starts_with("customer")),
+            "the top rows must be the prefix matches, got {:?}",
+            rows.iter().map(|row| &row.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Names differing only in case are one match, and the fold that decides so does
+    /// not allocate per row.
+    #[test]
+    fn matching_is_case_insensitive_in_both_directions() {
+        let symbols = vec![symbol("v:a", "AlphaBeta"), symbol("v:b", "alphabeta")];
+
+        assert_eq!(select_symbols(&symbols, "ALPHABETA", 10).1, 2);
+        assert_eq!(select_symbols(&symbols, "phab", 10).1, 2);
+        assert_eq!(select_symbols(&symbols, "AlphaBeta", 10).1, 2);
+    }
+
+    /// The folding helpers agree with the allocating forms they replaced, including at
+    /// the edges a windowed search gets wrong: an empty needle, a needle longer than
+    /// the name, and a needle that is the whole name.
+    #[test]
+    fn the_folding_helpers_agree_with_the_allocating_forms() {
+        let names = ["", "a", "Alpha", "alphabet", "ALPHABET", "xAlphaY"];
+        let needles = ["", "a", "alpha", "alphabet", "alphabetical", "y"];
+
+        for name in names {
+            for needle in needles {
+                let lowered = name.to_ascii_lowercase();
+                assert_eq!(
+                    contains_folded(name, needle.as_bytes()),
+                    lowered.contains(needle),
+                    "contains: {name:?} / {needle:?}"
+                );
+                assert_eq!(
+                    starts_with_folded(name, needle.as_bytes()),
+                    lowered.starts_with(needle),
+                    "starts_with: {name:?} / {needle:?}"
+                );
+                assert_eq!(
+                    folded_cmp(name, needle),
+                    lowered.cmp(&needle.to_ascii_lowercase()),
+                    "cmp: {name:?} / {needle:?}"
+                );
+            }
+        }
+    }
+
+    /// A workspace whose graph tracks more files than discovery finds.
+    ///
+    /// The include target sits *outside* the discovered tree, which is what makes the
+    /// tracked set larger than the discovered one — the exact shape the added-file
+    /// count has to survive.
+    fn workspace_with_an_outside_include() -> (tempfile::TempDir, tempfile::TempDir) {
+        let outside = tempfile::tempdir().expect("a directory outside the workspace");
+        std::fs::write(
+            outside.path().join("shared.i"),
+            "DEFINE VARIABLE fromShared AS INTEGER.\n",
+        )
+        .expect("an include target outside the tree");
+
+        let root = tempfile::tempdir().expect("a workspace");
+        std::fs::write(
+            root.path().join("oxabl.toml"),
+            format!(
+                "[workspace]\nname = \"unit\"\n[workspace.sources]\ninclude_paths = [{:?}]\n",
+                outside.path()
+            ),
+        )
+        .expect("a configuration naming the outside directory");
+        std::fs::write(
+            root.path().join("only.p"),
+            "{shared.i}\nMESSAGE fromShared.\n",
+        )
+        .expect("a source file that includes it");
+        (root, outside)
+    }
+
+    /// A pass's snapshot, with the rate limit on the added-file walk expired.
+    ///
+    /// Expired rather than slept through: the interval is a product value measured in
+    /// seconds, and a test that waited it out would trade determinism for two seconds
+    /// per assertion. Clearing the timestamp is exactly what elapsing it does.
+    fn expire_added_file_walk(workspace: &WorkspaceSnapshot) {
+        let mut walk = workspace
+            .added_files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        walk.last_ran = None;
+    }
+
+    /// How many directory walks this snapshot has run.
+    fn walks(workspace: &WorkspaceSnapshot) -> u64 {
+        workspace
+            .added_files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .walks
+    }
+
+    /// A pass over `root`, claimed and completed against a quiet session.
+    fn pass(root: &Path) -> WorkspaceSnapshot {
+        let host = SessionHost::new();
+        let generations = host.with(|sessions| sessions.for_root(root).generations());
+        build_workspace(
+            root,
+            HashMap::new(),
+            generations,
+            &WorkspaceProgress::default(),
+        )
+        .expect("a pass over the fixture")
+    }
+
+    /// A workspace that gained a file is stale, and no stamp could ever say so (R5).
+    ///
+    /// Freshness was computed entirely from stamps taken over the files the *previous*
+    /// pass saw. A file created since then is in no stamp, so every stamp stayed clean
+    /// and a workspace that had grown reported `Ready` — populated, unflagged, and
+    /// confidently wrong. This fails on every filesystem, every time, and both
+    /// pre-existing staleness tests missed it because both mutate an existing file's
+    /// length.
+    #[test]
+    fn a_file_added_after_the_pass_is_reported_stale() {
+        let root = workspace_root();
+        let root = root.path();
+        let workspace = pass(root);
+
+        assert_eq!(
+            workspace_freshness(&workspace).state,
+            IndexState::Ready,
+            "the workspace starts current"
+        );
+
+        std::fs::write(root.join("newcomer.p"), "MESSAGE \"added\".\n").expect("a new file");
+        expire_added_file_walk(&workspace);
+
+        match workspace_freshness(&workspace).state {
+            IndexState::Stale { changed_files } => assert_eq!(
+                changed_files, 1,
+                "one file was added, and the count must say so rather than be empty"
+            ),
+            other => panic!("a workspace that gained a file is not current, got {other:?}"),
+        }
+    }
+
+    /// The walk is rate-limited, because the condition that admits it is the idle
+    /// steady state rather than a rare one.
+    ///
+    /// Without the limit an editor polling freshness would walk the whole tree on every
+    /// poll: the gate runs the walk only when every stamp is clean, and every stamp
+    /// clean is precisely what an untouched workspace looks like. The gate is still the
+    /// right condition — an added file only matters when nothing else already marks the
+    /// workspace stale — but it bounds nothing on its own.
+    #[test]
+    fn repeated_freshness_polls_perform_at_most_one_directory_walk() {
+        let root = workspace_root();
+        let workspace = pass(root.path());
+
+        for _ in 0..8 {
+            assert_eq!(workspace_freshness(&workspace).state, IndexState::Ready);
+        }
+
+        assert_eq!(
+            walks(&workspace),
+            1,
+            "eight polls in quick succession must walk the tree once"
+        );
+    }
+
+    /// A workspace already known to be stale is not walked: the answer is settled, and
+    /// a directory walk could only confirm it more expensively.
+    #[test]
+    fn the_directory_walk_does_not_run_when_a_stamp_is_already_dirty() {
+        let root = workspace_root();
+        let root = root.path();
+        let workspace = pass(root);
+
+        std::fs::write(root.join("only.p"), "MESSAGE \"changed and longer\".\n")
+            .expect("a changed file");
+
+        assert!(matches!(
+            workspace_freshness(&workspace).state,
+            IndexState::Stale { .. }
+        ));
+        assert_eq!(
+            walks(&workspace),
+            0,
+            "a workspace already known to be stale must not pay for a directory walk"
+        );
+    }
+
+    /// A workspace that uses include files is `Ready` when nothing changed.
+    ///
+    /// The trap in the added-file check: the graph tracks more files than discovery
+    /// found, because include targets can live outside the discovered set. Compared
+    /// against the *tracked* count a fresh walk would come up short on every workspace
+    /// that uses includes and report `Stale` permanently — a false positive worse than
+    /// the missed detection this check exists to fix.
+    #[test]
+    fn a_workspace_that_uses_includes_is_ready_when_nothing_changed() {
+        let (root, _outside) = workspace_with_an_outside_include();
+        let workspace = pass(root.path());
+
+        assert!(
+            workspace.files.len() > workspace.discovered_files,
+            "the fixture must track more files than discovery found, or this proves \
+             nothing"
+        );
+        assert_eq!(workspace_freshness(&workspace).state, IndexState::Ready);
     }
 
     /// A snapshot installed while superseded must not be served by every later

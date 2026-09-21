@@ -212,6 +212,75 @@ fn a_resolved_class_reference_becomes_an_edge_carrying_its_span() {
     );
 }
 
+/// A class whose spans were previously recovered by rescanning the whole symbol
+/// table per lookup still reports the same span, with a body large enough that a
+/// scan and a map could plausibly differ.
+///
+/// The map is built once per file and keyed first-write-wins, in the order the scan
+/// searched — symbols in table order, `INHERITS` before `IMPLEMENTS`. This pins that
+/// the reorganisation did not move which occurrence a name resolves to.
+#[test]
+fn a_class_name_span_is_unchanged_by_the_per_file_map() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from(CALC_BASE_PATH), CALC_BASE);
+    let paths = dirs(&["/src"]);
+    let index = BatchIndex::new(&fs, &paths);
+    let schema = Schema::empty();
+
+    // Many symbols ahead of and behind the reference, so a scan that stopped early
+    // and a map that recorded the wrong entry would disagree.
+    let mut source = String::from("CLASS orders.child INHERITS orders.calc-base:\n");
+    source.push_str("METHOD PUBLIC VOID run-it():\n");
+    for index in 0..40 {
+        source.push_str(&format!(
+            "DEFINE VARIABLE v-pad{index} AS INTEGER NO-UNDO.\n"
+        ));
+    }
+    source.push_str("DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n");
+    source.push_str("v-total = calc-total().\n");
+    source.push_str("MESSAGE v-total.\n");
+    source.push_str("END METHOD.\nEND CLASS.");
+
+    let semantic = analyse(&source, &schema, &index);
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+
+    let class_edges: Vec<_> = edges.of_kind(EdgeKind::ClassReference).collect();
+    assert_eq!(class_edges.len(), 1, "got {class_edges:?}");
+    let span = class_edges[0].span.expect("the header writes the name");
+    assert_eq!(
+        &source[span.start as usize..span.end as usize],
+        "orders.calc-base",
+        "the span must still point at the name the header writes"
+    );
+}
+
+/// A file with no class lookup pays nothing for the map, because there is nothing to
+/// look up — the map is built on the first lookup rather than up front.
+///
+/// Asserted through the edge set rather than through a counter: a file that produces
+/// no class edges and no unresolved class rows never entered the branch that builds
+/// the map, and there is no other way to reach it.
+#[test]
+fn a_file_with_no_class_lookups_builds_no_map() {
+    let schema = customer_schema();
+    let semantic = analyse(
+        "DEFINE BUFFER b FOR Customer.\nFIND FIRST b NO-LOCK.\n",
+        &schema,
+        &NullIndex,
+    );
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+
+    assert_eq!(edges.of_kind(EdgeKind::ClassReference).count(), 0);
+    assert!(
+        edges
+            .unresolved()
+            .iter()
+            .all(|row| row.kind != EdgeKind::ClassReference),
+        "a file that names no class must ask the index nothing"
+    );
+    assert_eq!(targets(EdgeKind::SchemaTable, &edges), vec!["customer"]);
+}
+
 #[test]
 fn a_schema_edge_is_keyed_by_folded_table_name_and_case_collapses() {
     let schema = customer_schema();

@@ -58,10 +58,10 @@ use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicU32, Ordering},
 };
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_common::catch_panic;
@@ -270,6 +270,58 @@ pub(crate) struct WorkspaceSnapshot {
     /// current; it is not an absent measurement, so it is an `Option` rather than
     /// a `Sourced`.
     pub superseded: Option<SupersededPass>,
+    /// The root this pass walked, so freshness can walk it again.
+    pub root: PathBuf,
+    /// How many files discovery found when this pass ran.
+    ///
+    /// The *discovered* count, deliberately not the tracked one. The tracked set is
+    /// what the graph ended up holding, and it includes include targets that live
+    /// outside the discovery set — so a workspace that uses includes has more tracked
+    /// files than discovered ones, permanently. Comparing a fresh walk against the
+    /// tracked length would report `Stale` on every such workspace forever, which is a
+    /// worse failure than the missed detection this exists to fix.
+    pub discovered_files: usize,
+    /// When the added-file walk last ran, and what it found.
+    ///
+    /// Shared across every clone of this snapshot, because the rate limit is a
+    /// property of the installed snapshot rather than of one caller. A rebuild
+    /// installs a fresh one, which is right: a new pass has a new count to compare
+    /// against.
+    pub added_files: Arc<Mutex<AddedFileWalk>>,
+}
+
+/// The rate limit on the added-file walk, and what the last walk saw.
+///
+/// The walk exists because a file added since the pass is in no stamp, so a workspace
+/// that gained a file has entirely clean stamps and reports `Ready` — a failure that
+/// happens on every filesystem, every time.
+///
+/// It is rate-limited because the condition that admits it — every stamp clean — is
+/// the *idle steady state*, not a rare one. An editor polls freshness continuously,
+/// and without a limit every one of those polls would walk the whole tree. The gate
+/// is still the right condition (an added file only matters when nothing else already
+/// marks the workspace stale) but it is not, by itself, a bound on cost.
+#[derive(Debug)]
+pub(crate) struct AddedFileWalk {
+    /// When the last walk ran. `None` before the first one.
+    pub last_ran: Option<Instant>,
+    /// What that walk counted, or the pass's own count before the first walk.
+    pub last_count: usize,
+    /// How many walks have run. Read by tests, which is the only way the rate limit
+    /// is observable at all — a limit nothing can see is a limit nothing pins.
+    pub walks: u64,
+}
+
+impl AddedFileWalk {
+    /// The state a freshly installed snapshot starts in: nothing walked yet, and the
+    /// pass's own discovered count standing in for the last walk's answer.
+    pub fn starting_from(discovered: usize) -> Self {
+        AddedFileWalk {
+            last_ran: None,
+            last_count: discovered,
+            walks: 0,
+        }
+    }
 }
 
 /// The session state a whole-workspace pass is judged against, captured when the
@@ -319,6 +371,52 @@ pub(crate) struct FileStamp {
     path: PathBuf,
     len: u64,
     modified: Option<SystemTime>,
+    /// Inode identity and the inode's own change time.
+    ///
+    /// Length and mtime alone miss two edits that happen constantly. A write that
+    /// keeps a file's length — a typo fix, a flag flipped from `TRUE` to `true` —
+    /// leaves the length identical and can land inside one mtime tick. And a restore
+    /// from version control, or any tool that writes to a temporary file and renames
+    /// it over the target, installs a *new inode* while deliberately preserving the
+    /// timestamp, so both compared fields match a file whose every byte differs.
+    ///
+    /// `ctime` closes the first: it advances on any write to the inode and userland
+    /// cannot set it, so no tool can preserve it the way `mtime` is routinely
+    /// preserved. The device and inode numbers close the second: a rename installs a
+    /// different inode, whatever timestamps were copied onto it.
+    identity: FileIdentity,
+}
+
+/// The inode facts a stamp compares, where the platform has them.
+///
+/// `Default` is the non-Unix arm's answer, and the degradation it represents is
+/// stated rather than implied: two stamps on a platform with no inode metadata
+/// compare equal on this field, so detection there falls back to length and mtime
+/// exactly as it did before. That is a weaker guarantee, not a broken one — the
+/// daemon's socket layer is Unix-only anyway, so no shipping configuration relies
+/// on the degraded arm.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
+    device: u64,
+    inode: u64,
+    changed_at_seconds: i64,
+    changed_at_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        changed_at_seconds: metadata.ctime(),
+        changed_at_nanoseconds: metadata.ctime_nsec(),
+    }
+}
+
+#[cfg(not(unix))]
+fn file_identity(_metadata: &Metadata) -> FileIdentity {
+    FileIdentity::default()
 }
 
 impl FileStamp {
@@ -327,15 +425,44 @@ impl FileStamp {
         FileStamp {
             path,
             len: metadata.as_ref().map_or(0, Metadata::len),
+            identity: metadata
+                .as_ref()
+                .map_or_else(FileIdentity::default, file_identity),
             modified: metadata.and_then(|value| value.modified().ok()),
         }
     }
 
+    /// Whether the file on disk differs from the one this stamp was taken over.
+    ///
+    /// A file that cannot be read is reported as changed. That is the honest answer
+    /// for a stamp: it was taken over a file that was there, and one that is not
+    /// there now is a difference — a deletion, a permission change, a mount that went
+    /// away. Reporting it as unchanged would let a vanished file read as `Ready`.
+    ///
+    /// # The residual gap, named rather than implied (R8)
+    ///
+    /// One edit remains undetectable: a write that preserves a file's length, lands
+    /// within one tick of *both* `mtime` and `ctime`, and does not change the inode.
+    /// On a local filesystem with nanosecond timestamps that window is far shorter
+    /// than any write, so it is theoretical there. It is reachable on a mount with
+    /// one-second timestamp granularity, and on a network mount whose attribute cache
+    /// can serve a stale `stat` for seconds regardless of granularity — where even a
+    /// length-changing edit can be missed, which is why adding yet more metadata to
+    /// compare is the wrong direction.
+    ///
+    /// Content hashing would close it and is deliberately not done: freshness is an
+    /// interactive poll, and hashing turns a `stat` sweep into a read sweep over the
+    /// whole workspace exactly where latency is felt. A miss here mislabels a report;
+    /// it does not serve a wrong edge, because a disk change never invalidates the
+    /// graph by design. `oxabl/reindex` rebuilds unconditionally and is the escape
+    /// hatch when a report is not believed.
     pub fn changed(&self) -> bool {
         let Ok(metadata) = std::fs::metadata(&self.path) else {
             return true;
         };
-        metadata.len() != self.len || metadata.modified().ok() != self.modified
+        metadata.len() != self.len
+            || metadata.modified().ok() != self.modified
+            || file_identity(&metadata) != self.identity
     }
 }
 

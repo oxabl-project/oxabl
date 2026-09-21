@@ -107,6 +107,18 @@ struct Memo {
     classes: FxHashMap<OxablAtom, IndexAnswer<ClassFacts>>,
     /// Answers per `RUN` target key, for the same reasons.
     programs: FxHashMap<OxablAtom, IndexAnswer<IndexedFileId>>,
+    /// The inverse of `facts`: the path each minted id was indexed under.
+    ///
+    /// Kept rather than derived. Deriving it means scanning `facts` for the entry
+    /// whose id matches, and that lookup is the only way an id on a dependency edge
+    /// becomes a path a client can render — so the absorbing caller runs it per edge
+    /// per file, not once per distinct target as its documentation used to claim.
+    /// A scan per edge over a map that grows with the workspace is a quadratic shape
+    /// in a lookup documented as cheap.
+    ///
+    /// Written in exactly one place, beside the `facts` insert that mints the id, so
+    /// the two cannot disagree: an id exists in one iff it exists in the other.
+    paths: FxHashMap<IndexedFileId, PathBuf>,
     /// Next id to mint. Ids are assigned in first-index order and mean nothing
     /// outside this index, exactly as [`IndexedFileId`] documents. Starts at 1
     /// so a zero id never reads as a real file in a dump.
@@ -148,6 +160,7 @@ impl<'a> BatchIndex<'a> {
             known_files: &[],
             memo: RwLock::new(Memo {
                 facts: FxHashMap::default(),
+                paths: FxHashMap::default(),
                 classes: FxHashMap::default(),
                 programs: FxHashMap::default(),
                 next_file_id: 1,
@@ -211,14 +224,16 @@ impl<'a> BatchIndex<'a> {
     /// The inverse of [`indexed_id`](Self::indexed_id), and the only way an
     /// [`IndexedFileId`] on a dependency edge becomes something a client can render
     /// or open: the id space is this index's own, so nothing outside it can do the
-    /// mapping. A linear scan of the memo, called once per distinct edge target
-    /// rather than per lookup.
+    /// mapping.
+    ///
+    /// A direct lookup in a mapping maintained beside `facts`. It used to be a linear
+    /// scan, and its documentation said the scan was affordable because it ran once per
+    /// distinct edge target — but the absorbing caller runs it per edge per file, so the
+    /// cost was a scan of a workspace-sized map per edge. The mapping removes the shape;
+    /// the documentation is corrected here rather than left describing a call pattern
+    /// that was never the real one.
     pub fn indexed_path(&self, id: IndexedFileId) -> Option<PathBuf> {
-        self.memo()
-            .facts
-            .iter()
-            .find(|(_, facts)| facts.file == id)
-            .map(|(path, _)| path.clone())
+        self.memo().paths.get(&id).cloned()
     }
 
     /// The memo, recovering from poisoning.
@@ -305,6 +320,9 @@ impl Memo {
             // re-attempting the read on every reference to the same name.
             Err(_) => FileFacts::unparseable(id),
         });
+        // Both halves of one mapping, inserted together: `indexed_path` is only sound
+        // because nothing can add an entry to one without adding it to the other.
+        self.paths.insert(facts.file, key.clone());
         self.facts.insert(key, Arc::clone(&facts));
         facts
     }
@@ -623,6 +641,97 @@ mod tests {
         assert_eq!(
             index.program(&IndexName::new("post-order.p")),
             IndexAnswer::NotFound
+        );
+    }
+
+    /// The reverse mapping answers exactly what the scan it replaced answered, for
+    /// every id the run minted and for one it never did.
+    ///
+    /// The scan is kept here as the oracle rather than described, because the property
+    /// being pinned is equality with the old behaviour — including the normalised key
+    /// it returned, which is the part a hand-written expectation would get wrong.
+    #[test]
+    fn the_reverse_path_mapping_agrees_with_the_scan_it_replaced() {
+        let fs = CountingFs::new(&[
+            ("/src/orders/calc-total.p", "MESSAGE \"posted\"."),
+            ("/src/orders/post-order.p", "MESSAGE \"posted\"."),
+            ("/src/shared/audit.p", "MESSAGE \"audited\"."),
+        ]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+
+        for name in [
+            "orders/calc-total.p",
+            "orders/post-order.p",
+            "shared/audit.p",
+        ] {
+            let IndexAnswer::Found(_) = index.program(&IndexName::new(name)) else {
+                panic!("{name} is on the paths");
+            };
+        }
+
+        let scanned: Vec<(IndexedFileId, Option<PathBuf>)> = {
+            let memo = index.memo();
+            memo.facts
+                .values()
+                .map(|facts| {
+                    let by_scan = memo
+                        .facts
+                        .iter()
+                        .find(|(_, candidate)| candidate.file == facts.file)
+                        .map(|(path, _)| path.clone());
+                    (facts.file, by_scan)
+                })
+                .collect()
+        };
+
+        assert!(
+            scanned.len() >= 3,
+            "the run must have indexed every file, got {}",
+            scanned.len()
+        );
+        for (id, by_scan) in scanned {
+            assert_eq!(
+                index.indexed_path(id),
+                by_scan,
+                "the mapping and the scan must agree for {id:?}"
+            );
+        }
+    }
+
+    /// An id this index never minted has no path, which is the same absence the scan
+    /// produced — and the distinction that keeps an id from another index from being
+    /// rendered as one of ours.
+    #[test]
+    fn an_identifier_this_index_never_minted_has_no_path() {
+        let fs = CountingFs::new(&[("/src/calc-total.p", "MESSAGE \"posted\".")]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let IndexAnswer::Found(known) = index.program(&IndexName::new("calc-total.p")) else {
+            panic!("the file is on the paths");
+        };
+
+        assert!(index.indexed_path(known).is_some());
+        assert_eq!(
+            index.indexed_path(IndexedFileId::new(known.raw() + 1_000)),
+            None
+        );
+    }
+
+    /// Two spellings of one file are one id and therefore one path, so the reverse
+    /// mapping cannot be the place the two-spellings dedup comes apart.
+    #[test]
+    fn one_file_reached_through_two_spellings_has_one_reverse_path() {
+        let fs = CountingFs::new(&[("/src/calc-total.p", "MESSAGE \"posted\".")]);
+        let paths = dirs(&["/src", "/src/."]);
+        let index = BatchIndex::new(&fs, &paths);
+
+        let IndexAnswer::Found(file) = index.program(&IndexName::new("calc-total.p")) else {
+            panic!("exactly one match after normalisation");
+        };
+        assert_eq!(
+            index.indexed_path(file),
+            Some(PathBuf::from("/src/calc-total.p"))
         );
     }
 
