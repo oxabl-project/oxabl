@@ -205,7 +205,9 @@ fn the_envelope_reports_dependencies_at_version_three_and_nothing_else_moves() {
         ("types", 1),
         ("diagnostics", 1),
         ("preproc", 1),
-        ("coverage", 1),
+        // `coverage` 2 adds `source_context`, which an include-fragment root
+        // sets; every other section is unmoved.
+        ("coverage", 2),
         ("symbols", 4),
         ("references", 2),
     ] {

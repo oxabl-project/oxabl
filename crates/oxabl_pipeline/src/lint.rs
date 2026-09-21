@@ -79,7 +79,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    UnresolvedInclude, collect_from_expanded, expand_source,
+    UnresolvedInclude, collect_from_expanded_with_source_context, expand_source,
 };
 
 use oxabl_common::{
@@ -88,8 +88,8 @@ use oxabl_common::{
 use oxabl_index::{
     BatchIndex, DirectIncludeInput, EdgeInputs, UnresolvedIncludeInput, build_edge_set,
 };
-use oxabl_semantic::{Semantic, WorkspaceIndex};
-use oxabl_workspace::FileSystem;
+use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
+use oxabl_workspace::{FileSystem, is_include_fragment};
 
 use crate::{PipelineConfig, ROOT_FILE_ID};
 
@@ -761,13 +761,19 @@ impl<'a> LintPipeline<'a> {
         let dependency_paths = expansion.dependency_paths().to_vec();
         match &expansion.inner {
             Ok(expanded) => {
+                let source_context = if self.file().is_some_and(is_include_fragment) {
+                    SourceContext::IncludeFragment
+                } else {
+                    SourceContext::CompilationUnit
+                };
                 let (semantic, diagnostics) = self.with_run_index(|index| {
-                    collect_from_expanded(
+                    collect_from_expanded_with_source_context(
                         expanded,
                         &self.config.schema,
                         self.config.schema_loaded,
                         &self.config.lint_severities,
                         index,
+                        source_context,
                     )
                 });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
@@ -884,6 +890,42 @@ mod tests {
         assert!(cs.contains(&"LINT0002"), "expected lint anyway, got {cs:?}");
         assert!(!result.failed_run(), "recovery is not a failed run");
         assert!(result.semantic().is_some(), "model must still be built");
+    }
+
+    #[test]
+    fn fragment_mode_softens_only_includer_dependent_names() {
+        let fs = InMemoryFileSystem::new();
+        let config = PipelineConfig {
+            include_paths: vec![PathBuf::from("/workspace")],
+            ..PipelineConfig::default()
+        };
+        let source = "DEFINE VARIABLE value AS Object NO-UNDO.\n\
+                      value = NEW Missing().\n\
+                      value = NEW pkg.Missing().\n\
+                      RUN missing-program.p.\n\
+                      outside = value.\n";
+        let run = LintPipeline::new(&config, &fs);
+        let fragment = run.with_file("/workspace/fragment.I").run(source);
+        let undefined: Vec<_> = fragment
+            .all()
+            .filter(|d| d.diagnostic.code.0 == "LINT0001")
+            .map(|d| d.diagnostic.message.as_str())
+            .collect();
+
+        assert_eq!(undefined.len(), 2, "got {undefined:?}");
+        assert!(undefined.iter().any(|m| m.contains("pkg.Missing")));
+        assert!(undefined.iter().any(|m| m.contains("missing-program.p")));
+        assert!(!undefined.iter().any(|m| m.contains("`Missing`")));
+        assert!(!undefined.iter().any(|m| m.contains("outside")));
+
+        let unit = run.with_file("/workspace/program.p").run(source);
+        assert!(
+            unit.all()
+                .filter(|d| d.diagnostic.code.0 == "LINT0001")
+                .count()
+                > undefined.len(),
+            "the compilation-unit control must retain local and unqualified misses"
+        );
     }
 
     // The loud unresolvable-include warning must be reachable by source, not
