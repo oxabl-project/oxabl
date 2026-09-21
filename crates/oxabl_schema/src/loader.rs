@@ -35,10 +35,29 @@ impl SchemaLoader {
         Self::load_files_with_root(paths, fs, None)
     }
 
+    /// As [`load_files`](Self::load_files), but without merging the built-in
+    /// OpenEdge metaschema. Used to build the metaschema catalog itself, and
+    /// available to a caller that wants only what the `.df` files said.
+    pub fn load_files_without_metaschema(
+        paths: &[PathBuf],
+        fs: &dyn FileSystem,
+    ) -> (Schema, Vec<Diagnostic>) {
+        Self::load(paths, fs, None, false)
+    }
+
     pub fn load_files_with_root(
         paths: &[PathBuf],
         fs: &dyn FileSystem,
         workspace_root: Option<&Path>,
+    ) -> (Schema, Vec<Diagnostic>) {
+        Self::load(paths, fs, workspace_root, true)
+    }
+
+    fn load(
+        paths: &[PathBuf],
+        fs: &dyn FileSystem,
+        workspace_root: Option<&Path>,
+        with_metaschema: bool,
     ) -> (Schema, Vec<Diagnostic>) {
         let mut schema = Schema::empty();
         let mut diagnostics = Vec::new();
@@ -79,32 +98,20 @@ impl SchemaLoader {
                 }
             };
 
-            let mut outcome = parse_df(&source, file_id);
-            diagnostics.append(&mut outcome.diagnostics);
-
-            for table in outcome.tables {
-                if schema.len() >= LOAD_TABLE_CAP {
-                    diagnostics.push(Diagnostic::error(
-                        SCHEMA0031,
-                        format!(
-                            "schema table cap exceeded (> {LOAD_TABLE_CAP} tables); refusing to load further tables"
-                        ),
-                        table.source,
-                    ));
-                    break;
-                }
-                merge_table(&mut schema, table, &mut diagnostics);
-            }
-
-            for pending in outcome.fields {
-                merge_field(&mut schema, pending, &mut diagnostics);
-            }
-
-            for pending in outcome.indexes {
-                merge_index(&mut schema, pending, &mut diagnostics);
-            }
+            ingest(&mut schema, &source, file_id, &mut diagnostics);
         }
 
+        // The catalog is enabled for any load that went through this
+        // function, empty result or not. It is safe to do unconditionally
+        // because it is borrowed rather than merged: `is_empty`, `len` and
+        // `tables` keep reporting this schema's own tables, so a schema that
+        // loaded nothing still reads as "nothing configured". That also
+        // covers the case a non-empty gate would miss — a configured `.df`
+        // that happens to yield no tables, where the pipeline still reports
+        // the schema as loaded and the schema-backed rules are live.
+        if with_metaschema {
+            schema.enable_metaschema();
+        }
         if !schema.is_empty() {
             schema.bump_revision();
         }
@@ -113,12 +120,56 @@ impl SchemaLoader {
     }
 }
 
+/// Build a `Schema` from `.df` text that has no file behind it.
+///
+/// `file_id` is what every `Table`/`Field`/`Index` records as its source, so
+/// the built-in catalog passes [`FileId::UNKNOWN`]: its tables were not
+/// declared in any of the user's files, and pointing them at one would make a
+/// "defined at" answer name a file that never mentions them.
+pub(crate) fn schema_from_source(source: &str, file_id: FileId) -> (Schema, Vec<Diagnostic>) {
+    let mut schema = Schema::empty();
+    let mut diagnostics = Vec::new();
+    ingest(&mut schema, source, file_id, &mut diagnostics);
+    (schema, diagnostics)
+}
+
+/// Parse one `.df` source into `schema`, merging over whatever is already
+/// there. Factored out of [`SchemaLoader::load_files_with_root`] so the
+/// built-in metaschema catalog goes through exactly the same path as a user
+/// `.df` — there is no second parser and no second merge policy.
+fn ingest(schema: &mut Schema, source: &str, file_id: FileId, diagnostics: &mut Vec<Diagnostic>) {
+    let mut outcome = parse_df(source, file_id);
+    diagnostics.append(&mut outcome.diagnostics);
+
+    for table in outcome.tables {
+        if schema.len() >= LOAD_TABLE_CAP {
+            diagnostics.push(Diagnostic::error(
+                SCHEMA0031,
+                format!(
+                    "schema table cap exceeded (> {LOAD_TABLE_CAP} tables); refusing to load further tables"
+                ),
+                table.source,
+            ));
+            break;
+        }
+        merge_table(schema, table, diagnostics);
+    }
+
+    for pending in outcome.fields {
+        merge_field(schema, pending, diagnostics);
+    }
+
+    for pending in outcome.indexes {
+        merge_index(schema, pending, diagnostics);
+    }
+}
+
 fn merge_table(
     schema: &mut Schema,
     table: crate::schema::Table,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if let Some(existing_id) = schema.table_id(&table.name) {
+    if let Some(existing_id) = schema.own_table_id(&table.name) {
         let previous = schema
             .get_by_id(existing_id)
             .map(|t| t.source)
@@ -146,7 +197,7 @@ fn merge_field(schema: &mut Schema, pending: PendingField, diagnostics: &mut Vec
         table_display,
         field,
     } = pending;
-    let Some(table_id) = schema.table_id(&table) else {
+    let Some(table_id) = schema.own_table_id(&table) else {
         diagnostics.push(Diagnostic::error(
             SCHEMA0001,
             format!(
@@ -217,7 +268,7 @@ fn merge_index(schema: &mut Schema, pending: PendingIndex, diagnostics: &mut Vec
         table_display,
         index,
     } = pending;
-    let Some(table_id) = schema.table_id(&table) else {
+    let Some(table_id) = schema.own_table_id(&table) else {
         diagnostics.push(Diagnostic::error(
             SCHEMA0001,
             format!(

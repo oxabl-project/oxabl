@@ -2,3 +2,7 @@
 resources/*.html linguist-vendored
 resources/*.json linguist-vendored
 resources/*.abl linguist-vendored
+# vendored, not generated: keep it out of the language stats but keep the
+# diff visible, because a regeneration is exactly the change a human should
+# be able to read.
+crates/oxabl_schema/resources/*.df linguist-vendored
