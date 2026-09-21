@@ -413,6 +413,105 @@ fn changing_a_shared_include_marks_the_graph_stale() {
     ));
 }
 
+/// An edit that keeps a file's length is stale (R7).
+///
+/// Length and mtime were the whole comparison, and a typo fix or a flag flipped in
+/// place changes neither reliably: the length is identical by construction and the
+/// write can land inside one mtime tick. `ctime` advances on any write to the inode
+/// and userland cannot set it, which is what makes this detectable without hashing.
+///
+/// Documented caveat: this leans on `ctime` granularity. It is reliable on a local
+/// filesystem with nanosecond timestamps and could flake on a mount with one-second
+/// granularity. The fallback if it ever does is a timestamp-manipulation dependency,
+/// not deleting the test.
+#[test]
+fn an_edit_that_preserves_a_files_length_is_reported_stale() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    reindex(&dispatch, &host, &mut client);
+
+    let before = fs::read_to_string(&fixture.base).unwrap();
+    let after = before.replace("fromBase", "fromBasX");
+    assert_eq!(before.len(), after.len(), "the edit must not change length");
+    fs::write(&fixture.base, &after).unwrap();
+
+    assert!(
+        matches!(
+            freshness_response(&dispatch, &host, &mut client)
+                .freshness
+                .state,
+            IndexState::Stale { .. }
+        ),
+        "an edit that keeps a file's length still changes the file"
+    );
+}
+
+/// A file replaced by write-then-rename is stale even when the replacement is the same
+/// length and carries a copied timestamp (R7).
+///
+/// This is how version-control restores and most atomic-save editors write, so it is
+/// the ordinary case rather than an exotic one: a new inode is moved over the target,
+/// and preserving the length and the mtime is exactly what such a tool tries to do.
+/// The inode number is what tells them apart.
+#[test]
+fn a_file_replaced_by_rename_is_reported_stale() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    reindex(&dispatch, &host, &mut client);
+
+    let original = fs::read_to_string(&fixture.base).unwrap();
+    let replacement = original.replace("fromBase", "fromBasY");
+    let staging = fixture.root().join("staging.tmp");
+    fs::write(&staging, &replacement).unwrap();
+    // The timestamp is copied over deliberately, so only the inode differs.
+    let stamp = fs::metadata(&fixture.base).unwrap().modified().unwrap();
+    fs::File::open(&staging)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    fs::rename(&staging, &fixture.base).unwrap();
+
+    assert!(
+        matches!(
+            freshness_response(&dispatch, &host, &mut client)
+                .freshness
+                .state,
+            IndexState::Stale { .. }
+        ),
+        "a replacement inode is a different file however its timestamps were copied"
+    );
+}
+
+/// A workspace that uses include files reports `Ready` when nothing changed.
+///
+/// The trap in the added-file check: the graph tracks more files than discovery found,
+/// because include targets can live outside the discovered set. Compared against the
+/// *tracked* count, a fresh walk would come up short on every workspace that uses
+/// includes and report `Stale` permanently — a false positive worse than the missed
+/// detection the check exists to fix. The fixture uses includes, so this pins it.
+#[test]
+fn a_workspace_that_uses_includes_is_ready_when_nothing_changed() {
+    let fixture = Fixture::new();
+    let dispatch = default_dispatch();
+    let host = SessionHost::new();
+    let mut client = handshake(&dispatch, &host, fixture.root(), ClientKind::Desktop);
+    reindex(&dispatch, &host, &mut client);
+
+    for poll in 0..3 {
+        assert_eq!(
+            freshness_response(&dispatch, &host, &mut client)
+                .freshness
+                .state,
+            IndexState::Ready,
+            "poll {poll}: an untouched workspace stays current"
+        );
+    }
+}
+
 #[test]
 fn editor_and_desktop_clients_receive_the_same_impact_facts() {
     let fixture = Fixture::new();

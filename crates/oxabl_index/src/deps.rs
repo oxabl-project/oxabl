@@ -30,11 +30,12 @@
 
 use std::path::{Path, PathBuf};
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::search::normalize_lexically;
 use oxabl_ast::Span;
 use oxabl_common::VirtualSpan;
+use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_schema::Schema;
 use oxabl_semantic::{ClassLookup, IndexName, IndexedFileId, Semantic, UnresolvedReason};
 
@@ -337,8 +338,17 @@ fn class_edges(
     out: &mut Vec<DependencyEdge>,
     unresolved: &mut Vec<UnresolvedReference>,
 ) {
+    // Built once per file, and only for a file that has a class lookup at all.
+    // `class_name_span` used to walk the whole symbol table per lookup; a file with
+    // several class references therefore rescanned its own symbols once per
+    // reference. Measured at a fraction of a percent of the per-file budget, so this
+    // is hygiene rather than an optimisation: it removes a quadratic shape from a
+    // helper documented as a lookup.
+    let mut sites: Option<FxHashMap<OxablAtom, VirtualSpan>> = None;
+
     for (name, lookup) in inputs.semantic.symbols.class_lookups() {
-        let span = class_name_span(inputs, name);
+        let sites = sites.get_or_insert_with(|| supertype_name_sites(inputs));
+        let span = class_name_span(inputs, sites, name);
         match lookup {
             ClassLookup::Linked(file) => out.push(DependencyEdge {
                 kind: EdgeKind::ClassReference,
@@ -370,26 +380,38 @@ fn class_edges(
     }
 }
 
+/// Every supertype name this file writes, mapped to where it writes it.
+///
+/// One walk of the symbol table, in the order [`class_name_span`] used to search it:
+/// symbols in table order, and within a symbol the `INHERITS` references before the
+/// `IMPLEMENTS` ones. First write wins, which is what the previous `find_map` picked,
+/// so the span a repeated name resolves to is unchanged.
+fn supertype_name_sites(inputs: &EdgeInputs<'_>) -> FxHashMap<OxablAtom, VirtualSpan> {
+    let mut sites = FxHashMap::default();
+    for (id, _) in inputs.semantic.symbols.iter() {
+        let Some(supers) = inputs.semantic.symbols.supertypes(id) else {
+            continue;
+        };
+        for reference in supers.inherits.iter().chain(&supers.implements) {
+            sites
+                .entry(reference.name.as_atom().clone())
+                .or_insert(reference.name_span);
+        }
+    }
+    sites
+}
+
 /// Where the dependent file writes a class name, if it writes it at all.
 ///
-/// A linear scan of the recorded supertype references, which is how the model
-/// itself recovers a supertype's identity from a name. `None` for an *ancestor*
-/// reached through a chain walk: that name is written in another file's header,
-/// and pointing at an offset in this one would name unrelated bytes.
+/// A lookup in the map [`supertype_name_sites`] built for this file. `None` for an
+/// *ancestor* reached through a chain walk: that name is written in another file's
+/// header, and pointing at an offset in this one would name unrelated bytes.
 fn class_name_span(
     inputs: &EdgeInputs<'_>,
-    folded: &oxabl_lexer::oxabl_atom::OxablAtom,
+    sites: &FxHashMap<OxablAtom, VirtualSpan>,
+    folded: &OxablAtom,
 ) -> Option<Span> {
-    let virtual_span = inputs.semantic.symbols.iter().find_map(|(id, _)| {
-        let supers = inputs.semantic.symbols.supertypes(id)?;
-        supers
-            .inherits
-            .iter()
-            .chain(&supers.implements)
-            .find(|r| r.name.as_atom() == folded)
-            .map(|r| r.name_span)
-    })?;
-    (inputs.resolve_span)(virtual_span)
+    (inputs.resolve_span)(*sites.get(folded)?)
 }
 
 /// The two edges the model records per symbol: a `RUN` target and the producer of

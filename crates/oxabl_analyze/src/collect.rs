@@ -221,6 +221,41 @@ impl ExpandedFile {
         self.resolve_span(span).map(|fs| fs.span)
     }
 
+    /// The chunk containing virtual offset `virt`, or `None` past the end of the
+    /// expansion.
+    ///
+    /// A binary search, because the chunks are emitted in strictly increasing virtual
+    /// order by `flatten_tree` — it walks the span tree in expansion order and hands
+    /// each leaf the running cursor. This used to be a linear scan of an already
+    /// ordered table, which is a binary search written the long way: a diagnostic in a
+    /// file with many include sites paid a walk of every chunk before it, per span,
+    /// per label.
+    ///
+    /// The ordering is asserted rather than assumed. If the flattening ever emits out
+    /// of order the search would return a wrong chunk silently, and a wrong chunk maps
+    /// a span into the bytes of a different file.
+    fn chunk_at(&self, virt: u32) -> Option<&ExpandedChunk> {
+        debug_assert!(
+            self.chunks
+                .windows(2)
+                .all(|pair| pair[0].virt_start + pair[0].len <= pair[1].virt_start),
+            "the chunk table must be sorted and non-overlapping for the search below"
+        );
+        let found = self
+            .chunks
+            .binary_search_by(|chunk| {
+                if virt < chunk.virt_start {
+                    std::cmp::Ordering::Greater
+                } else if virt >= chunk.virt_start + chunk.len {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()?;
+        self.chunks.get(found)
+    }
+
     /// Resolve a virtual (expanded) offset to `(origin file, real offset)`.
     /// Returns `None` when the offset is past the end of the expansion.
     fn resolve(&self, virt: u32) -> Option<(FileId, u32)> {
@@ -228,30 +263,66 @@ impl ExpandedFile {
             // Identity mapping (no preprocessing): every offset is root-relative.
             return Some((self.root, virt));
         }
-        for c in &self.chunks {
-            if virt >= c.virt_start && virt < c.virt_start + c.len {
-                return Some((FileId::new(c.file), c.real_start + (virt - c.virt_start)));
-            }
-        }
-        None
+        let chunk = self.chunk_at(virt)?;
+        Some((
+            FileId::new(chunk.file),
+            chunk.real_start + (virt - chunk.virt_start),
+        ))
     }
 
     /// Resolve a virtual span to a root-buffer [`FileSpan`], or `None` if its
-    /// origin is not the root buffer (R8). Start and end resolve independently;
-    /// the real end is clamped to be no earlier than the real start.
+    /// origin is not the root buffer (R8).
+    ///
+    /// # Boundary convention
+    ///
+    /// Spans are **half-open**: `start` is the first byte and `end` is one past the
+    /// last. The offset table is a map over *bytes*, so only `start` and `end - 1` are
+    /// offsets it can answer for — `end` itself names the byte after the span, which
+    /// routinely belongs to something else.
+    ///
+    /// That distinction was the defect (R17). `end` was resolved as though it were a
+    /// byte of the span, so a span ending exactly where the next chunk begins resolved
+    /// *into that chunk*. When the next chunk came from an include — which is the
+    /// common case, since a chunk boundary is usually an include site — the origin
+    /// check failed and the span collapsed to zero width. The token immediately before
+    /// an include therefore reported a caret with no extent, and a client asked to jump
+    /// to it landed on an empty range. `end` past the very end of the expansion failed
+    /// the same way, for the same reason.
+    ///
+    /// The span is resolved **within the chunk its start falls in**. A span that
+    /// reaches beyond that chunk is truncated at the chunk's end rather than collapsed:
+    /// the bytes past the boundary are not the root file's contiguous bytes at all, so
+    /// there is no honest longer answer, and a truncated extent is strictly better than
+    /// no extent. A zero-length span stays zero-length.
     fn resolve_span(&self, span: Span) -> Option<FileSpan> {
         let (start_file, real_start) = self.resolve(span.start)?;
         if start_file != self.root {
             return None;
         }
-        let real_end = if span.end <= span.start {
-            real_start
-        } else {
-            match self.resolve(span.end) {
-                Some((f, r)) if f == self.root => r,
-                _ => real_start,
+
+        // An empty span has no last byte to map, so it keeps its point.
+        if span.end <= span.start {
+            return Some(FileSpan {
+                file: self.root,
+                span: Span {
+                    start: real_start,
+                    end: real_start,
+                },
+            });
+        }
+
+        let real_end = match self.chunk_at(span.start) {
+            // The last byte of the span, clamped into the chunk the start belongs to,
+            // then turned back into an exclusive end by adding one.
+            Some(chunk) => {
+                let chunk_last = chunk.virt_start + chunk.len - 1;
+                let last = (span.end - 1).min(chunk_last);
+                chunk.real_start + (last - chunk.virt_start) + 1
             }
+            // No chunk table: the identity mapping, where virtual is real.
+            None => span.end,
         };
+
         Some(FileSpan {
             file: self.root,
             span: Span {
@@ -702,6 +773,225 @@ mod tests {
 
     fn codes(c: &CollectedDiagnostics) -> Vec<&str> {
         c.all().map(|d| d.diagnostic.code.0).collect()
+    }
+
+    /// An expansion whose chunk table is supplied directly.
+    ///
+    /// Built rather than preprocessed, because the boundary cases below are about the
+    /// offset table's shape and a source fixture reaches them only by coincidence.
+    /// `chunks` is `(virt_start, len, file, real_start)` in expansion order.
+    fn expansion_with(chunks: &[(u32, u32, u32, u32)]) -> ExpandedFile {
+        ExpandedFile {
+            text: String::new(),
+            chunks: chunks
+                .iter()
+                .map(|(virt_start, len, file, real_start)| ExpandedChunk {
+                    virt_start: *virt_start,
+                    len: *len,
+                    file: *file,
+                    real_start: *real_start,
+                })
+                .collect(),
+            preproc: Vec::new(),
+            dependencies: Vec::new(),
+            dependency_paths: Vec::new(),
+            direct_includes: Vec::new(),
+            unresolved_includes: Vec::new(),
+            root: ROOT,
+        }
+    }
+
+    /// The root's own text, then an include's, then the root's again: the shape every
+    /// file with an include site has.
+    fn root_include_root() -> ExpandedFile {
+        expansion_with(&[
+            (0, 10, ROOT.raw(), 0),
+            (10, 20, 2, 0),
+            (30, 10, ROOT.raw(), 10),
+        ])
+    }
+
+    /// A span ending exactly where the next chunk begins keeps its extent (R17).
+    ///
+    /// The defect: `end` is exclusive, so it names the byte *after* the span, but it
+    /// was resolved as though it were a byte of the span. At a chunk boundary that byte
+    /// belongs to the next chunk — an include — so the origin check failed and the span
+    /// collapsed to zero width. The token immediately before an include site is exactly
+    /// this case, and a client asked to jump to it landed on an empty range.
+    #[test]
+    fn a_span_ending_on_a_chunk_boundary_keeps_its_extent() {
+        let expanded = root_include_root();
+
+        let resolved = expanded
+            .resolve_root_span(Span { start: 4, end: 10 })
+            .expect("a span that starts in the root resolves");
+
+        assert_eq!(
+            resolved,
+            Span { start: 4, end: 10 },
+            "a span ending where the include begins must keep its six bytes"
+        );
+    }
+
+    /// The same failure at the other boundary: a span ending at the very end of the
+    /// expansion had no offset past it to resolve at all.
+    #[test]
+    fn a_span_ending_at_the_end_of_the_expansion_keeps_its_extent() {
+        let expanded = root_include_root();
+
+        let resolved = expanded
+            .resolve_root_span(Span { start: 34, end: 40 })
+            .expect("a span in the trailing root chunk resolves");
+
+        assert_eq!(resolved, Span { start: 14, end: 20 });
+    }
+
+    /// A span wholly inside one chunk was never broken, and must stay that way.
+    #[test]
+    fn a_span_inside_one_chunk_is_unaffected() {
+        let expanded = root_include_root();
+
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 32, end: 36 }),
+            Some(Span { start: 12, end: 16 })
+        );
+    }
+
+    /// A zero-length span is a caret, and stays one — it must not become negative,
+    /// panic on the `end - 1`, or acquire width it never had.
+    #[test]
+    fn a_zero_length_span_at_a_boundary_stays_zero_length() {
+        let expanded = root_include_root();
+
+        // The first and last byte of each root chunk, so both edges of the boundary
+        // arithmetic are covered.
+        for (virt, real) in [(0, 0), (9, 9), (30, 10), (39, 19)] {
+            assert_eq!(
+                expanded.resolve_root_span(Span {
+                    start: virt,
+                    end: virt
+                }),
+                Some(Span {
+                    start: real,
+                    end: real
+                }),
+                "a caret at {virt} must stay a caret at {real}"
+            );
+        }
+    }
+
+    /// A span reaching past its start chunk is truncated at that chunk, not collapsed.
+    ///
+    /// The bytes beyond the boundary are not the root file's contiguous bytes, so there
+    /// is no honest longer answer — and the previous behaviour, collapsing to zero
+    /// width, threw away the extent that *was* known.
+    #[test]
+    fn a_span_crossing_a_chunk_boundary_is_truncated_rather_than_collapsed() {
+        let expanded = root_include_root();
+
+        let resolved = expanded
+            .resolve_root_span(Span { start: 6, end: 35 })
+            .expect("the start is in the root");
+
+        assert_eq!(
+            resolved,
+            Span { start: 6, end: 10 },
+            "the extent must stop at the chunk boundary rather than vanish"
+        );
+    }
+
+    /// A span whose start is inside an include is not the root's to report (R8).
+    #[test]
+    fn a_span_starting_inside_an_include_has_no_root_span() {
+        let expanded = root_include_root();
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 12, end: 18 }),
+            None
+        );
+    }
+
+    /// The search and the scan it replaced agree on every offset.
+    ///
+    /// Pinned over a deep table rather than a two-chunk one, because a binary search
+    /// that is wrong at a boundary is right everywhere else — the fixture has to have
+    /// enough boundaries for a wrong one to show.
+    #[test]
+    fn the_binary_search_agrees_with_a_linear_scan_at_every_offset() {
+        let chunks: Vec<(u32, u32, u32, u32)> = (0..16)
+            .map(|index| {
+                let file = if index % 2 == 0 {
+                    ROOT.raw()
+                } else {
+                    index + 10
+                };
+                (index * 7, 7, file, index * 3)
+            })
+            .collect();
+        let expanded = expansion_with(&chunks);
+
+        for virt in 0..(16 * 7 + 4) {
+            let scanned = expanded
+                .chunks
+                .iter()
+                .find(|chunk| virt >= chunk.virt_start && virt < chunk.virt_start + chunk.len)
+                .map(|chunk| {
+                    (
+                        FileId::new(chunk.file),
+                        chunk.real_start + (virt - chunk.virt_start),
+                    )
+                });
+            assert_eq!(
+                expanded.resolve(virt),
+                scanned,
+                "the search and the scan disagree at {virt}"
+            );
+        }
+    }
+
+    /// The identity mapping — preprocessing off, so no chunk table — is untouched.
+    #[test]
+    fn an_expansion_with_no_chunks_maps_a_span_to_itself() {
+        let expanded = expansion_with(&[]);
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 3, end: 11 }),
+            Some(Span { start: 3, end: 11 })
+        );
+    }
+
+    /// The invariant the search rests on, over a table a real expansion produced.
+    #[test]
+    fn the_chunk_table_is_emitted_in_increasing_order() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(
+            std::path::PathBuf::from("./outer.i"),
+            "{inner.i}\nDEFINE VARIABLE a AS INTEGER.\n",
+        );
+        fs.insert(
+            std::path::PathBuf::from("./inner.i"),
+            "DEFINE VARIABLE b AS INTEGER.\n",
+        );
+        let expanded = expand_source(
+            ROOT,
+            "{outer.i}\nMESSAGE a.\n{outer.i}\nMESSAGE b.\n",
+            &fs,
+            &[std::path::PathBuf::from(".")],
+            true,
+        )
+        .expect("the fixture expands");
+
+        assert!(
+            expanded.chunks.len() > 2,
+            "a nested include must produce several chunks, got {}",
+            expanded.chunks.len()
+        );
+        for pair in expanded.chunks.windows(2) {
+            assert!(
+                pair[0].virt_start + pair[0].len <= pair[1].virt_start,
+                "chunks must not overlap or go backwards: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
     }
 
     #[test]
