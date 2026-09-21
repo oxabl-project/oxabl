@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_workspace"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 license = "MIT"
 description = "Workspace configuration, file system abstraction, and file discovery for the Oxabl ABL tooling suite"

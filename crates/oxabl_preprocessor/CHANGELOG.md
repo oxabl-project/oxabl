@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.2](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.5.1...oxabl_preprocessor-v0.5.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **preprocessor:** report a nested unresolvable include instead of dropping it ([#177](https://github.com/oxabl-project/oxabl/issues/177)) ([676dafe](https://github.com/oxabl-project/oxabl/commit/676dafe4f3b5b3dc1d98ed43342033f567a7f778))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+
 ## [0.5.1](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.5.0...oxabl_preprocessor-v0.5.1) (2026-08-14)
 
 

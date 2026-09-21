@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v1.0.0...oxabl_lsp-v1.0.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **daemon:** close the registry's symlink hole and stop the probe taking the lock it tests ([#173](https://github.com/oxabl-project/oxabl/issues/173)) ([3fa0bc2](https://github.com/oxabl-project/oxabl/commit/3fa0bc2c402cab88218372fed7d9c3400148bc05))
+* **daemon:** move the socket and lock to the runtime directory, and key discovery on a canonical root ([#186](https://github.com/oxabl-project/oxabl/issues/186)) ([68c6a6f](https://github.com/oxabl-project/oxabl/commit/68c6a6f571013e47d694e7685de1ace222e3b7ce))
+* **daemon:** shared session correctness, and the contract bump that covers the series ([#174](https://github.com/oxabl-project/oxabl/issues/174)) ([39bba72](https://github.com/oxabl-project/oxabl/commit/39bba72396c8c4a8b241056b91d44b776d068a31))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 1.1.1 to 1.1.2
+    * oxabl_daemon bumped from 0.2.0 to 0.3.0
+    * oxabl_daemon_protocol bumped from 0.2.0 to 0.3.0
+    * oxabl_pipeline bumped from 1.1.1 to 1.1.2
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+  * dev-dependencies
+    * oxabl_daemon bumped from 0.2.0 to 0.3.0
+    * oxabl_analyze bumped from 1.1.1 to 1.1.2
+    * oxabl_schema bumped from 0.2.2 to 0.2.3
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+    * oxabl_pipeline bumped from 1.1.1 to 1.1.2
+
 ## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v0.1.2...oxabl_lsp-v1.0.0) (2026-08-14)
 
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.1.2](https://github.com/oxabl-project/oxabl/compare/oxabl-v1.1.1...oxabl-v1.1.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* analyze include roots as fragments ([#166](https://github.com/oxabl-project/oxabl/issues/166)) ([dba8a3c](https://github.com/oxabl-project/oxabl/commit/dba8a3cb0cdea9f753ae6e1161bd36aeb3014409))
+* **daemon:** close the registry's symlink hole and stop the probe taking the lock it tests ([#173](https://github.com/oxabl-project/oxabl/issues/173)) ([3fa0bc2](https://github.com/oxabl-project/oxabl/commit/3fa0bc2c402cab88218372fed7d9c3400148bc05))
+* **daemon:** move the socket and lock to the runtime directory, and key discovery on a canonical root ([#186](https://github.com/oxabl-project/oxabl/issues/186)) ([68c6a6f](https://github.com/oxabl-project/oxabl/commit/68c6a6f571013e47d694e7685de1ace222e3b7ce))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 1.0.2 to 1.0.3
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+    * oxabl_preprocessor bumped from 0.5.1 to 0.5.2
+    * oxabl_semantic bumped from 1.0.2 to 1.0.3
+    * oxabl_schema bumped from 0.2.2 to 0.2.3
+    * oxabl_analyze bumped from 1.1.1 to 1.1.2
+    * oxabl_pipeline bumped from 1.1.1 to 1.1.2
+    * oxabl_lint bumped from 1.0.2 to 1.0.3
+    * oxabl_lsp bumped from 1.0.0 to 1.0.1
+    * oxabl_daemon bumped from 0.2.0 to 0.3.0
+    * oxabl_formatter bumped from 1.0.0 to 1.0.1
+  * dev-dependencies
+    * oxabl_daemon_protocol bumped from 0.2.0 to 0.3.0
+    * oxabl_analyze bumped from 1.1.1 to 1.1.2
+    * oxabl_schema bumped from 0.2.2 to 0.2.3
+    * oxabl_workspace bumped from 1.0.2 to 1.0.3
+    * oxabl_pipeline bumped from 1.1.1 to 1.1.2
+
 ## [1.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl-v1.1.0...oxabl-v1.1.1) (2026-08-14)
 
 
