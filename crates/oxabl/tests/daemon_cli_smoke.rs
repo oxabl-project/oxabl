@@ -22,6 +22,20 @@ impl Drop for ChildGuard {
     }
 }
 
+/// Every base-directory variable, pointed at one temporary directory.
+///
+/// A spawned daemon inherits this process's environment, so overriding only
+/// `XDG_CACHE_HOME` would leave it registering under the developer's real
+/// `XDG_RUNTIME_DIR` — which now wins — and these tests would spawn daemons that
+/// register outside the sandbox they think they are in.
+fn isolated_base(base: &std::path::Path) -> [(&'static str, &std::path::Path); 3] {
+    [
+        ("XDG_RUNTIME_DIR", base),
+        ("XDG_CACHE_HOME", base),
+        ("HOME", base),
+    ]
+}
+
 #[test]
 fn a_client_with_no_daemon_launches_the_artifact_and_connects() {
     let root = tempfile::tempdir().expect("a workspace root");
@@ -35,7 +49,7 @@ fn a_client_with_no_daemon_launches_the_artifact_and_connects() {
     let child = Command::new(OXABL_BIN)
         .arg("daemon")
         .arg(root.path())
-        .env("XDG_CACHE_HOME", cache.path())
+        .envs(isolated_base(cache.path()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -83,7 +97,7 @@ fn the_editor_joins_the_existing_daemon_and_leaves_desktop_connected() {
     let daemon = Command::new(OXABL_BIN)
         .arg("daemon")
         .arg(root.path())
-        .env("XDG_CACHE_HOME", cache.path())
+        .envs(isolated_base(cache.path()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -103,7 +117,7 @@ fn the_editor_joins_the_existing_daemon_and_leaves_desktop_connected() {
 
     let mut editor = Command::new(OXABL_BIN)
         .arg("lsp")
-        .env("XDG_CACHE_HOME", cache.path())
+        .envs(isolated_base(cache.path()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -200,7 +214,7 @@ fn two_daemon_processes_racing_for_one_root_leave_one_serving() {
         Command::new(OXABL_BIN)
             .arg("daemon")
             .arg(root.path())
-            .env("XDG_CACHE_HOME", cache.path())
+            .envs(isolated_base(cache.path()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -271,7 +285,7 @@ fn a_daemon_exit_mid_session_is_reported_by_the_editor_shim() {
     let mut daemon = Command::new(OXABL_BIN)
         .arg("daemon")
         .arg(root.path())
-        .env("XDG_CACHE_HOME", cache.path())
+        .envs(isolated_base(cache.path()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -281,7 +295,7 @@ fn a_daemon_exit_mid_session_is_reported_by_the_editor_shim() {
 
     let mut editor = Command::new(OXABL_BIN)
         .arg("lsp")
-        .env("XDG_CACHE_HOME", cache.path())
+        .envs(isolated_base(cache.path()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -340,14 +354,21 @@ fn wait_for_registration(path: &std::path::Path) -> Registration {
         .expect("the registration is valid JSON")
 }
 
-/// The registration path a daemon under `cache` writes for `root`.
+/// The registration path a daemon under `base` writes for `root`.
 ///
-/// Calls the protocol crate's own naming rule with the directory supplied, so this
-/// test cannot drift from it. It used to reach the same rule by setting
-/// `XDG_CACHE_HOME` around the call, which needed a lock and two `unsafe` blocks to
-/// keep one process-wide variable from racing every other test in the binary.
-fn registration_path_in(root: &std::path::Path, cache: &std::path::Path) -> std::path::PathBuf {
-    oxabl_daemon_protocol::registration_path_in(&cache.join("oxabl").join("daemon"), root)
+/// Calls the protocol crate's own naming rule with the directory and the canonical
+/// root supplied, so this test cannot drift from it. It used to reach the same rule by
+/// setting `XDG_CACHE_HOME` around the call, which needed a lock and two `unsafe`
+/// blocks to keep one process-wide variable from racing every other test in the binary.
+///
+/// The root is canonicalised because the naming rule is: one tree is one name, however
+/// a client spelled it. A temporary directory is often reached through a symlink, so a
+/// test that skipped this step would derive a name no daemon writes.
+fn registration_path_in(root: &std::path::Path, base: &std::path::Path) -> std::path::PathBuf {
+    oxabl_daemon_protocol::registration_path_in(
+        &base.join("oxabl").join("daemon"),
+        &oxabl_daemon_protocol::canonical_root(root).expect("the workspace root exists"),
+    )
 }
 
 fn send_handshake(stream: &mut UnixStream, id: u32, root: &std::path::Path) {

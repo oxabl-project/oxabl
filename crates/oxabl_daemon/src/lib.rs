@@ -57,7 +57,8 @@ pub use handshake::{default_dispatch, register_handshake};
 pub use listener::{Listener, Stopper, connection_over};
 pub use methods::register_methods;
 pub use registry::{
-    DaemonState, Discovery, daemon_state, discover, register, socket_path_for, unregister,
+    DaemonState, Discovery, daemon_state, discover, register, registration_path_for,
+    socket_path_for, unregister,
 };
 pub use server::{serve, serve_stdio, serve_with_first};
 pub use session::{

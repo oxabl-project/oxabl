@@ -24,22 +24,41 @@ use oxabl_daemon::{
 use oxabl_daemon_protocol::{CONTRACT_VERSION, ClientKind, HandshakeRequest, HandshakeResponse};
 use serde_json::{Value, json};
 
-/// Point the registration directory at a fresh temporary directory for the duration.
+/// Run `body` with every base-directory variable pointed at one private temporary
+/// directory.
 ///
-/// `XDG_CACHE_HOME` is process-wide, so this serialises every test in the file
-/// behind one lock. Without that they race each other's registrations.
-fn with_cache_home<T>(body: impl FnOnce() -> T) -> T {
+/// All three, not just the cache one. The registration directory now prefers
+/// `XDG_RUNTIME_DIR`, so an override that redirected `XDG_CACHE_HOME` alone would stop
+/// redirecting anything on a host that sets a runtime directory — which is every Linux
+/// desktop and every developer machine this suite runs on — and these tests would write
+/// real sockets, locks and registrations into that directory and race each other
+/// through it.
+///
+/// The environment is process-wide and these tests run on threads of one binary, so the
+/// lock is what keeps one test's base directory from becoming another's.
+const BASE_VARIABLES: [&str; 3] = ["XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"];
+
+fn with_base_dir<T>(body: impl FnOnce() -> T) -> T {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let cache = tempfile::tempdir().expect("a temporary cache directory");
-    let previous = std::env::var_os("XDG_CACHE_HOME");
+    let base = tempfile::tempdir().expect("a temporary base directory");
+    let previous: Vec<_> = BASE_VARIABLES
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect();
     // SAFETY: the lock above makes this the only thread mutating the environment.
-    unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
+    unsafe {
+        for name in BASE_VARIABLES {
+            std::env::set_var(name, base.path());
+        }
+    }
     let out = body();
     unsafe {
-        match previous {
-            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
-            None => std::env::remove_var("XDG_CACHE_HOME"),
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
         }
     }
     out
@@ -156,7 +175,7 @@ impl Client {
 /// (R2). It is also the root the daemon is bound to, so a client naming it is the
 /// only client this daemon will serve (R26).
 fn with_daemon<T>(body: impl FnOnce(&Path, &Path, Arc<AtomicU32>) -> T) -> T {
-    with_cache_home(|| {
+    with_base_dir(|| {
         let workspace = tempfile::tempdir().expect("a workspace root");
         let root = workspace.path().to_path_buf();
         let slow_calls = Arc::new(AtomicU32::new(0));
@@ -450,8 +469,9 @@ fn a_second_daemon_on_one_root_is_refused() {
 /// daemon rather than connecting to a socket nobody holds.
 #[test]
 fn an_orderly_shutdown_removes_the_registration() {
-    with_cache_home(|| {
-        let root = Path::new("/proj/tidy");
+    with_base_dir(|| {
+        let workspace = tempfile::tempdir().expect("a workspace root");
+        let root = workspace.path();
         {
             let listener = Listener::bind(root).expect("the socket binds");
             assert!(matches!(discover(root), Discovery::Live(_)));

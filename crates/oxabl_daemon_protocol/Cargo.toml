@@ -19,3 +19,5 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 serde_json = "1"
+# Canonicalising a root needs a root that exists, so the naming-rule tests make one.
+tempfile = "3"

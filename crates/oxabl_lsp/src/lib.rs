@@ -1592,29 +1592,44 @@ mod tests {
     fn a_client_that_cannot_read_the_registration_gives_up_naming_the_cause() {
         use std::os::unix::fs::PermissionsExt;
 
-        // `XDG_CACHE_HOME` is process-wide, so this serialises against itself; no other
-        // test in this binary reads it.
+        // The base-directory variables are process-wide, so this serialises against
+        // itself; no other test in this binary reads them.
         static ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENVIRONMENT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        let cache = tempfile::tempdir().expect("a cache directory");
+        // Every base variable, not just the cache one: the registration directory now
+        // prefers `XDG_RUNTIME_DIR`, so redirecting `XDG_CACHE_HOME` alone would leave
+        // this test reading the developer's real runtime directory.
+        const BASE_VARIABLES: [&str; 3] = ["XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"];
+
+        let base = tempfile::tempdir().expect("a base directory");
+        let workspace = tempfile::tempdir().expect("a workspace root");
         // A registration directory the daemon would never have created: every poll
         // refuses it, so discovery is undecided on every pass and never absent.
-        let dir = cache.path().join("oxabl").join("daemon");
+        let dir = base.path().join("oxabl").join("daemon");
         std::fs::create_dir_all(&dir).expect("a registration directory");
         std::fs::set_permissions(&dir, PermissionsExt::from_mode(0o755)).expect("widen it");
-        let previous = std::env::var_os("XDG_CACHE_HOME");
+        let previous: Vec<_> = BASE_VARIABLES
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect();
         // SAFETY: the lock above makes this the only thread mutating the environment.
-        unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
+        unsafe {
+            for name in BASE_VARIABLES {
+                std::env::set_var(name, base.path());
+            }
+        }
 
-        let outcome = find_or_start_daemon(Path::new("/proj/refused"));
+        let outcome = find_or_start_daemon(workspace.path());
 
         unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
-                None => std::env::remove_var("XDG_CACHE_HOME"),
+            for (name, value) in previous {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
             }
         }
 

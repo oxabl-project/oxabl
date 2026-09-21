@@ -329,7 +329,7 @@ fn installing_a_configuration_bumps_the_generation() {
 fn a_bound_socket_and_its_directory_are_private() {
     use std::os::unix::fs::PermissionsExt;
 
-    with_cache_home(|cache| {
+    with_base_dir(|cache| {
         let root = tempfile::tempdir().expect("a workspace root");
         let listener = oxabl_daemon::Listener::bind(root.path()).expect("bind a listener");
         let socket = listener.socket_path().to_path_buf();
@@ -358,7 +358,7 @@ fn a_bound_socket_and_its_directory_are_private() {
 #[cfg(unix)]
 #[test]
 fn a_second_daemon_for_one_root_is_refused() {
-    with_cache_home(|_| {
+    with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         let first = oxabl_daemon::Listener::bind(root.path()).expect("the first daemon binds");
 
@@ -398,8 +398,9 @@ fn a_second_daemon_for_one_root_is_refused() {
 #[cfg(unix)]
 #[test]
 fn a_registration_without_the_lock_is_absent_even_with_a_live_pid() {
-    with_cache_home(|_| {
-        let root = Path::new("/proj/recycled-pid");
+    with_base_dir(|_| {
+        let workspace = tempfile::tempdir().expect("a workspace root");
+        let root = workspace.path();
 
         let socket = oxabl_daemon::registry::socket_path_for(root).expect("a socket path");
         oxabl_daemon::registry::register(root, &socket, std::process::id())
@@ -420,7 +421,7 @@ fn a_registration_without_the_lock_is_absent_even_with_a_live_pid() {
 fn two_clients_probing_one_root_start_exactly_one_daemon() {
     use std::sync::mpsc;
 
-    with_cache_home(|_| {
+    with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         let (report, results) = mpsc::channel();
 
@@ -474,7 +475,7 @@ fn two_clients_probing_one_root_start_exactly_one_daemon() {
 #[cfg(unix)]
 #[test]
 fn a_crashed_daemons_leftover_socket_is_cleaned_up_by_the_next_daemon() {
-    with_cache_home(|_| {
+    with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         let socket = oxabl_daemon::registry::socket_path_for(root.path()).expect("a socket path");
         oxabl_daemon::registry::ensure_registration_dir().expect("the directory");
@@ -502,7 +503,7 @@ fn a_crashed_daemons_leftover_socket_is_cleaned_up_by_the_next_daemon() {
 #[cfg(unix)]
 #[test]
 fn a_regular_file_at_the_socket_path_is_refused_rather_than_removed() {
-    with_cache_home(|_| {
+    with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         let socket = oxabl_daemon::registry::socket_path_for(root.path()).expect("a socket path");
         oxabl_daemon::registry::ensure_registration_dir().expect("the directory");
@@ -540,8 +541,13 @@ fn a_start_that_fails_after_the_bind_leaves_no_socket_behind() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    with_cache_home(|_| {
-        let root = PathBuf::from(OsStr::from_bytes(b"/proj/not-utf8-\xff"));
+    with_base_dir(|_| {
+        let tree = tempfile::tempdir().expect("a workspace tree");
+        // A real directory, because the socket path is keyed on a canonical root now
+        // and a root that is not on disk has no canonical name. Its *name* is what
+        // cannot be published.
+        let root = tree.path().join(OsStr::from_bytes(b"not-utf8-\xff"));
+        std::fs::create_dir(&root).expect("a root whose name is not UTF-8");
         let socket = oxabl_daemon::registry::socket_path_for(&root).expect("a socket path");
 
         let error = oxabl_daemon::Listener::bind(&root)
@@ -557,7 +563,9 @@ fn a_start_that_fails_after_the_bind_leaves_no_socket_behind() {
             socket.display()
         );
         assert!(
-            !oxabl_daemon_protocol::registration_path(&root).exists(),
+            !oxabl_daemon::registry::registration_path_for(&root)
+                .expect("a registration path")
+                .exists(),
             "and it must not leave a registration either"
         );
     });
@@ -577,7 +585,7 @@ fn a_client_probe_does_not_prevent_a_daemon_from_starting() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-    with_cache_home(|_| {
+    with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         let path = root.path().to_path_buf();
         let probing = Arc::new(AtomicBool::new(true));
@@ -632,7 +640,7 @@ fn a_client_probe_does_not_prevent_a_daemon_from_starting() {
 #[cfg(unix)]
 #[test]
 fn a_held_start_lock_with_no_registration_names_the_lock_rather_than_a_daemon() {
-    with_cache_home(|_| {
+    with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         while_the_root_lock_is_held(root.path(), || {
             let error = oxabl_daemon::Listener::bind(root.path())
@@ -665,7 +673,7 @@ fn a_held_start_lock_with_no_registration_names_the_lock_rather_than_a_daemon() 
 #[cfg(unix)]
 #[test]
 fn a_held_start_lock_with_a_live_registration_reports_a_daemon_that_is_starting() {
-    with_cache_home(|_| {
+    with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         let socket = oxabl_daemon::registry::socket_path_for(root.path()).expect("a socket path");
         while_the_root_lock_is_held(root.path(), || {
@@ -722,23 +730,42 @@ fn while_the_root_lock_is_held(root: &Path, body: impl FnOnce()) {
     });
 }
 
-/// Run `body` with the registration directory pointed at a private temporary one.
+/// Run `body` with every base-directory variable pointed at one private temporary
+/// directory.
 ///
-/// `XDG_CACHE_HOME` is process-wide and these tests run on threads of one binary,
-/// so the lock is what keeps one test's cache directory from becoming another's.
+/// All three, not just the cache one. The registration directory now prefers
+/// `XDG_RUNTIME_DIR`, so an override that redirected `XDG_CACHE_HOME` alone would stop
+/// redirecting anything on a host that sets a runtime directory — which is every Linux
+/// desktop and every developer machine this suite runs on — and these tests would write
+/// real sockets, locks and registrations into that directory and race each other
+/// through it.
+///
+/// The environment is process-wide and these tests run on threads of one binary, so the
+/// lock is what keeps one test's base directory from becoming another's.
+const BASE_VARIABLES: [&str; 3] = ["XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"];
+
 #[cfg(unix)]
-fn with_cache_home<T>(body: impl FnOnce(&Path) -> T) -> T {
+fn with_base_dir<T>(body: impl FnOnce(&Path) -> T) -> T {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let cache = tempfile::tempdir().expect("a cache directory");
-    let previous = std::env::var_os("XDG_CACHE_HOME");
+    let base = tempfile::tempdir().expect("a base directory");
+    let previous: Vec<_> = BASE_VARIABLES
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect();
     // SAFETY: the lock above makes this the only thread mutating the environment.
-    unsafe { std::env::set_var("XDG_CACHE_HOME", cache.path()) };
-    let out = body(cache.path());
     unsafe {
-        match previous {
-            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
-            None => std::env::remove_var("XDG_CACHE_HOME"),
+        for name in BASE_VARIABLES {
+            std::env::set_var(name, base.path());
+        }
+    }
+    let out = body(base.path());
+    unsafe {
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
         }
     }
     out
