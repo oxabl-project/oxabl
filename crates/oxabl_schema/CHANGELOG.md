@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.2.3...oxabl_schema-v0.3.0) (2026-09-21)
+
+
+### Features
+
+* **schema:** ship the OpenEdge metaschema so `_file` and friends resolve ([#189](https://github.com/oxabl-project/oxabl/issues/189)) ([0367b60](https://github.com/oxabl-project/oxabl/commit/0367b608273df8e20bb6c89495e27f23d8e50da2)), closes [#151](https://github.com/oxabl-project/oxabl/issues/151)
+
 ## [0.2.3](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.2.2...oxabl_schema-v0.2.3) (2026-09-21)
 
 
