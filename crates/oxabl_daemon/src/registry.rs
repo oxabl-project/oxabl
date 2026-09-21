@@ -122,7 +122,9 @@ use rustix::fs::{Mode, OFlags};
 #[cfg(unix)]
 use rustix::io::Errno;
 
-use oxabl_daemon_protocol::{CONTRACT_VERSION, Registration, registration_dir, registration_path};
+use oxabl_daemon_protocol::{
+    CONTRACT_VERSION, Registration, check_socket_path_fits, registration_dir, registration_path,
+};
 
 /// How many trailing components of [`registration_dir`] this daemon creates, and
 /// therefore owns the safety of. Everything above them is the prefix the user named
@@ -984,6 +986,12 @@ pub fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
 /// Cleaning up after a writer that died is a separate job, and a pid-agnostic one:
 /// see [`sweep_stale_staging`].
 ///
+/// The socket path is measured against `sun_path` here as well as at the bind, and
+/// this is the check that matters to a *client*. A registration naming a path no
+/// daemon can bind is worse than no registration at all: discovery finds the pid
+/// alive, hands the client the path, and the client waits on a socket that never
+/// existed. Refusing the write leaves the root looking unserved, which it is.
+///
 /// # Why a path that is not UTF-8 is refused rather than converted (R14)
 ///
 /// Both paths used to be published through `to_string_lossy`. The bind and the lock
@@ -996,6 +1004,8 @@ pub fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
 /// buys a shape change to the protocol for a locale nobody has asked for. A user in
 /// that position gets a message naming the path and the fix.
 pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Result<PathBuf> {
+    check_socket_path_fits(socket_path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let path = registration_path(workspace_root);
     ensure_registration_dir()?;
     let registration = Registration {
@@ -2492,6 +2502,28 @@ mod tests {
                 }
                 other => panic!("expected the replacement, got {other:?}"),
             }
+        });
+    }
+
+    // A registration that names a socket path no daemon can bind is worse than no
+    // registration: a client reads it, finds the pid alive, and connects to a path
+    // that never existed. Refused at the write rather than discovered at the
+    // connect.
+    #[test]
+    fn a_registration_naming_an_unbindable_socket_is_refused() {
+        with_cache_home(|_| {
+            let root = Path::new("/proj/too-long");
+            let socket = PathBuf::from(format!("/{}.sock", "s".repeat(200)));
+
+            let error = register(root, &socket, std::process::id())
+                .expect_err("a path no daemon can bind must not be persisted");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("limit is 107"), "got {error}");
+            assert_eq!(
+                discover(root),
+                Discovery::Absent,
+                "nothing may be persisted for a refused write"
+            );
         });
     }
 

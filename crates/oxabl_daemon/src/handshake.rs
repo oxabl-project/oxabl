@@ -1,9 +1,12 @@
 //! Contract validation at the daemon boundary (R11).
 
+use std::path::PathBuf;
+
 use oxabl_daemon_protocol::{
     CONTRACT_VERSION, ClientKind, ContractMismatch, HandshakeRequest, HandshakeResponse, method,
 };
 
+use crate::session::canonical_root;
 use crate::{DAEMON_VERSION, Dispatch, MethodError, SessionHost};
 
 /// Build the method table every socket daemon starts with.
@@ -33,22 +36,47 @@ pub fn register_handshake(dispatch: &mut Dispatch) {
             });
         }
 
+        // Resolved before any session is touched, so one tree is one session
+        // however the client spelled it (R2), and a root that is not on disk is
+        // refused here rather than keyed on and answered about later.
+        let requested = PathBuf::from(&request.workspace_root);
+        let root = canonical_root(&requested).map_err(|error| {
+            MethodError::invalid_request(format!(
+                "workspace root {} cannot be resolved: {error}",
+                requested.display()
+            ))
+        })?;
+        // A daemon behind a socket serves one root. Refusing another root is what
+        // stops one client driving a shared daemon into a full pass over an
+        // unrelated tree that every other client of it then pays for (R26).
+        if let Some(bound) = host.bound_root()
+            && bound != root
+        {
+            return Err(MethodError::invalid_request(format!(
+                "this daemon serves {}, not {}",
+                bound.display(),
+                root.display()
+            )));
+        }
+
         let (root, clients) = host.with(|sessions| {
-            let session = sessions.for_root(&request.workspace_root);
+            let session = sessions.for_root(&root);
             session.attach(matches!(request.client, ClientKind::Editor));
             (session.root().to_path_buf(), session.clients())
         });
-        if let Err(error) = context.bind(root, request.client) {
+        if let Err(error) = context.bind(root.clone(), request.client) {
             host.with(|sessions| {
                 sessions
-                    .for_root(&request.workspace_root)
+                    .for_root(&root)
                     .detach(matches!(request.client, ClientKind::Editor));
             });
             return Err(error);
         }
         serde_json::to_value(HandshakeResponse {
             contract_version: CONTRACT_VERSION,
-            workspace_root: request.workspace_root,
+            // The resolved root, not the spelling that arrived: the client is told
+            // which workspace it was actually attached to.
+            workspace_root: root.to_string_lossy().into_owned(),
             daemon_version: DAEMON_VERSION.to_string(),
             connected_clients: clients,
         })
