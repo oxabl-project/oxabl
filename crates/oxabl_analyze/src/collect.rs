@@ -298,12 +298,21 @@ pub fn expand_source(
             flatten_tree(&pf.tree, &mut cursor, &mut chunks);
             // Loud, root-origin preprocessor diagnostics carry real spans
             // already, so they are filtered by origin directly.
-            let preproc = pf
+            let mut preproc: Vec<Diagnostic> = pf
                 .diagnostics
                 .iter()
                 .filter(|d| is_loud(d) && d.span.file == root)
                 .cloned()
                 .collect();
+            // An unresolvable include *below* the root elides symbols from this
+            // analysis exactly as a root-origin one does, so its explanation has
+            // to reach this file's reader. Its own span belongs to an include's
+            // buffer, which no consumer of this expansion can render, so it is
+            // re-anchored on the root-origin `{...}` site that led to it.
+            preproc.extend(nested_unresolved_include_diagnostics(
+                &pf.unresolved_includes,
+                root,
+            ));
             let mut direct_includes = Vec::new();
             collect_direct_includes(&pf.tree, root, &mut direct_includes);
             // An include that failed to resolve deeper down is that file's gap to
@@ -330,6 +339,57 @@ pub fn expand_source(
             .filter(|d| is_loud(d) && d.span.file == root)
             .collect()),
     }
+}
+
+/// Re-anchored `PREPROC007`s for unresolvable includes found below the root.
+///
+/// A root-origin unresolvable include already reports itself, so only nested
+/// ones are synthesized here. Each is attributed to the outermost enclosing
+/// `{...}` site, which is the one coordinate that lies in the root file's own
+/// bytes — the same origin rule every other diagnostic in this expansion obeys.
+/// A chain whose outermost site is not the root cannot be rendered against it
+/// and is left to the file that owns it.
+///
+/// One unresolvable include reached through several paths is reported once per
+/// distinct root-origin site: the dedup key is that site plus the missing name,
+/// mirroring how `collect_direct_includes` folds a shared include into a single
+/// row rather than one per expansion of it.
+fn nested_unresolved_include_diagnostics(
+    unresolved: &[UnresolvedInclude],
+    root: FileId,
+) -> Vec<Diagnostic> {
+    let mut out: Vec<Diagnostic> = Vec::new();
+    let mut seen: Vec<(Span, &str)> = Vec::new();
+    for include in unresolved {
+        // Root-origin references are already carried by the preprocessor's own
+        // diagnostics; this is only about the ones that filter drops.
+        if include.site.file == root {
+            continue;
+        }
+        let Some(anchor) = include.via.first().filter(|site| site.file == root) else {
+            continue;
+        };
+        if seen.contains(&(anchor.span, include.name.as_str())) {
+            continue;
+        }
+        seen.push((anchor.span, include.name.as_str()));
+        out.push(
+            Diagnostic::warning(
+                "PREPROC007",
+                format!(
+                    "unresolvable include '{}' — symbols it declares cannot be checked \
+                     (reached through this include)",
+                    include.name
+                ),
+                *anchor,
+            )
+            .with_help(
+                "add its directory to include_paths (oxabl.toml [workspace.sources]) or pass -I"
+                    .to_string(),
+            ),
+        );
+    }
+    out
 }
 
 /// A [`FileSystem`] decorator that records the path of every successful `read`,

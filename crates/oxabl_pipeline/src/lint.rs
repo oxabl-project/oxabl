@@ -952,6 +952,108 @@ mod tests {
         );
     }
 
+    // An unresolvable include one level down elides symbols from this analysis
+    // exactly as a root-origin one does, so it has to explain itself here too.
+    // Before, the warning was dropped for belonging to the includer's buffer
+    // while the `undefined-symbol` cascade it explains still fired.
+    #[test]
+    fn a_nested_unresolvable_include_reports_against_the_root_include_site() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert("/proj/outer.i".into(), "{nowhere.i}\n");
+        let config = PipelineConfig {
+            include_paths: vec!["/proj".into()],
+            ..PipelineConfig::default()
+        };
+        let src = "{outer.i}\nv-gone = 1.\n";
+        let result = LintPipeline::new(&config, &fs).run(src);
+
+        let warnings: Vec<_> = result
+            .by_source(DiagnosticSource::Preproc)
+            .filter(|d| d.diagnostic.code.0 == "PREPROC007")
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected one nested PREPROC007, got {:?}",
+            codes(&result)
+        );
+        assert!(
+            warnings[0].diagnostic.message.contains("nowhere.i"),
+            "the warning must name the include that is missing, not the one \
+             it is anchored on: {}",
+            warnings[0].diagnostic.message
+        );
+        // Anchored on the root's own `{outer.i}`, which is the only span a
+        // reader of this file can be shown. A span inside `outer.i` would point
+        // at bytes that are not in this buffer at all.
+        let span = warnings[0].diagnostic.span.span;
+        assert_eq!((span.start, span.end), (0, 9));
+        assert_eq!(&src[span.start as usize..span.end as usize], "{outer.i}");
+        // The cascade it explains is correct ABL and still fires.
+        assert!(
+            result.all().any(|d| d.diagnostic.code.0 == "LINT0001"),
+            "the undefined-symbol findings are intended and must remain"
+        );
+    }
+
+    // Reaching one missing include through several paths must not multiply the
+    // warning at a site the reader would then see repeated.
+    #[test]
+    fn one_missing_include_reached_twice_reports_once_per_root_site() {
+        let mut fs = InMemoryFileSystem::new();
+        // Two references to the same missing include, inside one includer.
+        fs.insert("/proj/outer.i".into(), "{nowhere.i}\n{nowhere.i}\n");
+        fs.insert("/proj/other.i".into(), "{nowhere.i}\n");
+        let config = PipelineConfig {
+            include_paths: vec!["/proj".into()],
+            ..PipelineConfig::default()
+        };
+        let run = LintPipeline::new(&config, &fs);
+
+        let shared = run.run("{outer.i}\n");
+        assert_eq!(
+            shared
+                .by_source(DiagnosticSource::Preproc)
+                .filter(|d| d.diagnostic.code.0 == "PREPROC007")
+                .count(),
+            1,
+            "one root include site is one place to fix, so it warns once"
+        );
+
+        // Two *distinct* root sites are two distinct places to fix, so both are
+        // reported — deduping those away would hide one of them.
+        let separate = run.run("{outer.i}\n{other.i}\n");
+        let sites: Vec<_> = separate
+            .by_source(DiagnosticSource::Preproc)
+            .filter(|d| d.diagnostic.code.0 == "PREPROC007")
+            .map(|d| d.diagnostic.span.span.start)
+            .collect();
+        assert_eq!(sites, vec![0, 10], "got {sites:?}");
+    }
+
+    // A root-origin unresolvable include keeps reporting itself once, in its own
+    // words — the nested path must not add a second warning over the same bytes.
+    #[test]
+    fn a_root_level_unresolvable_include_is_unaffected() {
+        let fs = InMemoryFileSystem::new();
+        let config = PipelineConfig {
+            include_paths: vec!["/proj".into()],
+            ..PipelineConfig::default()
+        };
+        let result = LintPipeline::new(&config, &fs).run("{nowhere.i}\nv-gone = 1.\n");
+
+        let warnings: Vec<_> = result
+            .by_source(DiagnosticSource::Preproc)
+            .filter(|d| d.diagnostic.code.0 == "PREPROC007")
+            .collect();
+        assert_eq!(warnings.len(), 1, "got {:?}", codes(&result));
+        assert!(
+            !warnings[0].diagnostic.message.contains("reached through"),
+            "a root-origin failure is not reached through anything: {}",
+            warnings[0].diagnostic.message
+        );
+    }
+
     // A diagnostic whose origin is inside an expanded include is dropped;
     // root-origin spans are untouched.
     #[test]
