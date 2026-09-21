@@ -183,6 +183,85 @@ fn the_editor_joins_the_existing_daemon_and_leaves_desktop_connected() {
     );
 }
 
+/// Two daemon *processes* racing for one root: one serves it and the other exits with
+/// a message that names the state it actually found.
+///
+/// Across processes, so the lock is doing the work the kernel does for it rather than
+/// something a single process could have arranged. The loser must not claim the root
+/// is free, and it must not claim a daemon serves it when the winner is still binding
+/// — either sentence is fine, a wrong one is not.
+#[test]
+fn two_daemon_processes_racing_for_one_root_leave_one_serving() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+
+    let launch = || {
+        Command::new(OXABL_BIN)
+            .arg("daemon")
+            .arg(root.path())
+            .env("XDG_CACHE_HOME", cache.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("launch a daemon")
+    };
+    let first = ChildGuard(launch());
+    let second = ChildGuard(launch());
+
+    // Exactly one of the two is still running once the dust settles, and the other
+    // has failed with a refusal.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut candidates = [first, second];
+    let loser = loop {
+        let exited = candidates
+            .iter_mut()
+            .position(|child| child.0.try_wait().expect("poll a daemon").is_some());
+        if let Some(index) = exited {
+            break index;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "one of two daemons racing for one root must have been refused"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let status = candidates[loser].0.wait().expect("reap the loser");
+    assert!(!status.success(), "the refused daemon must fail");
+    let mut stderr = String::new();
+    candidates[loser]
+        .0
+        .stderr
+        .take()
+        .expect("the loser's stderr")
+        .read_to_string(&mut stderr)
+        .expect("read the loser's stderr");
+    assert!(
+        stderr.contains("already serves")
+            || stderr.contains("is starting")
+            || stderr.contains("start lock"),
+        "the refusal must name the state it found: {stderr}"
+    );
+
+    let winner = 1 - loser;
+    assert!(
+        candidates[winner]
+            .0
+            .try_wait()
+            .expect("poll the winner")
+            .is_none(),
+        "the winner must still be serving"
+    );
+    let registration = wait_for_registration(&registration_path);
+    assert_eq!(
+        registration.pid,
+        candidates[winner].0.id(),
+        "the registration must belong to the daemon that is still running"
+    );
+}
+
 #[test]
 fn a_daemon_exit_mid_session_is_reported_by_the_editor_shim() {
     let root = tempfile::tempdir().expect("a workspace root");

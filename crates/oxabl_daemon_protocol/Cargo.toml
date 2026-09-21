@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_daemon_protocol"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Wire types and contract version for the oxabl daemon's oxabl/* methods"
