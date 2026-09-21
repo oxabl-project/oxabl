@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v1.0.3...oxabl_semantic-v1.1.0) (2026-09-21)
+
+
+### Features
+
+* **schema:** ship the OpenEdge metaschema so `_file` and friends resolve ([#189](https://github.com/oxabl-project/oxabl/issues/189)) ([0367b60](https://github.com/oxabl-project/oxabl/commit/0367b608273df8e20bb6c89495e27f23d8e50da2)), closes [#151](https://github.com/oxabl-project/oxabl/issues/151)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_schema bumped from 0.2.3 to 0.3.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.2.3 to 0.3.0
+
 ## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v1.0.2...oxabl_semantic-v1.0.3) (2026-09-21)
 
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.3](https://github.com/oxabl-project/oxabl/compare/oxabl-v1.1.2...oxabl-v1.1.3) (2026-09-21)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_semantic bumped from 1.0.3 to 1.1.0
+    * oxabl_schema bumped from 0.2.3 to 0.3.0
+    * oxabl_analyze bumped from 1.1.2 to 1.1.3
+    * oxabl_pipeline bumped from 1.1.2 to 1.2.0
+    * oxabl_lint bumped from 1.0.3 to 1.1.0
+    * oxabl_lsp bumped from 1.0.1 to 1.0.2
+    * oxabl_daemon bumped from 0.3.0 to 0.3.1
+  * dev-dependencies
+    * oxabl_analyze bumped from 1.1.2 to 1.1.3
+    * oxabl_schema bumped from 0.2.3 to 0.3.0
+    * oxabl_pipeline bumped from 1.1.2 to 1.2.0
+
 ## [1.1.2](https://github.com/oxabl-project/oxabl/compare/oxabl-v1.1.1...oxabl-v1.1.2) (2026-09-21)
 
 
