@@ -11313,3 +11313,37 @@ fn skipped_empty_temp_table_span_covers_the_whole_statement() {
     assert_eq!(stmt.span.start, 0);
     assert_eq!(stmt.span.end as usize, source.len());
 }
+
+#[test]
+fn catch_and_finally_in_any_block_body_carry_real_spans() {
+    let sources = [
+        "PROCEDURE p:\n  MESSAGE 1.\n  FINALLY:\n    MESSAGE 2.\n  END FINALLY.\nEND PROCEDURE.",
+        "CLASS C:\n  METHOD PUBLIC VOID M():\n    MESSAGE 1.\n    CATCH e AS Progress.Lang.Error:\n      MESSAGE 2.\n    END CATCH.\n  END METHOD.\nEND CLASS.",
+        "DO:\n  MESSAGE 1.\n  CATCH e AS Progress.Lang.Error:\n    MESSAGE 2.\n  END CATCH.\nEND.",
+    ];
+    for source in sources {
+        let stmts = parse_program_stmts(source);
+        fn find<'a>(stmts: &'a [Statement], out: &mut Vec<&'a Statement>) {
+            for s in stmts {
+                match &s.kind {
+                    StatementKind::Catch { .. } | StatementKind::Finally { .. } => out.push(s),
+                    StatementKind::Procedure { body, .. }
+                    | StatementKind::Class { body, .. }
+                    | StatementKind::Method { body, .. }
+                    | StatementKind::Do { body, .. } => find(body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        find(&stmts, &mut found);
+        assert_eq!(found.len(), 1, "{source}");
+        let kw = if matches!(found[0].kind, StatementKind::Catch { .. }) {
+            "CATCH e"
+        } else {
+            "FINALLY"
+        };
+        assert_eq!(found[0].span.start as usize, source.find(kw).unwrap());
+        assert!(source[found[0].span.start as usize..found[0].span.end as usize].ends_with('.'));
+    }
+}

@@ -3362,15 +3362,6 @@ impl Parser<'_> {
         // parse body until END
         let mut body = Vec::new();
         while !self.check(Kind::End) && !self.at_end() {
-            // Handle CATCH and FINALLY blocks that may appear at the end of a PROCEDURE body
-            if self.check(Kind::Catch) {
-                body.push(self.parse_catch_block()?);
-                continue;
-            }
-            if self.check(Kind::Finally) {
-                body.push(self.parse_finally_block()?);
-                continue;
-            }
             self.parse_block_statement_recovering(&mut body);
         }
 
@@ -4369,16 +4360,6 @@ impl Parser<'_> {
             if self.at_end() {
                 break;
             }
-            // Check for CATCH block
-            if self.check(Kind::Catch) {
-                statements.push(self.parse_catch_block()?);
-                continue;
-            }
-            // Check for FINALLY block
-            if self.check(Kind::Finally) {
-                statements.push(self.parse_finally_block()?);
-                continue;
-            }
             // END is the block terminator — but END TRIGGERS. is a nested trigger
             // block terminator (from CREATE widget ASSIGN ... TRIGGERS:...END TRIGGERS.)
             // that can appear *inside* a DO/FOR/REPEAT body. Consume it and continue
@@ -4988,15 +4969,6 @@ impl Parser<'_> {
                     self.record_error(err);
                 }
                 break;
-            }
-            // Handle CATCH and FINALLY blocks that may appear at the end of a METHOD body
-            if self.check(Kind::Catch) {
-                body.push(self.parse_catch_block()?);
-                continue;
-            }
-            if self.check(Kind::Finally) {
-                body.push(self.parse_finally_block()?);
-                continue;
             }
             self.parse_block_statement_recovering(&mut body);
         }
