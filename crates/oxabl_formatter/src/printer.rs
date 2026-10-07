@@ -101,7 +101,7 @@ fn line_index(line_starts: &[usize], offset: usize) -> usize {
 
 /// Recursively record, per line: the shallowest statement starting on it
 /// (`starter`), the deepest statement covering it (`cover`, carrying that
-/// statement's first-line indent for the continuation delta), each node's
+/// statement's depth and first line for the continuation delta), each node's
 /// depth, and the last line + type keyword of every typed block (for
 /// `end_with_type`).
 #[allow(clippy::too_many_arguments)]
@@ -109,7 +109,6 @@ fn collect(
     stmt: &Statement,
     depth: usize,
     line_starts: &[usize],
-    leadings: &[usize],
     starter: &mut [Option<usize>],
     cover: &mut [Option<(usize, usize)>],
     depth_of: &mut HashMap<NodeId, usize>,
@@ -120,11 +119,10 @@ fn collect(
     let ll = line_index(line_starts, (stmt.span.end.saturating_sub(1)) as usize);
     depth_of.insert(stmt.id, depth);
     starter[fl] = Some(starter[fl].map_or(depth, |e| e.min(depth)));
-    let fleading = leadings[fl];
     for slot in cover[fl..=ll].iter_mut() {
         match slot {
             Some((d, _)) if *d >= depth => {}
-            _ => *slot = Some((depth, fleading)),
+            _ => *slot = Some((depth, fl)),
         }
     }
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
@@ -151,7 +149,6 @@ fn collect(
                 ch,
                 depth + delta,
                 line_starts,
-                leadings,
                 starter,
                 cover,
                 depth_of,
@@ -222,7 +219,6 @@ pub(crate) fn print(
             stmt,
             0,
             &line_starts,
-            &leadings,
             &mut starter,
             &mut cover,
             &mut depth_of,
@@ -238,8 +234,13 @@ pub(crate) fn print(
     for (l, slot) in indent.iter_mut().enumerate() {
         if let Some(d) = starter[l] {
             *slot = d * size;
-        } else if let Some((d, fleading)) = cover[l] {
-            let delta = d as isize * size as isize - fleading as isize;
+        } else if let Some((_, fl)) = cover[l] {
+            // Shift by what the covering statement's first line actually moves.
+            // That line sits at the shallowest depth of any statement starting
+            // on it, which is shallower than the statement's own depth when it
+            // follows `IF … THEN` or `ELSE` on the same line.
+            let first = starter[fl].unwrap_or(0);
+            let delta = first as isize * size as isize - leadings[fl] as isize;
             *slot = (leadings[l] as isize + delta).max(0) as usize;
         }
     }

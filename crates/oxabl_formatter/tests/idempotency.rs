@@ -161,3 +161,36 @@ fn multiline_token_shapes_are_idempotent() {
         }
     }
 }
+
+#[test]
+fn same_line_wrapped_branch_is_idempotent() {
+    // A branch statement that starts on the `IF … THEN` / `ELSE` line and wraps
+    // onto later lines must reach a fixpoint on the first pass: the
+    // continuation lines keep their offset from the branch's first line.
+    let cases = [
+        "IF TRUE THEN x = x +\n   \"y\".\n",
+        "IF TRUE THEN x = x +\n\"y\".\n",
+        "IF TRUE THEN x = x +\n                    \"y\".\n",
+        "DO:\n   IF lFlag THEN x = x +\n      \"y\".\nEND.\n",
+        "DO:\nDO:\nIF lFlag THEN x = x +\n\"y\".\nEND.\nEND.\n",
+        "IF TRUE THEN x = \"a\". ELSE x = x +\n    \"z\".\n",
+        "IF TRUE THEN\nx = 1.\nELSE x = x +\n\"z\".\n",
+        "IF a THEN x = 1.\nELSE IF b THEN x = 2.\nELSE x = x +\n\"z\".\n",
+        "IF TRUE THEN MESSAGE SUBSTITUTE(\n   \"a &1\", x\n).\n",
+        "IF TRUE THEN DO: x = x +\n\"y\". END.\n",
+    ];
+    for src in cases {
+        assert!(parse(src).is_ok(), "fixture must parse: {src:?}");
+        for (pname, base) in presets() {
+            for size in [3, 4] {
+                let mut style = base.clone();
+                style.indent_size = size;
+                let out1 = format(src, &parse(src), &style).unwrap();
+                let out2 = format(&out1, &parse(&out1), &style).unwrap();
+                assert_eq!(out1, out2, "{pname}/{size}: not idempotent for {src:?}");
+                let out3 = format(&out2, &parse(&out2), &style).unwrap();
+                assert_eq!(out2, out3, "{pname}/{size}: drifts for {src:?}");
+            }
+        }
+    }
+}
