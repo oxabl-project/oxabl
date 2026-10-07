@@ -2,7 +2,7 @@
 //! enumerating a statement's direct child statements, and identifying the type
 //! keyword a block's `END` takes under `end_with_type`.
 
-use oxabl_ast::{OnAction, OnKind, Statement, StatementKind};
+use oxabl_ast::{OnAction, OnKind, Span, Statement, StatementKind};
 
 /// Return the direct child statements of a block-bearing statement in source
 /// order, or `None` for a leaf (non-block) statement.
@@ -92,6 +92,10 @@ pub(crate) fn block_children(kind: &StatementKind) -> Option<Vec<&Statement>> {
         }
         _ => return None,
     }
+    // Signature parameters are synthesized `DefineParameter` statements with no
+    // source extent. They own no line, and their `0..0` span would sort them
+    // first and make them claim line 0.
+    out.retain(|s| s.span != Span::DUMMY);
     // Guarantee source order regardless of field declaration order.
     out.sort_by_key(|s| s.span.start);
     Some(out)

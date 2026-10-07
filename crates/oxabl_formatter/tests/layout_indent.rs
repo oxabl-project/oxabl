@@ -213,3 +213,40 @@ fn adjacent_comments_after_code_move_with_their_first_line() {
 fn else_with_trailing_comment_keeps_its_indent() {
     assert_stable("IF x THEN\n\tMESSAGE \"a\".\nELSE /* c */\n\tMESSAGE \"b\".\n");
 }
+
+// --- leading file comment ---------------------------------------------------
+
+#[test]
+fn leading_file_comment_stays_at_column_zero() {
+    assert_stable(
+        "/* header */\nCLASS Widget:\n\tMETHOD PUBLIC VOID M(INPUT piN AS INTEGER):\n\tEND METHOD.\nEND CLASS.\n",
+    );
+    assert_stable(
+        "/* header */\nCLASS Widget:\n\tCONSTRUCTOR PUBLIC Widget(INPUT piN AS INTEGER):\n\tEND CONSTRUCTOR.\nEND CLASS.\n",
+    );
+    assert_stable(
+        "/* header */\nFUNCTION f RETURNS INTEGER (INPUT piN AS INTEGER):\n\tRETURN 1.\nEND FUNCTION.\n",
+    );
+}
+
+#[test]
+fn leading_file_comments_with_using_stay_at_column_zero() {
+    assert_stable(
+        "/* header */\nUSING Progress.Lang.*.\n\n/* more */\n\nCLASS Widget:\n\tMETHOD PUBLIC VOID M(INPUT piN AS INTEGER):\n\t\tMESSAGE 1.\n\tEND METHOD.\nEND CLASS.\n",
+    );
+}
+
+#[test]
+fn leading_file_comment_before_procedure_with_parameters_stays_at_column_zero() {
+    assert_formats(
+        "\t\t/* header */\nPROCEDURE p:\n\tDEFINE INPUT PARAMETER pcX AS CHARACTER NO-UNDO.\nEND PROCEDURE.\n",
+        "/* header */\nPROCEDURE p:\n\tDEFINE INPUT PARAMETER pcX AS CHARACTER NO-UNDO.\nEND PROCEDURE.\n",
+    );
+}
+
+#[test]
+fn trigger_block_after_function_with_parameters_keeps_its_depth() {
+    assert_stable(
+        "FUNCTION f RETURNS INTEGER (INPUT piN AS INTEGER):\n\tRETURN 1.\nEND FUNCTION.\nON CHOOSE OF b IN FRAME fr\nDO:\n\tIF x THEN\n\t\tMESSAGE 1.\n\t/* c */\n\tMESSAGE 2.\nEND.\n",
+    );
+}
