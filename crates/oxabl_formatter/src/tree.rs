@@ -170,9 +170,16 @@ fn wrapper_child_delta(child: &Statement, is_else: bool) -> usize {
 /// Every child of an ordinary block nests `+1`. The prefix wrappers `If` /
 /// `Label` / `On` instead defer to [`wrapper_child_delta`], so a block branch
 /// (or an else-if) does not double-indent while a leaf branch still gets its
-/// level. Non-wrapper kinds delegate to [`block_children`], so any block kind
-/// added there is automatically covered here with the default `+1`.
-pub(crate) fn children_with_deltas(kind: &StatementKind) -> Option<Vec<(&Statement, usize)>> {
+/// level. A `CASE` branch body behaves like a wrapper branch: `WHEN … THEN` and
+/// `OTHERWISE` prefix their statement, so one that starts on a later line
+/// (`starts_own_line`) nests one level past the `WHEN`, unless it is a block
+/// that supplies its own level. Other kinds delegate to [`block_children`], so
+/// any block kind added there is automatically covered here with the default
+/// `+1`.
+pub(crate) fn children_with_deltas<'a>(
+    kind: &'a StatementKind,
+    starts_own_line: &dyn Fn(&Statement) -> bool,
+) -> Option<Vec<(&'a Statement, usize)>> {
     let mut out: Vec<(&Statement, usize)> = Vec::new();
     match kind {
         StatementKind::If {
@@ -191,6 +198,12 @@ pub(crate) fn children_with_deltas(kind: &StatementKind) -> Option<Vec<(&Stateme
         StatementKind::On { kind: on_kind } => {
             let action = on_action(on_kind)?;
             out.push((action, wrapper_child_delta(action, false)));
+        }
+        StatementKind::Case { .. } => {
+            for ch in block_children(kind)? {
+                let own_line = starts_own_line(ch) && !is_self_delimiting_block(&ch.kind);
+                out.push((ch, 1 + usize::from(own_line)));
+            }
         }
         _ => {
             for ch in block_children(kind)? {

@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 
-use oxabl_ast::{NodeId, Statement};
+use oxabl_ast::{NodeId, Statement, StatementKind};
 use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_style::StyleGuide;
 
@@ -114,6 +114,8 @@ fn collect(
     depth_of: &mut HashMap<NodeId, usize>,
     typed_ends: &mut Vec<(usize, &'static str)>,
     block_ends: &mut Vec<(usize, usize)>,
+    head_depth: &mut HashMap<NodeId, usize>,
+    toks: &[Token],
 ) {
     let fl = line_index(line_starts, stmt.span.start as usize);
     let ll = line_index(line_starts, (stmt.span.end.saturating_sub(1)) as usize);
@@ -128,7 +130,20 @@ fn collect(
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
         typed_ends.push((ll, ty));
     }
-    if let Some(children) = children_with_deltas(&stmt.kind) {
+    // A statement starts its own line when the token before it (comments aside)
+    // ends on an earlier line, e.g. the `THEN` of a `WHEN` branch.
+    let starts_own_line = |s: &Statement| {
+        let at = toks.partition_point(|t| t.start < s.span.start as usize);
+        toks[..at]
+            .iter()
+            .rev()
+            .find(|t| t.kind != Kind::Comment)
+            .is_some_and(|t| {
+                line_index(line_starts, t.end.saturating_sub(1))
+                    < line_index(line_starts, s.span.start as usize)
+            })
+    };
+    if let Some(children) = children_with_deltas(&stmt.kind, &starts_own_line) {
         // A block's closing `END` line is a structural line that must snap to the
         // block's own depth, not delta-preserve like an intra-statement
         // continuation. Prefix wrappers (`IF … THEN`, `ELSE`, a label, `ON …`)
@@ -144,7 +159,11 @@ fn collect(
         // is itself a self-delimiting block or an else-if (the block's own
         // `DO:`/`END` supplies the level), so `IF x THEN DO:` is one level, not
         // two — while a leaf or a THEN-nested bare `IF` still gets its +1.
+        let is_case = matches!(stmt.kind, StatementKind::Case { .. });
         for (ch, delta) in children {
+            if is_case {
+                head_depth.insert(ch.id, depth + 1);
+            }
             collect(
                 ch,
                 depth + delta,
@@ -154,6 +173,8 @@ fn collect(
                 depth_of,
                 typed_ends,
                 block_ends,
+                head_depth,
+                toks,
             );
         }
     }
@@ -213,6 +234,7 @@ pub(crate) fn print(
     let mut depth_of: HashMap<NodeId, usize> = HashMap::new();
     let mut typed_ends: Vec<(usize, &'static str)> = Vec::new();
     let mut block_ends: Vec<(usize, usize)> = Vec::new();
+    let mut head_depth: HashMap<NodeId, usize> = HashMap::new();
 
     for stmt in &program.statements {
         collect(
@@ -224,6 +246,8 @@ pub(crate) fn print(
             &mut depth_of,
             &mut typed_ends,
             &mut block_ends,
+            &mut head_depth,
+            toks,
         );
     }
 
@@ -291,8 +315,26 @@ pub(crate) fn print(
     // comment of the block body — must not drag the code line to the comment's
     // depth. Skip those lines; the code's indent wins (matching the `block_ends`
     // guard above).
+    //
+    // The same holds for a comment that follows code which is not a statement of
+    // its own, such as `ELSE /* x */` or `WHEN 1 THEN /* x */`: it rides on that
+    // line and must not re-indent it.
+    let code_before_on_line = |span_start: usize| {
+        let at = toks.partition_point(|t| t.start < span_start);
+        toks[..at]
+            .iter()
+            .rev()
+            .find(|t| t.kind != Kind::Comment)
+            .is_some_and(|t| {
+                line_index(&line_starts, t.end.saturating_sub(1))
+                    == line_index(&line_starts, span_start)
+            })
+    };
     let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, depth: usize| {
         let cfl = line_index(&line_starts, span_start);
+        if code_before_on_line(span_start) {
+            return;
+        }
         let cll = line_index(&line_starts, span_end.saturating_sub(1));
         let delta = depth as isize * size as isize - leadings[cfl] as isize;
         for l in cfl..=cll {
@@ -305,7 +347,19 @@ pub(crate) fn print(
     for (id, nc) in cmap.iter_nodes() {
         let d = *depth_of.get(&id).unwrap_or(&0);
         for c in &nc.leading {
-            set_comment(&mut indent, c.span.start as usize, c.span.end as usize, d);
+            // A comment ahead of the `WHEN` / `OTHERWISE` that introduces a
+            // branch statement sits at the branch's own level, not the
+            // statement's.
+            let end = c.span.end as usize;
+            let before_branch_head = head_depth.get(&id).filter(|_| {
+                let at = toks.partition_point(|t| t.start < end);
+                toks[at..]
+                    .iter()
+                    .find(|t| t.kind != Kind::Comment)
+                    .is_some_and(|t| matches!(t.kind, Kind::When | Kind::Otherwise))
+            });
+            let depth = before_branch_head.copied().unwrap_or(d);
+            set_comment(&mut indent, c.span.start as usize, end, depth);
         }
         for c in &nc.dangling {
             set_comment(

@@ -155,3 +155,61 @@ fn misindented_body_after_fields_phrase_is_reindented() {
         "FOR EACH customer FIELDS (name) NO-LOCK WHERE customer.name EQ \"a\":\n\tMESSAGE customer.name.\nEND.\n",
     );
 }
+
+// --- statement after WHEN … THEN / OTHERWISE --------------------------------
+
+#[test]
+fn statement_on_the_line_after_when_then_and_otherwise_nests_one_level() {
+    assert_stable(
+        "CASE i:\n\tWHEN 1 THEN\n\t\tMESSAGE \"one\".\n\tOTHERWISE\n\t\tMESSAGE \"other\".\nEND CASE.\n",
+    );
+}
+
+#[test]
+fn misindented_statement_after_when_then_is_reindented() {
+    assert_formats(
+        "CASE i:\n\tWHEN 1 THEN\nMESSAGE \"one\".\n\tOTHERWISE\n\t\t\t\tMESSAGE \"other\".\nEND CASE.\n",
+        "CASE i:\n\tWHEN 1 THEN\n\t\tMESSAGE \"one\".\n\tOTHERWISE\n\t\tMESSAGE \"other\".\nEND CASE.\n",
+    );
+}
+
+#[test]
+fn same_line_and_block_when_branches_are_unchanged() {
+    assert_stable(
+        "CASE i:\n\tWHEN 1 THEN MESSAGE \"one\".\n\tWHEN 2 THEN DO:\n\t\tMESSAGE \"two\".\n\tEND.\n\tOTHERWISE MESSAGE \"other\".\nEND CASE.\n",
+    );
+}
+
+#[test]
+fn when_branch_with_trailing_comment_or_wrapped_statement_stays_on_grid() {
+    assert_stable(
+        "CASE i:\n\tWHEN 1 THEN /* c */\n\t\tMESSAGE \"one\".\n\tOTHERWISE /* o */\n\t\tMESSAGE \"other\"\n\t\t\t+ \"x\".\nEND CASE.\n",
+    );
+}
+
+#[test]
+fn nested_case_and_when_if_branches_nest_one_level() {
+    assert_stable(
+        "CASE i:\n\tWHEN 1 THEN\n\t\tIF j EQ 1 THEN\n\t\t\tMESSAGE \"a\".\n\tWHEN 2 THEN DO:\n\t\tCASE j:\n\t\t\tWHEN 1 THEN\n\t\t\t\tMESSAGE \"b\".\n\t\t\tOTHERWISE\n\t\t\t\tMESSAGE \"c\".\n\t\tEND CASE.\n\tEND.\nEND CASE.\n",
+    );
+}
+
+#[test]
+fn comments_around_when_branches_sit_at_their_own_level() {
+    assert_stable(
+        "CASE i:\n\t/* before first */\n\tWHEN 1 THEN\n\t\t/* about one */\n\t\tMESSAGE \"one\".\n\t/* before second */\n\tWHEN 2 THEN MESSAGE \"two\".\n\t/* before otherwise */\n\tOTHERWISE\n\t\tMESSAGE \"other\".\nEND CASE.\n",
+    );
+}
+
+#[test]
+fn adjacent_comments_after_code_move_with_their_first_line() {
+    assert_formats(
+        "DO:\n\tMESSAGE 1.\n/* a *//* b\n   continued */\n\tMESSAGE 2.\nEND.\n",
+        "DO:\n\tMESSAGE 1.\n\t/* a *//* b\n\t   continued */\n\tMESSAGE 2.\nEND.\n",
+    );
+}
+
+#[test]
+fn else_with_trailing_comment_keeps_its_indent() {
+    assert_stable("IF x THEN\n\tMESSAGE \"a\".\nELSE /* c */\n\tMESSAGE \"b\".\n");
+}
