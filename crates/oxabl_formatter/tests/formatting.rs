@@ -505,3 +505,18 @@ fn table_candidate_forms_format_unchanged() {
         )
     );
 }
+
+#[test]
+fn same_line_wrapped_branch_keeps_its_continuation_offset() {
+    let style = StyleGuide::default_base();
+    // The branch starts on the `THEN` line, so its continuation line keeps its
+    // offset from that line instead of gaining the branch's nesting level.
+    assert_eq!(
+        fmt("IF TRUE THEN x = x +\n   \"y\".\n", &style),
+        "IF TRUE THEN x = x +\n   \"y\".\n"
+    );
+    assert_eq!(
+        fmt("DO:\nIF c THEN x = x +\n\"y\".\nEND.\n", &style),
+        "DO:\n    IF c THEN x = x +\n    \"y\".\nEND.\n"
+    );
+}

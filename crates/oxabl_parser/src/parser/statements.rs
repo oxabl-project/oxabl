@@ -2835,6 +2835,9 @@ impl Parser<'_> {
         // preprop refs, adjacent preprop+identifier compounds, and hyphenated names.
         let buffer = self.parse_qualified_identifier()?;
 
+        // optional FIELDS / EXCEPT phrase
+        self.skip_fields_phrase();
+
         // optional OF clause
         let of_relation = if self.check(Kind::Of) {
             self.advance();
@@ -2842,6 +2845,7 @@ impl Parser<'_> {
         } else {
             None
         };
+        self.skip_fields_phrase();
 
         // Lock type may appear before or after WHERE (ABL is flexible)
         let lock_type_pre = self.parse_lock_type();
@@ -2922,6 +2926,7 @@ impl Parser<'_> {
             if Self::can_be_identifier(self.peek().kind) {
                 self.advance();
             }
+            self.skip_fields_phrase();
             // optional OF clause (may appear before or after lock type)
             if self.check(Kind::Of) {
                 self.advance();
@@ -3362,15 +3367,6 @@ impl Parser<'_> {
         // parse body until END
         let mut body = Vec::new();
         while !self.check(Kind::End) && !self.at_end() {
-            // Handle CATCH and FINALLY blocks that may appear at the end of a PROCEDURE body
-            if self.check(Kind::Catch) {
-                body.push(self.parse_catch_block()?);
-                continue;
-            }
-            if self.check(Kind::Finally) {
-                body.push(self.parse_finally_block()?);
-                continue;
-            }
             self.parse_block_statement_recovering(&mut body);
         }
 
@@ -4369,16 +4365,6 @@ impl Parser<'_> {
             if self.at_end() {
                 break;
             }
-            // Check for CATCH block
-            if self.check(Kind::Catch) {
-                statements.push(self.parse_catch_block()?);
-                continue;
-            }
-            // Check for FINALLY block
-            if self.check(Kind::Finally) {
-                statements.push(self.parse_finally_block()?);
-                continue;
-            }
             // END is the block terminator — but END TRIGGERS. is a nested trigger
             // block terminator (from CREATE widget ASSIGN ... TRIGGERS:...END TRIGGERS.)
             // that can appear *inside* a DO/FOR/REPEAT body. Consume it and continue
@@ -4490,6 +4476,30 @@ impl Parser<'_> {
         );
 
         Ok(self.stmt(StatementKind::Finally { body }))
+    }
+
+    /// Skip an optional `FIELDS [(field ...)]` or `EXCEPT [(field ...)]` field
+    /// list of a record phrase. The field names are not modelled.
+    fn skip_fields_phrase(&mut self) {
+        if !self.check(Kind::Fields) && !self.check(Kind::Except) {
+            return;
+        }
+        self.advance(); // consume FIELDS / EXCEPT
+        if !self.check(Kind::LeftParen) {
+            return;
+        }
+        let mut depth = 0usize;
+        while !self.at_end() {
+            match self.peek().kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => depth -= 1,
+                _ => {}
+            }
+            self.advance();
+            if depth == 0 {
+                break;
+            }
+        }
     }
 
     /// Parses an optional lock type (NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK)
@@ -4988,15 +4998,6 @@ impl Parser<'_> {
                     self.record_error(err);
                 }
                 break;
-            }
-            // Handle CATCH and FINALLY blocks that may appear at the end of a METHOD body
-            if self.check(Kind::Catch) {
-                body.push(self.parse_catch_block()?);
-                continue;
-            }
-            if self.check(Kind::Finally) {
-                body.push(self.parse_finally_block()?);
-                continue;
             }
             self.parse_block_statement_recovering(&mut body);
         }
@@ -6475,7 +6476,12 @@ impl Parser<'_> {
 
         // DO...END block
         if self.check(Kind::Do) {
-            let block = self.parse_do_statement()?;
+            let lo = self.peek().start as u32;
+            let mut block = self.parse_do_statement()?;
+            block.span = Span {
+                start: lo,
+                end: self.prev_end().max(lo),
+            };
             return Ok(OnAction::Block(Box::new(block)));
         }
 

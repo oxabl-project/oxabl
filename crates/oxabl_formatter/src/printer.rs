@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 
-use oxabl_ast::{NodeId, Statement};
+use oxabl_ast::{NodeId, Statement, StatementKind};
 use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_style::StyleGuide;
 
@@ -101,7 +101,7 @@ fn line_index(line_starts: &[usize], offset: usize) -> usize {
 
 /// Recursively record, per line: the shallowest statement starting on it
 /// (`starter`), the deepest statement covering it (`cover`, carrying that
-/// statement's first-line indent for the continuation delta), each node's
+/// statement's depth and first line for the continuation delta), each node's
 /// depth, and the last line + type keyword of every typed block (for
 /// `end_with_type`).
 #[allow(clippy::too_many_arguments)]
@@ -109,28 +109,41 @@ fn collect(
     stmt: &Statement,
     depth: usize,
     line_starts: &[usize],
-    leadings: &[usize],
     starter: &mut [Option<usize>],
     cover: &mut [Option<(usize, usize)>],
     depth_of: &mut HashMap<NodeId, usize>,
     typed_ends: &mut Vec<(usize, &'static str)>,
     block_ends: &mut Vec<(usize, usize)>,
+    head_depth: &mut HashMap<NodeId, usize>,
+    toks: &[Token],
 ) {
     let fl = line_index(line_starts, stmt.span.start as usize);
     let ll = line_index(line_starts, (stmt.span.end.saturating_sub(1)) as usize);
     depth_of.insert(stmt.id, depth);
     starter[fl] = Some(starter[fl].map_or(depth, |e| e.min(depth)));
-    let fleading = leadings[fl];
     for slot in cover[fl..=ll].iter_mut() {
         match slot {
             Some((d, _)) if *d >= depth => {}
-            _ => *slot = Some((depth, fleading)),
+            _ => *slot = Some((depth, fl)),
         }
     }
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
         typed_ends.push((ll, ty));
     }
-    if let Some(children) = children_with_deltas(&stmt.kind) {
+    // A statement starts its own line when the token before it (comments aside)
+    // ends on an earlier line, e.g. the `THEN` of a `WHEN` branch.
+    let starts_own_line = |s: &Statement| {
+        let at = toks.partition_point(|t| t.start < s.span.start as usize);
+        toks[..at]
+            .iter()
+            .rev()
+            .find(|t| t.kind != Kind::Comment)
+            .is_some_and(|t| {
+                line_index(line_starts, t.end.saturating_sub(1))
+                    < line_index(line_starts, s.span.start as usize)
+            })
+    };
+    if let Some(children) = children_with_deltas(&stmt.kind, &starts_own_line) {
         // A block's closing `END` line is a structural line that must snap to the
         // block's own depth, not delta-preserve like an intra-statement
         // continuation. Prefix wrappers (`IF … THEN`, `ELSE`, a label, `ON …`)
@@ -146,17 +159,22 @@ fn collect(
         // is itself a self-delimiting block or an else-if (the block's own
         // `DO:`/`END` supplies the level), so `IF x THEN DO:` is one level, not
         // two — while a leaf or a THEN-nested bare `IF` still gets its +1.
+        let is_case = matches!(stmt.kind, StatementKind::Case { .. });
         for (ch, delta) in children {
+            if is_case {
+                head_depth.insert(ch.id, depth + 1);
+            }
             collect(
                 ch,
                 depth + delta,
                 line_starts,
-                leadings,
                 starter,
                 cover,
                 depth_of,
                 typed_ends,
                 block_ends,
+                head_depth,
+                toks,
             );
         }
     }
@@ -216,19 +234,43 @@ pub(crate) fn print(
     let mut depth_of: HashMap<NodeId, usize> = HashMap::new();
     let mut typed_ends: Vec<(usize, &'static str)> = Vec::new();
     let mut block_ends: Vec<(usize, usize)> = Vec::new();
+    let mut head_depth: HashMap<NodeId, usize> = HashMap::new();
 
     for stmt in &program.statements {
         collect(
             stmt,
             0,
             &line_starts,
-            &leadings,
             &mut starter,
             &mut cover,
             &mut depth_of,
             &mut typed_ends,
             &mut block_ends,
+            &mut head_depth,
+            toks,
         );
+    }
+
+    // Tab-sensitive lines: the compiler expands a TAB inside a quoted literal to
+    // the next 8-column stop measured from the *source line start*, so the
+    // literal's value depends on every column before it on that line. Record, per
+    // line, the byte offset of the last such TAB. A line with one keeps its
+    // leading whitespace verbatim (like a protected line), and no edit that
+    // changes the line's width before that TAB may be applied.
+    let mut tab_at: Vec<Option<usize>> = vec![None; n];
+    for t in toks {
+        if t.kind != Kind::StringLiteral {
+            continue;
+        }
+        for (i, _) in source.as_bytes()[t.start..t.end]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\t')
+        {
+            let at = t.start + i;
+            let li = line_index(&line_starts, at);
+            tab_at[li] = tab_at[li].max(Some(at));
+        }
     }
 
     // Absolute indent per line from the structural walk. Start-lines snap to
@@ -238,8 +280,18 @@ pub(crate) fn print(
     for (l, slot) in indent.iter_mut().enumerate() {
         if let Some(d) = starter[l] {
             *slot = d * size;
-        } else if let Some((d, fleading)) = cover[l] {
-            let delta = d as isize * size as isize - fleading as isize;
+        } else if let Some((_, fl)) = cover[l] {
+            // Shift by what the covering statement's first line actually moves.
+            // That line sits at the shallowest depth of any statement starting
+            // on it, which is shallower than the statement's own depth when it
+            // follows `IF … THEN` or `ELSE` on the same line.
+            // A tab-sensitive first line keeps its indent, so it moves by nothing.
+            let first = if tab_at[fl].is_some() {
+                leadings[fl]
+            } else {
+                starter[fl].unwrap_or(0) * size
+            };
+            let delta = first as isize - leadings[fl] as isize;
             *slot = (leadings[l] as isize + delta).max(0) as usize;
         }
     }
@@ -263,8 +315,26 @@ pub(crate) fn print(
     // comment of the block body — must not drag the code line to the comment's
     // depth. Skip those lines; the code's indent wins (matching the `block_ends`
     // guard above).
+    //
+    // The same holds for a comment that follows code which is not a statement of
+    // its own, such as `ELSE /* x */` or `WHEN 1 THEN /* x */`: it rides on that
+    // line and must not re-indent it.
+    let code_before_on_line = |span_start: usize| {
+        let at = toks.partition_point(|t| t.start < span_start);
+        toks[..at]
+            .iter()
+            .rev()
+            .find(|t| t.kind != Kind::Comment)
+            .is_some_and(|t| {
+                line_index(&line_starts, t.end.saturating_sub(1))
+                    == line_index(&line_starts, span_start)
+            })
+    };
     let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, depth: usize| {
         let cfl = line_index(&line_starts, span_start);
+        if code_before_on_line(span_start) {
+            return;
+        }
         let cll = line_index(&line_starts, span_end.saturating_sub(1));
         let delta = depth as isize * size as isize - leadings[cfl] as isize;
         for l in cfl..=cll {
@@ -277,7 +347,19 @@ pub(crate) fn print(
     for (id, nc) in cmap.iter_nodes() {
         let d = *depth_of.get(&id).unwrap_or(&0);
         for c in &nc.leading {
-            set_comment(&mut indent, c.span.start as usize, c.span.end as usize, d);
+            // A comment ahead of the `WHEN` / `OTHERWISE` that introduces a
+            // branch statement sits at the branch's own level, not the
+            // statement's.
+            let end = c.span.end as usize;
+            let before_branch_head = head_depth.get(&id).filter(|_| {
+                let at = toks.partition_point(|t| t.start < end);
+                toks[at..]
+                    .iter()
+                    .find(|t| t.kind != Kind::Comment)
+                    .is_some_and(|t| matches!(t.kind, Kind::When | Kind::Otherwise))
+            });
+            let depth = before_branch_head.copied().unwrap_or(d);
+            set_comment(&mut indent, c.span.start as usize, end, depth);
         }
         for c in &nc.dangling {
             set_comment(
@@ -320,7 +402,7 @@ pub(crate) fn print(
     // line-index binary searches behind a cheap newline scan of the token's
     // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
     let src_bytes = source.as_bytes();
-    let mut protected = vec![false; n];
+    let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
     for t in toks {
         if t.kind == Kind::Eof {
             break;
@@ -361,6 +443,9 @@ pub(crate) fn print(
             if t.start < cs {
                 continue;
             }
+            if new_text.len() != raw.len() && tab_at[li].is_some_and(|tab| t.start < tab) {
+                continue;
+            }
             let col = t.start - cs;
             let len = t.end - t.start;
             if col + len <= content[li].len() {
@@ -380,6 +465,9 @@ pub(crate) fn print(
     // consistent with the rest.
     if style.end_with_type {
         for (line, ty) in &typed_ends {
+            if tab_at[*line].is_some() {
+                continue;
+            }
             let cased = cased_type(ty, style);
             if let Some(updated) = apply_end_type(&content[*line], &cased) {
                 content[*line] = updated;
