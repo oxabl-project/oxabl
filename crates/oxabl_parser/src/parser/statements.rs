@@ -6476,7 +6476,12 @@ impl Parser<'_> {
 
         // DO...END block
         if self.check(Kind::Do) {
-            let block = self.parse_do_statement()?;
+            let lo = self.peek().start as u32;
+            let mut block = self.parse_do_statement()?;
+            block.span = Span {
+                start: lo,
+                end: self.prev_end().max(lo),
+            };
             return Ok(OnAction::Block(Box::new(block)));
         }
 

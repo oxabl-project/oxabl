@@ -11387,3 +11387,22 @@ fn catch_and_finally_in_any_block_body_carry_real_spans() {
         assert!(source[found[0].span.start as usize..found[0].span.end as usize].ends_with('.'));
     }
 }
+
+#[test]
+fn on_trigger_do_block_carries_its_real_span() {
+    let source = "ON CHOOSE OF b IN FRAME f DO:\n  MESSAGE 1.\nEND.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 1);
+    match &stmts[0].kind {
+        StatementKind::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => match action {
+            OnAction::Block(block) => {
+                assert_eq!(block.span.start as usize, source.find("DO:").unwrap());
+                assert_eq!(block.span.end as usize, source.len());
+            }
+            other => panic!("expected a block action, got {other:?}"),
+        },
+        other => panic!("expected ON, got {other:?}"),
+    }
+}
