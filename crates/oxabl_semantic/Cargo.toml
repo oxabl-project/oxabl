@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_semantic"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 license = "MIT"
 description = "Semantic analysis for Progress ABL: symbol table, scope tree, resolution, and types"
@@ -19,7 +19,7 @@ smallvec = { version = "1", features = ["union"] }
 rust_decimal = "1.40.0"
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.1" }
-oxabl_parser = { path = "../oxabl_parser", version = "1.0.3" }
+oxabl_parser = { path = "../oxabl_parser", version = "1.0.4" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.3.0", features = ["test-support"] }
 
 [[bench]]

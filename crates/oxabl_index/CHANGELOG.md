@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v1.0.2...oxabl_index-v1.0.3) (2026-10-07)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 1.0.3 to 1.0.4
+    * oxabl_semantic bumped from 1.1.0 to 1.1.1
+
 ## [1.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v1.0.1...oxabl_index-v1.0.2) (2026-09-21)
 
 
