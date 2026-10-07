@@ -18,6 +18,11 @@
 //!   `Kind::End` (the legal `end_with_type` transform) is not a mismatch (Fable
 //!   finding 2), so a bare-`END` file under a strict preset does not bail.
 //!
+//! - **TAB columns in string literals** → the compiler expands a TAB inside a
+//!   quoted literal to the next 8-column stop measured from the source line
+//!   start, so the compiled value depends on the TAB's column. Each such TAB's
+//!   column modulo 8 must be unchanged, or the guard trips.
+//!
 //! **Known blind spot (documented):** comment loss/corruption is invisible here
 //! because comments are trivia. U2's no-loss/no-duplication invariant carries
 //! that guarantee instead.
@@ -74,6 +79,29 @@ fn is_end_type_keyword(kind: Kind) -> bool {
     )
 }
 
+/// Column of every TAB byte inside a string literal, modulo 8 (the compiler's
+/// tab stop), in source order. Two layouts expand every such literal to the same
+/// value iff these sequences are equal.
+fn literal_tab_columns(src: &str, toks: &[Token]) -> Vec<u8> {
+    let bytes = src.as_bytes();
+    let mut out = Vec::new();
+    for t in toks.iter().filter(|t| t.kind == Kind::StringLiteral) {
+        for (i, _) in bytes[t.start..t.end]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\t')
+        {
+            let at = t.start + i;
+            let line_start = bytes[..at]
+                .iter()
+                .rposition(|b| *b == b'\n')
+                .map_or(0, |p| p + 1);
+            out.push(((at - line_start) % 8) as u8);
+        }
+    }
+    out
+}
+
 /// Build the comparison stream from `src` and a pre-computed token slice,
 /// dropping trivia. Borrows the tokens rather than owning them so the caller can
 /// share one tokenization of the input across the printer and this guard.
@@ -86,10 +114,6 @@ fn stream_from<'a>(src: &'a str, toks: &[Token]) -> Vec<Tok<'a>> {
             value: t.value.clone(),
         })
         .collect()
-}
-
-fn stream(src: &str) -> Vec<Tok<'_>> {
-    stream_from(src, &tokenize(src))
 }
 
 fn tokens_equal(a: &Tok, b: &Tok) -> bool {
@@ -113,7 +137,7 @@ fn tokens_equal(a: &Tok, b: &Tok) -> bool {
 /// input tokens); this two-sided variant backs the guard's own unit tests.
 #[cfg(test)]
 pub(crate) fn preserves(input: &str, candidate: &str) -> bool {
-    compare(&stream(input), &stream(candidate))
+    preserves_with_input_tokens(input, &tokenize(input), candidate)
 }
 
 /// Like [`preserves`], but the input side reuses a token slice already computed
@@ -125,7 +149,12 @@ pub(crate) fn preserves_with_input_tokens(
     input_tokens: &[Token],
     candidate: &str,
 ) -> bool {
-    compare(&stream_from(input, input_tokens), &stream(candidate))
+    let candidate_tokens = tokenize(candidate);
+    compare(
+        &stream_from(input, input_tokens),
+        &stream_from(candidate, &candidate_tokens),
+    ) && literal_tab_columns(input, input_tokens)
+        == literal_tab_columns(candidate, &candidate_tokens)
 }
 
 /// Kind-aware comparison of two non-trivia token streams under the KTD4 rules.
@@ -216,6 +245,17 @@ mod tests {
             "PROCEDURE foo:\n  MESSAGE \"x\".\nEND.",
             "PROCEDURE foo:\n  MESSAGE \"x\".\nEND PROCEDURE."
         ));
+    }
+
+    #[test]
+    fn shifting_a_tab_literal_off_its_tab_stop_trips() {
+        assert!(!preserves("c = \"a\tb\".", "   c = \"a\tb\"."));
+        assert!(!preserves("c = 'a\tb'.", "   c = 'a\tb'."));
+    }
+
+    #[test]
+    fn shifting_a_tab_literal_by_a_tab_stop_passes() {
+        assert!(preserves("c = \"a\tb\".", "        c = \"a\tb\"."));
     }
 
     #[test]

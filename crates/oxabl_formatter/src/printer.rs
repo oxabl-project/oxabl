@@ -101,7 +101,7 @@ fn line_index(line_starts: &[usize], offset: usize) -> usize {
 
 /// Recursively record, per line: the shallowest statement starting on it
 /// (`starter`), the deepest statement covering it (`cover`, carrying that
-/// statement's first-line indent for the continuation delta), each node's
+/// statement's depth and first line for the continuation delta), each node's
 /// depth, and the last line + type keyword of every typed block (for
 /// `end_with_type`).
 #[allow(clippy::too_many_arguments)]
@@ -109,7 +109,6 @@ fn collect(
     stmt: &Statement,
     depth: usize,
     line_starts: &[usize],
-    leadings: &[usize],
     starter: &mut [Option<usize>],
     cover: &mut [Option<(usize, usize)>],
     depth_of: &mut HashMap<NodeId, usize>,
@@ -120,11 +119,10 @@ fn collect(
     let ll = line_index(line_starts, (stmt.span.end.saturating_sub(1)) as usize);
     depth_of.insert(stmt.id, depth);
     starter[fl] = Some(starter[fl].map_or(depth, |e| e.min(depth)));
-    let fleading = leadings[fl];
     for slot in cover[fl..=ll].iter_mut() {
         match slot {
             Some((d, _)) if *d >= depth => {}
-            _ => *slot = Some((depth, fleading)),
+            _ => *slot = Some((depth, fl)),
         }
     }
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
@@ -151,7 +149,6 @@ fn collect(
                 ch,
                 depth + delta,
                 line_starts,
-                leadings,
                 starter,
                 cover,
                 depth_of,
@@ -222,13 +219,34 @@ pub(crate) fn print(
             stmt,
             0,
             &line_starts,
-            &leadings,
             &mut starter,
             &mut cover,
             &mut depth_of,
             &mut typed_ends,
             &mut block_ends,
         );
+    }
+
+    // Tab-sensitive lines: the compiler expands a TAB inside a quoted literal to
+    // the next 8-column stop measured from the *source line start*, so the
+    // literal's value depends on every column before it on that line. Record, per
+    // line, the byte offset of the last such TAB. A line with one keeps its
+    // leading whitespace verbatim (like a protected line), and no edit that
+    // changes the line's width before that TAB may be applied.
+    let mut tab_at: Vec<Option<usize>> = vec![None; n];
+    for t in toks {
+        if t.kind != Kind::StringLiteral {
+            continue;
+        }
+        for (i, _) in source.as_bytes()[t.start..t.end]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\t')
+        {
+            let at = t.start + i;
+            let li = line_index(&line_starts, at);
+            tab_at[li] = tab_at[li].max(Some(at));
+        }
     }
 
     // Absolute indent per line from the structural walk. Start-lines snap to
@@ -238,8 +256,18 @@ pub(crate) fn print(
     for (l, slot) in indent.iter_mut().enumerate() {
         if let Some(d) = starter[l] {
             *slot = d * size;
-        } else if let Some((d, fleading)) = cover[l] {
-            let delta = d as isize * size as isize - fleading as isize;
+        } else if let Some((_, fl)) = cover[l] {
+            // Shift by what the covering statement's first line actually moves.
+            // That line sits at the shallowest depth of any statement starting
+            // on it, which is shallower than the statement's own depth when it
+            // follows `IF … THEN` or `ELSE` on the same line.
+            // A tab-sensitive first line keeps its indent, so it moves by nothing.
+            let first = if tab_at[fl].is_some() {
+                leadings[fl]
+            } else {
+                starter[fl].unwrap_or(0) * size
+            };
+            let delta = first as isize - leadings[fl] as isize;
             *slot = (leadings[l] as isize + delta).max(0) as usize;
         }
     }
@@ -320,7 +348,7 @@ pub(crate) fn print(
     // line-index binary searches behind a cheap newline scan of the token's
     // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
     let src_bytes = source.as_bytes();
-    let mut protected = vec![false; n];
+    let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
     for t in toks {
         if t.kind == Kind::Eof {
             break;
@@ -361,6 +389,9 @@ pub(crate) fn print(
             if t.start < cs {
                 continue;
             }
+            if new_text.len() != raw.len() && tab_at[li].is_some_and(|tab| t.start < tab) {
+                continue;
+            }
             let col = t.start - cs;
             let len = t.end - t.start;
             if col + len <= content[li].len() {
@@ -380,6 +411,9 @@ pub(crate) fn print(
     // consistent with the rest.
     if style.end_with_type {
         for (line, ty) in &typed_ends {
+            if tab_at[*line].is_some() {
+                continue;
+            }
             let cased = cased_type(ty, style);
             if let Some(updated) = apply_end_type(&content[*line], &cased) {
                 content[*line] = updated;
