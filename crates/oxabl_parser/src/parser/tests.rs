@@ -11315,6 +11315,46 @@ fn skipped_empty_temp_table_span_covers_the_whole_statement() {
 }
 
 #[test]
+fn for_each_fields_and_except_phrases_keep_where_and_body() {
+    for source in [
+        "FOR EACH customer FIELDS (name) NO-LOCK WHERE customer.name EQ \"a\":\n  MESSAGE 1.\nEND.",
+        "FOR EACH customer EXCEPT (name city) NO-LOCK WHERE customer.name EQ \"a\":\n  MESSAGE 1.\nEND.",
+        "FOR FIRST customer FIELDS (name) WHERE customer.name EQ \"a\" NO-LOCK:\n  MESSAGE 1.\nEND.",
+    ] {
+        let stmts = parse_program_stmts(source);
+        assert_eq!(stmts.len(), 1, "{source}");
+        match &stmts[0].kind {
+            StatementKind::ForEach {
+                buffer,
+                where_clause,
+                lock_type,
+                body,
+                ..
+            } => {
+                assert_eq!(buffer.name, "customer");
+                assert!(where_clause.is_some(), "{source}");
+                assert_eq!(*lock_type, LockType::NoLock);
+                assert_eq!(body.len(), 1, "{source}");
+                assert!(matches!(body[0].kind, StatementKind::Message { .. }));
+            }
+            other => panic!("expected ForEach, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn for_each_fields_phrase_on_joined_table_is_skipped() {
+    let source =
+        "FOR EACH a NO-LOCK, EACH b FIELDS (x y) NO-LOCK WHERE b.x EQ a.x:\n  MESSAGE 1.\nEND.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 1);
+    match &stmts[0].kind {
+        StatementKind::ForEach { body, .. } => assert_eq!(body.len(), 1),
+        other => panic!("expected ForEach, got {other:?}"),
+    }
+}
+
+#[test]
 fn catch_and_finally_in_any_block_body_carry_real_spans() {
     let sources = [
         "PROCEDURE p:\n  MESSAGE 1.\n  FINALLY:\n    MESSAGE 2.\n  END FINALLY.\nEND PROCEDURE.",

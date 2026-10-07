@@ -2835,6 +2835,9 @@ impl Parser<'_> {
         // preprop refs, adjacent preprop+identifier compounds, and hyphenated names.
         let buffer = self.parse_qualified_identifier()?;
 
+        // optional FIELDS / EXCEPT phrase
+        self.skip_fields_phrase();
+
         // optional OF clause
         let of_relation = if self.check(Kind::Of) {
             self.advance();
@@ -2842,6 +2845,7 @@ impl Parser<'_> {
         } else {
             None
         };
+        self.skip_fields_phrase();
 
         // Lock type may appear before or after WHERE (ABL is flexible)
         let lock_type_pre = self.parse_lock_type();
@@ -2922,6 +2926,7 @@ impl Parser<'_> {
             if Self::can_be_identifier(self.peek().kind) {
                 self.advance();
             }
+            self.skip_fields_phrase();
             // optional OF clause (may appear before or after lock type)
             if self.check(Kind::Of) {
                 self.advance();
@@ -4471,6 +4476,30 @@ impl Parser<'_> {
         );
 
         Ok(self.stmt(StatementKind::Finally { body }))
+    }
+
+    /// Skip an optional `FIELDS [(field ...)]` or `EXCEPT [(field ...)]` field
+    /// list of a record phrase. The field names are not modelled.
+    fn skip_fields_phrase(&mut self) {
+        if !self.check(Kind::Fields) && !self.check(Kind::Except) {
+            return;
+        }
+        self.advance(); // consume FIELDS / EXCEPT
+        if !self.check(Kind::LeftParen) {
+            return;
+        }
+        let mut depth = 0usize;
+        while !self.at_end() {
+            match self.peek().kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => depth -= 1,
+                _ => {}
+            }
+            self.advance();
+            if depth == 0 {
+                break;
+            }
+        }
     }
 
     /// Parses an optional lock type (NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK)

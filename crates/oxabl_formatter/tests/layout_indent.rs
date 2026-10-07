@@ -109,3 +109,49 @@ fn misplaced_comment_in_block_with_finally_is_reindented_to_its_statement() {
         "PROCEDURE p:\n\tMESSAGE 1.\n\t/* c */\n\n\t/* d */\n\tMESSAGE 2.\n\tFINALLY:\n\t\tMESSAGE 3.\n\tEND FINALLY.\nEND PROCEDURE.\n",
     );
 }
+
+// --- FIELDS / EXCEPT phrase in FOR EACH -------------------------------------
+
+#[test]
+fn fields_phrase_keeps_wrapped_where_and_body_on_grid() {
+    assert_stable(
+        "FOR EACH customer FIELDS (name) NO-LOCK WHERE\n\t customer.name EQ \"a\":\n\tMESSAGE customer.name.\nEND.\n",
+    );
+}
+
+#[test]
+fn except_and_multi_field_phrases_keep_wrapped_where_on_grid() {
+    assert_stable(
+        "FOR EACH customer EXCEPT (name) NO-LOCK WHERE\n\t customer.name EQ \"a\":\n\tMESSAGE customer.name.\nEND.\n",
+    );
+    assert_stable(
+        "FOR FIRST customer FIELDS (name city) NO-LOCK WHERE\n\t customer.name EQ \"a\":\n\tMESSAGE customer.name.\nEND.\n",
+    );
+}
+
+#[test]
+fn fields_phrase_with_where_on_the_same_line_is_stable() {
+    assert_stable(
+        "FOR EACH customer FIELDS (name) NO-LOCK WHERE customer.name EQ \"a\":\n\tMESSAGE customer.name.\nEND.\n",
+    );
+    assert_stable(
+        "FOR EACH customer FIELDS (name) WHERE customer.name EQ \"a\" NO-LOCK:\n\tMESSAGE customer.name.\nEND.\n",
+    );
+}
+
+#[test]
+fn fields_phrase_in_joined_tables_and_bare_form_is_stable() {
+    assert_stable(
+        "FOR EACH a NO-LOCK, EACH b FIELDS (x y) NO-LOCK WHERE b.x EQ a.x:\n\tMESSAGE 1.\nEND.\n",
+    );
+    assert_stable("FOR EACH customer FIELDS NO-LOCK:\n\tMESSAGE 1.\nEND.\n");
+    assert_stable("FOR EACH customer EXCEPT (name):\n\tMESSAGE 1.\nEND.\n");
+}
+
+#[test]
+fn misindented_body_after_fields_phrase_is_reindented() {
+    assert_formats(
+        "FOR EACH customer FIELDS (name) NO-LOCK WHERE customer.name EQ \"a\":\nMESSAGE customer.name.\n\t\t\tEND.\n",
+        "FOR EACH customer FIELDS (name) NO-LOCK WHERE customer.name EQ \"a\":\n\tMESSAGE customer.name.\nEND.\n",
+    );
+}
