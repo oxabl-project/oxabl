@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.4](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v1.1.3...oxabl_analyze-v1.1.4) (2026-10-07)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 1.1.0 to 1.1.1
+    * oxabl_parser bumped from 1.0.3 to 1.0.4
+    * oxabl_semantic bumped from 1.1.0 to 1.1.1
+  * dev-dependencies
+    * oxabl_index bumped from 1.0.2 to 1.0.3
+
 ## [1.1.3](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v1.1.2...oxabl_analyze-v1.1.3) (2026-09-21)
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v1.1.0...oxabl_semantic-v1.1.1) (2026-10-07)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 1.0.3 to 1.0.4
+
 ## [1.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v1.0.3...oxabl_semantic-v1.1.0) (2026-09-21)
 
 

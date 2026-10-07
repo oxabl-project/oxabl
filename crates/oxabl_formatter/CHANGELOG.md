@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v1.0.1...oxabl_formatter-v1.0.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **formatter:** anchor continuation indent on the statement's first line ([326d147](https://github.com/oxabl-project/oxabl/commit/326d1471f898c51be37451a8bdb41b5e314d8949)), closes [#199](https://github.com/oxabl-project/oxabl/issues/199)
+* **formatter:** keep the column of a line holding a TAB in a string literal ([a54eebd](https://github.com/oxabl-project/oxabl/commit/a54eebdaa191e2eac41e4766e6b4d8d89c3c007b)), closes [#200](https://github.com/oxabl-project/oxabl/issues/200)
+* **formatter:** keep the first-line comment of a file at column zero ([8e65683](https://github.com/oxabl-project/oxabl/commit/8e65683c1fb0fb050fe10362c226e83b1756dfb3)), closes [#204](https://github.com/oxabl-project/oxabl/issues/204)
+* **formatter:** nest a statement after WHEN ... THEN or OTHERWISE one level ([6213a62](https://github.com/oxabl-project/oxabl/commit/6213a62c5b172bc62c8c1071a237174a4443db6b)), closes [#203](https://github.com/oxabl-project/oxabl/issues/203)
+* **formatter:** restore idempotency and value preservation, and fix four indent bugs ([1ba5c2f](https://github.com/oxabl-project/oxabl/commit/1ba5c2f20790e4aa90ec92fc8b500b9cd880616b))
+* **parser:** give CATCH and FINALLY blocks their real source span ([5c9013e](https://github.com/oxabl-project/oxabl/commit/5c9013e70e389863a5ecd4d6d08bc36fb7226109)), closes [#201](https://github.com/oxabl-project/oxabl/issues/201)
+* **parser:** skip the FIELDS and EXCEPT phrase of a FOR EACH record ([db20011](https://github.com/oxabl-project/oxabl/commit/db200111d5160a37fca21acc4f2f8a2db526451e)), closes [#202](https://github.com/oxabl-project/oxabl/issues/202)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 1.0.3 to 1.0.4
+
 ## [1.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v1.0.0...oxabl_formatter-v1.0.1) (2026-09-21)
 
 

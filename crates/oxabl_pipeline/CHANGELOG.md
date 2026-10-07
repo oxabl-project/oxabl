@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v1.2.0...oxabl_pipeline-v1.2.1) (2026-10-07)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 1.1.3 to 1.1.4
+    * oxabl_formatter bumped from 1.0.1 to 1.0.2
+    * oxabl_index bumped from 1.0.2 to 1.0.3
+    * oxabl_semantic bumped from 1.1.0 to 1.1.1
+  * dev-dependencies
+    * oxabl_parser bumped from 1.0.3 to 1.0.4
+
 ## [1.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v1.1.2...oxabl_pipeline-v1.2.0) (2026-09-21)
 
 

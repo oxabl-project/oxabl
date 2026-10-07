@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.3.1...oxabl_daemon-v0.3.2) (2026-10-07)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 1.1.3 to 1.1.4
+    * oxabl_index bumped from 1.0.2 to 1.0.3
+    * oxabl_pipeline bumped from 1.2.0 to 1.2.1
+    * oxabl_semantic bumped from 1.1.0 to 1.1.1
+  * dev-dependencies
+    * oxabl_pipeline bumped from 1.2.0 to 1.2.1
+
 ## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.3.0...oxabl_daemon-v0.3.1) (2026-09-21)
 
 
