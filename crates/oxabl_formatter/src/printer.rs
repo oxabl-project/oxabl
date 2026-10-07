@@ -227,6 +227,28 @@ pub(crate) fn print(
         );
     }
 
+    // Tab-sensitive lines: the compiler expands a TAB inside a quoted literal to
+    // the next 8-column stop measured from the *source line start*, so the
+    // literal's value depends on every column before it on that line. Record, per
+    // line, the byte offset of the last such TAB. A line with one keeps its
+    // leading whitespace verbatim (like a protected line), and no edit that
+    // changes the line's width before that TAB may be applied.
+    let mut tab_at: Vec<Option<usize>> = vec![None; n];
+    for t in toks {
+        if t.kind != Kind::StringLiteral {
+            continue;
+        }
+        for (i, _) in source.as_bytes()[t.start..t.end]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\t')
+        {
+            let at = t.start + i;
+            let li = line_index(&line_starts, at);
+            tab_at[li] = tab_at[li].max(Some(at));
+        }
+    }
+
     // Absolute indent per line from the structural walk. Start-lines snap to
     // their depth; continuation lines delta-preserve the innermost covering
     // statement's alignment.
@@ -239,8 +261,13 @@ pub(crate) fn print(
             // That line sits at the shallowest depth of any statement starting
             // on it, which is shallower than the statement's own depth when it
             // follows `IF … THEN` or `ELSE` on the same line.
-            let first = starter[fl].unwrap_or(0);
-            let delta = first as isize * size as isize - leadings[fl] as isize;
+            // A tab-sensitive first line keeps its indent, so it moves by nothing.
+            let first = if tab_at[fl].is_some() {
+                leadings[fl]
+            } else {
+                starter[fl].unwrap_or(0) * size
+            };
+            let delta = first as isize - leadings[fl] as isize;
             *slot = (leadings[l] as isize + delta).max(0) as usize;
         }
     }
@@ -321,7 +348,7 @@ pub(crate) fn print(
     // line-index binary searches behind a cheap newline scan of the token's
     // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
     let src_bytes = source.as_bytes();
-    let mut protected = vec![false; n];
+    let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
     for t in toks {
         if t.kind == Kind::Eof {
             break;
@@ -362,6 +389,9 @@ pub(crate) fn print(
             if t.start < cs {
                 continue;
             }
+            if new_text.len() != raw.len() && tab_at[li].is_some_and(|tab| t.start < tab) {
+                continue;
+            }
             let col = t.start - cs;
             let len = t.end - t.start;
             if col + len <= content[li].len() {
@@ -381,6 +411,9 @@ pub(crate) fn print(
     // consistent with the rest.
     if style.end_with_type {
         for (line, ty) in &typed_ends {
+            if tab_at[*line].is_some() {
+                continue;
+            }
             let cased = cased_type(ty, style);
             if let Some(updated) = apply_end_type(&content[*line], &cased) {
                 content[*line] = updated;
