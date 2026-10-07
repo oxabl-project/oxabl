@@ -11313,3 +11313,96 @@ fn skipped_empty_temp_table_span_covers_the_whole_statement() {
     assert_eq!(stmt.span.start, 0);
     assert_eq!(stmt.span.end as usize, source.len());
 }
+
+#[test]
+fn for_each_fields_and_except_phrases_keep_where_and_body() {
+    for source in [
+        "FOR EACH customer FIELDS (name) NO-LOCK WHERE customer.name EQ \"a\":\n  MESSAGE 1.\nEND.",
+        "FOR EACH customer EXCEPT (name city) NO-LOCK WHERE customer.name EQ \"a\":\n  MESSAGE 1.\nEND.",
+        "FOR FIRST customer FIELDS (name) WHERE customer.name EQ \"a\" NO-LOCK:\n  MESSAGE 1.\nEND.",
+    ] {
+        let stmts = parse_program_stmts(source);
+        assert_eq!(stmts.len(), 1, "{source}");
+        match &stmts[0].kind {
+            StatementKind::ForEach {
+                buffer,
+                where_clause,
+                lock_type,
+                body,
+                ..
+            } => {
+                assert_eq!(buffer.name, "customer");
+                assert!(where_clause.is_some(), "{source}");
+                assert_eq!(*lock_type, LockType::NoLock);
+                assert_eq!(body.len(), 1, "{source}");
+                assert!(matches!(body[0].kind, StatementKind::Message { .. }));
+            }
+            other => panic!("expected ForEach, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn for_each_fields_phrase_on_joined_table_is_skipped() {
+    let source =
+        "FOR EACH a NO-LOCK, EACH b FIELDS (x y) NO-LOCK WHERE b.x EQ a.x:\n  MESSAGE 1.\nEND.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 1);
+    match &stmts[0].kind {
+        StatementKind::ForEach { body, .. } => assert_eq!(body.len(), 1),
+        other => panic!("expected ForEach, got {other:?}"),
+    }
+}
+
+#[test]
+fn catch_and_finally_in_any_block_body_carry_real_spans() {
+    let sources = [
+        "PROCEDURE p:\n  MESSAGE 1.\n  FINALLY:\n    MESSAGE 2.\n  END FINALLY.\nEND PROCEDURE.",
+        "CLASS C:\n  METHOD PUBLIC VOID M():\n    MESSAGE 1.\n    CATCH e AS Progress.Lang.Error:\n      MESSAGE 2.\n    END CATCH.\n  END METHOD.\nEND CLASS.",
+        "DO:\n  MESSAGE 1.\n  CATCH e AS Progress.Lang.Error:\n    MESSAGE 2.\n  END CATCH.\nEND.",
+    ];
+    for source in sources {
+        let stmts = parse_program_stmts(source);
+        fn find<'a>(stmts: &'a [Statement], out: &mut Vec<&'a Statement>) {
+            for s in stmts {
+                match &s.kind {
+                    StatementKind::Catch { .. } | StatementKind::Finally { .. } => out.push(s),
+                    StatementKind::Procedure { body, .. }
+                    | StatementKind::Class { body, .. }
+                    | StatementKind::Method { body, .. }
+                    | StatementKind::Do { body, .. } => find(body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        find(&stmts, &mut found);
+        assert_eq!(found.len(), 1, "{source}");
+        let kw = if matches!(found[0].kind, StatementKind::Catch { .. }) {
+            "CATCH e"
+        } else {
+            "FINALLY"
+        };
+        assert_eq!(found[0].span.start as usize, source.find(kw).unwrap());
+        assert!(source[found[0].span.start as usize..found[0].span.end as usize].ends_with('.'));
+    }
+}
+
+#[test]
+fn on_trigger_do_block_carries_its_real_span() {
+    let source = "ON CHOOSE OF b IN FRAME f DO:\n  MESSAGE 1.\nEND.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 1);
+    match &stmts[0].kind {
+        StatementKind::On {
+            kind: OnKind::UiEvent { action, .. },
+        } => match action {
+            OnAction::Block(block) => {
+                assert_eq!(block.span.start as usize, source.find("DO:").unwrap());
+                assert_eq!(block.span.end as usize, source.len());
+            }
+            other => panic!("expected a block action, got {other:?}"),
+        },
+        other => panic!("expected ON, got {other:?}"),
+    }
+}
