@@ -2799,6 +2799,70 @@ pub const FIXTURES: &[ParityFixture] = &[
         target: "orders.calc-error",
         withheld: "orders.calc-error",
     },
+    // A class site whose class is located and cannot be parsed: an edge to the
+    // file and a row saying what is missing, as the chain walk reports it.
+    ParityFixture {
+        name: "class_site_unusable_class",
+        root_file: "report.p",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-obj AS orders.broken NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.broken",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // The same through a wildcard import: the located file is the import's
+    // qualified name, and that is the name both the edge and the row carry.
+    ParityFixture {
+        name: "class_site_unusable_class_using",
+        root_file: "report.p",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 MESSAGE broken:describe().\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.broken",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "broken",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
     // A subclass of a shipped class that uses an inherited member. The chain walk
     // asks about the shipped parent and the index cannot supply it, but no
     // workspace could, so it is no gap: the row's one claim is the workspace class.
@@ -2895,6 +2959,12 @@ const I_CALC: &str = "INTERFACE orders.i-calc:\n    \
 
 /// A workspace error class, for the `CATCH` row. Its own parent is shipped.
 const CALC_ERROR: &str = "CLASS orders.calc-error INHERITS Progress.Lang.AppError:\nEND CLASS.\n";
+
+/// A class file that is located and cannot be parsed.
+const BROKEN_CLASS_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/broken.cls",
+    source: "\u{1}\u{2}\u{3} 0x9f 0x00 ((( %%% .\n",
+}];
 
 /// Look a fixture up by name, panicking on a typo rather than silently skipping.
 pub fn fixture(name: &str) -> &'static ParityFixture {

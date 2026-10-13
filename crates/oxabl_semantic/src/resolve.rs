@@ -1371,6 +1371,14 @@ struct CrossFileState {
     /// The file that declares each class in [`Self::indexed_class_of`], kept so a
     /// class-naming site can record its dependency without asking the index again.
     indexed_class_file: FxHashMap<SymbolId, IndexedFileId>,
+    /// For a type name whose search stopped on [`TypeLookup::Unusable`], keyed
+    /// like [`Self::type_lookups`]: the candidate spelling the index located and
+    /// could not use, which may be an import's qualified name rather than the
+    /// name as written.
+    unusable_candidates: FxHashMap<OxablAtom, IndexName>,
+    /// The candidate [`ResolveWalker::try_indexed_class`] last answered
+    /// `Unusable` for, moved into [`Self::unusable_candidates`] by the search.
+    last_unusable: Option<IndexName>,
     /// One synthesized `Procedures` symbol per external program a literal `RUN`
     /// resolved to, so two `RUN post-order.p` sites in one file point at the
     /// *same* symbol rather than minting one each.
@@ -1725,7 +1733,13 @@ impl<'a> ResolveWalker<'a> {
             return hit;
         }
         let answer = self.search_type_in_workspace(raw, use_span);
-        self.cross_file_mut().type_lookups.insert(key, answer);
+        let cf = self.cross_file_mut();
+        if answer == TypeLookup::Unusable
+            && let Some(candidate) = cf.last_unusable.take()
+        {
+            cf.unusable_candidates.insert(key.clone(), candidate);
+        }
+        cf.type_lookups.insert(key, answer);
         answer
     }
 
@@ -1880,7 +1894,10 @@ impl<'a> ResolveWalker<'a> {
             // No file on the configured paths spells the name this way; another
             // candidate spelling still might.
             IndexAnswer::NotFound => None,
-            IndexAnswer::Unusable => Some(TypeLookup::Unusable),
+            IndexAnswer::Unusable => {
+                self.cross_file_mut().last_unusable = Some(name.clone());
+                Some(TypeLookup::Unusable)
+            }
             IndexAnswer::Unknowable => Some(TypeLookup::Unknowable),
         }
     }
@@ -1909,7 +1926,12 @@ impl<'a> ResolveWalker<'a> {
             }
             TypeLookup::NotFound if self.tried_a_shipped_namespace(raw) => return,
             TypeLookup::NotFound => (self.class_miss_key(raw), ClassLookup::Absent),
-            TypeLookup::Unusable => (self.class_miss_key(raw), ClassLookup::Unusable),
+            TypeLookup::Unusable => {
+                let Some(name) = self.note_unusable_class(raw) else {
+                    return;
+                };
+                (name, ClassLookup::Unusable)
+            }
             TypeLookup::Unknowable => (self.class_miss_key(raw), ClassLookup::Unknowable),
             TypeLookup::Local(_) | TypeLookup::External | TypeLookup::NotLooked => return,
         };
@@ -1950,6 +1972,29 @@ impl<'a> ResolveWalker<'a> {
             }
             _ => {}
         }
+    }
+
+    /// The name an [`TypeLookup::Unusable`] class site is recorded under, with the
+    /// located file noted for the edge set, which reports a located class as a
+    /// dependency as well as a gap. `None` when the located file is the one being
+    /// analysed: no dependency, and no gap either.
+    fn note_unusable_class(&mut self, raw: &str) -> Option<OxablAtom> {
+        let candidate = self
+            .cross_file()
+            .and_then(|cf| cf.unusable_candidates.get(&OxablAtom::from(raw)))
+            .cloned();
+        let Some(candidate) = candidate else {
+            return Some(self.class_miss_key(raw));
+        };
+        let name = candidate.as_atom().clone();
+        if self.symbols.unusable_class_file(&name).is_none() {
+            match self.ctx.index.located(LocateKind::Class, &candidate) {
+                Located::Itself => return None,
+                Located::In(file) => self.symbols.record_unusable_class_file(&name, file),
+                Located::Nowhere => {}
+            }
+        }
+        Some(name)
     }
 
     /// The name a class that did not resolve is reported under: the qualified
