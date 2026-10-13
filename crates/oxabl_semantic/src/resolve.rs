@@ -1368,6 +1368,17 @@ struct CrossFileState {
     /// indexed class
     /// symbol apart from a locally declared one.
     indexed_class_of: FxHashMap<SymbolId, IndexName>,
+    /// The file that declares each class in [`Self::indexed_class_of`], kept so a
+    /// class-naming site can record its dependency without asking the index again.
+    indexed_class_file: FxHashMap<SymbolId, IndexedFileId>,
+    /// For a type name whose search stopped on [`TypeLookup::Unusable`], keyed
+    /// like [`Self::type_lookups`]: the candidate spelling the index located and
+    /// could not use, which may be an import's qualified name rather than the
+    /// name as written.
+    unusable_candidates: FxHashMap<OxablAtom, IndexName>,
+    /// The candidate [`ResolveWalker::try_indexed_class`] last answered
+    /// `Unusable` for, moved into [`Self::unusable_candidates`] by the search.
+    last_unusable: Option<IndexName>,
     /// One synthesized `Procedures` symbol per external program a literal `RUN`
     /// resolved to, so two `RUN post-order.p` sites in one file point at the
     /// *same* symbol rather than minting one each.
@@ -1634,7 +1645,10 @@ impl<'a> ResolveWalker<'a> {
         for (class, scope, authored) in classes {
             let mut resolved = Vec::new();
             for parent in authored {
-                match self.resolve_type_name(parent.name.as_written(), scope, parent.name_span) {
+                let lookup =
+                    self.resolve_type_name(parent.name.as_written(), scope, parent.name_span);
+                self.note_class_site(parent.name.as_written(), lookup, parent.name_span);
+                match lookup {
                     TypeLookup::Local(parent) | TypeLookup::Indexed(parent) => {
                         if !resolved.contains(&parent) {
                             resolved.push(parent);
@@ -1719,7 +1733,13 @@ impl<'a> ResolveWalker<'a> {
             return hit;
         }
         let answer = self.search_type_in_workspace(raw, use_span);
-        self.cross_file_mut().type_lookups.insert(key, answer);
+        let cf = self.cross_file_mut();
+        if answer == TypeLookup::Unusable
+            && let Some(candidate) = cf.last_unusable.take()
+        {
+            cf.unusable_candidates.insert(key.clone(), candidate);
+        }
+        cf.type_lookups.insert(key, answer);
         answer
     }
 
@@ -1868,14 +1888,136 @@ impl<'a> ResolveWalker<'a> {
             IndexAnswer::Found(descriptor) => Some(TypeLookup::Indexed(self.indexed_class_symbol(
                 name,
                 descriptor.kind,
+                descriptor.file,
                 use_span,
             ))),
             // No file on the configured paths spells the name this way; another
             // candidate spelling still might.
             IndexAnswer::NotFound => None,
-            IndexAnswer::Unusable => Some(TypeLookup::Unusable),
+            IndexAnswer::Unusable => {
+                self.cross_file_mut().last_unusable = Some(name.clone());
+                Some(TypeLookup::Unusable)
+            }
             IndexAnswer::Unknowable => Some(TypeLookup::Unknowable),
         }
+    }
+
+    /// Record what one class-naming site resolved to, for the dependency edge
+    /// set: a link for a workspace class, a gap for one the workspace lacks.
+    ///
+    /// Bookkeeping only, like the chain walk's record — no rule reads it. Three
+    /// answers record nothing: a class this file declares is no dependency, an
+    /// `External` (`FROM ASSEMBLY`) or unlooked-for name is not the workspace's to
+    /// supply, and neither is a miss in a namespace the AVM ships.
+    fn note_class_site(&mut self, raw: &str, lookup: TypeLookup, site: VirtualSpan) {
+        let (name, outcome) = match lookup {
+            TypeLookup::Indexed(sym) => {
+                let Some(file) = self
+                    .cross_file()
+                    .and_then(|cf| cf.indexed_class_file.get(&sym))
+                    .copied()
+                else {
+                    return;
+                };
+                (
+                    self.symbols.get(sym).name.clone(),
+                    ClassLookup::Linked(file),
+                )
+            }
+            TypeLookup::NotFound if self.tried_a_shipped_namespace(raw) => return,
+            TypeLookup::NotFound => (self.class_miss_key(raw), ClassLookup::Absent),
+            TypeLookup::Unusable => {
+                let Some(name) = self.note_unusable_class(raw) else {
+                    return;
+                };
+                (name, ClassLookup::Unusable)
+            }
+            TypeLookup::Unknowable => (self.class_miss_key(raw), ClassLookup::Unknowable),
+            TypeLookup::Local(_) | TypeLookup::External | TypeLookup::NotLooked => return,
+        };
+        self.symbols.record_class_lookup(&name, outcome);
+        self.symbols.record_class_site(&name, site);
+    }
+
+    /// [`Self::note_class_site`] for a name not yet looked up: the scope tree
+    /// first, so a class this file declares is never asked of the index (which
+    /// answers `Unusable` for the analysed file itself), then the workspace.
+    ///
+    /// Gated before the scope-tree probe, so a run with no index attached pays
+    /// nothing per declaration.
+    fn note_class_name(&mut self, raw: &str, scope: ScopeId, site: VirtualSpan) {
+        if !self.ctx.index_loaded {
+            return;
+        }
+        let lookup = self.resolve_type_name(raw, scope, site);
+        self.note_class_site(raw, lookup, site);
+    }
+
+    /// [`Self::note_class_name`] for every class a declared type names — both
+    /// arms of a `&IF` type included, since either may be the one compiled.
+    fn note_data_type(&mut self, data_type: &DataType, scope: ScopeId, site: VirtualSpan) {
+        if !self.ctx.index_loaded {
+            return;
+        }
+        match data_type {
+            DataType::Class(name) if is_builtin_type_name(name) => {}
+            DataType::Class(name) => self.note_class_name(name, scope, site),
+            DataType::PreprocIf(pif) => {
+                for branch in std::iter::once(&pif.then_branch)
+                    .chain(pif.elseif_branches.iter().map(|(_, b)| b))
+                    .chain(&pif.else_branch)
+                {
+                    self.note_data_type(branch, scope, site);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The name an [`TypeLookup::Unusable`] class site is recorded under, with the
+    /// located file noted for the edge set, which reports a located class as a
+    /// dependency as well as a gap. `None` when the located file is the one being
+    /// analysed: no dependency, and no gap either.
+    fn note_unusable_class(&mut self, raw: &str) -> Option<OxablAtom> {
+        let candidate = self
+            .cross_file()
+            .and_then(|cf| cf.unusable_candidates.get(&OxablAtom::from(raw)))
+            .cloned();
+        let Some(candidate) = candidate else {
+            return Some(self.class_miss_key(raw));
+        };
+        let name = candidate.as_atom().clone();
+        if self.symbols.unusable_class_file(&name).is_none() {
+            match self.ctx.index.located(LocateKind::Class, &candidate) {
+                Located::Itself => return None,
+                Located::In(file) => self.symbols.record_unusable_class_file(&name, file),
+                Located::Nowhere => {}
+            }
+        }
+        Some(name)
+    }
+
+    /// The name a class that did not resolve is reported under: the qualified
+    /// name an explicit `USING` maps a bare name to, since that is the one class
+    /// the file can mean, and otherwise the name as written, folded.
+    fn class_miss_key(&self, raw: &str) -> OxablAtom {
+        match self.explicit_import(raw) {
+            Some(qualified) => qualified.as_atom().clone(),
+            None => fold_atom(raw),
+        }
+    }
+
+    /// The qualified name an explicit `USING <package>.<Name>` maps bare name
+    /// `raw` to, first import first.
+    fn explicit_import(&self, raw: &str) -> Option<&IndexName> {
+        if raw.contains('.') {
+            return None;
+        }
+        let simple = fold_atom(raw);
+        self.using_types()
+            .iter()
+            .find(|(name, _, _)| *name == simple)
+            .map(|(_, qualified, _)| qualified)
     }
 
     /// The synthesized `Types` symbol for an indexed class, minted on first
@@ -1888,6 +2030,7 @@ impl<'a> ResolveWalker<'a> {
         &mut self,
         name: &IndexName,
         kind: ClassKind,
+        file: IndexedFileId,
         use_span: VirtualSpan,
     ) -> SymbolId {
         if let Some(sym) = self
@@ -1909,6 +2052,7 @@ impl<'a> ResolveWalker<'a> {
         let cf = self.cross_file_mut();
         cf.synth_classes.insert(name.clone(), sym);
         cf.indexed_class_of.insert(sym, name.clone());
+        cf.indexed_class_file.insert(sym, file);
         // The class's own header, recorded on the symbol the same way a local
         // header's is. Needed the moment a cross-file class became a real
         // `ResolvedType::Class`: `coercion::ClassLattice` climbs from a value's
@@ -2225,7 +2369,15 @@ impl<'a> ResolveWalker<'a> {
     fn walk_statement(&mut self, stmt: &Statement, scope: ScopeId) {
         match &stmt.kind {
             // ---- Declarations with initializers --------------------------
-            StatementKind::VariableDeclaration { initial_value, .. } => {
+            StatementKind::VariableDeclaration {
+                name,
+                type_source,
+                initial_value,
+                ..
+            } => {
+                if let TypeSource::Explicit(dt) = type_source {
+                    self.note_data_type(dt, scope, identifier_span(name));
+                }
                 if let Some(e) = initial_value {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
@@ -2233,12 +2385,23 @@ impl<'a> ResolveWalker<'a> {
             StatementKind::DefineParameter { param_type, .. } => {
                 // Only the buffer shape names a table; every other parameter
                 // shape declares and reads nothing here.
-                if let ParameterType::Buffer { name, target } = param_type {
-                    self.credit_buffer_target(name, target, scope);
+                match param_type {
+                    ParameterType::Buffer { name, target } => {
+                        self.credit_buffer_target(name, target, scope);
+                    }
+                    ParameterType::Variable {
+                        name,
+                        type_source: TypeSource::Explicit(dt),
+                        ..
+                    } => self.note_data_type(dt, scope, identifier_span(name)),
+                    _ => {}
                 }
             }
             StatementKind::DefineTempTable { fields, .. } => {
                 for f in fields {
+                    if let TypeSource::Explicit(dt) = &f.type_source {
+                        self.note_data_type(dt, scope, identifier_span(&f.name));
+                    }
                     if let Some(init) = &f.initial_value {
                         for e in init {
                             self.walk_expression(e, scope, AccessMode::Read);
@@ -2262,11 +2425,14 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             StatementKind::Property {
+                name,
+                data_type,
                 get_body,
                 set_body,
                 set_parameters,
                 ..
             } => {
+                self.note_data_type(data_type, scope, identifier_span(name));
                 if let Some(body) = get_body
                     && let Some(gs) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertyGet)
                 {
@@ -2286,7 +2452,12 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_block(body, ps);
                 }
             }
-            StatementKind::Function { body, .. } => {
+            StatementKind::Function {
+                name,
+                return_type,
+                body,
+            } => {
+                self.note_data_type(return_type, scope, identifier_span(name));
                 if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
                     self.walk_block(body, fs);
                 }
@@ -2319,8 +2490,15 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             StatementKind::Method {
-                parameters, body, ..
+                name,
+                return_type,
+                parameters,
+                body,
+                ..
             } => {
+                if let Some(rt) = return_type {
+                    self.note_data_type(rt, scope, identifier_span(name));
+                }
                 if let Some(ms) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
                     self.walk_block(parameters, ms);
                     self.walk_block(body, ms);
@@ -2339,7 +2517,12 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_block(body, ds);
                 }
             }
-            StatementKind::Catch { body, .. } => {
+            StatementKind::Catch {
+                error_var,
+                error_type,
+                body,
+            } => {
+                self.note_class_name(error_type, scope, identifier_span(error_var));
                 if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Catch) {
                     self.walk_block(body, cs);
                 }
@@ -2898,6 +3081,13 @@ impl<'a> ResolveWalker<'a> {
                 for a in arguments {
                     self.walk_expression(a, scope, AccessMode::Read);
                 }
+                if self.ctx.index_loaded
+                    && let Some(operand) = type_operand(name, arguments)
+                    && let Some(raw) = dotted_name(operand)
+                {
+                    let span = VirtualSpan::new(operand.span.start, operand.span.end);
+                    self.note_class_name(&raw, scope, span);
+                }
             }
             ExpressionKind::MethodCall {
                 object,
@@ -2957,7 +3147,9 @@ impl<'a> ResolveWalker<'a> {
                 // A `NEW` operand is unambiguously a type name, so unlike a
                 // receiver it gets the full workspace search and a miss is a
                 // fact about the workspace rather than a shrug.
-                match self.resolve_type_name(class_name, scope, span) {
+                let lookup = self.resolve_type_name(class_name, scope, span);
+                self.note_class_site(class_name, lookup, span);
+                match lookup {
                     TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => {
                         self.references.insert(expr.id, Resolution::Resolved(sym));
                         self.bump_count(sym, AccessMode::Read);
@@ -3625,7 +3817,21 @@ impl<'a> ResolveWalker<'a> {
     /// today's `External`. A receiver that is not a type is very often a dynamic
     /// handle, and "no such class in the workspace" is the wrong thing to say
     /// about one.
-    fn try_receiver_type(&mut self, expr_id: NodeId, raw: &str, use_span: VirtualSpan) {
+    ///
+    /// With `record`, the answer is also recorded as a class-naming site, for
+    /// the edge set. A hit always is. A miss is only when a `USING` in this file
+    /// could have supplied the name: with none, the only class a bare receiver
+    /// can name is one in the unnamed package, and an unresolved bare name is far
+    /// more often something the scope model does not see (a trigger's `NEW`
+    /// buffer, a query, a member of an unresolved parent) than a missing class.
+    fn try_receiver_type(
+        &mut self,
+        expr_id: NodeId,
+        raw: &str,
+        scope: ScopeId,
+        use_span: VirtualSpan,
+        record: bool,
+    ) {
         if !matches!(
             self.references.get(expr_id),
             Some(Resolution::Unresolved {
@@ -3635,17 +3841,74 @@ impl<'a> ResolveWalker<'a> {
         ) {
             return;
         }
-        match self.resolve_type_in_workspace(raw, use_span) {
-            TypeLookup::Indexed(sym) => {
-                self.references.insert(expr_id, Resolution::Resolved(sym));
-            }
-            TypeLookup::Local(_)
-            | TypeLookup::External
-            | TypeLookup::NotFound
-            | TypeLookup::Unusable
-            | TypeLookup::Unknowable
-            | TypeLookup::NotLooked => {}
+        let lookup = self.resolve_receiver_type(expr_id, raw, scope, use_span);
+        let could_be_imported = !self.using_types().is_empty() || !self.using_prefixes().is_empty();
+        if record && (could_be_imported || !matches!(lookup, TypeLookup::NotFound)) {
+            self.note_class_site(raw, lookup, use_span);
         }
+    }
+
+    /// A dotted receiver (`pkg.Util:Two()`) parses as a field access, so it is a
+    /// type name only when it did not resolve as one: `customer.name:LABEL` is a
+    /// buffer field and stays one.
+    ///
+    /// A plain miss is recorded only under a loaded schema. Without one every
+    /// `table.field` is unresolved too, and the two shapes cannot be told apart,
+    /// so a miss would report a field as a missing class. A chain whose first
+    /// segment this file declares as a buffer, table or value is a field of it
+    /// whether or not the field resolved, and is never a package.
+    fn try_dotted_receiver_type(&mut self, expr: &Expression, scope: ScopeId) {
+        if !self.ctx.index_loaded
+            || matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
+        {
+            return;
+        }
+        let Some(raw) = dotted_name(expr) else {
+            return;
+        };
+        let first = fold_atom(raw.split('.').next().unwrap_or_default());
+        if [
+            NamespaceId::Buffers,
+            NamespaceId::Tables,
+            NamespaceId::Values,
+        ]
+        .iter()
+        .any(|ns| self.tree.resolve(scope, *ns, &first).is_some())
+        {
+            return;
+        }
+        let span = VirtualSpan::new(expr.span.start, expr.span.end);
+        let lookup = self.resolve_receiver_type(expr.id, &raw, scope, span);
+        if !self.ctx.schema_loaded && lookup == TypeLookup::NotFound {
+            return;
+        }
+        self.note_class_site(&raw, lookup, span);
+    }
+
+    /// Resolve a receiver as a type name, and link the receiver when the
+    /// workspace supplies it. A locally declared class is left as it is: its
+    /// members are in the scope tree, and it is no dependency.
+    fn resolve_receiver_type(
+        &mut self,
+        expr_id: NodeId,
+        raw: &str,
+        scope: ScopeId,
+        use_span: VirtualSpan,
+    ) -> TypeLookup {
+        if !self.ctx.index_loaded {
+            return TypeLookup::NotLooked;
+        }
+        if let Some(sym) = self
+            .tree
+            .resolve(scope, NamespaceId::Types, &fold_atom(raw))
+        {
+            return TypeLookup::Local(sym);
+        }
+        let lookup = self.resolve_type_in_workspace(raw, use_span);
+        if let TypeLookup::Indexed(sym) = lookup {
+            self.references.insert(expr_id, Resolution::Resolved(sym));
+        }
+        lookup
     }
 
     /// Try to resolve a bare identifier as an unqualified field of a buffer
@@ -3693,30 +3956,41 @@ impl<'a> ResolveWalker<'a> {
     /// `NotInScope` — package-qualified static types and dynamic handles are
     /// not local symbols (#58 items C/D).
     fn walk_receiver(&mut self, expr: &Expression, scope: ScopeId) {
+        self.walk_receiver_link(expr, scope, true);
+    }
+
+    /// [`Self::walk_receiver`] for one link of a receiver chain. `whole` is
+    /// whether this link is the entire receiver, and so could be a type name;
+    /// the `pkg` in `pkg.Util:Two()` is only a package segment, and recording
+    /// it as a class site would report a class nobody named.
+    fn walk_receiver_link(&mut self, expr: &Expression, scope: ScopeId, whole: bool) {
         match &expr.kind {
             ExpressionKind::Identifier(id) => {
                 // The scope tree first, always: a locally declared name must not
                 // be shadowed by a workspace class that happens to share it.
                 self.walk_expression(expr, scope, AccessMode::Read);
-                self.try_receiver_type(expr.id, &id.name, identifier_span(id));
+                self.try_receiver_type(expr.id, &id.name, scope, identifier_span(id), whole);
                 self.soften_unresolved_to_external(expr.id);
             }
             ExpressionKind::FieldAccess { qualifier, field } => {
                 // Soften each link of a package path; still attempt real
                 // buffer/table field resolution first.
-                self.walk_receiver(qualifier, scope);
+                self.walk_receiver_link(qualifier, scope, false);
                 self.resolve_field_access(qualifier, field, expr.id, scope, AccessMode::Read);
                 self.soften_unresolved_to_external(expr.id);
                 // resolve_field_access also records the bare-identifier
                 // qualifier; soften that too when it was NotInScope.
                 self.soften_unresolved_to_external(qualifier.id);
+                if whole {
+                    self.try_dotted_receiver_type(expr, scope);
+                }
             }
             ExpressionKind::MemberAccess { object, .. }
             | ExpressionKind::MethodCall { object, .. } => {
                 self.walk_receiver(object, scope);
             }
             ExpressionKind::ArrayAccess { array, index } => {
-                self.walk_receiver(array, scope);
+                self.walk_receiver_link(array, scope, false);
                 self.walk_expression(index, scope, AccessMode::Read);
             }
             _ => {
@@ -4293,14 +4567,32 @@ impl<'a> ResolveWalker<'a> {
             }
             None => {
                 visited.insert(IndexName::new(&self.symbols.get(class).name));
-                if let Some(supers) = self.symbols.supertypes(class) {
-                    queue.extend(
+                let authored: Vec<SupertypeRef> = self
+                    .symbols
+                    .supertypes(class)
+                    .map(|supers| {
                         supers
                             .inherits
                             .iter()
                             .chain(&supers.implements)
-                            .map(|s| s.name.clone()),
-                    );
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Queued under the name the header resolves to, so a parent this
+                // file imports by `USING` is asked about by its qualified name —
+                // and a missing one is recorded under the name its header site is.
+                // The lookup is the memoized one the header itself already made.
+                for parent in authored {
+                    let written = parent.name.as_written();
+                    let resolved = match self.resolve_type_in_workspace(written, parent.name_span) {
+                        TypeLookup::Indexed(sym) => self
+                            .cross_file()
+                            .and_then(|cf| cf.indexed_class_of.get(&sym))
+                            .cloned(),
+                        _ => self.explicit_import(written).cloned(),
+                    };
+                    queue.push_back(resolved.unwrap_or(parent.name));
                 }
                 MemberRole::Subclass
             }
@@ -4331,9 +4623,13 @@ impl<'a> ResolveWalker<'a> {
                 // be known statically, contributes nothing — and no diagnostic:
                 // the unresolved name is recorded on the class symbol, and
                 // reporting it is a rule's decision, not this pass's.
+                // A shipped class is not the workspace's to supply, so its miss
+                // is no gap in it either.
                 IndexAnswer::NotFound => {
-                    self.symbols
-                        .record_class_lookup(name.as_atom(), ClassLookup::Absent);
+                    if !is_system_namespace(name.as_atom()) {
+                        self.symbols
+                            .record_class_lookup(name.as_atom(), ClassLookup::Absent);
+                    }
                     continue;
                 }
                 // A supertype whose file was located and will not parse
@@ -4557,6 +4853,59 @@ fn strip_db_qualifier(name: &str) -> Option<&str> {
 
 fn identifier_span(id: &Identifier) -> VirtualSpan {
     VirtualSpan::new(id.span.start, id.span.end)
+}
+
+/// The name an identifier or a `pkg.sub.Name` field-access chain spells, which
+/// is how the parser shapes a type name in expression position. `None` for any
+/// other expression.
+fn dotted_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExpressionKind::Identifier(id) => Some(id.name.clone()),
+        ExpressionKind::FieldAccess { qualifier, field } => {
+            let mut name = dotted_name(qualifier)?;
+            name.push('.');
+            name.push_str(&field.name);
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a type name the parser carries as a class is a built-in ABL type it
+/// has no keyword for: `WIDGET-HANDLE` (abbreviable to `WIDGET-H`),
+/// `COMPONENT-HANDLE`, and the external-procedure parameter types. None of these is ever a class, so asking
+/// the index about one would report a missing class nobody named.
+fn is_builtin_type_name(name: &str) -> bool {
+    const WIDGET_HANDLE: &str = "widget-handle";
+    const OTHER_TYPES: [&str; 9] = [
+        "component-handle",
+        "byte",
+        "short",
+        "long",
+        "float",
+        "double",
+        "unsigned-byte",
+        "unsigned-short",
+        "unsigned-long",
+    ];
+    (name.len() >= "widget-h".len()
+        && name.len() <= WIDGET_HANDLE.len()
+        && WIDGET_HANDLE[..name.len()].eq_ignore_ascii_case(name))
+        || OTHER_TYPES.iter().any(|t| t.eq_ignore_ascii_case(name))
+}
+
+/// The argument of a `CAST`, `TYPE-OF` or `GET-CLASS` call that names a type.
+/// The parser models all three as ordinary calls, so the operand arrives as a
+/// value expression.
+fn type_operand<'e>(name: &Identifier, arguments: &'e [Expression]) -> Option<&'e Expression> {
+    let callee = name.name.as_str();
+    if callee.eq_ignore_ascii_case("cast") || callee.eq_ignore_ascii_case("type-of") {
+        arguments.get(1)
+    } else if callee.eq_ignore_ascii_case("get-class") {
+        arguments.first()
+    } else {
+        None
+    }
 }
 
 /// Project one header identifier into a [`SupertypeRef`](crate::SupertypeRef).

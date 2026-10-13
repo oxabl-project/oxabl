@@ -716,6 +716,12 @@ impl<'a> LintPipeline<'a> {
                 end: span.end,
             })
         };
+        let include_site = |span: oxabl_common::VirtualSpan| {
+            expanded.resolve_include_site(oxabl_ast::Span {
+                start: span.start,
+                end: span.end,
+            })
+        };
 
         Ok(build_edge_set(&EdgeInputs {
             semantic,
@@ -727,6 +733,7 @@ impl<'a> LintPipeline<'a> {
             unreadable_includes: &unreadable,
             parse_recovered: result.diagnostics().parse_recovered,
             resolve_span: &resolve_span,
+            include_site: &include_site,
         }))
     }
 

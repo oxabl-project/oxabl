@@ -1109,6 +1109,59 @@ pub const NON_ASCII_CHARACTER_COLUMN: usize = 30;
 pub const NESTED_UNRESOLVABLE_INCLUDE_FIXTURE: &str = "nested_unresolvable_include";
 
 /// Every fixture, shared by all four legs.
+/// One row per class-naming site: `source` names one sibling class in one way,
+/// and the row claims exactly one class edge with the sibling supplied and
+/// exactly one `absent_from_workspace` gap, under `withheld`, without it.
+///
+/// Claimed exactly, so a site that also sprayed a row for a shipped class, or
+/// for a package segment of a dotted name, fails the row.
+macro_rules! class_site_row {
+    (
+        name: $name:literal,
+        root_file: $root_file:literal,
+        siblings: $siblings:expr,
+        resolutions: $resolutions:expr,
+        source: $source:expr,
+        diagnostics: $diagnostics:expr,
+        needs: $needs:expr,
+        target: $target:literal,
+        withheld: $withheld:literal $(,)?
+    ) => {
+        ParityFixture {
+            name: $name,
+            root_file: $root_file,
+            siblings: $siblings,
+            resolutions: $resolutions,
+            source: $source,
+            diagnostics: $diagnostics,
+            format: ExpectedFormat::Unchanged,
+            needs: $needs,
+            edges: &[EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: $target,
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: $withheld,
+                    reason: "absent_from_workspace",
+                },
+            }],
+        }
+    };
+}
+
+/// No finding either way: the site's resolution shows only in the edge set.
+const SILENT: &[CrossFileResolution] = &[CrossFileResolution {
+    name: "orders.calc-base",
+    effect: CrossFileEffect::ResolvedSilently,
+}];
+
+const CALC_BASE_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/calc-base.cls",
+    source: CALC_BASE,
+}];
+
 pub const FIXTURES: &[ParityFixture] = &[
     ParityFixture {
         name: INCLUDE_FRAGMENT_FIXTURE,
@@ -1669,16 +1722,19 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        // Withheld, this row reports no gap at all — and that is a fact worth
-        // pinning rather than hiding. A class lookup is recorded by the supertype
-        // chain walk, and nothing here inherits, so with the sibling gone there is
-        // no walk to come back empty. The finding still arrives in the diagnostic
-        // channel; the *edge set* is simply silent, which is edge-kind fidelity
-        // work tracked upstream rather than a defect this row should paper over.
-        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
-            via: "class",
-            target: "orders.calc-base",
-        })],
+        // Every site that names the class records its lookup, so withholding the
+        // sibling turns the edge into a gap rather than a silence.
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
     },
     // The one cross-file resolution still invisible in the shared diagnostic
     // channel, and it is invisible for a documented reason rather than by
@@ -1704,12 +1760,19 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        // Same shape as `cross_file_using`: the class resolves, and withholding it
-        // records no lookup because no chain walk runs.
-        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
-            via: "class",
-            target: "orders.calc-base",
-        })],
+        // Silent in the diagnostic channel, but not in the edge set: the declared
+        // type is a class-naming site, so withheld it is a gap.
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
     },
     // The direction cross-file resolution could not produce until an inherited
     // member's declared type reached the type lattice: supplying the sibling makes
@@ -2420,6 +2483,413 @@ pub const FIXTURES: &[ParityFixture] = &[
             },
         }],
     },
+    // --- Class-naming sites ------------------------------------------------
+    //
+    // Each row names a sibling class in exactly one way. Before every such site
+    // recorded its lookup, only a member access or a supertype walk did, so all of
+    // these were silent with the sibling withheld.
+
+    // A static member access on a package-qualified class, the commonest way a
+    // file names a class. The receiver parses as a field access, so a miss is only
+    // reported under a loaded schema, where `table.field` is told apart.
+    class_site_row! {
+        name: "class_site_static_receiver",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/tax-util.cls",
+            source: TAX_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.tax-util",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                 v-rate = orders.tax-util:rate().\n\
+                 MESSAGE v-rate.\n",
+        diagnostics: &[],
+        needs: &[Capability::Schema],
+        target: "orders.tax-util",
+        withheld: "orders.tax-util",
+    },
+    // A static receiver written as a short name a wildcard `USING` imports. A
+    // wildcard cannot say which package was meant, so the gap keeps the short name.
+    class_site_row! {
+        name: "class_site_static_receiver_using",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/tax-util.cls",
+            source: TAX_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "tax-util",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                 v-rate = tax-util:rate().\n\
+                 MESSAGE v-rate.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.tax-util",
+        withheld: "tax-util",
+    },
+    // A short name no `USING` matches is tried as a class in the unnamed package,
+    // at the root of a search path. Withheld it is silence, not a gap: with no
+    // `USING` to import it, an unresolved bare receiver is far more often a name
+    // the scope model does not see than a missing class.
+    ParityFixture {
+        name: "class_site_top_level_class",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "session-state.cls",
+            source: SESSION_STATE,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "session-state",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-id AS INTEGER NO-UNDO.\n\
+                 v-id = session-state:current-id().\n\
+                 MESSAGE v-id.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+            via: "class",
+            target: "session-state",
+        })],
+    },
+    // A parameter's declared type.
+    class_site_row! {
+        name: "class_site_parameter_type",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE INPUT PARAMETER p-calc AS orders.calc-base NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(p-calc).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A method's return type.
+    class_site_row! {
+        name: "class_site_method_return_type",
+        root_file: "orders/maker.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.maker:\n    \
+                 METHOD PUBLIC orders.calc-base make-calc():\n        \
+                 RETURN ?.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A user-defined function's return type.
+    class_site_row! {
+        name: "class_site_function_return_type",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "FUNCTION make-calc RETURNS orders.calc-base ():\n    \
+                 RETURN ?.\nEND FUNCTION.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A property's declared type.
+    class_site_row! {
+        name: "class_site_property_type",
+        root_file: "orders/holder.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.holder:\n    \
+                 DEFINE PUBLIC PROPERTY calc AS orders.calc-base NO-UNDO\n        \
+                 GET.\n    \
+                 SET.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A temp-table field `AS CLASS`.
+    class_site_row! {
+        name: "class_site_temp_table_field",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE TEMP-TABLE tt-calc NO-UNDO\n    \
+                 FIELD f-calc AS CLASS orders.calc-base.\n\
+                 FIND FIRST tt-calc NO-ERROR.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A `NEW` that is the only mention, into a variable typed by a shipped class.
+    // The shipped class gives no row either way.
+    class_site_row! {
+        name: "class_site_new_only",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-base()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 63,
+                end: 85,
+            }),
+        }],
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 v-obj = NEW orders.calc-base().\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A declared type written as the short name an explicit `USING` imports. The
+    // import says which class is meant, so the gap carries the qualified name.
+    class_site_row! {
+        name: "class_site_using_short_name",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "USING orders.calc-base",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 6,
+                end: 22,
+            }),
+        }],
+        source: "USING orders.calc-base.\n\
+                 DEFINE VARIABLE v-calc AS calc-base NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A bare `INHERITS`: no inherited member is used, so no chain walk runs, and
+    // the header is the only mention.
+    class_site_row! {
+        name: "class_site_bare_inherits",
+        root_file: "orders/child.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.child INHERITS orders.calc-base:\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A parent named by the short name the header's own `USING` imports. The chain
+    // walk asks about the qualified name, so the inherited call resolves.
+    class_site_row! {
+        name: "class_site_inherits_using",
+        root_file: "orders/child.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "calc-total",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 158,
+                end: 168,
+            }),
+        }],
+        source: "USING orders.*.\n\
+                 CLASS orders.child INHERITS calc-base:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n        \
+                 v-total = calc-total().\n        \
+                 MESSAGE v-total.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "calc-base",
+    },
+    // An `IMPLEMENTS`.
+    class_site_row! {
+        name: "class_site_implements",
+        root_file: "orders/calc-impl.cls",
+        siblings: &[SiblingFile {
+            path: "orders/i-calc.cls",
+            source: I_CALC,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.i-calc",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "CLASS orders.calc-impl IMPLEMENTS orders.i-calc:\n    \
+                 METHOD PUBLIC INTEGER calc-total():\n        \
+                 RETURN 1.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.i-calc",
+        withheld: "orders.i-calc",
+    },
+    // The type operand of `CAST`.
+    class_site_row! {
+        name: "class_site_cast",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(CAST(v-obj, orders.calc-base)).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The type operand of `TYPE-OF`.
+    class_site_row! {
+        name: "class_site_type_of",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 MESSAGE TYPE-OF(v-obj, orders.calc-base).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The type operand of `GET-CLASS`.
+    class_site_row! {
+        name: "class_site_get_class",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "MESSAGE VALID-OBJECT(GET-CLASS(orders.calc-base)).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A `CATCH` variable's type.
+    class_site_row! {
+        name: "class_site_catch_type",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.calc-error",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DO ON ERROR UNDO, THROW:\n    \
+                 MESSAGE 1.\n    \
+                 CATCH e-calc AS orders.calc-error:\n        \
+                 MESSAGE VALID-OBJECT(e-calc).\n    \
+                 END CATCH.\nEND.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // A class site whose class is located and cannot be parsed: an edge to the
+    // file and a row saying what is missing, as the chain walk reports it.
+    ParityFixture {
+        name: "class_site_unusable_class",
+        root_file: "report.p",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-obj AS orders.broken NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.broken",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // The same through a wildcard import: the located file is the import's
+    // qualified name, and that is the name both the edge and the row carry.
+    ParityFixture {
+        name: "class_site_unusable_class_using",
+        root_file: "report.p",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 MESSAGE broken:describe().\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.broken",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "broken",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A subclass of a shipped class that uses an inherited member. The chain walk
+    // asks about the shipped parent and the index cannot supply it, but no
+    // workspace could, so it is no gap: the row's one claim is the workspace class.
+    class_site_row! {
+        name: "class_site_shipped_parent",
+        root_file: "orders/my-error.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.my-error INHERITS Progress.Lang.AppError:\n    \
+                 METHOD PUBLIC VOID raise-it():\n        \
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-calc).\n        \
+                 AddMessage(\"x\", 1).\n    \
+                 END METHOD.\nEND CLASS.\n",
+        // The shipped parent's own members are not modelled, so the inherited call
+        // is undefined either way. That is the shipped-library gap, not this row's.
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 196,
+            end: 206,
+        }],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -2470,6 +2940,31 @@ const CALC_BASE: &str = "CLASS orders.calc-base:\n    \
                          METHOD PUBLIC INTEGER calc-total():\n        \
                          RETURN 0.\n    \
                          END METHOD.\nEND CLASS.\n";
+
+/// A class whose only member is static, named through a static member access.
+const TAX_UTIL: &str = "CLASS orders.tax-util:\n    \
+                        METHOD PUBLIC STATIC INTEGER rate():\n        \
+                        RETURN 2.\n    \
+                        END METHOD.\nEND CLASS.\n";
+
+/// A class in the unnamed package, at the root of the search path.
+const SESSION_STATE: &str = "CLASS session-state:\n    \
+                             METHOD PUBLIC STATIC INTEGER current-id():\n        \
+                             RETURN 1.\n    \
+                             END METHOD.\nEND CLASS.\n";
+
+/// An interface with one method, for the `IMPLEMENTS` row.
+const I_CALC: &str = "INTERFACE orders.i-calc:\n    \
+                      METHOD PUBLIC INTEGER calc-total().\nEND INTERFACE.\n";
+
+/// A workspace error class, for the `CATCH` row. Its own parent is shipped.
+const CALC_ERROR: &str = "CLASS orders.calc-error INHERITS Progress.Lang.AppError:\nEND CLASS.\n";
+
+/// A class file that is located and cannot be parsed.
+const BROKEN_CLASS_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/broken.cls",
+    source: "\u{1}\u{2}\u{3} 0x9f 0x00 ((( %%% .\n",
+}];
 
 /// Look a fixture up by name, panicking on a typo rather than silently skipping.
 pub fn fixture(name: &str) -> &'static ParityFixture {

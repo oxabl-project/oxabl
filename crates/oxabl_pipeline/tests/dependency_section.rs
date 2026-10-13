@@ -1,4 +1,4 @@
-//! The envelope's `dependencies` section at version 3 (R2).
+//! The envelope's `dependencies` section at version 4 (R2).
 //!
 //! The section reports typed dependency edges, and the conversion from an edge set
 //! into its rows lives in this crate — the only one that depends on both the
@@ -19,9 +19,7 @@ use serde_json::Value;
 /// - `base.i` is included by `mid.i`, so the analysed file names `mid.i` directly
 ///   and reaches `base.i` transitively.
 /// - `Customer` is a schema table.
-/// - `orders.calc-base` is the class it inherits from and calls into. Inheritance
-///   is what records a class lookup today: a `NEW` expression or a class-typed
-///   declaration does not, which is edge-kind fidelity work tracked upstream.
+/// - `orders.calc-base` is the class it inherits from and calls into.
 /// - `post-order.p` is a literal `RUN` target.
 /// - `producer.p` supplies the `DEFINE NEW SHARED` name it consumes.
 /// - `nowhere.i` resolves to nothing.
@@ -182,9 +180,9 @@ fn unresolved_rows_keep_their_shape_and_reason_values() {
     );
 }
 
-// The envelope reports `dependencies` at 3 and leaves every other section alone.
+// The envelope reports `dependencies` at 4 and leaves every other section alone.
 #[test]
-fn the_envelope_reports_dependencies_at_version_three_and_nothing_else_moves() {
+fn the_envelope_reports_dependencies_at_version_four_and_nothing_else_moves() {
     let schema = customer_schema();
     let source = "MESSAGE \"hi\".\n";
     let tokens = oxabl_lexer::tokenize(source);
@@ -199,7 +197,7 @@ fn the_envelope_reports_dependencies_at_version_three_and_nothing_else_moves() {
         true,
         &DependencySection::default(),
     );
-    assert_eq!(v["sections"]["dependencies"], 3);
+    assert_eq!(v["sections"]["dependencies"], 4);
     for (name, version) in [
         ("scopes", 1),
         ("types", 1),
@@ -248,4 +246,92 @@ fn a_file_with_no_cross_file_dependencies_still_emits_the_section() {
     );
     assert!(v["dependencies"]["unresolved"].is_array());
     assert_eq!(v["dependencies"]["index_revision"], 0);
+}
+
+/// A class named in the file's own body and again in an include, and a second
+/// class named only in an include nested below that one.
+const ORIGINS: &str = "{outer.i}\n\
+                       DEFINE VARIABLE v-own AS orders.calc-base NO-UNDO.\n\
+                       MESSAGE VALID-OBJECT(v-own) VALID-OBJECT(v-inc) VALID-OBJECT(v-deep).\n";
+
+fn origins_section() -> DependencySection {
+    let mut fs = workspace();
+    fs.insert(
+        PathBuf::from("/src/outer.i"),
+        "DEFINE VARIABLE v-inc AS orders.calc-base NO-UNDO.\n{inner.i}\n",
+    );
+    fs.insert(
+        PathBuf::from("/src/inner.i"),
+        "DEFINE VARIABLE v-deep AS orders.helper NO-UNDO.\n",
+    );
+    fs.insert(
+        PathBuf::from("/src/orders/helper.cls"),
+        "CLASS orders.helper:\nEND CLASS.\n",
+    );
+    let config = config();
+    let run = LintPipeline::new(&config, &fs);
+    let file_run = run.with_file("/src/report.p");
+    let expansion = file_run.expand(ORIGINS);
+    let result = file_run.collect(&expansion);
+    let edges = file_run.edges_of(&expansion, &result).expect("clean");
+    dependency_section(&edges, 1)
+}
+
+// A class edge says where it comes from: `span` for the file's own mention and
+// `include_site` for the `{...}` an include mention arrived through, so a consumer
+// can tell "named in this file" from "named via an include".
+#[test]
+fn a_class_edge_names_its_own_site_and_its_include_site_independently() {
+    let section = origins_section();
+    let site = section
+        .edges
+        .iter()
+        .find(|e| e.via == "direct_include")
+        .and_then(|e| e.span)
+        .expect("the root writes `{outer.i}`");
+    let class = |target: &str| {
+        section
+            .edges
+            .iter()
+            .find(|e| e.via == "class" && e.target == target)
+            .unwrap_or_else(|| panic!("no class row for `{target}`: {:?}", section.edges))
+    };
+
+    let both = class("orders.calc-base");
+    let own = both.span.expect("the file's body names it");
+    assert_eq!(&ORIGINS[own.start as usize..own.end as usize], "v-own");
+    assert_eq!(both.include_site, Some(site), "and so does `outer.i`");
+
+    let nested = class("orders.helper");
+    assert_eq!(nested.span, None, "the file's body never names it");
+    assert_eq!(
+        nested.include_site,
+        Some(site),
+        "a nested include is attributed to the root-level site that pulled it in"
+    );
+}
+
+// A receiver that resolves as a buffer field is not a type name, so it records no
+// class lookup at all, not even an unresolved one.
+#[test]
+fn a_buffer_field_receiver_is_not_a_class_reference() {
+    let fs = workspace();
+    let config = config();
+    let run = LintPipeline::new(&config, &fs);
+    let file_run = run.with_file("/src/labels.p");
+    let source = "FIND FIRST Customer NO-LOCK.\nMESSAGE Customer.Name:LABEL.\n";
+    let expansion = file_run.expand(source);
+    let result = file_run.collect(&expansion);
+    let edges = file_run.edges_of(&expansion, &result).expect("clean");
+    let section = dependency_section(&edges, 1);
+    assert!(
+        !section.edges.iter().any(|e| e.via == "class"),
+        "got {:?}",
+        section.edges
+    );
+    assert!(
+        section.unresolved.is_empty(),
+        "got {:?}",
+        section.unresolved
+    );
 }

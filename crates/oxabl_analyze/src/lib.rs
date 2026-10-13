@@ -41,7 +41,7 @@
 //!     "diagnostics": 1,
 //!     "preproc": 1,
 //!     "coverage": 2,
-//!     "dependencies": 2
+//!     "dependencies": 4
 //!   },
 //!   "schema_revision": 0,
 //!   "scopes": [ ... ],
@@ -131,6 +131,12 @@ pub const ENVELOPE_VERSION: u32 = 1;
 ///   carries the `span` where the analysed file writes the reference, in that
 ///   file's **own** bytes rather than the post-expansion coordinates the
 ///   `unresolved` rows used to report.
+/// * `dependencies` 4 — every row carries `include_site`, the root-level `{...}`
+///   site through which an include names the reference, beside `span`, the
+///   analysed file's own mention. A target named both ways carries both, so a
+///   consumer can tell "named in this file" from "named in an include it pulls
+///   in". Class rows also arrive for every class-naming site, not only the
+///   supertype walk.
 fn section_versions() -> Value {
     let mut sections = Map::new();
     sections.insert("scopes".into(), json!(1));
@@ -140,7 +146,7 @@ fn section_versions() -> Value {
     sections.insert("diagnostics".into(), json!(1));
     sections.insert("preproc".into(), json!(1));
     sections.insert("coverage".into(), json!(2));
-    sections.insert("dependencies".into(), json!(3));
+    sections.insert("dependencies".into(), json!(4));
     Value::Object(sections)
 }
 
@@ -818,6 +824,11 @@ pub struct DependencyEdgeRow {
     /// intermediate file, and an ancestor reached through a supertype is named in
     /// another file's header.
     pub span: Option<LookupSpanRow>,
+    /// The root-level `{...}` site through which an include the analysed file
+    /// pulls in names the reference, in that file's own bytes. Absent when no
+    /// include names it. Independent of `span`: a target named both in the
+    /// file's body and in an include carries both.
+    pub include_site: Option<LookupSpanRow>,
 }
 
 /// One cross-file reference that produced no link.
@@ -832,6 +843,8 @@ pub struct UnresolvedEdgeRow {
     pub reason: String,
     /// Where the analysed file names it, when it names it in its own bytes.
     pub span: Option<LookupSpanRow>,
+    /// The include site that names it, as [`DependencyEdgeRow::include_site`].
+    pub include_site: Option<LookupSpanRow>,
 }
 
 /// The whole `dependencies` section, assembled by the caller.
@@ -1489,7 +1502,10 @@ mod tests {
             sections["references"], 2,
             "bumped for the resolved row's origin"
         );
-        assert_eq!(sections["dependencies"], 3, "bumped for the typed edge row");
+        assert_eq!(
+            sections["dependencies"], 4,
+            "bumped for the row's include site"
+        );
         // The untouched five keep their numbers: a bump is a claim about a
         // section's shape, and claiming one falsely is as bad as missing one.
         for (name, version) in [

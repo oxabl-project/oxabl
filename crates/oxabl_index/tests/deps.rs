@@ -72,6 +72,12 @@ fn identity(span: VirtualSpan) -> Option<Span> {
     })
 }
 
+/// The include-site mapping for an unpreprocessed buffer: nothing came from an
+/// include.
+fn no_include(_span: VirtualSpan) -> Option<Span> {
+    None
+}
+
 fn inputs<'a>(
     semantic: &'a Semantic,
     schema: &'a Schema,
@@ -89,6 +95,7 @@ fn inputs<'a>(
         unreadable_includes: &[],
         parse_recovered: false,
         resolve_span: &identity,
+        include_site: &no_include,
     }
 }
 
@@ -193,8 +200,8 @@ fn a_resolved_class_reference_becomes_an_edge_carrying_its_span() {
     let index = BatchIndex::new(&fs, &paths);
     let schema = Schema::empty();
 
-    // The body calls the inherited method, so the supertype chain walk actually
-    // runs — a header alone asks the index nothing.
+    // The header names the class, and the body's inherited call walks to it as
+    // well; both reach one edge.
     let source = CHILD;
     let semantic = analyse(source, &schema, &index);
     let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
@@ -215,13 +222,9 @@ fn a_resolved_class_reference_becomes_an_edge_carrying_its_span() {
     );
 }
 
-/// A class whose spans were previously recovered by rescanning the whole symbol
-/// table per lookup still reports the same span, with a body large enough that a
-/// scan and a map could plausibly differ.
-///
-/// The map is built once per file and keyed first-write-wins, in the order the scan
-/// searched — symbols in table order, `INHERITS` before `IMPLEMENTS`. This pins that
-/// the reorganisation did not move which occurrence a name resolves to.
+/// A class named in a header, with a body large enough that a scan and a map
+/// could plausibly differ, reports the header's span: the earliest place the
+/// file names it.
 #[test]
 fn a_class_name_span_is_unchanged_by_the_per_file_map() {
     let mut fs = InMemoryFileSystem::new();

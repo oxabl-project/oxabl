@@ -161,6 +161,15 @@ struct ExpandedChunk {
     real_start: u32,
 }
 
+/// The expanded text one root-origin include site pulled in, `[virt_start,
+/// virt_end)`, and that site in the root file's own bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IncludeRegion {
+    virt_start: u32,
+    virt_end: u32,
+    site: Span,
+}
+
 /// The preprocessed root buffer in owned, `Update`-trivial form.
 ///
 /// Holds the expanded text, a flattened virtual→real offset table (the only
@@ -176,6 +185,11 @@ pub struct ExpandedFile {
     /// Flattened span-tree leaves in expansion order. Empty means the identity
     /// mapping (preprocessing was off): virtual == real, origin == root.
     chunks: Vec<ExpandedChunk>,
+    /// The text each `{file.i}` the root writes itself expanded to, in expansion
+    /// order. Everything nested below one of these lies inside its region, so
+    /// this is how a span from any include depth is traced to the root-file site
+    /// that brought it in.
+    include_regions: Vec<IncludeRegion>,
     /// Loud, root-origin preprocessor diagnostics (already in real coords).
     preproc: Vec<Diagnostic>,
     /// Transitively included files (for change-tracking / invalidation).
@@ -252,6 +266,29 @@ impl ExpandedFile {
     /// expansion knows the mapping back.
     pub fn resolve_root_span(&self, span: Span) -> Option<Span> {
         self.resolve_span(span).map(|fs| fs.span)
+    }
+
+    /// The `{...}` site in the root file's own bytes through which a span in the
+    /// **expanded** buffer arrived, when it originates in an include.
+    ///
+    /// The outermost site, at any include depth: a span from an include nested
+    /// three deep is attributed to the root-level `{...}` that started the chain,
+    /// since that is the one coordinate the root file owns. `None` for a span
+    /// written in the root file itself.
+    pub fn resolve_include_site(&self, span: Span) -> Option<Span> {
+        let found = self
+            .include_regions
+            .binary_search_by(|region| {
+                if span.start < region.virt_start {
+                    std::cmp::Ordering::Greater
+                } else if span.start >= region.virt_end {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()?;
+        Some(self.include_regions[found].site)
     }
 
     /// The chunk containing virtual offset `virt`, or `None` past the end of the
@@ -407,6 +444,7 @@ pub fn expand_source_with(
         return Ok(ExpandedFile {
             text: source.to_string(),
             chunks: Vec::new(),
+            include_regions: Vec::new(),
             preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
@@ -429,8 +467,18 @@ pub fn expand_source_with(
     match processed {
         Ok(pf) => {
             let mut chunks = Vec::new();
+            let mut include_regions = Vec::new();
             let mut cursor = 0u32;
-            flatten_tree(&pf.tree, &mut cursor, &mut chunks);
+            flatten_tree(
+                &pf.tree,
+                &mut cursor,
+                &mut chunks,
+                &mut RegionTracker {
+                    root,
+                    inside: false,
+                    out: &mut include_regions,
+                },
+            );
             // Loud, root-origin preprocessor diagnostics carry real spans
             // already, so they are filtered by origin directly.
             let mut preproc: Vec<Diagnostic> = pf
@@ -467,6 +515,7 @@ pub fn expand_source_with(
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
                 chunks,
+                include_regions,
                 preproc,
                 dependencies: pf.dependencies.clone(),
                 dependency_paths: recorder.into_reads(),
@@ -571,8 +620,25 @@ impl FileSystem for RecordingFileSystem<'_> {
     }
 }
 
-/// Walk the span tree in expansion order, emitting a flat chunk per leaf.
-fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChunk>) {
+/// Where [`flatten_tree`] records root-origin include regions, and whether the
+/// walk is already inside one.
+struct RegionTracker<'a> {
+    root: FileId,
+    inside: bool,
+    out: &'a mut Vec<IncludeRegion>,
+}
+
+/// Walk the span tree in expansion order, emitting a flat chunk per leaf, and a
+/// region per outermost `{file.i}` the root writes.
+///
+/// A `{&var}` or `{N}` substitution (`path: None`) opens no region: its text sits
+/// at its parent's depth, the same rule `collect_direct_includes` follows.
+fn flatten_tree(
+    nodes: &[SpanNode],
+    cursor: &mut u32,
+    out: &mut Vec<ExpandedChunk>,
+    regions: &mut RegionTracker<'_>,
+) {
     for node in nodes {
         match node {
             SpanNode::Chunk { file, start, end } => {
@@ -585,7 +651,30 @@ fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChun
                 });
                 *cursor += len;
             }
-            SpanNode::Include { children, .. } => flatten_tree(children, cursor, out),
+            SpanNode::Include {
+                site,
+                path,
+                children,
+            } => {
+                let opens = !regions.inside && path.is_some() && site.file == regions.root;
+                if !opens {
+                    flatten_tree(children, cursor, out, regions);
+                    continue;
+                }
+                let virt_start = *cursor;
+                regions.inside = true;
+                flatten_tree(children, cursor, out, regions);
+                regions.inside = false;
+                // An include that expanded to nothing covers no span, and an empty
+                // region would break the search's ordering for nothing.
+                if *cursor > virt_start {
+                    regions.out.push(IncludeRegion {
+                        virt_start,
+                        virt_end: *cursor,
+                        site: site.span,
+                    });
+                }
+            }
         }
     }
 }
@@ -865,6 +954,7 @@ mod tests {
                     real_start: *real_start,
                 })
                 .collect(),
+            include_regions: Vec::new(),
             preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
@@ -1281,6 +1371,34 @@ mod tests {
     fn one_include_is_the_whole_direct_set() {
         let expanded = expand_in_proj(&[("a.i", "MESSAGE \"a\".\n")], "{a.i}\nMESSAGE \"root\".\n");
         assert_eq!(direct_names(&expanded), vec!["a.i"]);
+    }
+
+    // Text from any include depth traces to the root-level `{...}` that pulled it
+    // in; the root's own text traces to no include at all.
+    #[test]
+    fn an_include_span_traces_to_its_outermost_root_site() {
+        let source = "MESSAGE 1.\n{a.i}\nMESSAGE 2.\n";
+        let expanded = expand_in_proj(
+            &[("a.i", "MESSAGE 3.\n{b.i}\n"), ("b.i", "MESSAGE 4.\n")],
+            source,
+        );
+        let at = |needle: &str| {
+            let start = expanded.text.find(needle).expect("in the expansion") as u32;
+            Span {
+                start,
+                end: start + needle.len() as u32,
+            }
+        };
+        let site = Span { start: 11, end: 16 };
+        assert_eq!(&source[11..16], "{a.i}");
+        assert_eq!(expanded.resolve_include_site(at("MESSAGE 1.")), None);
+        assert_eq!(expanded.resolve_include_site(at("MESSAGE 2.")), None);
+        assert_eq!(expanded.resolve_include_site(at("MESSAGE 3.")), Some(site));
+        assert_eq!(
+            expanded.resolve_include_site(at("MESSAGE 4.")),
+            Some(site),
+            "a nested include is attributed to the root-level site"
+        );
     }
 
     // `a.i` includes `b.i`: only `a.i` is direct, but both are transitive.
