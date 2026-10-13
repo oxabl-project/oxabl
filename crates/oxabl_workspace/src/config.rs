@@ -38,6 +38,11 @@ pub struct WorkspaceSection {
     /// parse error.
     #[serde(default)]
     pub style: StyleGuide,
+
+    /// The compile environment the preprocessor reports through its predefined
+    /// names (`[workspace.preprocessor]`).
+    #[serde(default)]
+    pub preprocessor: PreprocessorConfig,
 }
 
 /// A user-facing severity level for a lint rule (`[workspace.lint]`).
@@ -130,6 +135,57 @@ impl LintConfig {
     }
 }
 
+/// The `[workspace.preprocessor]` table: the compile environment behind the
+/// AVM's predefined preprocessor names.
+///
+/// The AVM answers `{&OPSYS}`, `{&WINDOW-SYSTEM}`, `{&BATCH-MODE}`,
+/// `{&PROCESS-ARCHITECTURE}` and `{&PROVERSION}` from the machine it compiles
+/// on. A static analyzer has no such machine, so the environment is stated here
+/// and every `&IF` over one of these names is decided against it. The defaults
+/// describe a 64-bit Unix batch compile with a character (TTY) UI; set the keys
+/// to describe the environment your code is really compiled in.
+///
+/// `{&FILE-NAME}`, `{&LINE-NUMBER}` and `{&SEQUENCE}` are computed from the
+/// source and take no configuration.
+///
+/// Container-level `#[serde(default)]` lets a partial table fall back per key,
+/// and `deny_unknown_fields` makes a misspelled key a hard error rather than a
+/// silently wrong branch.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PreprocessorConfig {
+    /// Value of `{&OPSYS}`: `UNIX` or `WIN32`. Default `UNIX`.
+    pub opsys: String,
+
+    /// Value of `{&WINDOW-SYSTEM}`: `TTY` or `MS-WINDOWS`. Default `TTY`.
+    pub window_system: String,
+
+    /// Whether the compile is a batch compile; `{&BATCH-MODE}` expands to `yes`
+    /// or `no`. Default `true`.
+    pub batch_mode: bool,
+
+    /// Value of `{&PROCESS-ARCHITECTURE}`: `32` or `64`. Default `64`.
+    pub process_architecture: u32,
+
+    /// Value of `{&PROVERSION}`, for example `"12.8"`. There is no default: the
+    /// version is not something a tool can guess. While it is unset, an `&IF`
+    /// condition that reads `{&PROVERSION}` raises `PREPROC009` instead of
+    /// silently deciding against an empty string.
+    pub proversion: Option<String>,
+}
+
+impl Default for PreprocessorConfig {
+    fn default() -> Self {
+        PreprocessorConfig {
+            opsys: "UNIX".to_string(),
+            window_system: "TTY".to_string(),
+            batch_mode: true,
+            process_architecture: 64,
+            proversion: None,
+        }
+    }
+}
+
 /// The `[workspace.sources]` section.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SourcesConfig {
@@ -171,6 +227,7 @@ impl WorkspaceConfig {
                 schema: SchemaConfig::default(),
                 lint: LintConfig::default(),
                 style: StyleGuide::default_base(),
+                preprocessor: PreprocessorConfig::default(),
             },
         }
     }
@@ -231,6 +288,44 @@ files = ["schema/sports2000.df"]
             config.workspace.schema.files[0],
             PathBuf::from("schema/sports2000.df")
         );
+    }
+
+    #[test]
+    fn preprocessor_table_defaults_to_a_unix_tty_batch_compile() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        let pp = &config.workspace.preprocessor;
+        assert_eq!(pp.opsys, "UNIX");
+        assert_eq!(pp.window_system, "TTY");
+        assert!(pp.batch_mode);
+        assert_eq!(pp.process_architecture, 64);
+        assert_eq!(pp.proversion, None);
+    }
+
+    #[test]
+    fn preprocessor_table_overrides_per_key() {
+        let toml = r#"
+[workspace]
+name = "p"
+
+[workspace.preprocessor]
+opsys = "WIN32"
+batch-mode = false
+proversion = "12.8"
+"#;
+        let pp = WorkspaceConfig::from_toml(toml)
+            .unwrap()
+            .workspace
+            .preprocessor;
+        assert_eq!(pp.opsys, "WIN32");
+        assert_eq!(pp.window_system, "TTY");
+        assert!(!pp.batch_mode);
+        assert_eq!(pp.proversion.as_deref(), Some("12.8"));
+    }
+
+    #[test]
+    fn preprocessor_table_rejects_unknown_keys() {
+        let toml = "[workspace]\nname = \"p\"\n[workspace.preprocessor]\nopsis = \"UNIX\"\n";
+        assert!(WorkspaceConfig::from_toml(toml).is_err());
     }
 
     #[test]

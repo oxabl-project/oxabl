@@ -158,6 +158,43 @@
       ],
       "type": "string"
     },
+    "PreprocessorConfig": {
+      "additionalProperties": false,
+      "description": "The `[workspace.preprocessor]` table: the compile environment behind the AVM's predefined preprocessor names.\n\nThe AVM answers `{&OPSYS}`, `{&WINDOW-SYSTEM}`, `{&BATCH-MODE}`, `{&PROCESS-ARCHITECTURE}` and `{&PROVERSION}` from the machine it compiles on. A static analyzer has no such machine, so the environment is stated here and every `&IF` over one of these names is decided against it. The defaults describe a 64-bit Unix batch compile with a character (TTY) UI; set the keys to describe the environment your code is really compiled in.\n\n`{&FILE-NAME}`, `{&LINE-NUMBER}` and `{&SEQUENCE}` are computed from the source and take no configuration.\n\nContainer-level `#[serde(default)]` lets a partial table fall back per key, and `deny_unknown_fields` makes a misspelled key a hard error rather than a silently wrong branch.",
+      "properties": {
+        "batch-mode": {
+          "default": true,
+          "description": "Whether the compile is a batch compile; `{&BATCH-MODE}` expands to `yes` or `no`. Default `true`.",
+          "type": "boolean"
+        },
+        "opsys": {
+          "default": "UNIX",
+          "description": "Value of `{&OPSYS}`: `UNIX` or `WIN32`. Default `UNIX`.",
+          "type": "string"
+        },
+        "process-architecture": {
+          "default": 64,
+          "description": "Value of `{&PROCESS-ARCHITECTURE}`: `32` or `64`. Default `64`.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "proversion": {
+          "default": null,
+          "description": "Value of `{&PROVERSION}`, for example `\"12.8\"`. There is no default: the version is not something a tool can guess. While it is unset, an `&IF` condition that reads `{&PROVERSION}` raises `PREPROC009` instead of silently deciding against an empty string.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window-system": {
+          "default": "TTY",
+          "description": "Value of `{&WINDOW-SYSTEM}`: `TTY` or `MS-WINDOWS`. Default `TTY`.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "SchemaConfig": {
       "description": "The `[workspace.schema]` section.",
       "properties": {
@@ -544,6 +581,21 @@
         "name": {
           "description": "Human-readable project name.",
           "type": "string"
+        },
+        "preprocessor": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PreprocessorConfig"
+            }
+          ],
+          "default": {
+            "batch-mode": true,
+            "opsys": "UNIX",
+            "process-architecture": 64,
+            "proversion": null,
+            "window-system": "TTY"
+          },
+          "description": "The compile environment the preprocessor reports through its predefined names (`[workspace.preprocessor]`)."
         },
         "schema": {
           "allOf": [

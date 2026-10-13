@@ -4,7 +4,7 @@ mod file_system;
 mod include_paths;
 mod workspace;
 
-pub use config::{LintConfig, LintSeverity, WorkspaceConfig};
+pub use config::{LintConfig, LintSeverity, PreprocessorConfig, WorkspaceConfig};
 pub use discovery::{
     ROOT_EXTENSIONS, discover_path, is_include_fragment, is_root_file, walk_directory,
 };
