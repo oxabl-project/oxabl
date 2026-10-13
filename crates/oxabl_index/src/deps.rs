@@ -36,7 +36,9 @@
 //! file by its signature. So every edge and every unresolved row carries two
 //! independent sites, each in the dependent file's own bytes:
 //!
-//! - `span` — the first place the file's **own text** names the target;
+//! - `span` — the first place the file's **own text** names the target. For a
+//!   declared type that is the declaring identifier (the variable, parameter,
+//!   property or field), because the model keeps no span for the type name;
 //! - `include_site` — the first root-level `{...}` through which an
 //!   **include** names it, at any include depth.
 //!

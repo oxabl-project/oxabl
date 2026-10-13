@@ -1321,6 +1321,15 @@ struct CrossFileState {
     /// it are named, and a chain of depth five under twenty references costs five
     /// lookups rather than a hundred.
     inherited_walked: FxHashSet<SymbolId>,
+    /// Classes whose chain reached an ancestor the index could not supply — a
+    /// shipped class, one no file declares, or one it declined or failed to read.
+    /// A name such a class does not declare may well be a member that ancestor
+    /// passes on, so it is not evidence of a missing class.
+    incomplete_surfaces: FxHashSet<SymbolId>,
+    /// The folded names the file's text puts after a keyword that introduces a
+    /// handle-like object (`QUERY q`, `FRAME f`, `BUFFER b`, `NEW BUFFER nb`).
+    /// Built from the source on first use. None of them is a class.
+    widget_names: Option<FxHashSet<OxablAtom>>,
     /// What each ancestor contributes to a class in this file, keyed by
     /// `(subclass, folded member name)`. Populated by the chain walk; the symbol
     /// inside is minted only when a reference actually names the member.
@@ -1694,9 +1703,14 @@ impl<'a> ResolveWalker<'a> {
     /// 4. Each **wildcard `USING <package>.*` prefix**, in the order the file
     ///    wrote them, as `prefix + name`.
     /// 5. The name as a fully-qualified index key when it contains **no** dot —
-    ///    a class in the unnamed package, tried last because an undotted name is
+    ///    a class in the unnamed package, tried late because an undotted name is
     ///    far more often an import than a root-level class.
-    /// 6. The miss.
+    /// 6. The miss. A bare name of a `Progress.Lang` class is not one for the
+    ///    purposes of a gap: the AVM's implicit `USING Progress.Lang.*` ranks
+    ///    below every import the file writes, supplies it, and no workspace file
+    ///    is meant to. [`Self::tried_a_shipped_namespace`] says so. It is judged
+    ///    after step 5 so that a workspace class sharing such a name still links,
+    ///    because a lost edge is the worse mistake.
     ///
     /// First match wins at every step. An [`IndexAnswer::Unknowable`] at any
     /// step short-circuits rather than falling through to the next candidate:
@@ -1800,6 +1814,21 @@ impl<'a> ResolveWalker<'a> {
         TypeLookup::NotFound
     }
 
+    /// The `Progress.Lang` class the implicit import supplies for the bare name
+    /// `raw`, qualified. `None` for a dotted name, for a name that is no
+    /// `Progress.Lang` class, and for one an explicit `USING` maps to another
+    /// class — that import is the name's meaning, and a miss on it is the file's
+    /// to answer for.
+    fn implicit_lang_class(&self, raw: &str) -> Option<IndexName> {
+        if raw.contains('.') || !is_implicit_lang_class(fold_atom(raw).as_ref()) {
+            return None;
+        }
+        if self.explicit_import(raw).is_some() {
+            return None;
+        }
+        Some(IndexName::new(&format!("Progress.Lang.{raw}")))
+    }
+
     /// The reason a literal `RUN` target that no configured path supplies gets.
     ///
     /// A target with no file extension is held back from
@@ -1834,7 +1863,10 @@ impl<'a> ResolveWalker<'a> {
     /// bare name* could be a shipped class and the miss is inconclusive. A
     /// qualified spelling cannot be supplied by a wildcard and must stand on
     /// its own namespace; otherwise one `USING Progress.Lang.*` would exempt
-    /// every unrelated qualified typo in the file.
+    /// every unrelated qualified typo in the file. The implicit `Progress.Lang`
+    /// import is not a wildcard in that sense: it exempts only the names of the
+    /// classes that namespace ships, so a bare name it does not supply is still
+    /// a real miss.
     fn tried_a_shipped_namespace(&self, raw: &str) -> bool {
         let simple = fold_atom(raw);
         if is_system_namespace(&simple) {
@@ -1848,6 +1880,7 @@ impl<'a> ResolveWalker<'a> {
                     .using_prefixes()
                     .iter()
                     .any(|(prefix, _)| is_system_namespace(&fold_atom(prefix))))
+            || self.implicit_lang_class(raw).is_some()
     }
 
     /// [`Self::absent_reason`] for a *type* name, with the shipped-namespace
@@ -1959,6 +1992,23 @@ impl<'a> ResolveWalker<'a> {
         self.note_class_site(raw, lookup, site);
     }
 
+    /// [`Self::note_class_name`] for a declared type, where the parser may have
+    /// read a built-in type as a class name. `AS cha` and `AS WIDGET` abbreviate
+    /// types the lexer has no entry for, and `AS CLASS NO-UNDO` leaves a keyword
+    /// where the name should be. Such a name is recorded only when a workspace
+    /// class answers to it: a miss says more about the parser's reading than about
+    /// the workspace.
+    fn note_declared_class(&mut self, raw: &str, scope: ScopeId, site: VirtualSpan) {
+        if !self.ctx.index_loaded {
+            return;
+        }
+        let lookup = self.resolve_type_name(raw, scope, site);
+        if lookup == TypeLookup::NotFound && could_be_builtin_type(raw) {
+            return;
+        }
+        self.note_class_site(raw, lookup, site);
+    }
+
     /// [`Self::note_class_name`] for every class a declared type names — both
     /// arms of a `&IF` type included, since either may be the one compiled.
     fn note_data_type(&mut self, data_type: &DataType, scope: ScopeId, site: VirtualSpan) {
@@ -1967,7 +2017,7 @@ impl<'a> ResolveWalker<'a> {
         }
         match data_type {
             DataType::Class(name) if is_builtin_type_name(name) => {}
-            DataType::Class(name) => self.note_class_name(name, scope, site),
+            DataType::Class(name) => self.note_declared_class(name, scope, site),
             DataType::PreprocIf(pif) => {
                 for branch in std::iter::once(&pif.then_branch)
                     .chain(pif.elseif_branches.iter().map(|(_, b)| b))
@@ -3837,8 +3887,9 @@ impl<'a> ResolveWalker<'a> {
     /// the edge set. A hit always is. A miss is only when a `USING` in this file
     /// could have supplied the name: with none, the only class a bare receiver
     /// can name is one in the unnamed package, and an unresolved bare name is far
-    /// more often something the scope model does not see (a trigger's `NEW`
-    /// buffer, a query, a member of an unresolved parent) than a missing class.
+    /// more often something the scope model does not see than a missing class.
+    /// Even with a `USING`, a miss is dropped for a name that
+    /// [`Self::receiver_is_no_class`] knows is not one.
     fn try_receiver_type(
         &mut self,
         expr_id: NodeId,
@@ -3857,10 +3908,17 @@ impl<'a> ResolveWalker<'a> {
             return;
         }
         let lookup = self.resolve_receiver_type(expr_id, raw, scope, use_span);
-        let could_be_imported = !self.using_types().is_empty() || !self.using_prefixes().is_empty();
-        if record && (could_be_imported || !matches!(lookup, TypeLookup::NotFound)) {
-            self.note_class_site(raw, lookup, use_span);
+        if !record {
+            return;
         }
+        if lookup == TypeLookup::NotFound {
+            let could_be_imported =
+                !self.using_types().is_empty() || !self.using_prefixes().is_empty();
+            if !could_be_imported || self.receiver_is_no_class(raw, scope) {
+                return;
+            }
+        }
+        self.note_class_site(raw, lookup, use_span);
     }
 
     /// A dotted receiver (`pkg.Util:Two()`) parses as a field access, so it is a
@@ -3894,10 +3952,78 @@ impl<'a> ResolveWalker<'a> {
         }
         let span = VirtualSpan::new(expr.span.start, expr.span.end);
         let lookup = self.resolve_receiver_type(expr.id, &raw, scope, span);
-        if !self.ctx.schema_loaded && lookup == TypeLookup::NotFound {
+        if lookup == TypeLookup::NotFound
+            && (!self.ctx.schema_loaded || self.receiver_is_no_class(&raw, scope))
+        {
             return;
         }
         self.note_class_site(&raw, lookup, span);
+    }
+
+    /// Whether the receiver `raw`, bare or dotted, is known to be something other
+    /// than a class, so that failing to find a class by that name is no gap in the
+    /// workspace.
+    ///
+    /// Called only on a miss. A name the workspace does supply is a class
+    /// whatever else it looks like, which is why none of these checks runs ahead
+    /// of the lookup. The receiver is not a class when:
+    ///
+    /// * its first segment is bound as a frame in scope, or follows a keyword that
+    ///   introduces a query, frame, buffer or widget anywhere in the file
+    ///   (`QUERY q`, `FRAME f`, `NEW BUFFER nb`) — the parser drops that keyword
+    ///   and the scope tree has no entry for a query;
+    /// * under a loaded schema, its first segment is a table, or its second is
+    ///   one (`db.table.field`);
+    /// * the class inherits from a type the index could not supply, and the name
+    ///   may be a member of that type.
+    fn receiver_is_no_class(&mut self, raw: &str, scope: ScopeId) -> bool {
+        let mut segments = raw.split('.');
+        let first = fold_atom(segments.next().unwrap_or_default());
+        if [
+            NamespaceId::Buffers,
+            NamespaceId::Tables,
+            NamespaceId::Values,
+            NamespaceId::Frames,
+        ]
+        .iter()
+        .any(|ns| self.tree.resolve(scope, *ns, &first).is_some())
+        {
+            return true;
+        }
+        if self.ctx.schema_loaded {
+            let schema = self.ctx.schema;
+            if schema.table_id(&first).is_some()
+                || segments
+                    .next()
+                    .is_some_and(|second| schema.table_id(&fold_atom(second)).is_some())
+            {
+                return true;
+            }
+        }
+        self.follows_widget_keyword(&first) || self.inherits_from_unknown_type()
+    }
+
+    /// Whether the file writes the folded name `name` straight after a keyword
+    /// that introduces a query, frame, buffer, temp-table or widget.
+    fn follows_widget_keyword(&mut self, name: &OxablAtom) -> bool {
+        if self.cross_file().is_none_or(|cf| cf.widget_names.is_none()) {
+            let names = names_after_widget_keywords(self.ctx.source);
+            self.cross_file_mut().widget_names = Some(names);
+        }
+        self.cross_file()
+            .and_then(|cf| cf.widget_names.as_ref())
+            .is_some_and(|names| names.contains(name))
+    }
+
+    /// Whether the class being walked inherits, however far up, from a type the
+    /// index could not supply. Its members are then not all known.
+    fn inherits_from_unknown_type(&mut self) -> bool {
+        let Some(class) = self.current_class else {
+            return false;
+        };
+        self.walk_member_surface(class);
+        self.cross_file()
+            .is_some_and(|cf| cf.incomplete_surfaces.contains(&class))
     }
 
     /// Resolve a receiver as a type name, and link the receiver when the
@@ -4660,7 +4786,10 @@ impl<'a> ResolveWalker<'a> {
                             .cross_file()
                             .and_then(|cf| cf.indexed_class_of.get(&sym))
                             .cloned(),
-                        _ => self.explicit_import(written).cloned(),
+                        _ => self
+                            .explicit_import(written)
+                            .cloned()
+                            .or_else(|| self.implicit_lang_class(written)),
                     };
                     queue.push_back(resolved.unwrap_or(parent.name));
                 }
@@ -4696,6 +4825,7 @@ impl<'a> ResolveWalker<'a> {
                 // A shipped class is not the workspace's to supply, so its miss
                 // is no gap in it either.
                 IndexAnswer::NotFound => {
+                    self.cross_file_mut().incomplete_surfaces.insert(class);
                     if !is_system_namespace(name.as_atom()) {
                         self.symbols
                             .record_class_lookup(name.as_atom(), ClassLookup::Absent);
@@ -4708,6 +4838,7 @@ impl<'a> ResolveWalker<'a> {
                 // did not resolve, and this one is oxabl's gap rather than a
                 // missing file.
                 IndexAnswer::Unusable => {
+                    self.cross_file_mut().incomplete_surfaces.insert(class);
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unusable);
                     if let Located::In(file) = index.located(LocateKind::Class, &name) {
@@ -4717,6 +4848,7 @@ impl<'a> ResolveWalker<'a> {
                     continue;
                 }
                 IndexAnswer::Unknowable => {
+                    self.cross_file_mut().incomplete_surfaces.insert(class);
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
                     continue;
@@ -5021,6 +5153,76 @@ fn is_builtin_type_name(name: &str) -> bool {
         || OTHER_TYPES.iter().any(|t| t.eq_ignore_ascii_case(name))
 }
 
+/// Whether a type name the parser reads as a class may be a built-in type
+/// instead: an abbreviation of a long type keyword (`cha`, `WIDGET`, `longc`) that
+/// the lexer has no entry for, or a keyword where `AS CLASS` found no name.
+///
+/// Short type keywords are left out, because their prefixes are ordinary class
+/// names (`Row`, `Rec`, `Mem`). Only a miss is judged by this: a class the
+/// workspace does supply is a class.
+fn could_be_builtin_type(name: &str) -> bool {
+    const LONG_TYPES: [&str; 9] = [
+        "character",
+        "integer",
+        "decimal",
+        "logical",
+        "longchar",
+        "datetime",
+        "datetime-tz",
+        "handle",
+        "widget-handle",
+    ];
+    if name.contains('.') {
+        return false;
+    }
+    (name.len() >= 3
+        && LONG_TYPES
+            .iter()
+            .any(|t| name.len() <= t.len() && t[..name.len()].eq_ignore_ascii_case(name)))
+        || oxabl_lexer::tokenize(name).first().is_some_and(|token| {
+            !matches!(
+                token.kind,
+                oxabl_lexer::Kind::Identifier | oxabl_lexer::Kind::Eof
+            )
+        })
+}
+
+/// The folded names the source writes straight after a keyword that introduces a
+/// query, frame, buffer, temp-table, dataset or widget. Scanned from the tokens,
+/// so a keyword inside a comment or a string does not count.
+fn names_after_widget_keywords(source: &str) -> FxHashSet<OxablAtom> {
+    use oxabl_lexer::Kind;
+    let tokens = oxabl_lexer::tokenize(source);
+    let mut names = FxHashSet::default();
+    for pair in tokens.windows(2) {
+        let [keyword, name] = pair else { continue };
+        let introduces = match keyword.kind {
+            Kind::TempTable
+            | Kind::Buffer
+            | Kind::Query
+            | Kind::Frame
+            | Kind::Dataset
+            | Kind::DataSource
+            | Kind::Browse
+            | Kind::Rectangle => true,
+            _ => source.get(keyword.start..keyword.end).is_some_and(|text| {
+                ["button", "image", "menu", "sub-menu"]
+                    .iter()
+                    .any(|word| word.eq_ignore_ascii_case(text))
+            }),
+        };
+        if !introduces {
+            continue;
+        }
+        if let Some(text) = source.get(name.start..name.end)
+            && text.starts_with(|c: char| c.is_alphabetic() || c == '_')
+        {
+            names.insert(fold_atom(text));
+        }
+    }
+    names
+}
+
 /// The argument of a `CAST`, `TYPE-OF` or `GET-CLASS` call that names a type.
 /// The parser models all three as ordinary calls, so the operand arrives as a
 /// value expression.
@@ -5117,6 +5319,38 @@ fn is_system_namespace(name: &OxablAtom) -> bool {
     const SHIPPED: [&str; 4] = ["progress.", "openedge.", "system.", "microsoft."];
     let folded = name.as_ref();
     SHIPPED.iter().any(|prefix| folded.starts_with(prefix))
+}
+
+/// Whether `folded`, a bare case-folded type name, is a class in `Progress.Lang`.
+///
+/// The AVM imports that namespace into every source file, so these names resolve
+/// with no `USING`. The list is the documented class set of the namespace; a
+/// wildcard cannot be used instead, since it would exempt every unknown bare name.
+fn is_implicit_lang_class(folded: &str) -> bool {
+    matches!(
+        folded,
+        "apperror"
+            | "class"
+            | "enum"
+            | "error"
+            | "flagsenum"
+            | "lockconflict"
+            | "messagingerror"
+            | "messagingerrorabort"
+            | "messagingerrorfatal"
+            | "messagingerrorretriable"
+            | "object"
+            | "oerequestinfo"
+            | "oeversioninfo"
+            | "parameterlist"
+            | "proerror"
+            | "soapfaulterror"
+            | "stop"
+            | "stopafter"
+            | "stoperror"
+            | "syserror"
+            | "userinterrupt"
+    )
 }
 
 /// Case-fold and intern an identifier. Shared with [`crate::index`], whose
@@ -9071,6 +9305,94 @@ mod tests {
             vec![true, false],
             "and a recorded hit is likewise not handed to the spelling that \
              genuinely misses"
+        );
+    }
+}
+
+#[cfg(test)]
+mod class_site_guard_tests {
+    use super::*;
+    use crate::{ClassDescriptor, IndexRevision, MemberDescriptor, WorkspaceIndex};
+    use oxabl_common::FileId;
+    use oxabl_schema::Schema;
+    use std::sync::Arc;
+
+    /// An index that knows no class and no program: every lookup is a miss.
+    struct EmptyIndex;
+
+    impl WorkspaceIndex for EmptyIndex {
+        fn class(&self, _name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
+            IndexAnswer::NotFound
+        }
+
+        fn class_members(&self, _class: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
+            IndexAnswer::NotFound
+        }
+
+        fn program(&self, _target: &IndexName) -> IndexAnswer<IndexedFileId> {
+            IndexAnswer::NotFound
+        }
+
+        fn shared_producer(&self, _name: &IndexName) -> IndexAnswer<IndexedFileId> {
+            IndexAnswer::NotFound
+        }
+
+        fn revision(&self) -> IndexRevision {
+            IndexRevision::new(1)
+        }
+    }
+
+    /// The folded names of every class lookup recorded for `source`, analysed with
+    /// an empty context source. With nothing to scan, only the scope tree can tell
+    /// a receiver from a class.
+    fn recorded_class_names(source: &str) -> Vec<String> {
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&EmptyIndex);
+        let stmts = program.statements;
+        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
+        resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        let mut names: Vec<String> = symbols
+            .class_lookups()
+            .map(|(name, _)| name.as_ref().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_receiver_bound_as_a_frame_is_no_missing_class() {
+        assert_eq!(
+            recorded_class_names("USING orders.*.\nDEFINE FRAME f-main.\nf-main:HIDDEN = YES.\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn an_unbound_receiver_is_still_a_missing_class() {
+        assert_eq!(
+            recorded_class_names("USING orders.*.\nf-other:HIDDEN = YES.\n"),
+            vec!["f-other".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_bare_progress_lang_name_is_no_missing_class_but_a_typo_is() {
+        assert_eq!(
+            recorded_class_names(
+                "DEFINE VARIABLE v-obj AS Object NO-UNDO.\nDEFINE VARIABLE v-typo AS Objekt NO-UNDO.\n"
+            ),
+            vec!["objekt".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_explicit_import_of_a_lang_name_is_the_files_to_answer_for() {
+        assert_eq!(
+            recorded_class_names("USING pkg.Error.\nDEFINE VARIABLE v-err AS Error NO-UNDO.\n"),
+            vec!["pkg.error".to_string()]
         );
     }
 }
