@@ -1720,4 +1720,21 @@ mod tests {
             codes(&c)
         );
     }
+
+    // Another crate must carry a fallback arm for a kind of loss the preprocessor
+    // learns later. The denied lint fails if the attribute that requires it goes.
+    #[test]
+    fn text_loss_kinds_are_non_exhaustive() {
+        use oxabl_preprocessor::TextLossKind;
+
+        #[deny(unreachable_patterns)]
+        fn is_depth_limit(kind: TextLossKind) -> bool {
+            match kind {
+                TextLossKind::IncludeDepthLimit => true,
+                TextLossKind::UnclosedConditional | TextLossKind::UnknownPredefinedName => false,
+                _ => false,
+            }
+        }
+        assert!(is_depth_limit(TextLossKind::IncludeDepthLimit));
+    }
 }

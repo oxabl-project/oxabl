@@ -234,6 +234,7 @@ pub struct UnresolvedReference {
 /// that text would have produced an edge or a row, and there is nothing left to
 /// say it existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum DegradedReason {
     /// The parser recovered from an error and skipped statements, in the file
     /// itself or in an include.
@@ -273,7 +274,11 @@ impl DegradedReason {
 /// `Degraded` does not mean the edges are wrong. It means the absence of an edge
 /// proves nothing, so a consumer should widen its invalidation for this file
 /// rather than rely on the set.
+///
+/// Non-exhaustive: a consumer matching it treats an arm it does not know as
+/// degraded.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Completeness {
     /// Nothing was lost: every reference the file makes is an edge or a row.
     #[default]

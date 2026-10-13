@@ -612,3 +612,28 @@ fn a_transitive_include_names_the_site_of_the_include_that_pulled_it_in() {
         ]
     );
 }
+
+// Both enums grow with the analysis, so a consumer must carry a fallback arm. The
+// denied lint turns that arm unreachable, and so a failure, if the attribute that
+// requires it is ever dropped.
+#[test]
+fn completeness_and_degraded_reasons_are_non_exhaustive() {
+    #[deny(unreachable_patterns)]
+    fn trusted(completeness: &Completeness) -> bool {
+        match completeness {
+            Completeness::Complete => true,
+            Completeness::Degraded { .. } => false,
+            _ => false,
+        }
+    }
+    #[deny(unreachable_patterns)]
+    fn tag(reason: &DegradedReason) -> &'static str {
+        match reason {
+            DegradedReason::ParseRecovered => "parse",
+            DegradedReason::UnresolvedInclude => "include",
+            _ => "other",
+        }
+    }
+    assert!(trusted(&Completeness::Complete));
+    assert_eq!(tag(&DegradedReason::ParseRecovered), "parse");
+}
