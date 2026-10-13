@@ -12,7 +12,7 @@ use oxabl_ast::Span;
 use oxabl_common::{FileId, VirtualSpan};
 use oxabl_index::{
     BatchIndex, Completeness, DegradedReason, DependencyEdges, DirectIncludeInput, EdgeInputs,
-    EdgeKind, EdgeTarget, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
+    EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
     UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_parser::Parser;
@@ -91,6 +91,7 @@ fn inputs<'a>(
         schema,
         direct_includes: direct,
         transitive_includes: transitive,
+        include_origins: &[],
         unresolved_includes,
         nested_unresolved_includes: &[],
         unreadable_includes: &[],
@@ -195,6 +196,44 @@ fn direct_and_transitive_includes_are_not_confused() {
             .span,
         None,
         "a transitive include is named in another file, so this one has no site"
+    );
+}
+
+#[test]
+fn a_transitive_include_carries_the_site_of_the_chain_that_reached_it() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let site = Span { start: 0, end: 9 };
+    let direct = [DirectIncludeInput {
+        path: Path::new("/proj/outer.i"),
+        site,
+    }];
+    let transitive = dirs(&["/proj/outer.i", "/proj/inner.i", "/proj/orphan.i"]);
+    let origins = [
+        IncludeOriginInput {
+            path: Path::new("/proj/outer.i"),
+            site,
+        },
+        IncludeOriginInput {
+            path: Path::new("/proj/inner.i"),
+            site,
+        },
+    ];
+    let edges = build_edge_set(&EdgeInputs {
+        include_origins: &origins,
+        ..inputs(&semantic, &schema, &direct, &transitive, &[])
+    });
+
+    let sites: Vec<_> = edges
+        .of_kind(EdgeKind::TransitiveInclude)
+        .map(|edge| (edge.target.key().to_string(), edge.span, edge.include_site))
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("/proj/inner.i".to_string(), None, Some(site)),
+            ("/proj/orphan.i".to_string(), None, None),
+        ]
     );
 }
 

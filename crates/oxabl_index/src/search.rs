@@ -221,7 +221,7 @@ pub fn find_name_with<E: AsRef<str>>(
                 fs,
                 include_paths,
                 &with_extension(name.as_written(), extension),
-                &with_extension(name.as_str(), extension),
+                &with_extension(name.as_str(), &extension.to_ascii_lowercase()),
                 ExtensionPolicy::AnyButInclude,
             );
             if answer != IndexAnswer::NotFound {
@@ -444,6 +444,33 @@ mod tests {
                 NameKind::Class
             ),
             IndexAnswer::Found(PathBuf::from("/src/MyApp/Cache.cls"))
+        );
+    }
+
+    #[test]
+    fn a_configured_extension_is_tried_as_written_and_then_in_lower_case() {
+        let paths = dirs(&["/src"]);
+        let name = IndexName::new("Sub");
+        let upper = ["P".to_string()];
+        assert_eq!(
+            find_name_with(
+                &fs_with(&["/src/sub.p"]),
+                &paths,
+                &name,
+                NameKind::Program,
+                &upper
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/sub.p"))
+        );
+        assert_eq!(
+            find_name_with(
+                &fs_with(&["/src/Sub.P"]),
+                &paths,
+                &name,
+                NameKind::Program,
+                &upper
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/Sub.P"))
         );
     }
 

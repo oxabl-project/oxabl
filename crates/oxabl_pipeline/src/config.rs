@@ -41,7 +41,7 @@ use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
     LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, default_run_extensions,
-    find_workspace_root,
+    find_workspace_root, normalize_run_extensions,
 };
 
 /// A non-fatal problem hit while resolving configuration.
@@ -78,6 +78,11 @@ pub enum ConfigWarning {
     /// different thing and stays loaded: that is stated user intent, and it is the
     /// distinction `schema_loaded` exists to keep.
     SchemaPath(String),
+
+    /// A `[workspace.sources].run_extensions` entry that no file name can end in
+    /// (empty, or holding a path separator). The entry is dropped; without this
+    /// warning a bare `RUN` name would simply stop linking.
+    RunExtension(String),
 }
 
 impl std::fmt::Display for ConfigWarning {
@@ -86,6 +91,10 @@ impl std::fmt::Display for ConfigWarning {
             ConfigWarning::Config(msg) => write!(f, "{msg}"),
             ConfigWarning::Schema(d) => write!(f, "schema: [{}] {}", d.code.0, d.message),
             ConfigWarning::SchemaPath(msg) => write!(f, "schema: {msg}"),
+            ConfigWarning::RunExtension(entry) => write!(
+                f,
+                "run_extensions: ignoring `{entry}`, which cannot be a file extension"
+            ),
         }
     }
 }
@@ -338,7 +347,14 @@ fn derive(
 
     let lint_severities = config.workspace.lint.to_severity_map();
     let preprocessor = config.workspace.preprocessor.clone();
-    let run_extensions = config.workspace.sources.run_extensions.clone();
+    let run_extensions = normalize_run_extensions(&config.workspace.sources.run_extensions);
+    warnings.extend(
+        run_extensions
+            .rejected
+            .into_iter()
+            .map(ConfigWarning::RunExtension),
+    );
+    let run_extensions = run_extensions.extensions;
 
     let schema_path = match schema_loading {
         SchemaLoading::Load => overrides.schema_path.as_ref(),
@@ -1046,6 +1062,30 @@ mod tests {
         assert_eq!(config.include_paths, vec![root.join("inc")]);
         assert_eq!(config.lint_severities.get("LINT0001"), Some(None));
         assert_eq!(config.style.indent_size, 7);
+    }
+
+    #[test]
+    fn run_extensions_are_normalized_and_a_bad_entry_warns() {
+        let parsed = WorkspaceConfig::from_toml(
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\nrun_extensions = [\".p\", \"\", \"a/b\", \"w\"]\n",
+        )
+        .unwrap();
+
+        let (config, warnings) = resolve_from_config(
+            &parsed,
+            Path::new("/nonexistent-root"),
+            &ConfigOverrides::default(),
+        );
+
+        assert_eq!(config.run_extensions, ["p", "w"]);
+        assert_eq!(
+            warnings,
+            [
+                ConfigWarning::RunExtension(String::new()),
+                ConfigWarning::RunExtension("a/b".to_string()),
+            ]
+        );
     }
 
     /// The nearest `oxabl.toml` wins, as with every ancestor-walking tool.

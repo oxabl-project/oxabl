@@ -86,7 +86,7 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, NestedUnresolvedIncludeInput,
+    BatchIndex, DirectIncludeInput, EdgeInputs, IncludeOriginInput, NestedUnresolvedIncludeInput,
     UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
@@ -453,7 +453,7 @@ pub struct LintPipeline<'a> {
 /// semantic layer already takes — so the *questions* stay shared (R7) while the
 /// memoization differs, which is the whole shape of KTD2.
 enum RunIndex<'a> {
-    Owned(BatchIndex<'a>),
+    Owned(Box<BatchIndex<'a>>),
     Shared(&'a BatchIndex<'a>),
     External(&'a dyn WorkspaceIndex),
 }
@@ -474,10 +474,11 @@ impl<'a> LintPipeline<'a> {
             // The index reads nothing until a name is looked up (R6), so building
             // it here costs a pair of borrows and no I/O — which is what lets it
             // be unconditional rather than another thing a client can forget.
-            index: RunIndex::Owned(
+            index: RunIndex::Owned(Box::new(
                 BatchIndex::new(fs, &config.include_paths)
-                    .with_run_extensions(&config.run_extensions),
-            ),
+                    .with_run_extensions(&config.run_extensions)
+                    .with_preprocessor(&config.preprocessor),
+            )),
             file: None,
         }
     }
@@ -509,7 +510,7 @@ impl<'a> LintPipeline<'a> {
     #[must_use]
     pub fn with_known_files(mut self, files: &'a [PathBuf]) -> Self {
         self.index = match self.index {
-            RunIndex::Owned(index) => RunIndex::Owned(index.seeded_with(files)),
+            RunIndex::Owned(index) => RunIndex::Owned(Box::new((*index).seeded_with(files))),
             // A sibling does not own the index it answers from, so it cannot
             // change what that index knows — and must not, since the run handle
             // has already told it. Explicit arm rather than a catch-all so a
@@ -687,6 +688,14 @@ impl<'a> LintPipeline<'a> {
                 site: include.site,
             })
             .collect();
+        let origins: Vec<IncludeOriginInput<'_>> = expanded
+            .include_origins()
+            .iter()
+            .map(|origin| IncludeOriginInput {
+                path: origin.path.as_path(),
+                site: origin.site,
+            })
+            .collect();
         let unresolved_includes: Vec<UnresolvedIncludeInput<'_>> = expanded
             .unresolved_includes()
             .iter()
@@ -742,6 +751,7 @@ impl<'a> LintPipeline<'a> {
             schema: &self.config.schema,
             direct_includes: &direct,
             transitive_includes: expansion.dependency_paths(),
+            include_origins: &origins,
             unresolved_includes: &unresolved_includes,
             nested_unresolved_includes: &nested_unresolved,
             unreadable_includes: &unreadable,

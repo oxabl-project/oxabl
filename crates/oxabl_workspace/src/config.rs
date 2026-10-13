@@ -203,6 +203,10 @@ pub struct SourcesConfig {
     /// Extensions tried, in order, for a `RUN` target written without one
     /// (`RUN post-order`), written without the dot. Default `["p", "w"]`.
     ///
+    /// A leading dot is ignored, and an entry that is empty or holds a path
+    /// separator is dropped with a warning. Each extension is tried as written and
+    /// then in lower case.
+    ///
     /// The first extension that finds a file wins. A list that omits an
     /// extension never links a bare name to such a file; an empty list links no
     /// bare name at all.
@@ -213,6 +217,37 @@ pub struct SourcesConfig {
 /// The extensions an extensionless `RUN` target is tried with.
 pub fn default_run_extensions() -> Vec<String> {
     vec!["p".to_string(), "w".to_string()]
+}
+
+/// The usable entries of a `run_extensions` list, and the ones that were not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunExtensions {
+    /// Entries in configured order, without a leading dot, each once.
+    pub extensions: Vec<String>,
+    /// Entries dropped because no file name can end in them: empty, or holding a
+    /// path separator. As written.
+    pub rejected: Vec<String>,
+}
+
+/// Normalize a `run_extensions` list as the search needs it.
+///
+/// A leading dot is stripped (`.p` means `p`). Case is kept: the lookup tries the
+/// configured spelling and then the lower-case one, like every other name.
+pub fn normalize_run_extensions(entries: &[String]) -> RunExtensions {
+    let mut extensions: Vec<String> = Vec::new();
+    let mut rejected = Vec::new();
+    for entry in entries {
+        let extension = entry.trim().trim_start_matches('.');
+        if extension.is_empty() || extension.contains(['/', '\\']) {
+            rejected.push(entry.clone());
+        } else if !extensions.iter().any(|seen| seen == extension) {
+            extensions.push(extension.to_string());
+        }
+    }
+    RunExtensions {
+        extensions,
+        rejected,
+    }
 }
 
 impl Default for SourcesConfig {
@@ -360,6 +395,22 @@ proversion = "12.8"
         let toml = "[workspace]\nname = \"p\"\n[workspace.sources]\nrun_extensions = [\"w\", \"p\", \"pp\"]\n";
         let config = WorkspaceConfig::from_toml(toml).unwrap();
         assert_eq!(config.workspace.sources.run_extensions, ["w", "p", "pp"]);
+    }
+
+    #[test]
+    fn run_extensions_lose_a_leading_dot_and_repeats() {
+        let entries = |list: &[&str]| list.iter().map(|e| e.to_string()).collect::<Vec<_>>();
+        let normalized = normalize_run_extensions(&entries(&[".p", "w", "p", " .W "]));
+        assert_eq!(normalized.extensions, ["p", "w", "W"]);
+        assert!(normalized.rejected.is_empty());
+    }
+
+    #[test]
+    fn run_extensions_reject_what_no_file_name_ends_in() {
+        let entries = |list: &[&str]| list.iter().map(|e| e.to_string()).collect::<Vec<_>>();
+        let normalized = normalize_run_extensions(&entries(&["", ".", "a/b", "a\\b", "p"]));
+        assert_eq!(normalized.extensions, ["p"]);
+        assert_eq!(normalized.rejected, ["", ".", "a/b", "a\\b"]);
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! graph grows one referenced file at a time, and files nobody references are
 //! never touched.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
@@ -18,7 +19,7 @@ use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, WorkspaceIndex,
 };
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use rustc_hash::FxHashMap;
 
 use crate::facts::{ClassFacts, FileFacts};
@@ -48,6 +49,9 @@ pub struct BatchIndex<'a> {
     /// Extensions an extensionless `RUN` target is tried with, in order; `None`
     /// is [`search::BARE_PROGRAM_EXTENSIONS`].
     run_extensions: Option<&'a [String]>,
+    /// The environment the predefined names answer for; `None` is
+    /// [`PreprocessorConfig::default`].
+    preprocessor: Option<&'a PreprocessorConfig>,
     /// Files the run already knows it is going to read — the CLI walk's own
     /// discovered file list, handed over by [`BatchIndex::seeded_with`].
     ///
@@ -161,6 +165,7 @@ impl<'a> BatchIndex<'a> {
             fs,
             include_paths,
             run_extensions: None,
+            preprocessor: None,
             known_files: &[],
             memo: RwLock::new(Memo {
                 facts: FxHashMap::default(),
@@ -181,6 +186,23 @@ impl<'a> BatchIndex<'a> {
     pub fn with_run_extensions(mut self, extensions: &'a [String]) -> Self {
         self.run_extensions = Some(extensions);
         self
+    }
+
+    /// Answer `{&OPSYS}` and the other predefined names from `preprocessor`
+    /// when an indexed file's own directives are applied.
+    ///
+    /// Apply before any lookup.
+    #[must_use]
+    pub fn with_preprocessor(mut self, preprocessor: &'a PreprocessorConfig) -> Self {
+        self.preprocessor = Some(preprocessor);
+        self
+    }
+
+    fn predefined(&self) -> Cow<'a, PreprocessorConfig> {
+        match self.preprocessor {
+            Some(config) => Cow::Borrowed(config),
+            None => Cow::Owned(PreprocessorConfig::default()),
+        }
     }
 
     fn find_path(&self, name: &IndexName, kind: search::NameKind) -> IndexAnswer<PathBuf> {
@@ -284,7 +306,7 @@ impl<'a> BatchIndex<'a> {
         let answer =
             match search::find_name(self.fs, self.include_paths, name, search::NameKind::Class) {
                 IndexAnswer::Found(path) => {
-                    let facts = memo.facts_for(self.fs, &path);
+                    let facts = memo.facts_for(self.fs, &self.predefined(), &path);
                     // A file *was* located at the path the class name derives, and
                     // it does not visibly declare the class. That is `Unusable`,
                     // not `NotFound`, and the difference decides whether a
@@ -324,7 +346,12 @@ impl Memo {
     /// Takes `&mut self` (i.e. runs under the write guard) so the read, the
     /// extraction, and the insert are one atomic step — which is what makes the
     /// shared-dependency dedup a guarantee rather than a race.
-    fn facts_for(&mut self, fs: &dyn FileSystem, path: &Path) -> Arc<FileFacts> {
+    fn facts_for(
+        &mut self,
+        fs: &dyn FileSystem,
+        predefined: &PreprocessorConfig,
+        path: &Path,
+    ) -> Arc<FileFacts> {
         // Normalized *before* the probe and used for the insert as well, so the
         // two spellings of one file are one key on both halves. `path` itself is
         // what gets read: the normalized form is the key, not the I/O target, so a
@@ -337,7 +364,7 @@ impl Memo {
         let id = IndexedFileId::new(self.next_file_id);
         self.next_file_id += 1;
         let facts = Arc::new(match fs.read(path) {
-            Ok(source) => index_file(id, &source),
+            Ok(source) => index_file(id, &source, predefined),
             // Located but unreadable. Not an error case: a file we cannot read
             // is knowably unusable, and remembering that keeps us from
             // re-attempting the read on every reference to the same name.
@@ -376,7 +403,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
                 // an unusable file, and a program a file `RUN`s is the realistic
                 // producer of the `SHARED` names that file consumes — indexing it
                 // here is what gives `shared_producer` something true to say.
-                let facts = memo.facts_for(self.fs, &path);
+                let facts = memo.facts_for(self.fs, &self.predefined(), &path);
                 if facts.parsed {
                     IndexAnswer::Found(facts.file)
                 } else {
@@ -419,7 +446,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
         if !memo.known_indexed {
             memo.known_indexed = true;
             for path in self.known_files {
-                memo.facts_for(self.fs, path);
+                memo.facts_for(self.fs, &self.predefined(), path);
             }
         }
         let mut found = None;
@@ -441,7 +468,11 @@ impl WorkspaceIndex for BatchIndex<'_> {
             LocateKind::Program => search::NameKind::Program,
         };
         match self.find_path(name, kind) {
-            IndexAnswer::Found(path) => Located::In(self.memo().facts_for(self.fs, &path).file),
+            IndexAnswer::Found(path) => Located::In(
+                self.memo()
+                    .facts_for(self.fs, &self.predefined(), &path)
+                    .file,
+            ),
             _ => Located::Nowhere,
         }
     }

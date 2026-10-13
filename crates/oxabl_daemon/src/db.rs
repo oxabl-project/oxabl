@@ -107,7 +107,7 @@ use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, WorkspaceIndex,
 };
-use oxabl_workspace::{FileSystem, RealFileSystem};
+use oxabl_workspace::{FileSystem, PreprocessorConfig, RealFileSystem};
 use salsa::{Setter, Storage};
 
 /// The root buffer's file id, re-exported from its single owner (KTD12).
@@ -166,6 +166,11 @@ pub struct IndexedFile {
     pub index_id: u32,
     /// Bumped when the watcher reports this file changed on disk.
     pub disk_revision: u32,
+    /// The environment the file's own directives are applied under. An input
+    /// field rather than a read of the configuration, so a changed
+    /// `[workspace.preprocessor]` invalidates the facts that depended on it.
+    #[returns(ref)]
+    pub preprocessor: PreprocessorConfig,
 }
 
 /// Salsa input carrying a monotonically-bumped schema revision. The diagnostics
@@ -273,7 +278,13 @@ impl IndexHandle {
         }
         registry.next_id += 1;
         let index_id = registry.next_id;
-        let input = IndexedFile::new(db, path.to_path_buf(), index_id, 0);
+        let input = IndexedFile::new(
+            db,
+            path.to_path_buf(),
+            index_id,
+            0,
+            db.config().pipeline.preprocessor.clone(),
+        );
         registry.by_path.insert(
             key,
             Registered {
@@ -319,6 +330,19 @@ impl IndexHandle {
         drop(registry);
         input.set_disk_revision(db).to(revision);
         true
+    }
+
+    /// Point every registered input at `preprocessor`, invalidating the facts of
+    /// the files whose setting changed.
+    ///
+    /// Call after the configuration is replaced: an input created later reads
+    /// the new configuration itself, and one already registered holds the old.
+    pub fn set_preprocessor(&self, db: &mut AnalysisDatabase, preprocessor: &PreprocessorConfig) {
+        for (input, _) in self.registered() {
+            if input.preprocessor(db) != preprocessor {
+                input.set_preprocessor(db).to(preprocessor.clone());
+            }
+        }
     }
 
     /// Whether `path` has been registered — i.e. whether any lookup has ever
@@ -491,6 +515,7 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     // answer below is derived from it, and it is the whole invalidation protocol
     // (R10) — so it is read unconditionally, including on the unreadable-file path.
     let _revision = file.disk_revision(db);
+    let predefined = file.preprocessor(db);
     let id = IndexedFileId::new(*file.index_id(db));
     let path = file.path(db);
     let Ok(source) = db.config().fs.read(path) else {
@@ -507,7 +532,7 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     // in `diagnostics`: after the cheap read, before the parse. A concurrent
     // main-thread write has already made this answer irrelevant.
     db.unwind_if_revision_cancelled();
-    Arc::new(index_file(id, &source))
+    Arc::new(index_file(id, &source, predefined))
 }
 
 /// One class's descriptor, keyed per file **and per class** (R9).
@@ -888,6 +913,15 @@ pub(crate) fn indexed_members_for_test(
     class: &str,
 ) -> IndexAnswer<Arc<[MemberDescriptor]>> {
     SnapshotIndex::new(db, None).class_members(&IndexName::new(class))
+}
+
+/// The class descriptor lookup, for the same reason as the members one.
+#[cfg(test)]
+pub(crate) fn indexed_class_for_test(
+    db: &AnalysisDatabase,
+    class: &str,
+) -> IndexAnswer<Arc<ClassDescriptor>> {
+    SnapshotIndex::new(db, None).class(&IndexName::new(class))
 }
 
 #[cfg(test)]

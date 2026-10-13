@@ -756,6 +756,7 @@ impl Session {
             preprocess: previous.preprocess,
             index: Arc::clone(&previous.index),
         });
+        self.sync_index_preprocessor();
         self.config_generation += 1;
         self.workspace = None;
     }
@@ -764,8 +765,17 @@ impl Session {
     /// filesystem too — the tests, and a client that supplies its own.
     pub fn install_analysis_config(&mut self, config: AnalysisConfig) {
         self.db.set_config(config);
+        self.sync_index_preprocessor();
         self.config_generation += 1;
         self.workspace = None;
+    }
+
+    /// Carry the installed `[workspace.preprocessor]` to the registered index inputs.
+    fn sync_index_preprocessor(&mut self) {
+        let config = self.db.config().clone();
+        config
+            .index
+            .set_preprocessor(&mut self.db, &config.pipeline.preprocessor);
     }
 
     /// Bump the schema revision, invalidating every buffer's diagnostics.
@@ -1076,6 +1086,50 @@ fn retry_unless_panicked(work: CompletedWork) -> Disposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxabl_semantic::{IndexAnswer, IndexName};
+
+    /// The parent `pkg.Mid` declares, per the `{&OPSYS}` its directives read.
+    fn mid_parent(session: &Session) -> String {
+        match crate::db::indexed_class_for_test(session.database(), "pkg.Mid") {
+            IndexAnswer::Found(class) => class.inherits.as_ref().map_or_else(
+                || "none".to_string(),
+                |name: &IndexName| name.as_str().to_string(),
+            ),
+            _ => "unavailable".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_changed_preprocessor_environment_invalidates_the_indexed_facts() {
+        let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+        fs.insert(
+            PathBuf::from("/src/pkg/Mid.cls"),
+            "&IF \"{&OPSYS}\" = \"WIN32\" &THEN\n\
+             CLASS pkg.Mid INHERITS pkg.WinBase:\n\
+             &ELSE\n\
+             CLASS pkg.Mid INHERITS pkg.Base:\n\
+             &ENDIF\n\
+             END CLASS.\n",
+        );
+        let configured = |opsys: &str| {
+            let mut pipeline = PipelineConfig {
+                include_paths: vec![PathBuf::from("/src")],
+                ..PipelineConfig::default()
+            };
+            pipeline.preprocessor.opsys = opsys.to_string();
+            pipeline
+        };
+        let mut session = Session::new("/src");
+        session.install_analysis_config(AnalysisConfig {
+            fs: Arc::new(fs),
+            pipeline: Arc::new(configured("UNIX")),
+            ..AnalysisConfig::default()
+        });
+        assert_eq!(mid_parent(&session), "pkg.base");
+
+        session.install_config(configured("WIN32"));
+        assert_eq!(mid_parent(&session), "pkg.winbase");
+    }
 
     /// A computation that is current and produced an answer.
     fn healthy() -> CompletedWork {

@@ -233,7 +233,7 @@
             "p",
             "w"
           ],
-          "description": "Extensions tried, in order, for a `RUN` target written without one (`RUN post-order`), written without the dot. Default `[\"p\", \"w\"]`.\n\nThe first extension that finds a file wins. A list that omits an extension never links a bare name to such a file; an empty list links no bare name at all.",
+          "description": "Extensions tried, in order, for a `RUN` target written without one (`RUN post-order`), written without the dot. Default `[\"p\", \"w\"]`.\n\nA leading dot is ignored, and an entry that is empty or holds a path separator is dropped with a warning. Each extension is tried as written and then in lower case.\n\nThe first extension that finds a file wins. A list that omits an extension never links a bare name to such a file; an empty list links no bare name at all.",
           "items": {
             "type": "string"
           },

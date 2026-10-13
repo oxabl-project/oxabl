@@ -170,6 +170,16 @@ struct IncludeRegion {
     site: Span,
 }
 
+/// One include file the root pulls in at any depth, and the first `{...}` or
+/// `{&var}` the root itself writes through which it arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeOrigin {
+    /// The path the preprocessor resolved the include to.
+    pub path: PathBuf,
+    /// The outermost site of the chain that reached it, in the root's own bytes.
+    pub site: Span,
+}
+
 /// The preprocessed root buffer in owned, `Update`-trivial form.
 ///
 /// Holds the expanded text, a flattened virtual→real offset table (the only
@@ -206,15 +216,23 @@ pub struct ExpandedFile {
     /// is flat and transitive, so "direct or transitive?" is unanswerable
     /// downstream.
     direct_includes: Vec<DirectInclude>,
-    /// Root-origin include references that resolved to no file. An edge set that
-    /// dropped these would under-report impact silently.
+    /// Every include file the expansion read through a resolved include node, each
+    /// once, with the root-level site of the chain that reached it.
+    include_origins: Vec<IncludeOrigin>,
+    /// Include references that resolved to no file and that the root names itself:
+    /// written in the root, or reached only through `{&var}` substitutions the root
+    /// writes. For the second kind `site` is the substitution, in the root's own
+    /// bytes, and `via` is empty. An edge set that dropped these would
+    /// under-report impact silently.
     unresolved_includes: Vec<UnresolvedInclude>,
     /// Include references written in an *included* file that resolved to no file.
     /// The root cannot render their own sites, so each keeps the chain of sites
     /// that led to it.
     nested_unresolved_includes: Vec<UnresolvedInclude>,
     /// Include references, at any depth, that resolved to a path whose content
-    /// could not be read.
+    /// could not be read. As with [`Self::unresolved_includes`], one reached only
+    /// through the root's own `{&var}` substitutions carries the substitution as
+    /// its site.
     unreadable_includes: Vec<UnreadableInclude>,
     /// Places, at any depth, where the preprocessor dropped text or decided a
     /// branch without the facts to decide it.
@@ -243,7 +261,8 @@ impl ExpandedFile {
         &self.direct_includes
     }
 
-    /// Root-origin include references that named no locatable file.
+    /// Include references the root names itself that named no locatable file:
+    /// written in the root, or reached only through its `{&var}` substitutions.
     pub fn unresolved_includes(&self) -> &[UnresolvedInclude] {
         &self.unresolved_includes
     }
@@ -252,6 +271,16 @@ impl ExpandedFile {
     /// file, at any depth below the root.
     pub fn nested_unresolved_includes(&self) -> &[UnresolvedInclude] {
         &self.nested_unresolved_includes
+    }
+
+    /// Every include file this expansion read through a resolved include node, each
+    /// once, with the root-level site of the chain that reached it.
+    ///
+    /// For a direct include that is its own site. Pairs with
+    /// [`ExpandedFile::dependency_paths`]: a path that is read and absent here was
+    /// read through no include node, and has no site.
+    pub fn include_origins(&self) -> &[IncludeOrigin] {
+        &self.include_origins
     }
 
     /// Include references, at any depth, that resolved to a path whose content
@@ -460,6 +489,7 @@ pub fn expand_source_with(
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
+            include_origins: Vec::new(),
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
@@ -510,19 +540,48 @@ pub fn expand_source_with(
             ));
             let mut direct_includes = Vec::new();
             collect_direct_includes(&pf.tree, root, None, &mut direct_includes);
+            let mut include_origins = Vec::new();
+            collect_include_origins(
+                &pf.tree,
+                root,
+                None,
+                &mut std::collections::HashSet::new(),
+                &mut include_origins,
+            );
+            let mut substitutions = Vec::new();
+            collect_substitution_sites(&pf.tree, &mut substitutions);
             // An include that failed to resolve deeper down is that file's gap to
-            // report, not this one's — the same origin rule diagnostics follow.
-            let unresolved_includes = pf
-                .unresolved_includes
+            // report, not this one's — the same origin rule diagnostics follow. A
+            // `{&var}` the root writes is not deeper down: its value is the root's
+            // own text, so the reference is the root's and sits at the substitution.
+            let mut unresolved_includes = Vec::new();
+            let mut nested_unresolved_includes = Vec::new();
+            for include in &pf.unresolved_includes {
+                if include.site.file == root {
+                    unresolved_includes.push(include.clone());
+                } else if let Some(site) = substitution_site(&include.via, root, &substitutions) {
+                    unresolved_includes.push(UnresolvedInclude {
+                        site,
+                        via: Vec::new(),
+                        ..include.clone()
+                    });
+                } else {
+                    nested_unresolved_includes.push(include.clone());
+                }
+            }
+            let unreadable_includes = pf
+                .unreadable_includes
                 .iter()
-                .filter(|u| u.site.file == root)
-                .cloned()
-                .collect();
-            let nested_unresolved_includes = pf
-                .unresolved_includes
-                .iter()
-                .filter(|u| u.site.file != root)
-                .cloned()
+                .map(
+                    |include| match substitution_site(&include.via, root, &substitutions) {
+                        Some(site) if include.site.file != root => UnreadableInclude {
+                            site,
+                            via: Vec::new(),
+                            ..include.clone()
+                        },
+                        _ => include.clone(),
+                    },
+                )
                 .collect();
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
@@ -532,9 +591,10 @@ pub fn expand_source_with(
                 dependencies: pf.dependencies.clone(),
                 dependency_paths: recorder.into_reads(),
                 direct_includes,
+                include_origins,
                 unresolved_includes,
                 nested_unresolved_includes,
-                unreadable_includes: pf.unreadable_includes.clone(),
+                unreadable_includes,
                 text_losses: pf.text_losses.clone(),
                 root,
             })
@@ -689,6 +749,72 @@ fn flatten_tree(
                 }
             }
         }
+    }
+}
+
+/// Every `{&var}` substitution in the tree, as the file and span that wrote it.
+fn collect_substitution_sites(nodes: &[SpanNode], out: &mut Vec<FileSpan>) {
+    for node in nodes {
+        if let SpanNode::Include {
+            site,
+            path: None,
+            children,
+        } = node
+        {
+            out.push(*site);
+            collect_substitution_sites(children, out);
+        } else if let SpanNode::Include { children, .. } = node {
+            collect_substitution_sites(children, out);
+        }
+    }
+}
+
+/// The substitution in the root's own bytes through which a reference arrived,
+/// when the whole chain that led to it is `{&var}` substitutions and none is a
+/// file include.
+fn substitution_site(
+    via: &[FileSpan],
+    root: FileId,
+    substitutions: &[FileSpan],
+) -> Option<FileSpan> {
+    let first = via.first().filter(|site| site.file == root)?;
+    via.iter()
+        .all(|step| substitutions.contains(step))
+        .then_some(*first)
+}
+
+/// Every resolved include in the tree, at any depth, each path once in tree order,
+/// with the outermost site the root writes that led to it.
+///
+/// `anchor` is that outermost site once the walk is inside one. A node whose site
+/// is not in `root` and that has no anchor cannot be placed in the root's bytes
+/// and is skipped.
+fn collect_include_origins(
+    nodes: &[SpanNode],
+    root: FileId,
+    anchor: Option<Span>,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    out: &mut Vec<IncludeOrigin>,
+) {
+    for node in nodes {
+        let SpanNode::Include {
+            site,
+            path,
+            children,
+        } = node
+        else {
+            continue;
+        };
+        let origin = anchor.or((site.file == root).then_some(site.span));
+        if let (Some(path), Some(site)) = (path, origin)
+            && seen.insert(path.clone())
+        {
+            out.push(IncludeOrigin {
+                path: path.clone(),
+                site,
+            });
+        }
+        collect_include_origins(children, root, origin, seen, out);
     }
 }
 
@@ -981,6 +1107,7 @@ mod tests {
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
+            include_origins: Vec::new(),
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
@@ -1592,5 +1719,22 @@ mod tests {
             "unknown bare name in FIRST-OF must still be undefined, got {:?}",
             codes(&c)
         );
+    }
+
+    // Another crate must carry a fallback arm for a kind of loss the preprocessor
+    // learns later. The denied lint fails if the attribute that requires it goes.
+    #[test]
+    fn text_loss_kinds_are_non_exhaustive() {
+        use oxabl_preprocessor::TextLossKind;
+
+        #[deny(unreachable_patterns)]
+        fn is_depth_limit(kind: TextLossKind) -> bool {
+            match kind {
+                TextLossKind::IncludeDepthLimit => true,
+                TextLossKind::UnclosedConditional | TextLossKind::UnknownPredefinedName => false,
+                _ => false,
+            }
+        }
+        assert!(is_depth_limit(TextLossKind::IncludeDepthLimit));
     }
 }

@@ -476,3 +476,164 @@ fn an_extension_outside_the_configured_list_is_not_tried() {
     );
     assert!(run_targets("RUN both.\n", &[]).is_empty());
 }
+
+/// The class edges of `/proj/Child.cls` when `pkg.Mid` picks its parent with an
+/// `&IF` over `{&OPSYS}`.
+fn directive_built_parent_edges(opsys: &str) -> Vec<String> {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/pkg/Mid.cls"),
+        "&IF \"{&OPSYS}\" = \"WIN32\" &THEN\n\
+         CLASS pkg.Mid INHERITS pkg.WinBase:\n\
+         &ELSE\n\
+         CLASS pkg.Mid INHERITS pkg.Base:\n\
+         &ENDIF\n\
+         END CLASS.\n",
+    );
+    for base in ["Base", "WinBase"] {
+        fs.insert(
+            PathBuf::from(format!("/proj/pkg/{base}.cls")),
+            format!("CLASS pkg.{base}:\nEND CLASS.\n"),
+        );
+    }
+    let mut config = config("/proj");
+    config.preprocessor.opsys = opsys.to_string();
+    let run = LintPipeline::new(&config, &fs);
+    let edges = run
+        .with_file("/proj/Child.cls")
+        .edge_set(
+            "CLASS Child INHERITS pkg.Mid:\n\
+             METHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
+        )
+        .expect("edge set");
+    edges
+        .of_kind(EdgeKind::ClassReference)
+        .map(|edge| edge.target.key().to_string())
+        .collect()
+}
+
+#[test]
+fn a_directive_built_class_follows_the_configured_opsys() {
+    assert_eq!(
+        directive_built_parent_edges("UNIX"),
+        ["pkg.base", "pkg.mid"]
+    );
+    assert_eq!(
+        directive_built_parent_edges("WIN32"),
+        ["pkg.mid", "pkg.winbase"]
+    );
+}
+
+#[test]
+fn a_dotted_run_extension_in_the_configuration_still_links_a_bare_run() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/both.p"), "MESSAGE 1.\n");
+    let workspace = oxabl_workspace::WorkspaceConfig::from_toml(
+        "[workspace]\nname = \"p\"\n\
+         [workspace.sources]\ninclude_paths = [\"/proj\"]\nrun_extensions = [\".P\", \"\"]\n",
+    )
+    .expect("config");
+    let (config, warnings) = oxabl_pipeline::resolve_from_config(
+        &workspace,
+        Path::new("/proj"),
+        &oxabl_pipeline::ConfigOverrides::default(),
+    );
+    assert_eq!(warnings.len(), 1, "got {warnings:?}");
+    let run = LintPipeline::new(&config, &fs);
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set("RUN both.\n")
+        .expect("edge set");
+    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+}
+
+#[test]
+fn an_unreadable_include_through_a_define_is_the_roots_own_direct_include() {
+    let mut inner = InMemoryFileSystem::new();
+    inner.insert(PathBuf::from("/proj/ok.i"), "MESSAGE 1.\n");
+    let fs = Unreadable {
+        inner,
+        unreadable: vec![PathBuf::from("/proj/latin.i")],
+    };
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let source = "&SCOPED-DEFINE INC {latin.i}\n{&INC}\n";
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set(source)
+        .expect("edge set");
+
+    let site = source.find("{&INC}").unwrap() as u32;
+    let expected = Some(oxabl_ast::Span {
+        start: site,
+        end: site + 6,
+    });
+    let direct: Vec<_> = edges.of_kind(EdgeKind::DirectInclude).collect();
+    assert_eq!(direct.len(), 1, "got {:?}", edges.edges());
+    assert_eq!((direct[0].span, direct[0].include_site), (expected, None));
+    assert!(edges.of_kind(EdgeKind::TransitiveInclude).next().is_none());
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 1, "got {rows:?}");
+    assert_eq!(rows[0].kind, EdgeKind::DirectInclude);
+    assert_eq!((rows[0].span, rows[0].include_site), (expected, None));
+}
+
+#[test]
+fn a_transitive_include_names_the_site_of_the_include_that_pulled_it_in() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/a.i"), "{b.i}\n");
+    fs.insert(PathBuf::from("/proj/b.i"), "{c.i}\n");
+    fs.insert(PathBuf::from("/proj/c.i"), "MESSAGE 1.\n");
+    fs.insert(PathBuf::from("/proj/d.i"), "MESSAGE 2.\n");
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let source = "MESSAGE 0.\n{a.i}\n{d.i}\n";
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set(source)
+        .expect("edge set");
+
+    let a = source.find("{a.i}").unwrap() as u32;
+    let sites: Vec<_> = edges
+        .of_kind(EdgeKind::TransitiveInclude)
+        .map(|edge| {
+            (
+                edge.target.key().to_string(),
+                edge.span,
+                edge.include_site.map(|site| (site.start, site.end)),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("/proj/b.i".to_string(), None, Some((a, a + 5))),
+            ("/proj/c.i".to_string(), None, Some((a, a + 5))),
+        ]
+    );
+}
+
+// Both enums grow with the analysis, so a consumer must carry a fallback arm. The
+// denied lint turns that arm unreachable, and so a failure, if the attribute that
+// requires it is ever dropped.
+#[test]
+fn completeness_and_degraded_reasons_are_non_exhaustive() {
+    #[deny(unreachable_patterns)]
+    fn trusted(completeness: &Completeness) -> bool {
+        match completeness {
+            Completeness::Complete => true,
+            Completeness::Degraded { .. } => false,
+            _ => false,
+        }
+    }
+    #[deny(unreachable_patterns)]
+    fn tag(reason: &DegradedReason) -> &'static str {
+        match reason {
+            DegradedReason::ParseRecovered => "parse",
+            DegradedReason::UnresolvedInclude => "include",
+            _ => "other",
+        }
+    }
+    assert!(trusted(&Completeness::Complete));
+    assert_eq!(tag(&DegradedReason::ParseRecovered), "parse");
+}

@@ -89,6 +89,7 @@ pub struct UnreadableInclude {
 
 /// Why the preprocessor lost sight of text it was asked to expand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TextLossKind {
     /// An include was dropped because the chain reached the depth limit.
     IncludeDepthLimit,
