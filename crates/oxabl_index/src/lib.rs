@@ -27,6 +27,12 @@
 //! that only exists after an `{include}` splice is invisible to the index. That
 //! is the conservative direction — a missing fact yields a missing link, which
 //! by the R11 firewall produces no finding.
+//!
+//! One exception, for a file whose text as written does not parse or names a
+//! class with a `{&name}` reference: the file's *own* preprocessor directives are
+//! applied, with no file read, and the result is used when no include is left
+//! unexpanded. Facts then depend on the one file's text, which is what both
+//! caches need.
 
 mod batch;
 mod deps;
@@ -49,14 +55,17 @@ pub use facts::{ClassFacts, FileFacts};
 
 use std::sync::Arc;
 
-use oxabl_ast::{DataType, Statement, StatementKind};
+use oxabl_ast::{AccessModifier, DataType, Statement, StatementKind};
 use oxabl_common::FileId;
+use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
+use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, IndexName, IndexedFileId, MemberDescriptor,
     MemberType, ResolvedType, ScopeId, SymbolFlags, SymbolKind, declare_pass,
 };
+use oxabl_workspace::InMemoryFileSystem;
 
 /// The [`FileId`] the declare pass is run under while indexing.
 ///
@@ -81,6 +90,55 @@ const INDEXED_FILE: FileId = FileId::new(1);
 ///
 /// Not guarded against panics, on purpose — see the module docs.
 pub fn index_file(file: IndexedFileId, source: &str) -> FileFacts {
+    let facts = index_parsed(file, source);
+    if facts.parsed && !names_a_reference(&facts) {
+        return facts;
+    }
+    match expand_in_file(source).map(|expanded| index_parsed(file, &expanded)) {
+        Some(expanded) if expanded.parsed => expanded,
+        _ => facts,
+    }
+}
+
+/// Whether a class header in `facts` is spelled with an unexpanded `{&name}`
+/// reference, which the parser accepts as an ordinary name.
+fn names_a_reference(facts: &FileFacts) -> bool {
+    facts.classes.iter().any(|class| {
+        let descriptor = &class.descriptor;
+        descriptor.name.as_str().contains('{')
+            || descriptor
+                .inherits
+                .iter()
+                .chain(&descriptor.implements)
+                .any(|name| name.as_str().contains('{'))
+    })
+}
+
+/// `source` with its own preprocessor directives applied and every `{include}`
+/// left unresolved.
+///
+/// The fallback for a file whose raw text does not parse because the
+/// declaration is built from `&GLOBAL-DEFINE` names (`CLASS {&fullName}:`).
+/// No file is read, so the result depends on `source` alone, which is what keeps
+/// a memoizing cache's invalidation honest. `None` when the directives alone do
+/// not settle the text: a class whose header or body comes from an `{include}`
+/// stays unusable.
+fn expand_in_file(source: &str) -> Option<String> {
+    let fs = InMemoryFileSystem::new();
+    let processed = Preprocessor::new(&fs, &[])
+        .process(INDEXED_FILE, source)
+        .ok()?;
+    // Any include left unexpanded could have defined a name a later `&IF` reads,
+    // so the branches taken, and the facts read off them, would be a guess.
+    let guessed = !processed.diagnostics.is_empty()
+        || !processed.unresolved_includes.is_empty()
+        || !processed.unreadable_includes.is_empty();
+    (!guessed).then(|| processed.to_text().to_string())
+}
+
+/// The facts of `source` as written, or the unparseable record if it parses
+/// with recovered errors.
+fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
     let tokens = oxabl_lexer::tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     if !program.is_ok() {
@@ -123,7 +181,10 @@ pub fn index_file(file: IndexedFileId, source: &str) -> FileFacts {
     FileFacts {
         file,
         parsed: true,
-        classes: declared_classes(file, &program.statements),
+        classes: declared_classes(file, &program.statements)
+            .into_iter()
+            .chain(declared_enums(file, &tokens, source))
+            .collect(),
         procedures,
         functions,
         shared_definitions,
@@ -195,6 +256,117 @@ fn declared_classes(file: IndexedFileId, statements: &[Statement]) -> Vec<ClassF
         }
     }
     classes
+}
+
+/// Project the `ENUM` declarations at file level.
+///
+/// The parser skips an enum body without keeping a node, so this reads the token
+/// stream: an `ENUM` at the start of a statement is a declaration, and a
+/// `DEFINE ENUM` inside it is a member list. A member list that does not follow
+/// the grammar yields no members rather than a guessed one.
+fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<ClassFacts> {
+    let text = |t: &Token| &source[t.start..t.end];
+    let is_word = |t: &Token| text(t).starts_with(|c: char| c.is_alphabetic() || c == '_');
+    let mut enums = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let previous = tokens[..i].iter().rev().find(|t| t.kind != Kind::Comment);
+        let at_statement_start = previous.is_none_or(|t| t.kind == Kind::Period);
+        if !(at_statement_start && tokens[i].kind == Kind::KwEnum) {
+            i += 1;
+            continue;
+        }
+        let Some(first) = tokens.get(i + 1).filter(|t| is_word(t)) else {
+            i += 1;
+            continue;
+        };
+        let mut name = text(first).to_string();
+        i += 2;
+        while let (
+            Some(Token {
+                kind: Kind::Period, ..
+            }),
+            Some(next),
+        ) = (tokens.get(i), tokens.get(i + 1).filter(|t| is_word(t)))
+        {
+            name.push('.');
+            name.push_str(text(next));
+            i += 2;
+        }
+        let mut members = Vec::new();
+        let mut well_formed = true;
+        while i < tokens.len() && !(tokens[i].kind == Kind::End) {
+            if tokens[i].kind == Kind::Define
+                && tokens.get(i + 1).is_some_and(|t| t.kind == Kind::KwEnum)
+            {
+                let (names, next) = enum_members(&tokens[i + 2..], source);
+                well_formed &= names.is_some();
+                members.extend(names.unwrap_or_default());
+                i += 2 + next;
+            } else {
+                i += 1;
+            }
+        }
+        enums.push(ClassFacts {
+            descriptor: Arc::new(ClassDescriptor {
+                name: IndexName::new(&name),
+                file,
+                kind: ClassKind::Enum,
+                inherits: None,
+                implements: Vec::new(),
+            }),
+            members: if well_formed {
+                members.into()
+            } else {
+                Arc::from([])
+            },
+        });
+    }
+    enums
+}
+
+/// The member names of one `DEFINE ENUM` list, and how many tokens it spans.
+///
+/// `None` when the list is not `name [= value] [, ...]` with `|`-joined values.
+fn enum_members(tokens: &[Token], source: &str) -> (Option<Vec<MemberDescriptor>>, usize) {
+    let text = |t: &Token| &source[t.start..t.end];
+    let mut members = Vec::new();
+    let mut i = 0;
+    let mut ok = true;
+    while let Some(token) = tokens.get(i) {
+        match token.kind {
+            Kind::Period => {
+                i += 1;
+                break;
+            }
+            Kind::Comma => i += 1,
+            _ if text(token).starts_with(|c: char| c.is_alphabetic() || c == '_') => {
+                members.push(MemberDescriptor {
+                    name: IndexName::new(text(token)),
+                    kind: SymbolKind::Property,
+                    ty: MemberType::Untyped,
+                    access: AccessModifier::Public,
+                    is_static: true,
+                });
+                i += 1;
+                if tokens.get(i).is_some_and(|t| t.kind == Kind::Equals) {
+                    i += 1;
+                    if tokens.get(i).is_some_and(|t| t.kind == Kind::Minus) {
+                        i += 1;
+                    }
+                    i += 1;
+                    while tokens.get(i).is_some_and(|t| text(t) == "|") {
+                        i += 2;
+                    }
+                }
+            }
+            _ => {
+                ok = false;
+                i += 1;
+            }
+        }
+    }
+    (ok.then_some(members), i)
 }
 
 /// Project the members a class or interface body declares itself.
@@ -277,6 +449,53 @@ mod tests {
 
     fn portable(ty: ResolvedType) -> MemberType {
         MemberType::Portable(PortableType::new(ty).expect("fixture type is portable"))
+    }
+
+    #[test]
+    fn an_enum_is_indexed_as_a_class_with_its_members() {
+        let facts = index_file(
+            FILE,
+            "/* header */\nENUM orders.Shade FLAGS:\n    \
+             DEFINE ENUM light = 1, dark = 2\n        both = light | dark\n        none.\n\
+             END ENUM.\n",
+        );
+
+        assert!(facts.parsed);
+        let class = facts
+            .class(&IndexName::new("orders.shade"))
+            .expect("the enum is indexed under its qualified name");
+        assert_eq!(class.descriptor.kind, ClassKind::Enum);
+        let names: Vec<_> = class.members.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["light", "dark", "both", "none"]);
+        assert!(class.members.iter().all(|m| m.is_static));
+    }
+
+    #[test]
+    fn a_define_enum_that_is_not_an_enum_declaration_indexes_nothing() {
+        let facts = index_file(
+            FILE,
+            "DEFINE VARIABLE enum AS INTEGER NO-UNDO.\nenum = 1.\n",
+        );
+        assert!(facts.classes.is_empty());
+    }
+
+    #[test]
+    fn a_class_named_by_its_own_directives_is_indexed_under_the_expanded_name() {
+        let facts = index_file(
+            FILE,
+            "&GLOBAL-DEFINE fullName orders.built\nCLASS {&fullName}:\nEND CLASS.\n",
+        );
+        assert!(facts.class(&IndexName::new("orders.built")).is_some());
+    }
+
+    #[test]
+    fn a_class_whose_directives_depend_on_an_include_is_not_guessed_at() {
+        let facts = index_file(
+            FILE,
+            "{names.i}\n&IF DEFINED(legacy) = 0 &THEN\nCLASS orders.built:\n&ELSE\n\
+             CLASS orders.built INHERITS orders.old:\n&ENDIF\nEND CLASS.\n",
+        );
+        assert!(facts.class(&IndexName::new("orders.built")).is_none());
     }
 
     #[test]

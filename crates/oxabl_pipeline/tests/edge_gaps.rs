@@ -146,7 +146,7 @@ fn an_unparsable_program_target_is_an_edge_to_the_located_file() {
     let mut fs = InMemoryFileSystem::new();
     fs.insert(
         PathBuf::from("/proj/sub.p"),
-        "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  MESSAGE 1.\nEND.\n",
+        "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  {nothere.i}\n  MESSAGE 1.\nEND.\n",
     );
     let config = config("/proj");
     let run = LintPipeline::new(&config, &fs);

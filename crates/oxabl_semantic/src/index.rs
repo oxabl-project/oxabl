@@ -314,11 +314,12 @@ pub enum Located {
     In(IndexedFileId),
 }
 
-/// Whether an indexed type was declared as a class or an interface.
+/// Whether an indexed type was declared as a class, an interface or an enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassKind {
     Class,
     Interface,
+    Enum,
 }
 
 /// What the index knows about one class or interface, *before* any chain

@@ -2044,7 +2044,7 @@ impl<'a> ResolveWalker<'a> {
             name.as_atom().clone(),
             NamespaceId::Types,
             match kind {
-                ClassKind::Class => SymbolKind::Class,
+                ClassKind::Class | ClassKind::Enum => SymbolKind::Class,
                 ClassKind::Interface => SymbolKind::Interface,
             },
             use_span,

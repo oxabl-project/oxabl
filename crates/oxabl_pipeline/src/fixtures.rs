@@ -2353,14 +2353,14 @@ pub const FIXTURES: &[ParityFixture] = &[
         ],
     },
     // A located `RUN` target oxabl cannot parse on its own: an `&IF` that cuts
-    // across a block. The file is found, so it is a dependency whatever could be
-    // extracted from it.
+    // across a block, with an include the file's own text cannot expand. The file
+    // is found, so it is a dependency whatever could be extracted from it.
     ParityFixture {
         name: "edges_run_target_needs_its_preprocessor",
         root_file: "run.p",
         siblings: &[SiblingFile {
             path: "sub.p",
-            source: "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  MESSAGE 1.\nEND.\n",
+            source: "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  {nothere.i}\n  MESSAGE 1.\nEND.\n",
         }],
         resolutions: &[CrossFileResolution {
             name: "RUN sub.p",
@@ -3156,6 +3156,47 @@ pub const FIXTURES: &[ParityFixture] = &[
         target: "sub2",
         withheld: "sub2",
         reason: "external",
+    },
+    // A class declared with an `ENUM`. The file declares the type, so it is a usable
+    // class: an edge and no row, at the declaration and at a static member access.
+    class_site_row! {
+        name: "class_site_enum",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/shade.cls",
+            source: "ENUM orders.shade:\n    DEFINE ENUM light dark.\nEND ENUM.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.shade",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-shade AS orders.shade NO-UNDO.\n\
+                 v-shade = orders.shade:dark.\n\
+                 MESSAGE v-shade.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.shade",
+        withheld: "orders.shade",
+    },
+    // A class whose header is built from the file's own `&GLOBAL-DEFINE`. The raw
+    // text does not parse; the file's own directives are enough to read the header.
+    class_site_row! {
+        name: "class_site_directive_built_class",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/built.cls",
+            source: "&GLOBAL-DEFINE fullName orders.built\nCLASS {&fullName}:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.built",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-built AS orders.built NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-built).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.built",
+        withheld: "orders.built",
     },
 ];
 
