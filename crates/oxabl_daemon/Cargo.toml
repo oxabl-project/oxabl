@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_daemon"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 license = "MIT"
 description = "Long-lived oxabl session core: one salsa instance per workspace root, serving several clients"
@@ -14,13 +14,13 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_daemon"
 #
 # Absent from `release-please-config.json`, like the other client-layer crates.
 [dependencies]
-oxabl_analyze = { path = "../oxabl_analyze", version = "1.1.3" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "1.1.4" }
 oxabl_ast = { path = "../oxabl_ast", version = "1.0.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.1.0" }
 oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.3.0" }
-oxabl_index = { path = "../oxabl_index", version = "1.0.2" }
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.2.0" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "1.1.0" }
+oxabl_index = { path = "../oxabl_index", version = "1.0.3" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.2.1" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "1.1.1" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.3" }
 anyhow = "1"
 crossbeam-channel = "0.5"
@@ -54,7 +54,7 @@ oxabl_common = { path = "../oxabl_common", version = "1.1.0", features = [
     "test-panics",
 ] }
 # The shared cross-client parity fixture table, for the daemon's parity leg.
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.2.0", features = [
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "1.2.1", features = [
     "test-support",
 ] }
 tempfile = "3"

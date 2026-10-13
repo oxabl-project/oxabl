@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v1.1.0...oxabl_lint-v1.1.1) (2026-10-07)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_semantic bumped from 1.1.0 to 1.1.1
+  * dev-dependencies
+    * oxabl_index bumped from 1.0.2 to 1.0.3
+    * oxabl_parser bumped from 1.0.3 to 1.0.4
+
 ## [1.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v1.0.3...oxabl_lint-v1.1.0) (2026-09-21)
 
 

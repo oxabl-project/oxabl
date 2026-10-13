@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v1.0.3...oxabl_parser-v1.0.4) (2026-10-07)
+
+
+### Bug Fixes
+
+* **formatter:** restore idempotency and value preservation, and fix four indent bugs ([1ba5c2f](https://github.com/oxabl-project/oxabl/commit/1ba5c2f20790e4aa90ec92fc8b500b9cd880616b))
+* **parser:** give CATCH and FINALLY blocks their real source span ([5c9013e](https://github.com/oxabl-project/oxabl/commit/5c9013e70e389863a5ecd4d6d08bc36fb7226109)), closes [#201](https://github.com/oxabl-project/oxabl/issues/201)
+* **parser:** give the DO block of an ON trigger its real span ([6006075](https://github.com/oxabl-project/oxabl/commit/6006075eda7717a7ceaf52c51f3468ef1281c95f))
+* **parser:** skip the FIELDS and EXCEPT phrase of a FOR EACH record ([db20011](https://github.com/oxabl-project/oxabl/commit/db200111d5160a37fca21acc4f2f8a2db526451e)), closes [#202](https://github.com/oxabl-project/oxabl/issues/202)
+
 ## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v1.0.2...oxabl_parser-v1.0.3) (2026-09-21)
 
 
