@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use oxabl_ast::Span;
 use oxabl_common::{FileId, VirtualSpan};
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, UnresolvedIncludeInput,
-    build_edge_set,
+    BatchIndex, Completeness, DegradedReason, DependencyEdges, DirectIncludeInput, EdgeInputs,
+    EdgeKind, EdgeTarget, UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
@@ -85,6 +85,9 @@ fn inputs<'a>(
         direct_includes: direct,
         transitive_includes: transitive,
         unresolved_includes,
+        nested_unresolved_includes: &[],
+        unreadable_includes: &[],
+        parse_recovered: false,
         resolve_span: &identity,
     }
 }
@@ -393,4 +396,140 @@ fn two_edge_sets_from_identical_input_compare_equal() {
         build_edge_set(&inputs(&semantic, &schema, &direct, &transitive, &[]))
     };
     assert_eq!(build(), build());
+}
+
+#[test]
+fn an_edge_set_built_from_nothing_is_complete() {
+    assert_eq!(
+        DependencyEdges::default().completeness(),
+        &Completeness::Complete
+    );
+    assert!(
+        DependencyEdges::default()
+            .completeness()
+            .reasons()
+            .is_empty()
+    );
+
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+    assert!(edges.completeness().is_complete());
+}
+
+#[test]
+fn each_way_of_losing_source_degrades_the_set_for_its_own_reason() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let reasons = |inputs: EdgeInputs<'_>| build_edge_set(&inputs).completeness().clone();
+
+    let base = || inputs(&semantic, &schema, &[], &[], &[]);
+    assert_eq!(
+        reasons(EdgeInputs {
+            parse_recovered: true,
+            ..base()
+        }),
+        Completeness::Degraded {
+            reasons: vec![DegradedReason::ParseRecovered]
+        }
+    );
+    assert_eq!(
+        reasons(EdgeInputs {
+            nested_unresolved_includes: &["deep.i"],
+            ..base()
+        }),
+        Completeness::Degraded {
+            reasons: vec![DegradedReason::UnresolvedInclude]
+        }
+    );
+    assert_eq!(
+        reasons(EdgeInputs {
+            unreadable_includes: &[UnreadableIncludeInput {
+                name: "latin.i",
+                path: Path::new("/src/latin.i"),
+                site: None,
+            }],
+            ..base()
+        }),
+        Completeness::Degraded {
+            reasons: vec![DegradedReason::UnreadableInclude]
+        }
+    );
+}
+
+#[test]
+fn reasons_are_sorted_and_not_repeated() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let unresolved = [UnresolvedIncludeInput {
+        name: "a.i",
+        site: Span { start: 0, end: 5 },
+    }];
+    let edges = build_edge_set(&EdgeInputs {
+        parse_recovered: true,
+        nested_unresolved_includes: &["b.i"],
+        ..inputs(&semantic, &schema, &[], &[], &unresolved)
+    });
+    assert_eq!(
+        edges.completeness().reasons(),
+        [
+            DegradedReason::ParseRecovered,
+            DegradedReason::UnresolvedInclude
+        ]
+    );
+}
+
+#[test]
+fn a_nested_unresolved_include_is_a_transitive_row_with_no_site() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let edges = build_edge_set(&EdgeInputs {
+        nested_unresolved_includes: &["deep.i", "deep.i"],
+        ..inputs(&semantic, &schema, &[], &[], &[])
+    });
+
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 1, "one name reached twice is one row: {rows:?}");
+    assert_eq!(rows[0].kind, EdgeKind::TransitiveInclude);
+    assert_eq!(rows[0].name, "deep.i");
+    assert_eq!(rows[0].reason, UnresolvedReason::AbsentFromWorkspace);
+    assert_eq!(rows[0].span, None);
+}
+
+#[test]
+fn an_unreadable_include_keeps_its_edge_and_adds_a_row() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let site = Span { start: 0, end: 9 };
+    let edges = build_edge_set(&EdgeInputs {
+        unreadable_includes: &[
+            UnreadableIncludeInput {
+                name: "latin.i",
+                path: Path::new("/src/latin.i"),
+                site: Some(site),
+            },
+            UnreadableIncludeInput {
+                name: "deep.i",
+                path: Path::new("/src/deep.i"),
+                site: None,
+            },
+        ],
+        ..inputs(&semantic, &schema, &[], &[], &[])
+    });
+
+    assert_eq!(targets(EdgeKind::DirectInclude, &edges), ["/src/latin.i"]);
+    assert_eq!(
+        targets(EdgeKind::TransitiveInclude, &edges),
+        ["/src/deep.i"]
+    );
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 2, "got {rows:?}");
+    assert!(
+        rows.iter()
+            .all(|row| row.reason == UnresolvedReason::PresentButUnusable)
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.kind == EdgeKind::DirectInclude && row.span == Some(site))
+    );
 }
