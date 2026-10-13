@@ -763,7 +763,13 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
 /// making the caller handle an `Err` before it can ask a question.
 #[salsa::tracked(returns(clone))]
 fn expanded_text(db: &dyn AblDatabase, buffer: Buffer) -> Expansion {
-    db.config().lint_pipeline().expand(buffer.text(db).as_str())
+    // The file's name is part of the expansion: `{&FILE-NAME}` expands to it, and
+    // the edge set reads the same name.
+    let run = db.config().lint_pipeline();
+    match buffer.path(db).as_deref() {
+        Some(path) => run.with_file(path).expand(buffer.text(db).as_str()),
+        None => run.expand(buffer.text(db).as_str()),
+    }
 }
 
 /// Phase two: the shared pipeline's collection over the memoized expansion,
@@ -1005,6 +1011,26 @@ mod tests {
             "expected the unused-variable diagnostic to clear, got {:?}",
             d3.all().map(|c| c.diagnostic.code.0).collect::<Vec<_>>()
         );
+    }
+
+    /// `{&FILE-NAME}` is the buffer's own name in the expansion the diagnostics
+    /// read, as it is in the edge set: a buffer with a path decides a branch on it,
+    /// and one with none has no name to decide on.
+    #[test]
+    fn the_expansion_names_the_buffer_for_file_name() {
+        let db = db_with(oxabl_workspace::InMemoryFileSystem::new());
+        let text = "&IF \"{&FILE-NAME}\" MATCHES \"*.w\" &THEN\nMESSAGE 1.\n&ENDIF\n";
+        let has_unknown_name = |path: Option<&str>| {
+            let buffer = Buffer::new(&db, text.to_string(), path.map(std::path::PathBuf::from));
+            let schema = SchemaHandle::new(&db, 0);
+            compute_diagnostics(&db, buffer, schema)
+                .unwrap()
+                .all()
+                .any(|c| c.diagnostic.code.0 == "PREPROC009")
+        };
+
+        assert!(!has_unknown_name(Some("/proj/main.w")));
+        assert!(has_unknown_name(None));
     }
 
     #[test]

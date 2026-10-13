@@ -230,6 +230,15 @@ pub enum DegradedReason {
     /// An include, at any depth, resolved to a file whose content could not be
     /// read. The file is an edge, but what it includes is unknown.
     UnreadableInclude,
+    /// The preprocessor dropped text or decided a branch without the facts to
+    /// decide it: an include past the depth limit, an `&IF` that never closes, a
+    /// condition on a predefined name that has no value. Whatever the lost text
+    /// referenced is unknown.
+    PreprocessorLoss,
+    /// A statement the parser recognizes but does not model mentions a class or a
+    /// member access (`PUT`, `EXPORT`, ...), and no class could be attributed to
+    /// it. A reference in it may have produced no edge.
+    UnmodelledStatement,
 }
 
 impl DegradedReason {
@@ -239,6 +248,8 @@ impl DegradedReason {
             DegradedReason::ParseRecovered => "parse_recovered",
             DegradedReason::UnresolvedInclude => "unresolved_include",
             DegradedReason::UnreadableInclude => "unreadable_include",
+            DegradedReason::PreprocessorLoss => "preprocessor_loss",
+            DegradedReason::UnmodelledStatement => "unmodelled_statement",
         }
     }
 }
@@ -345,6 +356,20 @@ pub struct UnresolvedIncludeInput<'a> {
     pub name: &'a str,
     /// The `{...}` site, already in the dependent file's own bytes.
     pub site: Span,
+    /// The reference's `{` never closes, so `name` is only a best reading of the
+    /// text after it. The row says the reference is unknowable rather than that
+    /// the workspace lacks the file.
+    pub unterminated: bool,
+}
+
+/// An include reference written in an *included* file that resolved to no file.
+#[derive(Debug, Clone, Copy)]
+pub struct NestedUnresolvedIncludeInput<'a> {
+    pub name: &'a str,
+    /// The root-level `{...}` site, in the dependent file's own bytes, of the
+    /// include chain that reached it, when the chain starts in the dependent
+    /// file.
+    pub include_site: Option<Span>,
 }
 
 /// An include that resolved to a path whose content could not be read.
@@ -357,6 +382,9 @@ pub struct UnreadableIncludeInput<'a> {
     /// The `{...}` site in the dependent file's own bytes, or `None` when a
     /// nested include names it.
     pub site: Option<Span>,
+    /// For a nested include, the root-level `{...}` site of the chain that
+    /// reached it, in the dependent file's own bytes.
+    pub include_site: Option<Span>,
 }
 
 /// Everything [`build_edge_set`] needs, all of it from the caller.
@@ -378,13 +406,15 @@ pub struct EdgeInputs<'a> {
     pub transitive_includes: &'a [PathBuf],
     /// Include references that resolved to no file.
     pub unresolved_includes: &'a [UnresolvedIncludeInput<'a>],
-    /// Names of include references that resolved to no file, written in an
-    /// *included* file. The dependent file has no site for them.
-    pub nested_unresolved_includes: &'a [&'a str],
+    /// Include references that resolved to no file, written in an *included* file.
+    /// The dependent file has no site for them, only the chain that reached them.
+    pub nested_unresolved_includes: &'a [NestedUnresolvedIncludeInput<'a>],
     /// Includes, at any depth, that resolved to a path that could not be read.
     pub unreadable_includes: &'a [UnreadableIncludeInput<'a>],
     /// Whether the parser recovered from an error anywhere in the expansion.
     pub parse_recovered: bool,
+    /// Whether the preprocessor dropped text or decided a branch on a guess.
+    pub preprocessor_loss: bool,
     /// Maps a span in the expanded buffer back to the dependent file's own bytes,
     /// or `None` when it originates in an include.
     pub resolve_span: &'a dyn Fn(VirtualSpan) -> Option<Span>,
@@ -459,6 +489,12 @@ fn completeness(inputs: &EdgeInputs<'_>) -> Completeness {
     }
     if !inputs.unresolved_includes.is_empty() || !inputs.nested_unresolved_includes.is_empty() {
         reasons.push(DegradedReason::UnresolvedInclude);
+    }
+    if inputs.preprocessor_loss {
+        reasons.push(DegradedReason::PreprocessorLoss);
+    }
+    if inputs.semantic.symbols.has_unattributed_unmodelled_use() {
+        reasons.push(DegradedReason::UnmodelledStatement);
     }
     if !inputs.unreadable_includes.is_empty() {
         reasons.push(DegradedReason::UnreadableInclude);
@@ -561,19 +597,24 @@ fn unresolved_include_rows(
             name: include.name.to_string(),
             // The preprocessor searched the configured paths and no file supplied
             // the name — the same fact about the workspace this reason names for a
-            // class, reached by a different question.
-            reason: UnresolvedReason::AbsentFromWorkspace,
+            // class, reached by a different question. An unterminated reference
+            // names nothing for certain, so nothing is claimed of the workspace.
+            reason: if include.unterminated {
+                UnresolvedReason::Unknowable
+            } else {
+                UnresolvedReason::AbsentFromWorkspace
+            },
             span: Some(include.site),
             include_site: None,
         });
     }
-    for name in inputs.nested_unresolved_includes {
+    for include in inputs.nested_unresolved_includes {
         out.push(UnresolvedReference {
             kind: EdgeKind::TransitiveInclude,
-            name: (*name).to_string(),
+            name: include.name.to_string(),
             reason: UnresolvedReason::AbsentFromWorkspace,
             span: None,
-            include_site: None,
+            include_site: include.include_site,
         });
     }
     // The file exists, so it is an edge whatever could be read from it. The row
@@ -588,14 +629,14 @@ fn unresolved_include_rows(
             kind,
             target: EdgeTarget::IncludePath(normalize_lexically(include.path)),
             span: include.site,
-            include_site: None,
+            include_site: include.include_site,
         });
         out.push(UnresolvedReference {
             kind,
             name: include.name.to_string(),
             reason: UnresolvedReason::PresentButUnusable,
             span: include.site,
-            include_site: None,
+            include_site: include.include_site,
         });
     }
 }

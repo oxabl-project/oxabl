@@ -48,8 +48,8 @@ pub mod search;
 pub use batch::{BatchIndex, ExcludingFile};
 pub use deps::{
     Completeness, DegradedReason, DependencyEdge, DependencyEdges, DirectIncludeInput, EdgeInputs,
-    EdgeKind, EdgeTarget, UnreadableIncludeInput, UnresolvedIncludeInput, UnresolvedReference,
-    build_edge_set,
+    EdgeKind, EdgeTarget, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
+    UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
 

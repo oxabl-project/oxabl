@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,7 +8,9 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 use crate::PreprocVarTable;
 use crate::condition::evaluate_with_defined;
-use crate::span_tree::{PreprocessedFile, SpanNode, UnreadableInclude, UnresolvedInclude};
+use crate::span_tree::{
+    PreprocessedFile, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
+};
 
 /// Preprocessor for ABL source code.
 ///
@@ -134,6 +136,9 @@ impl<'fs> Preprocessor<'fs> {
             dependencies: Vec::new(),
             unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
+            text_losses: Vec::new(),
+            line_starts: HashMap::new(),
+            expanding_vars: Vec::new(),
             sources: vec![(file, Arc::from(source))],
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
@@ -164,6 +169,7 @@ impl<'fs> Preprocessor<'fs> {
             ctx.diagnostics,
         );
         processed.unreadable_includes = ctx.unreadable_includes;
+        processed.text_losses = ctx.text_losses;
         Ok(processed)
     }
 }
@@ -186,6 +192,15 @@ struct ProcessContext<'fs> {
     unresolved_includes: Vec<UnresolvedInclude>,
     /// Includes that resolved to a path but could not be read (PREPROC005).
     unreadable_includes: Vec<UnreadableInclude>,
+    /// Places where text was dropped or a branch was decided on a guess.
+    text_losses: Vec<TextLoss>,
+    /// Byte offset of each line start, built on first use per source for
+    /// `{&LINE-NUMBER}`. Keyed by the source's address and length, which are
+    /// stable because every source is held for the whole run.
+    line_starts: HashMap<(usize, usize), Vec<u32>>,
+    /// The variables whose value is being re-scanned for include references,
+    /// so a value that names itself cannot recurse.
+    expanding_vars: Vec<String>,
     sources: Vec<(FileId, Arc<str>)>,
     diagnostics: Vec<Diagnostic>,
     /// Stack of currently-being-processed paths for cycle detection.
@@ -491,6 +506,7 @@ impl<'fs> ProcessContext<'fs> {
                                 file,
                                 source,
                                 i,
+                                depth,
                                 &mut chunk_start,
                                 &mut nodes,
                             ) {
@@ -545,6 +561,10 @@ impl<'fs> ProcessContext<'fs> {
                                         ),
                                         include_site,
                                     ));
+                                    self.text_losses.push(TextLoss {
+                                        kind: TextLossKind::IncludeDepthLimit,
+                                        site: include_site,
+                                    });
                                     i = ref_end;
                                     chunk_start = i as u32;
                                     continue;
@@ -568,7 +588,13 @@ impl<'fs> ProcessContext<'fs> {
                                 chunk_start = i as u32;
                                 continue;
                             }
-                            self.report_unterminated_include(file, source, i);
+                            self.report_unterminated_include(
+                                file,
+                                source,
+                                i,
+                                &mut chunk_start,
+                                &mut nodes,
+                            );
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
                             if let Some(next) = self.expand_positional_ref_at(
@@ -628,6 +654,7 @@ impl<'fs> ProcessContext<'fs> {
                                 file,
                                 source,
                                 i,
+                                depth,
                                 &mut chunk_start,
                                 &mut nodes,
                             )
@@ -673,17 +700,22 @@ impl<'fs> ProcessContext<'fs> {
 
         // Warn about unclosed &IF
         for _ in &if_stack {
+            let site = FileSpan {
+                file,
+                span: Span {
+                    start: 0,
+                    end: len as u32,
+                },
+            };
             self.diagnostics.push(Diagnostic::warning(
                 "PREPROC002",
                 "unclosed &IF block".to_string(),
-                FileSpan {
-                    file,
-                    span: Span {
-                        start: 0,
-                        end: len as u32,
-                    },
-                },
+                site,
             ));
+            self.text_losses.push(TextLoss {
+                kind: TextLossKind::UnclosedConditional,
+                site,
+            });
         }
 
         nodes
@@ -705,8 +737,21 @@ impl<'fs> ProcessContext<'fs> {
         match name {
             ComputedName::FileName => self.file_names.last()?.as_deref().map(Arc::from),
             ComputedName::LineNumber => {
-                let before = &source.as_bytes()[..at.min(source.len())];
-                let line = before.iter().filter(|b| **b == b'\n').count() + 1;
+                let starts = self
+                    .line_starts
+                    .entry((source.as_ptr() as usize, source.len()))
+                    .or_insert_with(|| {
+                        std::iter::once(0)
+                            .chain(
+                                source
+                                    .bytes()
+                                    .enumerate()
+                                    .filter(|(_, b)| *b == b'\n')
+                                    .map(|(i, _)| i as u32 + 1),
+                            )
+                            .collect()
+                    });
+                let line = starts.partition_point(|start| *start as usize <= at);
                 Some(Arc::from(line.to_string()))
             }
             ComputedName::Sequence => {
@@ -800,9 +845,13 @@ impl<'fs> ProcessContext<'fs> {
                 name.to_ascii_lowercase()
             )
         };
-        self.diagnostics.push(
-            Diagnostic::warning("PREPROC009", message, nested.unwrap_or(site)).with_help(help),
-        );
+        let anchor = nested.unwrap_or(site);
+        self.diagnostics
+            .push(Diagnostic::warning("PREPROC009", message, anchor).with_help(help));
+        self.text_losses.push(TextLoss {
+            kind: TextLossKind::UnknownPredefinedName,
+            site: anchor,
+        });
     }
 
     /// Report an include reference whose `{` at byte offset `i` never closes.
@@ -810,7 +859,14 @@ impl<'fs> ProcessContext<'fs> {
     /// The reference is left in the text, so without this the file would look
     /// like it includes nothing. It is recorded as an unresolved include as well
     /// as a diagnostic, for the same reason an unlocatable file is.
-    fn report_unterminated_include(&mut self, file: FileId, source: &str, i: usize) {
+    fn report_unterminated_include(
+        &mut self,
+        file: FileId,
+        source: &str,
+        i: usize,
+        chunk_start: &mut u32,
+        nodes: &mut Vec<SpanNode>,
+    ) {
         let rest = &source[i + 1..];
         let name = parse_include_name(rest.lines().next().unwrap_or(rest));
         let site = FileSpan {
@@ -820,6 +876,26 @@ impl<'fs> ProcessContext<'fs> {
                 end: (i + 1) as u32,
             },
         };
+        // The file the reference names is still a dependency when it can be
+        // located; only where the reference ends, and so what it passes, is lost.
+        // The node is empty: the text stays as written.
+        if let Some(path) = self.fs.resolve_include(self.include_paths, &name) {
+            // A read, so a watcher learns of the path.
+            let _ = self.fs.read(&path);
+            if i as u32 > *chunk_start {
+                nodes.push(SpanNode::Chunk {
+                    file,
+                    start: *chunk_start,
+                    end: i as u32,
+                });
+                *chunk_start = i as u32;
+            }
+            nodes.push(SpanNode::Include {
+                site,
+                path: Some(path),
+                children: Vec::new(),
+            });
+        }
         self.diagnostics.push(Diagnostic::warning(
             "PREPROC008",
             format!("unterminated include reference '{{{name}'"),
@@ -829,6 +905,7 @@ impl<'fs> ProcessContext<'fs> {
             name,
             site,
             via: self.site_stack.clone(),
+            unterminated: true,
         });
     }
 
@@ -848,6 +925,7 @@ impl<'fs> ProcessContext<'fs> {
         file: FileId,
         source: &str,
         i: usize,
+        depth: usize,
         chunk_start: &mut u32,
         nodes: &mut Vec<SpanNode>,
     ) -> Option<usize> {
@@ -869,24 +947,44 @@ impl<'fs> ProcessContext<'fs> {
             // We store it as a new source entry.
             let expanded_id = self.next_file_id();
             let val_len = val.len() as u32;
-            self.sources.push((expanded_id, val));
+            self.sources.push((expanded_id, val.clone()));
 
             if val_len > 0 {
-                nodes.push(SpanNode::Include {
-                    site: FileSpan {
-                        file,
-                        span: Span {
-                            start: i as u32,
-                            end: ref_end as u32,
-                        },
+                let site = FileSpan {
+                    file,
+                    span: Span {
+                        start: i as u32,
+                        end: ref_end as u32,
                     },
-                    // A preprocessor-variable substitution, not a file include.
-                    path: None,
-                    children: vec![SpanNode::Chunk {
+                };
+                // A value holding `{file.i}` includes that file where it is
+                // referenced, as the AVM does. A name already being expanded is
+                // left as text, so a value that names itself ends.
+                let rescan = depth < MAX_INCLUDE_DEPTH
+                    && holds_include_ref(&val)
+                    && !self
+                        .expanding_vars
+                        .iter()
+                        .any(|open| open.eq_ignore_ascii_case(var_name));
+                let children = if rescan {
+                    self.expanding_vars.push(var_name.to_string());
+                    self.site_stack.push(site);
+                    let children = self.process_source(expanded_id, &val, depth + 1, &[]);
+                    self.site_stack.pop();
+                    self.expanding_vars.pop();
+                    children
+                } else {
+                    vec![SpanNode::Chunk {
                         file: expanded_id,
                         start: 0,
                         end: val_len,
-                    }],
+                    }]
+                };
+                nodes.push(SpanNode::Include {
+                    site,
+                    // A preprocessor-variable substitution, not a file include.
+                    path: None,
+                    children,
                 });
             }
         }
@@ -1226,6 +1324,7 @@ impl<'fs> ProcessContext<'fs> {
                     name: include_name.to_string(),
                     site,
                     via: self.site_stack.clone(),
+                    unterminated: false,
                 });
                 return None;
             }
@@ -1612,13 +1711,35 @@ fn include_ref_start(bytes: &[u8], open: usize) -> bool {
     )
 }
 
+/// Whether `text` holds a `{` that starts a file include reference.
+fn holds_include_ref(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(1))
+        .any(|i| bytes[i] == b'{' && bytes[i + 1] != b'&' && include_ref_start(bytes, i))
+}
+
 /// Find the matching `}` for a `{` at position `open`, handling nested braces.
+///
+/// A brace inside a quoted argument does not count, and `~` escapes the next
+/// byte in one. A quote that never closes would hide the real close, so when the
+/// quote-aware scan finds nothing the plain brace count answers instead.
 fn find_matching_brace(source: &str, open: usize) -> Option<usize> {
+    scan_matching_brace(source, open, true).or_else(|| scan_matching_brace(source, open, false))
+}
+
+fn scan_matching_brace(source: &str, open: usize, quote_aware: bool) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut depth = 1usize;
     let mut i = open + 1;
     while i < bytes.len() {
         match bytes[i] {
+            b'"' | b'\'' if quote_aware => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += if bytes[i] == b'~' { 2 } else { 1 };
+                }
+            }
             b'{' => depth += 1,
             b'}' => {
                 depth -= 1;
@@ -2129,6 +2250,179 @@ mod tests {
             assert_eq!(result.unresolved_includes.len(), 1);
             assert_eq!(result.unresolved_includes[0].name, "a.i");
         }
+    }
+
+    fn kinds(result: &PreprocessedFile) -> Vec<TextLossKind> {
+        result.text_losses.iter().map(|l| l.kind).collect()
+    }
+
+    #[test]
+    fn a_quoted_brace_does_not_end_an_include_reference() {
+        let fs = make_fs(&[("/inc/a.i", "A{1}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        for (source, text) in [
+            ("{a.i \"{\"}", "A{"),
+            ("{a.i \"}\"}", "A}"),
+            ("{a.i \"~\"}\"}Z", "A~Z"),
+            ("{a.i '}' }Z", "A}Z"),
+        ] {
+            let result = pp.process(FileId::new(1), source).unwrap();
+            assert_eq!(&*result.to_text(), text, "for {source:?}");
+            assert!(result.unresolved_includes.is_empty(), "for {source:?}");
+            assert!(result.diagnostics.is_empty(), "for {source:?}");
+        }
+    }
+
+    #[test]
+    fn an_unterminated_include_of_a_located_file_keeps_the_dependency() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "x = 1.\n{a.i \"X\"\ny = 2.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), source);
+        let unresolved = &result.unresolved_includes[0];
+        assert!(unresolved.unterminated);
+        let nodes: Vec<_> = result
+            .tree
+            .iter()
+            .filter_map(|n| match n {
+                SpanNode::Include { path, .. } => path.clone(),
+                SpanNode::Chunk { .. } => None,
+            })
+            .collect();
+        assert_eq!(nodes, vec![PathBuf::from("/inc/a.i")]);
+    }
+
+    #[test]
+    fn an_unterminated_include_of_a_missing_file_is_flagged_unterminated() {
+        let fs = make_fs(&[]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp.process(FileId::new(1), "{gone.i").unwrap();
+
+        assert!(result.unresolved_includes[0].unterminated);
+        assert!(
+            result
+                .tree
+                .iter()
+                .all(|n| matches!(n, SpanNode::Chunk { .. }))
+        );
+    }
+
+    #[test]
+    fn the_include_depth_limit_is_recorded_as_a_text_loss() {
+        let mut files = Vec::new();
+        for n in 0..=MAX_INCLUDE_DEPTH + 1 {
+            files.push((format!("/inc/d{n}.i"), format!("{{d{}.i}}", n + 1)));
+        }
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_str()))
+            .collect();
+        let fs = make_fs(&refs);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp.process(FileId::new(1), "{d0.i}").unwrap();
+
+        assert_eq!(kinds(&result), vec![TextLossKind::IncludeDepthLimit]);
+        assert!(result.diagnostics.iter().any(|d| d.code.0 == "PREPROC003"));
+    }
+
+    #[test]
+    fn an_unclosed_conditional_is_recorded_as_a_text_loss() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp
+            .process(FileId::new(1), "&IF 1 = 1 &THEN\n{a.i}\n")
+            .unwrap();
+
+        assert_eq!(kinds(&result), vec![TextLossKind::UnclosedConditional]);
+    }
+
+    #[test]
+    fn a_branch_decided_on_a_valueless_name_is_recorded_as_a_text_loss() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&IF \"{&PROVERSION}\" BEGINS \"12\" &THEN {a.i} &ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(kinds(&result), vec![TextLossKind::UnknownPredefinedName]);
+
+        let known = PreprocessorConfig {
+            proversion: Some("12.8".to_string()),
+            ..PreprocessorConfig::default()
+        };
+        let result = Preprocessor::new(&fs, &include_paths)
+            .with_predefined(&known)
+            .process(FileId::new(1), source)
+            .unwrap();
+        assert!(result.text_losses.is_empty());
+    }
+
+    #[test]
+    fn a_clean_file_records_no_text_loss() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp
+            .process(FileId::new(1), "&IF 1 = 1 &THEN\n{a.i}\n&ENDIF\n")
+            .unwrap();
+
+        assert!(result.text_losses.is_empty());
+    }
+
+    #[test]
+    fn a_define_holding_an_include_reference_includes_it_where_referenced() {
+        let fs = make_fs(&[("/inc/a.i", "A{&k}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE INC {a.i &k=7}\n[{&INC}]";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[A7]");
+        assert_eq!(result.dependencies.len(), 1);
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_define_holding_an_unresolvable_include_reports_it_through_the_reference() {
+        let fs = make_fs(&[]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE INC {gone.i}\n{&INC}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        let miss = &result.unresolved_includes[0];
+        assert_eq!(miss.name, "gone.i");
+        assert_eq!(miss.via.len(), 1);
+        assert_eq!(miss.via[0].file, FileId::new(1));
+    }
+
+    #[test]
+    fn a_define_that_names_itself_does_not_recurse() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE X {&X}{&X}{a.i}\n{&X}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(result.dependencies.len(), 1);
+        assert!(result.to_text().ends_with('A'));
+    }
+
+    #[test]
+    fn line_number_is_the_line_of_each_reference() {
+        let fs = make_fs(&[("/inc/a.i", "\n{&LINE-NUMBER}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{&LINE-NUMBER}\n{&LINE-NUMBER} {&line-number}\n\n{a.i}|{&LINE-NUMBER}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "1\n2 2\n\n\n2|4");
     }
 
     const ENV_SOURCE: &str = "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\n{a.i}\n&ELSE\n{b.i}\n&ENDIF\n\
