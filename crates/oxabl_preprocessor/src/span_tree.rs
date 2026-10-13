@@ -63,6 +63,10 @@ pub struct UnresolvedInclude {
     /// coordinate a consumer analysing it can render, since [`Self::site`]
     /// belongs to an include's buffer rather than to the root's bytes.
     pub via: Vec<FileSpan>,
+    /// The reference's `{` never closes, so the name is only a best reading of
+    /// the text after it. Whether the file exists says nothing about what the
+    /// reference would have included.
+    pub unterminated: bool,
 }
 
 /// An include that resolved to a path whose content could not be read.
@@ -83,6 +87,29 @@ pub struct UnreadableInclude {
     pub via: Vec<FileSpan>,
 }
 
+/// Why the preprocessor lost sight of text it was asked to expand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextLossKind {
+    /// An include was dropped because the chain reached the depth limit.
+    IncludeDepthLimit,
+    /// An `&IF` was never closed, so the rest of its file was dropped or kept
+    /// on the strength of a branch that has no end.
+    UnclosedConditional,
+    /// An `&IF` was decided on a predefined name that had no value.
+    UnknownPredefinedName,
+}
+
+/// A place where the preprocessor dropped text, or chose between branches without
+/// the facts to choose. Kept as data so a dependency edge set can say its
+/// absence of an edge proves nothing for this file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextLoss {
+    pub kind: TextLossKind,
+    /// The directive or reference at fault, in the coordinates of the file that
+    /// wrote it.
+    pub site: FileSpan,
+}
+
 /// The preprocessed representation of a source file.
 ///
 /// Contains the virtual span tree, the preprocessor variable state after
@@ -101,6 +128,9 @@ pub struct PreprocessedFile {
     /// Every include reference, at any depth, that resolved to a path whose
     /// content could not be read.
     pub unreadable_includes: Vec<UnreadableInclude>,
+    /// Every place, at any depth, where text was dropped or a branch was chosen
+    /// without the facts to choose it.
+    pub text_losses: Vec<TextLoss>,
     /// Non-fatal diagnostics accumulated during preprocessing.
     ///
     /// Fatal diagnostics bail out with `Err` from [`crate::Preprocessor::process`].
@@ -128,6 +158,7 @@ impl PreprocessedFile {
             dependencies,
             unresolved_includes,
             unreadable_includes: Vec::new(),
+            text_losses: Vec::new(),
             diagnostics,
             sources,
         }
@@ -184,6 +215,16 @@ impl PreprocessedFile {
     }
 
     fn get_source(&self, file: FileId) -> Option<&str> {
+        // Ids are handed out in the order the sources are pushed, so the source
+        // is usually at its id's offset from the first. The scan covers a table
+        // built in another order.
+        let first = self.sources.first()?.0;
+        let guess = file.raw().checked_sub(first.raw()).map(|n| n as usize);
+        if let Some((id, src)) = guess.and_then(|n| self.sources.get(n))
+            && *id == file
+        {
+            return Some(src);
+        }
         self.sources
             .iter()
             .find(|(id, _)| *id == file)
