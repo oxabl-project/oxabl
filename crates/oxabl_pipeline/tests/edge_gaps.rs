@@ -546,3 +546,69 @@ fn a_dotted_run_extension_in_the_configuration_still_links_a_bare_run() {
         .expect("edge set");
     assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
 }
+
+#[test]
+fn an_unreadable_include_through_a_define_is_the_roots_own_direct_include() {
+    let mut inner = InMemoryFileSystem::new();
+    inner.insert(PathBuf::from("/proj/ok.i"), "MESSAGE 1.\n");
+    let fs = Unreadable {
+        inner,
+        unreadable: vec![PathBuf::from("/proj/latin.i")],
+    };
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let source = "&SCOPED-DEFINE INC {latin.i}\n{&INC}\n";
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set(source)
+        .expect("edge set");
+
+    let site = source.find("{&INC}").unwrap() as u32;
+    let expected = Some(oxabl_ast::Span {
+        start: site,
+        end: site + 6,
+    });
+    let direct: Vec<_> = edges.of_kind(EdgeKind::DirectInclude).collect();
+    assert_eq!(direct.len(), 1, "got {:?}", edges.edges());
+    assert_eq!((direct[0].span, direct[0].include_site), (expected, None));
+    assert!(edges.of_kind(EdgeKind::TransitiveInclude).next().is_none());
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 1, "got {rows:?}");
+    assert_eq!(rows[0].kind, EdgeKind::DirectInclude);
+    assert_eq!((rows[0].span, rows[0].include_site), (expected, None));
+}
+
+#[test]
+fn a_transitive_include_names_the_site_of_the_include_that_pulled_it_in() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/a.i"), "{b.i}\n");
+    fs.insert(PathBuf::from("/proj/b.i"), "{c.i}\n");
+    fs.insert(PathBuf::from("/proj/c.i"), "MESSAGE 1.\n");
+    fs.insert(PathBuf::from("/proj/d.i"), "MESSAGE 2.\n");
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let source = "MESSAGE 0.\n{a.i}\n{d.i}\n";
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set(source)
+        .expect("edge set");
+
+    let a = source.find("{a.i}").unwrap() as u32;
+    let sites: Vec<_> = edges
+        .of_kind(EdgeKind::TransitiveInclude)
+        .map(|edge| {
+            (
+                edge.target.key().to_string(),
+                edge.span,
+                edge.include_site.map(|site| (site.start, site.end)),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("/proj/b.i".to_string(), None, Some((a, a + 5))),
+            ("/proj/c.i".to_string(), None, Some((a, a + 5))),
+        ]
+    );
+}

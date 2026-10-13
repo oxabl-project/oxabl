@@ -43,13 +43,25 @@
 //!   **include** names it, at any include depth.
 //!
 //! Both are set when the target is named both ways, and neither when the file
-//! names it nowhere — a transitive include, or an ancestor class the chain walk
-//! reached through another class's header. The caller maps include sites with
-//! [`EdgeInputs::include_site`].
+//! names it nowhere — an ancestor class the chain walk reached through another
+//! class's header. The caller maps include sites with [`EdgeInputs::include_site`].
 //!
 //! Class edges see every mention. The kinds read off a symbol — a schema table,
 //! a `RUN` target, a `SHARED` producer — see only the one site the symbol keeps,
 //! so at most one of the two is set on them.
+//!
+//! ## Which include rows carry which site
+//!
+//! An include is the file's own when the root writes the `{...}` or a `{&var}`
+//! whose value names it. Whether it resolved, could not be read, or resolved to no
+//! file, such an include is a [`EdgeKind::DirectInclude`] edge or row whose `span`
+//! is that reference, or the substitution for a `{&var}`, and whose `include_site`
+//! is `None`.
+//!
+//! An include reached through a file include is a [`EdgeKind::TransitiveInclude`]
+//! edge or row whose `span` is `None` and whose `include_site` is the root-level
+//! `{...}` or `{&var}` of the chain that reached it. A transitive edge has no site
+//! only for a file the expansion read through no include node.
 
 use std::path::{Path, PathBuf};
 
@@ -352,11 +364,22 @@ pub struct DirectIncludeInput<'a> {
     pub site: Span,
 }
 
+/// One include file the dependent file pulls in at any depth, and the site of the
+/// chain that reached it.
+#[derive(Debug, Clone, Copy)]
+pub struct IncludeOriginInput<'a> {
+    pub path: &'a Path,
+    /// The outermost `{...}` or `{&var}` the dependent file itself writes on the
+    /// chain, already in its own bytes.
+    pub site: Span,
+}
+
 /// An include reference the preprocessor resolved to no file.
 #[derive(Debug, Clone, Copy)]
 pub struct UnresolvedIncludeInput<'a> {
     pub name: &'a str,
-    /// The `{...}` site, already in the dependent file's own bytes.
+    /// The `{...}` site, already in the dependent file's own bytes. For a
+    /// reference a `{&var}` value names, the substitution.
     pub site: Span,
     /// The reference's `{` never closes, so `name` is only a best reading of the
     /// text after it. The row says the reference is unknowable rather than that
@@ -406,6 +429,9 @@ pub struct EdgeInputs<'a> {
     /// Every include the expansion read, transitively. Paths that also appear in
     /// `direct_includes` are reported as direct, not twice.
     pub transitive_includes: &'a [PathBuf],
+    /// The root-level site of the chain that reached each include, at any depth.
+    /// Gives a transitive include edge its `include_site`.
+    pub include_origins: &'a [IncludeOriginInput<'a>],
     /// Include references that resolved to no file.
     pub unresolved_includes: &'a [UnresolvedIncludeInput<'a>],
     /// Include references that resolved to no file, written in an *included* file.
@@ -559,10 +585,21 @@ fn include_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
     // one file, and a textual comparison would call them two — emitting the same
     // include as direct *and* transitive, which is the double count the invariant
     // above exists to prevent.
+    //
+    // An unreadable include the root names is a direct edge of its own, so its
+    // path is direct here as well.
     let direct_paths: FxHashSet<PathBuf> = inputs
         .direct_includes
         .iter()
-        .map(|direct| normalize_lexically(direct.path))
+        .map(|direct| direct.path)
+        .chain(
+            inputs
+                .unreadable_includes
+                .iter()
+                .filter(|unreadable| unreadable.site.is_some())
+                .map(|unreadable| unreadable.path),
+        )
+        .map(normalize_lexically)
         .collect();
 
     for direct in inputs.direct_includes {
@@ -573,6 +610,13 @@ fn include_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
             include_site: None,
         });
     }
+    let mut origins: FxHashMap<PathBuf, Span> = FxHashMap::default();
+    for origin in inputs.include_origins {
+        let site = origins
+            .entry(normalize_lexically(origin.path))
+            .or_insert(origin.site);
+        *site = earliest(Some(*site), Some(origin.site)).unwrap_or(*site);
+    }
     for path in inputs.transitive_includes {
         let normalized = normalize_lexically(path);
         if direct_paths.contains(&normalized) {
@@ -580,10 +624,11 @@ fn include_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
         }
         out.push(DependencyEdge {
             kind: EdgeKind::TransitiveInclude,
+            // Named in an intermediate file, so this file has no site for it, only
+            // the one through which the chain reached it.
+            include_site: origins.get(&normalized).copied(),
             target: EdgeTarget::IncludePath(normalized),
-            // Named in an intermediate file, so this file has no site for it.
             span: None,
-            include_site: None,
         });
     }
 }

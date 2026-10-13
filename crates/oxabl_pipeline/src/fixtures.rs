@@ -3497,7 +3497,7 @@ pub const FIXTURES: &[ParityFixture] = &[
                 target: "a.i",
             },
             withheld: ExpectedUnresolvedEdge {
-                via: "transitive_include",
+                via: "direct_include",
                 name: "a.i",
                 reason: "absent_from_workspace",
             },
@@ -3945,6 +3945,29 @@ pub const FIXTURES: &[ParityFixture] = &[
             }),
         ],
     },
+    // A define whose value names an include nothing supplies. The root writes the
+    // substitution, so the gap is its own, as when the file is found.
+    ParityFixture {
+        name: "edges_unresolved_include_through_define",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "&SCOPED-DEFINE INC {gone.i}\n{&INC}\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC007",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 28,
+            end: 34,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "direct_include",
+            name: "gone.i",
+            reason: "absent_from_workspace",
+        })],
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -4009,6 +4032,10 @@ const DEGRADED_FIXTURES: &[(&str, Degraded)] = &[
     (
         "edges_include_through_define",
         Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_unresolved_include_through_define",
+        Degraded(&["unresolved_include"], &["unresolved_include"]),
     ),
     (
         "edges_quoted_brace_in_include_argument",

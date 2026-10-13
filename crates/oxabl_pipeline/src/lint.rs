@@ -86,7 +86,7 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, NestedUnresolvedIncludeInput,
+    BatchIndex, DirectIncludeInput, EdgeInputs, IncludeOriginInput, NestedUnresolvedIncludeInput,
     UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
@@ -688,6 +688,14 @@ impl<'a> LintPipeline<'a> {
                 site: include.site,
             })
             .collect();
+        let origins: Vec<IncludeOriginInput<'_>> = expanded
+            .include_origins()
+            .iter()
+            .map(|origin| IncludeOriginInput {
+                path: origin.path.as_path(),
+                site: origin.site,
+            })
+            .collect();
         let unresolved_includes: Vec<UnresolvedIncludeInput<'_>> = expanded
             .unresolved_includes()
             .iter()
@@ -743,6 +751,7 @@ impl<'a> LintPipeline<'a> {
             schema: &self.config.schema,
             direct_includes: &direct,
             transitive_includes: expansion.dependency_paths(),
+            include_origins: &origins,
             unresolved_includes: &unresolved_includes,
             nested_unresolved_includes: &nested_unresolved,
             unreadable_includes: &unreadable,
