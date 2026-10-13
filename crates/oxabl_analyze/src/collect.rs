@@ -42,7 +42,7 @@ use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, NullIndex, Semantic, SourceContext, WorkspaceIndex, analyze_file,
 };
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
 /// diagnostics to its own JSON channel while parse/semantic/lint feed the
@@ -120,10 +120,14 @@ impl CollectedDiagnostics {
 /// The *loud* preprocessor surfacing rule (moved here from the CLI so both
 /// consumers share it): all errors, plus the always-loud warnings PREPROC007
 /// (unresolvable include — symbol loss), PREPROC008 (unterminated include
-/// reference) and PREPROC002 (unclosed `&IF`).
+/// reference), PREPROC009 (predefined name without a value in a condition) and
+/// PREPROC002 (unclosed `&IF`).
 pub fn is_loud(d: &Diagnostic) -> bool {
     matches!(d.severity, Severity::Error)
-        || matches!(d.code.0, "PREPROC002" | "PREPROC007" | "PREPROC008")
+        || matches!(
+            d.code.0,
+            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009"
+        )
 }
 
 /// One include a file names itself, and where it names it.
@@ -347,6 +351,31 @@ pub fn expand_source(
     include_paths: &[PathBuf],
     preprocess: bool,
 ) -> Result<ExpandedFile, Vec<Diagnostic>> {
+    expand_source_with(
+        root,
+        None,
+        source,
+        fs,
+        include_paths,
+        &PreprocessorConfig::default(),
+        preprocess,
+    )
+}
+
+/// [`expand_source`] with the compile environment spelled out.
+///
+/// `predefined` answers the AVM's predefined names (`{&OPSYS}` and friends), and
+/// `name` is what `{&FILE-NAME}` expands to in the root file. `expand_source` is
+/// this with [`PreprocessorConfig::default`] and no name.
+pub fn expand_source_with(
+    root: FileId,
+    name: Option<&str>,
+    source: &str,
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    predefined: &PreprocessorConfig,
+    preprocess: bool,
+) -> Result<ExpandedFile, Vec<Diagnostic>> {
     if !preprocess {
         return Ok(ExpandedFile {
             text: source.to_string(),
@@ -363,8 +392,12 @@ pub fn expand_source(
     // Wrap the filesystem to record every include path read during expansion,
     // giving the LSP watcher a precise `*.i` → buffer dependency set (R17).
     let recorder = RecordingFileSystem::new(fs);
-    let pp = Preprocessor::new(&recorder, include_paths);
-    match pp.process(root, source) {
+    let pp = Preprocessor::new(&recorder, include_paths).with_predefined(predefined);
+    let processed = match name {
+        Some(name) => pp.process_named(root, name, source),
+        None => pp.process(root, source),
+    };
+    match processed {
         Ok(pf) => {
             let mut chunks = Vec::new();
             let mut cursor = 0u32;

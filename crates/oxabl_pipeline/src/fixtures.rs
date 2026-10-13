@@ -1948,6 +1948,130 @@ pub const FIXTURES: &[ParityFixture] = &[
             reason: "absent_from_workspace",
         })],
     },
+    // The AVM's predefined environment names decide which include a branch
+    // names. The canonical environment is a 64-bit Unix batch compile with a TTY
+    // window system, so the `&IF` takes `a.i`, `c.i` and `d.i` and never names
+    // `b.i`. `b.i` is planted anyway: a wrong branch would show up as an edge to
+    // it rather than hiding behind a file that happens to be absent.
+    ParityFixture {
+        name: "edges_predefined_environment_branches",
+        root_file: "main.p",
+        siblings: &[
+            SiblingFile {
+                path: "a.i",
+                source: "/* unix */\n",
+            },
+            SiblingFile {
+                path: "b.i",
+                source: "/* not unix */\n",
+            },
+            SiblingFile {
+                path: "c.i",
+                source: "/* tty */\n",
+            },
+            SiblingFile {
+                path: "d.i",
+                source: "/* batch */\n",
+            },
+        ],
+        resolutions: &[
+            CrossFileResolution {
+                name: "{a.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 30,
+                    end: 35,
+                }),
+            },
+            CrossFileResolution {
+                name: "{c.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 92,
+                    end: 97,
+                }),
+            },
+            CrossFileResolution {
+                name: "{d.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 139,
+                    end: 144,
+                }),
+            },
+        ],
+        source: "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\n{a.i}\n&ELSE\n{b.i}\n&ENDIF\n\
+                 &IF \"{&WINDOW-SYSTEM}\" = \"TTY\" &THEN\n{c.i}\n&ENDIF\n\
+                 &IF \"{&BATCH-MODE}\" = \"yes\" &THEN\n{d.i}\n&ENDIF\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Reformatted(
+            "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\n    {a.i}\n&ELSE\n    {b.i}\n&ENDIF\n\
+             &IF \"{&WINDOW-SYSTEM}\" = \"TTY\" &THEN\n    {c.i}\n&ENDIF\n\
+             &IF \"{&BATCH-MODE}\" = \"yes\" &THEN\n    {d.i}\n&ENDIF\n",
+        ),
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "a.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "a.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "c.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "c.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "d.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "d.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
+    // A predefined name the environment does not state. `PROVERSION` has no
+    // default, so the condition cannot be decided and must say so rather than
+    // quietly taking the branch an empty string selects.
+    ParityFixture {
+        name: "predefined_name_without_a_value",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "&IF \"{&PROVERSION}\" >= \"12\" &THEN\n    {a.i}\n&ENDIF\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC009",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 0,
+            end: 34,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[],
+    },
 ];
 
 /// The parent class two cross-file rows resolve to: one public method with a
