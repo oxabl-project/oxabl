@@ -1793,6 +1793,161 @@ pub const FIXTURES: &[ParityFixture] = &[
             reason: "absent_from_workspace",
         })],
     },
+    // Include references with whitespace inside the braces, beside a tight one.
+    // The AVM accepts all three spellings, so all three must be edges; withheld,
+    // each is a gap and a loud warning rather than a silence.
+    ParityFixture {
+        name: "edges_spaced_include_references",
+        root_file: "main.p",
+        siblings: &[
+            SiblingFile {
+                path: "a.i",
+                source: "DEFINE VARIABLE v-a AS INTEGER NO-UNDO.\n",
+            },
+            SiblingFile {
+                path: "b.i",
+                source: "DEFINE VARIABLE v-b AS INTEGER NO-UNDO.\n",
+            },
+            SiblingFile {
+                path: "c.i",
+                source: "DEFINE VARIABLE v-c AS CHARACTER NO-UNDO INITIAL \"{1}\".\n",
+            },
+        ],
+        resolutions: &[
+            CrossFileResolution {
+                name: "{ a.i }",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 0,
+                    end: 7,
+                }),
+            },
+            CrossFileResolution {
+                name: "{b.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 8,
+                    end: 13,
+                }),
+            },
+            CrossFileResolution {
+                name: "{ c.i \"X\"}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 14,
+                    end: 24,
+                }),
+            },
+            CrossFileResolution {
+                name: "v-a",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 33,
+                    end: 36,
+                }),
+            },
+            CrossFileResolution {
+                name: "v-b",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 37,
+                    end: 40,
+                }),
+            },
+            CrossFileResolution {
+                name: "v-c",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 41,
+                    end: 44,
+                }),
+            },
+        ],
+        source: "{ a.i }\n{b.i}\n{ c.i \"X\"}\nMESSAGE v-a v-b v-c.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "a.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "a.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "b.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "b.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "c.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "c.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
+    // An include reference that never closes. The text stays in the expansion and
+    // fails to parse, but the file still reads as naming an include: a gap, not
+    // a file that includes nothing.
+    ParityFixture {
+        name: "unterminated_include_reference",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "{ gone.i \"X\"\nMESSAGE \"hello\".\n",
+        diagnostics: &[
+            ExpectedDiagnostic {
+                code: "PREPROC008",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 1,
+            },
+            ExpectedDiagnostic {
+                code: "PARSE001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Parse,
+                start: 0,
+                end: 30,
+            },
+        ],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "direct_include",
+            name: "gone.i",
+            reason: "absent_from_workspace",
+        })],
+    },
 ];
 
 /// The parent class two cross-file rows resolve to: one public method with a

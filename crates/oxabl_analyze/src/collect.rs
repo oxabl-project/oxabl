@@ -119,9 +119,11 @@ impl CollectedDiagnostics {
 
 /// The *loud* preprocessor surfacing rule (moved here from the CLI so both
 /// consumers share it): all errors, plus the always-loud warnings PREPROC007
-/// (unresolvable include — symbol loss) and PREPROC002 (unclosed `&IF`).
+/// (unresolvable include — symbol loss), PREPROC008 (unterminated include
+/// reference) and PREPROC002 (unclosed `&IF`).
 pub fn is_loud(d: &Diagnostic) -> bool {
-    matches!(d.severity, Severity::Error) || d.code.0 == "PREPROC007" || d.code.0 == "PREPROC002"
+    matches!(d.severity, Severity::Error)
+        || matches!(d.code.0, "PREPROC002" | "PREPROC007" | "PREPROC008")
 }
 
 /// One include a file names itself, and where it names it.

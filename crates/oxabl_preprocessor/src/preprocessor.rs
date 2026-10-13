@@ -375,13 +375,9 @@ impl<'fs> ProcessContext<'fs> {
                                 i = next;
                                 continue;
                             }
-                        } else if bytes[i + 1].is_ascii_alphabetic()
-                            || bytes[i + 1] == b'/'
-                            || bytes[i + 1] == b'.'
-                            || bytes[i + 1] == b'"'
-                            || bytes[i + 1] == b'{'
-                        {
-                            // Include file reference {file.i}
+                        } else if include_ref_start(bytes, i) {
+                            // Include file reference {file.i}. The AVM accepts
+                            // whitespace after the `{` and before the `}`.
                             //
                             // `{{&name}...}` — dynamic include whose file name is
                             // built from a preprocessor variable (e.g.
@@ -450,6 +446,7 @@ impl<'fs> ProcessContext<'fs> {
                                 chunk_start = i as u32;
                                 continue;
                             }
+                            self.report_unterminated_include(file, source, i);
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
                             if let Some(next) = self.expand_positional_ref_at(
@@ -568,6 +565,33 @@ impl<'fs> ProcessContext<'fs> {
         }
 
         nodes
+    }
+
+    /// Report an include reference whose `{` at byte offset `i` never closes.
+    ///
+    /// The reference is left in the text, so without this the file would look
+    /// like it includes nothing. It is recorded as an unresolved include as well
+    /// as a diagnostic, for the same reason an unlocatable file is.
+    fn report_unterminated_include(&mut self, file: FileId, source: &str, i: usize) {
+        let rest = &source[i + 1..];
+        let name = parse_include_name(rest.lines().next().unwrap_or(rest));
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: i as u32,
+                end: (i + 1) as u32,
+            },
+        };
+        self.diagnostics.push(Diagnostic::warning(
+            "PREPROC008",
+            format!("unterminated include reference '{{{name}'"),
+            site,
+        ));
+        self.unresolved_includes.push(UnresolvedInclude {
+            name,
+            site,
+            via: self.site_stack.clone(),
+        });
     }
 
     /// Expand a `{&name}` preprocessor variable reference whose `{` sits at
@@ -1315,6 +1339,22 @@ fn find_same_line_if_boundary(source: &str, from: usize) -> Option<usize> {
     best.map(|p| from + p)
 }
 
+/// Whether the `{` at `open` starts a file include reference: optional
+/// whitespace, then the first byte of a file name.
+///
+/// `{&name}` and `{1}` are decided before this is asked, and a `{` followed by
+/// whitespace and then `&` or a digit is neither.
+fn include_ref_start(bytes: &[u8], open: usize) -> bool {
+    let first = bytes[open + 1..]
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .copied();
+    matches!(
+        first,
+        Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'.' | b'"' | b'{')
+    )
+}
+
 /// Find the matching `}` for a `{` at position `open`, handling nested braces.
 fn find_matching_brace(source: &str, open: usize) -> Option<usize> {
     let bytes = source.as_bytes();
@@ -1761,6 +1801,77 @@ mod tests {
 
         assert_eq!(&*result.to_text(), "BEFORE\n/* header */\nAFTER");
         assert_eq!(result.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn include_reference_with_inner_whitespace_expands_like_the_tight_form() {
+        let fs = make_fs(&[
+            ("/inc/a.i", "A"),
+            ("/inc/b.i", "B"),
+            ("/inc/c.i", "C{1}"),
+            ("/inc/d.i", "D{&k}"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{ a.i }|{b.i}|{ c.i \"X\"}|{\n  d.i\n  &k=7\n}|{\ta.i\t}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "A|B|CX|D7|A");
+        assert!(result.unresolved_includes.is_empty());
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn spaced_include_reference_that_is_missing_is_unresolved() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let result = pp.process(FileId::new(1), "{ gone.i }").unwrap();
+
+        assert_eq!(result.unresolved_includes.len(), 1);
+        assert_eq!(result.unresolved_includes[0].name, "gone.i");
+        assert!(result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"));
+    }
+
+    #[test]
+    fn whitespace_before_amp_or_digit_is_not_an_include_reference() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE V v\n{ &V }|{ 1 }|{&V}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "{ &V }|{ 1 }|v");
+        assert!(result.unresolved_includes.is_empty());
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn spaced_include_reference_in_string_stays_literal() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "MESSAGE '{ a.i }'.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), source);
+    }
+
+    #[test]
+    fn unterminated_include_reference_is_reported_not_silent() {
+        for source in ["x = 1.\n{ a.i \"X\"\ny = 2.", "{a.i"] {
+            let fs = make_fs(&[("/inc/a.i", "A")]);
+            let include_paths = vec![PathBuf::from("/inc")];
+            let pp = Preprocessor::new(&fs, &include_paths);
+            let result = pp.process(FileId::new(1), source).unwrap();
+
+            assert_eq!(&*result.to_text(), source);
+            assert!(
+                result.diagnostics.iter().any(|d| d.code.0 == "PREPROC008"),
+                "no PREPROC008 for {source:?}"
+            );
+            assert_eq!(result.unresolved_includes.len(), 1);
+            assert_eq!(result.unresolved_includes[0].name, "a.i");
+        }
     }
 
     #[test]
