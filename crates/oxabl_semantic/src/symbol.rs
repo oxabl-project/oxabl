@@ -450,6 +450,10 @@ struct SymbolSideMaps {
     /// one spliced in from an include, so it keeps them all and lets the edge
     /// builder, which holds the expansion's mapping, pick a site of each kind.
     class_sites: Vec<(OxablAtom, VirtualSpan)>,
+    /// Where an unmodelled statement (`PUT`, `EXPORT`, ...) names something that
+    /// may be a class — `NEW x(...)` or a `name:` member access — and the walk
+    /// could neither attribute it to a class nor rule it out.
+    unattributed_unmodelled_uses: Vec<VirtualSpan>,
 }
 
 impl SymbolTable {
@@ -695,6 +699,20 @@ impl SymbolTable {
         self.side
             .as_deref()
             .map_or(&[], |side| side.class_sites.as_slice())
+    }
+
+    /// Record a place in an unmodelled statement that may name a class and was
+    /// neither attributed to one nor ruled out.
+    pub fn record_unattributed_unmodelled_use(&mut self, site: VirtualSpan) {
+        self.side_mut().unattributed_unmodelled_uses.push(site);
+    }
+
+    /// Whether any unmodelled statement may name a class this table has no record
+    /// of. A reference there could have produced a dependency that is absent.
+    pub fn has_unattributed_unmodelled_use(&self) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| !side.unattributed_unmodelled_uses.is_empty())
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

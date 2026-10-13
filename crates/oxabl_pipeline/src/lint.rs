@@ -86,8 +86,8 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, UnreadableIncludeInput, UnresolvedIncludeInput,
-    build_edge_set,
+    BatchIndex, DirectIncludeInput, EdgeInputs, NestedUnresolvedIncludeInput,
+    UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
 use oxabl_workspace::{FileSystem, is_include_fragment};
@@ -693,12 +693,22 @@ impl<'a> LintPipeline<'a> {
             .map(|include| UnresolvedIncludeInput {
                 name: include.name.as_str(),
                 site: include.site.span,
+                unterminated: include.unterminated,
             })
             .collect();
-        let nested_unresolved: Vec<&str> = expanded
+        // The chain's first site is the one coordinate in the root's own bytes.
+        let chain_site = |via: &[oxabl_common::FileSpan]| {
+            via.first()
+                .filter(|site| site.file == ROOT_FILE_ID)
+                .map(|site| site.span)
+        };
+        let nested_unresolved: Vec<NestedUnresolvedIncludeInput<'_>> = expanded
             .nested_unresolved_includes()
             .iter()
-            .map(|include| include.name.as_str())
+            .map(|include| NestedUnresolvedIncludeInput {
+                name: include.name.as_str(),
+                include_site: chain_site(&include.via),
+            })
             .collect();
         // An unreadable include written at the root has a site in the root's
         // bytes; a nested one does not, and is a transitive edge.
@@ -709,6 +719,7 @@ impl<'a> LintPipeline<'a> {
                 name: include.name.as_str(),
                 path: include.path.as_path(),
                 site: (include.site.file == ROOT_FILE_ID).then_some(include.site.span),
+                include_site: chain_site(&include.via),
             })
             .collect();
         // The model's spans are post-expansion; an edge must carry the dependent
@@ -735,6 +746,7 @@ impl<'a> LintPipeline<'a> {
             nested_unresolved_includes: &nested_unresolved,
             unreadable_includes: &unreadable,
             parse_recovered: result.diagnostics().parse_recovered,
+            preprocessor_loss: !expanded.text_losses().is_empty(),
             resolve_span: &resolve_span,
             include_site: &include_site,
         }))

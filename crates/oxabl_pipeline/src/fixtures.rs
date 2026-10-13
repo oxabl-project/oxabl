@@ -2127,7 +2127,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
             via: "direct_include",
             name: "gone.i",
-            reason: "absent_from_workspace",
+            reason: "unknowable",
         })],
     },
     // The AVM's predefined environment names decide which include a branch
@@ -3265,6 +3265,327 @@ pub const FIXTURES: &[ParityFixture] = &[
             }),
         ],
     },
+    // --- Unmodelled statements and the same-line frame phrase --------------
+    //
+    // A statement the parser recognizes but does not model has no expressions to
+    // walk, so a class it names reached neither an edge nor a row.
+
+    // A static member access inside `PUT`. Withheld, the dotted receiver cannot be
+    // told from a table field, so it is no row; the set says so instead.
+    ParityFixture {
+        name: "edges_put_static_receiver",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/tax-util.cls",
+            source: TAX_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.tax-util",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "PUT UNFORMATTED orders.tax-util:rate() SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+            via: "class",
+            target: "orders.tax-util",
+        })],
+    },
+    // A constructor inside `EXPORT` is a class and nothing else, so a miss is a
+    // gap.
+    class_site_row! {
+        name: "class_site_export_new",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "EXPORT DELIMITER \",\" NEW orders.calc-base():calc-total().\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The unmodelled statement names something no lookup can attribute, beside a
+    // class that resolves. The one edge is no reason to call the set complete.
+    ParityFixture {
+        name: "edges_unmodelled_statement_unattributed",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n\
+                 PUT UNFORMATTED mystery.helper:run() SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A handle is not a class: the receiver is a variable and a keyword, and the
+    // statement carries no gap.
+    ParityFixture {
+        name: "edges_put_handle_receivers_are_no_gap",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 DEFINE VARIABLE h-widget AS HANDLE NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n\
+                 PUT UNFORMATTED h-widget:name SESSION:date-format SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A statement on the same line after `WITH FRAME x.` was swallowed into the
+    // frame phrase, so the class it names left no trace.
+    class_site_row! {
+           name: "class_site_after_same_line_frame_phrase",
+           root_file: "report.p",
+           siblings: &[SiblingFile {
+               path: "orders/tax-util.cls",
+               source: TAX_UTIL,
+           }],
+           resolutions: &[CrossFileResolution {
+               name: "NEW orders.tax-util()",
+    effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic { code: "LINT0001", severity: Severity::Error, source: DiagnosticSource::Lint, start: 86, end: 107 }),
+           }],
+           source: "DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                    DISPLAY v-rate WITH FRAME f-rate. v-rate = NEW orders.tax-util():rate().\n",
+           diagnostics: &[],
+           needs: &[],
+           target: "orders.tax-util",
+           withheld: "orders.tax-util",
+       },
+    // --- Text the preprocessor loses ------------------------------------------
+
+    // A branch decided on a predefined name with no value. The `&IF` is taken or
+    // not on a guess, so the set cannot say `a.i` is no dependency.
+    ParityFixture {
+        name: "edges_valueless_predefined_branch",
+        root_file: "main.p",
+        siblings: &[
+            SiblingFile {
+                path: "a.i",
+                source: "/* gated */\n",
+            },
+            SiblingFile {
+                path: "b.i",
+                source: "/* plain */\n",
+            },
+        ],
+        resolutions: &[CrossFileResolution {
+            name: "{b.i}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 51,
+                end: 56,
+            }),
+        }],
+        source: "&IF \"{&PROVERSION}\" BEGINS \"12\" &THEN\n{a.i}\n&ENDIF\n{b.i}\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC009",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 0,
+            end: 38,
+        }],
+        format: ExpectedFormat::Reformatted(
+            "&IF \"{&PROVERSION}\" BEGINS \"12\" &THEN\n    {a.i}\n&ENDIF\n{b.i}\n",
+        ),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "b.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "b.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // An `&IF` that never closes: the rest of the file hangs on a branch with no
+    // end.
+    ParityFixture {
+        name: "edges_unclosed_conditional",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "/* gated */\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 15,
+                end: 20,
+            }),
+        }],
+        source: "&IF TRUE &THEN\n{a.i}\nMESSAGE 1.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC002",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 0,
+            end: 32,
+        }],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A define whose value is an include reference includes the file where the
+    // define is referenced.
+    ParityFixture {
+        name: "edges_include_through_define",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{&INC}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 25,
+                end: 31,
+            }),
+        }],
+        source: "&SCOPED-DEFINE INC {a.i}\n{&INC}\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "transitive_include",
+                name: "a.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A brace inside a quoted include argument does not close the reference.
+    ParityFixture {
+        name: "edges_quoted_brace_in_include_argument",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "MESSAGE \"{1}\".\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 9,
+            }),
+        }],
+        source: "{a.i \"}\"}\nMESSAGE 2.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // An unterminated reference whose file exists is still an edge to that file,
+    // and the row says only that the reference is unknowable.
+    ParityFixture {
+        name: "edges_unterminated_include_of_located_file",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "/* plain */\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "{ a.i \"X\"\nMESSAGE \"hello\".\n",
+        diagnostics: &[
+            ExpectedDiagnostic {
+                code: "PREPROC008",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 1,
+            },
+            ExpectedDiagnostic {
+                code: "PARSE001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Parse,
+                start: 0,
+                end: 27,
+            },
+        ],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "unknowable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "unknowable",
+            },
+        }],
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -3303,6 +3624,43 @@ const DEGRADED_FIXTURES: &[(&str, Degraded)] = &[
     (
         "edges_recovered_parse",
         Degraded(&["parse_recovered"], &["parse_recovered"]),
+    ),
+    (
+        "edges_put_static_receiver",
+        Degraded(&[], &["unmodelled_statement"]),
+    ),
+    (
+        "edges_unmodelled_statement_unattributed",
+        Degraded(&["unmodelled_statement"], &["unmodelled_statement"]),
+    ),
+    (
+        "edges_valueless_predefined_branch",
+        Degraded(
+            &["preprocessor_loss"],
+            &["unresolved_include", "preprocessor_loss"],
+        ),
+    ),
+    (
+        "edges_unclosed_conditional",
+        Degraded(
+            &["preprocessor_loss"],
+            &["unresolved_include", "preprocessor_loss"],
+        ),
+    ),
+    (
+        "edges_include_through_define",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_quoted_brace_in_include_argument",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_unterminated_include_of_located_file",
+        Degraded(
+            &["parse_recovered", "unresolved_include"],
+            &["parse_recovered", "unresolved_include"],
+        ),
     ),
 ];
 

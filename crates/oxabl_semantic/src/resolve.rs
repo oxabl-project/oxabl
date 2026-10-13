@@ -3021,6 +3021,7 @@ impl<'a> ResolveWalker<'a> {
                 if *may_reference_tables {
                     self.credit_unmodelled_table_names(names, scope);
                 }
+                self.note_unmodelled_class_runs(stmt.span, scope);
             }
         }
     }
@@ -4116,6 +4117,61 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
+    /// Offer the class-shaped runs of a recognized-but-unmodelled statement to the
+    /// class lookup: `NEW name(...)` and a `name:` member access. The statement
+    /// has no expressions to walk, so without this a class it names would give
+    /// neither an edge nor a row.
+    ///
+    /// A run that is a class is recorded like any other naming site. One that
+    /// cannot be told from a handle or a table field is recorded as unattributed,
+    /// so the edge set reports itself degraded rather than silent.
+    fn note_unmodelled_class_runs(&mut self, span: Span, scope: ScopeId) {
+        if !self.ctx.index_loaded {
+            return;
+        }
+        let source = self.ctx.source;
+        let Some(text) = source.get(span.start as usize..span.end as usize) else {
+            return;
+        };
+        let bytes = text.as_bytes();
+        if !bytes.contains(&b':') && !bytes.windows(3).any(|w| w.eq_ignore_ascii_case(b"new")) {
+            return;
+        }
+        for run in class_shaped_runs(text) {
+            let name = &text[run.name.clone()];
+            let site = VirtualSpan::new(
+                span.start + run.name.start as u32,
+                span.start + run.name.end as u32,
+            );
+            if run.is_constructor {
+                self.note_class_name(name, scope, site);
+                continue;
+            }
+            // A variable, buffer or table is not a type, and neither is a chain
+            // whose first segment is one.
+            let first = fold_atom(name.split('.').next().unwrap_or_default());
+            if [
+                NamespaceId::Buffers,
+                NamespaceId::Tables,
+                NamespaceId::Values,
+            ]
+            .iter()
+            .any(|ns| self.tree.resolve(scope, *ns, &first).is_some())
+            {
+                continue;
+            }
+            match self.resolve_type_name(name, scope, site) {
+                lookup @ (TypeLookup::Indexed(_) | TypeLookup::Unusable) => {
+                    self.note_class_site(name, lookup, site)
+                }
+                TypeLookup::Local(_) | TypeLookup::External => {}
+                TypeLookup::NotFound | TypeLookup::Unknowable | TypeLookup::NotLooked => {
+                    self.symbols.record_unattributed_unmodelled_use(site)
+                }
+            }
+        }
+    }
+
     /// Credit one read on the table or temp-table a buffer definition names
     /// (#130): `DEFINE BUFFER b FOR tt.` and `DEFINE PARAMETER BUFFER b FOR tt.`
     ///
@@ -4867,6 +4923,63 @@ fn strip_db_qualifier(name: &str) -> Option<&str> {
 
 fn identifier_span(id: &Identifier) -> VirtualSpan {
     VirtualSpan::new(id.span.start, id.span.end)
+}
+
+/// A name inside an unmodelled statement that may be a class.
+struct ClassShapedRun {
+    /// The name's byte range in the statement text, dots included.
+    name: std::ops::Range<usize>,
+    /// `NEW name(`, which is a class and nothing else, rather than a `name:`
+    /// receiver, which may be a handle or a table field.
+    is_constructor: bool,
+}
+
+/// The `NEW name(...)` constructors and `name:` member-access receivers in the
+/// text of one statement. Only a name the lexer reads as an identifier is
+/// offered: a system handle such as `SESSION` is a keyword and never is.
+fn class_shaped_runs(text: &str) -> Vec<ClassShapedRun> {
+    use oxabl_lexer::{Kind, tokenize};
+    let tokens = tokenize(text);
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i].kind != Kind::Identifier {
+            i += 1;
+            continue;
+        }
+        let start = tokens[i].start;
+        let mut end = tokens[i].end;
+        let mut next = i + 1;
+        // `a.b.C` lexes as identifiers joined by byte-adjacent periods.
+        while next + 1 < tokens.len()
+            && tokens[next].kind == Kind::Period
+            && tokens[next].start == end
+            && tokens[next + 1].start == tokens[next].end
+            && text[tokens[next + 1].start..tokens[next + 1].end]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        {
+            end = tokens[next + 1].end;
+            next += 2;
+        }
+        let after_member = i > 0
+            && matches!(tokens[i - 1].kind, Kind::Colon | Kind::Period)
+            && tokens[i - 1].end == start;
+        let after_new = i > 0 && tokens[i - 1].kind == Kind::New;
+        let is_receiver = tokens
+            .get(next)
+            .is_some_and(|t| t.kind == Kind::Colon && t.start == end);
+        let is_constructor =
+            after_new && tokens.get(next).is_some_and(|t| t.kind == Kind::LeftParen);
+        if !after_member && (is_constructor || is_receiver) {
+            runs.push(ClassShapedRun {
+                name: start..end,
+                is_constructor,
+            });
+        }
+        i = next;
+    }
+    runs
 }
 
 /// The name an identifier or a `pkg.sub.Name` field-access chain spells, which

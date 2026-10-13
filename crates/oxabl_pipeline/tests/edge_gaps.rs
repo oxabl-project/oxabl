@@ -124,6 +124,124 @@ fn a_non_utf8_include_on_a_real_filesystem_is_an_edge_and_a_row() {
 }
 
 #[test]
+fn an_unreadable_include_is_a_dependency_path() {
+    let fs = Unreadable {
+        inner: InMemoryFileSystem::new(),
+        unreadable: vec![PathBuf::from("/proj/latin.i")],
+    };
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/main.p");
+
+    let expansion = pipeline.expand("{latin.i}\n{gone.i}\n");
+
+    assert_eq!(
+        expansion.dependency_paths(),
+        [PathBuf::from("/proj/latin.i")],
+        "an existing file that cannot be read is watched; a missing one is not"
+    );
+}
+
+#[test]
+fn a_nested_row_names_the_root_site_of_its_chain() {
+    let mut inner = InMemoryFileSystem::new();
+    inner.insert(PathBuf::from("/proj/mid.i"), "{latin.i}\n{gone.i}\n");
+    let fs = Unreadable {
+        inner,
+        unreadable: vec![PathBuf::from("/proj/latin.i")],
+    };
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/main.p");
+    let source = "MESSAGE 1.\n{mid.i}\n";
+    let start = source.find("{mid.i}").expect("site") as u32;
+
+    let edges = pipeline.edge_set(source).expect("edge set");
+
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 2, "got {rows:?}");
+    for row in rows {
+        assert_eq!(row.span, None, "{row:?}");
+        let site = row.include_site.expect("the chain's root site");
+        assert_eq!(
+            (site.start, site.end),
+            (start, start + "{mid.i}".len() as u32),
+            "{row:?}"
+        );
+    }
+}
+
+#[test]
+fn the_include_depth_limit_degrades_the_set() {
+    let mut inner = InMemoryFileSystem::new();
+    for n in 0..80 {
+        inner.insert(
+            PathBuf::from(format!("/proj/d{n}.i")),
+            format!("{{d{}.i}}\n", n + 1),
+        );
+    }
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &inner);
+    let pipeline = run.with_file("/proj/main.p");
+
+    let edges = pipeline.edge_set("{d0.i}\n").expect("edge set");
+
+    assert_eq!(
+        edges.completeness().reasons(),
+        [DegradedReason::PreprocessorLoss]
+    );
+}
+
+#[test]
+fn an_unmodelled_statement_naming_a_class_is_an_edge_or_degrades_the_set() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/orders/util.cls"),
+        "CLASS orders.util:\n  METHOD PUBLIC STATIC INTEGER two():\n    RETURN 2.\n  END METHOD.\nEND CLASS.\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/main.p");
+
+    let found = pipeline
+        .edge_set("PUT UNFORMATTED orders.util:two() SKIP.\n")
+        .expect("edge set");
+    assert_eq!(found.of_kind(EdgeKind::ClassReference).count(), 1);
+    assert!(found.completeness().is_complete());
+
+    let lost = pipeline
+        .edge_set("EXPORT orders.nothere:two().\n")
+        .expect("edge set");
+    assert_eq!(lost.of_kind(EdgeKind::ClassReference).count(), 0);
+    assert_eq!(
+        lost.completeness().reasons(),
+        [DegradedReason::UnmodelledStatement]
+    );
+}
+
+#[test]
+fn line_number_references_in_a_large_file_do_not_cost_the_file_each() {
+    let mut source = String::new();
+    for n in 0..60_000 {
+        source.push_str(&format!("MESSAGE {{&LINE-NUMBER}} {n}.\n"));
+    }
+    let fs = InMemoryFileSystem::new();
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/big.p");
+
+    let started = std::time::Instant::now();
+    let expansion = pipeline.expand(&source);
+    let elapsed = started.elapsed();
+
+    assert!(expansion.expanded().is_some());
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "60k references took {elapsed:?}"
+    );
+}
+
+#[test]
 fn a_program_that_runs_itself_depends_on_nothing_and_leaves_no_row() {
     let mut fs = InMemoryFileSystem::new();
     fs.insert(PathBuf::from("/proj/loop.p"), "RUN loop.p.\n");
