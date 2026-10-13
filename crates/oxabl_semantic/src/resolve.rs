@@ -162,6 +162,19 @@ pub enum UnresolvedReason {
     Unknowable,
 }
 
+/// Whether the last segment of a `RUN` target carries an extension. The last
+/// segment only, so a dotted *package*-looking directory is not mistaken for one.
+fn has_run_extension(raw: &str) -> bool {
+    raw.rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|last| last.contains('.'))
+}
+
+/// A `RUN` target that is a single name: no extension and no path separator.
+fn is_bare_run_name(raw: &str) -> bool {
+    !raw.contains(['/', '\\']) && !has_run_extension(raw)
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -1791,26 +1804,19 @@ impl<'a> ResolveWalker<'a> {
     ///
     /// A target with no file extension is held back from
     /// [`UnresolvedReason::AbsentFromWorkspace`], because a path search is not the
-    /// mechanism the AVM would have used and a miss therefore proves nothing:
+    /// mechanism the AVM would have used and a miss therefore proves nothing.
+    /// `RUN post-order` means an internal procedure first: this file's own, then
+    /// any registered `SUPER PROCEDURE`'s. oxabl models neither super-procedure
+    /// registration nor persistent handles, so a miss here is inconclusive rather
+    /// than a fact about the workspace, and the honest answer is
+    /// [`UnresolvedReason::External`]. `RUN post-order.p` names a file and is
+    /// judged normally.
     ///
-    /// * **A target with no file extension.** `RUN post-order` means an internal
-    ///   procedure first: this file's own, then any registered `SUPER PROCEDURE`'s.
-    ///   oxabl models neither super-procedure registration nor persistent handles,
-    ///   so a miss here is inconclusive rather than a fact about the workspace, and
-    ///   the honest answer is [`UnresolvedReason::External`]. `RUN post-order.p`
-    ///   names a file and is judged normally.
-    ///
-    /// Both were measured, not guessed: without them the great majority of a real
-    /// codebase's new findings were `RUN x IN h` and extension-less internal calls,
-    /// every one of them correct ABL.
+    /// Measured, not guessed: without it the great majority of a real codebase's
+    /// new findings were extension-less internal calls, every one of them correct
+    /// ABL.
     fn run_miss_reason(&self, raw: &str, name: &OxablAtom) -> UnresolvedReason {
-        // Extension on the last segment, so a dotted *package*-looking target is
-        // not mistaken for an extension.
-        let has_extension = raw
-            .rsplit(['/', '\\'])
-            .next()
-            .is_some_and(|last| last.contains('.'));
-        if !has_extension {
+        if !has_run_extension(raw) {
             return UnresolvedReason::External;
         }
         self.absent_reason(name)
@@ -2044,7 +2050,7 @@ impl<'a> ResolveWalker<'a> {
             name.as_atom().clone(),
             NamespaceId::Types,
             match kind {
-                ClassKind::Class => SymbolKind::Class,
+                ClassKind::Class | ClassKind::Enum => SymbolKind::Class,
                 ClassKind::Interface => SymbolKind::Interface,
             },
             use_span,
@@ -3523,7 +3529,7 @@ impl<'a> ResolveWalker<'a> {
         let index = self.ctx.index;
         let name = IndexName::new(raw);
         let span = VirtualSpan::new(name_span.start, name_span.end);
-        let (resolution, located) = match index.program(&name) {
+        let (resolution, located, internal_call) = match index.program(&name) {
             IndexAnswer::Found(file) => {
                 let sym = self.indexed_program_symbol(&name, span, file);
                 self.references.insert(id, Resolution::Resolved(sym));
@@ -3539,6 +3545,10 @@ impl<'a> ResolveWalker<'a> {
                     name: name.as_atom().clone(),
                 },
                 None,
+                // A bare name no file supplies is an internal procedure of a
+                // running program, resolved at run time and never a compile
+                // input, so a dependency consumer gets no row for it.
+                is_bare_run_name(raw),
             ),
             // The program file is right there and oxabl could not parse it. It is
             // still the file this `RUN` depends on, so the dependency record
@@ -3564,6 +3574,7 @@ impl<'a> ResolveWalker<'a> {
                         Located::In(file) => Some(file),
                         _ => None,
                     },
+                    false,
                 ),
             },
             IndexAnswer::Unknowable => (
@@ -3572,9 +3583,12 @@ impl<'a> ResolveWalker<'a> {
                     reason: UnresolvedReason::Unknowable,
                 },
                 None,
+                false,
             ),
         };
-        if let Resolution::Unresolved { reason, .. } = &resolution {
+        if let Resolution::Unresolved { reason, .. } = &resolution
+            && !internal_call
+        {
             self.symbols.record_unlinked_run(UnlinkedRun {
                 name: name.as_atom().clone(),
                 reason: *reason,

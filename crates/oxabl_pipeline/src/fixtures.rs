@@ -1153,8 +1153,34 @@ macro_rules! class_site_row {
 
 /// One `RUN` target spelling: `source` runs one sibling program, and the row
 /// claims exactly one program edge with the sibling supplied and exactly one gap
-/// named `withheld` with the stated reason without it.
+/// named `withheld` with the stated reason without it. Without `withheld` and
+/// `reason`, the target is a bare name and leaves no gap without the sibling.
 macro_rules! run_target_row {
+    (
+        name: $name:literal,
+        sibling: $sibling:literal,
+        resolutions: $resolutions:expr,
+        source: $source:expr,
+        target: $target:literal $(,)?
+    ) => {
+        ParityFixture {
+            name: $name,
+            root_file: "run.p",
+            siblings: &[SiblingFile {
+                path: $sibling,
+                source: "MESSAGE 1.\n",
+            }],
+            resolutions: $resolutions,
+            source: $source,
+            diagnostics: &[],
+            format: ExpectedFormat::Unchanged,
+            needs: &[],
+            edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "program",
+                target: $target,
+            })],
+        }
+    };
     (
         name: $name:literal,
         sibling: $sibling:literal,
@@ -2353,14 +2379,14 @@ pub const FIXTURES: &[ParityFixture] = &[
         ],
     },
     // A located `RUN` target oxabl cannot parse on its own: an `&IF` that cuts
-    // across a block. The file is found, so it is a dependency whatever could be
-    // extracted from it.
+    // across a block, with an include the file's own text cannot expand. The file
+    // is found, so it is a dependency whatever could be extracted from it.
     ParityFixture {
         name: "edges_run_target_needs_its_preprocessor",
         root_file: "run.p",
         siblings: &[SiblingFile {
             path: "sub.p",
-            source: "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  MESSAGE 1.\nEND.\n",
+            source: "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  {nothere.i}\n  MESSAGE 1.\nEND.\n",
         }],
         resolutions: &[CrossFileResolution {
             name: "RUN sub.p",
@@ -2434,8 +2460,8 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
     },
     // A `RUN` written without an extension resolves like the one written with it.
-    // Withheld, the bare name is inconclusive rather than absent: it may be an
-    // internal procedure or a super procedure that oxabl does not model.
+    // Withheld, the bare name leaves no row: it may be an internal procedure or a
+    // super procedure that oxabl does not model, and it is never a compile input.
     ParityFixture {
         name: "edges_run_without_extension",
         root_file: "noext.p",
@@ -2458,17 +2484,10 @@ pub const FIXTURES: &[ParityFixture] = &[
         format: ExpectedFormat::Unchanged,
         needs: &[],
         edges: &[
-            EdgeExpectation::ResolvedWithSiblings {
-                edge: ExpectedEdge {
-                    via: "program",
-                    target: "sub2",
-                },
-                withheld: ExpectedUnresolvedEdge {
-                    via: "program",
-                    name: "sub2",
-                    reason: "external",
-                },
-            },
+            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "program",
+                target: "sub2",
+            }),
             EdgeExpectation::ResolvedWithSiblings {
                 edge: ExpectedEdge {
                     via: "program",
@@ -3106,8 +3125,6 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         source: "RUN sub2 /* note */.\n",
         target: "sub2",
-        withheld: "sub2",
-        reason: "external",
     },
     // A line comment after the target.
     run_target_row! {
@@ -3119,8 +3136,6 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         source: "RUN sub2 // note\n.\n",
         target: "sub2",
-        withheld: "sub2",
-        reason: "external",
     },
     // A comment after a target that has an extension.
     run_target_row! {
@@ -3154,8 +3169,101 @@ pub const FIXTURES: &[ParityFixture] = &[
                  i = 1.\n\
                  MESSAGE i.\n",
         target: "sub2",
-        withheld: "sub2",
-        reason: "external",
+    },
+    // A class declared with an `ENUM`. The file declares the type, so it is a usable
+    // class: an edge and no row, at the declaration and at a static member access.
+    class_site_row! {
+        name: "class_site_enum",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/shade.cls",
+            source: "ENUM orders.shade:\n    DEFINE ENUM light dark.\nEND ENUM.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.shade",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-shade AS orders.shade NO-UNDO.\n\
+                 v-shade = orders.shade:dark.\n\
+                 MESSAGE v-shade.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.shade",
+        withheld: "orders.shade",
+    },
+    // A class whose header is built from the file's own `&GLOBAL-DEFINE`. The raw
+    // text does not parse; the file's own directives are enough to read the header.
+    class_site_row! {
+        name: "class_site_directive_built_class",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/built.cls",
+            source: "&GLOBAL-DEFINE fullName orders.built\nCLASS {&fullName}:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.built",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-built AS orders.built NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-built).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.built",
+        withheld: "orders.built",
+    },
+    // Three `RUN`s that nothing supplies. A bare name is an internal procedure of a
+    // running program and leaves no row. A path without an extension and a named
+    // file with one are file references and do.
+    ParityFixture {
+        name: "edges_run_unsupplied_targets",
+        root_file: "runs.p",
+        siblings: &[SiblingFile {
+            path: "lib/real.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN lib/real.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 53,
+                end: 63,
+            }),
+        }],
+        source: "RUN getdata.\nRUN lib/getdata.\nRUN lib/nothere.p.\nRUN lib/real.p.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 34,
+            end: 47,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "lib/real.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "lib/real.p",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "lib/getdata",
+                reason: "external",
+            }),
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "lib/nothere.p",
+                reason: "absent_from_workspace",
+            }),
+        ],
     },
 ];
 

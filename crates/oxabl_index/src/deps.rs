@@ -169,6 +169,35 @@ pub struct DependencyEdge {
 /// A first-class member of the edge set rather than a dropped row or a bump to a
 /// resolved count. An impact answer that folds these in under-reports the blast
 /// radius while looking more confident, which is the worst failure this data has.
+///
+/// # What a consumer does with a `RUN` row
+///
+/// A row of kind [`EdgeKind::ProgramReference`] is a literal or computed `RUN`
+/// target that did not link to a usable file. What each [`reason`](Self::reason)
+/// tells a build tool:
+///
+/// - [`AbsentFromWorkspace`](UnresolvedReason::AbsentFromWorkspace): a named file
+///   (`RUN x.p`, `RUN a/b.p`) that no configured path supplies. There is no edge.
+///   The file lives outside the configured paths or does not exist; a consumer
+///   that tracks only workspace files cannot key on it.
+/// - [`PresentButUnusable`](UnresolvedReason::PresentButUnusable): the file was
+///   found and an edge to it is present. oxabl could not read or parse it, so what
+///   *it* depends on is unknown. Key on the edge and treat the file's own
+///   dependencies as incomplete.
+/// - [`Unknowable`](UnresolvedReason::Unknowable): the target is not a single
+///   file. Either it is computed (`RUN VALUE(...)`, named `VALUE(...)` here), or
+///   two path entries supply the same name and oxabl declines to pick. There is no
+///   edge. A consumer that needs a sound answer widens for this file.
+/// - [`External`](UnresolvedReason::External): a named file oxabl could not
+///   search for, because no search path is configured or because an extensionless
+///   path (`RUN a/b`) may also be satisfied by compiled code. There is no edge.
+///   Read it as `AbsentFromWorkspace` with less evidence.
+///
+/// A bare name with no extension and no path separator (`RUN getdata`) makes no
+/// row at all when no file supplies it. It is an internal procedure of a running
+/// program, resolved at run time, and it is never a compile input. When a file
+/// *does* supply it (`getdata.p`, then `getdata.w`), that file is an ordinary
+/// edge. `RUN x IN h` is likewise silent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedReference {
     /// Which question was asked. The kind is meaningful even though no target

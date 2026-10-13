@@ -45,6 +45,9 @@ const BATCH_REVISION: IndexRevision = IndexRevision::new(1);
 pub struct BatchIndex<'a> {
     fs: &'a dyn FileSystem,
     include_paths: &'a [PathBuf],
+    /// Extensions an extensionless `RUN` target is tried with, in order; `None`
+    /// is [`search::BARE_PROGRAM_EXTENSIONS`].
+    run_extensions: Option<&'a [String]>,
     /// Files the run already knows it is going to read — the CLI walk's own
     /// discovered file list, handed over by [`BatchIndex::seeded_with`].
     ///
@@ -157,6 +160,7 @@ impl<'a> BatchIndex<'a> {
         BatchIndex {
             fs,
             include_paths,
+            run_extensions: None,
             known_files: &[],
             memo: RwLock::new(Memo {
                 facts: FxHashMap::default(),
@@ -166,6 +170,25 @@ impl<'a> BatchIndex<'a> {
                 next_file_id: 1,
                 known_indexed: false,
             }),
+        }
+    }
+
+    /// Try `extensions`, in order, for a `RUN` target written without one,
+    /// instead of [`search::BARE_PROGRAM_EXTENSIONS`].
+    ///
+    /// Apply before any lookup.
+    #[must_use]
+    pub fn with_run_extensions(mut self, extensions: &'a [String]) -> Self {
+        self.run_extensions = Some(extensions);
+        self
+    }
+
+    fn find_path(&self, name: &IndexName, kind: search::NameKind) -> IndexAnswer<PathBuf> {
+        match self.run_extensions {
+            Some(extensions) => {
+                search::find_name_with(self.fs, self.include_paths, name, kind, extensions)
+            }
+            None => search::find_name(self.fs, self.include_paths, name, kind),
         }
     }
 
@@ -346,12 +369,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
             return hit.clone();
         }
 
-        let answer = match search::find_name(
-            self.fs,
-            self.include_paths,
-            target,
-            search::NameKind::Program,
-        ) {
+        let answer = match self.find_path(target, search::NameKind::Program) {
             IndexAnswer::Found(path) => {
                 // The target is indexed rather than merely existence-checked,
                 // for two reasons: the seam's totality rule needs a verdict for
@@ -422,7 +440,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
             LocateKind::Class => search::NameKind::Class,
             LocateKind::Program => search::NameKind::Program,
         };
-        match search::find_name(self.fs, self.include_paths, name, kind) {
+        match self.find_path(name, kind) {
             IndexAnswer::Found(path) => Located::In(self.memo().facts_for(self.fs, &path).file),
             _ => Located::Nowhere,
         }

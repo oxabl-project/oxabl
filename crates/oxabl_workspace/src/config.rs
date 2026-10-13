@@ -187,7 +187,7 @@ impl Default for PreprocessorConfig {
 }
 
 /// The `[workspace.sources]` section.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SourcesConfig {
     /// Directories to walk for ABL *root* files — `.p`, `.w`, `.cls`, and `.v`,
     /// matched case-insensitively. `.i` is deliberately not among them: an
@@ -199,6 +199,30 @@ pub struct SourcesConfig {
     /// Include search paths, searched in order (PROPATH equivalent).
     #[serde(default)]
     pub include_paths: Vec<PathBuf>,
+
+    /// Extensions tried, in order, for a `RUN` target written without one
+    /// (`RUN post-order`), written without the dot. Default `["p", "w"]`.
+    ///
+    /// The first extension that finds a file wins. A list that omits an
+    /// extension never links a bare name to such a file; an empty list links no
+    /// bare name at all.
+    #[serde(default = "default_run_extensions")]
+    pub run_extensions: Vec<String>,
+}
+
+/// The extensions an extensionless `RUN` target is tried with.
+pub fn default_run_extensions() -> Vec<String> {
+    vec!["p".to_string(), "w".to_string()]
+}
+
+impl Default for SourcesConfig {
+    fn default() -> Self {
+        SourcesConfig {
+            directories: Vec::new(),
+            include_paths: Vec::new(),
+            run_extensions: default_run_extensions(),
+        }
+    }
 }
 
 /// The `[workspace.schema]` section.
@@ -326,6 +350,16 @@ proversion = "12.8"
     fn preprocessor_table_rejects_unknown_keys() {
         let toml = "[workspace]\nname = \"p\"\n[workspace.preprocessor]\nopsis = \"UNIX\"\n";
         assert!(WorkspaceConfig::from_toml(toml).is_err());
+    }
+
+    #[test]
+    fn run_extensions_default_to_p_then_w_and_override_as_a_list() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert_eq!(config.workspace.sources.run_extensions, ["p", "w"]);
+
+        let toml = "[workspace]\nname = \"p\"\n[workspace.sources]\nrun_extensions = [\"w\", \"p\", \"pp\"]\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert_eq!(config.workspace.sources.run_extensions, ["w", "p", "pp"]);
     }
 
     #[test]
