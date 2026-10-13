@@ -31,8 +31,8 @@
 //! One exception, for a file whose text as written does not parse or names a
 //! class with a `{&name}` reference: the file's *own* preprocessor directives are
 //! applied, with no file read, and the result is used when no include is left
-//! unexpanded. Facts then depend on the one file's text, which is what both
-//! caches need.
+//! unexpanded. Facts then depend on the one file's text and on the configured
+//! predefined names (`{&OPSYS}` and friends), which is what both caches need.
 
 mod batch;
 mod deps;
@@ -65,7 +65,7 @@ use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, IndexName, IndexedFileId, MemberDescriptor,
     MemberType, ResolvedType, ScopeId, SymbolFlags, SymbolKind, declare_pass,
 };
-use oxabl_workspace::InMemoryFileSystem;
+use oxabl_workspace::{InMemoryFileSystem, PreprocessorConfig};
 
 /// The [`FileId`] the declare pass is run under while indexing.
 ///
@@ -88,13 +88,17 @@ const INDEXED_FILE: FileId = FileId::new(1);
 /// it mis-attributes symbols across the program graph, while a missing fact just
 /// leaves a name unresolved and silent.
 ///
+/// `predefined` answers the AVM's predefined names (`{&OPSYS}` and friends) when
+/// the fallback applies the file's own directives, so a directive-chosen
+/// declaration follows the configured environment.
+///
 /// Not guarded against panics, on purpose — see the module docs.
-pub fn index_file(file: IndexedFileId, source: &str) -> FileFacts {
+pub fn index_file(file: IndexedFileId, source: &str, predefined: &PreprocessorConfig) -> FileFacts {
     let facts = index_parsed(file, source);
     if facts.parsed && !names_a_reference(&facts) {
         return facts;
     }
-    match expand_in_file(source).map(|expanded| index_parsed(file, &expanded)) {
+    match expand_in_file(source, predefined).map(|expanded| index_parsed(file, &expanded)) {
         Some(expanded) if expanded.parsed => expanded,
         _ => facts,
     }
@@ -123,9 +127,10 @@ fn names_a_reference(facts: &FileFacts) -> bool {
 /// a memoizing cache's invalidation honest. `None` when the directives alone do
 /// not settle the text: a class whose header or body comes from an `{include}`
 /// stays unusable.
-fn expand_in_file(source: &str) -> Option<String> {
+fn expand_in_file(source: &str, predefined: &PreprocessorConfig) -> Option<String> {
     let fs = InMemoryFileSystem::new();
     let processed = Preprocessor::new(&fs, &[])
+        .with_predefined(predefined)
         .process(INDEXED_FILE, source)
         .ok()?;
     // Any include left unexpanded could have defined a name a later `&IF` reads,
@@ -446,6 +451,10 @@ mod tests {
     use oxabl_semantic::{PortableType, PrimitiveTy};
 
     const FILE: IndexedFileId = IndexedFileId::new(7);
+
+    fn index_file(file: IndexedFileId, source: &str) -> FileFacts {
+        super::index_file(file, source, &PreprocessorConfig::default())
+    }
 
     fn portable(ty: ResolvedType) -> MemberType {
         MemberType::Portable(PortableType::new(ty).expect("fixture type is portable"))

@@ -476,7 +476,8 @@ impl<'a> LintPipeline<'a> {
             // be unconditional rather than another thing a client can forget.
             index: RunIndex::Owned(
                 BatchIndex::new(fs, &config.include_paths)
-                    .with_run_extensions(&config.run_extensions),
+                    .with_run_extensions(&config.run_extensions)
+                    .with_preprocessor(&config.preprocessor),
             ),
             file: None,
         }

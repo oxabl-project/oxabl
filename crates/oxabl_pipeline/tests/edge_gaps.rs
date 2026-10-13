@@ -476,3 +476,50 @@ fn an_extension_outside_the_configured_list_is_not_tried() {
     );
     assert!(run_targets("RUN both.\n", &[]).is_empty());
 }
+
+/// The class edges of `/proj/Child.cls` when `pkg.Mid` picks its parent with an
+/// `&IF` over `{&OPSYS}`.
+fn directive_built_parent_edges(opsys: &str) -> Vec<String> {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/pkg/Mid.cls"),
+        "&IF \"{&OPSYS}\" = \"WIN32\" &THEN\n\
+         CLASS pkg.Mid INHERITS pkg.WinBase:\n\
+         &ELSE\n\
+         CLASS pkg.Mid INHERITS pkg.Base:\n\
+         &ENDIF\n\
+         END CLASS.\n",
+    );
+    for base in ["Base", "WinBase"] {
+        fs.insert(
+            PathBuf::from(format!("/proj/pkg/{base}.cls")),
+            format!("CLASS pkg.{base}:\nEND CLASS.\n"),
+        );
+    }
+    let mut config = config("/proj");
+    config.preprocessor.opsys = opsys.to_string();
+    let run = LintPipeline::new(&config, &fs);
+    let edges = run
+        .with_file("/proj/Child.cls")
+        .edge_set(
+            "CLASS Child INHERITS pkg.Mid:\n\
+             METHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
+        )
+        .expect("edge set");
+    edges
+        .of_kind(EdgeKind::ClassReference)
+        .map(|edge| edge.target.key().to_string())
+        .collect()
+}
+
+#[test]
+fn a_directive_built_class_follows_the_configured_opsys() {
+    assert_eq!(
+        directive_built_parent_edges("UNIX"),
+        ["pkg.base", "pkg.mid"]
+    );
+    assert_eq!(
+        directive_built_parent_edges("WIN32"),
+        ["pkg.mid", "pkg.winbase"]
+    );
+}
