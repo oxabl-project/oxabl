@@ -453,7 +453,7 @@ pub struct LintPipeline<'a> {
 /// semantic layer already takes — so the *questions* stay shared (R7) while the
 /// memoization differs, which is the whole shape of KTD2.
 enum RunIndex<'a> {
-    Owned(BatchIndex<'a>),
+    Owned(Box<BatchIndex<'a>>),
     Shared(&'a BatchIndex<'a>),
     External(&'a dyn WorkspaceIndex),
 }
@@ -474,11 +474,11 @@ impl<'a> LintPipeline<'a> {
             // The index reads nothing until a name is looked up (R6), so building
             // it here costs a pair of borrows and no I/O — which is what lets it
             // be unconditional rather than another thing a client can forget.
-            index: RunIndex::Owned(
+            index: RunIndex::Owned(Box::new(
                 BatchIndex::new(fs, &config.include_paths)
                     .with_run_extensions(&config.run_extensions)
                     .with_preprocessor(&config.preprocessor),
-            ),
+            )),
             file: None,
         }
     }
@@ -510,7 +510,7 @@ impl<'a> LintPipeline<'a> {
     #[must_use]
     pub fn with_known_files(mut self, files: &'a [PathBuf]) -> Self {
         self.index = match self.index {
-            RunIndex::Owned(index) => RunIndex::Owned(index.seeded_with(files)),
+            RunIndex::Owned(index) => RunIndex::Owned(Box::new((*index).seeded_with(files))),
             // A sibling does not own the index it answers from, so it cannot
             // change what that index knows — and must not, since the run handle
             // has already told it. Explicit arm rather than a catch-all so a
