@@ -1151,6 +1151,46 @@ macro_rules! class_site_row {
     };
 }
 
+/// One `RUN` target spelling: `source` runs one sibling program, and the row
+/// claims exactly one program edge with the sibling supplied and exactly one gap
+/// named `withheld` with the stated reason without it.
+macro_rules! run_target_row {
+    (
+        name: $name:literal,
+        sibling: $sibling:literal,
+        resolutions: $resolutions:expr,
+        source: $source:expr,
+        target: $target:literal,
+        withheld: $withheld:literal,
+        reason: $reason:literal $(,)?
+    ) => {
+        ParityFixture {
+            name: $name,
+            root_file: "run.p",
+            siblings: &[SiblingFile {
+                path: $sibling,
+                source: "MESSAGE 1.\n",
+            }],
+            resolutions: $resolutions,
+            source: $source,
+            diagnostics: &[],
+            format: ExpectedFormat::Unchanged,
+            needs: &[],
+            edges: &[EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: $target,
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: $withheld,
+                    reason: $reason,
+                },
+            }],
+        }
+    };
+}
+
 /// No finding either way: the site's resolution shows only in the edge set.
 const SILENT: &[CrossFileResolution] = &[CrossFileResolution {
     name: "orders.calc-base",
@@ -2890,6 +2930,233 @@ pub const FIXTURES: &[ParityFixture] = &[
         target: "orders.calc-base",
         withheld: "orders.calc-base",
     },
+    // --- Class-naming sites inside exits ------------------------------------
+    //
+    // The expression after `THROW` or `RETURN ERROR` is an ordinary expression,
+    // and a `NEW` in it names a class like any other.
+
+    // `UNDO, THROW` with a thrown object.
+    class_site_row! {
+        name: "class_site_undo_throw_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 74,
+                end: 103,
+            }),
+        }],
+        source: "DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n\
+                 IF v-flag THEN\n    \
+                 UNDO, THROW NEW orders.calc-error(\"x\", 1).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // A bare `THROW`.
+    class_site_row! {
+        name: "class_site_throw_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 6,
+                end: 35,
+            }),
+        }],
+        source: "THROW NEW orders.calc-error(\"x\", 1).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // `RETURN ERROR` with an error object.
+    class_site_row! {
+        name: "class_site_return_error_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 36,
+                end: 65,
+            }),
+        }],
+        source: "PROCEDURE fail-it:\n    \
+                 RETURN ERROR NEW orders.calc-error(\"x\", 1).\n\
+                 END PROCEDURE.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // `UNDO, RETURN ERROR` with an error object.
+    class_site_row! {
+        name: "class_site_undo_return_error_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 81,
+                end: 110,
+            }),
+        }],
+        source: "DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n\
+                 IF v-flag THEN\n    \
+                 UNDO, RETURN ERROR NEW orders.calc-error(\"x\", 1).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // A static receiver whose class name is a keyword (`COLOR`), so the dotted
+    // name is not made of plain identifiers.
+    class_site_row! {
+        name: "class_site_keyword_segment_receiver",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/color.cls",
+            source: COLOR_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.color",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                 v-rate = orders.color:rate().\n\
+                 MESSAGE v-rate.\n",
+        diagnostics: &[],
+        needs: &[Capability::Schema],
+        target: "orders.color",
+        withheld: "orders.color",
+    },
+    // --- `RUN` targets bounded at their own text ----------------------------
+    //
+    // A target ends at whitespace, a comment, `(`, or the next statement. Before
+    // that, each of these swallowed what followed it into the name, so the lookup
+    // asked for a file nobody wrote.
+
+    // A path target followed by `PERSISTENT SET`.
+    run_target_row! {
+        name: "edges_run_path_persistent_set",
+        sibling: "comm/expdist.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN comm/expdist",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE h-proc AS HANDLE NO-UNDO.\n\
+                 RUN comm/expdist PERSISTENT SET h-proc (1).\n\
+                 MESSAGE VALID-HANDLE(h-proc).\n",
+        target: "comm/expdist",
+        withheld: "comm/expdist",
+        reason: "external",
+    },
+    // A target split over lines.
+    run_target_row! {
+        name: "edges_run_multiline_target",
+        sibling: "comm/expdist.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN comm/expdist",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE h-proc AS HANDLE NO-UNDO.\n\
+                 RUN comm/expdist\n    \
+                 PERSISTENT\n    \
+                 SET h-proc.\n\
+                 MESSAGE VALID-HANDLE(h-proc).\n",
+        target: "comm/expdist",
+        withheld: "comm/expdist",
+        reason: "external",
+    },
+    // A block comment after the target.
+    run_target_row! {
+        name: "edges_run_target_block_comment",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "RUN sub2 /* note */.\n",
+        target: "sub2",
+        withheld: "sub2",
+        reason: "external",
+    },
+    // A line comment after the target.
+    run_target_row! {
+        name: "edges_run_target_line_comment",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "RUN sub2 // note\n.\n",
+        target: "sub2",
+        withheld: "sub2",
+        reason: "external",
+    },
+    // A comment after a target that has an extension.
+    run_target_row! {
+        name: "edges_run_target_extension_comment",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 10,
+            }),
+        }],
+        source: "RUN sub2.p /* note */.\n",
+        target: "sub2.p",
+        withheld: "sub2.p",
+        reason: "absent_from_workspace",
+    },
+    // A one-letter variable on the next line is not an extension.
+    run_target_row! {
+        name: "edges_run_target_next_statement",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE i AS INTEGER NO-UNDO.\n\
+                 RUN sub2.\n\
+                 i = 1.\n\
+                 MESSAGE i.\n",
+        target: "sub2",
+        withheld: "sub2",
+        reason: "external",
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -2952,6 +3219,12 @@ const SESSION_STATE: &str = "CLASS session-state:\n    \
                              METHOD PUBLIC STATIC INTEGER current-id():\n        \
                              RETURN 1.\n    \
                              END METHOD.\nEND CLASS.\n";
+
+/// A class whose name is a keyword, with one static member.
+const COLOR_UTIL: &str = "CLASS orders.color:\n    \
+                          METHOD PUBLIC STATIC INTEGER rate():\n        \
+                          RETURN 2.\n    \
+                          END METHOD.\nEND CLASS.\n";
 
 /// An interface with one method, for the `IMPLEMENTS` row.
 const I_CALC: &str = "INTERFACE orders.i-calc:\n    \
