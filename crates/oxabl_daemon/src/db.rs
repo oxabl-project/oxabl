@@ -166,9 +166,17 @@ pub struct IndexedFile {
     pub index_id: u32,
     /// Bumped when the watcher reports this file changed on disk.
     pub disk_revision: u32,
-    /// The environment the file's own directives are applied under. An input
-    /// field rather than a read of the configuration, so a changed
-    /// `[workspace.preprocessor]` invalidates the facts that depended on it.
+}
+
+/// The environment every indexed file's own directives are applied under.
+///
+/// One input shared by all [`IndexedFile`]s rather than a copy on each: a copy
+/// is taken from whichever snapshot registers the file, and a worker on an old
+/// snapshot would store an old `[workspace.preprocessor]` for good. Read by
+/// [`indexed_facts`], so a changed value invalidates exactly the facts that
+/// depended on it.
+#[salsa::input]
+pub struct IndexEnvironment {
     #[returns(ref)]
     pub preprocessor: PreprocessorConfig,
 }
@@ -220,6 +228,9 @@ pub struct IndexHandle {
 #[derive(Default)]
 struct Registry {
     by_path: HashMap<PathBuf, Registered>,
+    /// Created once, by whichever of registration and [`IndexHandle::set_preprocessor`]
+    /// comes first; the main loop's sync reconciles its value either way.
+    environment: Option<IndexEnvironment>,
     /// Ids are minted from 1 so a zero never reads as a real file in a dump,
     /// matching the batch index.
     next_id: u32,
@@ -278,13 +289,7 @@ impl IndexHandle {
         }
         registry.next_id += 1;
         let index_id = registry.next_id;
-        let input = IndexedFile::new(
-            db,
-            path.to_path_buf(),
-            index_id,
-            0,
-            db.config().pipeline.preprocessor.clone(),
-        );
+        let input = IndexedFile::new(db, path.to_path_buf(), index_id, 0);
         registry.by_path.insert(
             key,
             Registered {
@@ -332,16 +337,33 @@ impl IndexHandle {
         true
     }
 
-    /// Point every registered input at `preprocessor`, invalidating the facts of
-    /// the files whose setting changed.
+    /// The shared environment input, created from the snapshot's configuration if
+    /// the main loop has not installed one yet.
     ///
-    /// Call after the configuration is replaced: an input created later reads
-    /// the new configuration itself, and one already registered holds the old.
+    /// A value created here from an old snapshot is corrected by the next
+    /// [`set_preprocessor`](Self::set_preprocessor), whose setter cancels that
+    /// snapshot.
+    fn environment(&self, db: &dyn AblDatabase) -> IndexEnvironment {
+        *self.registry().environment.get_or_insert_with(|| {
+            IndexEnvironment::new(db, db.config().pipeline.preprocessor.clone())
+        })
+    }
+
+    /// Install `preprocessor` as the environment of every indexed file,
+    /// invalidating the facts of the files that read a different one.
+    ///
+    /// Call after the configuration is replaced. Always reconciles the one
+    /// shared input, so no registration order leaves a stale value behind.
     pub fn set_preprocessor(&self, db: &mut AnalysisDatabase, preprocessor: &PreprocessorConfig) {
-        for (input, _) in self.registered() {
-            if input.preprocessor(db) != preprocessor {
-                input.set_preprocessor(db).to(preprocessor.clone());
-            }
+        let mut registry = self.registry();
+        let Some(input) = registry.environment else {
+            registry.environment = Some(IndexEnvironment::new(&*db, preprocessor.clone()));
+            return;
+        };
+        // Dropped before the write, as in `bump`: `set_*` waits for snapshots.
+        drop(registry);
+        if input.preprocessor(&*db) != preprocessor {
+            input.set_preprocessor(db).to(preprocessor.clone());
         }
     }
 
@@ -515,7 +537,7 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     // answer below is derived from it, and it is the whole invalidation protocol
     // (R10) — so it is read unconditionally, including on the unreadable-file path.
     let _revision = file.disk_revision(db);
-    let predefined = file.preprocessor(db);
+    let predefined = db.config().index.environment(db).preprocessor(db);
     let id = IndexedFileId::new(*file.index_id(db));
     let path = file.path(db);
     let Ok(source) = db.config().fs.read(path) else {
@@ -939,6 +961,52 @@ mod tests {
 
     fn db_with(source_fs: oxabl_workspace::InMemoryFileSystem) -> AnalysisDatabase {
         AnalysisDatabase::new(config_with(source_fs))
+    }
+
+    /// A snapshot taken before a configuration change registers a file after it:
+    /// the file must still read the installed environment, not the snapshot's.
+    #[test]
+    fn a_file_registered_from_an_old_snapshot_reads_the_installed_environment() {
+        let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+        fs.insert(
+            PathBuf::from("/src/pkg/Mid.cls"),
+            "&IF \"{&OPSYS}\" = \"WIN32\" &THEN\n\
+             CLASS pkg.Mid INHERITS pkg.WinBase:\n\
+             &ELSE\n\
+             CLASS pkg.Mid INHERITS pkg.Base:\n\
+             &ENDIF\n\
+             END CLASS.\n",
+        );
+        let configured = |opsys: &str| {
+            let mut pipeline = PipelineConfig {
+                include_paths: vec![PathBuf::from("/src")],
+                ..PipelineConfig::default()
+            };
+            pipeline.preprocessor.opsys = opsys.to_string();
+            pipeline
+        };
+        let old = AnalysisConfig {
+            fs: Arc::new(fs),
+            pipeline: Arc::new(configured("UNIX")),
+            ..Default::default()
+        };
+        let index = Arc::clone(&old.index);
+        let mut db = AnalysisDatabase::new(old.clone());
+        let snapshot = db.clone();
+
+        let new_pipeline = configured("WIN32");
+        index.set_preprocessor(&mut db, &new_pipeline.preprocessor);
+        db.set_config(AnalysisConfig {
+            pipeline: Arc::new(new_pipeline),
+            ..old
+        });
+
+        let parent = |db: &AnalysisDatabase| match indexed_class_for_test(db, "pkg.Mid") {
+            IndexAnswer::Found(class) => class.inherits.as_ref().map(|n| n.as_str().to_string()),
+            _ => None,
+        };
+        assert_eq!(parent(&snapshot).as_deref(), Some("pkg.winbase"));
+        assert_eq!(parent(&db).as_deref(), Some("pkg.winbase"));
     }
 
     /// The shared guard both diagnostics paths go through (R8). Client-observable
