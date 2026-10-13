@@ -629,7 +629,13 @@ impl<'db> SnapshotIndex<'db> {
     /// to a producer that is really its own earlier revision.
     fn locate(&self, name: &IndexName, kind: NameKind) -> IndexAnswer<IndexedFile> {
         let config = self.db.config();
-        match search::find_name(&*config.fs, &config.pipeline.include_paths, name, kind) {
+        match search::find_name_with(
+            &*config.fs,
+            &config.pipeline.include_paths,
+            name,
+            kind,
+            &config.pipeline.run_extensions,
+        ) {
             IndexAnswer::Found(path) => {
                 if self.is_analysed(&path) {
                     // `Unusable`, not `NotFound` — the file exists, it just cannot
@@ -691,7 +697,13 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
             LocateKind::Class => NameKind::Class,
             LocateKind::Program => NameKind::Program,
         };
-        match search::find_name(&*config.fs, &config.pipeline.include_paths, name, kind) {
+        match search::find_name_with(
+            &*config.fs,
+            &config.pipeline.include_paths,
+            name,
+            kind,
+            &config.pipeline.run_extensions,
+        ) {
             IndexAnswer::Found(path) if self.is_analysed(&path) => Located::Itself,
             IndexAnswer::Found(path) => {
                 let file = config.index.file_for(self.db, &path);

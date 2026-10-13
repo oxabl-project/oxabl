@@ -474,7 +474,10 @@ impl<'a> LintPipeline<'a> {
             // The index reads nothing until a name is looked up (R6), so building
             // it here costs a pair of borrows and no I/O — which is what lets it
             // be unconditional rather than another thing a client can forget.
-            index: RunIndex::Owned(BatchIndex::new(fs, &config.include_paths)),
+            index: RunIndex::Owned(
+                BatchIndex::new(fs, &config.include_paths)
+                    .with_run_extensions(&config.run_extensions),
+            ),
             file: None,
         }
     }

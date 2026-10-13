@@ -40,7 +40,8 @@ use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, find_workspace_root,
+    LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, default_run_extensions,
+    find_workspace_root,
 };
 
 /// A non-fatal problem hit while resolving configuration.
@@ -149,6 +150,10 @@ pub struct PipelineConfig {
     /// [`PreprocessorConfig::default`], so an `&IF` over `{&OPSYS}` takes the
     /// same branch in the browser as in the CLI.
     pub preprocessor: PreprocessorConfig,
+
+    /// Extensions an extensionless `RUN` target is tried with, in order and
+    /// without the dot (`[workspace.sources].run_extensions`). Default `p`, `w`.
+    pub run_extensions: Vec<String>,
 }
 
 impl Default for PipelineConfig {
@@ -183,6 +188,7 @@ impl Default for PipelineConfig {
             schema: Schema::empty(),
             schema_loaded: false,
             preprocessor: PreprocessorConfig::default(),
+            run_extensions: default_run_extensions(),
         }
     }
 }
@@ -332,6 +338,7 @@ fn derive(
 
     let lint_severities = config.workspace.lint.to_severity_map();
     let preprocessor = config.workspace.preprocessor.clone();
+    let run_extensions = config.workspace.sources.run_extensions.clone();
 
     let schema_path = match schema_loading {
         SchemaLoading::Load => overrides.schema_path.as_ref(),
@@ -346,6 +353,7 @@ fn derive(
                     schema: Schema::empty(),
                     schema_loaded: false,
                     preprocessor,
+                    run_extensions,
                 },
                 warnings,
             );
@@ -391,6 +399,7 @@ fn derive(
             schema,
             schema_loaded,
             preprocessor,
+            run_extensions,
         },
         warnings,
     )

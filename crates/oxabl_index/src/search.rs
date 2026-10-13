@@ -165,7 +165,8 @@ pub enum NameKind {
     Program,
 }
 
-/// The source extensions tried, in order, for a `RUN` target written without one.
+/// The source extensions tried, in order, for a `RUN` target written without one,
+/// when the workspace does not configure its own (`[workspace.sources].run_extensions`).
 ///
 /// The AVM tries compiled code first (`name.r`), then source. A dependency answer
 /// is about source, so `.r` is not in the list; `.p` and `.w` are the program
@@ -200,8 +201,22 @@ pub fn find_name(
     name: &IndexName,
     kind: NameKind,
 ) -> IndexAnswer<PathBuf> {
+    find_name_with(fs, include_paths, name, kind, BARE_PROGRAM_EXTENSIONS)
+}
+
+/// [`find_name`] with the extensions an extensionless program target is tried
+/// with spelled out, in order and without the dot. They are ignored for a class
+/// name and for a program target that already has an extension.
+pub fn find_name_with<E: AsRef<str>>(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    name: &IndexName,
+    kind: NameKind,
+    bare_extensions: &[E],
+) -> IndexAnswer<PathBuf> {
     if kind == NameKind::Program && !has_extension(name.as_written()) {
-        for extension in BARE_PROGRAM_EXTENSIONS {
+        for extension in bare_extensions {
+            let extension = extension.as_ref();
             let answer = find_spellings(
                 fs,
                 include_paths,

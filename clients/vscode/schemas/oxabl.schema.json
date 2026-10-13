@@ -227,6 +227,17 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "run_extensions": {
+          "default": [
+            "p",
+            "w"
+          ],
+          "description": "Extensions tried, in order, for a `RUN` target written without one (`RUN post-order`), written without the dot. Default `[\"p\", \"w\"]`.\n\nThe first extension that finds a file wins. A list that omits an extension never links a bare name to such a file; an empty list links no bare name at all.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
