@@ -523,3 +523,26 @@ fn a_directive_built_class_follows_the_configured_opsys() {
         ["pkg.mid", "pkg.winbase"]
     );
 }
+
+#[test]
+fn a_dotted_run_extension_in_the_configuration_still_links_a_bare_run() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/both.p"), "MESSAGE 1.\n");
+    let workspace = oxabl_workspace::WorkspaceConfig::from_toml(
+        "[workspace]\nname = \"p\"\n\
+         [workspace.sources]\ninclude_paths = [\"/proj\"]\nrun_extensions = [\".P\", \"\"]\n",
+    )
+    .expect("config");
+    let (config, warnings) = oxabl_pipeline::resolve_from_config(
+        &workspace,
+        Path::new("/proj"),
+        &oxabl_pipeline::ConfigOverrides::default(),
+    );
+    assert_eq!(warnings.len(), 1, "got {warnings:?}");
+    let run = LintPipeline::new(&config, &fs);
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set("RUN both.\n")
+        .expect("edge set");
+    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+}
