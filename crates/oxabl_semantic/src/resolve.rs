@@ -37,10 +37,10 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
-    AnalysisContext, ClassKind, ClassLookup, IndexAnswer, IndexName, IndexedFileId,
-    MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind,
-    ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
-    builtins, diagnostics, resolve_span,
+    AnalysisContext, ClassKind, ClassLookup, IndexAnswer, IndexName, IndexedFileId, LocateKind,
+    Located, MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType, ScopeId,
+    ScopeKind, ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind,
+    SymbolTable, UnlinkedRun, builtins, diagnostics, resolve_span,
 };
 
 fn method_signature(parameters: &[Statement]) -> Vec<String> {
@@ -2619,7 +2619,7 @@ impl<'a> ResolveWalker<'a> {
                         // fact is about the *target*, which is a different thing
                         // recorded at a different node.
                         self.walk_expression(e, scope, AccessMode::Read);
-                        self.record_computed_run_target(stmt.id);
+                        self.record_computed_run_target(stmt.id, stmt.span);
                     }
                 }
                 for arg in arguments {
@@ -3326,28 +3326,65 @@ impl<'a> ResolveWalker<'a> {
         let index = self.ctx.index;
         let name = IndexName::new(raw);
         let span = VirtualSpan::new(name_span.start, name_span.end);
-        let resolution = match index.program(&name) {
+        let (resolution, located) = match index.program(&name) {
             IndexAnswer::Found(file) => {
-                Resolution::Resolved(self.indexed_program_symbol(&name, span, file))
+                let sym = self.indexed_program_symbol(&name, span, file);
+                self.references.insert(id, Resolution::Resolved(sym));
+                return;
             }
             // An index was attached and it searched every path entry: this is a
             // fact about the workspace — but only where a path search is the
             // mechanism the AVM itself would use. `run_miss_reason` is where the
             // two shapes it would not are held back.
-            IndexAnswer::NotFound => Resolution::Unresolved {
-                reason: self.run_miss_reason(raw, in_handle, name.as_atom()),
-                name: name.as_atom().clone(),
+            IndexAnswer::NotFound => (
+                Resolution::Unresolved {
+                    reason: self.run_miss_reason(raw, in_handle, name.as_atom()),
+                    name: name.as_atom().clone(),
+                },
+                None,
+            ),
+            // The program file is right there and oxabl could not parse it. It is
+            // still the file this `RUN` depends on, so the dependency record
+            // keeps it. The analysed file itself is not a dependency of itself,
+            // and records nothing.
+            IndexAnswer::Unusable => match index.located(LocateKind::Program, &name) {
+                Located::Itself => {
+                    self.references.insert(
+                        id,
+                        Resolution::Unresolved {
+                            name: name.as_atom().clone(),
+                            reason: UnresolvedReason::PresentButUnusable,
+                        },
+                    );
+                    return;
+                }
+                located => (
+                    Resolution::Unresolved {
+                        name: name.as_atom().clone(),
+                        reason: UnresolvedReason::PresentButUnusable,
+                    },
+                    match located {
+                        Located::In(file) => Some(file),
+                        _ => None,
+                    },
+                ),
             },
-            // The program file is right there and oxabl could not parse it.
-            IndexAnswer::Unusable => Resolution::Unresolved {
-                name: name.as_atom().clone(),
-                reason: UnresolvedReason::PresentButUnusable,
-            },
-            IndexAnswer::Unknowable => Resolution::Unresolved {
-                name: name.as_atom().clone(),
-                reason: UnresolvedReason::Unknowable,
-            },
+            IndexAnswer::Unknowable => (
+                Resolution::Unresolved {
+                    name: name.as_atom().clone(),
+                    reason: UnresolvedReason::Unknowable,
+                },
+                None,
+            ),
         };
+        if let Resolution::Unresolved { reason, .. } = &resolution {
+            self.symbols.record_unlinked_run(UnlinkedRun {
+                name: name.as_atom().clone(),
+                reason: *reason,
+                located,
+                span,
+            });
+        }
         self.references.insert(id, resolution);
     }
 
@@ -3397,10 +3434,16 @@ impl<'a> ResolveWalker<'a> {
     /// own resolution. Gated on an attached index for the same reason as
     /// [`Self::resolve_run_target`]: unknowability does not depend on an index,
     /// but a run that looked at nothing should not grow its `references` table.
-    fn record_computed_run_target(&mut self, stmt_id: NodeId) {
+    fn record_computed_run_target(&mut self, stmt_id: NodeId, span: Span) {
         if !self.ctx.index_loaded {
             return;
         }
+        self.symbols.record_unlinked_run(UnlinkedRun {
+            name: OxablAtom::from(COMPUTED_TARGET),
+            reason: UnresolvedReason::Unknowable,
+            located: None,
+            span: VirtualSpan::new(span.start, span.end),
+        });
         self.references.insert(
             stmt_id,
             Resolution::Unresolved {
@@ -4292,6 +4335,10 @@ impl<'a> ResolveWalker<'a> {
                 IndexAnswer::Unusable => {
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unusable);
+                    if let Located::In(file) = index.located(LocateKind::Class, &name) {
+                        self.symbols
+                            .record_unusable_class_file(name.as_atom(), file);
+                    }
                     continue;
                 }
                 IndexAnswer::Unknowable => {

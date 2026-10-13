@@ -165,8 +165,31 @@ pub enum NameKind {
     Program,
 }
 
+/// The source extensions tried, in order, for a `RUN` target written without one.
+///
+/// The AVM tries compiled code first (`name.r`), then source. A dependency answer
+/// is about source, so `.r` is not in the list; `.p` and `.w` are the program
+/// extensions the AVM would otherwise reach.
+pub const BARE_PROGRAM_EXTENSIONS: &[&str] = &["p", "w"];
+
+/// Whether the last segment of a `RUN` target carries an extension.
+///
+/// The last segment only, so a directory named `util.d` is not mistaken for one.
+fn has_extension(target: &str) -> bool {
+    target
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|last| last.contains('.'))
+}
+
 /// Locate the file `name` names: the as-written spelling first, the folded
 /// spelling second when the two differ.
+///
+/// A program target without an extension tries each of
+/// [`BARE_PROGRAM_EXTENSIONS`] in order, stopping at the first that is not
+/// [`IndexAnswer::NotFound`]. Each extension keeps the exactly-one-match rule on
+/// its own, so a name matching `name.p` in two path entries is ambiguous even
+/// though `name.w` might exist.
 ///
 /// This is the entry point an index should call. See the module docs for why
 /// two spellings are tried, and for what happens when they match different path
@@ -177,17 +200,52 @@ pub fn find_name(
     name: &IndexName,
     kind: NameKind,
 ) -> IndexAnswer<PathBuf> {
-    let written = match kind {
-        NameKind::Class => class_path(name),
-        NameKind::Program => program_path(name),
-    };
-    let policy = match kind {
+    if kind == NameKind::Program && !has_extension(name.as_written()) {
+        for extension in BARE_PROGRAM_EXTENSIONS {
+            let answer = find_spellings(
+                fs,
+                include_paths,
+                &with_extension(name.as_written(), extension),
+                &with_extension(name.as_str(), extension),
+                ExtensionPolicy::AnyButInclude,
+            );
+            if answer != IndexAnswer::NotFound {
+                return answer;
+            }
+        }
+        return IndexAnswer::NotFound;
+    }
+
+    let (written, folded, policy) = match kind {
         // A derived class path always ends in `.cls`, so either policy admits it;
         // naming the stricter one keeps the derivation honest.
-        NameKind::Class => ExtensionPolicy::WalkRoots,
-        NameKind::Program => ExtensionPolicy::AnyButInclude,
+        NameKind::Class => (
+            class_path(name),
+            folded_class_path(name),
+            ExtensionPolicy::WalkRoots,
+        ),
+        NameKind::Program => (
+            program_path(name),
+            folded_program_path(name),
+            ExtensionPolicy::AnyButInclude,
+        ),
     };
-    match find_unique_with_policy(fs, include_paths, &written, policy) {
+    find_spellings(fs, include_paths, &written, &folded, policy)
+}
+
+fn with_extension(target: &str, extension: &str) -> PathBuf {
+    PathBuf::from(format!("{target}.{extension}"))
+}
+
+/// The two-spellings search: `written` first, `folded` when it differs.
+fn find_spellings(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    written: &Path,
+    folded: &Path,
+    policy: ExtensionPolicy,
+) -> IndexAnswer<PathBuf> {
+    match find_unique_with_policy(fs, include_paths, written, policy) {
         IndexAnswer::Found(path) => return IndexAnswer::Found(path),
         // Already ambiguous under the spelling the source used; a second
         // candidate cannot un-ambiguate it.
@@ -200,16 +258,12 @@ pub fn find_name(
         IndexAnswer::NotFound => {}
     }
 
-    let folded = match kind {
-        NameKind::Class => folded_class_path(name),
-        NameKind::Program => folded_program_path(name),
-    };
     if folded == written {
         // The source already wrote the name folded, so the fallback would
         // re-run the identical search.
         return IndexAnswer::NotFound;
     }
-    find_unique_with_policy(fs, include_paths, &folded, policy)
+    find_unique_with_policy(fs, include_paths, folded, policy)
 }
 
 /// Search every entry of `include_paths` for `relative`, insisting on exactly
@@ -663,5 +717,62 @@ mod tests {
             ),
             IndexAnswer::NotFound
         );
+    }
+
+    fn bare(fs: &InMemoryFileSystem, target: &str) -> IndexAnswer<PathBuf> {
+        find_name(
+            fs,
+            &[PathBuf::from("/src")],
+            &IndexName::new(target),
+            NameKind::Program,
+        )
+    }
+
+    #[test]
+    fn a_bare_run_target_tries_p_then_w() {
+        let fs = fs_with(&["/src/only-w.w", "/src/both.p", "/src/both.w"]);
+        assert_eq!(
+            bare(&fs, "both"),
+            IndexAnswer::Found(PathBuf::from("/src/both.p"))
+        );
+        assert_eq!(
+            bare(&fs, "only-w"),
+            IndexAnswer::Found(PathBuf::from("/src/only-w.w"))
+        );
+        assert_eq!(bare(&fs, "neither"), IndexAnswer::NotFound);
+    }
+
+    #[test]
+    fn a_bare_run_target_keeps_the_exactly_one_match_rule_per_extension() {
+        let fs = fs_with(&["/a/dup.p", "/b/dup.p", "/b/dup.w"]);
+        let paths = dirs(&["/a", "/b"]);
+        assert_eq!(
+            find_name(&fs, &paths, &IndexName::new("dup"), NameKind::Program),
+            IndexAnswer::Unknowable
+        );
+    }
+
+    #[test]
+    fn a_bare_run_target_under_a_directory_with_a_dot_is_still_bare() {
+        let fs = fs_with(&["/src/util.d/calc.p"]);
+        assert_eq!(
+            bare(&fs, "util.d/calc"),
+            IndexAnswer::Found(PathBuf::from("/src/util.d/calc.p"))
+        );
+    }
+
+    #[test]
+    fn a_bare_run_target_folds_like_a_written_one() {
+        let fs = fs_with(&["/src/calc-total.p"]);
+        assert_eq!(
+            bare(&fs, "Calc-Total"),
+            IndexAnswer::Found(PathBuf::from("/src/calc-total.p"))
+        );
+    }
+
+    #[test]
+    fn a_target_with_an_extension_is_not_extended() {
+        let fs = fs_with(&["/src/calc.p.w"]);
+        assert_eq!(bare(&fs, "calc.p"), IndexAnswer::NotFound);
     }
 }
