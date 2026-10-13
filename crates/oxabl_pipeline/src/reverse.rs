@@ -26,6 +26,11 @@
 //! that distinction is the difference between an honest impact answer and one that
 //! under-reports.
 //!
+//! A file that was analysed over a recovered parse, or past an include it could
+//! not resolve or read, keeps its edges and is recorded in
+//! [`ReverseGraph::degraded`]: what it names is right, and what it fails to name
+//! proves nothing.
+//!
 //! The same rule covers a narrower third failure. An edge can resolve and still be
 //! unnameable here, when its target is an index file id this pass cannot map back
 //! to a path — the id belongs to an index it does not own. Those are recorded in
@@ -41,7 +46,8 @@ use oxabl_analyze::{
 };
 use oxabl_ast::Span;
 use oxabl_index::{
-    DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference, search::normalize_lexically,
+    DegradedReason, DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference,
+    search::normalize_lexically,
 };
 
 use crate::LintPipeline;
@@ -160,6 +166,19 @@ pub struct Unanalysed {
     pub reason: String,
 }
 
+/// A file whose edge set is known to be incomplete, and why.
+///
+/// Unlike [`Unanalysed`], the file contributed edges and rows, and they are all
+/// correct. What is missing is anything the analysis could not see, so a
+/// consumer should widen or always rebuild it rather than trust that it does not
+/// depend on a given file.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Degraded {
+    pub file: PathBuf,
+    /// Sorted, with no repeats, and never empty.
+    pub reasons: Vec<DegradedReason>,
+}
+
 /// The answer to "who depends on this".
 ///
 /// The two collections are separate for the reason the edge set keeps them
@@ -249,6 +268,8 @@ pub struct ReverseGraph {
     unresolved_by_name: HashMap<String, Vec<UnresolvedRow>>,
     /// Files the pass could not analyse at all.
     unanalysed: Vec<Unanalysed>,
+    /// Files analysed whose edge set reports itself incomplete.
+    degraded: Vec<Degraded>,
     /// Edges whose target this pass could not name. Empty for a pass over its own
     /// batch index, which is every pass today.
     unnameable: Vec<UnnameableEdge>,
@@ -320,6 +341,15 @@ impl ReverseGraph {
                 .iter()
                 .map(|row| row.file.to_string_lossy().len() + row.reason.capacity())
                 .sum::<usize>()
+            + self.degraded.capacity() * std::mem::size_of::<Degraded>()
+            + self
+                .degraded
+                .iter()
+                .map(|row| {
+                    row.file.to_string_lossy().len()
+                        + row.reasons.capacity() * std::mem::size_of::<DegradedReason>()
+                })
+                .sum::<usize>()
             + self.files.capacity() * std::mem::size_of::<PathBuf>()
             + self
                 .files
@@ -361,6 +391,7 @@ impl ReverseGraph {
             dependents: HashMap::new(),
             unresolved_by_name: HashMap::new(),
             unanalysed: Vec::new(),
+            degraded: Vec::new(),
             unnameable: Vec::new(),
             files: files.iter().map(|p| normalize_lexically(p)).collect(),
             ambiguous_stems: HashSet::new(),
@@ -409,6 +440,12 @@ impl ReverseGraph {
 
     /// Invert one file's edge set into the graph.
     fn absorb(&mut self, dependent: &Path, edges: &DependencyEdges, pipeline: &LintPipeline<'_>) {
+        if !edges.completeness().is_complete() {
+            self.degraded.push(Degraded {
+                file: dependent.to_path_buf(),
+                reasons: edges.completeness().reasons().to_vec(),
+            });
+        }
         for edge in edges.edges() {
             let Some(subject) = self.subject_of(&edge.target, pipeline) else {
                 // Recorded, not dropped. The pass promises never to present a
@@ -477,6 +514,8 @@ impl ReverseGraph {
         }
         self.unanalysed.sort();
         self.unanalysed.dedup();
+        self.degraded.sort();
+        self.degraded.dedup();
         self.unnameable.sort();
         self.unnameable.dedup();
         self.files.sort();
@@ -623,6 +662,16 @@ impl ReverseGraph {
     /// Files the pass could not analyse. Never folded into "depends on nothing".
     pub fn unanalysed(&self) -> &[Unanalysed] {
         &self.unanalysed
+    }
+
+    /// Files that were analysed but whose edge set is incomplete: the parse
+    /// recovered an error, or an include could not be resolved or read. Their
+    /// edges stand, but their absence of an edge does not.
+    ///
+    /// Reported beside [`unanalysed`](Self::unanalysed) rather than inside it,
+    /// because these files do appear in [`dependents`](Self::dependents).
+    pub fn degraded(&self) -> &[Degraded] {
+        &self.degraded
     }
 
     /// Edges whose target the pass could not name, so a consumer can say the

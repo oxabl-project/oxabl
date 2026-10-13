@@ -289,6 +289,31 @@ impl<T> IndexAnswer<T> {
     }
 }
 
+/// Which name-to-path convention a [`WorkspaceIndex::located`] question uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocateKind {
+    /// A qualified class or interface name.
+    Class,
+    /// A literal `RUN` target.
+    Program,
+}
+
+/// Where the file behind a name is, whatever its usability.
+///
+/// [`IndexAnswer::Unusable`] says a file was located and carries no identity,
+/// because every other consumer of that answer only needs the verdict. A
+/// dependency edge needs the file: a program oxabl cannot parse is still a file
+/// the dependent unit depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Located {
+    /// No file was located, or the index cannot say which.
+    Nowhere,
+    /// The file is the one being analysed. Not a dependency on anything.
+    Itself,
+    /// The file the name maps onto.
+    In(IndexedFileId),
+}
+
 /// Whether an indexed type was declared as a class or an interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassKind {
@@ -443,7 +468,8 @@ impl MemberDescriptor {
 /// shareable across threads still is: `oxabl_index::BatchIndex` pins its own
 /// `Send + Sync` in a test.
 ///
-/// There are exactly four queries and no client carve-outs. A client that
+/// There are exactly four queries and no client carve-outs, plus the follow-up
+/// [`Self::located`] a consumer asks after an `Unusable` answer. A client that
 /// cannot answer one of them answers [`IndexAnswer::NotFound`] for it — it
 /// does not get a narrower trait.
 ///
@@ -482,6 +508,16 @@ pub trait WorkspaceIndex {
     /// Look up the file whose `DEFINE NEW [GLOBAL] SHARED` definition produces
     /// `name`, for a consumer's `DEFINE SHARED` to link against.
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId>;
+
+    /// The file `name` maps onto, even when [`Self::class`] or [`Self::program`]
+    /// answered [`IndexAnswer::Unusable`] for it.
+    ///
+    /// Asked only after such an answer, so an implementation may search again
+    /// rather than memoize. Defaults to [`Located::Nowhere`], which costs a
+    /// consumer the edge and nothing else: the unresolved row is still recorded.
+    fn located(&self, _kind: LocateKind, _name: &IndexName) -> Located {
+        Located::Nowhere
+    }
 
     /// The generation this index is on. Stamped onto every
     /// [`Semantic`](crate::Semantic) so stale results are detectable.

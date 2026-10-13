@@ -104,8 +104,8 @@ use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, index_file};
 use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
 use oxabl_semantic::{
-    ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, MemberDescriptor,
-    WorkspaceIndex,
+    ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
+    MemberDescriptor, WorkspaceIndex,
 };
 use oxabl_workspace::{FileSystem, RealFileSystem};
 use salsa::{Setter, Storage};
@@ -682,6 +682,22 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
             IndexAnswer::NotFound => IndexAnswer::NotFound,
             IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
+        }
+    }
+
+    fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
+        let config = self.db.config();
+        let kind = match kind {
+            LocateKind::Class => NameKind::Class,
+            LocateKind::Program => NameKind::Program,
+        };
+        match search::find_name(&*config.fs, &config.pipeline.include_paths, name, kind) {
+            IndexAnswer::Found(path) if self.is_analysed(&path) => Located::Itself,
+            IndexAnswer::Found(path) => {
+                let file = config.index.file_for(self.db, &path);
+                Located::In(indexed_facts(self.db, file).file)
+            }
+            _ => Located::Nowhere,
         }
     }
 

@@ -86,7 +86,8 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, UnresolvedIncludeInput, build_edge_set,
+    BatchIndex, DirectIncludeInput, EdgeInputs, UnreadableIncludeInput, UnresolvedIncludeInput,
+    build_edge_set,
 };
 use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
 use oxabl_workspace::{FileSystem, is_include_fragment};
@@ -288,6 +289,7 @@ impl LintResult {
     pub fn diagnostics(&self) -> &CollectedDiagnostics {
         static NONE: &CollectedDiagnostics = &CollectedDiagnostics {
             diagnostics: Vec::new(),
+            parse_recovered: false,
         };
         match &self.outcome {
             Outcome::Computed { diagnostics, .. } => diagnostics,
@@ -690,6 +692,22 @@ impl<'a> LintPipeline<'a> {
                 site: include.site.span,
             })
             .collect();
+        let nested_unresolved: Vec<&str> = expanded
+            .nested_unresolved_includes()
+            .iter()
+            .map(|include| include.name.as_str())
+            .collect();
+        // An unreadable include written at the root has a site in the root's
+        // bytes; a nested one does not, and is a transitive edge.
+        let unreadable: Vec<UnreadableIncludeInput<'_>> = expanded
+            .unreadable_includes()
+            .iter()
+            .map(|include| UnreadableIncludeInput {
+                name: include.name.as_str(),
+                path: include.path.as_path(),
+                site: (include.site.file == ROOT_FILE_ID).then_some(include.site.span),
+            })
+            .collect();
         // The model's spans are post-expansion; an edge must carry the dependent
         // file's own bytes, and only the expansion knows the mapping.
         let resolve_span = |span: oxabl_common::VirtualSpan| {
@@ -705,6 +723,9 @@ impl<'a> LintPipeline<'a> {
             direct_includes: &direct,
             transitive_includes: expansion.dependency_paths(),
             unresolved_includes: &unresolved_includes,
+            nested_unresolved_includes: &nested_unresolved,
+            unreadable_includes: &unreadable,
+            parse_recovered: result.diagnostics().parse_recovered,
             resolve_span: &resolve_span,
         }))
     }
@@ -791,6 +812,7 @@ impl<'a> LintPipeline<'a> {
                             source: DiagnosticSource::Preproc,
                         })
                         .collect(),
+                    parse_recovered: false,
                 };
                 LintResult::computed(None, diagnostics, dependency_paths)
             }

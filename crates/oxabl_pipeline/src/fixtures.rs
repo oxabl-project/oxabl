@@ -272,6 +272,22 @@ pub enum EdgeExpectation {
     /// An unresolved reference present either way — the reference names something
     /// no sibling supplies.
     AlwaysUnresolved(ExpectedUnresolvedEdge),
+    /// An unresolved reference present only when the siblings are supplied: a
+    /// sibling names something no file supplies, so withholding the sibling
+    /// removes the reference along with it.
+    UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge),
+    /// A file the siblings supply that oxabl located but could not use. Supplied,
+    /// it is **both** an edge to the located file and a row for the facts that are
+    /// missing; withheld, it is the one row `withheld` describes.
+    ///
+    /// Both halves are pinned because either alone is the failure: the edge
+    /// without the row hides what was not extracted, and the row without the edge
+    /// loses a file the unit depends on.
+    LocatedButUnusable {
+        edge: ExpectedEdge,
+        row: ExpectedUnresolvedEdge,
+        withheld: ExpectedUnresolvedEdge,
+    },
 }
 
 /// One cross-file name a fixture exercises, and what resolving it does.
@@ -626,7 +642,12 @@ impl ParityFixture {
                 | EdgeExpectation::ResolvedWithSiblings { edge, .. } => {
                     expected.edges.push(observed_from(edge));
                 }
-                EdgeExpectation::AlwaysUnresolved(row) => {
+                EdgeExpectation::AlwaysUnresolved(row)
+                | EdgeExpectation::UnresolvedOnlyWithSiblings(row) => {
+                    expected.unresolved.push(unresolved_from(row));
+                }
+                EdgeExpectation::LocatedButUnusable { edge, row, .. } => {
+                    expected.edges.push(observed_from(edge));
                     expected.unresolved.push(unresolved_from(row));
                 }
             }
@@ -647,16 +668,39 @@ impl ParityFixture {
                 EdgeExpectation::Always(edge) => expected.edges.push(observed_from(edge)),
                 // Nothing names it once the file that named it is gone.
                 EdgeExpectation::OnlyWithSiblings(_) => {}
-                EdgeExpectation::ResolvedWithSiblings { withheld, .. } => {
+                EdgeExpectation::ResolvedWithSiblings { withheld, .. }
+                | EdgeExpectation::LocatedButUnusable { withheld, .. } => {
                     expected.unresolved.push(unresolved_from(withheld));
                 }
                 EdgeExpectation::AlwaysUnresolved(row) => {
                     expected.unresolved.push(unresolved_from(row));
                 }
+                EdgeExpectation::UnresolvedOnlyWithSiblings(_) => {}
             }
         }
         expected.normalize();
         expected
+    }
+
+    /// The reasons this row's edge set must report itself degraded for, as
+    /// [`DegradedReason::as_str`](oxabl_index::DegradedReason::as_str) spells
+    /// them. Empty means the set must be complete.
+    ///
+    /// This is the answer with the siblings supplied; see
+    /// [`Self::expected_degraded_without_siblings`].
+    pub fn expected_degraded(&self) -> &'static [&'static str] {
+        DEGRADED_FIXTURES
+            .iter()
+            .find(|(name, _)| *name == self.name)
+            .map_or(&[], |(_, degraded)| degraded.0)
+    }
+
+    /// [`Self::expected_degraded`] with the siblings withheld.
+    pub fn expected_degraded_without_siblings(&self) -> &'static [&'static str] {
+        DEGRADED_FIXTURES
+            .iter()
+            .find(|(name, _)| *name == self.name)
+            .map_or(&[], |(_, degraded)| degraded.1)
     }
 
     /// Assert an observed edge set equals what this row claims with its siblings
@@ -1507,18 +1551,21 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        // Both edges are gone rather than reported as gaps when the sibling is
-        // withheld, and that is the honest description of what the model records: a
-        // `RUN` target and a `SHARED` producer are noted only when the index
-        // *answers*, so a miss leaves no row behind. The finding still arrives in
-        // the diagnostic channel above. Turning these misses into unresolved rows is
-        // edge-kind fidelity work tracked upstream; pinning the current shape here
-        // is what makes that change visible when it lands.
+        // A withheld `RUN` target is a gap. A `SHARED` producer is different: its
+        // name maps onto no path, so a miss leaves no row behind and the edge is
+        // simply gone.
         edges: &[
-            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
-                via: "program",
-                target: "producer.p",
-            }),
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "producer.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "producer.p",
+                    reason: "absent_from_workspace",
+                },
+            },
             EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
                 via: "shared_producer",
                 target: "v-site",
@@ -1753,7 +1800,13 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        edges: &[],
+        // Supplying the file it happens to name changes nothing: the gap is the
+        // target being computed, not the file being absent.
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "program",
+            name: "VALUE(...)",
+            reason: "unknowable",
+        })],
     },
     // A parent no supplied file declares. A sibling *is* supplied — a different
     // class in the same package — so the row distinguishes "the search found
@@ -2072,7 +2125,344 @@ pub const FIXTURES: &[ParityFixture] = &[
         needs: &[Capability::IncludeResolution],
         edges: &[],
     },
+    // An include that an *included* file names and nothing supplies, beside one
+    // the root names itself. Both are gaps, and the nested one must be a row of
+    // its own: a diagnostic alone leaves the edge set looking complete.
+    ParityFixture {
+        name: "edges_nested_unresolved_include",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "{missing.i}\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i}",
+            // Withheld, the root's own `{a.i}` is the unresolvable one; supplied,
+            // the failure moves one level down and is re-anchored on the same
+            // bytes.
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "{a.i}\n{gone.i}\nMESSAGE 1.\n",
+        diagnostics: &[
+            ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 5,
+            },
+            ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 6,
+                end: 14,
+            },
+        ],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "a.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "a.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "gone.i",
+                reason: "absent_from_workspace",
+            }),
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "transitive_include",
+                name: "missing.i",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // The three `RUN` outcomes that used to leave no trace: a target nothing
+    // supplies, a target computed at run time, and (supplied) the one that links.
+    ParityFixture {
+        name: "edges_run_outcomes",
+        root_file: "runs.p",
+        siblings: &[SiblingFile {
+            path: "sub.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[
+            CrossFileResolution {
+                name: "RUN sub.p",
+                effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 4,
+                    end: 9,
+                }),
+            },
+            CrossFileResolution {
+                name: "RUN nothere.p",
+                effect: CrossFileEffect::Unresolvable,
+            },
+            CrossFileResolution {
+                name: "VALUE(\"x\" + \".p\")",
+                effect: CrossFileEffect::Unknowable,
+            },
+        ],
+        source: "RUN sub.p.\nRUN nothere.p.\nRUN VALUE(\"x\" + \".p\").\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 15,
+            end: 24,
+        }],
+        format: ExpectedFormat::Unchanged,
+        // A miss is only a fact about the workspace where a path was searched.
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "sub.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "sub.p",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "nothere.p",
+                reason: "absent_from_workspace",
+            }),
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "VALUE(...)",
+                reason: "unknowable",
+            }),
+        ],
+    },
+    // A located `RUN` target oxabl cannot parse on its own: an `&IF` that cuts
+    // across a block. The file is found, so it is a dependency whatever could be
+    // extracted from it.
+    ParityFixture {
+        name: "edges_run_target_needs_its_preprocessor",
+        root_file: "run.p",
+        siblings: &[SiblingFile {
+            path: "sub.p",
+            source: "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  MESSAGE 1.\nEND.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 9,
+            }),
+        }],
+        source: "RUN sub.p.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "program",
+                target: "sub.p",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "sub.p",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "sub.p",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // The same for a target that is not ABL text at all, which is what an
+    // encrypted program looks like to a reader that cannot decrypt it.
+    ParityFixture {
+        name: "edges_run_target_is_not_readable_abl",
+        root_file: "run.p",
+        siblings: &[SiblingFile {
+            path: "enc.p",
+            source: "\u{1}\u{2}\u{3} 0x9f 0x00 ((( %%% .\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN enc.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 9,
+            }),
+        }],
+        source: "RUN enc.p.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "program",
+                target: "enc.p",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "enc.p",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "enc.p",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A `RUN` written without an extension resolves like the one written with it.
+    // Withheld, the bare name is inconclusive rather than absent: it may be an
+    // internal procedure or a super procedure that oxabl does not model.
+    ParityFixture {
+        name: "edges_run_without_extension",
+        root_file: "noext.p",
+        siblings: &[SiblingFile {
+            path: "sub2.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 14,
+                end: 20,
+            }),
+        }],
+        source: "RUN sub2.\nRUN sub2.p.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "sub2",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "sub2",
+                    reason: "external",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "sub2.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "sub2.p",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
+    // A parse that recovered an error. The `RUN` after it still links, and the set
+    // says it cannot be trusted to be everything.
+    ParityFixture {
+        name: "edges_recovered_parse",
+        root_file: "broken.p",
+        siblings: &[SiblingFile {
+            path: "sub.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 9,
+            }),
+        }],
+        source: "RUN sub.p.\n@ @ @\nMESSAGE 1.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PARSE001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Parse,
+            start: 11,
+            end: 12,
+        }],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "program",
+                target: "sub.p",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "sub.p",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
 ];
+
+/// The rows whose edge set must report itself degraded, and for what. Every other
+/// row that claims an edge set must report it complete, so a degradation that
+/// leaks onto a clean file fails the suite as surely as one that goes missing.
+const DEGRADED_FIXTURES: &[(&str, Degraded)] = &[
+    // The reasons with the siblings supplied, then withheld.
+    (
+        "unresolvable_include",
+        Degraded(&["unresolved_include"], &["unresolved_include"]),
+    ),
+    (
+        "edges_nested_unresolved_include",
+        Degraded(&["unresolved_include"], &["unresolved_include"]),
+    ),
+    // Withholding the intermediate include makes the root's own include the gap.
+    (
+        "edges_nested_include",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "unterminated_include_reference",
+        Degraded(
+            &["parse_recovered", "unresolved_include"],
+            &["parse_recovered", "unresolved_include"],
+        ),
+    ),
+    (
+        "edges_spaced_include_references",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_predefined_environment_branches",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_recovered_parse",
+        Degraded(&["parse_recovered"], &["parse_recovered"]),
+    ),
+];
+
+/// The degraded reasons a row expects, with its siblings supplied and withheld.
+struct Degraded(&'static [&'static str], &'static [&'static str]);
 
 /// The parent class two cross-file rows resolve to: one public method with a
 /// return type, and nothing else. Synthetic.

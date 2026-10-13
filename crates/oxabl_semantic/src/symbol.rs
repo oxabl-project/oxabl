@@ -13,7 +13,7 @@ use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 
-use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId};
+use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId, UnresolvedReason};
 
 /// Dense arena index for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -231,6 +231,27 @@ pub enum ClassLookup {
     Unknowable,
 }
 
+/// A literal or computed `RUN` target the index did not link to a usable file.
+///
+/// A linked target mints a program symbol (see [`SymbolTable::program_file`]);
+/// every other outcome mints nothing, so without this record a `RUN` that missed,
+/// was ambiguous, or could not be named at all looks exactly like no `RUN`.
+///
+/// Bookkeeping only, like [`ClassLookup`]: it exists so a dependency consumer can
+/// tell silence from a gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnlinkedRun {
+    /// The folded target, or the empty atom for `RUN VALUE(...)`, which has none.
+    pub name: OxablAtom,
+    /// Why the target did not link.
+    pub reason: UnresolvedReason,
+    /// The file the target maps onto when the index located one it could not use.
+    /// A program oxabl cannot parse is still a file the `RUN` depends on.
+    pub located: Option<IndexedFileId>,
+    /// Where the target is written, in expanded coordinates.
+    pub span: VirtualSpan,
+}
+
 /// A declared name. Identity is the `SymbolId` issued by [`SymbolTable`];
 /// two declarations of the same name in overlapping scopes are distinct
 /// symbols.
@@ -409,6 +430,12 @@ struct SymbolSideMaps {
     /// entirely from a run with no index attached or one whose classes nobody
     /// inherits from.
     class_lookups: FxHashMap<OxablAtom, ClassLookup>,
+    /// The file a class lookup located but could not use, keyed like
+    /// [`Self::class_lookups`]. Separate from [`ClassLookup::Unusable`] so that
+    /// enum stays a plain verdict.
+    unusable_class_files: FxHashMap<OxablAtom, IndexedFileId>,
+    /// Every `RUN` target that did not link, in walk order.
+    unlinked_runs: Vec<UnlinkedRun>,
 }
 
 impl SymbolTable {
@@ -610,6 +637,33 @@ impl SymbolTable {
             .as_deref()
             .into_iter()
             .flat_map(|side| side.class_lookups.iter().map(|(n, l)| (n, *l)))
+    }
+
+    /// Record the file a class lookup located but could not use.
+    pub fn record_unusable_class_file(&mut self, name: &OxablAtom, file: IndexedFileId) {
+        self.side_mut()
+            .unusable_class_files
+            .insert(name.clone(), file);
+    }
+
+    /// The file behind a class lookup that answered [`ClassLookup::Unusable`], or
+    /// `None` when the index could not say which file it was.
+    pub fn unusable_class_file(&self, name: &OxablAtom) -> Option<IndexedFileId> {
+        self.side
+            .as_deref()?
+            .unusable_class_files
+            .get(name)
+            .copied()
+    }
+
+    /// Record a `RUN` target that did not link.
+    pub fn record_unlinked_run(&mut self, run: UnlinkedRun) {
+        self.side_mut().unlinked_runs.push(run);
+    }
+
+    /// Every `RUN` target that did not link, in walk order.
+    pub fn unlinked_runs(&self) -> &[UnlinkedRun] {
+        self.side.as_deref().map_or(&[], |side| &side.unlinked_runs)
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

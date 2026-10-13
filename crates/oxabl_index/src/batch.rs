@@ -15,8 +15,8 @@ use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
-    ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, MemberDescriptor,
-    WorkspaceIndex,
+    ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
+    MemberDescriptor, WorkspaceIndex,
 };
 use oxabl_workspace::FileSystem;
 use rustc_hash::FxHashMap;
@@ -417,6 +417,17 @@ impl WorkspaceIndex for BatchIndex<'_> {
         found.map_or(IndexAnswer::NotFound, IndexAnswer::Found)
     }
 
+    fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
+        let kind = match kind {
+            LocateKind::Class => search::NameKind::Class,
+            LocateKind::Program => search::NameKind::Program,
+        };
+        match search::find_name(self.fs, self.include_paths, name, kind) {
+            IndexAnswer::Found(path) => Located::In(self.memo().facts_for(self.fs, &path).file),
+            _ => Located::Nowhere,
+        }
+    }
+
     fn revision(&self) -> IndexRevision {
         BATCH_REVISION
     }
@@ -516,6 +527,13 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
             // really the analysed file's own earlier revision is not a producer at
             // all — there is nothing here for a consumer to be told about.
             IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::NotFound,
+            other => other,
+        }
+    }
+
+    fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
+        match self.index.located(kind, name) {
+            Located::In(file) if self.is_analysed(file) => Located::Itself,
             other => other,
         }
     }

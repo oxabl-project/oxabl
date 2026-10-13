@@ -37,7 +37,7 @@ use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
-use oxabl_preprocessor::{Preprocessor, SpanNode, UnresolvedInclude};
+use oxabl_preprocessor::{Preprocessor, SpanNode, UnreadableInclude, UnresolvedInclude};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, NullIndex, Semantic, SourceContext, WorkspaceIndex, analyze_file,
@@ -79,6 +79,13 @@ pub struct CollectedDiagnostic {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CollectedDiagnostics {
     pub diagnostics: Vec<CollectedDiagnostic>,
+    /// Whether the parser recovered from at least one error, wherever in the
+    /// expansion it occurred.
+    ///
+    /// Not derivable from `diagnostics`: a parse error that originates inside an
+    /// include has no root-buffer span and is dropped from that list, while the
+    /// statements it skipped are gone from the model all the same.
+    pub parse_recovered: bool,
 }
 
 impl CollectedDiagnostics {
@@ -113,6 +120,7 @@ impl CollectedDiagnostics {
                 .filter(|d| d.source != source)
                 .cloned()
                 .collect(),
+            parse_recovered: self.parse_recovered,
         }
     }
 }
@@ -187,6 +195,13 @@ pub struct ExpandedFile {
     /// Root-origin include references that resolved to no file. An edge set that
     /// dropped these would under-report impact silently.
     unresolved_includes: Vec<UnresolvedInclude>,
+    /// Include references written in an *included* file that resolved to no file.
+    /// The root cannot render their own sites, so each keeps the chain of sites
+    /// that led to it.
+    nested_unresolved_includes: Vec<UnresolvedInclude>,
+    /// Include references, at any depth, that resolved to a path whose content
+    /// could not be read.
+    unreadable_includes: Vec<UnreadableInclude>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -214,6 +229,18 @@ impl ExpandedFile {
     /// Root-origin include references that named no locatable file.
     pub fn unresolved_includes(&self) -> &[UnresolvedInclude] {
         &self.unresolved_includes
+    }
+
+    /// Include references written in an included file that named no locatable
+    /// file, at any depth below the root.
+    pub fn nested_unresolved_includes(&self) -> &[UnresolvedInclude] {
+        &self.nested_unresolved_includes
+    }
+
+    /// Include references, at any depth, that resolved to a path whose content
+    /// could not be read. The file exists, but what it includes is unknown.
+    pub fn unreadable_includes(&self) -> &[UnreadableInclude] {
+        &self.unreadable_includes
     }
 
     /// Map a span in the **expanded** buffer back to the root file's own bytes.
@@ -385,6 +412,8 @@ pub fn expand_source_with(
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
             unresolved_includes: Vec::new(),
+            nested_unresolved_includes: Vec::new(),
+            unreadable_includes: Vec::new(),
             root,
         });
     }
@@ -429,6 +458,12 @@ pub fn expand_source_with(
                 .filter(|u| u.site.file == root)
                 .cloned()
                 .collect();
+            let nested_unresolved_includes = pf
+                .unresolved_includes
+                .iter()
+                .filter(|u| u.site.file != root)
+                .cloned()
+                .collect();
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
                 chunks,
@@ -437,6 +472,8 @@ pub fn expand_source_with(
                 dependency_paths: recorder.into_reads(),
                 direct_includes,
                 unresolved_includes,
+                nested_unresolved_includes,
+                unreadable_includes: pf.unreadable_includes.clone(),
                 root,
             })
         }
@@ -645,6 +682,7 @@ pub fn collect_from_expanded_with_source_context(
     let tokens = tokenize(&expanded.text);
     let mut parser = Parser::new(&tokens, &expanded.text);
     let program = parser.parse_program();
+    out.parse_recovered = !program.errors.is_empty();
 
     for err in program.errors {
         let virt = err.into_diagnostic(root);
@@ -832,6 +870,8 @@ mod tests {
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
             unresolved_includes: Vec::new(),
+            nested_unresolved_includes: Vec::new(),
+            unreadable_includes: Vec::new(),
             root: ROOT,
         }
     }

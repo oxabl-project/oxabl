@@ -65,6 +65,24 @@ pub struct UnresolvedInclude {
     pub via: Vec<FileSpan>,
 }
 
+/// An include that resolved to a path whose content could not be read.
+///
+/// The file exists, so editing it changes the including unit, but its own
+/// includes are unknown. Kept as data, like [`UnresolvedInclude`], so a dependency
+/// edge set can keep the edge and say what is missing behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableInclude {
+    /// The include as written, after `{&var}` pre-expansion.
+    pub name: String,
+    /// The path the include resolved to.
+    pub path: PathBuf,
+    /// The `{...}` site, in the coordinates of the file that wrote it.
+    pub site: FileSpan,
+    /// The enclosing include sites that led here, outermost first. Empty when the
+    /// reference was written in the file being processed.
+    pub via: Vec<FileSpan>,
+}
+
 /// The preprocessed representation of a source file.
 ///
 /// Contains the virtual span tree, the preprocessor variable state after
@@ -80,6 +98,9 @@ pub struct PreprocessedFile {
     pub dependencies: Vec<FileId>,
     /// Every include reference, at any depth, that resolved to no file.
     pub unresolved_includes: Vec<UnresolvedInclude>,
+    /// Every include reference, at any depth, that resolved to a path whose
+    /// content could not be read.
+    pub unreadable_includes: Vec<UnreadableInclude>,
     /// Non-fatal diagnostics accumulated during preprocessing.
     ///
     /// Fatal diagnostics bail out with `Err` from [`crate::Preprocessor::process`].
@@ -106,6 +127,7 @@ impl PreprocessedFile {
             vars,
             dependencies,
             unresolved_includes,
+            unreadable_includes: Vec::new(),
             diagnostics,
             sources,
         }

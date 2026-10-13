@@ -8,7 +8,7 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 use crate::PreprocVarTable;
 use crate::condition::evaluate_with_defined;
-use crate::span_tree::{PreprocessedFile, SpanNode, UnresolvedInclude};
+use crate::span_tree::{PreprocessedFile, SpanNode, UnreadableInclude, UnresolvedInclude};
 
 /// Preprocessor for ABL source code.
 ///
@@ -133,6 +133,7 @@ impl<'fs> Preprocessor<'fs> {
             global_vars: PreprocVarTable::new(),
             dependencies: Vec::new(),
             unresolved_includes: Vec::new(),
+            unreadable_includes: Vec::new(),
             sources: vec![(file, Arc::from(source))],
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
@@ -154,14 +155,16 @@ impl<'fs> Preprocessor<'fs> {
             return Err(ctx.diagnostics);
         }
 
-        Ok(PreprocessedFile::new(
+        let mut processed = PreprocessedFile::new(
             tree,
             ctx.vars,
             ctx.dependencies,
             ctx.unresolved_includes,
             ctx.sources,
             ctx.diagnostics,
-        ))
+        );
+        processed.unreadable_includes = ctx.unreadable_includes;
+        Ok(processed)
     }
 }
 
@@ -181,6 +184,8 @@ struct ProcessContext<'fs> {
     /// PREPROC007 reports, kept as data so a dependency edge set can report the
     /// gap instead of quietly missing an edge.
     unresolved_includes: Vec<UnresolvedInclude>,
+    /// Includes that resolved to a path but could not be read (PREPROC005).
+    unreadable_includes: Vec<UnreadableInclude>,
     sources: Vec<(FileId, Arc<str>)>,
     diagnostics: Vec<Diagnostic>,
     /// Stack of currently-being-processed paths for cycle detection.
@@ -1235,6 +1240,12 @@ impl<'fs> ProcessContext<'fs> {
                     format!("failed to read include file '{}': {e}", path.display()),
                     site,
                 ));
+                self.unreadable_includes.push(UnreadableInclude {
+                    name: include_name.to_string(),
+                    path,
+                    site,
+                    via: self.site_stack.clone(),
+                });
                 return None;
             }
         };
