@@ -3810,6 +3810,141 @@ pub const FIXTURES: &[ParityFixture] = &[
         target: "orders.calc-base",
         withheld: "orders.calc-base",
     },
+    // A type whose name merely starts like a long type keyword is a class, not a
+    // built-in: `Hand` abbreviates nothing.
+    class_site_row! {
+        name: "class_site_declared_type_not_abbreviation",
+        root_file: "report.p",
+        siblings: HAND_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.hand",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 DEFINE VARIABLE v-hand AS Hand NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-hand).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.hand",
+        withheld: "hand",
+    },
+    // A frame or query receiver in an unmodelled statement is no class, so the
+    // edge set stays complete beside the one class that resolves.
+    ParityFixture {
+        name: "edges_put_widget_receivers_are_no_gap",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 DEFINE FRAME f-main WITH 1 DOWN.\n\
+                 DEFINE QUERY q-cust FOR cust-tab.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n\
+                 PUT UNFORMATTED FRAME f-main:TITLE SKIP.\n\
+                 PUT UNFORMATTED QUERY q-cust:NUM-RESULTS SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A missing dotted receiver in a class under a shipped parent is still a gap,
+    // and so is one under a parent oxabl cannot read: ABL reaches an inherited
+    // member with a bare name, never a dotted one.
+    ParityFixture {
+        name: "class_site_dotted_receiver_shipped_parent",
+        root_file: "orders/my-error.cls",
+        siblings: &[],
+        resolutions: &[],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-error INHERITS Progress.Lang.AppError:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-num AS INTEGER NO-UNDO.\n        \
+                 v-num = orders.gone:rate().\n        \
+                 MESSAGE v-num.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "class",
+            name: "orders.gone",
+            reason: "absent_from_workspace",
+        })],
+    },
+    // A bare missing receiver under a shipped parent: the shipped surface is not
+    // the workspace's, so the name is a missing class.
+    ParityFixture {
+        name: "class_site_bare_receiver_shipped_parent",
+        root_file: "orders/my-error.cls",
+        siblings: &[],
+        resolutions: &[],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-error INHERITS Progress.Lang.AppError:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-num AS INTEGER NO-UNDO.\n        \
+                 v-num = gone:rate().\n        \
+                 MESSAGE v-num.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "class",
+            name: "gone",
+            reason: "absent_from_workspace",
+        })],
+    },
+    ParityFixture {
+        name: "class_site_dotted_receiver_unusable_parent",
+        root_file: "orders/my-child.cls",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-child INHERITS orders.broken:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-num AS INTEGER NO-UNDO.\n        \
+                 v-num = orders.gone:rate().\n        \
+                 MESSAGE v-num.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[
+            EdgeExpectation::LocatedButUnusable {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.broken",
+                },
+                row: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.broken",
+                    reason: "present_but_unusable",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.broken",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.gone",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -3897,6 +4032,12 @@ const CALC_BASE: &str = "CLASS orders.calc-base:\n    \
                          METHOD PUBLIC INTEGER calc-total():\n        \
                          RETURN 0.\n    \
                          END METHOD.\nEND CLASS.\n";
+
+/// A class whose name starts like a built-in type keyword.
+const HAND_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/hand.cls",
+    source: "CLASS orders.hand:\nEND CLASS.\n",
+}];
 
 /// A class whose only member is static, named through a static member access.
 const TAX_UTIL: &str = "CLASS orders.tax-util:\n    \

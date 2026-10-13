@@ -3917,6 +3917,14 @@ impl<'a> ResolveWalker<'a> {
             if !could_be_imported || self.receiver_is_no_class(raw, scope) {
                 return;
             }
+            // A bare name may be a member inherited from a workspace parent the
+            // index could not supply. That parent's own row already tells a
+            // consumer the class is incomplete, so a second row here adds noise.
+            // A dotted name is never an inherited member, so the guard is not
+            // applied to it.
+            if self.inherits_from_unknown_type() {
+                return;
+            }
         }
         self.note_class_site(raw, lookup, use_span);
     }
@@ -3973,9 +3981,7 @@ impl<'a> ResolveWalker<'a> {
     ///   (`QUERY q`, `FRAME f`, `NEW BUFFER nb`) — the parser drops that keyword
     ///   and the scope tree has no entry for a query;
     /// * under a loaded schema, its first segment is a table, or its second is
-    ///   one (`db.table.field`);
-    /// * the class inherits from a type the index could not supply, and the name
-    ///   may be a member of that type.
+    ///   one (`db.table.field`).
     fn receiver_is_no_class(&mut self, raw: &str, scope: ScopeId) -> bool {
         let mut segments = raw.split('.');
         let first = fold_atom(segments.next().unwrap_or_default());
@@ -4000,7 +4006,7 @@ impl<'a> ResolveWalker<'a> {
                 return true;
             }
         }
-        self.follows_widget_keyword(&first) || self.inherits_from_unknown_type()
+        self.follows_widget_keyword(&first)
     }
 
     /// Whether the file writes the folded name `name` straight after a keyword
@@ -4015,8 +4021,9 @@ impl<'a> ResolveWalker<'a> {
             .is_some_and(|names| names.contains(name))
     }
 
-    /// Whether the class being walked inherits, however far up, from a type the
-    /// index could not supply. Its members are then not all known.
+    /// Whether the class being walked inherits, however far up, from a workspace
+    /// type the index could not supply. Its members are then not all known. A
+    /// shipped parent does not count: it is not the workspace's to supply.
     fn inherits_from_unknown_type(&mut self) -> bool {
         let Some(class) = self.current_class else {
             return false;
@@ -4291,6 +4298,7 @@ impl<'a> ResolveWalker<'a> {
                     self.note_class_site(name, lookup, site)
                 }
                 TypeLookup::Local(_) | TypeLookup::External => {}
+                TypeLookup::NotFound if self.receiver_is_no_class(name, scope) => {}
                 TypeLookup::NotFound | TypeLookup::Unknowable | TypeLookup::NotLooked => {
                     self.symbols.record_unattributed_unmodelled_use(site)
                 }
@@ -4825,8 +4833,8 @@ impl<'a> ResolveWalker<'a> {
                 // A shipped class is not the workspace's to supply, so its miss
                 // is no gap in it either.
                 IndexAnswer::NotFound => {
-                    self.cross_file_mut().incomplete_surfaces.insert(class);
                     if !is_system_namespace(name.as_atom()) {
+                        self.cross_file_mut().incomplete_surfaces.insert(class);
                         self.symbols
                             .record_class_lookup(name.as_atom(), ClassLookup::Absent);
                     }
@@ -5154,37 +5162,34 @@ fn is_builtin_type_name(name: &str) -> bool {
 }
 
 /// Whether a type name the parser reads as a class may be a built-in type
-/// instead: an abbreviation of a long type keyword (`cha`, `WIDGET`, `longc`) that
-/// the lexer has no entry for, or a keyword where `AS CLASS` found no name.
+/// instead: an abbreviation of a type keyword that the lexer has no entry for
+/// (`cha`), or a keyword where `AS CLASS` found no name.
 ///
-/// Short type keywords are left out, because their prefixes are ordinary class
-/// names (`Row`, `Rec`, `Mem`). Only a miss is judged by this: a class the
-/// workspace does supply is a class.
+/// Only the types ABL lets one abbreviate are matched, from their minimum
+/// abbreviation up (`WIDGET` stands for `WIDGET-HANDLE`). `Hand` and `Long` are
+/// ordinary class names. Only a miss is
+/// judged by this: a class the workspace does supply is a class.
 fn could_be_builtin_type(name: &str) -> bool {
-    const LONG_TYPES: [&str; 9] = [
-        "character",
-        "integer",
-        "decimal",
-        "logical",
-        "longchar",
-        "datetime",
-        "datetime-tz",
-        "handle",
-        "widget-handle",
+    const ABBREVIABLE: [(&str, &str); 5] = [
+        ("cha", "character"),
+        ("int", "integer"),
+        ("dec", "decimal"),
+        ("log", "logical"),
+        ("widget", "widget-handle"),
     ];
     if name.contains('.') {
         return false;
     }
-    (name.len() >= 3
-        && LONG_TYPES
-            .iter()
-            .any(|t| name.len() <= t.len() && t[..name.len()].eq_ignore_ascii_case(name)))
-        || oxabl_lexer::tokenize(name).first().is_some_and(|token| {
-            !matches!(
-                token.kind,
-                oxabl_lexer::Kind::Identifier | oxabl_lexer::Kind::Eof
-            )
-        })
+    ABBREVIABLE.iter().any(|(min, full)| {
+        name.len() >= min.len()
+            && name.len() <= full.len()
+            && full[..name.len()].eq_ignore_ascii_case(name)
+    }) || oxabl_lexer::tokenize(name).first().is_some_and(|token| {
+        !matches!(
+            token.kind,
+            oxabl_lexer::Kind::Identifier | oxabl_lexer::Kind::Eof
+        )
+    })
 }
 
 /// The folded names the source writes straight after a keyword that introduces a
