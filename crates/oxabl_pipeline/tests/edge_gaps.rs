@@ -548,6 +548,17 @@ fn a_dotted_run_extension_in_the_configuration_still_links_a_bare_run() {
 }
 
 #[test]
+fn a_run_extension_list_set_directly_is_normalized_by_the_lookup() {
+    for extensions in [&[".p"][..], &["P"][..], &[" .P "][..]] {
+        assert_eq!(
+            run_targets("RUN Both.\n", extensions),
+            [PathBuf::from("/proj/both.p")],
+            "extensions {extensions:?}"
+        );
+    }
+}
+
+#[test]
 fn an_unreadable_include_through_a_define_is_the_roots_own_direct_include() {
     let mut inner = InMemoryFileSystem::new();
     inner.insert(PathBuf::from("/proj/ok.i"), "MESSAGE 1.\n");

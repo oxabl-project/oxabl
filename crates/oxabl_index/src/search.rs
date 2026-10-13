@@ -54,7 +54,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use oxabl_semantic::{IndexAnswer, IndexName};
-use oxabl_workspace::{FileSystem, is_root_file};
+use oxabl_workspace::{FileSystem, is_root_file, normalize_run_extension};
 
 /// Resolve `.` and `..` segments in `path` **textually**, leaving everything else
 /// byte-identical.
@@ -205,8 +205,20 @@ pub fn find_name(
 }
 
 /// [`find_name`] with the extensions an extensionless program target is tried
-/// with spelled out, in order and without the dot. They are ignored for a class
-/// name and for a program target that already has an extension.
+/// with spelled out, in order. They are ignored for a class name and for a
+/// program target that already has an extension.
+///
+/// Entries are normalized here ([`normalize_run_extension`]: a leading dot and
+/// surrounding whitespace go, unusable entries and repeats are skipped), so a
+/// caller that builds the list by hand gets the same lookup as one that went
+/// through the configuration.
+///
+/// For each extension the candidates are tried in one fixed order, with the
+/// first that is not [`IndexAnswer::NotFound`] winning: name as written with the
+/// extension as written, folded name with the lower-case extension, name as
+/// written with the lower-case extension, folded name with the extension as
+/// written. For a lower-case extension the last two repeat the first two and
+/// are skipped.
 pub fn find_name_with<E: AsRef<str>>(
     fs: &dyn FileSystem,
     include_paths: &[PathBuf],
@@ -215,15 +227,32 @@ pub fn find_name_with<E: AsRef<str>>(
     bare_extensions: &[E],
 ) -> IndexAnswer<PathBuf> {
     if kind == NameKind::Program && !has_extension(name.as_written()) {
+        let mut tried: Vec<&str> = Vec::with_capacity(bare_extensions.len());
         for extension in bare_extensions {
-            let extension = extension.as_ref();
-            let answer = find_spellings(
+            let Some(extension) = normalize_run_extension(extension.as_ref()) else {
+                continue;
+            };
+            if tried.contains(&extension) {
+                continue;
+            }
+            tried.push(extension);
+            let lower = extension.to_ascii_lowercase();
+            let mut answer = find_spellings(
                 fs,
                 include_paths,
                 &with_extension(name.as_written(), extension),
-                &with_extension(name.as_str(), &extension.to_ascii_lowercase()),
+                &with_extension(name.as_str(), &lower),
                 ExtensionPolicy::AnyButInclude,
             );
+            if answer == IndexAnswer::NotFound && lower != extension {
+                answer = find_spellings(
+                    fs,
+                    include_paths,
+                    &with_extension(name.as_written(), &lower),
+                    &with_extension(name.as_str(), extension),
+                    ExtensionPolicy::AnyButInclude,
+                );
+            }
             if answer != IndexAnswer::NotFound {
                 return answer;
             }
@@ -471,6 +500,63 @@ mod tests {
                 &upper
             ),
             IndexAnswer::Found(PathBuf::from("/src/Sub.P"))
+        );
+    }
+
+    #[test]
+    fn an_upper_case_extension_still_finds_the_name_as_written() {
+        // Written name with the lower-case extension: the same file the default
+        // list finds.
+        let name = IndexName::new("Mixed");
+        for extensions in [["P"], ["p"]] {
+            assert_eq!(
+                find_name_with(
+                    &fs_with(&["/src/Mixed.p"]),
+                    &dirs(&["/src"]),
+                    &name,
+                    NameKind::Program,
+                    &extensions
+                ),
+                IndexAnswer::Found(PathBuf::from("/src/Mixed.p")),
+                "extensions {extensions:?}"
+            );
+        }
+        // Folded name with the extension as written.
+        assert_eq!(
+            find_name_with(
+                &fs_with(&["/src/mixed.P"]),
+                &dirs(&["/src"]),
+                &name,
+                NameKind::Program,
+                &["P"]
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/mixed.P"))
+        );
+    }
+
+    #[test]
+    fn a_hand_built_extension_list_is_normalized_like_a_configured_one() {
+        let paths = dirs(&["/src"]);
+        let fs = fs_with(&["/src/sub.p", "/src/sub.w"]);
+        let name = IndexName::new("sub");
+        let found =
+            |extensions: &[&str]| find_name_with(&fs, &paths, &name, NameKind::Program, extensions);
+        assert_eq!(
+            found(&[".p"]),
+            IndexAnswer::Found(PathBuf::from("/src/sub.p"))
+        );
+        assert_eq!(
+            found(&[" .w ", "p"]),
+            IndexAnswer::Found(PathBuf::from("/src/sub.w"))
+        );
+        assert_eq!(
+            found(&["", "a/b", "."]),
+            IndexAnswer::NotFound,
+            "unusable entries link nothing"
+        );
+        assert_eq!(
+            found(&["", ".p"]),
+            IndexAnswer::Found(PathBuf::from("/src/sub.p"))
         );
     }
 

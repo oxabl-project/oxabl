@@ -6,7 +6,7 @@ mod workspace;
 
 pub use config::{
     LintConfig, LintSeverity, PreprocessorConfig, RunExtensions, WorkspaceConfig,
-    default_run_extensions, normalize_run_extensions,
+    default_run_extensions, normalize_run_extension, normalize_run_extensions,
 };
 pub use discovery::{
     ROOT_EXTENSIONS, discover_path, is_include_fragment, is_root_file, walk_directory,

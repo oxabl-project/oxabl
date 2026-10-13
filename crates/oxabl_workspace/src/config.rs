@@ -205,7 +205,7 @@ pub struct SourcesConfig {
     ///
     /// A leading dot is ignored, and an entry that is empty or holds a path
     /// separator is dropped with a warning. Each extension is tried as written and
-    /// then in lower case.
+    /// then in lower case, against the name as written and then folded.
     ///
     /// The first extension that finds a file wins. A list that omits an
     /// extension never links a bare name to such a file; an empty list links no
@@ -229,19 +229,28 @@ pub struct RunExtensions {
     pub rejected: Vec<String>,
 }
 
-/// Normalize a `run_extensions` list as the search needs it.
+/// One `run_extensions` entry as a file extension, or `None` when no file name
+/// can end in it.
 ///
-/// A leading dot is stripped (`.p` means `p`). Case is kept: the lookup tries the
-/// configured spelling and then the lower-case one, like every other name.
+/// Surrounding whitespace and a leading dot are stripped (` .p ` means `p`).
+/// Case is kept: the lookup tries the configured spelling and the lower-case one.
+pub fn normalize_run_extension(entry: &str) -> Option<&str> {
+    let extension = entry.trim().trim_start_matches('.');
+    (!extension.is_empty() && !extension.contains(['/', '\\'])).then_some(extension)
+}
+
+/// Normalize a `run_extensions` list as the search needs it: each entry through
+/// [`normalize_run_extension`], repeats dropped.
 pub fn normalize_run_extensions(entries: &[String]) -> RunExtensions {
     let mut extensions: Vec<String> = Vec::new();
     let mut rejected = Vec::new();
     for entry in entries {
-        let extension = entry.trim().trim_start_matches('.');
-        if extension.is_empty() || extension.contains(['/', '\\']) {
-            rejected.push(entry.clone());
-        } else if !extensions.iter().any(|seen| seen == extension) {
-            extensions.push(extension.to_string());
+        match normalize_run_extension(entry) {
+            None => rejected.push(entry.clone()),
+            Some(extension) if !extensions.iter().any(|seen| seen == extension) => {
+                extensions.push(extension.to_string());
+            }
+            Some(_) => {}
         }
     }
     RunExtensions {
