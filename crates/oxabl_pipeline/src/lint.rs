@@ -79,7 +79,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    UnresolvedInclude, collect_from_expanded_with_source_context, expand_source,
+    UnresolvedInclude, collect_from_expanded_with_source_context, expand_source_with,
 };
 
 use oxabl_common::{
@@ -742,11 +742,13 @@ impl<'a> LintPipeline<'a> {
         // must escape.
         panic_if_injected(panic_sites::ANALYZE, source);
         Expansion {
-            inner: expand_source(
+            inner: expand_source_with(
                 ROOT_FILE_ID,
+                self.file().and_then(Path::to_str),
                 source,
                 self.fs,
                 &self.config.include_paths,
+                &self.config.preprocessor,
                 self.preprocess,
             ),
         }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 use crate::PreprocVarTable;
 use crate::condition::evaluate_with_defined;
@@ -15,9 +15,58 @@ use crate::span_tree::{PreprocessedFile, SpanNode, UnresolvedInclude};
 /// Expands include files, evaluates `&IF`/`&THEN`/`&ENDIF` conditions, and
 /// tracks `&SCOPED-DEFINE`/`&GLOBAL-DEFINE`/`&UNDEFINE` variables. Produces a
 /// [`PreprocessedFile`] with a virtual span tree for position resolution.
+///
+/// The AVM's predefined names (`{&OPSYS}` and friends) are answered from a
+/// [`PreprocessorConfig`]; see [`Self::with_predefined`].
 pub struct Preprocessor<'fs> {
     fs: &'fs dyn FileSystem,
     include_paths: &'fs [PathBuf],
+    predefined: PreprocessorConfig,
+}
+
+/// The predefined names whose value comes from [`PreprocessorConfig`].
+const CONFIGURED_NAMES: [&str; 5] = [
+    "OPSYS",
+    "WINDOW-SYSTEM",
+    "BATCH-MODE",
+    "PROCESS-ARCHITECTURE",
+    "PROVERSION",
+];
+
+/// The predefined names computed from the source being preprocessed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComputedName {
+    FileName,
+    LineNumber,
+    Sequence,
+}
+
+impl ComputedName {
+    fn from_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case("FILE-NAME") {
+            Some(ComputedName::FileName)
+        } else if name.eq_ignore_ascii_case("LINE-NUMBER") {
+            Some(ComputedName::LineNumber)
+        } else if name.eq_ignore_ascii_case("SEQUENCE") {
+            Some(ComputedName::Sequence)
+        } else {
+            None
+        }
+    }
+}
+
+/// Define the predefined names that [`PreprocessorConfig`] answers.
+fn define_configured_names(vars: &mut PreprocVarTable, config: &PreprocessorConfig) {
+    vars.define("OPSYS", &config.opsys);
+    vars.define("WINDOW-SYSTEM", &config.window_system);
+    vars.define("BATCH-MODE", if config.batch_mode { "yes" } else { "no" });
+    vars.define(
+        "PROCESS-ARCHITECTURE",
+        &config.process_architecture.to_string(),
+    );
+    if let Some(version) = &config.proversion {
+        vars.define("PROVERSION", version);
+    }
 }
 
 /// Maximum include depth to prevent runaway recursion from very deep (but
@@ -26,7 +75,21 @@ const MAX_INCLUDE_DEPTH: usize = 64;
 
 impl<'fs> Preprocessor<'fs> {
     pub fn new(fs: &'fs dyn FileSystem, include_paths: &'fs [PathBuf]) -> Self {
-        Preprocessor { fs, include_paths }
+        Preprocessor {
+            fs,
+            include_paths,
+            predefined: PreprocessorConfig::default(),
+        }
+    }
+
+    /// Describe the compile environment behind `{&OPSYS}`, `{&WINDOW-SYSTEM}`,
+    /// `{&BATCH-MODE}`, `{&PROCESS-ARCHITECTURE}` and `{&PROVERSION}`.
+    ///
+    /// Without this the defaults of [`PreprocessorConfig`] apply: a 64-bit Unix
+    /// batch compile with a TTY window system and no known `PROVERSION`.
+    pub fn with_predefined(mut self, predefined: &PreprocessorConfig) -> Self {
+        self.predefined = predefined.clone();
+        self
     }
 
     /// Preprocess a source file, expanding includes and evaluating directives.
@@ -35,10 +98,38 @@ impl<'fs> Preprocessor<'fs> {
     /// failure. Non-fatal diagnostics (warnings) are collected but do not
     /// prevent the `PreprocessedFile` from being returned.
     pub fn process(&self, file: FileId, source: &str) -> Result<PreprocessedFile, Vec<Diagnostic>> {
+        self.process_inner(file, None, source)
+    }
+
+    /// Like [`Self::process`], for a file the caller knows by `name`.
+    ///
+    /// `name` is what `{&FILE-NAME}` expands to in the root file, as the AVM
+    /// reports the name the file was compiled under. Inside an include it
+    /// expands to the include name as written. [`Self::process`] knows no name,
+    /// so there `{&FILE-NAME}` is unknown in the root file.
+    pub fn process_named(
+        &self,
+        file: FileId,
+        name: &str,
+        source: &str,
+    ) -> Result<PreprocessedFile, Vec<Diagnostic>> {
+        self.process_inner(file, Some(name), source)
+    }
+
+    fn process_inner(
+        &self,
+        file: FileId,
+        name: Option<&str>,
+        source: &str,
+    ) -> Result<PreprocessedFile, Vec<Diagnostic>> {
+        let mut vars = PreprocVarTable::new();
+        define_configured_names(&mut vars, &self.predefined);
         let mut ctx = ProcessContext {
             fs: self.fs,
             include_paths: self.include_paths,
-            vars: PreprocVarTable::new(),
+            vars,
+            file_names: vec![name.map(str::to_string)],
+            sequence: 0,
             global_vars: PreprocVarTable::new(),
             dependencies: Vec::new(),
             unresolved_includes: Vec::new(),
@@ -78,6 +169,11 @@ struct ProcessContext<'fs> {
     fs: &'fs dyn FileSystem,
     include_paths: &'fs [PathBuf],
     vars: PreprocVarTable,
+    /// The name `{&FILE-NAME}` reports for each file being processed, innermost
+    /// last. The root's is `None` when the caller supplied no name.
+    file_names: Vec<Option<String>>,
+    /// The next value of `{&SEQUENCE}`, shared by the whole compilation unit.
+    sequence: u32,
     /// Variables set via `&GLOBAL-DEFINE` — propagated back to parent.
     global_vars: PreprocVarTable,
     dependencies: Vec<FileId>,
@@ -201,7 +297,7 @@ impl<'fs> ProcessContext<'fs> {
                                         value.clone()
                                     };
                                     let expanded = self
-                                        .expand_defined_preproc_vars(&expanded)
+                                        .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
                                     self.vars.define(name, &expanded);
                                 }
@@ -227,7 +323,7 @@ impl<'fs> ProcessContext<'fs> {
                                         value.clone()
                                     };
                                     let expanded = self
-                                        .expand_defined_preproc_vars(&expanded)
+                                        .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
                                     self.vars.define(name, &expanded);
                                     self.global_vars.define(name, &expanded);
@@ -261,9 +357,20 @@ impl<'fs> ProcessContext<'fs> {
                                     });
                                 }
                                 let cond_result = if emitting {
-                                    let condition =
-                                        expand_positional_refs(condition, positional_args);
-                                    evaluate_with_defined(&condition, &self.vars)
+                                    let site = FileSpan {
+                                        file,
+                                        span: Span {
+                                            start: i as u32,
+                                            end: directive.end as u32,
+                                        },
+                                    };
+                                    self.evaluate_condition(
+                                        condition,
+                                        positional_args,
+                                        source,
+                                        i,
+                                        site,
+                                    )
                                 } else {
                                     false
                                 };
@@ -286,10 +393,20 @@ impl<'fs> ProcessContext<'fs> {
                                 }
                                 if let Some(state) = if_stack.last_mut() {
                                     if state.parent_emitting && !state.any_branch_taken {
-                                        let condition =
-                                            expand_positional_refs(condition, positional_args);
-                                        let cond_result =
-                                            evaluate_with_defined(&condition, &self.vars);
+                                        let site = FileSpan {
+                                            file,
+                                            span: Span {
+                                                start: i as u32,
+                                                end: directive.end as u32,
+                                            },
+                                        };
+                                        let cond_result = self.evaluate_condition(
+                                            condition,
+                                            positional_args,
+                                            source,
+                                            i,
+                                            site,
+                                        );
                                         state.emitting = cond_result;
                                         if cond_result {
                                             state.any_branch_taken = true;
@@ -375,13 +492,9 @@ impl<'fs> ProcessContext<'fs> {
                                 i = next;
                                 continue;
                             }
-                        } else if bytes[i + 1].is_ascii_alphabetic()
-                            || bytes[i + 1] == b'/'
-                            || bytes[i + 1] == b'.'
-                            || bytes[i + 1] == b'"'
-                            || bytes[i + 1] == b'{'
-                        {
-                            // Include file reference {file.i}
+                        } else if include_ref_start(bytes, i) {
+                            // Include file reference {file.i}. The AVM accepts
+                            // whitespace after the `{` and before the `}`.
                             //
                             // `{{&name}...}` — dynamic include whose file name is
                             // built from a preprocessor variable (e.g.
@@ -395,7 +508,7 @@ impl<'fs> ProcessContext<'fs> {
 
                                 // Pre-expand any `{&var}` references inside the
                                 // inner content to support dynamic include names.
-                                let expanded_inner = self.expand_preproc_vars(raw_inner);
+                                let expanded_inner = self.expand_preproc_vars(raw_inner, source, i);
                                 let inner_ref: &str =
                                     expanded_inner.as_deref().unwrap_or(raw_inner);
 
@@ -450,6 +563,7 @@ impl<'fs> ProcessContext<'fs> {
                                 chunk_start = i as u32;
                                 continue;
                             }
+                            self.report_unterminated_include(file, source, i);
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
                             if let Some(next) = self.expand_positional_ref_at(
@@ -570,6 +684,149 @@ impl<'fs> ProcessContext<'fs> {
         nodes
     }
 
+    /// The value of `{&name}` at byte offset `at` of `source`: a defined name
+    /// first, then one of the computed predefined names.
+    fn lookup_ref(&mut self, name: &str, source: &str, at: usize) -> Option<Arc<str>> {
+        if let Some(val) = self.vars.get(name) {
+            return Some(val.clone());
+        }
+        let computed = ComputedName::from_name(name)?;
+        self.computed_value(computed, source, at)
+    }
+
+    /// Compute a predefined name for a reference at byte offset `at` of
+    /// `source`. `None` for `{&FILE-NAME}` when the root file has no name.
+    fn computed_value(&mut self, name: ComputedName, source: &str, at: usize) -> Option<Arc<str>> {
+        match name {
+            ComputedName::FileName => self.file_names.last()?.as_deref().map(Arc::from),
+            ComputedName::LineNumber => {
+                let before = &source.as_bytes()[..at.min(source.len())];
+                let line = before.iter().filter(|b| **b == b'\n').count() + 1;
+                Some(Arc::from(line.to_string()))
+            }
+            ComputedName::Sequence => {
+                let next = self.sequence;
+                self.sequence += 1;
+                Some(Arc::from(next.to_string()))
+            }
+        }
+    }
+
+    /// Evaluate an `&IF`/`&ELSEIF` condition whose directive starts at byte
+    /// offset `at` of `source`.
+    ///
+    /// Computed predefined names are substituted first. A predefined name with no
+    /// value to substitute (`{&PROVERSION}` when the environment does not say, a
+    /// `{&FILE-NAME}` for an unnamed root) would otherwise decide the branch as
+    /// an empty string, so each one raises PREPROC009.
+    fn evaluate_condition(
+        &mut self,
+        condition: &str,
+        positional_args: &[String],
+        source: &str,
+        at: usize,
+        site: FileSpan,
+    ) -> bool {
+        let condition = expand_positional_refs(condition, positional_args);
+        let condition = self.substitute_computed_names(&condition, source, at, site);
+        evaluate_with_defined(&condition, &self.vars)
+    }
+
+    fn substitute_computed_names(
+        &mut self,
+        condition: &str,
+        source: &str,
+        at: usize,
+        site: FileSpan,
+    ) -> String {
+        if !condition.contains("{&") {
+            return condition.to_string();
+        }
+        let mut out = String::with_capacity(condition.len());
+        let mut rest = condition;
+        while let Some(open) = rest.find("{&") {
+            out.push_str(&rest[..open]);
+            let Some(close_rel) = rest[open..].find('}') else {
+                rest = &rest[open..];
+                break;
+            };
+            let reference = &rest[open..=open + close_rel];
+            let name = &reference[2..reference.len() - 1];
+            if self.vars.is_defined(name) {
+                out.push_str(reference);
+            } else if let Some(computed) = ComputedName::from_name(name) {
+                match self.computed_value(computed, source, at) {
+                    Some(val) => out.push_str(&val),
+                    None => self.report_unknown_predefined(name, site),
+                }
+            } else {
+                if CONFIGURED_NAMES
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(name))
+                {
+                    self.report_unknown_predefined(name, site);
+                }
+                out.push_str(reference);
+            }
+            rest = &rest[open + close_rel + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn report_unknown_predefined(&mut self, name: &str, site: FileSpan) {
+        // Anchored on the outermost include site when nested, so the diagnostic
+        // lands in the file the caller actually analysed.
+        let nested = self.site_stack.first().copied();
+        let message = format!(
+            "predefined name '{{&{}}}' has no value — the condition is decided as if it were empty{}",
+            name.to_ascii_uppercase(),
+            if nested.is_some() {
+                " (reached through this include)"
+            } else {
+                ""
+            },
+        );
+        let help = if name.eq_ignore_ascii_case("FILE-NAME") {
+            "pass the file's name to the preprocessor".to_string()
+        } else {
+            format!(
+                "set `{}` under [workspace.preprocessor] in oxabl.toml",
+                name.to_ascii_lowercase()
+            )
+        };
+        self.diagnostics.push(
+            Diagnostic::warning("PREPROC009", message, nested.unwrap_or(site)).with_help(help),
+        );
+    }
+
+    /// Report an include reference whose `{` at byte offset `i` never closes.
+    ///
+    /// The reference is left in the text, so without this the file would look
+    /// like it includes nothing. It is recorded as an unresolved include as well
+    /// as a diagnostic, for the same reason an unlocatable file is.
+    fn report_unterminated_include(&mut self, file: FileId, source: &str, i: usize) {
+        let rest = &source[i + 1..];
+        let name = parse_include_name(rest.lines().next().unwrap_or(rest));
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: i as u32,
+                end: (i + 1) as u32,
+            },
+        };
+        self.diagnostics.push(Diagnostic::warning(
+            "PREPROC008",
+            format!("unterminated include reference '{{{name}'"),
+            site,
+        ));
+        self.unresolved_includes.push(UnresolvedInclude {
+            name,
+            site,
+            via: self.site_stack.clone(),
+        });
+    }
+
     /// Expand a `{&name}` preprocessor variable reference whose `{` sits at
     /// byte offset `i`. Flushes the pending chunk, then emits a synthetic
     /// expansion node when the variable is defined with a non-empty value.
@@ -602,7 +859,7 @@ impl<'fs> ProcessContext<'fs> {
             });
         }
 
-        if let Some(val) = self.vars.get(var_name).cloned() {
+        if let Some(val) = self.lookup_ref(var_name, source, i) {
             // Create a synthetic chunk for the expanded value.
             // We store it as a new source entry.
             let expanded_id = self.next_file_id();
@@ -826,7 +1083,7 @@ impl<'fs> ProcessContext<'fs> {
     ///
     /// Used to resolve dynamic include references like `{{&frame}.f …}` where
     /// the include file name is built from a preprocessor variable.
-    fn expand_preproc_vars(&self, text: &str) -> Option<String> {
+    fn expand_preproc_vars(&mut self, text: &str, source: &str, at: usize) -> Option<String> {
         if !text.contains("{&") {
             return None;
         }
@@ -843,8 +1100,8 @@ impl<'fs> ProcessContext<'fs> {
                 let end = i + close_rel;
                 let name = &text[i + 2..end];
                 // ABL expands undefined {&name} to empty; do not preserve (#64).
-                if let Some(val) = self.vars.get(name) {
-                    out.push_str(val);
+                if let Some(val) = self.lookup_ref(name, source, at) {
+                    out.push_str(&val);
                 }
                 i = end + 1;
                 changed = true;
@@ -872,7 +1129,12 @@ impl<'fs> ProcessContext<'fs> {
     /// verbatim rather than expanded to empty, so genuine forward references
     /// still resolve lazily when the define is later referenced. Returns
     /// `Some(expanded)` when any substitution occurred, or `None` otherwise.
-    fn expand_defined_preproc_vars(&self, text: &str) -> Option<String> {
+    fn expand_defined_preproc_vars(
+        &mut self,
+        text: &str,
+        source: &str,
+        at: usize,
+    ) -> Option<String> {
         if !text.contains("{&") {
             return None;
         }
@@ -888,8 +1150,14 @@ impl<'fs> ProcessContext<'fs> {
             {
                 let end = i + close_rel;
                 let name = &text[i + 2..end];
-                if let Some(val) = self.vars.get(name) {
-                    out.push_str(val);
+                // A computed name is read where the define is written, as the
+                // AVM does, rather than where the define is later used.
+                let val = self.vars.get(name).cloned().or_else(|| {
+                    ComputedName::from_name(name)
+                        .and_then(|computed| self.computed_value(computed, source, at))
+                });
+                if let Some(val) = val {
+                    out.push_str(&val);
                     changed = true;
                 } else {
                     // Undefined: preserve verbatim for lazy resolution at
@@ -996,7 +1264,9 @@ impl<'fs> ProcessContext<'fs> {
         // The site is on the stack for the duration, so anything unresolvable
         // below here can name the chain that reached it.
         self.site_stack.push(site);
+        self.file_names.push(Some(include_name.to_string()));
         let children = self.process_source(include_file_id, &content, depth + 1, &args.positional);
+        self.file_names.pop();
         self.site_stack.pop();
 
         // Restore vars (named args don't leak to parent)
@@ -1313,6 +1583,22 @@ fn find_same_line_if_boundary(source: &str, from: usize) -> Option<usize> {
         }
     }
     best.map(|p| from + p)
+}
+
+/// Whether the `{` at `open` starts a file include reference: optional
+/// whitespace, then the first byte of a file name.
+///
+/// `{&name}` and `{1}` are decided before this is asked, and a `{` followed by
+/// whitespace and then `&` or a digit is neither.
+fn include_ref_start(bytes: &[u8], open: usize) -> bool {
+    let first = bytes[open + 1..]
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .copied();
+    matches!(
+        first,
+        Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'.' | b'"' | b'{')
+    )
 }
 
 /// Find the matching `}` for a `{` at position `open`, handling nested braces.
@@ -1761,6 +2047,262 @@ mod tests {
 
         assert_eq!(&*result.to_text(), "BEFORE\n/* header */\nAFTER");
         assert_eq!(result.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn include_reference_with_inner_whitespace_expands_like_the_tight_form() {
+        let fs = make_fs(&[
+            ("/inc/a.i", "A"),
+            ("/inc/b.i", "B"),
+            ("/inc/c.i", "C{1}"),
+            ("/inc/d.i", "D{&k}"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{ a.i }|{b.i}|{ c.i \"X\"}|{\n  d.i\n  &k=7\n}|{\ta.i\t}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "A|B|CX|D7|A");
+        assert!(result.unresolved_includes.is_empty());
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn spaced_include_reference_that_is_missing_is_unresolved() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let result = pp.process(FileId::new(1), "{ gone.i }").unwrap();
+
+        assert_eq!(result.unresolved_includes.len(), 1);
+        assert_eq!(result.unresolved_includes[0].name, "gone.i");
+        assert!(result.diagnostics.iter().any(|d| d.code.0 == "PREPROC007"));
+    }
+
+    #[test]
+    fn whitespace_before_amp_or_digit_is_not_an_include_reference() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE V v\n{ &V }|{ 1 }|{&V}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "{ &V }|{ 1 }|v");
+        assert!(result.unresolved_includes.is_empty());
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn spaced_include_reference_in_string_stays_literal() {
+        let fs = make_fs(&[("/inc/a.i", "A")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "MESSAGE '{ a.i }'.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), source);
+    }
+
+    #[test]
+    fn unterminated_include_reference_is_reported_not_silent() {
+        for source in ["x = 1.\n{ a.i \"X\"\ny = 2.", "{a.i"] {
+            let fs = make_fs(&[("/inc/a.i", "A")]);
+            let include_paths = vec![PathBuf::from("/inc")];
+            let pp = Preprocessor::new(&fs, &include_paths);
+            let result = pp.process(FileId::new(1), source).unwrap();
+
+            assert_eq!(&*result.to_text(), source);
+            assert!(
+                result.diagnostics.iter().any(|d| d.code.0 == "PREPROC008"),
+                "no PREPROC008 for {source:?}"
+            );
+            assert_eq!(result.unresolved_includes.len(), 1);
+            assert_eq!(result.unresolved_includes[0].name, "a.i");
+        }
+    }
+
+    const ENV_SOURCE: &str = "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\n{a.i}\n&ELSE\n{b.i}\n&ENDIF\n\
+        &IF \"{&WINDOW-SYSTEM}\" = \"TTY\" &THEN\n{c.i}\n&ENDIF\n\
+        &IF \"{&BATCH-MODE}\" = \"yes\" &THEN\n{d.i}\n&ENDIF\n\
+        &IF {&PROCESS-ARCHITECTURE} = 64 &THEN\n{e.i}\n&ENDIF\n";
+
+    fn env_fs() -> InMemoryFileSystem {
+        make_fs(&[
+            ("/inc/a.i", "A"),
+            ("/inc/b.i", "B"),
+            ("/inc/c.i", "C"),
+            ("/inc/d.i", "D"),
+            ("/inc/e.i", "E"),
+        ])
+    }
+
+    #[test]
+    fn predefined_names_default_to_a_unix_tty_batch_compile() {
+        let fs = env_fs();
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp.process(FileId::new(1), ENV_SOURCE).unwrap();
+
+        assert_eq!(result.to_text().replace('\n', ""), "ACDE");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn every_predefined_name_can_be_overridden() {
+        let fs = env_fs();
+        let include_paths = vec![PathBuf::from("/inc")];
+        let config = PreprocessorConfig {
+            opsys: "WIN32".to_string(),
+            window_system: "MS-WINDOWS".to_string(),
+            batch_mode: false,
+            process_architecture: 32,
+            proversion: Some("12.8".to_string()),
+        };
+        let pp = Preprocessor::new(&fs, &include_paths).with_predefined(&config);
+        let result = pp.process(FileId::new(1), ENV_SOURCE).unwrap();
+        assert_eq!(result.to_text().replace('\n', ""), "B");
+
+        let source =
+            "{&OPSYS}|{&WINDOW-SYSTEM}|{&BATCH-MODE}|{&PROCESS-ARCHITECTURE}|{&PROVERSION}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "WIN32|MS-WINDOWS|no|32|12.8");
+    }
+
+    #[test]
+    fn predefined_names_are_case_insensitive_and_visible_to_defined() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "{&opsys}\n&IF DEFINED(OPSYS) &THEN\nyes\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "UNIX\nyes\n");
+    }
+
+    #[test]
+    fn a_define_can_shadow_a_predefined_name() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE OPSYS WIN32\n{&OPSYS}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "WIN32");
+    }
+
+    #[test]
+    fn unset_proversion_in_a_condition_is_reported() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF \"{&PROVERSION}\" >= \"12\" &THEN\nnew\n&ELSE\nold\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code.0 == "PREPROC009")
+            .expect("PREPROC009");
+        assert_eq!(diag.span.span.start, 0);
+        assert!(diag.message.contains("{&PROVERSION}"));
+    }
+
+    #[test]
+    fn unset_proversion_outside_a_condition_and_user_names_stay_quiet() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "{&PROVERSION}\n&IF \"{&NOT-PREDEFINED}\" = \"\" &THEN\nx\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "\nx\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_defined_proversion_in_a_condition_is_quiet() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE PROVERSION 12\n&IF {&PROVERSION} >= 12 &THEN\nnew\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "new\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn unset_predefined_name_in_an_include_is_anchored_on_the_root_site() {
+        let fs = make_fs(&[("/inc/v.i", "&IF {&PROVERSION} > 9 &THEN\nx\n&ENDIF\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "a\n{v.i}\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code.0 == "PREPROC009")
+            .expect("PREPROC009");
+        assert_eq!(diag.span.file, FileId::new(1));
+        assert_eq!((diag.span.span.start, diag.span.span.end), (2, 7));
+    }
+
+    #[test]
+    fn file_name_is_the_root_name_then_the_include_name_as_written() {
+        let fs = make_fs(&[("/inc/sub/x.i", "[{&FILE-NAME}]")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{&FILE-NAME}{sub/x.i}{&FILE-NAME}";
+        let result = pp
+            .process_named(FileId::new(1), "dir/main.p", source)
+            .unwrap();
+        assert_eq!(&*result.to_text(), "dir/main.p[sub/x.i]dir/main.p");
+    }
+
+    #[test]
+    fn file_name_condition_uses_the_name_and_unnamed_root_is_reported() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF \"{&FILE-NAME}\" MATCHES \"*.w\" &THEN\nwindow\n&ENDIF\n";
+
+        let named = pp.process_named(FileId::new(1), "main.w", source).unwrap();
+        assert_eq!(&*named.to_text(), "window\n");
+        assert!(named.diagnostics.is_empty());
+
+        let unnamed = pp.process(FileId::new(1), source).unwrap();
+        assert!(unnamed.diagnostics.iter().any(|d| d.code.0 == "PREPROC009"));
+    }
+
+    #[test]
+    fn line_number_is_the_line_within_the_current_file() {
+        let fs = make_fs(&[("/inc/l.i", "\n\n<{&LINE-NUMBER}>")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "a\nb {&LINE-NUMBER}\n{l.i}\n\"{&LINE-NUMBER}\"";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "a\nb 2\n\n\n<3>\n\"4\"");
+    }
+
+    #[test]
+    fn line_number_in_a_condition_is_the_line_of_the_directive() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "\n\n&IF {&LINE-NUMBER} = 3 &THEN\nhere\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "\n\nhere\n");
+    }
+
+    #[test]
+    fn sequence_counts_up_across_includes_and_skips_disabled_branches() {
+        let fs = make_fs(&[("/inc/s.i", "{&SEQUENCE}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source =
+            "{&SEQUENCE} {s.i} {&sequence}\n&IF FALSE &THEN\n{&SEQUENCE}\n&ENDIF\n{&SEQUENCE}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "0 1 2\n3");
+    }
+
+    #[test]
+    fn a_computed_name_in_a_define_value_is_read_at_the_define() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE HERE {&LINE-NUMBER}\n\n\n{&HERE}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "\n\n1");
     }
 
     #[test]

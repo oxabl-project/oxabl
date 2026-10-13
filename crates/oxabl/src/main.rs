@@ -285,6 +285,8 @@ struct JsonErrorPattern {
 ///
 /// Always-loud warning codes:
 /// - `PREPROC007` unresolvable include (symbol loss)
+/// - `PREPROC008` unterminated include reference
+/// - `PREPROC009` predefined name without a value in an `&IF` condition
 /// - `PREPROC002` unclosed `&IF` (inline/`skip_to_eol` regressions; #65 gate)
 ///
 /// Rendering is delegated to [`render_diagnostics`] with a [`SourceResolver`]
@@ -1551,7 +1553,8 @@ fn parse_file_with_preprocess(
     };
 
     // Surface loud preprocessor diagnostics — errors plus PREPROC007
-    // (unresolvable include) and PREPROC002 (unclosed &IF) — so true
+    // (unresolvable include), PREPROC008 (unterminated include), PREPROC009
+    // (valueless predefined name) and PREPROC002 (unclosed &IF) — so true
     // preproc problems aren't hidden. Other warnings stay quiet.
     surface_preproc_diagnostics(path, &source, file_id, &preprocessed.diagnostics);
 

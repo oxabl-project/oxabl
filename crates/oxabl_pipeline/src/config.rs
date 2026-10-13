@@ -39,7 +39,9 @@ use std::path::{Path, PathBuf};
 use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{LintConfig, RealFileSystem, WorkspaceConfig, find_workspace_root};
+use oxabl_workspace::{
+    LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, find_workspace_root,
+};
 
 /// A non-fatal problem hit while resolving configuration.
 ///
@@ -139,6 +141,14 @@ pub struct PipelineConfig {
     /// no tables" is a different fact from "the user gave us no schema", and only
     /// the second should keep `unknown-table-or-field` silent.
     pub schema_loaded: bool,
+
+    /// The compile environment the preprocessor answers its predefined names
+    /// from (`[workspace.preprocessor]`).
+    ///
+    /// Every client that builds a config without an `oxabl.toml` gets
+    /// [`PreprocessorConfig::default`], so an `&IF` over `{&OPSYS}` takes the
+    /// same branch in the browser as in the CLI.
+    pub preprocessor: PreprocessorConfig,
 }
 
 impl Default for PipelineConfig {
@@ -172,6 +182,7 @@ impl Default for PipelineConfig {
             style: StyleGuide::default_base(),
             schema: Schema::empty(),
             schema_loaded: false,
+            preprocessor: PreprocessorConfig::default(),
         }
     }
 }
@@ -320,6 +331,7 @@ fn derive(
         .unwrap_or_else(|| config.workspace.style.clone());
 
     let lint_severities = config.workspace.lint.to_severity_map();
+    let preprocessor = config.workspace.preprocessor.clone();
 
     let schema_path = match schema_loading {
         SchemaLoading::Load => overrides.schema_path.as_ref(),
@@ -333,6 +345,7 @@ fn derive(
                     style,
                     schema: Schema::empty(),
                     schema_loaded: false,
+                    preprocessor,
                 },
                 warnings,
             );
@@ -377,6 +390,7 @@ fn derive(
             style,
             schema,
             schema_loaded,
+            preprocessor,
         },
         warnings,
     )
