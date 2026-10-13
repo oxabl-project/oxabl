@@ -72,10 +72,8 @@ pub fn dependency_section(edges: &DependencyEdges, index_revision: u32) -> Depen
                     // An include mints no index id, and a table has no file.
                     EdgeTarget::IncludePath(_) | EdgeTarget::SchemaTable(_) => None,
                 },
-                span: edge.span.map(|span| LookupSpanRow {
-                    start: span.start,
-                    end: span.end,
-                }),
+                span: edge.span.map(span_row),
+                include_site: edge.include_site.map(span_row),
             })
             .collect(),
         unresolved: edges
@@ -85,12 +83,17 @@ pub fn dependency_section(edges: &DependencyEdges, index_revision: u32) -> Depen
                 via: row.kind.as_str().to_string(),
                 name: row.name.clone(),
                 reason: unresolved_reason_str(row.reason).to_string(),
-                span: row.span.map(|span| LookupSpanRow {
-                    start: span.start,
-                    end: span.end,
-                }),
+                span: row.span.map(span_row),
+                include_site: row.include_site.map(span_row),
             })
             .collect(),
+    }
+}
+
+fn span_row(span: Span) -> LookupSpanRow {
+    LookupSpanRow {
+        start: span.start,
+        end: span.end,
     }
 }
 
