@@ -509,16 +509,9 @@ impl<'a> Parser<'a> {
     pub(crate) fn skip_to_statement_end(&mut self) -> (usize, usize) {
         let start = self.current;
         while !self.at_end() {
-            if self.check(Kind::Period) {
-                let period_end = self.tokens[self.current].end;
-                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
-                        && !self.source[period_end..t.start].contains('\n')
-                });
-                if !is_field_access {
-                    self.advance(); // consume the terminating period
-                    return self.skip_range(start);
-                }
+            if self.check(Kind::Period) && !self.period_is_field_access() {
+                self.advance(); // consume the terminating period
+                return self.skip_range(start);
             }
             self.advance();
         }
@@ -558,16 +551,9 @@ impl<'a> Parser<'a> {
                 return self.skip_range(start);
             }
             // Normal statement-end detection.
-            if self.check(Kind::Period) {
-                let period_end = self.tokens[self.current].end;
-                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
-                        && !self.source[period_end..t.start].contains('\n')
-                });
-                if !is_field_access {
-                    self.advance(); // consume the terminating period
-                    return self.skip_range(start);
-                }
+            if self.check(Kind::Period) && !self.period_is_field_access() {
+                self.advance(); // consume the terminating period
+                return self.skip_range(start);
             }
             self.advance();
         }
@@ -623,20 +609,24 @@ impl<'a> Parser<'a> {
                 return self.skip_range(start);
             }
             // Normal statement-end detection.
-            if self.check(Kind::Period) {
-                let period_end = self.tokens[self.current].end;
-                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
-                        && !self.source[period_end..t.start].contains('\n')
-                });
-                if !is_field_access {
-                    self.advance(); // consume the terminating period
-                    return self.skip_range(start);
-                }
+            if self.check(Kind::Period) && !self.period_is_field_access() {
+                self.advance(); // consume the terminating period
+                return self.skip_range(start);
             }
             self.advance();
         }
         self.skip_range(start)
+    }
+
+    /// Whether the period at the cursor joins a field access (`table.field`)
+    /// rather than ending the statement. A qualifier's period is byte-adjacent to
+    /// the name after it; a period followed by whitespace ends the statement, so
+    /// `DISPLAY x WITH FRAME f. y = 1.` is two statements.
+    fn period_is_field_access(&self) -> bool {
+        let period_end = self.tokens[self.current].end;
+        self.tokens
+            .get(self.current + 1)
+            .is_some_and(|t| t.start == period_end && Self::can_be_identifier(t.kind))
     }
 
     /// The half-open token range a skip helper consumed, `[start, self.current)`.

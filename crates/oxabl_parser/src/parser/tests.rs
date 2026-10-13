@@ -4433,6 +4433,42 @@ fn parse_display_with_frame() {
     }
 }
 
+/// A period followed by whitespace ends the statement, so a statement on the
+/// same line after `WITH FRAME x.` is its own statement and not swallowed into
+/// the frame phrase.
+#[test]
+fn a_same_line_statement_after_a_frame_phrase_is_its_own_statement() {
+    for source in [
+        "DISPLAY x WITH FRAME a. y = 1.",
+        "DISPLAY x FRAME a. y = 1.",
+        "UPDATE x WITH FRAME a. y = 1.",
+        "DISPLAY x WITH FRAME a.\ny = 1.",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(
+            program.errors.is_empty(),
+            "{source:?}: {:?}",
+            program.errors
+        );
+        assert_eq!(program.statements.len(), 2, "for {source:?}");
+        assert!(
+            matches!(program.statements[1].kind, StatementKind::Assignment { .. }),
+            "for {source:?}: {:?}",
+            program.statements[1].kind
+        );
+    }
+}
+
+/// A byte-adjacent period still joins a field access inside the frame phrase.
+#[test]
+fn a_qualified_name_inside_a_frame_phrase_does_not_end_the_statement() {
+    let source = "DISPLAY x WITH FRAME a TITLE \"t\" + tbl.fld + \"u\". y = 1.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert_eq!(program.statements.len(), 2);
+}
+
 #[test]
 fn parse_display_with_frame_columns() {
     let source = "DISPLAY x y z WITH FRAME results 2 COLUMNS.";
