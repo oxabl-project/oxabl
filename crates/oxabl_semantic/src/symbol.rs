@@ -12,6 +12,7 @@ use oxabl_ast::NodeId;
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId, UnresolvedReason};
 
@@ -204,9 +205,10 @@ pub struct Supertypes {
 /// What the index answered when the resolve pass asked about one class name.
 ///
 /// Recorded per name actually asked about — every class this file names (a
-/// supertype, a `NEW` or `CAST` operand, a declared type, a static receiver, a
-/// `USING` import) and every ancestor the chain walk reaches through them — so
-/// the *outcome* of a cross-file class lookup survives the pass that made it.
+/// supertype, a `NEW` or `CAST` operand, a declared type, a static receiver) and
+/// every ancestor the chain walk reaches through them — so the *outcome* of a
+/// cross-file class lookup survives the pass that made it. A `USING` import
+/// alone records nothing: it names no use.
 /// Nothing else in the model carries it: a supertype that resolved mints no
 /// symbol (the members it contributes do), so without this record a parent no
 /// file declares is indistinguishable from one that resolved and contributed
@@ -214,7 +216,11 @@ pub struct Supertypes {
 ///
 /// A name in a namespace the AVM ships (`Progress.*`, `OpenEdge.*`, ...) that
 /// the index does not supply gets no record: no workspace file could supply it,
-/// so "absent" would be a claim about the workspace nobody can make.
+/// so "absent" would be a claim about the workspace nobody can make. A bare name
+/// the implicit `USING Progress.Lang.*` supplies is the same.
+///
+/// Spellings that differ only in case are one class and share one entry; see
+/// [`SymbolTable::record_class_lookup`] for how their answers merge.
 ///
 /// Bookkeeping only. No pass branches on it and no rule may read it — it exists
 /// so the analyze envelope can report which files a run consulted and which
@@ -235,6 +241,72 @@ pub enum ClassLookup {
     Unusable,
     /// The index declined to choose between candidates.
     Unknowable,
+}
+
+/// What the index answered for the spellings of one folded class name, merged.
+///
+/// The index probes a case-sensitive path per spelling, so `pkg.Base` and
+/// `pkg.base` can get different answers, and the record is keyed by the folded
+/// name. Merging keeps the result independent of statement order: every file a
+/// spelling linked to stays, and a miss never displaces a link. Among misses the
+/// one that says most wins: [`ClassLookup::Unusable`], then
+/// [`ClassLookup::Unknowable`], then [`ClassLookup::Absent`].
+///
+/// A miss next to a link is dropped on purpose. The class resolved, so the
+/// dependency is the link; the other spelling is a case mismatch the file system
+/// is strict about, not a second unresolved class.
+#[derive(Debug, Clone, Default)]
+struct ClassAnswers {
+    links: SmallVec<[IndexedFileId; 1]>,
+    miss: Option<ClassLookup>,
+}
+
+impl ClassAnswers {
+    fn record(&mut self, lookup: ClassLookup) {
+        match lookup {
+            ClassLookup::Linked(file) => {
+                self.miss = None;
+                if !self.links.contains(&file) {
+                    self.links.push(file);
+                }
+            }
+            // A miss next to a link is dropped; among misses the most
+            // informative stays.
+            miss => {
+                let outranks = self
+                    .miss
+                    .is_none_or(|kept| miss_rank(miss) > miss_rank(kept));
+                if self.links.is_empty() && outranks {
+                    self.miss = Some(miss);
+                }
+            }
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = ClassLookup> + '_ {
+        self.links
+            .iter()
+            .map(|file| ClassLookup::Linked(*file))
+            .chain(self.miss)
+    }
+
+    /// One verdict for the name: the link with the lowest file id, so the pick
+    /// does not depend on the order the spellings were met in.
+    fn first(&self) -> Option<ClassLookup> {
+        self.links
+            .iter()
+            .min_by_key(|file| file.raw())
+            .map(|file| ClassLookup::Linked(*file))
+            .or(self.miss)
+    }
+}
+
+fn miss_rank(lookup: ClassLookup) -> u8 {
+    match lookup {
+        ClassLookup::Unusable => 2,
+        ClassLookup::Unknowable => 1,
+        ClassLookup::Absent | ClassLookup::Linked(_) => 0,
+    }
 }
 
 /// A literal or computed `RUN` target the index did not link to a usable file.
@@ -423,9 +495,9 @@ struct SymbolSideMaps {
     /// re-derive which of the two it was looking at.
     shared_producers: FxHashMap<SymbolId, IndexedFileId>,
     /// Every class name the resolve pass asked the index about, and what came
-    /// back. Keyed by the **folded** class name, since that is the
-    /// index's own identity for a name and two spellings of one class must not
-    /// produce two entries.
+    /// back. Keyed by the **folded** class name, since that is the index's own
+    /// identity for a name: two spellings of one class share one entry, and their
+    /// answers merge (see [`ClassAnswers`]) rather than the later one winning.
     ///
     /// Keyed by name rather than by [`SymbolId`] because most of these names have
     /// no symbol in this table: a resolved supertype contributes members, not a
@@ -435,7 +507,7 @@ struct SymbolSideMaps {
     /// A side map for the reason [`Self::supertypes`] documents, and absent
     /// entirely from a run with no index attached or one whose classes nobody
     /// inherits from.
-    class_lookups: FxHashMap<OxablAtom, ClassLookup>,
+    class_lookups: FxHashMap<OxablAtom, ClassAnswers>,
     /// The file a class lookup located but could not use, keyed like
     /// [`Self::class_lookups`]. Separate from [`ClassLookup::Unusable`] so that
     /// enum stays a plain verdict.
@@ -634,35 +706,52 @@ impl SymbolTable {
     }
 
     /// Record what the index answered for class name `name`. The resolve pass
-    /// calls this from the chain walk and from every site that names a class; a
-    /// repeat overwrites with the same answer, since the index is keyed by name
-    /// and total.
+    /// calls this from the chain walk and from every site that names a class.
+    ///
+    /// Answers for one folded name merge instead of overwriting: a link beats a
+    /// miss, and several links all stay. The result is the same whatever order the
+    /// calls come in.
     pub fn record_class_lookup(&mut self, name: &OxablAtom, lookup: ClassLookup) {
-        self.side_mut().class_lookups.insert(name.clone(), lookup);
+        self.side_mut()
+            .class_lookups
+            .entry(name.clone())
+            .or_default()
+            .record(lookup);
     }
 
     /// What the index answered for folded class name `name`, or `None` when the
     /// pass never asked about it — which is the common case: with no index
     /// attached nothing is asked, and a file that names no class asks nothing
-    /// either.
+    /// either. A name that linked to several files answers with the one of lowest
+    /// id; [`Self::class_lookups`] has all of them.
     pub fn class_lookup(&self, name: &OxablAtom) -> Option<ClassLookup> {
-        self.side.as_deref()?.class_lookups.get(name).copied()
+        self.side.as_deref()?.class_lookups.get(name)?.first()
     }
 
     /// Every class lookup this run made, in **unspecified order** — a hash map's
-    /// order, so a consumer that renders these must sort them itself.
+    /// order, so a consumer that renders these must sort them itself. A name
+    /// appears once per distinct answer, which is more than once only when its
+    /// spellings linked to different files.
     pub fn class_lookups(&self) -> impl Iterator<Item = (&OxablAtom, ClassLookup)> {
-        self.side
-            .as_deref()
-            .into_iter()
-            .flat_map(|side| side.class_lookups.iter().map(|(n, l)| (n, *l)))
+        self.side.as_deref().into_iter().flat_map(|side| {
+            side.class_lookups
+                .iter()
+                .flat_map(|(name, answers)| answers.iter().map(move |lookup| (name, lookup)))
+        })
     }
 
-    /// Record the file a class lookup located but could not use.
+    /// Record the file a class lookup located but could not use. Where two
+    /// spellings located different files, the one of lowest id is kept.
     pub fn record_unusable_class_file(&mut self, name: &OxablAtom, file: IndexedFileId) {
         self.side_mut()
             .unusable_class_files
-            .insert(name.clone(), file);
+            .entry(name.clone())
+            .and_modify(|kept| {
+                if file.raw() < kept.raw() {
+                    *kept = file;
+                }
+            })
+            .or_insert(file);
     }
 
     /// The file behind a class lookup that answered [`ClassLookup::Unusable`], or
@@ -730,5 +819,107 @@ impl SymbolTable {
     /// the block-var-used-outside analysis (LINT0005) has nothing to track.
     pub fn has_block_scoped_var(&self) -> bool {
         !self.block_defined.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(n: u32) -> IndexedFileId {
+        IndexedFileId::new(n)
+    }
+
+    /// Every ordering of the same answers must leave the same record.
+    fn merged(answers: &[ClassLookup]) -> Vec<(String, ClassLookup)> {
+        fn permutations(items: &[ClassLookup]) -> Vec<Vec<ClassLookup>> {
+            if items.len() <= 1 {
+                return vec![items.to_vec()];
+            }
+            let mut out = Vec::new();
+            for i in 0..items.len() {
+                let mut rest = items.to_vec();
+                let head = rest.remove(i);
+                for mut tail in permutations(&rest) {
+                    tail.insert(0, head);
+                    out.push(tail);
+                }
+            }
+            out
+        }
+        let name = OxablAtom::from("pkg.base");
+        let mut results: Vec<Vec<(String, ClassLookup)>> = Vec::new();
+        for order in permutations(answers) {
+            let mut table = SymbolTable::new();
+            for lookup in order {
+                table.record_class_lookup(&name, lookup);
+            }
+            let mut rows: Vec<(String, ClassLookup)> = table
+                .class_lookups()
+                .map(|(n, l)| (n.as_ref().to_string(), l))
+                .collect();
+            rows.sort_by_key(|(_, l)| format!("{l:?}"));
+            results.push(rows);
+        }
+        let first = results[0].clone();
+        assert!(
+            results.iter().all(|r| *r == first),
+            "the record depends on the order of the answers: {results:?}"
+        );
+        first
+    }
+
+    #[test]
+    fn a_link_beats_every_miss_in_either_order() {
+        let rows = merged(&[
+            ClassLookup::Absent,
+            ClassLookup::Unknowable,
+            ClassLookup::Unusable,
+            ClassLookup::Linked(file(3)),
+        ]);
+        assert_eq!(
+            rows,
+            vec![("pkg.base".to_string(), ClassLookup::Linked(file(3)))]
+        );
+    }
+
+    #[test]
+    fn spellings_that_linked_to_different_files_keep_both() {
+        let rows = merged(&[ClassLookup::Linked(file(2)), ClassLookup::Linked(file(1))]);
+        assert_eq!(rows.len(), 2);
+        let mut table = SymbolTable::new();
+        let name = OxablAtom::from("pkg.base");
+        table.record_class_lookup(&name, ClassLookup::Linked(file(2)));
+        table.record_class_lookup(&name, ClassLookup::Linked(file(1)));
+        assert_eq!(
+            table.class_lookup(&name),
+            Some(ClassLookup::Linked(file(1))),
+            "the single verdict is the lowest file id, whatever order came first"
+        );
+    }
+
+    #[test]
+    fn among_misses_the_most_informative_one_stays() {
+        let rows = merged(&[ClassLookup::Absent, ClassLookup::Unknowable]);
+        assert_eq!(
+            rows,
+            vec![("pkg.base".to_string(), ClassLookup::Unknowable)]
+        );
+        let rows = merged(&[
+            ClassLookup::Unknowable,
+            ClassLookup::Unusable,
+            ClassLookup::Absent,
+        ]);
+        assert_eq!(rows, vec![("pkg.base".to_string(), ClassLookup::Unusable)]);
+    }
+
+    #[test]
+    fn the_unusable_file_kept_is_the_lowest_id() {
+        let name = OxablAtom::from("pkg.base");
+        let mut table = SymbolTable::new();
+        table.record_unusable_class_file(&name, file(5));
+        table.record_unusable_class_file(&name, file(4));
+        table.record_unusable_class_file(&name, file(9));
+        assert_eq!(table.unusable_class_file(&name), Some(file(4)));
     }
 }

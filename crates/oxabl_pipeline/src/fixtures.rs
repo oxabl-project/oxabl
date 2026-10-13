@@ -3586,6 +3586,87 @@ pub const FIXTURES: &[ParityFixture] = &[
             },
         }],
     },
+    // Two spellings of one class whose file name carries capitals: the exact one
+    // finds it, the other is a case mismatch a case-sensitive file system rejects.
+    // They share one record, so the miss must not displace the link.
+    class_site_row! {
+        name: "class_site_mixed_spellings_miss_last",
+        root_file: "report.p",
+        siblings: PRICE_RULE_SIBLING,
+        resolutions: SILENT_PRICE_RULE,
+        source: "DEFINE VARIABLE v-exact AS orders.Price-Rule NO-UNDO.\n\
+                 DEFINE VARIABLE v-mixed AS orders.price-rule NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-exact) VALID-OBJECT(v-mixed).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.price-rule",
+        withheld: "orders.price-rule",
+    },
+    // The same two spellings in the other order: the answer does not depend on
+    // which one the file writes first.
+    class_site_row! {
+        name: "class_site_mixed_spellings_miss_first",
+        root_file: "report.p",
+        siblings: PRICE_RULE_SIBLING,
+        resolutions: SILENT_PRICE_RULE,
+        source: "DEFINE VARIABLE v-mixed AS orders.price-rule NO-UNDO.\n\
+                 DEFINE VARIABLE v-exact AS orders.Price-Rule NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-exact) VALID-OBJECT(v-mixed).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.price-rule",
+        withheld: "orders.price-rule",
+    },
+    // An ancestor the chain walk links, named again in a case the file system
+    // rejects. The walk's link must survive the later miss.
+    ParityFixture {
+        name: "class_site_chain_walk_mixed_spelling",
+        root_file: "orders/my-calc.cls",
+        siblings: PRICE_RULE_CHAIN_SIBLINGS,
+        resolutions: &[CrossFileResolution {
+            name: "rule-total",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 88,
+                end: 98,
+            }),
+        }],
+        source: "CLASS orders.my-calc INHERITS orders.calc-mid:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 rule-total().\n        \
+                 DEFINE VARIABLE v-rule AS orders.price-rule NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-rule).\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.price-rule",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.price-rule",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -3698,6 +3779,35 @@ const I_CALC: &str = "INTERFACE orders.i-calc:\n    \
 
 /// A workspace error class, for the `CATCH` row. Its own parent is shipped.
 const CALC_ERROR: &str = "CLASS orders.calc-error INHERITS Progress.Lang.AppError:\nEND CLASS.\n";
+
+/// A class whose file name carries capitals. A case-sensitive file system finds
+/// it only for the exact spelling of its name; the folded spelling misses.
+const PRICE_RULE: &str = "CLASS orders.Price-Rule:\n    \
+                          METHOD PUBLIC INTEGER rule-total():\n        \
+                          RETURN 0.\n    \
+                          END METHOD.\nEND CLASS.\n";
+
+const PRICE_RULE_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/Price-Rule.cls",
+    source: PRICE_RULE,
+}];
+
+const SILENT_PRICE_RULE: &[CrossFileResolution] = &[CrossFileResolution {
+    name: "orders.Price-Rule",
+    effect: CrossFileEffect::ResolvedSilently,
+}];
+
+/// A class that inherits the one above, and that one: a chain of two.
+const PRICE_RULE_CHAIN_SIBLINGS: &[SiblingFile] = &[
+    SiblingFile {
+        path: "orders/calc-mid.cls",
+        source: "CLASS orders.calc-mid INHERITS orders.Price-Rule:\nEND CLASS.\n",
+    },
+    SiblingFile {
+        path: "orders/Price-Rule.cls",
+        source: PRICE_RULE,
+    },
+];
 
 /// A class file that is located and cannot be parsed.
 const BROKEN_CLASS_SIBLING: &[SiblingFile] = &[SiblingFile {
