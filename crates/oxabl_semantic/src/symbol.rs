@@ -201,14 +201,20 @@ pub struct Supertypes {
     pub implements: Vec<SupertypeRef>,
 }
 
-/// What the index answered when the chain walk asked about one class name.
+/// What the index answered when the resolve pass asked about one class name.
 ///
-/// Recorded per name the walk actually asked about — a class's own declared
-/// supertypes, and every ancestor reached through them — so the *outcome* of a
-/// cross-file class lookup survives the walk that made it. Nothing else in the
-/// model carries it: a supertype that resolved mints no symbol (the members it
-/// contributes do), so without this record a parent no file declares is
-/// indistinguishable from one that resolved and contributed nothing.
+/// Recorded per name actually asked about — every class this file names (a
+/// supertype, a `NEW` or `CAST` operand, a declared type, a static receiver, a
+/// `USING` import) and every ancestor the chain walk reaches through them — so
+/// the *outcome* of a cross-file class lookup survives the pass that made it.
+/// Nothing else in the model carries it: a supertype that resolved mints no
+/// symbol (the members it contributes do), so without this record a parent no
+/// file declares is indistinguishable from one that resolved and contributed
+/// nothing.
+///
+/// A name in a namespace the AVM ships (`Progress.*`, `OpenEdge.*`, ...) that
+/// the index does not supply gets no record: no workspace file could supply it,
+/// so "absent" would be a claim about the workspace nobody can make.
 ///
 /// Bookkeeping only. No pass branches on it and no rule may read it — it exists
 /// so the analyze envelope can report which files a run consulted and which
@@ -416,8 +422,8 @@ struct SymbolSideMaps {
     /// merely has a counterpart elsewhere. One map would force a consumer to
     /// re-derive which of the two it was looking at.
     shared_producers: FxHashMap<SymbolId, IndexedFileId>,
-    /// Every class name the resolve pass's chain walk asked the index about, and
-    /// what came back. Keyed by the **folded** class name, since that is the
+    /// Every class name the resolve pass asked the index about, and what came
+    /// back. Keyed by the **folded** class name, since that is the
     /// index's own identity for a name and two spellings of one class must not
     /// produce two entries.
     ///
@@ -436,6 +442,14 @@ struct SymbolSideMaps {
     unusable_class_files: FxHashMap<OxablAtom, IndexedFileId>,
     /// Every `RUN` target that did not link, in walk order.
     unlinked_runs: Vec<UnlinkedRun>,
+    /// Every place this file names a class whose lookup is in
+    /// [`Self::class_lookups`], keyed the same way, in walk order.
+    ///
+    /// One row per mention rather than one per name. The semantic layer works in
+    /// expanded coordinates and cannot tell a mention in the file's own bytes from
+    /// one spliced in from an include, so it keeps them all and lets the edge
+    /// builder, which holds the expansion's mapping, pick a site of each kind.
+    class_sites: Vec<(OxablAtom, VirtualSpan)>,
 }
 
 impl SymbolTable {
@@ -615,17 +629,18 @@ impl SymbolTable {
         self.side.as_deref()?.shared_producers.get(&sym).copied()
     }
 
-    /// Record what the index answered for class name `name`. Only the resolve
-    /// pass's chain walk calls this, once per name per walk; a repeat overwrites
-    /// with the same answer, since the index is keyed by name and total.
+    /// Record what the index answered for class name `name`. The resolve pass
+    /// calls this from the chain walk and from every site that names a class; a
+    /// repeat overwrites with the same answer, since the index is keyed by name
+    /// and total.
     pub fn record_class_lookup(&mut self, name: &OxablAtom, lookup: ClassLookup) {
         self.side_mut().class_lookups.insert(name.clone(), lookup);
     }
 
-    /// What the index answered for folded class name `name`, or `None` when no
-    /// walk ever asked about it — which is the common case: with no index
-    /// attached nothing is asked, and a file whose classes inherit nothing asks
-    /// nothing either.
+    /// What the index answered for folded class name `name`, or `None` when the
+    /// pass never asked about it — which is the common case: with no index
+    /// attached nothing is asked, and a file that names no class asks nothing
+    /// either.
     pub fn class_lookup(&self, name: &OxablAtom) -> Option<ClassLookup> {
         self.side.as_deref()?.class_lookups.get(name).copied()
     }
@@ -664,6 +679,22 @@ impl SymbolTable {
     /// Every `RUN` target that did not link, in walk order.
     pub fn unlinked_runs(&self) -> &[UnlinkedRun] {
         self.side.as_deref().map_or(&[], |side| &side.unlinked_runs)
+    }
+
+    /// Record that this file names class `name` at `site`. The name is the key
+    /// its lookup was recorded under by [`Self::record_class_lookup`].
+    pub fn record_class_site(&mut self, name: &OxablAtom, site: VirtualSpan) {
+        self.side_mut().class_sites.push((name.clone(), site));
+    }
+
+    /// Every place this file names a class, in walk order, in expanded
+    /// coordinates. A name may appear many times; a class reached only through
+    /// another class's header (an ancestor found by the chain walk) has no site
+    /// here, because this file never writes it.
+    pub fn class_sites(&self) -> &[(OxablAtom, VirtualSpan)] {
+        self.side
+            .as_deref()
+            .map_or(&[], |side| side.class_sites.as_slice())
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.
