@@ -53,7 +53,7 @@
 
 use std::sync::Arc;
 
-use oxabl_ast::AccessModifier;
+use oxabl_ast::{AccessModifier, Statement, StatementKind, UsingSource};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 
 use crate::resolve::fold_atom;
@@ -322,6 +322,175 @@ pub enum ClassKind {
     Enum,
 }
 
+/// The `USING` imports of one file, as the resolver reads them.
+///
+/// A type name means what the file that wrote it says it means. A consumer
+/// walking from one file's class header to the next file's must therefore
+/// resolve each parent name through the imports of the file that wrote it, not
+/// its own; a [`ClassDescriptor`] carries this for that reason.
+///
+/// Spellings are kept as written, so two files whose imports differ only in
+/// case are not equal and an incremental cache cannot serve one's file paths
+/// for the other.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportContext {
+    /// `USING <package>.<Name>`: the simple name folded, and the qualified name
+    /// as written.
+    types: Vec<(OxablAtom, String, UsingSource)>,
+    /// `USING <package>.*`: each prefix keeps its trailing dot, so a candidate is
+    /// `prefix + name`.
+    packages: Vec<(String, UsingSource)>,
+    /// Text the extraction did not read, such as an unexpanded `{include}`
+    /// ahead of the header, may hold further imports.
+    unseen: bool,
+}
+
+/// One spelling a bare or qualified type name may stand for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ImportCandidate {
+    /// A qualified name to ask the index about.
+    Name(IndexName),
+    /// The import names a .NET assembly, which no workspace file supplies.
+    Assembly,
+}
+
+impl ImportContext {
+    /// No imports.
+    pub const fn new() -> Self {
+        ImportContext {
+            types: Vec::new(),
+            packages: Vec::new(),
+            unseen: false,
+        }
+    }
+
+    /// The imports `program` writes.
+    ///
+    /// Only top-level statements are read: ABL puts `USING` at file scope, ahead
+    /// of the class or procedure body, and an import is legal nowhere else.
+    pub fn from_statements(program: &[Statement]) -> Self {
+        let mut imports = Self::new();
+        for stmt in program {
+            let StatementKind::Using {
+                type_name, source, ..
+            } = &stmt.kind
+            else {
+                continue;
+            };
+            match type_name.strip_suffix('*') {
+                // `USING MyApp.Services.*` names no single class: it widens the
+                // set of prefixes an unqualified name is tried against.
+                Some(prefix) => imports.packages.push((prefix.to_string(), *source)),
+                // `USING MyApp.Services.Cache` makes `Cache` mean this one name,
+                // stored under the spelling a later reference will use.
+                None => {
+                    let simple = type_name.rsplit('.').next().unwrap_or(type_name);
+                    imports
+                        .types
+                        .push((fold_atom(simple), type_name.clone(), *source));
+                }
+            }
+        }
+        imports
+    }
+
+    /// Mark that the file may import more than was read.
+    pub fn with_unseen_imports(mut self) -> Self {
+        self.unseen = true;
+        self
+    }
+
+    /// Whether the file imports nothing that was read.
+    pub fn is_empty(&self) -> bool {
+        self.types.is_empty() && self.packages.is_empty()
+    }
+
+    /// Whether the file may import more than was read.
+    pub fn has_unseen_imports(&self) -> bool {
+        self.unseen
+    }
+
+    /// The qualified name an explicit import maps the bare name `raw` to, first
+    /// import first.
+    pub(crate) fn explicit(&self, raw: &str) -> Option<IndexName> {
+        if raw.contains('.') {
+            return None;
+        }
+        let simple = fold_atom(raw);
+        self.types
+            .iter()
+            .find(|(name, ..)| *name == simple)
+            .map(|(_, qualified, _)| IndexName::new(qualified))
+    }
+
+    /// Every explicit import that maps the bare name `raw`, as qualified names.
+    pub(crate) fn explicit_all(&self, raw: &str) -> impl Iterator<Item = &str> {
+        let simple = fold_atom(raw);
+        self.types
+            .iter()
+            .filter(move |(name, ..)| *name == simple)
+            .map(|(_, qualified, _)| qualified.as_str())
+    }
+
+    /// The wildcard prefixes, each with its trailing dot.
+    pub(crate) fn prefixes(&self) -> impl Iterator<Item = &str> {
+        self.packages.iter().map(|(prefix, _)| prefix.as_str())
+    }
+
+    /// The `Progress.Lang` class the implicit import supplies for the bare name
+    /// `raw`, qualified. `None` for a dotted name, for a name that is no
+    /// `Progress.Lang` class, and for one an explicit import maps to another
+    /// class — that import is the name's meaning.
+    pub(crate) fn implicit_lang_class(&self, raw: &str) -> Option<IndexName> {
+        if raw.contains('.')
+            || !crate::resolve::is_implicit_lang_class(fold_atom(raw).as_ref())
+            || self.explicit(raw).is_some()
+        {
+            return None;
+        }
+        Some(IndexName::new(&format!("Progress.Lang.{raw}")))
+    }
+
+    /// The spellings `raw` may stand for, in the order the AVM tries them:
+    ///
+    /// 1. A dotted name as a qualified name.
+    /// 2. Each explicit `USING <package>.<Name>` whose simple name matches.
+    /// 3. Each wildcard prefix, as `prefix + raw`.
+    /// 4. An undotted name as a qualified name, last of the file's own because it
+    ///    is far more often an import than a class in the unnamed package.
+    /// 5. The `Progress.Lang` class the implicit import supplies, which ranks
+    ///    below every import the file writes.
+    ///
+    /// An import from an assembly stands for no workspace file; it ends the
+    /// useful part of the sequence.
+    pub(crate) fn candidates<'a>(
+        &'a self,
+        raw: &'a str,
+    ) -> impl Iterator<Item = ImportCandidate> + 'a {
+        let dotted = raw.contains('.');
+        let simple = fold_atom(raw);
+        let qualified = move |source, name: &str| match source {
+            UsingSource::Assembly => ImportCandidate::Assembly,
+            _ => ImportCandidate::Name(IndexName::new(name)),
+        };
+        dotted
+            .then(|| ImportCandidate::Name(IndexName::new(raw)))
+            .into_iter()
+            .chain(
+                self.types
+                    .iter()
+                    .filter(move |(name, ..)| *name == simple)
+                    .map(move |(_, name, source)| qualified(*source, name)),
+            )
+            .chain(self.packages.iter().map(move |(prefix, source)| {
+                // One allocation per (name, prefix) pair actually tried.
+                qualified(*source, &format!("{prefix}{raw}"))
+            }))
+            .chain((!dotted).then(|| ImportCandidate::Name(IndexName::new(raw))))
+            .chain(self.implicit_lang_class(raw).map(ImportCandidate::Name))
+    }
+}
+
 /// What the index knows about one class or interface, *before* any chain
 /// walking.
 ///
@@ -331,6 +500,10 @@ pub enum ClassKind {
 /// child's symbol, and keeping the walk out of the index is what preserves
 /// per-class early cutoff — an answer that had already followed the chain
 /// would have to be invalidated whenever any ancestor changed.
+///
+/// A written name is only meaningful beside the imports of the file that wrote
+/// it, so `imports` travels with it. Resolve a parent through those, never
+/// through the imports of the file that asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassDescriptor {
     /// The class as indexed — the folded qualified name.
@@ -343,6 +516,9 @@ pub struct ClassDescriptor {
     pub inherits: Option<IndexName>,
     /// The `IMPLEMENTS` names as written, in declaration order.
     pub implements: Vec<IndexName>,
+    /// The `USING` imports of the declaring file, which `inherits` and
+    /// `implements` are written under. Empty when the class names no supertype.
+    pub imports: Arc<ImportContext>,
 }
 
 /// A [`ResolvedType`] proven safe to carry across a file boundary.
@@ -732,6 +908,77 @@ mod tests {
         assert_eq!(
             IndexAnswer::<u32>::Unknowable.map(|n| n + 1),
             IndexAnswer::Unknowable
+        );
+    }
+
+    fn imports(source: &str) -> ImportContext {
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        ImportContext::from_statements(&program.statements)
+    }
+
+    fn spellings(imports: &ImportContext, raw: &str) -> Vec<String> {
+        imports
+            .candidates(raw)
+            .map(|candidate| match candidate {
+                ImportCandidate::Name(name) => name.as_written().to_string(),
+                ImportCandidate::Assembly => "<assembly>".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_bare_name_is_tried_through_explicit_imports_then_wildcards_then_as_itself() {
+        let imports = imports("USING a.Base.\nUSING b.*.\nUSING c.Base.\nUSING d.*.\n");
+        assert_eq!(
+            spellings(&imports, "Base"),
+            ["a.Base", "c.Base", "b.Base", "d.Base", "Base"]
+        );
+    }
+
+    #[test]
+    fn a_dotted_name_is_tried_as_written_before_any_wildcard() {
+        let imports = imports("USING a.Base.\nUSING b.*.\n");
+        assert_eq!(spellings(&imports, "x.Base"), ["x.Base", "b.x.Base"]);
+    }
+
+    #[test]
+    fn an_assembly_import_stands_for_no_workspace_file() {
+        let imports = imports("USING Dotnet.Gauge FROM ASSEMBLY.\nUSING b.*.\n");
+        assert_eq!(
+            spellings(&imports, "Gauge"),
+            ["<assembly>", "b.Gauge", "Gauge"]
+        );
+    }
+
+    #[test]
+    fn the_implicit_lang_import_ranks_below_everything_the_file_writes() {
+        let none = ImportContext::new();
+        assert_eq!(
+            spellings(&none, "AppError"),
+            ["AppError", "Progress.Lang.AppError"]
+        );
+        assert_eq!(spellings(&none, "Thing"), ["Thing"]);
+
+        // An explicit import of the name is its meaning, so the implicit class is
+        // not a candidate at all.
+        let mapped = imports("USING a.AppError.\n");
+        assert_eq!(spellings(&mapped, "AppError"), ["a.AppError", "AppError"]);
+    }
+
+    #[test]
+    fn the_imports_a_file_writes_are_read_at_file_level_only() {
+        let imports = imports(
+            "USING a.*.\nCLASS c:\n    METHOD PUBLIC VOID m():\n    END METHOD.\nEND CLASS.\n",
+        );
+        assert!(!imports.is_empty());
+        assert!(!imports.has_unseen_imports());
+        assert!(ImportContext::new().is_empty());
+        assert!(
+            ImportContext::new()
+                .with_unseen_imports()
+                .has_unseen_imports()
         );
     }
 }

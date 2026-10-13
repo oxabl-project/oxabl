@@ -62,8 +62,8 @@ use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
 use oxabl_schema::Schema;
 use oxabl_semantic::{
-    AnalysisContext, ClassDescriptor, ClassKind, IndexName, IndexedFileId, MemberDescriptor,
-    MemberType, ResolvedType, ScopeId, SymbolFlags, SymbolKind, declare_pass,
+    AnalysisContext, ClassDescriptor, ClassKind, ImportContext, IndexName, IndexedFileId,
+    MemberDescriptor, MemberType, ResolvedType, ScopeId, SymbolFlags, SymbolKind, declare_pass,
 };
 use oxabl_workspace::{InMemoryFileSystem, PreprocessorConfig};
 
@@ -183,10 +183,15 @@ fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
         }
     }
 
+    let mut imports = ImportContext::from_statements(&program.statements);
+    if include_before_header(&tokens) {
+        imports = imports.with_unseen_imports();
+    }
+
     FileFacts {
         file,
         parsed: true,
-        classes: declared_classes(file, &program.statements)
+        classes: declared_classes(file, &program.statements, &Arc::new(imports))
             .into_iter()
             .chain(declared_enums(file, &tokens, source))
             .collect(),
@@ -194,6 +199,15 @@ fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
         functions,
         shared_definitions,
     }
+}
+
+/// Whether an `{include}` stands ahead of the first class or interface header,
+/// where it could bring in `USING` statements the parse does not see.
+fn include_before_header(tokens: &[Token]) -> bool {
+    tokens
+        .iter()
+        .take_while(|t| !matches!(t.kind, Kind::Class | Kind::Interface))
+        .any(|t| t.kind == Kind::IncludeReference)
 }
 
 /// Project the class and interface declarations of `statements`.
@@ -211,7 +225,21 @@ fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
 /// File level only: a class nested inside a preprocessor `&IF` branch is not
 /// indexed, which is the conservative direction (a missing fact, not a wrong
 /// one).
-fn declared_classes(file: IndexedFileId, statements: &[Statement]) -> Vec<ClassFacts> {
+///
+/// A class that names no supertype carries no imports, so an edit to the file's
+/// `USING` list leaves its descriptor, and every answer keyed on it, unchanged.
+fn declared_classes(
+    file: IndexedFileId,
+    statements: &[Statement],
+    imports: &Arc<ImportContext>,
+) -> Vec<ClassFacts> {
+    let imports_for = |has_supertype: bool| {
+        if has_supertype {
+            Arc::clone(imports)
+        } else {
+            Arc::default()
+        }
+    };
     let mut classes = Vec::new();
     for stmt in statements {
         if let StatementKind::Class {
@@ -232,6 +260,7 @@ fn declared_classes(file: IndexedFileId, statements: &[Statement]) -> Vec<ClassF
                         .iter()
                         .map(|id| IndexName::new(&id.name))
                         .collect(),
+                    imports: imports_for(inherits.is_some() || !implements.is_empty()),
                 }),
                 members: declared_members(body),
             });
@@ -255,6 +284,7 @@ fn declared_classes(file: IndexedFileId, statements: &[Statement]) -> Vec<ClassF
                     // members.
                     inherits: None,
                     implements: inherits.iter().map(|id| IndexName::new(&id.name)).collect(),
+                    imports: imports_for(!inherits.is_empty()),
                 }),
                 members: declared_members(body),
             });
@@ -319,6 +349,7 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
                 kind: ClassKind::Enum,
                 inherits: None,
                 implements: Vec::new(),
+                imports: Arc::default(),
             }),
             members: if well_formed {
                 members.into()
@@ -692,5 +723,88 @@ mod tests {
         );
         assert!(!facts.parsed);
         assert!(facts.class(&IndexName::new("orders.total-calc")).is_none());
+    }
+
+    fn imports_of(facts: &FileFacts, class: &str) -> Arc<ImportContext> {
+        Arc::clone(
+            &facts
+                .class(&IndexName::new(class))
+                .expect("the class is indexed")
+                .descriptor
+                .imports,
+        )
+    }
+
+    #[test]
+    fn a_class_with_a_parent_carries_the_imports_it_names_it_under() {
+        let wildcard = index_file(
+            FILE,
+            "USING rules.*.\nCLASS orders.mid INHERITS base:\nEND CLASS.\n",
+        );
+        let explicit = index_file(
+            FILE,
+            "USING rules.base.\nCLASS orders.mid INHERITS base:\nEND CLASS.\n",
+        );
+        let bare = index_file(FILE, "CLASS orders.mid INHERITS base:\nEND CLASS.\n");
+
+        let (wildcard, explicit, bare) = (
+            imports_of(&wildcard, "orders.mid"),
+            imports_of(&explicit, "orders.mid"),
+            imports_of(&bare, "orders.mid"),
+        );
+        assert!(!wildcard.is_empty() && !explicit.is_empty() && bare.is_empty());
+        assert_ne!(wildcard, explicit, "the two import forms differ");
+        assert_ne!(wildcard, bare);
+    }
+
+    #[test]
+    fn an_interface_carries_the_imports_of_the_interfaces_it_extends() {
+        let facts = index_file(
+            FILE,
+            "USING rules.*.\nINTERFACE orders.i-mid INHERITS i-base:\nEND INTERFACE.\n",
+        );
+        assert!(!imports_of(&facts, "orders.i-mid").is_empty());
+    }
+
+    #[test]
+    fn a_class_with_no_parent_carries_no_imports() {
+        // An edit to the `USING` list of a class nothing walks past leaves its
+        // descriptor, and so every answer keyed on it, unchanged.
+        let facts = index_file(FILE, "USING rules.*.\nCLASS orders.leaf:\nEND CLASS.\n");
+        assert_eq!(*imports_of(&facts, "orders.leaf"), ImportContext::default());
+    }
+
+    #[test]
+    fn imports_that_differ_only_in_case_are_different_facts() {
+        // A cache keyed on equality must not serve the paths one spelling derives
+        // for the other.
+        let upper = index_file(
+            FILE,
+            "USING Rules.Base.\nCLASS orders.mid INHERITS Base:\nEND CLASS.\n",
+        );
+        let lower = index_file(
+            FILE,
+            "USING rules.base.\nCLASS orders.mid INHERITS Base:\nEND CLASS.\n",
+        );
+        assert_ne!(
+            imports_of(&upper, "orders.mid"),
+            imports_of(&lower, "orders.mid")
+        );
+    }
+
+    #[test]
+    fn an_include_ahead_of_the_header_may_hold_imports_the_index_does_not_read() {
+        let hidden = index_file(
+            FILE,
+            "{usings.i}\nCLASS orders.mid INHERITS base:\nEND CLASS.\n",
+        );
+        assert!(imports_of(&hidden, "orders.mid").has_unseen_imports());
+
+        let after_header = index_file(
+            FILE,
+            "CLASS orders.mid INHERITS base:\n    METHOD PUBLIC VOID m():\n        {body.i}\n    \
+             END METHOD.\nEND CLASS.\n",
+        );
+        assert!(!imports_of(&after_header, "orders.mid").has_unseen_imports());
     }
 }

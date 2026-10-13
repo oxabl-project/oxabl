@@ -3968,6 +3968,257 @@ pub const FIXTURES: &[ParityFixture] = &[
             reason: "absent_from_workspace",
         })],
     },
+    // A grandparent the parent names bare under its own wildcard `USING`. The
+    // child's imports could not find it, so the walk once recorded a row under the
+    // bare name and the real file was no edge. The call to the grandparent's
+    // method resolves, and the receiver that no class supplies is a row, which
+    // the false row had silenced.
+    ParityFixture {
+        name: "class_chain_grandparent_wildcard_using",
+        root_file: "orders/my-child.cls",
+        siblings: CHAIN_WILDCARD_SIBLINGS,
+        resolutions: CHAIN_BASE_TOTAL,
+        source: CHAIN_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_EDGES,
+    },
+    // The same grandparent through an explicit `USING` in the parent.
+    ParityFixture {
+        name: "class_chain_grandparent_explicit_using",
+        root_file: "orders/my-child.cls",
+        siblings: CHAIN_EXPLICIT_SIBLINGS,
+        resolutions: CHAIN_BASE_TOTAL,
+        source: CHAIN_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_EDGES,
+    },
+    // A parent that implements an interface its own `USING` names.
+    ParityFixture {
+        name: "class_chain_parent_implements_through_using",
+        root_file: "orders/my-child.cls",
+        siblings: &[
+            SiblingFile {
+                path: "orders/calc-mid.cls",
+                source: "USING rules.*.\nCLASS orders.calc-mid IMPLEMENTS i-price:\nEND CLASS.\n",
+            },
+            SiblingFile {
+                path: "rules/i-price.cls",
+                source: "INTERFACE rules.i-price:\n    \
+                         METHOD PUBLIC INTEGER base-total().\nEND INTERFACE.\n",
+            },
+        ],
+        resolutions: &[CrossFileResolution {
+            name: "rules.i-price",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "class",
+                target: "rules.i-price",
+            }),
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "gone",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // A grandparent that no file supplies is a gap under the qualified name the
+    // parent's `USING` gives it, not under the bare name no file has.
+    ParityFixture {
+        name: "class_chain_grandparent_absent_explicit_using",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "USING rules.price-base.\n\
+                     CLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "rules.price-base",
+            effect: CrossFileEffect::Unresolvable,
+        }],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-child INHERITS orders.calc-mid:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 base-total().\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 105,
+            end: 115,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "rules.price-base",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // A parent whose imports may come from an include the index does not read:
+    // what its own parent is cannot be told, so it is unknowable, not absent.
+    ParityFixture {
+        name: "class_chain_parent_imports_in_include",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "{rules/usings.i}\nCLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "price-base",
+            effect: CrossFileEffect::Unresolvable,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "price-base",
+                reason: "unknowable",
+            }),
+        ],
+    },
+    // A shipped parent named bare under a shipped wildcard `USING` is the AVM's to
+    // supply, so the walk records no gap for it.
+    class_site_row! {
+        name: "class_chain_shipped_parent_through_wildcard",
+        root_file: "orders/my-handler.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "USING OpenEdge.Web.*.\n\
+                 CLASS orders.my-handler INHERITS WebHandler:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-calc).\n        \
+                 Gone:Foo().\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The same name one level up: a workspace parent whose own parent is shipped.
+    // The receiver no class supplies stays a row, because a shipped class is no
+    // workspace type the index failed to read.
+    ParityFixture {
+        name: "class_chain_shipped_grandparent_through_wildcard",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "USING OpenEdge.Web.*.\nCLASS orders.calc-mid INHERITS WebHandler:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.calc-mid",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_SHIPPED_EDGES,
+    },
+    // And a `Progress.Lang` parent, which no `USING` is needed for.
+    ParityFixture {
+        name: "class_chain_implicit_lang_grandparent",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "CLASS orders.calc-mid INHERITS AppError:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.calc-mid",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_SHIPPED_EDGES,
+    },
+    // A parent that a .NET assembly supplies is no workspace gap either. The
+    // receiver no class supplies is a row, as under a shipped parent.
+    ParityFixture {
+        name: "class_chain_assembly_parent",
+        root_file: "orders/my-gauge.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "USING Dotnet.Gauge FROM ASSEMBLY.\n\
+                 USING orders.*.\n\
+                 CLASS orders.my-gauge INHERITS Gauge:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-calc).\n        \
+                 Gone:Foo().\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-base",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-base",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "gone",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -4125,6 +4376,110 @@ const BROKEN_CLASS_SIBLING: &[SiblingFile] = &[SiblingFile {
     path: "orders/broken.cls",
     source: "\u{1}\u{2}\u{3} 0x9f 0x00 ((( %%% .\n",
 }];
+
+/// A child of `orders.calc-mid` that calls a method only the grandparent
+/// declares, and names a receiver no class supplies.
+const CHAIN_CHILD: &str = "USING orders.*.\n\
+                           CLASS orders.my-child INHERITS orders.calc-mid:\n    \
+                           METHOD PUBLIC VOID run-it():\n        \
+                           base-total().\n        \
+                           Gone:Foo().\n    \
+                           END METHOD.\nEND CLASS.\n";
+
+/// `CHAIN_CHILD` without the call, for a parent whose chain has no method to find.
+const CHAIN_RECEIVER_CHILD: &str = "USING orders.*.\n\
+                                    CLASS orders.my-child INHERITS orders.calc-mid:\n    \
+                                    METHOD PUBLIC VOID run-it():\n        \
+                                    Gone:Foo().\n    \
+                                    END METHOD.\nEND CLASS.\n";
+
+/// The grandparent `CHAIN_CHILD` reaches through `orders.calc-mid`.
+const RULES_PRICE_BASE: SiblingFile = SiblingFile {
+    path: "rules/price-base.cls",
+    source: "CLASS rules.price-base:\n    \
+             METHOD PUBLIC INTEGER base-total():\n        \
+             RETURN 0.\n    \
+             END METHOD.\nEND CLASS.\n",
+};
+
+const CHAIN_WILDCARD_SIBLINGS: &[SiblingFile] = &[
+    SiblingFile {
+        path: "orders/calc-mid.cls",
+        source: "USING rules.*.\nCLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+    },
+    RULES_PRICE_BASE,
+];
+
+const CHAIN_EXPLICIT_SIBLINGS: &[SiblingFile] = &[
+    SiblingFile {
+        path: "orders/calc-mid.cls",
+        source: "USING rules.price-base.\n\
+                 CLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+    },
+    RULES_PRICE_BASE,
+];
+
+/// The call `CHAIN_CHILD` makes is an undefined symbol until the grandparent is
+/// found.
+const CHAIN_BASE_TOTAL: &[CrossFileResolution] = &[CrossFileResolution {
+    name: "base-total",
+    effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+        code: "LINT0001",
+        severity: Severity::Error,
+        source: DiagnosticSource::Lint,
+        start: 105,
+        end: 115,
+    }),
+}];
+
+/// What `CHAIN_CHILD` claims over a parent that reaches the grandparent: the
+/// parent and the grandparent, and the receiver that no class supplies.
+///
+/// The receiver is a row only when the whole chain is known. Withheld, the parent
+/// is a workspace type the index could not read, and the receiver may be one of
+/// its members.
+const CHAIN_EDGES: &[EdgeExpectation] = &[
+    EdgeExpectation::ResolvedWithSiblings {
+        edge: ExpectedEdge {
+            via: "class",
+            target: "orders.calc-mid",
+        },
+        withheld: ExpectedUnresolvedEdge {
+            via: "class",
+            name: "orders.calc-mid",
+            reason: "absent_from_workspace",
+        },
+    },
+    EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+        via: "class",
+        target: "rules.price-base",
+    }),
+    EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+        via: "class",
+        name: "gone",
+        reason: "absent_from_workspace",
+    }),
+];
+
+/// `CHAIN_EDGES` for a parent whose own parent is shipped: no grandparent edge.
+const CHAIN_SHIPPED_EDGES: &[EdgeExpectation] = &[
+    EdgeExpectation::ResolvedWithSiblings {
+        edge: ExpectedEdge {
+            via: "class",
+            target: "orders.calc-mid",
+        },
+        withheld: ExpectedUnresolvedEdge {
+            via: "class",
+            name: "orders.calc-mid",
+            reason: "absent_from_workspace",
+        },
+    },
+    EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+        via: "class",
+        name: "gone",
+        reason: "absent_from_workspace",
+    }),
+];
 
 /// Look a fixture up by name, panicking on a typo rather than silently skipping.
 pub fn fixture(name: &str) -> &'static ParityFixture {

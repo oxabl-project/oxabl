@@ -24,6 +24,7 @@
 //! - `SEM0003` — BLOB/CLOB used as a local variable type
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use oxabl_ast::{
     AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
@@ -36,11 +37,12 @@ use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::index::ImportCandidate;
 use crate::{
-    AnalysisContext, ClassKind, ClassLookup, IndexAnswer, IndexName, IndexedFileId, LocateKind,
-    Located, MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType, ScopeId,
-    ScopeKind, ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind,
-    SymbolTable, UnlinkedRun, builtins, diagnostics, resolve_span,
+    AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
+    LocateKind, Located, MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType,
+    ScopeId, ScopeKind, ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId,
+    SymbolKind, SymbolTable, UnlinkedRun, builtins, diagnostics, resolve_span,
 };
 
 fn method_signature(parameters: &[Statement]) -> Vec<String> {
@@ -1321,10 +1323,12 @@ struct CrossFileState {
     /// it are named, and a chain of depth five under twenty references costs five
     /// lookups rather than a hundred.
     inherited_walked: FxHashSet<SymbolId>,
-    /// Classes whose chain reached an ancestor the index could not supply — a
-    /// shipped class, one no file declares, or one it declined or failed to read.
-    /// A name such a class does not declare may well be a member that ancestor
-    /// passes on, so it is not evidence of a missing class.
+    /// Classes whose chain reached a workspace ancestor the index could not
+    /// supply — one no file declares, or one it declined or failed to read. A
+    /// name such a class does not declare may well be a member that ancestor
+    /// passes on, so it is not evidence of a missing class. An ancestor the AVM
+    /// or a .NET assembly supplies is not the workspace's to supply, and does not
+    /// count.
     incomplete_surfaces: FxHashSet<SymbolId>,
     /// The folded names the file's text puts after a keyword that introduces a
     /// handle-like object (`QUERY q`, `FRAME f`, `BUFFER b`, `NEW BUFFER nb`).
@@ -1349,17 +1353,11 @@ struct CrossFileState {
     /// answer — the accessible path has always been namespace-gated, and this is
     /// the same gate on the other branch.
     inherited_inaccessible: FxHashSet<(SymbolId, NamespaceId, OxablAtom)>,
-    /// Explicit `USING <package>.<Name>` imports, in the order the file wrote
-    /// them: the simple name folded, paired with the qualified name **as
-    /// written** (which is what a file path has to be derived from).
+    /// The file's `USING` imports, in the order it wrote them.
     ///
     /// Collected once, before the walk, and only when an index is attached — a
     /// single-file run pays nothing for it.
-    using_types: Vec<(OxablAtom, IndexName, UsingSource)>,
-    /// Wildcard `USING <package>.*` prefixes, in the order the file wrote them.
-    /// Each keeps its trailing dot, so a candidate is `prefix + name` with no
-    /// re-splicing at lookup time.
-    using_prefixes: Vec<(String, UsingSource)>,
+    imports: Arc<ImportContext>,
     /// Memo for the *workspace* half of a type-name lookup, keyed by the
     /// **as-written** spelling — the exact bytes the source used, unfolded.
     ///
@@ -1575,29 +1573,18 @@ impl<'a> ResolveWalker<'a> {
         self.cross_file.get_or_insert_with(Default::default)
     }
 
-    /// The file's explicit `USING <package>.<Name>` imports — empty when no
-    /// index is attached, because nothing collected them.
+    /// The file's `USING` imports — empty when no index is attached, because
+    /// nothing collected them.
     ///
-    /// A slice accessor rather than `cross_file()?.using_types` because the
-    /// search below indexes it in a loop whose body needs `&mut self`, and
-    /// threading an `Option` through that is how an off-by-one gets in.
-    fn using_types(&self) -> &[(OxablAtom, IndexName, UsingSource)] {
-        self.cross_file().map_or(&[], |cf| &cf.using_types)
-    }
-
-    /// The file's wildcard `USING <package>.*` prefixes — empty for the reason
-    /// [`Self::using_types`] gives.
-    fn using_prefixes(&self) -> &[(String, UsingSource)] {
-        self.cross_file().map_or(&[], |cf| &cf.using_prefixes)
+    /// Shared rather than borrowed because the searches that read it need
+    /// `&mut self` to mint symbols while they iterate.
+    fn imports(&self) -> Arc<ImportContext> {
+        self.cross_file()
+            .map_or_else(Arc::default, |cf| Arc::clone(&cf.imports))
     }
 
     /// Record the file's `USING` imports before anything tries to resolve a
     /// type name through them.
-    ///
-    /// Only top-level statements are scanned: ABL puts `USING` at file scope,
-    /// ahead of the class or procedure body, and its effect is the whole
-    /// compilation unit. Scanning bodies too would admit an import that is not
-    /// legal ABL.
     ///
     /// A no-op without an index, which is what keeps a single-file run at
     /// exactly its current cost — there is nothing an import could be resolved
@@ -1606,33 +1593,9 @@ impl<'a> ResolveWalker<'a> {
         if !self.ctx.index_loaded {
             return;
         }
-        for stmt in program {
-            let StatementKind::Using {
-                type_name, source, ..
-            } = &stmt.kind
-            else {
-                continue;
-            };
-            match type_name.strip_suffix('*') {
-                // `USING MyApp.Services.*` — names no single class, so it
-                // resolves to nothing and instead widens the set of prefixes an
-                // unqualified name is tried against.
-                Some(prefix) => self
-                    .cross_file_mut()
-                    .using_prefixes
-                    .push((prefix.to_string(), *source)),
-                // `USING MyApp.Services.Cache` — makes `Cache` mean this one
-                // qualified name. Stored under the simple name, since that is
-                // the spelling a later reference will use.
-                None => {
-                    let simple = type_name.rsplit('.').next().unwrap_or(type_name);
-                    self.cross_file_mut().using_types.push((
-                        fold_atom(simple),
-                        IndexName::new(type_name),
-                        *source,
-                    ));
-                }
-            }
+        let imports = ImportContext::from_statements(program);
+        if !imports.is_empty() {
+            self.cross_file_mut().imports = Arc::new(imports);
         }
     }
 
@@ -1705,12 +1668,13 @@ impl<'a> ResolveWalker<'a> {
     /// 5. The name as a fully-qualified index key when it contains **no** dot —
     ///    a class in the unnamed package, tried late because an undotted name is
     ///    far more often an import than a root-level class.
-    /// 6. The miss. A bare name of a `Progress.Lang` class is not one for the
-    ///    purposes of a gap: the AVM's implicit `USING Progress.Lang.*` ranks
-    ///    below every import the file writes, supplies it, and no workspace file
-    ///    is meant to. [`Self::tried_a_shipped_namespace`] says so. It is judged
-    ///    after step 5 so that a workspace class sharing such a name still links,
+    /// 6. The `Progress.Lang` class the AVM's implicit `USING Progress.Lang.*`
+    ///    supplies for a bare name, below every import the file writes. No
+    ///    workspace file is meant to hold it, but one that does still links,
     ///    because a lost edge is the worse mistake.
+    /// 7. The miss. A bare name of a `Progress.Lang` class is not one for the
+    ///    purposes of a gap, since the AVM supplies it.
+    ///    [`Self::tried_a_shipped_namespace`] says so.
     ///
     /// First match wins at every step. An [`IndexAnswer::Unknowable`] at any
     /// step short-circuits rather than falling through to the next candidate:
@@ -1729,7 +1693,7 @@ impl<'a> ResolveWalker<'a> {
         self.resolve_type_in_workspace(raw, use_span)
     }
 
-    /// Steps 2-6 of [`Self::resolve_type_name`], memoized by the folded name.
+    /// Steps 2-7 of [`Self::resolve_type_name`], memoized by the folded name.
     ///
     /// Split out because two callers have already done step 1 themselves — the
     /// receiver path resolves the identifier normally before softening it, and
@@ -1774,59 +1738,41 @@ impl<'a> ResolveWalker<'a> {
     /// is the memoized door, and an index lookup per reference is exactly the
     /// cost this unit is benchmarked against.
     fn search_type_in_workspace(&mut self, raw: &str, use_span: VirtualSpan) -> TypeLookup {
-        let dotted = raw.contains('.');
-        if dotted && let Some(answer) = self.try_indexed_class(&IndexName::new(raw), use_span) {
-            return answer;
-        }
-        let simple = fold_atom(raw);
-        // Indexed rather than iterated: the loop body needs `&mut self` to mint
-        // a symbol, and the candidate is cloned out before that borrow starts.
-        for i in 0..self.using_types().len() {
-            if self.using_types()[i].0 != simple {
-                continue;
-            }
-            if self.using_types()[i].2 == UsingSource::Assembly {
-                return TypeLookup::External;
-            }
-            let candidate = self.using_types()[i].1.clone();
-            if let Some(answer) = self.try_indexed_class(&candidate, use_span) {
-                return answer;
-            }
-        }
-        for i in 0..self.using_prefixes().len() {
-            if self.using_prefixes()[i].1 == UsingSource::Assembly {
-                return TypeLookup::External;
-            }
-            // One allocation per (name, prefix) pair actually tried, on a path
-            // that runs once per distinct name in the file and only with an
-            // index attached — `type_lookups` absorbs every repeat.
-            let mut qualified = String::with_capacity(self.using_prefixes()[i].0.len() + raw.len());
-            qualified.push_str(&self.using_prefixes()[i].0);
-            qualified.push_str(raw);
-            let candidate = IndexName::new(&qualified);
-            if let Some(answer) = self.try_indexed_class(&candidate, use_span) {
-                return answer;
-            }
-        }
-        if !dotted && let Some(answer) = self.try_indexed_class(&IndexName::new(raw), use_span) {
-            return answer;
-        }
-        TypeLookup::NotFound
+        let imports = self.imports();
+        self.search_in_imports(raw, &imports, false, use_span)
     }
 
-    /// The `Progress.Lang` class the implicit import supplies for the bare name
-    /// `raw`, qualified. `None` for a dotted name, for a name that is no
-    /// `Progress.Lang` class, and for one an explicit `USING` maps to another
-    /// class — that import is the name's meaning, and a miss on it is the file's
-    /// to answer for.
-    fn implicit_lang_class(&self, raw: &str) -> Option<IndexName> {
-        if raw.contains('.') || !is_implicit_lang_class(fold_atom(raw).as_ref()) {
-            return None;
+    /// Steps 2-6 of [`Self::resolve_type_name`] for a name written in a file
+    /// whose imports are `imports`: the analysed file's own, or those of the
+    /// file that declares an indexed class, which is where that class's header
+    /// names mean what they say.
+    ///
+    /// `local` also looks each candidate up in this file's `Types` namespace,
+    /// for a header written elsewhere whose parent may be a class declared
+    /// here; a name written in this file has had step 1 already.
+    fn search_in_imports(
+        &mut self,
+        raw: &str,
+        imports: &ImportContext,
+        local: bool,
+        use_span: VirtualSpan,
+    ) -> TypeLookup {
+        for candidate in imports.candidates(raw) {
+            let ImportCandidate::Name(name) = candidate else {
+                return TypeLookup::External;
+            };
+            if local
+                && let Some(sym) =
+                    self.tree
+                        .resolve(ScopeId::ROOT, NamespaceId::Types, name.as_atom())
+            {
+                return TypeLookup::Local(sym);
+            }
+            if let Some(answer) = self.try_indexed_class(&name, use_span) {
+                return answer;
+            }
         }
-        if self.explicit_import(raw).is_some() {
-            return None;
-        }
-        Some(IndexName::new(&format!("Progress.Lang.{raw}")))
+        TypeLookup::NotFound
     }
 
     /// The reason a literal `RUN` target that no configured path supplies gets.
@@ -1868,19 +1814,7 @@ impl<'a> ResolveWalker<'a> {
     /// classes that namespace ships, so a bare name it does not supply is still
     /// a real miss.
     fn tried_a_shipped_namespace(&self, raw: &str) -> bool {
-        let simple = fold_atom(raw);
-        if is_system_namespace(&simple) {
-            return true;
-        }
-        self.using_types()
-            .iter()
-            .any(|(name, qualified, _)| *name == simple && is_system_namespace(qualified.as_atom()))
-            || (!raw.contains('.')
-                && self
-                    .using_prefixes()
-                    .iter()
-                    .any(|(prefix, _)| is_system_namespace(&fold_atom(prefix))))
-            || self.implicit_lang_class(raw).is_some()
+        names_shipped_class(&self.imports(), raw)
     }
 
     /// [`Self::absent_reason`] for a *type* name, with the shipped-namespace
@@ -2057,23 +1991,7 @@ impl<'a> ResolveWalker<'a> {
     /// name an explicit `USING` maps a bare name to, since that is the one class
     /// the file can mean, and otherwise the name as written, folded.
     fn class_miss_key(&self, raw: &str) -> OxablAtom {
-        match self.explicit_import(raw) {
-            Some(qualified) => qualified.as_atom().clone(),
-            None => fold_atom(raw),
-        }
-    }
-
-    /// The qualified name an explicit `USING <package>.<Name>` maps bare name
-    /// `raw` to, first import first.
-    fn explicit_import(&self, raw: &str) -> Option<&IndexName> {
-        if raw.contains('.') {
-            return None;
-        }
-        let simple = fold_atom(raw);
-        self.using_types()
-            .iter()
-            .find(|(name, _, _)| *name == simple)
-            .map(|(_, qualified, _)| qualified)
+        miss_key(&self.imports(), raw)
     }
 
     /// The synthesized `Types` symbol for an indexed class, minted on first
@@ -2149,15 +2067,15 @@ impl<'a> ResolveWalker<'a> {
                     },
                 );
             }
-            let parent_names: Vec<IndexName> = descriptor
-                .inherits
-                .iter()
-                .chain(&descriptor.implements)
-                .cloned()
-                .collect();
             let mut resolved = Vec::new();
-            for parent in parent_names {
-                match self.resolve_type_name(parent.as_written(), ScopeId::ROOT, use_span) {
+            for parent in descriptor.inherits.iter().chain(&descriptor.implements) {
+                let lookup = self.search_in_imports(
+                    parent.as_written(),
+                    &descriptor.imports,
+                    true,
+                    use_span,
+                );
+                match lookup {
                     TypeLookup::Local(parent) | TypeLookup::Indexed(parent) => {
                         if !resolved.contains(&parent) {
                             resolved.push(parent);
@@ -3912,8 +3830,7 @@ impl<'a> ResolveWalker<'a> {
             return;
         }
         if lookup == TypeLookup::NotFound {
-            let could_be_imported =
-                !self.using_types().is_empty() || !self.using_prefixes().is_empty();
+            let could_be_imported = !self.imports().is_empty();
             if !could_be_imported || self.receiver_is_no_class(raw, scope) {
                 return;
             }
@@ -4720,6 +4637,48 @@ impl<'a> ResolveWalker<'a> {
         InheritedLookup::Member(sym)
     }
 
+    /// Queue the class the supertype name `raw` means, for the walk of `class`.
+    ///
+    /// `raw` is read through `imports`, the imports of the file that wrote it:
+    /// the analysed file for its own header, the declaring file for an indexed
+    /// class's. Resolving a parent's parent through the child's imports finds
+    /// the wrong class, or none, and the miss would be recorded under a name no
+    /// file has.
+    ///
+    /// A candidate the index answers anything but `NotFound` for is queued, and
+    /// the walk records the answer. A name every candidate missed is recorded here
+    /// as absent, unless it is the AVM's to supply, or as unknowable when the file
+    /// may import more than the index read.
+    fn queue_supertype(
+        &mut self,
+        class: SymbolId,
+        imports: &ImportContext,
+        raw: &str,
+        queue: &mut VecDeque<IndexName>,
+    ) {
+        let index = self.ctx.index;
+        for candidate in imports.candidates(raw) {
+            let ImportCandidate::Name(name) = candidate else {
+                return;
+            };
+            if !matches!(index.class(&name), IndexAnswer::NotFound) {
+                queue.push_back(name);
+                return;
+            }
+        }
+        if names_shipped_class(imports, raw) {
+            return;
+        }
+        let outcome = if imports.has_unseen_imports() {
+            ClassLookup::Unknowable
+        } else {
+            ClassLookup::Absent
+        };
+        self.cross_file_mut().incomplete_surfaces.insert(class);
+        self.symbols
+            .record_class_lookup(&miss_key(imports, raw), outcome);
+    }
+
     /// Walk `class`'s member surface once and record what each level contributes
     /// to it.
     ///
@@ -4783,23 +4742,9 @@ impl<'a> ResolveWalker<'a> {
                             .collect()
                     })
                     .unwrap_or_default();
-                // Queued under the name the header resolves to, so a parent this
-                // file imports by `USING` is asked about by its qualified name —
-                // and a missing one is recorded under the name its header site is.
-                // The lookup is the memoized one the header itself already made.
+                let imports = self.imports();
                 for parent in authored {
-                    let written = parent.name.as_written();
-                    let resolved = match self.resolve_type_in_workspace(written, parent.name_span) {
-                        TypeLookup::Indexed(sym) => self
-                            .cross_file()
-                            .and_then(|cf| cf.indexed_class_of.get(&sym))
-                            .cloned(),
-                        _ => self
-                            .explicit_import(written)
-                            .cloned()
-                            .or_else(|| self.implicit_lang_class(written)),
-                    };
-                    queue.push_back(resolved.unwrap_or(parent.name));
+                    self.queue_supertype(class, &imports, parent.name.as_written(), &mut queue);
                 }
                 MemberRole::Subclass
             }
@@ -4823,7 +4768,12 @@ impl<'a> ResolveWalker<'a> {
                     // An interface's methods contribute exactly as a superclass's
                     // do, so the walk does not branch on `descriptor.kind`.
                     for supertype in descriptor.inherits.iter().chain(&descriptor.implements) {
-                        queue.push_back(supertype.clone());
+                        self.queue_supertype(
+                            class,
+                            &descriptor.imports,
+                            supertype.as_written(),
+                            &mut queue,
+                        );
                     }
                 }
                 // A supertype no file on the paths declares, or one that cannot
@@ -5326,12 +5276,36 @@ fn is_system_namespace(name: &OxablAtom) -> bool {
     SHIPPED.iter().any(|prefix| folded.starts_with(prefix))
 }
 
+/// Whether any spelling the search over `imports` *would have tried* for the type
+/// name `raw` lives in a namespace the AVM ships. See
+/// [`ResolveWalker::tried_a_shipped_namespace`].
+fn names_shipped_class(imports: &ImportContext, raw: &str) -> bool {
+    is_system_namespace(&fold_atom(raw))
+        || imports
+            .explicit_all(raw)
+            .any(|qualified| is_system_namespace(&fold_atom(qualified)))
+        || (!raw.contains('.')
+            && imports
+                .prefixes()
+                .any(|prefix| is_system_namespace(&fold_atom(prefix))))
+        || imports.implicit_lang_class(raw).is_some()
+}
+
+/// The name a class that did not resolve is reported under, for `raw` written in
+/// a file with `imports`. See [`ResolveWalker::class_miss_key`].
+fn miss_key(imports: &ImportContext, raw: &str) -> OxablAtom {
+    match imports.explicit(raw) {
+        Some(qualified) => qualified.as_atom().clone(),
+        None => fold_atom(raw),
+    }
+}
+
 /// Whether `folded`, a bare case-folded type name, is a class in `Progress.Lang`.
 ///
 /// The AVM imports that namespace into every source file, so these names resolve
 /// with no `USING`. The list is the documented class set of the namespace; a
 /// wildcard cannot be used instead, since it would exempt every unknown bare name.
-fn is_implicit_lang_class(folded: &str) -> bool {
+pub(crate) fn is_implicit_lang_class(folded: &str) -> bool {
     matches!(
         folded,
         "apperror"
@@ -9226,6 +9200,7 @@ mod tests {
                 kind: ClassKind::Class,
                 inherits: None,
                 implements: Vec::new(),
+                imports: Default::default(),
             }))
         }
 
