@@ -3136,6 +3136,72 @@ fn parse_return_no_apply() {
 }
 
 #[test]
+fn parse_throw_forms_keep_the_thrown_expression() {
+    for source in [
+        "THROW NEW Err().",
+        "UNDO, THROW NEW Err().",
+        "RETURN ERROR NEW Err().",
+        "UNDO, RETURN ERROR NEW Err().",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert!(
+            matches!(&stmt.kind, StatementKind::Throw(e) if matches!(e.kind, ExpressionKind::New { .. })),
+            "{source}: {:?}",
+            stmt.kind
+        );
+    }
+}
+
+#[test]
+fn parse_return_error_without_value_is_a_bare_return() {
+    let source = "RETURN ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert_eq!(stmt.kind, StatementKind::Return(None));
+}
+
+#[test]
+fn run_target_stops_at_whitespace_and_comments() {
+    for (source, expected) in [
+        ("RUN comm/expdist PERSISTENT SET h (1).", "comm/expdist"),
+        ("RUN comm/expdist\n  PERSISTENT SET h.", "comm/expdist"),
+        ("RUN sub2 /* c */.", "sub2"),
+        ("RUN sub2 // c\n.", "sub2"),
+        ("RUN sub2.p /* c */.", "sub2.p"),
+        ("RUN sub2.\ni = 1.", "sub2"),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt.kind {
+            StatementKind::Run {
+                target: RunTarget::Literal { name, .. },
+                ..
+            } => assert_eq!(name, expected, "{source}"),
+            other => panic!("{source}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_keyword_segment_is_a_field_access() {
+    let source = "x = pkg.Color:Red.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Assignment { value, .. } = stmt.kind else {
+        panic!("{:?}", stmt.kind);
+    };
+    let ExpressionKind::MemberAccess { object, .. } = value.kind else {
+        panic!("{:?}", value.kind);
+    };
+    assert!(matches!(object.kind, ExpressionKind::FieldAccess { .. }));
+}
+
+#[test]
 fn parse_loop_with_leave_and_next() {
     let source = "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
     let tokens = tokenize(source);

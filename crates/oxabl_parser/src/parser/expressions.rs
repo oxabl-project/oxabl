@@ -505,10 +505,11 @@ impl Parser<'_> {
         // follows the period with no whitespace. A period followed by whitespace (space, newline)
         // before an identifier is a statement terminator, not a field access separator.
         // This prevents "p. var" (space after period) from being mis-parsed as "p.var".
+        // Any word-like token qualifies, so a keyword segment such as `pkg.Color` is a name.
         let period_end = self.tokens[self.current].end;
-        self.tokens
-            .get(self.current + 1)
-            .is_some_and(|t| Self::can_be_identifier(t.kind) && t.start == period_end)
+        self.tokens.get(self.current + 1).is_some_and(|t| {
+            (Self::can_be_identifier(t.kind) || Self::is_word_kind(t.kind)) && t.start == period_end
+        })
     }
 
     /// Check if an expression is string-like for implicit concatenation purposes.
@@ -539,7 +540,7 @@ impl Parser<'_> {
         self.advance(); // consume '.'
 
         // Expect identifier (or keyword used as field name) after '.'
-        if !Self::can_be_identifier(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) && !Self::is_word_kind(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected field name after '.'".to_string(),
                 span: Span {
