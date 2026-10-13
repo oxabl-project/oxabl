@@ -285,14 +285,76 @@ fn a_run_of_a_procedure_in_the_same_unit_is_neither_an_edge_nor_a_row() {
 }
 
 #[test]
-fn an_external_row_is_only_for_a_bare_name_nothing_defines() {
+fn a_bare_run_name_nothing_supplies_has_no_row() {
     let edges =
         run_set("RUN local-proc.\nRUN sub.\nRUN mystery.\nPROCEDURE local-proc:\nEND PROCEDURE.\n");
+    assert!(
+        edges.unresolved().is_empty(),
+        "got {:?}",
+        edges.unresolved()
+    );
+    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+}
+
+#[test]
+fn an_extensionless_run_path_nothing_supplies_keeps_its_row() {
+    let edges = run_set("RUN lib/mystery.\nRUN lib/other.p.\n");
     let rows: Vec<_> = edges
         .unresolved()
         .iter()
         .map(|row| (row.name.as_str(), row.reason))
         .collect();
-    assert_eq!(rows, [("mystery", UnresolvedReason::External)]);
-    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+    assert_eq!(
+        rows,
+        [
+            ("lib/mystery", UnresolvedReason::External),
+            ("lib/other.p", UnresolvedReason::AbsentFromWorkspace),
+        ]
+    );
+}
+
+/// The paths the program edges of `source` land on, under `extensions`.
+fn run_targets(source: &str, extensions: &[&str]) -> Vec<PathBuf> {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/both.p"), "MESSAGE 1.\n");
+    fs.insert(PathBuf::from("/proj/both.w"), "MESSAGE 2.\n");
+    fs.insert(PathBuf::from("/proj/only.pp"), "MESSAGE 3.\n");
+    let config = PipelineConfig {
+        run_extensions: extensions.iter().map(|e| e.to_string()).collect(),
+        ..config("/proj")
+    };
+    let run = LintPipeline::new(&config, &fs);
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set(source)
+        .expect("edge set");
+    edges
+        .of_kind(EdgeKind::ProgramReference)
+        .map(|edge| match edge.target {
+            EdgeTarget::IndexedFile { file, .. } => run.indexed_path(file).expect("indexed path"),
+            _ => panic!("a program edge names an indexed file"),
+        })
+        .collect()
+}
+
+#[test]
+fn the_extension_order_for_a_bare_run_name_comes_from_the_configuration() {
+    assert_eq!(
+        run_targets("RUN both.\n", &["p", "w"]),
+        [PathBuf::from("/proj/both.p")]
+    );
+    assert_eq!(
+        run_targets("RUN both.\n", &["w", "p"]),
+        [PathBuf::from("/proj/both.w")]
+    );
+}
+
+#[test]
+fn an_extension_outside_the_configured_list_is_not_tried() {
+    assert!(run_targets("RUN only.\n", &["p", "w"]).is_empty());
+    assert_eq!(
+        run_targets("RUN only.\n", &["pp"]),
+        [PathBuf::from("/proj/only.pp")]
+    );
+    assert!(run_targets("RUN both.\n", &[]).is_empty());
 }
