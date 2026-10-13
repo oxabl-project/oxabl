@@ -1769,15 +1769,10 @@ impl<'a> ResolveWalker<'a> {
 
     /// The reason a literal `RUN` target that no configured path supplies gets.
     ///
-    /// Two shapes are held back from [`UnresolvedReason::AbsentFromWorkspace`],
-    /// both because a path search is not the mechanism the AVM would have used and
-    /// a miss therefore proves nothing:
+    /// A target with no file extension is held back from
+    /// [`UnresolvedReason::AbsentFromWorkspace`], because a path search is not the
+    /// mechanism the AVM would have used and a miss therefore proves nothing:
     ///
-    /// * **`RUN name IN handle`.** The target is an entry point in another *running*
-    ///   program, reached through a handle whose value is a run-time fact. No file
-    ///   on any path could supply it, so the answer is
-    ///   [`UnresolvedReason::Unknowable`] — the same category as
-    ///   `RUN VALUE(...)`, and for the same reason.
     /// * **A target with no file extension.** `RUN post-order` means an internal
     ///   procedure first: this file's own, then any registered `SUPER PROCEDURE`'s.
     ///   oxabl models neither super-procedure registration nor persistent handles,
@@ -1788,10 +1783,7 @@ impl<'a> ResolveWalker<'a> {
     /// Both were measured, not guessed: without them the great majority of a real
     /// codebase's new findings were `RUN x IN h` and extension-less internal calls,
     /// every one of them correct ABL.
-    fn run_miss_reason(&self, raw: &str, in_handle: bool, name: &OxablAtom) -> UnresolvedReason {
-        if in_handle {
-            return UnresolvedReason::Unknowable;
-        }
+    fn run_miss_reason(&self, raw: &str, name: &OxablAtom) -> UnresolvedReason {
         // Extension on the last segment, so a dotted *package*-looking target is
         // not mistaken for an extension.
         let has_extension = raw
@@ -2619,7 +2611,7 @@ impl<'a> ResolveWalker<'a> {
                         // fact is about the *target*, which is a different thing
                         // recorded at a different node.
                         self.walk_expression(e, scope, AccessMode::Read);
-                        self.record_computed_run_target(stmt.id, stmt.span);
+                        self.record_computed_run_target(stmt.id, stmt.span, in_handle.is_some());
                     }
                 }
                 for arg in arguments {
@@ -3322,6 +3314,19 @@ impl<'a> ResolveWalker<'a> {
             self.references.insert(id, Resolution::Resolved(sym));
             return;
         }
+        // An entry point in a running program, reached through a handle whose
+        // value is a run-time fact. No file is named, so the index is not asked
+        // and nothing is recorded for a dependency consumer.
+        if in_handle {
+            self.references.insert(
+                id,
+                Resolution::Unresolved {
+                    reason: UnresolvedReason::Unknowable,
+                    name: atom,
+                },
+            );
+            return;
+        }
         // Copied out so no borrow of `self` is held across the synthesis below.
         let index = self.ctx.index;
         let name = IndexName::new(raw);
@@ -3338,7 +3343,7 @@ impl<'a> ResolveWalker<'a> {
             // two shapes it would not are held back.
             IndexAnswer::NotFound => (
                 Resolution::Unresolved {
-                    reason: self.run_miss_reason(raw, in_handle, name.as_atom()),
+                    reason: self.run_miss_reason(raw, name.as_atom()),
                     name: name.as_atom().clone(),
                 },
                 None,
@@ -3434,16 +3439,20 @@ impl<'a> ResolveWalker<'a> {
     /// own resolution. Gated on an attached index for the same reason as
     /// [`Self::resolve_run_target`]: unknowability does not depend on an index,
     /// but a run that looked at nothing should not grow its `references` table.
-    fn record_computed_run_target(&mut self, stmt_id: NodeId, span: Span) {
+    fn record_computed_run_target(&mut self, stmt_id: NodeId, span: Span, in_handle: bool) {
         if !self.ctx.index_loaded {
             return;
         }
-        self.symbols.record_unlinked_run(UnlinkedRun {
-            name: OxablAtom::from(COMPUTED_TARGET),
-            reason: UnresolvedReason::Unknowable,
-            located: None,
-            span: VirtualSpan::new(span.start, span.end),
-        });
+        // `RUN VALUE(x) IN h` names an entry point in a running program, not a
+        // file, so it is not a dependency gap.
+        if !in_handle {
+            self.symbols.record_unlinked_run(UnlinkedRun {
+                name: OxablAtom::from(COMPUTED_TARGET),
+                reason: UnresolvedReason::Unknowable,
+                located: None,
+                span: VirtualSpan::new(span.start, span.end),
+            });
+        }
         self.references.insert(
             stmt_id,
             Resolution::Unresolved {

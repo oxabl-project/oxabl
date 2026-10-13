@@ -223,3 +223,76 @@ fn the_reverse_graph_reports_degraded_files_beside_unanalysed_ones() {
         ]
     );
 }
+
+/// The edge set for `source` beside a program `sub.p` and an include that
+/// defines the procedure `from-include`.
+fn run_set(source: &str) -> oxabl_pipeline::DependencyEdges {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/sub.p"), "MESSAGE 1.\n");
+    fs.insert(
+        PathBuf::from("/proj/procs.i"),
+        "PROCEDURE from-include:\n  MESSAGE 2.\nEND PROCEDURE.\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/main.p");
+    pipeline.edge_set(source).expect("edge set")
+}
+
+#[test]
+fn a_run_through_a_handle_is_neither_an_edge_nor_a_row() {
+    // `sub` is a real file beside the handle calls, so a lookup by name would
+    // link it.
+    let edges = run_set(
+        "DEFINE VARIABLE h AS HANDLE NO-UNDO.\n\
+         RUN sub IN h.\n\
+         RUN sub.p IN h.\n\
+         RUN sub IN THIS-PROCEDURE.\n\
+         RUN sub IN SUPER.\n\
+         RUN sub IN TARGET-PROCEDURE.\n\
+         RUN sub IN SOURCE-PROCEDURE.\n\
+         RUN sub IN h:CURRENT-WINDOW.\n\
+         RUN VALUE(\"sub\") IN h.\n",
+    );
+    assert!(edges.edges().is_empty(), "got {:?}", edges.edges());
+    assert!(
+        edges.unresolved().is_empty(),
+        "got {:?}",
+        edges.unresolved()
+    );
+}
+
+#[test]
+fn a_run_of_a_procedure_in_the_same_unit_is_neither_an_edge_nor_a_row() {
+    let edges = run_set(
+        "{procs.i}\n\
+         RUN local-proc.\n\
+         RUN from-include.\n\
+         RUN later-proc.\n\
+         PROCEDURE local-proc:\n  MESSAGE 1.\nEND PROCEDURE.\n\
+         PROCEDURE later-proc:\n  MESSAGE 3.\nEND PROCEDURE.\n",
+    );
+    assert!(
+        edges.of_kind(EdgeKind::ProgramReference).next().is_none(),
+        "got {:?}",
+        edges.edges()
+    );
+    assert!(
+        edges.unresolved().is_empty(),
+        "got {:?}",
+        edges.unresolved()
+    );
+}
+
+#[test]
+fn an_external_row_is_only_for_a_bare_name_nothing_defines() {
+    let edges =
+        run_set("RUN local-proc.\nRUN sub.\nRUN mystery.\nPROCEDURE local-proc:\nEND PROCEDURE.\n");
+    let rows: Vec<_> = edges
+        .unresolved()
+        .iter()
+        .map(|row| (row.name.as_str(), row.reason))
+        .collect();
+    assert_eq!(rows, [("mystery", UnresolvedReason::External)]);
+    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+}
