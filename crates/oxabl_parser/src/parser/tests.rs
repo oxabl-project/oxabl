@@ -12970,3 +12970,44 @@ fn strong_scope_headers_keep_their_bodies() {
         }
     }
 }
+
+#[test]
+fn record_statements_take_database_qualified_names() {
+    for (source, expected) in [
+        ("CREATE sports.customer.", "sports.customer"),
+        ("DELETE sports.customer NO-ERROR.", "sports.customer"),
+        ("RELEASE sports.customer.", "sports.customer"),
+        ("VALIDATE sports.customer.", "sports.customer"),
+        ("RELEASE customer.", "customer"),
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        let name = match &program.statements[0].kind {
+            StatementKind::Create {
+                target: CreateTarget::Name(n),
+                ..
+            } => &n.name,
+            StatementKind::Delete { buffer, .. }
+            | StatementKind::Release { buffer, .. }
+            | StatementKind::Validate { buffer, .. } => &buffer.name,
+            other => panic!("{source}: {other:?}"),
+        };
+        assert_eq!(name, expected, "{source}");
+    }
+    let source = "BUFFER-COPY sports.customer TO sports.cust2.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    match &program.statements[..] {
+        [s] => match &s.kind {
+            StatementKind::BufferCopy { source, target, .. } => {
+                assert_eq!(source.name, "sports.customer");
+                assert_eq!(target.name, "sports.cust2");
+            }
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
