@@ -1313,6 +1313,7 @@ pub fn resolve_pass(
     walker.resolve_supertype_edges();
     walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
+    walker.soften_opaque_misses();
     // After the walk, never during it: the only files the index can answer a
     // `SHARED` producer question from are the ones the walk's `RUN` lookups
     // pulled in. See `link_shared_consumers`.
@@ -1466,6 +1467,16 @@ struct CrossFileState {
     /// or a .NET assembly supplies is not the workspace's to supply, and does not
     /// count.
     incomplete_surfaces: FxHashSet<SymbolId>,
+    /// Classes whose `INHERITS` chain reaches an ancestor whose members were not
+    /// read: one the index could not supply, or a shipped class, whose members
+    /// oxabl does not model. Such an ancestor may declare any name the class uses
+    /// unqualified. An `IMPLEMENTS` gap does not count, since a class declares
+    /// its interfaces' members itself.
+    opaque_surfaces: FxHashSet<SymbolId>,
+    /// References recorded `NotInScope` inside a class with an opaque surface.
+    /// Softened to `External` after the walk, so the receiver path still sees
+    /// `NotInScope` and can try the name as a type first.
+    opaque_misses: Vec<NodeId>,
     /// The folded names the file's text puts after a keyword that introduces a
     /// handle-like object (`QUERY q`, `FRAME f`, `BUFFER b`, `NEW BUFFER nb`).
     /// Built from the source on first use. None of them is a class.
@@ -2599,17 +2610,11 @@ impl<'a> ResolveWalker<'a> {
                     // inherits. Saved and restored rather than assigned, so a
                     // nested declaration cannot leak its class outward.
                     let outer = self.current_class;
-                    // Gated, because the only reader is `lookup_inherited`, which
-                    // returns `Absent` without an index. Left `None` on a
-                    // single-file run this costs nothing; ungated it would intern
-                    // an atom and walk the scope chain once per `CLASS` for an
-                    // answer nothing would ever ask for.
-                    self.current_class = if self.ctx.index_loaded {
+                    // Not gated on the index: a single-file run reads it too, to
+                    // tell whether the class inherits a parent it never reads.
+                    self.current_class =
                         self.tree
-                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name))
-                    } else {
-                        None
-                    };
+                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name));
                     self.walk_block(body, cs);
                     self.current_class = outer;
                 }
@@ -3226,19 +3231,26 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(op) = &sequence {
                     self.resolve_sequence_operand(op);
                 }
+                // A user function never takes a type operand, so the built-in
+                // reading applies only when the callee did not resolve here.
+                let type_name =
+                    if matches!(self.references.get(expr.id), Some(Resolution::Resolved(_))) {
+                        None
+                    } else {
+                        type_operand(name, arguments)
+                            .and_then(|operand| Some((operand.id, dotted_name(operand)?)))
+                    };
                 // The arguments of `NEXT-VALUE` / `CURRENT-VALUE` are a sequence
                 // name and a logical database name, neither a symbol.
                 if !sequence.is_some_and(|op| op.is_static) {
                     for a in arguments {
-                        self.walk_expression(a, scope, AccessMode::Read);
+                        match &type_name {
+                            Some((id, raw)) if *id == a.id => {
+                                self.resolve_type_operand(a, raw, scope);
+                            }
+                            _ => self.walk_expression(a, scope, AccessMode::Read),
+                        }
                     }
-                }
-                if self.ctx.index_loaded
-                    && let Some(operand) = type_operand(name, arguments)
-                    && let Some(raw) = dotted_name(operand)
-                {
-                    let span = VirtualSpan::new(operand.span.start, operand.span.end);
-                    self.note_class_name(&raw, scope, span);
                 }
             }
             ExpressionKind::MethodCall {
@@ -3554,6 +3566,59 @@ impl<'a> ResolveWalker<'a> {
                 reason: UnresolvedReason::NotInScope,
             },
         );
+        self.note_miss_in_opaque_class(expr_id);
+    }
+
+    /// Note a `NotInScope` reference made inside a class with an opaque surface
+    /// (see [`CrossFileState::opaque_surfaces`]): an ancestor whose members were
+    /// not read may declare the name, so the miss proves nothing.
+    ///
+    /// With no index no ancestor is read, so any parent this file does not
+    /// declare makes the surface opaque. No receiver is then tried as a type, so
+    /// the miss is softened at once.
+    fn note_miss_in_opaque_class(&mut self, expr_id: NodeId) {
+        let Some(class) = self.current_class else {
+            return;
+        };
+        if !self.ctx.index_loaded {
+            if self.inherits_unread_parent(class) {
+                self.soften_unresolved_to_external(expr_id);
+            }
+            return;
+        }
+        self.walk_member_surface(class);
+        let cf = self.cross_file_mut();
+        if cf.opaque_surfaces.contains(&class) {
+            cf.opaque_misses.push(expr_id);
+        }
+    }
+
+    /// Whether `class` inherits a parent this file does not declare, other than
+    /// `Progress.Lang.Object`.
+    fn inherits_unread_parent(&self, class: SymbolId) -> bool {
+        let Some(parent) = self
+            .symbols
+            .supertypes(class)
+            .and_then(|supers| supers.inherits.as_ref())
+        else {
+            return false;
+        };
+        !names_root_object(&ImportContext::default(), parent.name.as_written())
+            && self
+                .tree
+                .resolve(ScopeId::ROOT, NamespaceId::Types, parent.name.as_atom())
+                .is_none()
+    }
+
+    /// Soften every [`Self::note_miss_in_opaque_class`] reference that is still
+    /// `NotInScope` after the walk to `External`.
+    fn soften_opaque_misses(&mut self) {
+        let Some(cf) = self.cross_file.as_mut() else {
+            return;
+        };
+        for id in std::mem::take(&mut cf.opaque_misses) {
+            self.soften_unresolved_to_external(id);
+        }
     }
 
     /// Resolve a `USING` import and record the answer as a reference entry on
@@ -4362,6 +4427,39 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
+    /// Resolve the type-name operand `raw` of a `CAST`, `TYPE-OF` or
+    /// `GET-CLASS` call in the `Types` namespace, the way a `NEW` operand is, and
+    /// record the answer on the operand's node.
+    fn resolve_type_operand(&mut self, operand: &Expression, raw: &str, scope: ScopeId) {
+        let span = VirtualSpan::new(operand.span.start, operand.span.end);
+        let lookup = self.resolve_type_name(raw, scope, span);
+        self.note_class_site(raw, lookup, span);
+        let atom = fold_atom(raw);
+        let resolution = match lookup {
+            TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => {
+                self.bump_count(sym, AccessMode::Read);
+                Resolution::Resolved(sym)
+            }
+            TypeLookup::NotFound => Resolution::Unresolved {
+                reason: self.absent_type_reason(raw, &atom),
+                name: atom,
+            },
+            TypeLookup::Unusable => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::PresentButUnusable,
+            },
+            TypeLookup::Unknowable => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::Unknowable,
+            },
+            TypeLookup::External | TypeLookup::NotLooked => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::External,
+            },
+        };
+        self.references.insert(operand.id, resolution);
+    }
+
     /// Resolve an `Identifier` in a **statement** position (buffer name in
     /// `DELETE`, stream name in `DISPLAY STREAM`, etc.). Statement-level
     /// identifiers don't carry their own NodeId in v1, so no entry is
@@ -4618,6 +4716,10 @@ impl<'a> ResolveWalker<'a> {
                         reason,
                     },
                 );
+                if reason == UnresolvedReason::NotInScope {
+                    self.note_miss_in_opaque_class(qualifier.id);
+                    self.note_miss_in_opaque_class(expr_id);
+                }
             }
         }
     }
@@ -4967,22 +5069,34 @@ impl<'a> ResolveWalker<'a> {
     /// the walk records the answer. A name every candidate missed is recorded here
     /// as absent, unless it is the AVM's to supply, or as unknowable when the file
     /// may import more than the index read.
+    ///
+    /// `superclass` is whether `raw` is on `class`'s `INHERITS` chain. A miss
+    /// there, shipped or not, makes the surface opaque.
     fn queue_supertype(
         &mut self,
         class: SymbolId,
         imports: &ImportContext,
         raw: &str,
-        queue: &mut VecDeque<IndexName>,
+        superclass: bool,
+        queue: &mut VecDeque<(IndexName, bool)>,
     ) {
         let index = self.ctx.index;
         for candidate in imports.candidates(raw) {
             let ImportCandidate::Name(name) = candidate else {
+                if superclass {
+                    self.cross_file_mut().opaque_surfaces.insert(class);
+                }
                 return;
             };
             if !matches!(index.class(&name), IndexAnswer::NotFound) {
-                queue.push_back(name);
+                queue.push_back((name, superclass));
                 return;
             }
+        }
+        // `Progress.Lang.Object` is every class's root, written or not, so
+        // naming it hides nothing an unwritten root does not.
+        if superclass && !names_root_object(imports, raw) {
+            self.cross_file_mut().opaque_surfaces.insert(class);
         }
         if names_shipped_class(imports, raw) {
             return;
@@ -5034,7 +5148,8 @@ impl<'a> ResolveWalker<'a> {
         // Copied out so no borrow of `self` is held across the synthesis below.
         let index = self.ctx.index;
         let mut visited: FxHashSet<IndexName> = FxHashSet::default();
-        let mut queue: VecDeque<IndexName> = VecDeque::new();
+        // Each name with whether it is on the `INHERITS` chain.
+        let mut queue: VecDeque<(IndexName, bool)> = VecDeque::new();
         // Cloned out rather than borrowed: the `None` arm below reads
         // `self.symbols`, and the loop after it takes `&mut self`.
         let indexed_name = self
@@ -5043,32 +5158,35 @@ impl<'a> ResolveWalker<'a> {
             .cloned();
         let role = match indexed_name {
             Some(name) => {
-                queue.push_back(name);
+                queue.push_back((name, true));
                 MemberRole::Outside
             }
             None => {
                 visited.insert(IndexName::new(&self.symbols.get(class).name));
-                let authored: Vec<SupertypeRef> = self
+                let authored: Vec<(SupertypeRef, bool)> = self
                     .symbols
                     .supertypes(class)
                     .map(|supers| {
-                        supers
-                            .inherits
-                            .iter()
-                            .chain(&supers.implements)
-                            .cloned()
-                            .collect()
+                        let inherits = supers.inherits.iter().map(|s| (s.clone(), true));
+                        let implements = supers.implements.iter().map(|s| (s.clone(), false));
+                        inherits.chain(implements).collect()
                     })
                     .unwrap_or_default();
                 let imports = self.imports();
-                for parent in authored {
-                    self.queue_supertype(class, &imports, parent.name.as_written(), &mut queue);
+                for (parent, superclass) in authored {
+                    self.queue_supertype(
+                        class,
+                        &imports,
+                        parent.name.as_written(),
+                        superclass,
+                        &mut queue,
+                    );
                 }
                 MemberRole::Subclass
             }
         };
 
-        while let Some(name) = queue.pop_front() {
+        while let Some((name, superclass)) = queue.pop_front() {
             if !visited.insert(name.clone()) {
                 continue;
             }
@@ -5085,11 +5203,14 @@ impl<'a> ResolveWalker<'a> {
                         .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
                     // An interface's methods contribute exactly as a superclass's
                     // do, so the walk does not branch on `descriptor.kind`.
-                    for supertype in descriptor.inherits.iter().chain(&descriptor.implements) {
+                    let inherits = descriptor.inherits.iter().map(|s| (s, superclass));
+                    let implements = descriptor.implements.iter().map(|s| (s, false));
+                    for (supertype, on_chain) in inherits.chain(implements) {
                         self.queue_supertype(
                             class,
                             &descriptor.imports,
                             supertype.as_written(),
+                            on_chain,
                             &mut queue,
                         );
                     }
@@ -5101,6 +5222,9 @@ impl<'a> ResolveWalker<'a> {
                 // A shipped class is not the workspace's to supply, so its miss
                 // is no gap in it either.
                 IndexAnswer::NotFound => {
+                    if superclass {
+                        self.cross_file_mut().opaque_surfaces.insert(class);
+                    }
                     if !is_system_namespace(name.as_atom()) {
                         self.cross_file_mut().incomplete_surfaces.insert(class);
                         self.symbols
@@ -5114,7 +5238,11 @@ impl<'a> ResolveWalker<'a> {
                 // did not resolve, and this one is oxabl's gap rather than a
                 // missing file.
                 IndexAnswer::Unusable => {
-                    self.cross_file_mut().incomplete_surfaces.insert(class);
+                    let cf = self.cross_file_mut();
+                    cf.incomplete_surfaces.insert(class);
+                    if superclass {
+                        cf.opaque_surfaces.insert(class);
+                    }
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unusable);
                     if let Located::In(file) = index.located(LocateKind::Class, &name) {
@@ -5124,7 +5252,11 @@ impl<'a> ResolveWalker<'a> {
                     continue;
                 }
                 IndexAnswer::Unknowable => {
-                    self.cross_file_mut().incomplete_surfaces.insert(class);
+                    let cf = self.cross_file_mut();
+                    cf.incomplete_surfaces.insert(class);
+                    if superclass {
+                        cf.opaque_surfaces.insert(class);
+                    }
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
                     continue;
@@ -5221,7 +5353,11 @@ impl<'a> ResolveWalker<'a> {
                             });
                     }
                 }
-                IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {}
+                IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {
+                    if superclass {
+                        self.cross_file_mut().opaque_surfaces.insert(class);
+                    }
+                }
             }
         }
     }
@@ -5688,6 +5824,18 @@ fn names_shipped_class(imports: &ImportContext, raw: &str) -> bool {
             .prefixes()
             .any(|prefix| is_system_namespace(&fold_atom(prefix))))
         || imports.implicit_lang_class(raw).is_some()
+}
+
+/// Whether the supertype name `raw`, written in a file with `imports`, is
+/// `Progress.Lang.Object`.
+fn names_root_object(imports: &ImportContext, raw: &str) -> bool {
+    match imports.explicit(raw) {
+        Some(qualified) => qualified.as_atom().as_ref() == "progress.lang.object",
+        None => {
+            let folded = fold_atom(raw);
+            folded.as_ref() == "progress.lang.object" || folded.as_ref() == "object"
+        }
+    }
 }
 
 /// The name a class that did not resolve is reported under, for `raw` written in

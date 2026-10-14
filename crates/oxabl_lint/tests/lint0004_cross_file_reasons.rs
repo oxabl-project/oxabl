@@ -672,7 +672,7 @@ fn a_shipped_wildcard_does_not_exempt_an_unrelated_qualified_type() {
 }
 
 #[test]
-fn a_member_behind_an_unexpanded_include_gains_no_finding_from_the_index() {
+fn a_member_behind_an_unexpanded_include_is_silent_only_when_qualified() {
     // The index does not expand includes, so a member spliced in from one is
     // invisible to it. Two shapes, and they differ — which is worth stating
     // precisely, because the difference is deliberate.
@@ -680,11 +680,9 @@ fn a_member_behind_an_unexpanded_include_gains_no_finding_from_the_index() {
     // Qualified, the name can only be a member, so a lookup that comes up empty
     // against a class the index *did* answer for is `PresentButUnusable` and
     // silent. Unqualified, the same name could just as easily be a misspelled local
-    // variable — which is the case `undefined-symbol` exists for — so it stays
-    // `NotInScope` and fires, exactly as it does with no index attached. That
-    // finding is pre-existing, not something widening the rule introduced, and the
-    // assertion is therefore about the *delta*: attaching an index adds nothing
-    // here either way.
+    // variable — which is the case `undefined-symbol` exists for — so with the
+    // parent read it stays `NotInScope` and fires. With no index the parent is
+    // unread, so the name may be its member and nothing fires.
     let base = "CLASS orders.calc-base:\n{members.i}\nEND CLASS.\n";
     let workspace = [("/src/orders/calc-base.cls", base)];
 
@@ -706,11 +704,8 @@ fn a_member_behind_an_unexpanded_include_gains_no_finding_from_the_index() {
                        END CLASS.\n";
     let with_index = lint0001_for(unqualified, &workspace);
     let without = lint0001_without_any_index(unqualified);
-    assert_eq!(
-        with_index.len(),
-        without.len(),
-        "the unqualified finding is pre-existing; the index must not add to it"
-    );
+    assert_eq!(with_index.len(), 1, "{with_index:?}");
+    assert!(without.is_empty(), "{without:?}");
     assert!(
         with_index.iter().all(|d| d.help.is_none()),
         "and it is the plain not-in-scope finding, not a workspace-absence claim"

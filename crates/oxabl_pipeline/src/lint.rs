@@ -1041,7 +1041,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use oxabl_lint::LINT0004;
+    use oxabl_lint::{LINT0001, LINT0004};
 
     /// Silence the default panic hook for the duration of a deliberately
     /// panicking test, so a green run does not print a backtrace.
@@ -1055,6 +1055,16 @@ mod tests {
 
     fn codes(result: &LintResult) -> Vec<&str> {
         result.all().map(|d| d.diagnostic.code.0).collect()
+    }
+
+    /// Whether the inherited `calc-total` call resolved to a symbol. With the
+    /// parent unread the call is silent too, so no finding can tell the two apart.
+    fn calc_total_resolved(result: &LintResult) -> bool {
+        let sem = result.semantic().expect("the run produced a model");
+        sem.references.iter().any(|(_, resolution)| {
+            matches!(resolution, oxabl_semantic::Resolution::Resolved(sym)
+                if &*sem.symbols.get(*sym).name == "calc-total")
+        })
     }
 
     #[test]
@@ -1947,9 +1957,8 @@ END CLASS."#;
     /// qualified name maps onto a relative path by replacing dots with separators.
     const CALC_BASE_PATH: &str = "/src/orders/calc-base.cls";
 
-    /// A subclass calling the inherited method. Without cross-file resolution the
-    /// call is an `undefined-symbol` finding — the false positive this whole line
-    /// of work removes — which is what makes resolution observable from out here.
+    /// A subclass calling the inherited method. Without the parent the call is
+    /// unknowable and silent; [`calc_total_resolved`] tells whether it resolved.
     const CHILD: &str = r#"CLASS orders.child INHERITS orders.calc-base:
     METHOD PUBLIC VOID run-it():
         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
@@ -2036,6 +2045,7 @@ END CLASS."#;
             "the inherited call must resolve through the run's index, got {:?}",
             codes(&result)
         );
+        assert!(calc_total_resolved(&result));
     }
 
     #[test]
@@ -2054,6 +2064,7 @@ END CLASS."#;
         assert_eq!(two_phase.dependency_paths(), one_shot.dependency_paths());
         assert_eq!(two_phase.failed_run(), one_shot.failed_run());
         assert!(!codes(&two_phase).contains(&"LINT0001"));
+        assert!(calc_total_resolved(&two_phase));
     }
 
     #[test]
@@ -2068,9 +2079,8 @@ END CLASS."#;
 
         let result = anonymous.run(CHILD);
         assert!(
-            !codes(&result).contains(&"LINT0001"),
-            "an identity-less run resolves cross-file too, got {:?}",
-            codes(&result)
+            calc_total_resolved(&result),
+            "an identity-less run resolves cross-file too"
         );
 
         // And with no identity the file on disk that *is* the buffer is just
@@ -2085,7 +2095,7 @@ END CLASS."#;
     END METHOD.
 END CLASS."#;
         let unexcluded = anonymous.run(sub_of_itself);
-        assert!(!codes(&unexcluded).contains(&"LINT0001"));
+        assert!(calc_total_resolved(&unexcluded));
     }
 
     #[test]
@@ -2103,15 +2113,14 @@ END CLASS."#;
         assert_eq!(itself.file(), Some(Path::new(CALC_BASE_PATH)));
         let excluded = itself.run(CHILD);
         assert!(
-            codes(&excluded).contains(&"LINT0001"),
-            "the analysed file must not resolve a class to itself, got {:?}",
-            codes(&excluded)
+            !calc_total_resolved(&excluded),
+            "the analysed file must not resolve a class to itself"
         );
 
         // Any *other* file's handle, off the same run and the same index, still
         // resolves it — the exclusion is per asking file, not a state change.
         let neighbour = run.with_file("/src/orders/child.cls");
-        assert!(!codes(&neighbour.run(CHILD)).contains(&"LINT0001"));
+        assert!(calc_total_resolved(&neighbour.run(CHILD)));
     }
 
     #[test]
@@ -2140,7 +2149,7 @@ END CLASS."#;
     #[test]
     fn an_empty_include_path_list_resolves_nothing_cross_file() {
         // Nowhere to search, so the answer must be exactly the single-file one:
-        // the inherited call is undefined, as it has always been.
+        // the parent is unread and the inherited call is unknowable.
         let fs = workspace(&[(CALC_BASE_PATH, CALC_BASE)]);
         let config = PipelineConfig::default();
         assert!(config.include_paths.is_empty());
@@ -2148,8 +2157,12 @@ END CLASS."#;
 
         let result = run.with_file("/src/orders/child.cls").run(CHILD);
         assert!(
-            codes(&result).contains(&"LINT0001"),
-            "with no search path the parent is unreachable, got {:?}",
+            !calc_total_resolved(&result),
+            "with no search path the parent is unreachable"
+        );
+        assert!(
+            !codes(&result).contains(&"LINT0001"),
+            "{:?}",
             codes(&result)
         );
         // And the whole set matches the no-index collect, not just that one code.
@@ -2174,10 +2187,9 @@ END CLASS."#;
     // client here, driving the same pipeline every client drives. It used to
     // assert that attaching one added nothing; now that a cross-file type reaches
     // the lattice, the contract is the *enumeration* — a mismatched assignment
-    // through an inherited member gains a LINT0004, and every other shape still
-    // gains nothing. Removals stay unchecked on purpose: an `undefined-symbol`
-    // disappearing from an inherited member is the pre-existing false positive
-    // this work fixes.
+    // through an inherited member gains a LINT0004, a misspelt member of a parent
+    // the index reads gains a LINT0001 (unread, any name may be the parent's),
+    // and every other shape still gains nothing.
     #[test]
     fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
         let fs = workspace(&[
@@ -2221,7 +2233,7 @@ END CLASS."#;
              MESSAGE v-n.\n\
              END METHOD.\n\
              END CLASS.",
-                &[],
+                &[LINT0001],
             ),
             ("USING orders.calc-base.\nMESSAGE \"hi\".\n", &[]),
             (
@@ -2347,21 +2359,20 @@ END CLASS."#;
         // The control: without the supplied index this exact configuration cannot
         // resolve the parent — that is `an_empty_include_path_list_resolves_nothing`.
         let unaided = LintPipeline::new(&nowhere, &fs);
-        assert!(codes(&unaided.run(CHILD)).contains(&"LINT0001"));
+        assert!(!calc_total_resolved(&unaided.run(CHILD)));
 
         let aided = LintPipeline::new(&nowhere, &fs).with_index(&supplied);
         let result = aided.run(CHILD);
         assert!(
-            !codes(&result).contains(&"LINT0001"),
-            "the supplied index must be the one consulted, got {:?}",
-            codes(&result)
+            calc_total_resolved(&result),
+            "the supplied index must be the one consulted"
         );
 
         // And a per-file sibling keeps answering from it rather than falling back
         // to a fresh batch — which is what the language server relies on, since its
         // index is the only one that knows anything.
         let per_file = aided.with_file("/src/orders/child.cls");
-        assert!(!codes(&per_file.run(CHILD)).contains(&"LINT0001"));
+        assert!(calc_total_resolved(&per_file.run(CHILD)));
         // The supplied index owns its own exclusion, so recording the identity does
         // not make the handle apply one on its behalf.
         assert_eq!(per_file.file(), Some(Path::new("/src/orders/child.cls")));
