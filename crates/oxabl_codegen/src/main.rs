@@ -976,6 +976,7 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
         ("return-value", "return-val"),
         ("substitute", "subst"),
         ("truncate", "trunc"),
+        ("widget-handle", "widget-h"),
     ];
     for &(full, abbrev) in UNRESERVED_FUNCTION_ABBREVS {
         if !builtin_upper.contains(full.to_uppercase().as_str()) {
@@ -995,6 +996,30 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
     // DYNAMIC-NEW is a function in expression position but is indexed as a
     // statement, so it is registered by hand like VALUE.
     names.push("dynamic-new".to_string());
+
+    // Functions that real code calls but the function index does not list: the
+    // settable MEMPTR and codepage forms (`SET-SIZE(m) = 16`) and the case
+    // conversions. Registered by hand like VALUE.
+    const UNINDEXED_FUNCTIONS: &[&str] = &[
+        "fix-codepage",
+        "lower",
+        "put-bits",
+        "put-byte",
+        "put-bytes",
+        "put-double",
+        "put-float",
+        "put-int64",
+        "put-long",
+        "put-short",
+        "put-string",
+        "put-unsigned-long",
+        "put-unsigned-short",
+        "set-byte-order",
+        "set-pointer-value",
+        "set-size",
+        "upper",
+    ];
+    names.extend(UNINDEXED_FUNCTIONS.iter().map(|n| n.to_string()));
 
     names.sort();
     names.dedup();

@@ -236,3 +236,77 @@ DELETE OBJECT hTt.
 ",
     );
 }
+
+#[test]
+fn a_widget_handle_used_only_as_a_trigger_target_is_read() {
+    for source in [
+        "\
+DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+CREATE BUTTON hb ASSIGN LABEL = \"x\".
+ON CHOOSE OF hb DO:
+  MESSAGE \"x\".
+END.
+",
+        "\
+DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+CREATE BUTTON hb.
+ON CHOOSE, ENTRY OF hb IN FRAME f1 DO:
+  MESSAGE \"x\".
+END.
+",
+        "\
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+CREATE QUERY hq.
+ON CHOOSE OF hq PERSISTENT RUN p IN THIS-PROCEDURE.
+",
+    ] {
+        assert_clean(source);
+    }
+}
+
+#[test]
+fn a_trigger_target_that_is_no_value_is_not_an_undefined_symbol() {
+    assert_clean("ON CHOOSE OF btnFromAFrame DO:\n  MESSAGE \"x\".\nEND.\n");
+}
+
+#[test]
+fn builtin_functions_in_a_create_trigger_body_are_defined() {
+    assert_clean(
+        "\
+DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+DEFINE VARIABLE hf AS HANDLE NO-UNDO.
+DEFINE VARIABLE s AS CHARACTER NO-UNDO.
+CREATE BUTTON hb
+  ASSIGN LABEL = \"x\"
+  TRIGGERS:
+    ON \"choose\":U
+    DO:
+      ASSIGN s = \"a\" + lower( hf:TABLE ) + \"b\".
+      s = LOWER(s).
+      MESSAGE s.
+    END.
+  END TRIGGERS.
+DELETE WIDGET hb.
+",
+    );
+}
+
+#[test]
+fn memptr_and_case_builtins_are_defined() {
+    assert_clean(
+        "\
+DEFINE VARIABLE mp AS MEMPTR NO-UNDO.
+DEFINE VARIABLE lc AS LONGCHAR NO-UNDO.
+DEFINE VARIABLE h AS HANDLE NO-UNDO.
+DEFINE VARIABLE s AS CHARACTER NO-UNDO.
+SET-SIZE(mp) = 16.
+PUT-BYTE(mp, 1) = 65.
+PUT-STRING(mp, 1) = \"x\".
+SET-BYTE-ORDER(mp) = 1.
+FIX-CODEPAGE(lc) = \"UTF-8\".
+h = WIDGET-H(\"1024\").
+s = LOWER(UPPER(s)).
+MESSAGE h s GET-SIZE(mp).
+",
+    );
+}

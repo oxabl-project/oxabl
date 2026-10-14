@@ -2830,23 +2830,44 @@ impl<'a> ResolveWalker<'a> {
             }
 
             // ---- Trigger / preprocessor ---------------------------------
-            StatementKind::On { kind } => match kind {
-                OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action {
-                    OnAction::Block(body) => {
-                        let ts = self
-                            .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
-                            .unwrap_or(scope);
-                        self.walk_statement(body, ts);
-                    }
-                    OnAction::PersistentRun { in_handle, arguments, .. } => {
-                        for arg in in_handle.iter().chain(arguments) {
-                            self.walk_expression(arg, scope, AccessMode::Read);
+            StatementKind::On { kind } => {
+                if let OnKind::UiEvent { clauses, .. } = kind {
+                    // A trigger target is a read; a name that is no value (a
+                    // frame field or static widget) stays silent.
+                    for clause in clauses {
+                        for widget in &clause.widgets {
+                            self.resolve_statement_ident(
+                                &widget.name,
+                                scope,
+                                &[NamespaceId::Values],
+                                AccessMode::Read,
+                            );
                         }
                     }
-                    OnAction::Revert => {}
-                },
-                OnKind::KeyRemap { .. } => {}
-            },
+                }
+                match kind {
+                    OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action
+                    {
+                        OnAction::Block(body) => {
+                            let ts = self
+                                .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
+                                .unwrap_or(scope);
+                            self.walk_statement(body, ts);
+                        }
+                        OnAction::PersistentRun {
+                            in_handle,
+                            arguments,
+                            ..
+                        } => {
+                            for arg in in_handle.iter().chain(arguments) {
+                                self.walk_expression(arg, scope, AccessMode::Read);
+                            }
+                        }
+                        OnAction::Revert => {}
+                    },
+                    OnKind::KeyRemap { .. } => {}
+                }
+            }
             StatementKind::TriggerProcedure { .. } => {}
             StatementKind::PreprocIf(pif) => {
                 self.walk_expression(&pif.condition, scope, AccessMode::Read);
@@ -3134,7 +3155,11 @@ impl<'a> ResolveWalker<'a> {
                         for trigger in triggers {
                             match &trigger.action {
                                 OnAction::Block(body) => self.walk_statement(body, ts),
-                                OnAction::PersistentRun { in_handle, arguments, .. } => {
+                                OnAction::PersistentRun {
+                                    in_handle,
+                                    arguments,
+                                    ..
+                                } => {
                                     for arg in in_handle.iter().chain(arguments) {
                                         self.walk_expression(arg, scope, AccessMode::Read);
                                     }

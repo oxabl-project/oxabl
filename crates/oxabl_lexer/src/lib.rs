@@ -2422,6 +2422,22 @@ mod object_keyword_tests {
     use super::*;
 
     #[test]
+    fn unindexed_functions_and_widget_h_are_builtins() {
+        for name in [
+            "lower",
+            "upper",
+            "set-size",
+            "put-byte",
+            "put-string",
+            "fix-codepage",
+            "widget-h",
+            "widget-handl",
+        ] {
+            assert!(is_builtin_function(name), "`{name}` should be a built-in");
+        }
+    }
+
+    #[test]
     fn handle_lifetime_words_lex_as_keywords() {
         for (word, kind) in [
             ("OBJECT", Kind::Object),
