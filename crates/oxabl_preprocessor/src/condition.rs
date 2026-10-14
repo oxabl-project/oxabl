@@ -39,7 +39,7 @@ pub struct Evaluation {
 /// - `=` `<>` `<` `>` `<=` `>=` (and `EQ` `NE` `LT` `GT` `LE` `GE`), `BEGINS`, `MATCHES`
 /// - `?`, the unknown value: equal only to itself, unknown in every other
 ///   comparison. `NOT`, `AND` and `OR` are three-valued, and an unknown result
-///   selects no branch
+///   is false, so the `&ELSE` or `&ELSEIF` branch is taken
 /// - `NOT`, `AND`, `OR`, parentheses
 /// - `+` `-` `*` `MODULO` on integers, `+` on strings
 /// - `DEFINED(name)` (0 undefined, 1 `&GLOBAL-DEFINE`, 2 include argument,
@@ -553,7 +553,7 @@ impl<'a> CondParser<'a> {
         }
     }
 
-    /// The branch a value selects: an unknown one selects none.
+    /// The branch a value selects: an unknown one is false.
     fn truth(&mut self, v: &CondValue) -> bool {
         self.tri(v).unwrap_or(false)
     }
@@ -1771,7 +1771,7 @@ mod tests {
 
     #[test]
     fn the_unknown_value_is_a_third_truth_value() {
-        // An unknown comparison stays unknown through NOT, so no branch is taken.
+        // An unknown comparison stays unknown through NOT, so the condition is false.
         assert!(!exact("NOT (1 < ?)"));
         assert!(!exact("NOT ?"));
         assert!(!exact("?"));

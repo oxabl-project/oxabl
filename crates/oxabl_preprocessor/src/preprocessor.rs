@@ -2789,6 +2789,19 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_condition_is_false_so_else_and_elseif_are_taken() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF 1 > ? &THEN\nthen\n&ELSE\nelse\n&ENDIF\n\
+                      &IF ? &THEN\nthen\n&ELSEIF TRUE &THEN\nelseif\n&ENDIF\n\
+                      &IF NOT (1 > ?) &THEN\nthen\n&ELSE\nnot-else\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "else\nelseif\nnot-else\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
     fn the_database_functions_read_the_listed_databases_or_report_a_guess() {
         let fs = make_fs(&[]);
         let source = "&IF DBTYPE(\"ledger\") NE ? &THEN\nconnected\n&ELSE\nabsent\n&ENDIF\n";
