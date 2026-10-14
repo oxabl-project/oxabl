@@ -1,0 +1,23 @@
+unit u1 procedure one
+  query @3 leaks holder=h1 pool=unscoped
+    free delete-object @5
+    leak exit-return @4 abnormal via raise(error)@4 path 3>4
+unit u2 procedure two
+  buffer @10 leaks holder=h2 pool=unscoped
+    free delete-object @12
+    leak exit-return @11 abnormal via raise(error)@11 path 10>11
+unit u3 procedure three
+  persistent-procedure @17 leaks holder=h3
+    free delete-procedure @19
+    leak exit-return @18 abnormal via raise(error)@18 path 17>18
+unit u4 procedure four
+  query @26 leaks holder=h4 pool=unscoped
+    free delete-object @29
+    leak exit-return @28 normal path 26>27>28
+unit u5 procedure five
+  query @35 leaks holder=h5 pool=unscoped
+    free delete-object @37
+    leak exit-return @36 normal path 35>36
+unit u6 procedure six
+  query @43 leaks holder=h6 pool=unscoped
+    leak exit-return @44 normal path 43>44

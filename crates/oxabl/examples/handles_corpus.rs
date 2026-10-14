@@ -12,6 +12,7 @@
 //! ```
 //! With `OXABL_HANDLES_DUMP=1` and a single file, print that file's dump;
 //! `OXABL_HANDLES_EXPANDED=<path>` also writes the expanded text there.
+//! `OXABL_HANDLES_SITES=<path>` writes the distinct normal-path leak sites there.
 //! Set `OXABL_HANDLES_VERBOSE=<n>` to print `n` sampled leaking objects (every
 //! k-th, spread over the tree) with `file:line` and their path lines, and the
 //! files that panicked or failed. Lines are in the root file; a site inside an
@@ -224,6 +225,7 @@ fn run_file(pipeline: &LintPipeline, root: &Path, file: &Path, r: &mut Report) {
                 Placement::NotPooled => "none",
                 Placement::UnitPool => "unit",
                 Placement::FilePool => "file",
+                Placement::ClassPool => "class",
                 Placement::NamedPool { .. } => "named",
                 Placement::ForeignPool { .. } => "foreign",
                 Placement::Unscoped => "unscoped",
@@ -363,6 +365,10 @@ fn print_report(r: &Report, wall: Duration, verbose: usize) {
         r.distinct_normal.len(),
         r.distinct_abnormal.len()
     );
+    if let Some(path) = std::env::var_os("OXABL_HANDLES_SITES") {
+        let lines: Vec<&str> = r.distinct_normal.iter().map(String::as_str).collect();
+        let _ = std::fs::write(path, lines.join("\n"));
+    }
     println!(
         "escapes only to a member or outer variable no other unit frees: {}",
         r.unowned_outer

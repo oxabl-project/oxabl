@@ -329,6 +329,9 @@ pub enum Placement {
     /// The unnamed pool the file's main block creates; it is deleted when the
     /// procedure (or, for a persistent procedure, its instance) ends.
     FilePool,
+    /// The pool of a class with `USE-WIDGET-POOL`; it is deleted with the
+    /// instance.
+    ClassPool,
     /// A named pool this file creates, by its name as written.
     NamedPool { name: String, persistent: bool },
     /// A named pool this file does not create.
@@ -346,6 +349,7 @@ impl Placement {
             self,
             Placement::UnitPool
                 | Placement::FilePool
+                | Placement::ClassPool
                 | Placement::NamedPool {
                     persistent: false,
                     ..

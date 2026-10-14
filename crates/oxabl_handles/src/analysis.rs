@@ -59,6 +59,14 @@ enum Fx {
     Sweep,
 }
 
+/// An `IF` condition's value for a live holder; see `events::Guard`.
+#[derive(Debug, Clone, Copy)]
+struct GuardFx {
+    var: Option<u32>,
+    live: Option<bool>,
+    created: Option<bool>,
+}
+
 struct Var {
     escape: Option<EscapeKind>,
     freed_elsewhere: bool,
@@ -70,6 +78,8 @@ struct Obj {
     holder: Option<String>,
     into: Into,
     pool: PoolRef,
+    /// `CREATE ... NO-ERROR`: the object may not exist after it.
+    no_error: bool,
     nodes: SmallVec<[NodeIx; 1]>,
 }
 
@@ -93,7 +103,7 @@ struct UnitWalk<'c, 'i, 'a> {
     unit_stmt: NodeId,
     vars: Vec<Var>,
     fx: Vec<SmallVec<[Fx; 2]>>,
-    guards: Vec<Option<(u32, bool)>>,
+    guards: Vec<SmallVec<[GuardFx; 1]>>,
     /// The statement cannot raise, though the CFG gives it a raise edge.
     safe: Vec<bool>,
     objs: Vec<Obj>,
@@ -112,7 +122,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
             unit_stmt,
             vars: Vec::new(),
             fx: Vec::with_capacity(cfg.node_count()),
-            guards: vec![None; cfg.node_count()],
+            guards: vec![SmallVec::new(); cfg.node_count()],
             safe: vec![false; cfg.node_count()],
             objs: Vec::new(),
             pools: Vec::new(),
@@ -153,7 +163,12 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                 for e in &f.effects {
                     let mut var = |name: &'a str| w.var(&mut var_ix, name);
                     match e {
-                        Effect::Create { kind, into, pool } => {
+                        Effect::Create {
+                            kind,
+                            into,
+                            pool,
+                            no_error,
+                        } => {
                             let into_r = match into {
                                 Some(Place::Var(v)) => Into::Var(var(v)),
                                 Some(Place::Other(k)) => Into::Other(*k),
@@ -174,6 +189,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                                     },
                                     into: into_r,
                                     pool: pool.clone(),
+                                    no_error: *no_error,
                                     nodes: SmallVec::new(),
                                 });
                                 w.objs.len() as u32 - 1
@@ -194,6 +210,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                                     holder: None,
                                     into: Into::Nothing,
                                     pool: PoolRef::Default,
+                                    no_error: false,
                                     nodes: SmallVec::new(),
                                 });
                                 w.objs.len() as u32 - 1
@@ -255,8 +272,13 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                     }
                 }
                 w.safe[n.index()] = f.safe;
-                if let Some((v, when)) = f.guard {
-                    w.guards[n.index()] = Some((w.var(&mut var_ix, v), when));
+                for g in &f.guards {
+                    let var = g.var.map(|v| w.var(&mut var_ix, v));
+                    w.guards[n.index()].push(GuardFx {
+                        var,
+                        live: g.live,
+                        created: g.created,
+                    });
                 }
             }
             w.fx.push(out);
@@ -315,7 +337,9 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                         return Placement::UnitPool;
                     }
                 }
-                if self.unit_stmt != NodeId::PROGRAM && self.index.main_pool {
+                if self.index.class_pool {
+                    Placement::ClassPool
+                } else if self.unit_stmt != NodeId::PROGRAM && self.index.main_pool {
                     Placement::FilePool
                 } else {
                     Placement::Unscoped
@@ -374,6 +398,9 @@ const ESCAPED: u8 = 2;
 /// The create node itself, before any effect; told apart from a later
 /// arrival at the same node (a loop back to the create).
 const ROOT: u8 = 4;
+/// Just after a `NO-ERROR` create, before the next statement: the object
+/// exists on this path, so `ERROR-STATUS:ERROR` is false.
+const CREATED: u8 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct State {
@@ -556,10 +583,17 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                 &normal
             };
             let Ok(s) = next else { continue };
-            if self.pruned(n, kind, s.holders) {
+            if self.pruned(n, kind, st.flags, s.holders) {
                 continue;
             }
             let mut flags = s.flags & !ROOT;
+            // Only a later statement can change the error status.
+            if cfg.node(n).kind == NodeKind::Stmt {
+                flags &= !CREATED;
+                if root && self.u.objs[self.o as usize].no_error {
+                    flags |= CREATED;
+                }
+            }
             if is_abnormal(kind) {
                 flags |= ABNORMAL;
             }
@@ -574,18 +608,23 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
         }
     }
 
-    /// The edge leaves an `IF` that tests a holder for an invalid handle, on
-    /// the branch where it is invalid: no path with the object live goes there.
-    fn pruned(&self, n: NodeIx, kind: EdgeKind, holders: u64) -> bool {
-        let Some((v, when)) = self.u.guards[n.index()] else {
-            return false;
+    /// The edge leaves an `IF` whose condition has the other value while the
+    /// object lives: no path with the object live goes there.
+    fn pruned(&self, n: NodeIx, kind: EdgeKind, flags: u8, holders: u64) -> bool {
+        let edge = match kind {
+            EdgeKind::True => true,
+            EdgeKind::False => false,
+            _ => return false,
         };
-        holders & self.bit(v) != 0
-            && match kind {
-                EdgeKind::True => when,
-                EdgeKind::False => !when,
-                _ => false,
-            }
+        self.u.guards[n.index()].iter().any(|g| {
+            let value = if flags & CREATED != 0 {
+                g.created.or(g.live)
+            } else {
+                g.live
+            };
+            let held = g.var.is_none_or(|v| holders & self.bit(v) != 0);
+            held && value.is_some_and(|v| v != edge)
+        })
     }
 
     /// Run node `n`'s effects from the `from`-th on the object. `Err(None)`

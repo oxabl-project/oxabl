@@ -74,7 +74,8 @@
 //! ([`ObjectKind::uses_widget_pool`]). [`Placement`] says which: a named pool
 //! from `IN WIDGET-POOL`, the unnamed pool of an earlier `CREATE WIDGET-POOL`
 //! of the unit (it must dominate the create), the main block's unnamed pool
-//! for a nested unit, or [`Placement::Unscoped`]: the caller's pool or the
+//! for a nested unit, the pool of a class with `USE-WIDGET-POOL`, or
+//! [`Placement::Unscoped`]: the caller's pool or the
 //! session pool, which this file cannot know (HD005).
 //!
 //! # Units and includes

@@ -116,6 +116,12 @@ in expressions.
    the target is the first statement of an include's expansion. An annotation before an `&IF`
    targets the conditional; M6 must decide whether to look into its branches (open).
 
+**Corpus delta of H5 and H5a (verified).** Distinct normal-path leak sites fell from 1771 to 1750
+on the first corpus and from 291 to 280 on the second; none were added. Of 10 moved sites sampled,
+all 10 were false positives: 3 `CREATE ... NO-ERROR` or `RUN ... PERSISTENT SET ... NO-ERROR`
+followed by `IF ERROR-STATUS:ERROR`, and 7 freed under a `VALID-OBJECT` guard (mostly in
+`FINALLY` blocks).
+
 **Still to verify against a licensed install:** the compiler's treatment of an annotation in a
 position it does not know, the exact list of annotations it reads itself, and whether unquoted
 attribute values compile.
@@ -394,8 +400,10 @@ queries are pinned by `crates/oxabl_handles/tests/rules.rs`.
 | H2 | Handle-based objects (`CREATE QUERY`, `BUFFER`, `TEMP-TABLE`, `DATASET`, `DATA-SOURCE`, `CALL`, X-, SAX-, SOAP-, socket and server objects, `CLIENT-PRINCIPAL`), widgets, COM objects, persistent procedures and MEMPTRs are not collected. They live until deleted, until their widget pool is deleted, or until the session ends. | Recalled, high. | `create_kinds.p` |
 | H3 | Frees: `DELETE OBJECT`, `DELETE PROCEDURE`, `DELETE WIDGET` (each handle of `DELETE WIDGET h1 h2`), `RELEASE OBJECT` (COM) and `SET-SIZE(m) = 0`. A delete that raises (an invalid handle) is still a free on its error edge. | Recalled, high. | `create_kinds.p`, `frees.p`, `new_kinds.p`, `memptr.p` |
 | H4 | `APPLY "CLOSE" TO hProc` frees the procedure. This is a convention, not a language rule: the procedure's `CLOSE` trigger usually runs `DELETE PROCEDURE THIS-PROCEDURE`. `RUN destroy IN h` (or `destroyObject`) follows the same kind of convention but shows nothing in the caller, so it makes the object unknown, not freed. | Proposed, medium. | `frees.p`, `persistent.p` |
-| H5 | A live object's handle is valid. So the branch of `IF VALID-HANDLE(h)` (also `NOT`, `h <> ?`, `h = ?`) where `h` is invalid cannot happen while `h` holds a live object, and `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` frees on every path. `VALID-OBJECT` is not a guard for a handle. | Recalled, high. | `guards.p` |
+| H5 | A live object's handle is valid and not unknown. Each test of a holder then has a fixed value: `VALID-HANDLE(h)`, `VALID-OBJECT(h)` and `h <> ?` are true, `h = ?` is false, `NOT` flips. An `IF` whose whole condition has a fixed value this way, through `AND`, `OR` and `NOT`, has a branch that cannot happen while `h` holds a live object: `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` frees on every path, and so does `IF h <> ? AND VALID-HANDLE(h)`. The false branch of `VALID-HANDLE(h) AND x` can happen (`x` is false), so it stays. A test of another holder is no guard. `VALID-OBJECT` is taken as a guard on handles too: real code tests procedure and widget handles with it. | Recalled, high for `VALID-HANDLE`, `<> ?` and `= ?`. Medium for `VALID-OBJECT` on a handle (the corpus uses it for cleanup of handles; its behaviour on an invalid handle is not confirmed). | `guards.p`, `guards_compound.p` |
+| H5a | After `CREATE ... NO-ERROR` or `RUN ... PERSISTENT SET h NO-ERROR`, the object may not exist. The branch of an `IF` that tests `ERROR-STATUS:ERROR` as true cannot hold the object, so a path that leaves there is no leak. This holds only when the `IF` is the next statement after the create: any other statement may change the error status. `NOT VALID-HANDLE(h)` after the create is H5. A create without `NO-ERROR` gets no such rule. | Proposed, medium. | `no_error.p` |
 | H6 | An object created without `IN WIDGET-POOL` goes into the most recent unnamed pool, else the session pool. An unnamed pool is deleted when the procedure or trigger that created it ends; one created in the main block of a persistent procedure lives until that procedure is deleted. Model: a `CREATE WIDGET-POOL.` that dominates the create in the same unit is the unit's pool; one in the main block also covers the file's other units (the file pool). The caller's pool is not knowable: "unscoped" (HD005). | Recalled, medium. | `pools.p`, `unscoped.p` |
+| H6a | A class with `USE-WIDGET-POOL` has an unnamed pool for each instance. An object a unit of the class creates without `IN WIDGET-POOL` goes there, unless a `CREATE WIDGET-POOL` of the unit dominates the create. The pool is deleted with the instance, so the object is pool-freed (placement "class"). `NEW` and static members are not told apart: a static method may use the session pool in a real run. | Proposed, low. | `class_pool.cls` |
 | H7 | A named pool is session-wide by name. `DELETE WIDGET-POOL name` deletes it, and so does the end of the procedure that created it, unless it is `PERSISTENT`. A pool name no statement of the file creates belongs to someone else: the object escapes to it. | Recalled, medium. | `pools.p` |
 | H8 | Widget pools hold handle-based objects and widgets, not persistent procedures, MEMPTRs, COM objects or class instances. Server and socket objects, and a `CREATE VALUE` whose type is not known, are taken as not pooled, so HD005 does not report them. | Recalled. Medium; low for the server, socket, X-, SAX- and SOAP- objects. | `pools.p`, `new_kinds.p` |
 | H9 | An object left in a pool this procedure deletes is freed with it, so it is not an HD001 leak, also when a loop overwrites its handle. It can still grow memory until the procedure ends. | Proposed. | `pools.p` |
@@ -413,12 +421,19 @@ queries are pinned by `crates/oxabl_handles/tests/rules.rs`.
 
 Not modelled, known gaps:
 
-- `CREATE ... NO-ERROR` that fails makes no object, and the usual `IF ERROR-STATUS:ERROR THEN
-  RETURN.` after it is then a leak path that cannot happen.
+- A statement between a `NO-ERROR` create and the test of `ERROR-STATUS:ERROR` ends H5a, also when it
+  cannot change the status. A leak is then reported on the failed path. The test of a saved status
+  (`lErr = ERROR-STATUS:ERROR` first) is not read.
 - `UNDO` restores a variable without `NO-UNDO`, a handle variable included. Objects are not undone,
-  and the model does not restore variables either.
+  and the model does not restore variables either. This is safe to leave: the only effect on a
+  verdict is a miss. A transaction block that creates into a variable and then undoes the variable
+  loses the handle in a real run, while the model still sees it, so a later `IF VALID-HANDLE(h)
+  THEN DELETE OBJECT h` is taken as a free (a missed leak, not a false report). The opposite case
+  needs an old live handle overwritten inside a block that is then undone, which is rare. Modelling
+  it needs the CFG to know which edges undo which block, and the holder set to remember the value at
+  each block entry. `undo.p` pins the current verdicts.
 - `COPY-LOB ... TO m` and other statements that allocate a MEMPTR; only `SET-SIZE` is.
-- The `USE-WIDGET-POOL` option of a class, `CREATE-LIKE` on a dataset, and the widget-pool option
+- `CREATE-LIKE` on a dataset, and the widget-pool option
   of a widget's `ASSIGN` phrase.
 - A caller's widget pool, and an object freed by a procedure this file runs (no call graph yet).
 - More than 64 variables of one unit that hold the same object on one path.

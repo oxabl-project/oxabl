@@ -11,7 +11,7 @@ use oxabl_ast::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::events::{self, Effect, Effects};
+use crate::events::{self, Effect, Effects, Guards};
 use crate::model::EscapeKind;
 
 /// How a variable name resolves from one unit.
@@ -59,9 +59,8 @@ pub(crate) struct StmtFacts<'a> {
     pub(crate) effects: Effects<'a>,
     /// The statement cannot raise, though the CFG gives it a raise edge.
     pub(crate) safe: bool,
-    /// The variable an `IF` tests for an invalid handle, and the value of the
-    /// condition when it is invalid.
-    pub(crate) guard: Option<(&'a str, bool)>,
+    /// What an `IF` condition says about holders of a live object.
+    pub(crate) guards: Guards<'a>,
 }
 
 /// The facts of the unit being walked.
@@ -83,6 +82,8 @@ pub(crate) struct FileIndex<'a> {
     frees: FxHashMap<Name<'a>, SmallVec<[NodeId; 2]>>,
     /// The main block creates an unnamed widget pool.
     pub(crate) main_pool: bool,
+    /// The file's class has `USE-WIDGET-POOL`.
+    pub(crate) class_pool: bool,
     /// Named pools the file creates, lowercased, with `PERSISTENT`.
     pub(crate) named_pools: FxHashMap<String, bool>,
     /// Named pools the file deletes, lowercased.
@@ -98,6 +99,7 @@ impl<'a> FileIndex<'a> {
             creating: Vec::new(),
             frees: FxHashMap::default(),
             main_pool: false,
+            class_pool: false,
             named_pools: FxHashMap::default(),
             deleted_pools: FxHashSet::default(),
         };
@@ -184,17 +186,17 @@ impl<'a> FileIndex<'a> {
             self.note(s.id, unit, &effects);
         }
         let safe = events::cannot_raise(s);
-        let guard = match &s.kind {
-            SK::If { condition, .. } => events::invalid_test(condition),
-            _ => None,
+        let guards = match &s.kind {
+            SK::If { condition, .. } => events::guards(condition),
+            _ => Guards::new(),
         };
-        if !effects.is_empty() || safe || guard.is_some() {
+        if !effects.is_empty() || safe || !guards.is_empty() {
             self.cur.stmts.push((
                 s.id,
                 StmtFacts {
                     effects,
                     safe,
-                    guard,
+                    guards,
                 },
             ));
         }
@@ -274,7 +276,14 @@ impl<'a> FileIndex<'a> {
                     }
                 });
             }
-            SK::Class { body, .. } => self.walk(body, unit, true, src),
+            SK::Class {
+                body,
+                use_widget_pool,
+                ..
+            } => {
+                self.class_pool |= *use_widget_pool;
+                self.walk(body, unit, true, src)
+            }
             SK::Interface { .. } => {}
             SK::On { kind } => {
                 if let Some(action) = trigger_block(kind) {

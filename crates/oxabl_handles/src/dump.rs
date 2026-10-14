@@ -102,6 +102,7 @@ fn placement(p: &Placement) -> String {
         Placement::NotPooled => "none".into(),
         Placement::UnitPool => "unit".into(),
         Placement::FilePool => "file".into(),
+        Placement::ClassPool => "class".into(),
         Placement::NamedPool { name, persistent } => {
             format!("\"{name}\"{}", if *persistent { " persistent" } else { "" })
         }

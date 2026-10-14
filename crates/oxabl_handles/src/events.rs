@@ -42,6 +42,8 @@ pub(crate) enum Effect<'a> {
         kind: ObjectKind,
         into: Option<Place<'a>>,
         pool: PoolRef,
+        /// `NO-ERROR`: the create may fail and make nothing.
+        no_error: bool,
     },
     /// A class instance (`NEW`, `DYNAMIC-NEW`).
     Collected,
@@ -104,7 +106,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                     for_table,
                     ..
                 },
-            ..
+            no_error,
         } => {
             for e in [class, for_table, widget_pool].into_iter().flatten() {
                 scan(e, src, &mut out);
@@ -120,6 +122,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 kind: object_kind(*kind),
                 into: place_of(handle),
                 pool,
+                no_error: *no_error,
             });
             // `ASSIGN FRAME = f` or `PARENT = w`: the parent widget owns it.
             if let Some(var) = var_of(handle)
@@ -199,6 +202,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             in_handle,
             persistent,
             persistent_handle,
+            no_error,
             ..
         } => {
             let dynamic = matches!(target, oxabl_ast::RunTarget::Dynamic(_));
@@ -250,6 +254,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                     kind: ObjectKind::PersistentProcedure,
                     into: persistent_handle.as_ref().and_then(place_of),
                     pool: PoolRef::Default,
+                    no_error: *no_error,
                 });
             }
         }
@@ -339,6 +344,7 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
                 kind: ObjectKind::Memptr,
                 into: Some(into),
                 pool: PoolRef::Default,
+                no_error: false,
             });
         }
         return;
@@ -588,26 +594,121 @@ fn pool_name(e: &Expression, src: &str) -> String {
     }
 }
 
-/// The variable an `IF` condition tests for an invalid handle, and the value
-/// the condition has when the handle is invalid: `VALID-HANDLE(h)` is false,
-/// `h = ?` is true.
-pub(crate) fn invalid_test(cond: &Expression) -> Option<(&str, bool)> {
-    match &cond.kind {
-        EK::FunctionCall { name, arguments }
-            if name.name.eq_ignore_ascii_case("VALID-HANDLE") && arguments.len() == 1 =>
-        {
-            var_of(&arguments[0]).map(|v| (v, false))
+/// What an `IF` condition says about a holder of a live object, so that no
+/// path with the object live takes one of its edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Guard<'a> {
+    /// The holder the condition tests; `None` for a test of
+    /// `ERROR-STATUS:ERROR` alone.
+    pub(crate) var: Option<&'a str>,
+    /// The value of the condition for every path where the holder is valid:
+    /// the other edge is never taken while the object lives.
+    pub(crate) live: Option<bool>,
+    /// The same, right after a `NO-ERROR` create that made the object, where
+    /// `ERROR-STATUS:ERROR` is false too.
+    pub(crate) created: Option<bool>,
+}
+
+pub(crate) type Guards<'a> = SmallVec<[Guard<'a>; 1]>;
+
+/// The guards of an `IF` condition: one for each holder a test names, and one
+/// for the error status.
+pub(crate) fn guards(cond: &Expression) -> Guards<'_> {
+    let mut vars: SmallVec<[Option<&str>; 2]> = SmallVec::new();
+    let mut error = false;
+    collect_tested(cond, &mut vars, &mut error);
+    if error {
+        vars.push(None);
+    }
+    vars.into_iter()
+        .filter_map(|var| {
+            let live = var.and_then(|v| eval(cond, Some(v), false));
+            let created = eval(cond, var, true);
+            (live.is_some() || created.is_some()).then_some(Guard { var, live, created })
+        })
+        .collect()
+}
+
+fn collect_tested<'a>(
+    e: &'a Expression,
+    vars: &mut SmallVec<[Option<&'a str>; 2]>,
+    error: &mut bool,
+) {
+    match &e.kind {
+        EK::Not(a) => collect_tested(a, vars, error),
+        EK::And(a, b) | EK::Or(a, b) => {
+            collect_tested(a, vars, error);
+            collect_tested(b, vars, error);
         }
-        EK::Not(inner) => invalid_test(inner).map(|(v, when)| (v, !when)),
-        EK::Equal(a, b) | EK::NotEqual(a, b) => {
-            let when = matches!(cond.kind, EK::Equal(..));
-            match (&a.kind, &b.kind) {
-                (_, EK::Literal(Literal::Unknown(_))) => var_of(a).map(|v| (v, when)),
-                (EK::Literal(Literal::Unknown(_)), _) => var_of(b).map(|v| (v, when)),
-                _ => None,
+        _ => {
+            if is_error_status(e) {
+                *error = true;
+            } else if let Some(v) = tested_var(e)
+                && !vars.contains(&Some(v))
+            {
+                vars.push(Some(v));
             }
         }
+    }
+}
+
+/// The holder a validity or `?` comparison names.
+fn tested_var(e: &Expression) -> Option<&str> {
+    match &e.kind {
+        EK::FunctionCall { name, arguments }
+            if is_validity_test(&name.name) && arguments.len() == 1 =>
+        {
+            var_of(&arguments[0])
+        }
+        EK::Equal(a, b) | EK::NotEqual(a, b) => match (&a.kind, &b.kind) {
+            (_, EK::Literal(Literal::Unknown(_))) => var_of(a),
+            (EK::Literal(Literal::Unknown(_)), _) => var_of(b),
+            _ => None,
+        },
         _ => None,
+    }
+}
+
+fn is_validity_test(name: &str) -> bool {
+    name.eq_ignore_ascii_case("VALID-HANDLE") || name.eq_ignore_ascii_case("VALID-OBJECT")
+}
+
+fn is_error_status(e: &Expression) -> bool {
+    match &e.kind {
+        EK::Identifier(id) => id.name.eq_ignore_ascii_case("ERROR-STATUS:ERROR"),
+        EK::MemberAccess { object, member } => {
+            member.name.eq_ignore_ascii_case("ERROR")
+                && matches!(&object.kind, EK::Identifier(id)
+                    if id.name.eq_ignore_ascii_case("ERROR-STATUS"))
+        }
+        _ => false,
+    }
+}
+
+/// The value of `cond` when `var` holds a live object (valid, not unknown) and,
+/// if `error_clear`, `ERROR-STATUS:ERROR` is false; `None` when it varies.
+fn eval(cond: &Expression, var: Option<&str>, error_clear: bool) -> Option<bool> {
+    match &cond.kind {
+        EK::Not(a) => eval(a, var, error_clear).map(|v| !v),
+        EK::And(a, b) => match (eval(a, var, error_clear), eval(b, var, error_clear)) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        },
+        EK::Or(a, b) => match (eval(a, var, error_clear), eval(b, var, error_clear)) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        },
+        _ if is_error_status(cond) => error_clear.then_some(false),
+        _ => {
+            let v = var?;
+            if tested_var(cond)? != v {
+                return None;
+            }
+            // Valid and not unknown: a validity test and `<> ?` hold.
+            Some(!matches!(cond.kind, EK::Equal(..)))
+        }
     }
 }
 
