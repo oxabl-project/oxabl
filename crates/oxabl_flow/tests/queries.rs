@@ -547,8 +547,12 @@ fn block_of_head(p: &Parsed, cfg: &Cfg, prefix: &str) -> BlockId {
 
 /// The handler a `throw` edge of `n` reaches.
 fn throw_handler(cfg: &Cfg, n: NodeIx) -> NodeIx {
-    let (to, kind) = only_edge(cfg, n);
-    assert_eq!(kind, EdgeKind::Throw);
+    let throws: Vec<_> = cfg
+        .successors(n)
+        .filter(|e| e.kind == EdgeKind::Throw)
+        .collect();
+    assert_eq!(throws.len(), 1, "{throws:?}");
+    let to = throws[0].to;
     assert_eq!(cfg.node(to).kind, NodeKind::Handler(Condition::Error));
     to
 }
@@ -654,9 +658,37 @@ fn undo_without_an_action_does_the_blocks_error_action() {
     let flow = p.flow();
     let cfg = &flow.units()[0];
     let nodes = p.nodes(cfg, "UNDO.");
-    let kinds: Vec<EdgeKind> = nodes.iter().map(|&n| only_edge(cfg, n).1).collect();
-    // BLOCK-LEVEL throws; an explicit ON ERROR phrase wins.
-    assert_eq!(kinds, [EdgeKind::Throw, EdgeKind::Leave, EdgeKind::Throw]);
+    let kinds = |n: NodeIx| -> Vec<EdgeKind> { cfg.successors(n).map(|e| e.kind).collect() };
+    // BLOCK-LEVEL throws, but the statement's own default is RETRY, and which
+    // one wins is not settled: both outcomes stay. In a loop RETRY becomes
+    // NEXT, so the loop keeps its next iteration.
+    assert_eq!(kinds(nodes[0]), [EdgeKind::Next, EdgeKind::Throw]);
+    // An explicit ON ERROR phrase wins.
+    assert_eq!(kinds(nodes[1]), [EdgeKind::Leave]);
+    // A block that is not iterating is left on RETRY.
+    assert_eq!(kinds(nodes[2]), [EdgeKind::Leave, EdgeKind::Throw]);
+}
+
+#[test]
+fn undo_with_a_value_raises_before_it_undoes() {
+    let p = parse(include_str!("fixtures/undo_value.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[1];
+    let raises = |n: NodeIx| {
+        cfg.successors(n)
+            .any(|e| e.kind == EdgeKind::Raise(Condition::Error))
+    };
+    for prefix in [
+        "UNDO, RETURN h:",
+        "UNDO, RETURN ERROR h:",
+        "UNDO, THROW NEW",
+    ] {
+        let n = p.node(cfg, prefix);
+        assert!(raises(n), "{prefix}");
+        assert!(cfg.node(n).undoes.is_some(), "{prefix}");
+    }
+    // No value, nothing to evaluate.
+    assert!(!raises(p.node(cfg, "UNDO, RETURN.")));
 }
 
 #[test]

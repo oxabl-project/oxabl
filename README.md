@@ -107,13 +107,13 @@ Lint rules are in groups. The `LINT` rules are in the `default` group, which is 
 | CL005 | `shared-state` | `strict.calls` | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
 | TX006 | `missing-no-undo` | `strict.transactions` | a variable, parameter, temp-table or property without `NO-UNDO` |
 
-These four rules are context-free: each finding depends only on the text of its own file.
+These four rules are context-free: each finding depends only on the text of its own file, expanded with no arguments and no includer defines. For most files that is the whole answer. It is not for a parametrised include fragment: `{1}`, `{&name}` and `&IF DEFINED(...)` resolve against no includer, so a statement that holds one can compile differently in each includer.
 
-**Include files.** A strict rule reports code from an include in the include file, once, and never in the program that includes it. `oxabl check <dir>` therefore also checks the `.i` files of the tree, but only for context-free rules, and only where the configuration enables one for that file. Other findings of a fragment (parse errors, undefined names, unused variables) stay hidden, because a fragment often does not parse or resolve alone. A baseline keys such a finding by the include's path. Limits:
+**Include files.** A strict rule reports code from an include in the include file, once, and never in the program that includes it. `oxabl check <dir>` therefore also checks the `.i` files of the tree, but only for context-free rules, and only where the configuration enables one for that file. Other findings of a fragment (parse errors, undefined names, unused variables) stay hidden, because a fragment often does not parse or resolve alone. A baseline keys such a finding by the include's path. A finding whose statement holds a `{...}` reference, or sits under an `&IF`, is lower confidence: it has the generic help (TX006 never asks for the `NEW SHARED` producer and every consumer there), its help says that it depends on the including file, and no autofix may change it. The run cannot see what an includer's arguments would add, for example a `NEW SHARED` modifier that comes from `{&mod}`, so such a finding can also be missing. Limits:
 
 - `oxabl check <file>` checks that one file. It does not check the includes of a program. Name the `.i` file to check it.
 - `check` does not find an include outside the directory that it walks, or an include with an extension other than `.i`.
-- In the editor, an open `.i` file shows its context-free findings.
+- In the editor, an open `.i` file shows its context-free findings. The editor does not show the help, so it does not show the lower-confidence note.
 - The text summary and `--json` count these files apart from the roots (`include_files_checked`).
 
 See `docs/design/strict-analysis-open-questions.md` for the reasons and for the plan for rules that depend on the includer.
@@ -153,7 +153,7 @@ oxabl check src --baseline oxabl-baseline.json                     # fail only o
 ```
 
 - A finding matches an entry by rule code, workspace-relative path, a hash of the flagged line and span, and an occurrence number for identical findings. Whitespace runs are collapsed and letters are folded to lower case before hashing, so a change of keyword case does not change the match. The file has no line numbers, so edits that move a finding to a different line do not change the match.
-- Paths are made relative to the workspace root (the directory with `oxabl.toml`, else the directory with the baseline file) after `.` and `..` are resolved, so `src/sub/../a.p` and `src/a.p` are one file. On Windows the root is matched without regard to case. A finding in a file outside the root is reported but never recorded; `check` says how many.
+- Paths are made relative to the workspace root (the directory with `oxabl.toml`, else the directory with the baseline file) after the file system resolves them, so `src/sub/../a.p` and `src/a.p` are one file, and a `..` that follows a symlink names the file that is read. On Windows the path also takes the case of the file system, so `SRC\A.P` and `src\a.p` are one file. A finding in a file outside the root is reported but never recorded; `check` says how many.
 - Identical findings in one file (same rule, same text) are told apart by their order only. If you add a third identical line above two baselined ones, the count of new findings is right, but the finding that `check` shows as new is the last copy, not the line that you added.
 - `check` writes the counts to stderr: `new`, `baselined`, and `stale` (fixed findings that are still in the file). With `--json`, the report has a `baseline` key with the same counts, and `diagnostics` holds only new findings.
 - `--update-baseline` adds the new findings and removes the stale entries. It keeps the entries of files that the run did not check. It cannot be used with `--no-lint`.

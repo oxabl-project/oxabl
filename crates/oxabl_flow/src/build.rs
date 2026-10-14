@@ -385,6 +385,9 @@ enum Shape<'a> {
     Undo {
         label: Option<String>,
         action: Option<Action>,
+        /// `UNDO, RETURN v` and `UNDO, THROW v` evaluate `v` first, and that
+        /// can raise.
+        raises: bool,
     },
     Stop,
     Quit,
@@ -1299,19 +1302,37 @@ impl<'a> Builder<'a> {
                 self.jump(n, Target::Exit(ExitKind::Error), EdgeKind::ReturnError)
             }
             Shape::Throw => self.raise(n, Condition::Error, EdgeKind::Throw),
-            Shape::Undo { label, action } => {
+            Shape::Undo {
+                label,
+                action,
+                raises,
+            } => {
                 // UNDO without a label undoes the closest block with the
-                // error property; without an action it does that block's
-                // ON ERROR action (a plain block has none: RETRY).
+                // error property.
                 let closest = self.undo_frame();
                 let u = self.label_target(n, label.as_deref(), closest);
                 self.cfg.nodes[n.index()].undoes = Some(self.frames[u].block);
-                let action = action.unwrap_or_else(|| {
-                    self.block(u)
-                        .handling(Condition::Error)
-                        .map_or(Action::Retry(None), |h| h.action.clone())
-                });
-                self.apply(n, u, &action);
+                if raises {
+                    self.raise(n, Condition::Error, EdgeKind::Raise(Condition::Error));
+                    self.may_stop(n, false);
+                }
+                match action {
+                    Some(action) => self.apply(n, u, &action),
+                    // Without an action the statement's own default is RETRY.
+                    // Whether a block action of THROW overrides it is not
+                    // settled, so both outcomes are kept (F7).
+                    None => match self.block(u).handling(Condition::Error) {
+                        Some(h) if h.action == Action::Throw => {
+                            self.apply(n, u, &Action::Retry(None));
+                            self.apply(n, u, &Action::Throw);
+                        }
+                        Some(h) => {
+                            let action = h.action.clone();
+                            self.apply(n, u, &action);
+                        }
+                        None => self.apply(n, u, &Action::Retry(None)),
+                    },
+                }
             }
             Shape::Stop => self.raise(n, Condition::Stop, EdgeKind::Raise(Condition::Stop)),
             Shape::Quit => self.raise(n, Condition::Quit, EdgeKind::Raise(Condition::Quit)),
@@ -1342,7 +1363,11 @@ impl<'a> Builder<'a> {
             | SK::On { .. } => Shape::plain(false),
             SK::Empty => match tokens::read_control(self.src, s.span) {
                 Control::Plain | Control::Directive(_) => Shape::plain(false),
-                Control::Undo { label, action } => Shape::Undo { label, action },
+                Control::Undo { label, action } => Shape::Undo {
+                    label,
+                    action,
+                    raises: false,
+                },
                 Control::Quit => Shape::Quit,
                 Control::Stop => Shape::Stop,
                 Control::Throw => Shape::Throw,
@@ -1423,14 +1448,22 @@ impl<'a> Builder<'a> {
             // ERROR v` and `UNDO, THROW v` as a `RETURN` or `THROW`.
             SK::Return(value) => match tokens::read_control(self.src, s.span) {
                 Control::ReturnError => Shape::ReturnError,
-                Control::Undo { label, action } => Shape::Undo { label, action },
+                Control::Undo { label, action } => Shape::Undo {
+                    label,
+                    action,
+                    raises: value.is_some(),
+                },
                 _ => Shape::Return {
                     raises: value.is_some(),
                 },
             },
             SK::Throw(_) => match tokens::read_control(self.src, s.span) {
                 Control::ReturnError => Shape::ReturnError,
-                Control::Undo { label, action } => Shape::Undo { label, action },
+                Control::Undo { label, action } => Shape::Undo {
+                    label,
+                    action,
+                    raises: true,
+                },
                 _ => Shape::Throw,
             },
             // Structural statements are handled by `stmt`; anything new is

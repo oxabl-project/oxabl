@@ -106,6 +106,12 @@ pub const DEFAULT_SEVERITY: Severity = Severity::Warning;
 pub const DESCRIPTION: &str =
     "a variable, parameter, temp-table or property is defined without NO-UNDO";
 
+/// The help of a plain finding.
+pub const HELP: &str = "Add `NO-UNDO` to the definition.";
+/// The help of a finding on a `SHARED` or `NEW [GLOBAL] SHARED` definition.
+pub const SHARED_HELP: &str = "Add `NO-UNDO` to the `NEW SHARED` producer and to every `SHARED` consumer; \
+     changing one side alone makes the definitions disagree.";
+
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
     let mut v = Definitions {
@@ -132,13 +138,8 @@ fn type_is_exempt(type_source: &TypeSource) -> bool {
 
 impl Definitions<'_> {
     fn report(&mut self, name: &Identifier, noun: &str, shared: bool) {
-        let help = if shared {
-            // The AVM expects the producer and its consumers to match.
-            "Add `NO-UNDO` to the `NEW SHARED` producer and to every `SHARED` consumer; \
-             changing one side alone makes the definitions disagree."
-        } else {
-            "Add `NO-UNDO` to the definition."
-        };
+        // The AVM expects the producer and its consumers to match.
+        let help = if shared { SHARED_HELP } else { HELP };
         self.diags.push(
             Diagnostic::warning(
                 TX006,

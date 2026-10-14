@@ -49,13 +49,16 @@
 //! A finding that sits in an include file is dropped when the includer is
 //! linted. A context-free rule reports it once, in the include file itself,
 //! when a client lints that file as a root (`oxabl check <dir>` does so for
-//! every `.i` file it walks; an editor does so for an open buffer).
+//! every `.i` file it walks; an editor does so for an open buffer). The fragment
+//! is expanded with no includer, so a finding on a statement with a `{...}`
+//! reference or an `&IF` is lower confidence: see [`fragment`].
 //!
 
 use oxabl_ast::Statement;
 use oxabl_common::Diagnostic;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
+pub mod fragment;
 mod registry;
 mod rules;
 

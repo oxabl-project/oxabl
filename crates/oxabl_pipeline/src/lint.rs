@@ -842,10 +842,17 @@ impl<'a> LintPipeline<'a> {
     /// includes it, and is reported here once. Preprocessor, parse, semantic and
     /// context-dependent findings are left out, since an include fragment often
     /// does not parse or resolve alone.
+    ///
+    /// A fragment is expanded with no arguments and no includer defines, so a
+    /// finding whose statement holds a `{...}` reference or sits under an `&IF`
+    /// can differ from what an includer compiles. Such a finding has the
+    /// generic help and is not autofixable
+    /// ([`oxabl_lint::fragment`]).
     pub fn run_context_free(&self, source: &str) -> LintResult {
         match catch_panic(|| {
             let expansion = self.expand(source);
-            self.collect_selecting(&expansion, RuleSelection::ContextFree)
+            let result = self.collect_selecting(&expansion, RuleSelection::ContextFree);
+            lower_includer_dependent(result, source)
         }) {
             Ok(result) => result,
             Err(panic) => LintResult::failed(panic),
@@ -921,12 +928,46 @@ impl<'a> LintPipeline<'a> {
     pub fn run(&self, source: &str) -> LintResult {
         match catch_panic(|| {
             let expansion = self.expand(source);
-            self.collect(&expansion)
+            let result = self.collect(&expansion);
+            if self.file().is_some_and(is_include_fragment) {
+                lower_includer_dependent(result, source)
+            } else {
+                result
+            }
         }) {
             Ok(result) => result,
             Err(panic) => LintResult::failed(panic),
         }
     }
+}
+
+/// Lower the confidence of the context-free findings of an include fragment
+/// whose statement can change with the includer.
+fn lower_includer_dependent(mut result: LintResult, source: &str) -> LintResult {
+    let Outcome::Computed { diagnostics, .. } = &mut result.outcome else {
+        return result;
+    };
+    let dependence = oxabl_lint::fragment::IncludeDependence::scan(source);
+    if dependence.is_empty() {
+        return result;
+    }
+    let registry = oxabl_lint::Registry::builtin_shared();
+    let context_free = |code: &str| {
+        registry
+            .rules()
+            .any(|rule| rule.meta().context_free && rule.meta().code == code)
+    };
+    for found in &mut diagnostics.diagnostics {
+        let d = &found.diagnostic;
+        if found.source == DiagnosticSource::Lint
+            && d.span.file == ROOT_FILE_ID
+            && context_free(d.code.0)
+            && dependence.covers(d.span.span)
+        {
+            found.diagnostic = oxabl_lint::fragment::lower_confidence(d.clone());
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -1390,6 +1431,77 @@ mod tests {
             "recovery is still noted"
         );
         assert!(!result.failed_run());
+    }
+
+    // A fragment is expanded with no includer: a statement that holds a
+    // reference, or sits under an `&IF`, can be judged differently by each
+    // includer, so its findings carry the generic help and block an autofix.
+    #[test]
+    fn a_finding_that_depends_on_the_includer_is_lower_confidence() {
+        let config = PipelineConfig {
+            lint_severities: {
+                let mut map = LintSeverityMap::new();
+                map.base_mut().enable_group("strict.transactions");
+                map.base_mut().enable_group("strict.calls");
+                map
+            },
+            ..PipelineConfig::default()
+        };
+        let fs = InMemoryFileSystem::new();
+        let run = LintPipeline::new(&config, &fs);
+        let src = "\
+DEFINE {&mod} VARIABLE x AS INTEGER NO-UNDO.
+DEFINE VARIABLE y AS INTEGER {&nu}.
+DEFINE SHARED VARIABLE s AS INTEGER {&nu}.
+DEFINE VARIABLE plain AS INTEGER.
+&IF NOT DEFINED(want-run) &THEN
+RUN VALUE(y).
+&ENDIF
+RUN VALUE(z).
+";
+        let fragment = run.with_file("/ws/inc.i");
+        for result in [fragment.run_context_free(src), fragment.run(src)] {
+            let found: Vec<(&str, &str, bool)> = result
+                .all()
+                .filter(|d| ["TX006", "CL001"].contains(&d.diagnostic.code.0))
+                .map(|d| {
+                    let at = d.diagnostic.span.span.start as usize;
+                    let note = d
+                        .diagnostic
+                        .help
+                        .as_deref()
+                        .is_some_and(|h| h.ends_with(oxabl_lint::fragment::INCLUDER_NOTE));
+                    assert_eq!(oxabl_lint::fragment::autofixable(&d.diagnostic), !note);
+                    (d.diagnostic.code.0, &src[at..at + 1], note)
+                })
+                .collect();
+            // Line 3's `SHARED` is literal, but its statement holds a reference
+            // too: the shared-specific help is never used for it.
+            assert_eq!(
+                found,
+                [
+                    ("CL001", "y", true),
+                    ("CL001", "z", false),
+                    ("TX006", "y", true),
+                    ("TX006", "s", true),
+                    ("TX006", "p", false),
+                ]
+            );
+            let shared = result
+                .all()
+                .find(|d| src[d.diagnostic.span.span.start as usize..].starts_with('s'))
+                .unwrap();
+            assert!(
+                !shared
+                    .diagnostic
+                    .help
+                    .as_deref()
+                    .unwrap()
+                    .contains("producer"),
+                "{:?}",
+                shared.diagnostic.help
+            );
+        }
     }
 
     #[test]
