@@ -42,7 +42,9 @@ pub struct Evaluation {
 ///   `LEFT-TRIM`, `RIGHT-TRIM`, `LC`, `INDEX`, `R-INDEX`, `ENTRY`,
 ///   `NUM-ENTRIES`, `LOOKUP`, `ABSOLUTE`, `MAXIMUM`, `MINIMUM`
 ///
-/// Comparisons are case-insensitive (ABL semantics).
+/// Comparisons are case-insensitive (ABL semantics). Two strings compare as text
+/// and two numbers as numbers; a string against a number, or either against a
+/// logical, is a [`Gap`], as is a `MAXIMUM` or `MINIMUM` over mixed types.
 ///
 /// Everything else is a [`Gap`]: the evaluator still returns a branch, but the
 /// caller must treat it as a guess. That covers every other function (`SEARCH`
@@ -740,7 +742,49 @@ impl<'a> CondParser<'a> {
             };
             return matches!(op, CondToken::Neq | CondToken::Gt | CondToken::Ge);
         }
-        compare_values(lhs, op, rhs)
+        match (type_of(lhs), type_of(rhs)) {
+            // The AVM rejects it. The branch is a guess, read the loose way.
+            (Some(a), Some(b)) if a != b => {
+                self.gap(format!(
+                    "a comparison of {} with {}",
+                    a.describe(),
+                    b.describe()
+                ));
+                compare_values(lhs, op, rhs)
+            }
+            // Two character values compare as text, however they look.
+            _ => match (lhs, rhs) {
+                (CondValue::Str(l), CondValue::Str(r)) => compare_text(l, op, r),
+                _ => compare_values(lhs, op, rhs),
+            },
+        }
+    }
+}
+
+/// The data type of a value, as far as a comparison cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueType {
+    Text,
+    Number,
+    Logical,
+}
+
+impl ValueType {
+    fn describe(self) -> &'static str {
+        match self {
+            ValueType::Text => "a string",
+            ValueType::Number => "a number",
+            ValueType::Logical => "a logical",
+        }
+    }
+}
+
+fn type_of(v: &CondValue) -> Option<ValueType> {
+    match v {
+        CondValue::Str(_) => Some(ValueType::Text),
+        CondValue::Num(_) | CondValue::Dec(_) => Some(ValueType::Number),
+        CondValue::Bool(_) => Some(ValueType::Logical),
+        CondValue::Positive | CondValue::Unknown => None,
     }
 }
 
@@ -760,7 +804,7 @@ fn compare_values(lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> bool {
             _ => {}
         }
     }
-    // Try numeric comparison first
+    // Only reached for two numbers, two logicals, or a mixed guess.
     if let (Some(l), Some(r)) = (as_number(lhs), as_number(rhs)) {
         match op {
             CondToken::Eq => return l == r,
@@ -773,9 +817,13 @@ fn compare_values(lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> bool {
         }
     }
 
-    // Fall back to case-insensitive string comparison
-    let l = as_string(lhs).to_ascii_lowercase();
-    let r = as_string(rhs).to_ascii_lowercase();
+    compare_text(&as_string(lhs), op, &as_string(rhs))
+}
+
+/// Case-insensitive comparison as text.
+fn compare_text(lhs: &str, op: &CondToken, rhs: &str) -> bool {
+    let l = lhs.to_ascii_lowercase();
+    let r = rhs.to_ascii_lowercase();
     match op {
         CondToken::Eq => l == r,
         CondToken::Neq => l != r,
@@ -891,6 +939,7 @@ fn delimiter(arg: Option<&CondValue>) -> Option<char> {
 /// Evaluate a function whose semantics are modelled exactly. `None` means the
 /// function, or this use of it, is not modelled.
 fn call(name: &str, args: &[CondValue]) -> Option<CondValue> {
+    use std::cmp::Ordering::{self, Greater, Less};
     let one = |f: fn(&CondValue) -> Option<CondValue>| match args {
         [a] => f(a),
         _ => None,
@@ -921,14 +970,33 @@ fn call(name: &str, args: &[CondValue]) -> Option<CondValue> {
         "RIGHT-TRIM" => one(|a| Some(CondValue::Str(trim_blanks(&text(a)?, false, true)))),
         "LC" => one(|a| Some(CondValue::Str(fold(&text(a)?)?))),
         "ABSOLUTE" => one(|a| int(a)?.checked_abs().map(CondValue::Num)),
+        // All numbers or all strings; a string pick compares as text.
         "MAXIMUM" | "MINIMUM" if args.len() >= 2 => {
-            let nums = args.iter().map(int).collect::<Option<Vec<_>>>()?;
-            let pick = if name == "MAXIMUM" {
-                nums.into_iter().max()
-            } else {
-                nums.into_iter().min()
-            };
-            pick.map(CondValue::Num)
+            let beats = |order: Ordering| order == if name == "MAXIMUM" { Greater } else { Less };
+            let (first, rest) = args.split_first()?;
+            match first {
+                CondValue::Num(first) => {
+                    let mut pick = first;
+                    for arg in rest {
+                        let CondValue::Num(n) = arg else { return None };
+                        if beats(n.cmp(pick)) {
+                            pick = n;
+                        }
+                    }
+                    Some(CondValue::Num(*pick))
+                }
+                CondValue::Str(first) => {
+                    let mut pick = first;
+                    for arg in rest {
+                        let CondValue::Str(s) = arg else { return None };
+                        if beats(s.to_ascii_lowercase().cmp(&pick.to_ascii_lowercase())) {
+                            pick = s;
+                        }
+                    }
+                    Some(CondValue::Str(pick.clone()))
+                }
+                _ => None,
+            }
         }
         "SUBSTRING" | "SUBSTR" => {
             let (s, start, len) = match args {
@@ -1330,7 +1398,48 @@ mod tests {
         assert!(exact("12.10 < 12.8"));
         assert!(exact("12.80 = 12.8"));
         assert!(exact("-1.5 < 0"));
-        assert!(exact(r#"12.8 >= "12""#));
+    }
+
+    #[test]
+    fn two_strings_compare_as_text_however_they_look() {
+        assert!(exact(r#""9" >= "10""#));
+        assert!(!exact(r#""9" < "10""#));
+        assert!(exact(r#""12.8" > "12.10""#));
+        assert!(exact(r#"ENTRY(1, "9.1", ".") >= "10""#));
+        assert!(exact(r#""007" <> "7""#));
+        assert!(exact(r#"STRING(9) > STRING(10)"#));
+        let vars = vars_with(&[("a", "9"), ("b", "10")]);
+        assert!(evaluate_exact(r#""{&a}" > "{&b}""#, &vars));
+        // Two numbers still compare as numbers.
+        assert!(exact("9 < 10"));
+        assert!(!exact("9 >= 10"));
+        assert!(exact("12.8 > 12.10"));
+        assert!(exact("INTEGER(ENTRY(1, \"9.1\", \".\")) < 10"));
+    }
+
+    #[test]
+    fn a_string_and_a_number_are_not_comparable() {
+        for condition in [
+            r#"12.8 >= "12""#,
+            r#""5" = 5"#,
+            r#"LENGTH("ab") = "2""#,
+            r#"PROVERSION >= 12"#,
+            "TRUE = 1",
+            r#"LOGICAL("yes") = "yes""#,
+        ] {
+            assert_eq!(gaps(condition).len(), 1, "{condition}");
+        }
+    }
+
+    #[test]
+    fn maximum_and_minimum_keep_the_value_type() {
+        assert!(exact(r#"MAXIMUM("10", "9") = "9""#));
+        assert!(exact(r#"MINIMUM("10", "9") = "10""#));
+        assert!(exact(r#"MAXIMUM("a", "B", "c") = "c""#));
+        assert!(exact("MAXIMUM(10, 9) = 10"));
+        assert!(exact("MINIMUM(10, 9, 11) = 9"));
+        assert_eq!(gaps(r#"MAXIMUM(1, "2") = 2"#).len(), 1);
+        assert_eq!(gaps(r#"MINIMUM("1", 2) = 1"#).len(), 1);
     }
 
     #[test]

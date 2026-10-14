@@ -2637,6 +2637,30 @@ mod tests {
     }
 
     #[test]
+    fn digit_strings_compare_as_text_and_a_mixed_comparison_is_a_guess() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF ENTRY(1, \"9.1\", \".\") >= \"10\" &THEN\ntext\n&ELSE\nnumber\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "text\n");
+        assert!(result.diagnostics.is_empty());
+
+        let source = "&IF ENTRY(1, \"9.1\", \".\") >= 10 &THEN\nx\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let messages: Vec<_> = result.diagnostics.iter().map(|d| &d.message).collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].contains("a comparison of a string with a number"),
+            "{}",
+            messages[0]
+        );
+        assert_eq!(
+            result.text_losses[0].kind,
+            TextLossKind::UnmodelledCondition
+        );
+    }
+
+    #[test]
     fn an_unmodelled_function_in_a_condition_is_reported_once_per_condition() {
         let fs = make_fs(&[]);
         let pp = Preprocessor::new(&fs, &[]);
