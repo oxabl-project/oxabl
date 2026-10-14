@@ -541,6 +541,10 @@ fn only_edge(cfg: &Cfg, n: NodeIx) -> (NodeIx, EdgeKind) {
     (edges[0].to, edges[0].kind)
 }
 
+fn block_of_head(p: &Parsed, cfg: &Cfg, prefix: &str) -> BlockId {
+    cfg.node(p.node(cfg, prefix)).block
+}
+
 /// The handler a `throw` edge of `n` reaches.
 fn throw_handler(cfg: &Cfg, n: NodeIx) -> NodeIx {
     let (to, kind) = only_edge(cfg, n);
@@ -653,4 +657,45 @@ fn undo_without_an_action_does_the_blocks_error_action() {
     let kinds: Vec<EdgeKind> = nodes.iter().map(|&n| only_edge(cfg, n).1).collect();
     // BLOCK-LEVEL throws; an explicit ON ERROR phrase wins.
     assert_eq!(kinds, [EdgeKind::Throw, EdgeKind::Leave, EdgeKind::Throw]);
+}
+
+#[test]
+fn for_first_and_for_last_run_their_body_once() {
+    let p = parse(include_str!("fixtures/for_first.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let loop_backs: Vec<_> = cfg
+        .edges()
+        .iter()
+        .filter(|e| e.kind == EdgeKind::LoopBack)
+        .collect();
+    // Only the FOR FIRST that joins an EACH goes round again.
+    assert_eq!(loop_backs.len(), 1);
+    let each = block_of_head(&p, cfg, "FOR FIRST Customer NO-LOCK, EACH");
+    assert_eq!(cfg.node(loop_backs[0].from).block, each);
+
+    for prefix in [
+        "FOR FIRST Customer NO-LOCK:",
+        "FOR LAST Customer NO-LOCK:",
+        "FOR FIRST Customer NO-LOCK, LAST",
+    ] {
+        let b = block_of_head(&p, cfg, prefix);
+        assert!(
+            cfg.block(b).iterating,
+            "{prefix}: NEXT and RETRY still apply"
+        );
+        let end = cfg
+            .nodes()
+            .find(|(_, n)| n.kind == NodeKind::End && n.block == b)
+            .expect("end node")
+            .0;
+        let (to, kind) = only_edge(cfg, end);
+        assert_eq!(kind, EdgeKind::LoopDone, "{prefix}");
+        assert_eq!(cfg.node(to).kind, NodeKind::After(b), "{prefix}");
+    }
+
+    // A NEXT in a FOR LAST ends the loop.
+    let next = p.node(cfg, "NEXT.");
+    let (end, kind) = only_edge(cfg, next);
+    assert_eq!((kind, cfg.node(end).kind), (EdgeKind::Next, NodeKind::End));
 }

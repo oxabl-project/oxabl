@@ -1,0 +1,14 @@
+DEFINE VARIABLE h AS HANDLE NO-UNDO.
+FOR FIRST Customer NO-LOCK:
+    CREATE QUERY h.
+END.
+FOR LAST Customer NO-LOCK:
+    IF h = ? THEN NEXT.
+    MESSAGE "x".
+END.
+FOR FIRST Customer NO-LOCK, EACH Order OF Customer NO-LOCK:
+    MESSAGE "many".
+END.
+FOR FIRST Customer NO-LOCK, LAST Order OF Customer NO-LOCK:
+    MESSAGE "once".
+END.

@@ -175,6 +175,9 @@ pub(crate) struct Header {
     pub has_while: bool,
     pub has_to: bool,
     pub for_qualifier: Option<ForQualifier>,
+    /// Every record phrase of a `FOR` is `FIRST` or `LAST`, so the body runs
+    /// at most once. Unsure counts as `false`.
+    pub single_record: bool,
     /// `FOR` record-phrase buffers, or `DO FOR`/`REPEAT FOR` buffers.
     pub buffers: Vec<String>,
     pub phrases: SmallVec<[(Condition, Handling); 2]>,
@@ -200,6 +203,10 @@ pub(crate) fn read_header(src: &str, span: Span) -> Header {
             2
         };
         h.buffers.extend(t.name(at));
+        h.single_record = matches!(
+            h.for_qualifier,
+            Some(ForQualifier::First | ForQualifier::Last)
+        );
     }
     let mut depth = 0u32;
     let mut i = 1;
@@ -210,14 +217,17 @@ pub(crate) fn read_header(src: &str, span: Span) -> Header {
             Kind::RightParen | Kind::RightBracket => depth = depth.saturating_sub(1),
             _ if depth > 0 => {}
             // A joined record phrase: `, EACH order OF customer`.
-            Kind::Comma
-                if for_block
-                    && matches!(
-                        t.kind(i + 1),
-                        Some(Kind::Each | Kind::First | Kind::Last | Kind::Next | Kind::Prev)
-                    ) =>
-            {
-                h.buffers.extend(t.name(i + 2));
+            Kind::Comma if for_block => {
+                let next = t.kind(i + 1);
+                if matches!(
+                    next,
+                    Some(Kind::Each | Kind::First | Kind::Last | Kind::Next | Kind::Prev)
+                ) {
+                    h.buffers.extend(t.name(i + 2));
+                }
+                if !matches!(next, Some(Kind::First | Kind::Last)) {
+                    h.single_record = false;
+                }
             }
             // `DO FOR b1, b2` / `REPEAT FOR b1`: strongly scoped buffers.
             Kind::KwFor if !for_block => {
@@ -507,6 +517,12 @@ mod tests {
             header("FOR c WHERE c.x = 1:").for_qualifier,
             Some(ForQualifier::Unqualified)
         );
+        assert!(header("FOR FIRST c, LAST o OF c:").single_record);
+        assert!(!header("FOR FIRST c, EACH o OF c:").single_record);
+        assert!(!header("FOR FIRST c, o OF c:").single_record);
+        assert!(!header("FOR EACH c:").single_record);
+        assert!(!header("REPEAT:").single_record);
+        assert!(header("FOR FIRST c ON ERROR UNDO, LEAVE:").single_record);
         assert!(header("REPEAT i = 1 TO 3:").has_to);
         assert!(header("REPEAT WHILE x:").has_while);
         assert!(header("DO STOP-AFTER 5:").stop_after);

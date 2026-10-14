@@ -475,7 +475,8 @@ pub enum EdgeKind {
     Preproc,
     /// Block header to body: the first statement, or the next iteration.
     LoopBody,
-    /// Block header to after the block: the test failed or no record.
+    /// Block header to after the block: the test failed or no record. Also
+    /// the end of the only iteration of a `FOR FIRST` or `FOR LAST`.
     LoopDone,
     /// End of an iteration back to the header.
     LoopBack,

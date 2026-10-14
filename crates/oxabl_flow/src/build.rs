@@ -338,6 +338,9 @@ struct Frame<'a> {
     end_at: u32,
     label: Option<&'a str>,
     iterating: bool,
+    /// The body runs at most once (`FOR FIRST`, `FOR LAST`), though the block
+    /// is iterating for `NEXT` and `RETRY`.
+    single_pass: bool,
     head: NodeIx,
     end: Option<NodeIx>,
     after: Option<NodeIx>,
@@ -489,6 +492,7 @@ impl<'a> Builder<'a> {
             end_at: spec.span.end,
             label: None,
             iterating: false,
+            single_pass: false,
             head: entry,
             end: None,
             after: Some(exit),
@@ -790,6 +794,7 @@ impl<'a> Builder<'a> {
             end_at: fin.span.end,
             label: None,
             iterating: false,
+            single_pass: false,
             head,
             end: None,
             after: None,
@@ -1020,6 +1025,7 @@ impl<'a> Builder<'a> {
             end_at: s.span.end,
             label,
             iterating,
+            single_pass: header.single_record,
             head,
             end: None,
             after: None,
@@ -1075,6 +1081,7 @@ impl<'a> Builder<'a> {
                 end_at: c.span.end,
                 label: None,
                 iterating: false,
+                single_pass: false,
                 head,
                 end: None,
                 after: None,
@@ -1121,7 +1128,9 @@ impl<'a> Builder<'a> {
         }
 
         if let Some(end) = self.frames[k].end {
-            if self.frames[k].iterating {
+            if self.frames[k].single_pass {
+                self.jump(end, Target::After(k), EdgeKind::LoopDone);
+            } else if self.frames[k].iterating {
                 self.jump(end, Target::Head(k), EdgeKind::LoopBack);
             } else {
                 self.jump(end, Target::After(k), EdgeKind::Normal);
