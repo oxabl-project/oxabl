@@ -66,7 +66,7 @@
       "additionalProperties": {
         "$ref": "#/definitions/LintSeverity"
       },
-      "description": "The `[workspace.lint]` table: which rule groups run, per-rule severities, and per-directory overrides.\n\nPrecedence, lowest first: each rule's default, then this table, then every override whose `files` match, in file order — a later override wins over an earlier one, so list broad patterns before narrow ones. Within one table a rule's own setting beats a group toggle, and `disable` beats `enable`. A group toggle turns rules on or off but keeps the severity an earlier table chose.\n\nThe `default` group (the `LINT` rules) is always on: it cannot be toggled as a group, but each of its rules can be set to `off`. The `strict.*` groups are off until enabled.",
+      "description": "The `[workspace.lint]` table: which rule groups run, per-rule severities, and per-directory overrides.\n\nPrecedence, lowest first: each rule's default, then this table, then every override whose `files` match, in file order — a later override wins over an earlier one, so list broad patterns before narrow ones. Within one table a rule's own setting beats a group toggle, and `disable` beats `enable`. A group toggle turns rules on or off but keeps the severity an earlier table chose.\n\nA group toggle in an override replaces an explicit setting for a rule in `[workspace.lint]` (an override is more specific than the global table), but not one made by the same or an earlier override: overrides rank equal, so a rule's own setting there stands against any later group toggle. A later rule setting always wins. For example, with `CL001 = \"off\"` in `[workspace.lint]`, an override that enables `strict.calls` turns `CL001` on for its files; with `CL001 = \"off\"` in an override for `a/**`, a later override for `**/*.p` that enables `strict.calls` leaves `CL001` off.\n\nAn override with no `files` patterns, or only invalid ones, applies to no file and is reported as a warning.\n\nThe `default` group (the `LINT` rules) is always on: it cannot be toggled as a group, but each of its rules can be set to `off`. The `strict.*` groups are off until enabled.",
       "properties": {
         "disable": {
           "description": "Rule groups to turn off. Applied after `enable` in the same table.",
@@ -96,7 +96,7 @@
       "additionalProperties": {
         "$ref": "#/definitions/LintSeverity"
       },
-      "description": "One `[[workspace.lint.overrides]]` entry: settings for the files that match `files`.",
+      "description": "One `[[workspace.lint.overrides]]` entry: settings for the files that match `files`. An entry with no `files` applies to nothing.",
       "properties": {
         "disable": {
           "description": "Rule groups to turn off. Applied after `enable` in the same table.",

@@ -343,10 +343,11 @@ fn derive(
 
     let (lint_severities, rejected_patterns) = config.workspace.lint.to_severity_map_at(root);
     warnings.extend(rejected_patterns.into_iter().map(|r| {
-        ConfigWarning::Lint(format!(
-            "ignoring override pattern `{}`: {}",
-            r.pattern, r.reason
-        ))
+        ConfigWarning::Lint(if r.pattern.is_empty() {
+            format!("ignoring override: {}", r.reason)
+        } else {
+            format!("ignoring override pattern `{}`: {}", r.pattern, r.reason)
+        })
     }));
     warnings.extend(lint_name_warnings(&config.workspace.lint));
     let preprocessor = config.workspace.preprocessor.clone();
@@ -577,6 +578,25 @@ mod tests {
              [[workspace.lint.overrides]]\nfiles = [\"legacy\"]\ndisable = [\"strict.nulls\"]\n",
         );
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_override_without_a_usable_pattern_is_a_warning() {
+        let warnings = lint_warnings(
+            "[[workspace.lint.overrides]]\nLINT0002 = \"off\"\n\
+             [[workspace.lint.overrides]]\nfiles = []\nLINT0001 = \"off\"\n\
+             [[workspace.lint.overrides]]\nfiles = [\"\"]\nLINT0003 = \"off\"\n",
+        );
+        assert_eq!(
+            warnings,
+            [
+                "lint: ignoring override: the override has no `files` patterns, so it applies \
+                 to no file",
+                "lint: ignoring override: the override has no `files` patterns, so it applies \
+                 to no file",
+                "lint: ignoring override: empty pattern",
+            ]
+        );
     }
 
     #[test]

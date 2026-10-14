@@ -165,7 +165,7 @@ impl LintRuleSettings {
 }
 
 /// One `[[workspace.lint.overrides]]` entry: settings for the files that match
-/// `files`.
+/// `files`. An entry with no `files` applies to nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct LintOverride {
@@ -190,6 +190,18 @@ pub struct LintOverride {
 /// group toggle turns rules on or off but keeps the severity an earlier table
 /// chose.
 ///
+/// A group toggle in an override replaces an explicit setting for a rule in
+/// `[workspace.lint]` (an override is more specific than the global table),
+/// but not one made by the same or an earlier override: overrides rank equal,
+/// so a rule's own setting there stands against any later group toggle. A
+/// later rule setting always wins. For example, with `CL001 = "off"` in
+/// `[workspace.lint]`, an override that enables `strict.calls` turns `CL001`
+/// on for its files; with `CL001 = "off"` in an override for `a/**`, a later
+/// override for `**/*.p` that enables `strict.calls` leaves `CL001` off.
+///
+/// An override with no `files` patterns, or only invalid ones, applies to no
+/// file and is reported as a warning.
+///
 /// The `default` group (the `LINT` rules) is always on: it cannot be toggled as
 /// a group, but each of its rules can be set to `off`. The `strict.*` groups
 /// are off until enabled.
@@ -206,10 +218,13 @@ pub struct LintConfig {
     pub overrides: Vec<LintOverride>,
 }
 
-/// A `files` pattern in `[[workspace.lint.overrides]]` that is not a valid glob.
+/// A problem in the `files` of a `[[workspace.lint.overrides]]` entry that makes
+/// the entry, or one pattern of it, apply to nothing: a pattern that is not a
+/// valid glob, or an entry with no pattern at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RejectedLintPattern {
-    /// The pattern as written.
+    /// The pattern as written. Empty when the entry has no `files` patterns
+    /// or the pattern is itself empty.
     pub pattern: String,
     /// Why it was rejected.
     pub reason: String,
@@ -218,12 +233,20 @@ pub struct RejectedLintPattern {
 impl LintConfig {
     /// Lower to the pipeline's [`LintSeverityMap`] with override patterns
     /// anchored at `root`, the directory holding `oxabl.toml`. Invalid patterns
-    /// are dropped and returned.
+    /// are dropped and returned. An entry with no `files` patterns applies to
+    /// no file; it is dropped and returned with an empty `pattern`.
     pub fn to_severity_map_at(&self, root: &Path) -> (LintSeverityMap, Vec<RejectedLintPattern>) {
         let mut map = LintSeverityMap::new();
         *map.base_mut() = self.settings.to_layer();
         let mut rejected = Vec::new();
         for entry in &self.overrides {
+            if entry.files.is_empty() {
+                rejected.push(RejectedLintPattern {
+                    pattern: String::new(),
+                    reason: "the override has no `files` patterns, so it applies to no file"
+                        .to_string(),
+                });
+            }
             rejected.extend(
                 map.add_scope(root, &entry.files, entry.settings.to_layer())
                     .into_iter()
@@ -685,6 +708,22 @@ enable = ["strict.calls"]
         let (_, rejected) = lint.to_severity_map_at(Path::new("/ws"));
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].pattern, "a/[");
+    }
+
+    #[test]
+    fn an_override_with_no_files_is_returned() {
+        for toml in [
+            "[[workspace.lint.overrides]]\nLINT0002 = \"off\"\n",
+            "[[workspace.lint.overrides]]\nfiles = []\nLINT0002 = \"off\"\n",
+        ] {
+            let (map, rejected) = lint_of(toml).to_severity_map_at(Path::new("/ws"));
+            assert_eq!(rejected.len(), 1, "{toml}");
+            assert!(rejected[0].pattern.is_empty());
+            assert!(rejected[0].reason.contains("no `files`"), "{rejected:?}");
+            let unused = rule("LINT0002", "unused-variable", None);
+            let resolved = map.for_path(Path::new("/ws/a.p"));
+            assert_eq!(resolved.severity_for(&unused), Some(Severity::Warning));
+        }
     }
 
     #[test]
