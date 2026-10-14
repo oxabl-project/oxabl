@@ -2555,6 +2555,7 @@ mod tests {
             batch_mode: false,
             process_architecture: 32,
             proversion: Some("12.8".to_string()),
+            ..PreprocessorConfig::default()
         };
         let pp = Preprocessor::new(&fs, &include_paths).with_predefined(&config);
         let result = pp.process(FileId::new(1), ENV_SOURCE).unwrap();
