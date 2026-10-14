@@ -58,6 +58,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
         pos: 0,
         env,
         gaps: Vec::new(),
+        guesses: 0,
     };
     let value = parser.parse_or();
     if parser.pos < tokens.len() {
@@ -337,7 +338,10 @@ pub(crate) fn skip_comment(bytes: &[u8], start: usize) -> usize {
 /// Read the argument of the `DEFINED` that ends at `at`.
 fn defined(input: &str, at: usize) -> (CondToken, usize) {
     let rest = &input[at..];
-    let open = rest.len() - rest.trim_start_matches(' ').len();
+    let open = rest.len()
+        - rest
+            .trim_start_matches(|c: char| c.is_ascii_whitespace())
+            .len();
     if !rest[open..].starts_with('(') {
         return (CondToken::BareDefined, at);
     }
@@ -455,6 +459,8 @@ struct CondParser<'a> {
     pos: usize,
     env: &'a Environment<'a>,
     gaps: Vec<Gap>,
+    /// How many times a guess was made, counting repeats that `gaps` folds.
+    guesses: usize,
 }
 
 impl<'a> CondParser<'a> {
@@ -480,7 +486,11 @@ impl<'a> CondParser<'a> {
     }
 
     fn gap(&mut self, what: String) {
-        let gap = Gap::Unmodelled(what);
+        self.record(Gap::Unmodelled(what));
+    }
+
+    fn record(&mut self, gap: Gap) {
+        self.guesses += 1;
         if !self.gaps.contains(&gap) {
             self.gaps.push(gap);
         }
@@ -507,29 +517,41 @@ impl<'a> CondParser<'a> {
 
     /// OR has lowest precedence.
     fn parse_or(&mut self) -> CondValue {
-        let first = self.parse_and();
-        if self.peek() != Some(&CondToken::Or) {
-            return first;
-        }
-        let mut result = self.truth(&first);
-        while self.eat(&CondToken::Or) {
-            let rhs = self.parse_and();
-            let rhs = self.truth(&rhs);
-            result = result || rhs;
-        }
-        CondValue::Bool(result)
+        self.parse_chain(Self::parse_and, CondToken::Or)
     }
 
     fn parse_and(&mut self) -> CondValue {
-        let first = self.parse_not();
-        if self.peek() != Some(&CondToken::And) {
+        self.parse_chain(Self::parse_not, CondToken::And)
+    }
+
+    /// `operand (op operand)*` for `AND` or `OR`, read left to right.
+    ///
+    /// Once an operand has settled the result without a guess (`true` for `OR`,
+    /// `false` for `AND`), the operands after it cannot change the result, so
+    /// the gaps they would record are dropped.
+    fn parse_chain(&mut self, operand: fn(&mut Self) -> CondValue, op: CondToken) -> CondValue {
+        let settling = op == CondToken::Or;
+        let guesses = self.guesses;
+        let first = operand(self);
+        if self.peek() != Some(&op) {
             return first;
         }
         let mut result = self.truth(&first);
-        while self.eat(&CondToken::And) {
-            let rhs = self.parse_not();
+        let mut settled = result == settling && self.guesses == guesses;
+        while self.eat(&op) {
+            let (gaps, guesses) = (self.gaps.len(), self.guesses);
+            let rhs = operand(self);
             let rhs = self.truth(&rhs);
-            result = result && rhs;
+            if settled {
+                self.gaps.truncate(gaps);
+            } else {
+                settled = rhs == settling && self.guesses == guesses;
+            }
+            result = if settling {
+                result || rhs
+            } else {
+                result && rhs
+            };
         }
         CondValue::Bool(result)
     }
@@ -679,9 +701,7 @@ impl<'a> CondParser<'a> {
                 "PROVERSION" => match self.env.proversion {
                     Some(version) => CondValue::Str(version.to_string()),
                     None => {
-                        if !self.gaps.contains(&Gap::UnsetProversion) {
-                            self.gaps.push(Gap::UnsetProversion);
-                        }
+                        self.record(Gap::UnsetProversion);
                         CondValue::Unknown
                     }
                 },
@@ -1515,6 +1535,59 @@ mod tests {
         ] {
             assert!(!gaps(condition).is_empty(), "{condition}");
         }
+    }
+
+    #[test]
+    fn an_operand_after_a_settled_result_records_no_gap() {
+        let decided = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(
+                (e.value, e.gaps.as_slice()),
+                (value, &[][..]),
+                "{condition}"
+            );
+        };
+        decided(r#"TRUE OR SEARCH("a") = 1"#, true);
+        decided(r#"FALSE AND SEARCH("a") = 1"#, false);
+        decided(r#"FALSE OR TRUE OR SEARCH("a") = 1"#, true);
+        decided(r#"TRUE AND FALSE AND SEARCH("a") = 1"#, false);
+        decided(r#"DEFINED(x) = 0 OR SEARCH("a") = 1"#, true);
+        decided(r#"(TRUE OR SEARCH("a") = 1) AND TRUE"#, true);
+        decided(r#"NOT (TRUE OR SEARCH("a") = 1) OR TRUE"#, true);
+    }
+
+    #[test]
+    fn an_operand_that_can_change_the_result_still_records_its_gap() {
+        for condition in [
+            r#"FALSE OR SEARCH("a") = 1"#,
+            r#"TRUE AND SEARCH("a") = 1"#,
+            r#"SEARCH("a") = 1 OR FALSE"#,
+            // The first operand is true only by a guess.
+            r#""yes-ish" OR SEARCH("a") = 1"#,
+            r#"SEARCH("a") = 1 OR SEARCH("b") = 1"#,
+            r#"TRUE AND (FALSE OR SEARCH("a") = 1)"#,
+        ] {
+            assert!(!gaps(condition).is_empty(), "{condition}");
+        }
+        // A gap before the settling operand stays; one after it does not.
+        let e = eval(r#"SEARCH("a") = 1 OR TRUE OR KEYWORD("b") = "x""#);
+        assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
+    }
+
+    #[test]
+    fn defined_takes_any_whitespace_before_its_parenthesis() {
+        let vars = vars_with(&[("x", "1")]);
+        for condition in [
+            "DEFINED (x) = 3",
+            "DEFINED\t(x) = 3",
+            "DEFINED\n(x) = 3",
+            "DEFINED \r\n  (x) = 3",
+            "DEFINED( \n x \n ) = 3",
+        ] {
+            assert!(evaluate_exact(condition, &vars), "{condition:?}");
+        }
+        assert!(evaluate_exact("DEFINED\n(nothing) = 0", &vars));
+        assert_eq!(gaps("DEFINED = 1").len(), 1);
     }
 
     #[test]

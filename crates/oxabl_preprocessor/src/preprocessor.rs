@@ -2661,6 +2661,20 @@ mod tests {
     }
 
     #[test]
+    fn a_decided_condition_does_not_report_the_operand_it_never_needed() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE OR SEARCH(\"a.i\") = 1 &THEN\nyes\n&ENDIF\n\
+                      &IF FALSE AND SEARCH(\"a.i\") = 1 &THEN\nno\n&ENDIF\n\
+                      &IF DEFINED\t(missing) = 0 &THEN\nspaced\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "yes\nspaced\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.text_losses.is_empty());
+    }
+
+    #[test]
     fn an_unmodelled_function_in_a_condition_is_reported_once_per_condition() {
         let fs = make_fs(&[]);
         let pp = Preprocessor::new(&fs, &[]);
