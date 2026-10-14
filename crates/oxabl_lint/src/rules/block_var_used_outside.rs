@@ -39,6 +39,10 @@
 //! DISPLAY v.   /* silent: only the ELSE path gets here */
 //! ```
 //!
+//! Only the unit that holds the defining block is built (`oxabl_flow::UnitBuilder`),
+//! and a read in another unit gives up before any build. One solve answers for
+//! every hoisted variable of a block, a bit for each.
+//!
 //! The check can only remove findings. It gives up, and the finding stays,
 //! when it cannot account for every reference to the variable, when a read
 //! is in another unit (an internal procedure or trigger can run at any time),
@@ -91,29 +95,34 @@ pub fn run(
     sem: &Semantic,
     ctx: &AnalysisContext,
 ) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    let mut paths: Option<paths::Paths> = None;
-    for (sid, sym) in sem.symbols.iter() {
-        if !is_hazard(sid, sym, &sem.scope_tree, &sem.symbols) {
-            continue;
-        }
-        let paths = paths.get_or_insert_with(|| paths::Paths::new(program, ctx.source));
-        if paths.assigned_before_every_outside_read(sid, sym, sem) {
-            continue;
-        }
-        let name = display_name(sym, ctx.source);
-        let span = declaration_span(ctx, sym);
-        diags.push(Diagnostic::info(
-            LINT0005,
-            format!(
-                "`{name}` is defined inside a block but read outside it and never assigned there; \
-                 it holds its default value unless that block ran. Assign it before use, or move \
-                 the DEFINE to the routine level."
-            ),
-            span,
-        ));
+    let hazards: Vec<(SymbolId, &Symbol)> = sem
+        .symbols
+        .iter()
+        .filter(|(sid, sym)| is_hazard(*sid, sym, &sem.scope_tree, &sem.symbols))
+        .collect();
+    if hazards.is_empty() {
+        return Vec::new();
     }
-    diags
+    let paths = paths::Paths::new(program, ctx.source);
+    let cleared = paths.assigned_before_every_outside_read(&hazards, sem);
+    hazards
+        .iter()
+        .zip(&cleared)
+        .filter(|(_, cleared)| !**cleared)
+        .map(|((_, sym), _)| {
+            let name = display_name(sym, ctx.source);
+            let span = declaration_span(ctx, sym);
+            Diagnostic::info(
+                LINT0005,
+                format!(
+                    "`{name}` is defined inside a block but read outside it and never assigned \
+                     there; it holds its default value unless that block ran. Assign it before \
+                     use, or move the DEFINE to the routine level."
+                ),
+                span,
+            )
+        })
+        .collect()
 }
 
 /// A block-hoisted variable read outside its defining block, with no
@@ -160,16 +169,24 @@ fn display_name(sym: &Symbol, source: &str) -> String {
 }
 
 mod paths {
-    //! Definite assignment of one block-hoisted variable over the CFG.
+    //! Definite assignment of block-hoisted variables over the CFG.
+    //!
+    //! One solve per defining block covers every hoisted variable of that
+    //! block (a bit for each), and only the unit that holds the block is built.
 
     use oxabl_ast::{
         CreateTarget, Expression, ExpressionKind, NodeId, OnAction, OnKind, RunTarget, Statement,
         StatementKind as SK, StreamOperation, SubscribeTarget,
     };
     use oxabl_flow::dataflow::{Analysis, Direction, solve};
-    use oxabl_flow::{BlockId, Cfg, Edge, EdgeKind, FileFlow, NodeIx, NodeKind};
+    use oxabl_flow::{
+        BlockId, Cfg, Edge, EdgeKind, FlowOptions, NodeIx, NodeKind, UnitBuilder, UnitId,
+    };
     use oxabl_semantic::{Resolution, Semantic, Symbol, SymbolId};
     use rustc_hash::{FxHashMap, FxHashSet};
+
+    /// The variables of one block that one solve answers for.
+    const CHUNK: usize = u64::BITS as usize;
 
     /// A reference to a symbol: the statement whose node evaluates it, and
     /// whether it is an assignment target.
@@ -179,8 +196,9 @@ mod paths {
         write: bool,
     }
 
-    pub(super) struct Paths {
-        flow: FileFlow,
+    /// What the walk of the program learned.
+    pub(super) struct Paths<'a> {
+        units: UnitBuilder<'a>,
         uses: FxHashMap<NodeId, Use>,
         no_undo: FxHashSet<NodeId>,
         /// `name = <literal>.` statements. Assigning a literal to a variable
@@ -189,10 +207,18 @@ mod paths {
         literal_writes: FxHashSet<NodeId>,
     }
 
-    impl Paths {
-        pub(super) fn new(program: &[Statement], source: &str) -> Self {
+    /// A candidate whose references the walk placed.
+    struct Candidate {
+        /// Index into the caller's list.
+        at: usize,
+        undoable: bool,
+        refs: Vec<NodeId>,
+    }
+
+    impl<'a> Paths<'a> {
+        pub(super) fn new(program: &'a [Statement], source: &'a str) -> Self {
             let mut paths = Paths {
-                flow: oxabl_flow::build_file(program, source),
+                units: UnitBuilder::new(program, source, &FlowOptions::default()),
                 uses: FxHashMap::default(),
                 no_undo: FxHashSet::default(),
                 literal_writes: FxHashSet::default(),
@@ -201,67 +227,144 @@ mod paths {
             paths
         }
 
-        /// Whether `sym` is definitely assigned before every read outside
-        /// the block it is defined in. `false` whenever that cannot be shown.
+        /// For each of `hazards`, whether it is definitely assigned before
+        /// every read outside the block it is defined in. `false` whenever
+        /// that cannot be shown.
         pub(super) fn assigned_before_every_outside_read(
             &self,
-            sid: SymbolId,
-            sym: &Symbol,
+            hazards: &[(SymbolId, &Symbol)],
             sem: &Semantic,
-        ) -> bool {
-            let Some(scope) = sem.symbols.block_defined_scope(sid) else {
-                return false;
-            };
-            let owner = sem.scope_tree.get(scope).owner_node;
-            let Some((cfg, block)) = self
-                .flow
-                .units()
-                .iter()
-                .find_map(|c| c.block_of(owner).map(|b| (c, b)))
-            else {
-                return false;
-            };
+        ) -> Vec<bool> {
+            let mut cleared = vec![false; hazards.len()];
 
-            let mut writes = FxHashSet::default();
-            let mut reads = Vec::new();
+            // One pass over the references for every hazard.
+            let by_symbol: FxHashMap<SymbolId, usize> = hazards
+                .iter()
+                .enumerate()
+                .map(|(at, (sid, _))| (*sid, at))
+                .collect();
+            let mut refs: Vec<Vec<NodeId>> = vec![Vec::new(); hazards.len()];
             for (id, res) in sem.references.iter() {
-                if !matches!(res, Resolution::Resolved(s) if *s == sid) {
-                    continue;
-                }
-                // A reference the walk did not place: the proof is incomplete.
-                let Some(u) = self.uses.get(&id) else {
-                    return false;
-                };
-                let nodes = cfg.nodes_of(u.stmt);
-                if nodes.is_empty() {
-                    // Not in this unit's CFG: another unit, or a statement
-                    // the CFG does not execute.
-                    return false;
-                }
-                let inside = nodes.iter().all(|&n| cfg.node_in_block(n, block));
-                match (u.write, inside) {
-                    (true, true) => {
-                        writes.insert(u.stmt);
-                    }
-                    (true, false) => return false,
-                    (false, true) => {}
-                    (false, false) => reads.push(u.stmt),
+                if let Resolution::Resolved(s) = res
+                    && let Some(&at) = by_symbol.get(s)
+                {
+                    refs[at].push(id);
                 }
             }
-            if reads.is_empty() || writes.is_empty() {
-                return false;
+
+            // Group by defining block, in first-seen order.
+            let mut blocks: Vec<(NodeId, Vec<Candidate>)> = Vec::new();
+            for (at, (sid, sym)) in hazards.iter().enumerate() {
+                let Some(scope) = sem.symbols.block_defined_scope(*sid) else {
+                    continue;
+                };
+                let owner = sem.scope_tree.get(scope).owner_node;
+                let candidate = Candidate {
+                    at,
+                    undoable: !self.no_undo.contains(&sym.declaration),
+                    refs: std::mem::take(&mut refs[at]),
+                };
+                match blocks.iter_mut().find(|(o, _)| *o == owner) {
+                    Some((_, list)) => list.push(candidate),
+                    None => blocks.push((owner, vec![candidate])),
+                }
+            }
+
+            // The unit that holds a block is built once, for every block in it.
+            let mut cfgs: FxHashMap<UnitId, Cfg> = FxHashMap::default();
+            for (owner, mut candidates) in blocks {
+                let Some(unit) = self.units.unit_of(owner) else {
+                    continue;
+                };
+                // A read in another unit (a procedure or trigger can run at any
+                // time) is not proven: nothing to build for it.
+                candidates.retain(|c| {
+                    c.refs.iter().all(|r| {
+                        self.uses
+                            .get(r)
+                            .is_some_and(|u| self.units.unit_of(u.stmt) == Some(unit))
+                    })
+                });
+                if candidates.is_empty() {
+                    continue;
+                }
+                let cfg = cfgs.entry(unit).or_insert_with(|| self.units.build(unit));
+                let Some(block) = cfg.block_of(owner) else {
+                    continue;
+                };
+                for chunk in candidates.chunks(CHUNK) {
+                    self.solve_block(cfg, block, chunk, &mut cleared);
+                }
+            }
+            cleared
+        }
+
+        /// One solve for the `candidates` (at most [`CHUNK`]) of one block.
+        fn solve_block(
+            &self,
+            cfg: &Cfg,
+            block: BlockId,
+            candidates: &[Candidate],
+            out: &mut [bool],
+        ) {
+            // Statement -> the candidates (bits) it assigns.
+            let mut writes: FxHashMap<NodeId, u64> = FxHashMap::default();
+            let mut reads: Vec<(usize, Vec<NodeId>)> = Vec::new();
+            let mut undoable = 0u64;
+            for (bit, c) in candidates.iter().enumerate() {
+                let mut written = false;
+                let mut read_stmts = Vec::new();
+                let mut proven = true;
+                for r in &c.refs {
+                    // `uses` has it: the unit check above placed every one.
+                    let u = self.uses[r];
+                    let nodes = cfg.nodes_of(u.stmt);
+                    if nodes.is_empty() {
+                        // Not in this unit's CFG: another unit, or a statement
+                        // the CFG does not execute.
+                        proven = false;
+                        break;
+                    }
+                    let inside = nodes.iter().all(|&n| cfg.node_in_block(n, block));
+                    match (u.write, inside) {
+                        (true, true) => {
+                            *writes.entry(u.stmt).or_default() |= 1 << bit;
+                            written = true;
+                        }
+                        (true, false) => {
+                            proven = false;
+                            break;
+                        }
+                        (false, true) => {}
+                        (false, false) => read_stmts.push(u.stmt),
+                    }
+                }
+                if proven && written && !read_stmts.is_empty() {
+                    reads.push((bit, read_stmts));
+                    if c.undoable {
+                        undoable |= 1 << bit;
+                    }
+                }
+            }
+            if reads.is_empty() {
+                return;
             }
 
             let analysis = Assigned {
                 writes: &writes,
                 literal_writes: &self.literal_writes,
-                undoable: !self.no_undo.contains(&sym.declaration),
+                undoable,
                 defined_in: block,
             };
             let solved = solve(cfg, &analysis);
-            reads
-                .iter()
-                .all(|&r| cfg.nodes_of(r).iter().all(|&n| *solved.before(n)))
+            for (bit, read_stmts) in reads {
+                let assigned = read_stmts.iter().all(|&r| {
+                    cfg.nodes_of(r)
+                        .iter()
+                        .all(|&n| solved.before(n) & (1 << bit) != 0)
+                });
+                out[candidates[bit].at] = assigned;
+            }
         }
 
         fn walk(&mut self, stmts: &[Statement]) {
@@ -608,50 +711,53 @@ mod paths {
         }
     }
 
-    /// Forward must-analysis: is the variable assigned on every path here?
+    /// Forward must-analysis: which variables (one bit each) are assigned on
+    /// every path here?
     struct Assigned<'a> {
-        writes: &'a FxHashSet<NodeId>,
+        writes: &'a FxHashMap<NodeId, u64>,
         literal_writes: &'a FxHashSet<NodeId>,
-        undoable: bool,
+        /// Variables without `NO-UNDO`.
+        undoable: u64,
         defined_in: BlockId,
     }
 
     impl Analysis for Assigned<'_> {
-        type Fact = bool;
+        type Fact = u64;
 
         fn direction(&self) -> Direction {
             Direction::Forward
         }
 
-        fn initial(&self, _: &Cfg) -> bool {
-            true
+        fn initial(&self, _: &Cfg) -> u64 {
+            u64::MAX
         }
 
-        fn boundary(&self, _: &Cfg) -> bool {
-            false
+        fn boundary(&self, _: &Cfg) -> u64 {
+            0
         }
 
-        fn join(&self, acc: &mut bool, other: &bool) {
+        fn join(&self, acc: &mut u64, other: &u64) {
             *acc &= *other;
         }
 
-        fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut bool) {
+        fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut u64) {
             let n = cfg.node(node);
-            if n.kind == NodeKind::Stmt && n.stmt.is_some_and(|s| self.writes.contains(&s)) {
-                *fact = true;
-            } else if self.undoable
-                // A handler or an `UNDO` statement that undoes a block
-                // overlapping the defining block can restore an undoable
-                // variable's earlier value.
-                && cfg.undone_block(node).is_some_and(|b| {
-                    cfg.block_contains(b, self.defined_in) || cfg.block_contains(self.defined_in, b)
-                })
+            // A handler or an `UNDO` statement that undoes a block overlapping
+            // the defining block can restore an undoable variable's earlier
+            // value.
+            if cfg.undone_block(node).is_some_and(|b| {
+                cfg.block_contains(b, self.defined_in) || cfg.block_contains(self.defined_in, b)
+            }) {
+                *fact &= !self.undoable;
+            }
+            if n.kind == NodeKind::Stmt
+                && let Some(written) = n.stmt.and_then(|s| self.writes.get(&s))
             {
-                *fact = false;
+                *fact |= written;
             }
         }
 
-        fn transfer_edge(&self, cfg: &Cfg, node: NodeIx, edge: &Edge, fact: &mut bool) {
+        fn transfer_edge(&self, cfg: &Cfg, node: NodeIx, edge: &Edge, fact: &mut u64) {
             // A statement that raised did not finish its assignment, unless it
             // is a literal assignment, which cannot raise.
             let raised = matches!(edge.kind, EdgeKind::Raise(_))

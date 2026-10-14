@@ -128,28 +128,29 @@ includes it. It reports the diagnostic in the include only when someone checks t
 own root. Since M1, a directory walk does that for the context-free strict rules.
 
 - **Dropped at the includer.** The pipeline lints the expanded text, then maps each span back to
-  real bytes. `resolve_diagnostic` (`crates/oxabl_analyze/src/collect.rs:1020`) returns `None`
-  for any span whose first byte is not in the root file, and `resolve_span`
-  (`collect.rs:408`) is where that origin check happens. A semantic or lint finding inside an
+  real bytes. `resolve_diagnostic` (`crates/oxabl_analyze/src/collect.rs`) returns `None`
+  for any span whose first byte is not in the root file, and `ExpandedFile::resolve_span`
+  (`collect.rs`) is where that origin check happens. A semantic or lint finding inside an
   include is therefore dropped. So is a label that points into an include. A parse error inside
-  an include is dropped at the same place (`collect.rs:965-966`), although the recovery flag is
-  set first (`collect.rs:962`). The edge set still learns that the parse recovered, and the CLI
-  suppresses format drift for the file, but no diagnostic is shown.
-- **Preprocessor diagnostics follow the same rule.** Only loud diagnostics whose own span is in
-  the root file are kept (`collect.rs:529`, `collect.rs:604`).
+  an include is dropped at the same place (the parse-error loop of
+  `collect_from_expanded_selecting`), although `parse_recovered` is set first. The edge set still
+  learns that the parse recovered, and the CLI suppresses format drift for the file, but no
+  diagnostic is shown.
+- **Preprocessor diagnostics follow the same rule.** Only loud diagnostics (`is_loud`) whose own span is in
+  the root file are kept, on the success path and on the error path of `expand_source_with`.
 - **One exception, shown at the use site.** An unresolvable include found below the root is
   reported as `PREPROC007` at the outermost `{...}` in the root file that led to it, with the
-  note "reached through this include" (`collect.rs:622`). It is reported once per root site and
-  missing name. The reason is that such a gap hides symbols from the includer's own analysis.
+  note "reached through this include" (`nested_unresolved_include_diagnostics`). It is reported
+  once per root site and missing name. The reason is that such a gap hides symbols from the includer's own analysis.
 - **Use-site coordinates already exist.** `ExpandedFile::resolve_include_site`
-  (`collect.rs:318`) maps any expanded span to the root-level `{...}` that brought it in, at any
+  (`collect.rs`) maps any expanded span to the root-level `{...}` that brought it in, at any
   depth. The dependency section uses it for `include_site` on every edge row
-  (`crates/oxabl_analyze/src/lib.rs:135`, `:832`).
+  (`DependencyEdgeRow::include_site` in `crates/oxabl_analyze/src/lib.rs`).
 - **Walks do not check includes as roots.** `.i` is not a root extension, so `oxabl check <dir>`
   and workspace discovery do not volunteer include files as roots
-  (`crates/oxabl_workspace/src/discovery.rs:44-47`, the reasoning in the module docs, "R9"). A path
-  named on the command line, or a buffer open in the language server, is a root regardless
-  (`discovery.rs:54`). Since M1, `check <dir>` also lints the `.i` files of the walked tree for
+  (`ROOT_EXTENSIONS` and `is_root_file` in `crates/oxabl_workspace/src/discovery.rs`, the reasoning
+  in the module docs, "R9"). A path named on the command line, or a buffer open in the language server, is a root regardless
+  (`discover_path`). Since M1, `check <dir>` also lints the `.i` files of the walked tree for
   context-free rules only (see "What shipped in M1" below).
 - **Checking an include as a root is deliberately quieter.** The pipeline marks it
   `SourceContext::IncludeFragment` (`LintPipeline::collect_selecting` in
@@ -247,23 +248,56 @@ on a `RUN VALUE` under an `&IF` that is true only in the includer). On a large r
 share of the include findings sit on a line with a reference; the share is small for TX006 and
 large for CL005.
 
-M1 keeps the finding and lowers its confidence. A finding of a context-free rule whose statement
-holds a `{...}` reference, or sits under an `&IF`, in an include fragment:
+M1 keeps the finding and lowers its confidence. A finding of a context-free rule in an include
+fragment is lowered when the part of its statement that the rule reads can change with the
+includer:
 
-- has the generic help of its rule, never help chosen from a modifier. TX006 gives the "producer and
-  every consumer" help only for a definition that says `SHARED` itself, and a statement with a
-  reference gets the plain help even then;
-- ends its help with a note that it depends on the including file;
+- has a help that ends with a note that it depends on the including file. TX006 chooses the rest
+  from the modifier slot of the `DEFINE` (the words between `DEFINE` and `VARIABLE` or
+  `TEMP-TABLE`):
+  - a **literal `SHARED`** (`DEFINE {1} SHARED VARIABLE ...`, the commonest form) keeps the
+    "producer and every consumer" help. The definition is one side of a pair in every includer, so
+    "add `NO-UNDO` here" is the unsafe advice of section 4;
+  - a **reference or `&IF` in the slot**, with no literal `SHARED`, gets a third help: "if an
+    includer makes this definition `SHARED`, add `NO-UNDO` to the producer and every consumer; if
+    none does, add it to the definition";
+  - any other lowered finding gets the plain help. It is never the plain help for a modifier that a
+    reference supplies;
 - is **not autofixable**. `oxabl_lint::fragment::autofixable` is `false` for it, and the future
   autofix must ask that function first. The answer is in the help text, so it survives every
   client. Replace it with a typed field when a diagnostic gains one.
 
-The statement is found lexically in the fragment's own text (`IncludeDependence::scan`): it ends at
-a period, or at a colon followed by white space, and an `&IF` that is open at any of its tokens
-counts. A whole-file include guard (`&IF DEFINED(x) = 0 &THEN ... &ENDIF`) therefore lowers every
-finding below it. That is the safe side. Pinned by
-`a_finding_that_depends_on_the_includer_is_lower_confidence` in `oxabl_pipeline` and by
-`a_finding_that_depends_on_the_includer_has_the_generic_help` in `oxabl` (the `inc.i` shape).
+What counts (`IncludeDependence::scan` and `IncludeDependence::dependence`, in the fragment's own
+text; a statement ends at a period, at a colon followed by white space, at the end of a
+`&SCOPED-DEFINE` or `&GLOBAL-DEFINE` line, or at a reference alone on its line):
+
+- `{&name}`, `{n}`, `{*}` and `{file.i <args>}` always count, and so does a statement that starts
+  under an `&IF` or has an `&IF` inside it. The condition of an `&IF` is not part of a statement.
+- An argument-less `{file.i}` counts only when it did not resolve, or when its own text has a
+  reference or an `&IF`. The pipeline answers from the expansion and from one read of the include
+  file (`ExpansionProbe`). Confidence high that the rest expands the same in every includer: the
+  expansion is textual, and an includer's `&GLOBAL-DEFINE` reaches a nested include only through a
+  reference or an `&IF`, which count. The check does not follow includes nested in that include.
+- An include guard is not a dependence: an `&IF DEFINED(x) = 0 &THEN` (or `NOT DEFINED(x)`) that
+  encloses the whole file, has no `&ELSE`, and defines `x` inside. Confidence medium: it gives one
+  answer for every includer that includes the file once, and an includer that already defined `x`
+  gets no text at all, which is the purpose of a guard.
+- `RUN VALUE(...)` (CL001) counts only for a reference or `&IF` in its target, up to the matching
+  parenthesis. An argument or `NO-ERROR` cannot change whether the target is dynamic. TX006 and
+  CL005 read the modifier slot, the type and the options, so a reference anywhere in the statement
+  counts. Not done: a narrower scan for them. The options and the `INITIAL` or `LABEL` values are
+  not separable without parsing the fragment, and a fragment often does not parse.
+
+On a large real corpus (counts only), the lowered share of
+include findings went from 1,938 of 25,531 (7.6 %) to 1,380 (5.4 %). CL001 went from 509 of 527 to
+none, because the nested include sat in the argument list after the target. TX006 kept 1,098 of
+24,373 lowered (80 with the shared help, 101 with the third help). Findings themselves did not
+change. Pinned by `a_nested_include_without_arguments_lowers_a_finding_only_when_it_may_change`,
+`an_include_guard_does_not_lower_the_findings_inside_it`,
+`a_define_line_does_not_lower_the_definition_after_it` and
+`a_lowered_tx006_help_follows_the_modifier_slot` in `oxabl_pipeline`, by the unit tests of
+`oxabl_lint::fragment`, and by `the_includer_note_marks_only_what_an_includer_can_change` in
+`oxabl`. A later correction shows as a snapshot diff in those.
 
 Not done: finding the includer's arguments (the other branch is "recommendation 2" above, which
 reports the finding at the use site) and so recovering the missing findings. The `run` that an
@@ -323,6 +357,7 @@ draft, and its row says what it was.
 | F11 | `FIND NEXT` and `FIND PREV` may raise both ERROR and ENDKEY. `IMPORT` and `PAUSE` raise ENDKEY. | Proposed for `FIND` (it is the safe side). Recalled for the others. | `input.p` |
 | F12 | `FOR FIRST` and `FOR LAST` run their body once: the end of the body goes to the point after the block, not back to the header. The block still counts as iterating, so `NEXT` and `RETRY` work. A joined `EACH` (`FOR FIRST a, EACH b OF a`) iterates, and keeps its loop-back. **Changed:** every `FOR` looped back. | Recalled. Medium. | `for_first.p`, `loops.p` |
 | F13 | STOP sources. Every statement under `STOP-AFTER` may raise STOP, and the header of an iterating block too. `RUN`, a `FIND` or `FOR` with a lock, and `WAIT-FOR` may raise STOP, but only where a block or `CATCH` of the unit handles STOP. STOP runs the `FINALLY` blocks it leaves, as any jump does. Not modelled: STOP from a function or method call, a user interrupt, a lock wait in other statements, and an unhandled STOP from `RUN` and the others (it leaves the unit). **Changed:** only the `STOP` statement raised STOP, so an `ON STOP` phrase on a `STOP-AFTER` block was dead. The handler-only limit keeps the graph of ordinary code unchanged. Raising STOP from every such statement adds a STOP exit to each unit that has a `RUN` or a lock wait. On a large corpus that grew the graphs by 0.8% in nodes and 1.6% in edges, and no rule asks for those paths yet. | Recalled for `STOP-AFTER` and for lock waits. Proposed for the rest. Low for the `FINALLY` rule. | `stop.p` |
+| F14 | `UNDO [label], RETURN NO-APPLY.` parses (it was a parse error) and is a return: it undoes the block as `UNDO, RETURN` does, then leaves the routine. `NO-APPLY` is the keyword that cancels the UI event of a trigger. | Recalled, medium: the form is legal ABL, and the graph is that of `UNDO, RETURN`. | `undo_return_no_apply.p` |
 
 **Still to verify against a licensed install:** F5, F7 (when it settles, keep one successor) and F8 for STOP and QUIT first, because
 the readings differ in graph shape. Then F10 (destructor and trigger blocks) and F13.

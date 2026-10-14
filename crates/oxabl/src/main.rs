@@ -910,10 +910,6 @@ fn run_check(
             return ExitCode::from(2);
         }
     };
-    if files.is_empty() {
-        eprintln!("error: no ABL files found in {}", path.display());
-        return ExitCode::from(2);
-    }
 
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
     // `.df` it names, so doing it inside the loop would re-parse the schema for
@@ -989,6 +985,25 @@ fn run_check(
     // The format pipeline is built from the resolved style and nothing else, so
     // it *cannot* see expanded macro text however this walk is configured (R4).
     let format = FormatPipeline::new(config.style.clone());
+
+    // Include files in a walked directory. They count as ABL files here: a
+    // directory of nothing else is checked, not a usage error.
+    let fragments: Vec<(PathBuf, PathBuf)> = if !no_lint && path.is_dir() {
+        walk_include_fragments(path)
+            .into_iter()
+            .map(|file| {
+                let indexed_path = std::path::absolute(&file).unwrap_or_else(|_| file.clone());
+                (file, indexed_path)
+            })
+            .filter(|(_, indexed_path)| lint.with_file(indexed_path).context_free_rules_enabled())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if files.is_empty() && fragments.is_empty() {
+        eprintln!("error: no ABL files found in {}", path.display());
+        return ExitCode::from(2);
+    }
 
     let mut diagnostics: Vec<CheckJsonDiagnostic> = Vec::new();
     let mut preproc: Vec<CheckJsonDiagnostic> = Vec::new();
@@ -1116,45 +1131,39 @@ fn run_check(
     // from an include, so nothing is reported twice. Nothing else about an
     // include is checked: it often does not parse or resolve without its includer.
     let mut include_files_checked = 0usize;
-    if !no_lint && path.is_dir() {
-        for file in walk_include_fragments(path) {
-            let indexed_path = std::path::absolute(&file).unwrap_or_else(|_| file.clone());
-            let handle = lint.with_file(&indexed_path);
-            if !handle.context_free_rules_enabled() {
-                continue;
-            }
-            let display = file.display().to_string();
-            let source = match std::fs::read_to_string(&file) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: cannot read {display}: {e}");
-                    failures.push(CheckJsonFailure {
-                        path: display,
-                        reason: format!("cannot read: {e}"),
-                    });
-                    continue;
-                }
-            };
-            let result = handle.run_context_free(&source);
-            if let Some(panic) = result.failure() {
-                eprintln!("error: analysis failed on {display}: {panic}");
+    for (file, indexed_path) in &fragments {
+        let handle = lint.with_file(indexed_path);
+        let display = file.display().to_string();
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read {display}: {e}");
                 failures.push(CheckJsonFailure {
                     path: display,
-                    reason: panic.to_string(),
+                    reason: format!("cannot read: {e}"),
                 });
                 continue;
             }
-            include_files_checked += 1;
-            report_findings(
-                &display,
-                &indexed_path,
-                &source,
-                result.into_diagnostics(),
-                baseline.as_mut(),
-                json_output,
-                &mut diagnostics,
-            );
+        };
+        let result = handle.run_context_free(&source);
+        if let Some(panic) = result.failure() {
+            eprintln!("error: analysis failed on {display}: {panic}");
+            failures.push(CheckJsonFailure {
+                path: display,
+                reason: panic.to_string(),
+            });
+            continue;
         }
+        include_files_checked += 1;
+        report_findings(
+            &display,
+            indexed_path,
+            &source,
+            result.into_diagnostics(),
+            baseline.as_mut(),
+            json_output,
+            &mut diagnostics,
+        );
     }
 
     let baseline = match baseline.map(|run| run.finish(!no_lint)) {

@@ -66,6 +66,9 @@
 //! [`Cfg`]. [`dominators`] has dominator and post-dominator trees, and
 //! [`dataflow`] a worklist solver for forward and backward analyses.
 //! [`FileFlow::dump`] renders a stable text form for snapshot tests.
+//!
+//! A question about one block needs one unit: [`UnitBuilder`] says which unit
+//! holds a statement and builds that unit alone.
 
 mod build;
 pub mod dataflow;
@@ -75,7 +78,7 @@ mod model;
 mod query;
 mod tokens;
 
-pub use build::{FlowOptions, build_file, build_file_with};
+pub use build::{FlowOptions, UnitBuilder, build_file, build_file_with};
 pub use model::{
     Action, Block, BlockId, BlockKind, Cfg, Condition, Edge, EdgeKind, ErrorDirective, ExitKind,
     ForQualifier, Handling, Node, NodeIx, NodeKind, OpaqueReason, Origin, RetryBehavior,

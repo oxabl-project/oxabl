@@ -3136,6 +3136,17 @@ fn parse_return_no_apply() {
 }
 
 #[test]
+fn parse_undo_return_no_apply() {
+    for source in ["UNDO, RETURN NO-APPLY.", "UNDO lbl, RETURN NO-APPLY."] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let program = parser.parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+    }
+}
+
+#[test]
 fn parse_throw_forms_keep_the_thrown_expression() {
     for source in [
         "THROW NEW Err().",

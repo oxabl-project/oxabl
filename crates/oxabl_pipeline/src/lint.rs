@@ -76,6 +76,8 @@
 //! instead.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
@@ -852,7 +854,7 @@ impl<'a> LintPipeline<'a> {
         match catch_panic(|| {
             let expansion = self.expand(source);
             let result = self.collect_selecting(&expansion, RuleSelection::ContextFree);
-            lower_includer_dependent(result, source)
+            lower_includer_dependent(result, source, &expansion, self.fs)
         }) {
             Ok(result) => result,
             Err(panic) => LintResult::failed(panic),
@@ -930,7 +932,7 @@ impl<'a> LintPipeline<'a> {
             let expansion = self.expand(source);
             let result = self.collect(&expansion);
             if self.file().is_some_and(is_include_fragment) {
-                lower_includer_dependent(result, source)
+                lower_includer_dependent(result, source, &expansion, self.fs)
             } else {
                 result
             }
@@ -943,7 +945,12 @@ impl<'a> LintPipeline<'a> {
 
 /// Lower the confidence of the context-free findings of an include fragment
 /// whose statement can change with the includer.
-fn lower_includer_dependent(mut result: LintResult, source: &str) -> LintResult {
+fn lower_includer_dependent(
+    mut result: LintResult,
+    source: &str,
+    expansion: &Expansion,
+    fs: &dyn FileSystem,
+) -> LintResult {
     let Outcome::Computed { diagnostics, .. } = &mut result.outcome else {
         return result;
     };
@@ -951,6 +958,12 @@ fn lower_includer_dependent(mut result: LintResult, source: &str) -> LintResult 
     if dependence.is_empty() {
         return result;
     }
+    let probe = ExpansionProbe {
+        source,
+        expansion,
+        fs,
+        texts: RefCell::default(),
+    };
     let registry = oxabl_lint::Registry::builtin_shared();
     let context_free = |code: &str| {
         registry
@@ -959,15 +972,63 @@ fn lower_includer_dependent(mut result: LintResult, source: &str) -> LintResult 
     };
     for found in &mut diagnostics.diagnostics {
         let d = &found.diagnostic;
-        if found.source == DiagnosticSource::Lint
-            && d.span.file == ROOT_FILE_ID
-            && context_free(d.code.0)
-            && dependence.covers(d.span.span)
+        if found.source != DiagnosticSource::Lint
+            || d.span.file != ROOT_FILE_ID
+            || !context_free(d.code.0)
         {
-            found.diagnostic = oxabl_lint::fragment::lower_confidence(d.clone());
+            continue;
+        }
+        if let Some(depends) = dependence.dependence(d.code.0, d.span.span, &probe) {
+            found.diagnostic = oxabl_lint::fragment::lower_confidence(d.clone(), depends);
         }
     }
     result
+}
+
+/// Answers the fragment scan's questions about argument-less includes from the
+/// expansion that was run and the files it read.
+struct ExpansionProbe<'a> {
+    source: &'a str,
+    expansion: &'a Expansion,
+    fs: &'a dyn FileSystem,
+    /// Per include file: whether its own text has a reference or an `&IF`.
+    texts: RefCell<HashMap<PathBuf, bool>>,
+}
+
+impl oxabl_lint::fragment::IncludeProbe for ExpansionProbe<'_> {
+    fn depends_on_includer(&self, site: oxabl_ast::Span) -> bool {
+        // An include that did not resolve is unknown.
+        if self
+            .expansion
+            .unresolved_includes()
+            .iter()
+            .any(|u| u.site.file == ROOT_FILE_ID && u.site.span.start == site.start)
+        {
+            return true;
+        }
+        // A direct include is listed once per file, at its first site: match
+        // that site, else the name as written.
+        let name = self
+            .source
+            .get(site.start as usize..site.end as usize)
+            .map(|text| text.trim_matches(['{', '}', ' ', '\t', '"', '\'']))
+            .unwrap_or_default();
+        let direct = self.expansion.direct_includes();
+        let found = direct
+            .iter()
+            .find(|d| d.site == site)
+            .or_else(|| direct.iter().find(|d| d.path.ends_with(name)));
+        // No record of it: it came some way this scan does not follow.
+        let Some(found) = found else { return true };
+        *self
+            .texts
+            .borrow_mut()
+            .entry(found.path.clone())
+            .or_insert_with(|| match self.fs.read(&found.path) {
+                Ok(text) => oxabl_lint::fragment::IncludeDependence::scan(&text).has_reference(),
+                Err(_) => true,
+            })
+    }
 }
 
 #[cfg(test)]
@@ -1487,21 +1548,184 @@ RUN VALUE(z).
                     ("TX006", "p", false),
                 ]
             );
+            // Line 3's `SHARED` is literal text, so the definition is a producer
+            // or a consumer in every includer: the shared help stays.
             let shared = result
                 .all()
-                .find(|d| src[d.diagnostic.span.span.start as usize..].starts_with('s'))
+                .find(|d| {
+                    d.diagnostic.code.0 == "TX006"
+                        && src[d.diagnostic.span.span.start as usize..].starts_with('s')
+                })
                 .unwrap();
             assert!(
-                !shared
+                shared
                     .diagnostic
                     .help
                     .as_deref()
                     .unwrap()
-                    .contains("producer"),
+                    .starts_with(oxabl_lint::missing_no_undo::SHARED_HELP),
                 "{:?}",
                 shared.diagnostic.help
             );
         }
+    }
+
+    /// The findings of `src` run as the fragment `/ws/frag.i`, as `(code,
+    /// first word of the statement, has the includer note)`. Includes resolve
+    /// in `/ws/inc`.
+    fn fragment_findings(files: &[(&str, &str)], src: &str) -> Vec<(String, String, bool)> {
+        let config = PipelineConfig {
+            lint_severities: {
+                let mut map = LintSeverityMap::new();
+                map.base_mut().enable_group("strict.transactions");
+                map.base_mut().enable_group("strict.calls");
+                map
+            },
+            include_paths: vec![PathBuf::from("/ws/inc")],
+            ..PipelineConfig::default()
+        };
+        let mut fs = InMemoryFileSystem::new();
+        for (name, text) in files {
+            fs.insert(PathBuf::from(format!("/ws/inc/{name}")), text.to_string());
+        }
+        let run = LintPipeline::new(&config, &fs);
+        let result = run.with_file("/ws/frag.i").run_context_free(src);
+        let statement_word = |d: &CollectedDiagnostic| {
+            let line_start = src[..d.diagnostic.span.span.start as usize]
+                .rfind('\n')
+                .map_or(0, |i| i + 1);
+            src[line_start..]
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        result
+            .all()
+            .map(|d| {
+                let note = d
+                    .diagnostic
+                    .help
+                    .as_deref()
+                    .is_some_and(|h| h.ends_with(oxabl_lint::fragment::INCLUDER_NOTE));
+                (d.diagnostic.code.0.to_string(), statement_word(d), note)
+            })
+            .collect()
+    }
+
+    // An argument-less nested include expands to the same text in every
+    // includer that finds it, unless its own text has a reference or an `&IF`
+    // or it does not resolve.
+    #[test]
+    fn a_nested_include_without_arguments_lowers_a_finding_only_when_it_may_change() {
+        let files = [
+            ("plain.i", "\"x\""),
+            ("param.i", "\"x\"{&suffix}"),
+            ("cond.i", "&IF DEFINED(a) &THEN \"x\" &ELSE \"y\" &ENDIF"),
+            (
+                "guarded.i",
+                "&IF DEFINED(g) = 0 &THEN\n&GLOBAL-DEFINE g 1\n\"x\"\n&ENDIF\n",
+            ),
+            ("label.i", "LABEL \"a\""),
+            ("label-param.i", "LABEL {&l}"),
+        ];
+        let src = "\
+RUN VALUE(c + {plain.i}).
+RUN VALUE(c + {param.i}).
+RUN VALUE(c + {cond.i}).
+RUN VALUE(c + {guarded.i}).
+RUN VALUE(c) (INPUT {param.i}).
+DEFINE VARIABLE a AS INTEGER {label.i}.
+DEFINE VARIABLE b AS INTEGER {label-param.i}.
+DEFINE VARIABLE d AS INTEGER {missing.i}.
+";
+        let found = fragment_findings(&files, src);
+        let notes: Vec<(&str, bool)> = found
+            .iter()
+            .map(|(code, _, note)| (code.as_str(), *note))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                ("CL001", false),
+                ("CL001", true),
+                ("CL001", true),
+                ("CL001", false),
+                // The `{param.i}` after the target changes nothing the rule reads.
+                ("CL001", false),
+                ("TX006", false),
+                ("TX006", true),
+                ("TX006", true),
+            ],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_define_line_does_not_lower_the_definition_after_it() {
+        let src = "\
+&SCOPED-DEFINE pfx {1}
+DEFINE VARIABLE a AS INTEGER.
+&GLOBAL-DEFINE nu NO-UNDO ~
+    {&more}
+DEFINE VARIABLE b AS INTEGER.
+";
+        let found = fragment_findings(&[], src);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.iter().all(|(_, _, note)| !note), "{found:?}");
+    }
+
+    #[test]
+    fn an_include_guard_does_not_lower_the_findings_inside_it() {
+        let guarded = "\
+&IF DEFINED(frag-once) = 0 &THEN
+&GLOBAL-DEFINE frag-once 1
+DEFINE VARIABLE a AS INTEGER.
+RUN VALUE(c).
+&ENDIF
+";
+        let found = fragment_findings(&[], guarded);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.iter().all(|(_, _, note)| !note), "{found:?}");
+        // The same `&IF` without the guard's `&GLOBAL-DEFINE` is a condition.
+        let found = fragment_findings(&[], &guarded.replace("&GLOBAL-DEFINE frag-once 1\n", ""));
+        assert!(found.iter().all(|(_, _, note)| *note), "{found:?}");
+    }
+
+    // The help of a TX006 finding depends on what the modifier slot holds.
+    #[test]
+    fn a_lowered_tx006_help_follows_the_modifier_slot() {
+        let src = "\
+DEFINE {1} SHARED VARIABLE a AS INTEGER.
+DEFINE {&mod} VARIABLE b AS INTEGER.
+DEFINE VARIABLE c AS INTEGER {&nu}.
+";
+        let config = PipelineConfig {
+            lint_severities: {
+                let mut map = LintSeverityMap::new();
+                map.base_mut().enable_group("strict.transactions");
+                map
+            },
+            ..PipelineConfig::default()
+        };
+        let fs = InMemoryFileSystem::new();
+        let result = LintPipeline::new(&config, &fs)
+            .with_file("/ws/frag.i")
+            .run_context_free(src);
+        let helps: Vec<&str> = result
+            .all()
+            .map(|d| d.diagnostic.help.as_deref().unwrap())
+            .collect();
+        use oxabl_lint::fragment::{INCLUDER_NOTE, MAYBE_SHARED_HELP};
+        use oxabl_lint::missing_no_undo::{HELP, SHARED_HELP};
+        assert_eq!(
+            helps,
+            [
+                format!("{SHARED_HELP} {INCLUDER_NOTE}"),
+                format!("{MAYBE_SHARED_HELP} {INCLUDER_NOTE}"),
+                format!("{HELP} {INCLUDER_NOTE}"),
+            ]
+        );
     }
 
     #[test]

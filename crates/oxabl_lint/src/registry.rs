@@ -66,7 +66,7 @@ pub struct RuleMeta {
     /// finding sits in, not on the code around an include. A context-free
     /// finding inside an include can be reported once, in the include. That
     /// text is expanded with no arguments and no includer defines, so a finding
-    /// on a statement with a `{...}` reference or an `&IF` is lower confidence
+    /// on a statement that an includer can change is lower confidence
     /// ([`fragment`](crate::fragment)).
     pub context_free: bool,
 }
