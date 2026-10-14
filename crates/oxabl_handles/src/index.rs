@@ -3,12 +3,12 @@
 //! (which units free a name, which widget pools the file creates). The
 //! per-statement facts are kept only for units that create something.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 
 use oxabl_ast::{
-    DataType, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType, Statement,
-    StatementKind as SK, TypeSource,
+    AccessModifier, DataType, Identifier, NodeId, OnAction, OnKind, ParameterDirection,
+    ParameterType, Statement, StatementKind as SK, TypeSource,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
@@ -74,10 +74,24 @@ enum CallableKind {
     Method,
 }
 
+/// What a call of a callable runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Runs {
+    /// The body the file defines.
+    Body,
+    /// Code another file may define: a method a subclass can override, or an
+    /// `ABSTRACT` one.
+    Elsewhere,
+    /// A shared-library entry point (`PROCEDURE ... EXTERNAL`). It cannot free
+    /// an ABL MEMPTR or take a handle as a handle, so it only borrows.
+    Library,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Callable {
     kind: CallableKind,
     unit: NodeId,
+    runs: Runs,
 }
 
 #[derive(Default)]
@@ -104,6 +118,9 @@ pub(crate) enum Passed {
 /// How many calls deep a handle handed on from callee to callee is followed.
 const CALL_DEPTH: u8 = 4;
 
+/// How many callee bodies one fate may read before it is taken as unknown.
+const FATE_BUDGET: u32 = 1000;
+
 /// What a unit does with a variable, for the units a call can run.
 #[derive(Debug, Clone, Copy)]
 enum Use<'a> {
@@ -123,11 +140,14 @@ enum Use<'a> {
     Skipped(&'a [Identifier]),
     /// `recv:ADD-BUFFER(var)`.
     Attach {
-        recv: &'a str,
+        recv: Option<&'a str>,
         var: &'a str,
     },
-    /// `CREATE DATASET var`.
-    Dataset(&'a str),
+    /// `CREATE DATASET var` or `CREATE QUERY var`.
+    Created {
+        kind: ObjectKind,
+        var: &'a str,
+    },
     Pass {
         var: &'a str,
         callee: Callee<'a>,
@@ -173,8 +193,12 @@ pub(crate) struct FileIndex<'a> {
     fates: RefCell<FxHashMap<(NodeId, usize), Passed>>,
     /// The parameters whose fate is being read, innermost last.
     reading: RefCell<SmallVec<[(NodeId, usize); 4]>>,
+    /// The callee bodies the fate being read may still read.
+    budget: Cell<u32>,
     /// The name of the file's class.
     class_name: Option<&'a str>,
+    /// The file's class is `FINAL`.
+    class_final: bool,
     /// The main block creates an unnamed widget pool.
     pub(crate) main_pool: bool,
     /// The file's class has `USE-WIDGET-POOL`.
@@ -198,7 +222,9 @@ impl<'a> FileIndex<'a> {
             uses: FxHashMap::default(),
             fates: RefCell::default(),
             reading: RefCell::default(),
+            budget: Cell::new(0),
             class_name: None,
+            class_final: false,
             main_pool: false,
             class_pool: false,
             named_pools: FxHashMap::default(),
@@ -371,7 +397,11 @@ impl<'a> FileIndex<'a> {
             .get(&Name(name))?
             .iter()
             .filter(named)
-            .map(|c| self.fate(c.unit, pos, depth))
+            .map(|c| match c.runs {
+                Runs::Body => self.fate(c.unit, pos, depth),
+                Runs::Elsewhere => Passed::Unknown,
+                Runs::Library => Passed::Borrow,
+            })
             .max()
     }
 
@@ -379,14 +409,19 @@ impl<'a> FileIndex<'a> {
     /// its uses, without regard to order, following plain copies to its own
     /// variables. A call back into a parameter being read adds nothing.
     fn fate(&self, unit: NodeId, pos: usize, depth: u8) -> Passed {
-        if depth == 0
-            && let Some(&f) = self.fates.borrow().get(&(unit, pos))
-        {
-            return f;
+        if depth == 0 {
+            if let Some(&f) = self.fates.borrow().get(&(unit, pos)) {
+                return f;
+            }
+            self.budget.set(FATE_BUDGET);
         }
         if self.reading.borrow().contains(&(unit, pos)) {
             return Passed::Borrow;
         }
+        let Some(left) = self.budget.get().checked_sub(1) else {
+            return Passed::Unknown;
+        };
+        self.budget.set(left);
         self.reading.borrow_mut().push((unit, pos));
         let fate = self.read_fate(unit, pos, depth);
         self.reading.borrow_mut().pop();
@@ -434,14 +469,20 @@ impl<'a> FileIndex<'a> {
                     }
                 }
                 Use::Escape(v) if holds(&holders, v) => Passed::Keeps,
-                // As in the caller: a dataset the unit creates owns it.
-                Use::Attach { recv, var }
-                    if holds(&holders, var)
-                        && uses
-                            .iter()
-                            .any(|u| matches!(*u, Use::Dataset(d) if Name(d) == Name(recv))) =>
-                {
-                    Passed::Keeps
+                // As in the caller: a dataset the unit creates owns it, a query
+                // it creates does not, any other receiver may be either.
+                Use::Attach { recv, var } if holds(&holders, var) => {
+                    let created = recv.and_then(|r| {
+                        uses.iter().find_map(|u| match *u {
+                            Use::Created { kind, var } if Name(var) == Name(r) => Some(kind),
+                            _ => None,
+                        })
+                    });
+                    match created {
+                        Some(ObjectKind::Dataset) => Passed::Keeps,
+                        Some(_) => Passed::Borrow,
+                        None => Passed::Unknown,
+                    }
                 }
                 Use::Opaque(v) if holds(&holders, v) => Passed::Unknown,
                 Use::Skipped(names) if names.iter().any(|n| holds(&holders, &n.name)) => {
@@ -487,11 +528,11 @@ impl<'a> FileIndex<'a> {
         effects.retain(|e| !matches!(e, Effect::CopyLob { .. }));
     }
 
-    fn callable(&mut self, name: &'a Identifier, kind: CallableKind, unit: NodeId) {
+    fn callable(&mut self, name: &'a Identifier, kind: CallableKind, unit: NodeId, runs: Runs) {
         self.callables
             .entry(Name(&name.name))
             .or_default()
-            .push(Callable { kind, unit });
+            .push(Callable { kind, unit, runs });
     }
 
     fn define(&mut self, unit: NodeId, name: &'a str, class: VarClass, ty: VarType<'a>) {
@@ -524,10 +565,10 @@ impl<'a> FileIndex<'a> {
                 Effect::Opaque { var, .. } => Use::Opaque(var),
                 Effect::Attach { recv, var } => Use::Attach { recv, var },
                 Effect::Create {
-                    kind: ObjectKind::Dataset,
+                    kind: kind @ (ObjectKind::Dataset | ObjectKind::Query),
                     into: Some(Place::Var(var)),
                     ..
-                } => Use::Dataset(var),
+                } => Use::Created { kind, var },
                 Effect::Skipped(names) => Use::Skipped(names),
                 Effect::Pass { var, callee, pos } => Use::Pass { var, callee, pos },
                 _ => return None,
@@ -631,11 +672,13 @@ impl<'a> FileIndex<'a> {
                 name,
                 body,
                 is_prototype,
-                ..
+                is_external,
             } => {
-                // `IN SUPER`, `IN h` and `EXTERNAL` run code of another file.
-                if !is_prototype {
-                    self.callable(name, CallableKind::Procedure, s.id);
+                // `IN SUPER` and `IN h` run code of another file.
+                if *is_external {
+                    self.callable(name, CallableKind::Procedure, s.id, Runs::Library);
+                } else if !is_prototype {
+                    self.callable(name, CallableKind::Procedure, s.id, Runs::Body);
                 }
                 self.unit(s.id, unit, |ix| ix.walk(body, s.id, false, src));
             }
@@ -651,7 +694,7 @@ impl<'a> FileIndex<'a> {
                 // A `FORWARD`, `IN` or `MAP TO` prototype has no body. Only a
                 // `FORWARD` one is defined in the file, by its own definition.
                 if !body.is_empty() {
-                    self.callable(name, CallableKind::Function, s.id);
+                    self.callable(name, CallableKind::Function, s.id, Runs::Body);
                 }
                 self.unit(s.id, unit, |ix| {
                     ix.walk(prototype_parameters, s.id, false, src);
@@ -659,12 +702,22 @@ impl<'a> FileIndex<'a> {
                 });
             }
             SK::Method {
+                access,
+                is_static,
+                is_abstract,
                 name,
                 parameters,
                 body,
                 ..
             } => {
-                self.callable(name, CallableKind::Method, s.id);
+                let runs = if !is_abstract
+                    && (*is_static || *access == AccessModifier::Private || self.class_final)
+                {
+                    Runs::Body
+                } else {
+                    Runs::Elsewhere
+                };
+                self.callable(name, CallableKind::Method, s.id, runs);
                 self.unit(s.id, unit, |ix| {
                     ix.walk(parameters, s.id, false, src);
                     ix.walk(body, s.id, false, src);
@@ -700,9 +753,11 @@ impl<'a> FileIndex<'a> {
                 name,
                 body,
                 use_widget_pool,
+                is_final,
                 ..
             } => {
                 self.class_name = Some(&name.name);
+                self.class_final = *is_final;
                 self.class_pool |= *use_widget_pool;
                 self.walk(body, unit, true, src)
             }
@@ -720,7 +775,8 @@ impl<'a> FileIndex<'a> {
             | SK::ForEach { body, .. }
             | SK::Catch { body, .. }
             | SK::Finally { body }
-            | SK::Block(body) => self.walk(body, unit, member, src),
+            | SK::Block(body)
+            | SK::VariableDeclarationList(body) => self.walk(body, unit, member, src),
             SK::Label { body, .. } => self.visit(body, unit, member, src),
             SK::If {
                 then_branch,

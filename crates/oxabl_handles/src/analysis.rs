@@ -184,9 +184,10 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
         };
         let empty = FxHashMap::default();
         let facts = index.unit_facts(unit_stmt).unwrap_or(&empty);
-        // Variables this unit creates a dataset into, and variables that walk
-        // a procedure list.
+        // Variables this unit creates a dataset or a query into, and variables
+        // that walk a procedure list.
         let mut datasets: FxHashSet<Name> = FxHashSet::default();
+        let mut queries: FxHashSet<Name> = FxHashSet::default();
         let mut walkers: FxHashSet<Name> = FxHashSet::default();
         for e in facts.values().flat_map(|f| &f.effects) {
             match e {
@@ -196,6 +197,13 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                     ..
                 } => {
                     datasets.insert(Name(v));
+                }
+                Effect::Create {
+                    kind: ObjectKind::Query,
+                    into: Some(Place::Var(v)),
+                    ..
+                } => {
+                    queries.insert(Name(v));
                 }
                 Effect::ProcedureWalk { var } => {
                     walkers.insert(Name(var));
@@ -335,14 +343,17 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                             });
                         }
                         Effect::Skipped(names) => skipped.push((n, names)),
-                        Effect::Attach { recv, var: v } => {
-                            if datasets.contains(&Name(recv)) {
-                                out.push(Fx::Escape {
-                                    var: var(v),
-                                    kind: EscapeKind::DatasetMember,
-                                });
-                            }
-                        }
+                        Effect::Attach { recv, var: v } => match recv.map(Name) {
+                            Some(r) if datasets.contains(&r) => out.push(Fx::Escape {
+                                var: var(v),
+                                kind: EscapeKind::DatasetMember,
+                            }),
+                            Some(r) if queries.contains(&r) => {}
+                            _ => out.push(Fx::Opaque {
+                                var: var(v),
+                                reason: OpaqueReason::AddBuffer,
+                            }),
+                        },
                         Effect::ProcedureWalk { .. } => {}
                         Effect::CreatePool { name, persistent } => {
                             if name.is_none() {

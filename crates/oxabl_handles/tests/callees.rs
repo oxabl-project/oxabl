@@ -68,13 +68,38 @@ fn a_procedure_prototype_is_not_a_callee_of_the_file() {
             "PROCEDURE killp IN hLib:\n  DEFINE INPUT PARAMETER ph AS HANDLE NO-UNDO.\nEND PROCEDURE.",
             "RUN killp (INPUT hq).",
         ),
-        (
-            "PROCEDURE killx EXTERNAL \"lib.dll\":\n  DEFINE INPUT PARAMETER ph AS LONG NO-UNDO.\nEND PROCEDURE.",
-            "RUN killx (INPUT hq).",
-        ),
     ] {
         assert_callee_unknown(&work(defs, call));
     }
+}
+
+#[test]
+fn a_shared_library_entry_point_borrows_its_input_arguments() {
+    let dll = "\
+PROCEDURE killx EXTERNAL \"lib.dll\":
+  DEFINE INPUT PARAMETER pm AS MEMPTR NO-UNDO.
+  DEFINE INPUT PARAMETER pn AS LONG NO-UNDO.
+END PROCEDURE.
+";
+    let o = only(&work(dll, "RUN killx (INPUT hq, INPUT 1)."));
+    assert_eq!(o.verdict, Verdict::Leaks);
+    let memptr = format!(
+        "\
+{dll}
+PROCEDURE work:
+  DEFINE VARIABLE m AS MEMPTR NO-UNDO.
+  SET-SIZE(m) = 16.
+  RUN killx (INPUT m, INPUT 16).
+END PROCEDURE.
+"
+    );
+    let o = only(&memptr);
+    assert_eq!(
+        o.verdict,
+        Verdict::Leaks,
+        "{}",
+        analyze(&memptr).dump(&memptr)
+    );
 }
 
 #[test]
@@ -287,13 +312,84 @@ CLASS pkg.Svc:
     CREATE QUERY hq.
     {call}
   END METHOD.
-  METHOD PUBLIC VOID Keep(INPUT ph AS HANDLE):
+  METHOD PRIVATE VOID Keep(INPUT ph AS HANDLE):
   END METHOD.
-  METHOD PUBLIC VOID Save(INPUT ph AS HANDLE):
+  METHOD PRIVATE VOID Save(INPUT ph AS HANDLE):
   END METHOD.
 END CLASS.
 "
     ))
+}
+
+/// A class `Svc`, declared by `class`, whose method `Work` creates a query
+/// and runs `call` on it; `consume` declares a method `Consume`.
+fn consumer(class: &str, consume: &str, call: &str) -> Object {
+    only(&format!(
+        "\
+{class}:
+  DEFINE PRIVATE VARIABLE oPeer AS Svc NO-UNDO.
+  METHOD PUBLIC VOID Work():
+    DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+    CREATE QUERY hq.
+    {call}
+  END METHOD.
+  {consume}
+END CLASS.
+"
+    ))
+}
+
+#[test]
+fn an_abstract_method_is_not_a_callee_of_the_file() {
+    for call in ["Consume(hq).", "THIS-OBJECT:Consume(hq)."] {
+        let o = consumer(
+            "CLASS Svc ABSTRACT",
+            "METHOD PROTECTED ABSTRACT VOID Consume(INPUT ph AS HANDLE).",
+            call,
+        );
+        assert_eq!(o.verdict, Verdict::Unknown, "{call}");
+        assert_eq!(reasons(&o), [OpaqueReason::Callee], "{call}");
+    }
+}
+
+#[test]
+fn a_method_a_subclass_can_override_is_not_bound_to_its_body() {
+    for access in ["PUBLIC", "PROTECTED"] {
+        for call in [
+            "Consume(hq).",
+            "THIS-OBJECT:Consume(hq).",
+            "oPeer:Consume(hq).",
+        ] {
+            let consume =
+                format!("METHOD {access} VOID Consume(INPUT ph AS HANDLE):\n  END METHOD.");
+            let o = consumer("CLASS Svc", &consume, call);
+            assert_eq!(o.verdict, Verdict::Unknown, "{access} {call}");
+            assert_eq!(reasons(&o), [OpaqueReason::Callee], "{access} {call}");
+        }
+    }
+}
+
+#[test]
+fn a_private_static_or_final_class_method_is_bound_to_its_body() {
+    for (class, access) in [
+        ("CLASS Svc", "PRIVATE"),
+        ("CLASS Svc", "PUBLIC STATIC"),
+        ("CLASS Svc", "PROTECTED STATIC"),
+        ("CLASS Svc FINAL", "PUBLIC"),
+        ("CLASS Svc FINAL", "PROTECTED"),
+    ] {
+        for (body, freed) in [("", false), ("DELETE OBJECT ph.", true)] {
+            let consume = format!(
+                "METHOD {access} VOID Consume(INPUT ph AS HANDLE):\n    {body}\n  END METHOD."
+            );
+            let o = consumer(class, &consume, "Consume(hq).");
+            if freed {
+                assert_eq!(escapes(&o), [EscapeKind::FreedByCallee], "{class} {access}");
+            } else {
+                assert_eq!(o.verdict, Verdict::Leaks, "{class} {access}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -402,4 +498,93 @@ END PROCEDURE.
     let via = o.leaks[0].via.expect("an abnormal leak");
     let text = &src[via.span.start as usize..via.span.end as usize];
     assert!(text.starts_with("COPY-LOB"), "{text}");
+}
+
+#[test]
+fn each_name_of_a_var_list_is_a_variable_of_its_unit() {
+    let all = objects(
+        "\
+CLASS Svc:
+  DEFINE PRIVATE VARIABLE hA AS HANDLE NO-UNDO.
+  METHOD PUBLIC VOID Work():
+    VAR HANDLE hq, hq2.
+    VAR MEMPTR m1, m2.
+    CREATE QUERY hq.
+    CREATE QUERY hq2.
+    hA = hq2.
+    SET-SIZE(m2) = 8.
+  END METHOD.
+END CLASS.
+",
+    );
+    let verdicts: Vec<_> = all
+        .iter()
+        .map(|o| (o.holder.clone().unwrap(), o.verdict, escapes(o)))
+        .collect();
+    assert_eq!(
+        verdicts,
+        [
+            ("hq".into(), Verdict::Leaks, vec![]),
+            ("hq2".into(), Verdict::Escapes, vec![EscapeKind::Member]),
+            ("m2".into(), Verdict::Leaks, vec![]),
+        ]
+    );
+}
+
+#[test]
+fn a_buffer_added_to_an_object_the_unit_did_not_create_is_unknown() {
+    let all = objects(
+        "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+PROCEDURE a:
+  DEFINE INPUT PARAMETER phDs AS HANDLE NO-UNDO.
+  DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+  CREATE BUFFER hb FOR TABLE \"tt\".
+  phDs:ADD-BUFFER(hb).
+END PROCEDURE.
+DEFINE DATASET ds FOR tt.
+PROCEDURE b:
+  DEFINE VARIABLE hb2 AS HANDLE NO-UNDO.
+  CREATE BUFFER hb2 FOR TABLE \"tt\".
+  DATASET ds:ADD-BUFFER(hb2).
+END PROCEDURE.
+",
+    );
+    assert_eq!(all.len(), 2);
+    for o in &all {
+        assert_eq!(o.verdict, Verdict::Unknown, "{:?}", o.holder);
+        assert_eq!(reasons(o), [OpaqueReason::AddBuffer], "{:?}", o.holder);
+    }
+    for body in ["po:ADD-BUFFER(ph).", "ghq:ADD-BUFFER(ph)."] {
+        let o = passed_to(body);
+        assert_eq!(o.verdict, Verdict::Unknown, "{body}");
+        assert_eq!(reasons(&o), [OpaqueReason::Callee], "{body}");
+    }
+}
+
+#[test]
+fn many_callees_that_hand_a_handle_to_each_other_stay_fast() {
+    const N: usize = 60;
+    let mut src = String::new();
+    for i in 0..N {
+        src.push_str(&format!(
+            "PROCEDURE p{i}:\n  DEFINE INPUT PARAMETER ph AS HANDLE NO-UNDO.\n"
+        ));
+        for j in (0..N).filter(|&j| j != i) {
+            src.push_str(&format!("  RUN p{j} (INPUT ph).\n"));
+        }
+        src.push_str("END PROCEDURE.\n");
+    }
+    src.push_str("PROCEDURE work:\n  DEFINE VARIABLE hq AS HANDLE NO-UNDO.\n  CREATE QUERY hq.\n");
+    for j in 0..N {
+        src.push_str(&format!("  RUN p{j} (INPUT hq).\n"));
+    }
+    src.push_str("END PROCEDURE.\n");
+    let start = std::time::Instant::now();
+    let o = only(&src);
+    let took = start.elapsed();
+    assert_eq!(o.verdict, Verdict::Unknown);
+    assert!(reasons(&o).iter().all(|&r| r == OpaqueReason::Callee));
+    // Unbounded, this shape costs seconds at N = 60 even in a release build.
+    assert!(took.as_millis() < 1500, "{took:?}");
 }

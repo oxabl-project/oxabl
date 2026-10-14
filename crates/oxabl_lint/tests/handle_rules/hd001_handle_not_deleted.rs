@@ -341,3 +341,88 @@ END CLASS.
 ";
     assert_eq!(lines(src, &check(run, src)), [10]);
 }
+
+#[test]
+fn a_handle_passed_to_an_abstract_or_overridable_method_is_not_reported() {
+    let src = "\
+CLASS Svc ABSTRACT:
+    METHOD PUBLIC VOID Work():
+        DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+        CREATE QUERY hq.
+        Consume(hq).
+    END METHOD.
+    METHOD PUBLIC VOID Work2():
+        DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+        CREATE QUERY hq.
+        Show(hq).
+    END METHOD.
+    METHOD PROTECTED ABSTRACT VOID Consume(INPUT ph AS HANDLE).
+    METHOD PROTECTED VOID Show(INPUT ph AS HANDLE):
+    END METHOD.
+END CLASS.
+";
+    assert!(check(run, src).is_empty());
+}
+
+#[test]
+fn a_handle_passed_to_a_method_of_a_final_class_is_reported() {
+    let src = "\
+CLASS Svc FINAL:
+    METHOD PUBLIC VOID Work():
+        DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+        CREATE QUERY hq.
+        Show(hq).
+    END METHOD.
+    METHOD PROTECTED VOID Show(INPUT ph AS HANDLE):
+    END METHOD.
+END CLASS.
+";
+    assert_eq!(lines(src, &check(run, src)), [4]);
+}
+
+#[test]
+fn objects_of_a_var_list_are_reported() {
+    let src = "\
+PROCEDURE a:
+    VAR HANDLE h1, h2.
+    CREATE QUERY h1.
+    CREATE QUERY h2.
+    DELETE OBJECT h2.
+END PROCEDURE.
+";
+    assert_eq!(lines(src, &check(run, src)), [3]);
+}
+
+#[test]
+fn a_buffer_added_to_a_receiver_of_unknown_kind_is_not_reported() {
+    let src = "\
+PROCEDURE addb:
+    DEFINE INPUT PARAMETER phDs AS HANDLE NO-UNDO.
+    DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+    CREATE BUFFER hb FOR TABLE \"customer\".
+    phDs:ADD-BUFFER(hb).
+END PROCEDURE.
+PROCEDURE attach:
+    DEFINE INPUT PARAMETER phDs AS HANDLE NO-UNDO.
+    DEFINE INPUT PARAMETER phBuf AS HANDLE NO-UNDO.
+    phDs:ADD-BUFFER(phBuf).
+END PROCEDURE.
+PROCEDURE work:
+    DEFINE VARIABLE hDs AS HANDLE NO-UNDO.
+    DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+    CREATE DATASET hDs.
+    CREATE BUFFER hb FOR TABLE \"customer\".
+    RUN attach (INPUT hDs, INPUT hb).
+    DELETE OBJECT hDs.
+END PROCEDURE.
+PROCEDURE query:
+    DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+    DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+    CREATE QUERY hq.
+    CREATE BUFFER hb FOR TABLE \"customer\".
+    hq:ADD-BUFFER(hb).
+    DELETE OBJECT hq.
+END PROCEDURE.
+";
+    assert_eq!(lines(src, &check(run, src)), [24]);
+}

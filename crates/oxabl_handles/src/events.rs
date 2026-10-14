@@ -94,9 +94,10 @@ pub(crate) enum Effect<'a> {
         no_error: bool,
     },
     /// `recv:ADD-BUFFER(var)` or `recv:ADD-BUFFER(var:DEFAULT-BUFFER-HANDLE)`:
-    /// an escape when `recv` holds a dataset.
+    /// an escape when `recv` holds a dataset, a use when it holds a query.
+    /// `recv` is `None` when the receiver is not a variable.
     Attach {
-        recv: &'a str,
+        recv: Option<&'a str>,
         var: &'a str,
     },
     /// `var = x:FIRST-PROCEDURE` (or `LAST-PROCEDURE`, `NEXT-SIBLING`,
@@ -602,9 +603,8 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
             for a in arguments {
                 scan(a, src, out);
             }
-            if method.name.eq_ignore_ascii_case("ADD-BUFFER")
-                && let Some(recv) = var_of(object)
-            {
+            if method.name.eq_ignore_ascii_case("ADD-BUFFER") {
+                let recv = var_of(object);
                 for a in arguments {
                     let var = match &a.kind {
                         EK::MemberAccess { object, member }
