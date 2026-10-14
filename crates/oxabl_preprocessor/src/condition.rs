@@ -1,13 +1,14 @@
+use oxabl_workspace::PreprocessorConfig;
+
 use crate::PreprocVarTable;
 use crate::var_table::Origin;
 
 /// What an `&IF` condition is evaluated against.
 pub struct Environment<'a> {
     pub vars: &'a PreprocVarTable,
-    /// The `OPSYS` function. Unlike `{&OPSYS}` a `&SCOPED-DEFINE` cannot shadow it.
-    pub opsys: &'a str,
-    /// The `PROVERSION` function; `None` when the environment does not say.
-    pub proversion: Option<&'a str>,
+    /// The compile environment behind `OPSYS`, `PROVERSION` and the database
+    /// functions. Unlike `{&OPSYS}`, a `&SCOPED-DEFINE` cannot shadow them.
+    pub config: &'a PreprocessorConfig,
 }
 
 /// A part of a condition that was not decided from facts.
@@ -34,14 +35,25 @@ pub struct Evaluation {
 /// - literals: strings (with an ignored `:U`-style attribute), integers, decimals
 ///   (compared only), `TRUE`/`YES`, `FALSE`/`NO`
 /// - `=` `<>` `<` `>` `<=` `>=` (and `EQ` `NE` `LT` `GT` `LE` `GE`), `BEGINS`, `MATCHES`
+/// - `?`, the unknown value: equal only to itself, unknown in every other
+///   comparison. `NOT`, `AND` and `OR` are three-valued, and an unknown result
+///   selects no branch
 /// - `NOT`, `AND`, `OR`, parentheses
 /// - `+` `-` `*` `MODULO` on integers, `+` on strings
-/// - `DEFINED(name)`, `OPSYS`, `PROVERSION`, `LOGICAL`, `INTEGER`, `DECIMAL`
-///   (integral values only), `STRING`, `SUBSTRING`, `LENGTH`, `TRIM`,
+/// - `DEFINED(name)` (0 undefined, 1 `&GLOBAL-DEFINE`, 2 include argument,
+///   3 `&SCOPED-DEFINE`), `OPSYS`, `PROVERSION`, `LOGICAL`, `INTEGER`,
+///   `DECIMAL` (integral values only), `STRING`, `SUBSTRING`, `LENGTH`, `TRIM`,
 ///   `LEFT-TRIM`, `RIGHT-TRIM`, `LC`, `INDEX`, `R-INDEX`, `ENTRY`,
 ///   `NUM-ENTRIES`, `LOOKUP`, `ABSOLUTE`, `MAXIMUM`, `MINIMUM`
+/// - `DBTYPE`, `CONNECTED` and `LDBNAME` of a logical database name, from the
+///   databases the environment lists: `DBTYPE` is `PROGRESS` unless the
+///   environment says otherwise, and `?` for an unlisted name. They are a [`Gap`]
+///   while no list is known, and for a sequence number, which depends on the
+///   order of connection.
 ///
-/// Comparisons are case-insensitive (ABL semantics).
+/// Comparisons are case-insensitive (ABL semantics). Two strings compare as text
+/// and two numbers as numbers; a string against a number, or either against a
+/// logical, is a [`Gap`], as is a `MAXIMUM` or `MINIMUM` over mixed types.
 ///
 /// Everything else is a [`Gap`]: the evaluator still returns a branch, but the
 /// caller must treat it as a guess. That covers every other function (`SEARCH`
@@ -55,6 +67,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
         pos: 0,
         env,
         gaps: Vec::new(),
+        guesses: 0,
     };
     let value = parser.parse_or();
     if parser.pos < tokens.len() {
@@ -114,6 +127,8 @@ enum CondToken {
     Comma,
     LParen,
     RParen,
+    /// `?`, the unknown value.
+    Question,
     StringLit(String),
     Number(i64),
     /// A number with a fractional part, kept as written.
@@ -133,6 +148,7 @@ fn describe(token: &CondToken) -> String {
         CondToken::Star => "'*'".into(),
         CondToken::Slash => "'/'".into(),
         CondToken::Comma => "','".into(),
+        CondToken::Question => "'?'".into(),
         CondToken::LParen => "'('".into(),
         CondToken::RParen => "')'".into(),
         other => format!("{other:?}").to_ascii_uppercase(),
@@ -149,6 +165,7 @@ fn ends_value(token: Option<&CondToken>) -> bool {
                 | CondToken::Number(_)
                 | CondToken::Decimal(_)
                 | CondToken::Ident(_)
+                | CondToken::Question
                 | CondToken::True
                 | CondToken::False
         )
@@ -173,6 +190,10 @@ fn tokenize(input: &str) -> Vec<CondToken> {
             }
             b',' => {
                 tokens.push(CondToken::Comma);
+                i += 1;
+            }
+            b'?' => {
+                tokens.push(CondToken::Question);
                 i += 1;
             }
             b'+' => {
@@ -311,7 +332,7 @@ fn tokenize(input: &str) -> Vec<CondToken> {
 }
 
 /// The offset after the block comment that starts at `start`. Comments nest.
-fn skip_comment(bytes: &[u8], start: usize) -> usize {
+pub(crate) fn skip_comment(bytes: &[u8], start: usize) -> usize {
     let mut depth = 0;
     let mut i = start;
     while i < bytes.len() {
@@ -334,7 +355,10 @@ fn skip_comment(bytes: &[u8], start: usize) -> usize {
 /// Read the argument of the `DEFINED` that ends at `at`.
 fn defined(input: &str, at: usize) -> (CondToken, usize) {
     let rest = &input[at..];
-    let open = rest.len() - rest.trim_start_matches(' ').len();
+    let open = rest.len()
+        - rest
+            .trim_start_matches(|c: char| c.is_ascii_whitespace())
+            .len();
     if !rest[open..].starts_with('(') {
         return (CondToken::BareDefined, at);
     }
@@ -436,8 +460,10 @@ enum CondValue {
     Bool(bool),
     Str(String),
     Num(i64),
-    /// A number known only to be above zero: `DEFINED` of a name that is both an
-    /// include argument and a define.
+    /// The ABL unknown value, `?`. As a logical it is the third truth value.
+    Null,
+    /// A number known only to be above zero: `DEFINED` of a name that is more
+    /// than one of a global, a scoped define and an include argument.
     Positive,
     /// The value of a part that was not modelled; a gap is already recorded for it.
     Unknown,
@@ -452,6 +478,8 @@ struct CondParser<'a> {
     pos: usize,
     env: &'a Environment<'a>,
     gaps: Vec<Gap>,
+    /// How many times a guess was made, counting repeats that `gaps` folds.
+    guesses: usize,
 }
 
 impl<'a> CondParser<'a> {
@@ -477,64 +505,88 @@ impl<'a> CondParser<'a> {
     }
 
     fn gap(&mut self, what: String) {
-        let gap = Gap::Unmodelled(what);
+        self.record(Gap::Unmodelled(what));
+    }
+
+    fn record(&mut self, gap: Gap) {
+        self.guesses += 1;
         if !self.gaps.contains(&gap) {
             self.gaps.push(gap);
         }
     }
 
-    /// A value in a place that needs a truth value.
-    fn truth(&mut self, v: &CondValue) -> bool {
+    /// A value in a place that needs a truth value; `None` is unknown.
+    fn tri(&mut self, v: &CondValue) -> Option<bool> {
         match v {
-            CondValue::Bool(b) => *b,
-            CondValue::Num(n) => *n != 0,
-            CondValue::Dec(d) => !d.is_zero(),
-            CondValue::Unknown => false,
-            CondValue::Positive => true,
+            CondValue::Bool(b) => Some(*b),
+            CondValue::Num(n) => Some(*n != 0),
+            CondValue::Dec(d) => Some(!d.is_zero()),
+            CondValue::Unknown => Some(false),
+            CondValue::Null => None,
+            CondValue::Positive => Some(true),
             CondValue::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
-                "yes" | "true" => true,
-                "no" | "false" => false,
+                "yes" | "true" => Some(true),
+                "no" | "false" => Some(false),
                 _ => {
                     self.gap("a string used as a logical".into());
-                    !s.is_empty()
+                    Some(!s.is_empty())
                 }
             },
         }
     }
 
+    /// The branch a value selects: an unknown one selects none.
+    fn truth(&mut self, v: &CondValue) -> bool {
+        self.tri(v).unwrap_or(false)
+    }
+
     /// OR has lowest precedence.
     fn parse_or(&mut self) -> CondValue {
-        let first = self.parse_and();
-        if self.peek() != Some(&CondToken::Or) {
-            return first;
-        }
-        let mut result = self.truth(&first);
-        while self.eat(&CondToken::Or) {
-            let rhs = self.parse_and();
-            let rhs = self.truth(&rhs);
-            result = result || rhs;
-        }
-        CondValue::Bool(result)
+        self.parse_chain(Self::parse_and, CondToken::Or)
     }
 
     fn parse_and(&mut self) -> CondValue {
-        let first = self.parse_not();
-        if self.peek() != Some(&CondToken::And) {
+        self.parse_chain(Self::parse_not, CondToken::And)
+    }
+
+    /// `operand (op operand)*` for `AND` or `OR`, read left to right.
+    ///
+    /// Once an operand has settled the result without a guess (`true` for `OR`,
+    /// `false` for `AND`), the operands after it cannot change the result, so
+    /// the gaps they would record are dropped.
+    fn parse_chain(&mut self, operand: fn(&mut Self) -> CondValue, op: CondToken) -> CondValue {
+        let settling = op == CondToken::Or;
+        let guesses = self.guesses;
+        let first = operand(self);
+        if self.peek() != Some(&op) {
             return first;
         }
-        let mut result = self.truth(&first);
-        while self.eat(&CondToken::And) {
-            let rhs = self.parse_not();
-            let rhs = self.truth(&rhs);
-            result = result && rhs;
+        let mut result = self.tri(&first);
+        let mut settled = result == Some(settling) && self.guesses == guesses;
+        while self.eat(&op) {
+            let (gaps, guesses) = (self.gaps.len(), self.guesses);
+            let rhs = operand(self);
+            let rhs = self.tri(&rhs);
+            if settled {
+                self.gaps.truncate(gaps);
+            } else {
+                settled = rhs == Some(settling) && self.guesses == guesses;
+            }
+            // Three-valued: an operand of the settling value decides the result,
+            // otherwise an unknown operand leaves it unknown.
+            result = match (result, rhs) {
+                (Some(a), _) | (_, Some(a)) if a == settling => Some(settling),
+                (Some(_), Some(_)) => Some(!settling),
+                _ => None,
+            };
         }
-        CondValue::Bool(result)
+        logical(result)
     }
 
     fn parse_not(&mut self) -> CondValue {
         if self.eat(&CondToken::Not) {
             let v = self.parse_not();
-            return CondValue::Bool(!self.truth(&v));
+            return logical(self.tri(&v).map(|b| !b));
         }
         self.parse_comparison()
     }
@@ -554,7 +606,7 @@ impl<'a> CondParser<'a> {
             ) => {
                 let op = self.advance().unwrap().clone();
                 let rhs = self.parse_additive();
-                CondValue::Bool(self.compare(&lhs, &op, &rhs))
+                logical(self.compare(&lhs, &op, &rhs))
             }
             _ => lhs,
         }
@@ -620,10 +672,11 @@ impl<'a> CondParser<'a> {
         match token {
             CondToken::Defined(name) => match self.env.vars.origin(&name) {
                 None => CondValue::Num(0),
-                Some(Origin::Define) => CondValue::Num(1),
+                Some(Origin::Global) => CondValue::Num(1),
                 Some(Origin::Argument) => CondValue::Num(2),
-                // The exact answer for a name that is both is not known.
-                Some(Origin::Both) => CondValue::Positive,
+                Some(Origin::Scoped) => CondValue::Num(3),
+                // The exact answer for a name that is several is not known.
+                Some(Origin::Mixed) => CondValue::Positive,
             },
             CondToken::BareDefined => {
                 self.gap("DEFINED without a name in parentheses".into());
@@ -637,6 +690,7 @@ impl<'a> CondParser<'a> {
                 result
             }
             CondToken::StringLit(s) => CondValue::Str(s),
+            CondToken::Question => CondValue::Null,
             CondToken::Number(n) => CondValue::Num(n),
             CondToken::Decimal(text) => match Decimal::parse(&text) {
                 Some(d) => CondValue::Dec(d),
@@ -671,13 +725,11 @@ impl<'a> CondParser<'a> {
         let upper = name.to_ascii_uppercase();
         if self.peek() != Some(&CondToken::LParen) {
             return match upper.as_str() {
-                "OPSYS" => CondValue::Str(self.env.opsys.to_string()),
-                "PROVERSION" => match self.env.proversion {
+                "OPSYS" => CondValue::Str(self.env.config.opsys.clone()),
+                "PROVERSION" => match self.env.config.proversion.as_deref() {
                     Some(version) => CondValue::Str(version.to_string()),
                     None => {
-                        if !self.gaps.contains(&Gap::UnsetProversion) {
-                            self.gaps.push(Gap::UnsetProversion);
-                        }
+                        self.record(Gap::UnsetProversion);
                         CondValue::Unknown
                     }
                 },
@@ -707,6 +759,9 @@ impl<'a> CondParser<'a> {
         if args.iter().any(|a| matches!(a, CondValue::Unknown)) {
             return CondValue::Unknown;
         }
+        if matches!(upper.as_str(), "DBTYPE" | "CONNECTED" | "LDBNAME") {
+            return self.database_call(&upper, &args);
+        }
         match call(&upper, &args) {
             Some(v) => v,
             None => {
@@ -716,9 +771,64 @@ impl<'a> CondParser<'a> {
         }
     }
 
-    fn compare(&mut self, lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> bool {
+    /// `DBTYPE`, `CONNECTED` or `LDBNAME` of a logical database name, answered
+    /// from the databases the environment lists.
+    fn database_call(&mut self, name: &str, args: &[CondValue]) -> CondValue {
+        let config = self.env.config;
+        let Some(databases) = config.databases.as_deref() else {
+            self.gap(format!(
+                "the function {name}, with no connected databases known \
+                 (list them under `databases` in [workspace.preprocessor] or configure [workspace.schema])"
+            ));
+            return CondValue::Unknown;
+        };
+        let wanted = match args {
+            [CondValue::Str(wanted)] => wanted,
+            [CondValue::Num(_)] => {
+                self.gap(format!(
+                    "the function {name} with a sequence number, which depends on the order of connection"
+                ));
+                return CondValue::Unknown;
+            }
+            _ => {
+                self.gap(format!(
+                    "the function {name} with something other than a database name"
+                ));
+                return CondValue::Unknown;
+            }
+        };
+        let connected = databases.iter().find(|d| d.eq_ignore_ascii_case(wanted));
+        match (name, connected) {
+            ("CONNECTED", connected) => CondValue::Bool(connected.is_some()),
+            (_, None) => CondValue::Null,
+            ("LDBNAME", Some(db)) => CondValue::Str(db.clone()),
+            (_, Some(db)) => CondValue::Str(
+                config
+                    .database_types
+                    .iter()
+                    .find(|(listed, _)| listed.eq_ignore_ascii_case(db))
+                    .map_or("PROGRESS", |(_, kind)| kind)
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// `None` when the comparison is unknown, which only an unknown operand makes.
+    fn compare(&mut self, lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> Option<bool> {
         if matches!(lhs, CondValue::Unknown) || matches!(rhs, CondValue::Unknown) {
-            return false;
+            return Some(false);
+        }
+        // `?` equals only `?`; ordering and pattern tests against it are unknown.
+        let unknowns = [lhs, rhs]
+            .iter()
+            .filter(|v| matches!(v, CondValue::Null))
+            .count();
+        if unknowns > 0 {
+            return match op {
+                CondToken::Eq => Some(unknowns == 2),
+                CondToken::Neq => Some(unknowns != 2),
+                _ => None,
+            };
         }
         for (positive, other, flipped) in [(lhs, rhs, false), (rhs, lhs, true)] {
             if !matches!(positive, CondValue::Positive) {
@@ -726,8 +836,8 @@ impl<'a> CondParser<'a> {
             }
             // Only a comparison with zero does not need the number itself.
             let (Some(0), true) = (as_number(other), !matches!(other, CondValue::Positive)) else {
-                self.gap("DEFINED of a name that is an include argument and a define".into());
-                return false;
+                self.gap("DEFINED of a name that is defined in more than one way".into());
+                return Some(false);
             };
             let op = match (op, flipped) {
                 (CondToken::Lt, true) => &CondToken::Gt,
@@ -736,9 +846,56 @@ impl<'a> CondParser<'a> {
                 (CondToken::Ge, true) => &CondToken::Le,
                 (op, _) => op,
             };
-            return matches!(op, CondToken::Neq | CondToken::Gt | CondToken::Ge);
+            return Some(matches!(op, CondToken::Neq | CondToken::Gt | CondToken::Ge));
         }
-        compare_values(lhs, op, rhs)
+        Some(match (type_of(lhs), type_of(rhs)) {
+            // The AVM rejects it. The branch is a guess, read the loose way.
+            (Some(a), Some(b)) if a != b => {
+                self.gap(format!(
+                    "a comparison of {} with {}",
+                    a.describe(),
+                    b.describe()
+                ));
+                compare_values(lhs, op, rhs)
+            }
+            // Two character values compare as text, however they look.
+            _ => match (lhs, rhs) {
+                (CondValue::Str(l), CondValue::Str(r)) => compare_text(l, op, r),
+                _ => compare_values(lhs, op, rhs),
+            },
+        })
+    }
+}
+
+/// A truth value as a [`CondValue`].
+fn logical(truth: Option<bool>) -> CondValue {
+    truth.map_or(CondValue::Null, CondValue::Bool)
+}
+
+/// The data type of a value, as far as a comparison cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueType {
+    Text,
+    Number,
+    Logical,
+}
+
+impl ValueType {
+    fn describe(self) -> &'static str {
+        match self {
+            ValueType::Text => "a string",
+            ValueType::Number => "a number",
+            ValueType::Logical => "a logical",
+        }
+    }
+}
+
+fn type_of(v: &CondValue) -> Option<ValueType> {
+    match v {
+        CondValue::Str(_) => Some(ValueType::Text),
+        CondValue::Num(_) | CondValue::Dec(_) => Some(ValueType::Number),
+        CondValue::Bool(_) => Some(ValueType::Logical),
+        CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -758,7 +915,7 @@ fn compare_values(lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> bool {
             _ => {}
         }
     }
-    // Try numeric comparison first
+    // Only reached for two numbers, two logicals, or a mixed guess.
     if let (Some(l), Some(r)) = (as_number(lhs), as_number(rhs)) {
         match op {
             CondToken::Eq => return l == r,
@@ -771,9 +928,13 @@ fn compare_values(lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> bool {
         }
     }
 
-    // Fall back to case-insensitive string comparison
-    let l = as_string(lhs).to_ascii_lowercase();
-    let r = as_string(rhs).to_ascii_lowercase();
+    compare_text(&as_string(lhs), op, &as_string(rhs))
+}
+
+/// Case-insensitive comparison as text.
+fn compare_text(lhs: &str, op: &CondToken, rhs: &str) -> bool {
+    let l = lhs.to_ascii_lowercase();
+    let r = rhs.to_ascii_lowercase();
     match op {
         CondToken::Eq => l == r,
         CondToken::Neq => l != r,
@@ -827,7 +988,7 @@ fn as_number(v: &CondValue) -> Option<i64> {
         CondValue::Num(n) => Some(*n),
         CondValue::Str(s) => s.trim().parse().ok(),
         CondValue::Bool(b) => Some(i64::from(*b)),
-        CondValue::Dec(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Dec(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -836,7 +997,7 @@ fn as_decimal(v: &CondValue) -> Option<Decimal> {
         CondValue::Dec(d) => Some(d.clone()),
         CondValue::Num(n) => Decimal::parse(&n.to_string()),
         CondValue::Str(s) => Decimal::parse(s),
-        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -846,7 +1007,7 @@ fn as_string(v: &CondValue) -> String {
         CondValue::Num(n) => n.to_string(),
         CondValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
         CondValue::Dec(d) => d.text.clone(),
-        CondValue::Positive | CondValue::Unknown => String::new(),
+        CondValue::Positive | CondValue::Unknown | CondValue::Null => String::new(),
     }
 }
 
@@ -859,7 +1020,7 @@ fn text(v: &CondValue) -> Option<String> {
         CondValue::Str(s) => Some(s.clone()),
         CondValue::Num(n) => Some(n.to_string()),
         CondValue::Dec(d) => Some(d.text.clone()),
-        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -867,7 +1028,11 @@ fn int(v: &CondValue) -> Option<i64> {
     match v {
         CondValue::Num(n) => Some(*n),
         CondValue::Str(s) => s.trim().parse().ok(),
-        CondValue::Bool(_) | CondValue::Dec(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Bool(_)
+        | CondValue::Dec(_)
+        | CondValue::Positive
+        | CondValue::Unknown
+        | CondValue::Null => None,
     }
 }
 
@@ -889,6 +1054,7 @@ fn delimiter(arg: Option<&CondValue>) -> Option<char> {
 /// Evaluate a function whose semantics are modelled exactly. `None` means the
 /// function, or this use of it, is not modelled.
 fn call(name: &str, args: &[CondValue]) -> Option<CondValue> {
+    use std::cmp::Ordering::{self, Greater, Less};
     let one = |f: fn(&CondValue) -> Option<CondValue>| match args {
         [a] => f(a),
         _ => None,
@@ -898,7 +1064,7 @@ fn call(name: &str, args: &[CondValue]) -> Option<CondValue> {
             CondValue::Bool(b) => Some(CondValue::Bool(*b)),
             CondValue::Num(n) => Some(CondValue::Bool(*n != 0)),
             CondValue::Positive => Some(CondValue::Bool(true)),
-            CondValue::Dec(_) | CondValue::Unknown => None,
+            CondValue::Dec(_) | CondValue::Unknown | CondValue::Null => None,
             CondValue::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "yes" | "true" => Some(CondValue::Bool(true)),
                 "no" | "false" => Some(CondValue::Bool(false)),
@@ -919,14 +1085,33 @@ fn call(name: &str, args: &[CondValue]) -> Option<CondValue> {
         "RIGHT-TRIM" => one(|a| Some(CondValue::Str(trim_blanks(&text(a)?, false, true)))),
         "LC" => one(|a| Some(CondValue::Str(fold(&text(a)?)?))),
         "ABSOLUTE" => one(|a| int(a)?.checked_abs().map(CondValue::Num)),
+        // All numbers or all strings; a string pick compares as text.
         "MAXIMUM" | "MINIMUM" if args.len() >= 2 => {
-            let nums = args.iter().map(int).collect::<Option<Vec<_>>>()?;
-            let pick = if name == "MAXIMUM" {
-                nums.into_iter().max()
-            } else {
-                nums.into_iter().min()
-            };
-            pick.map(CondValue::Num)
+            let beats = |order: Ordering| order == if name == "MAXIMUM" { Greater } else { Less };
+            let (first, rest) = args.split_first()?;
+            match first {
+                CondValue::Num(first) => {
+                    let mut pick = first;
+                    for arg in rest {
+                        let CondValue::Num(n) = arg else { return None };
+                        if beats(n.cmp(pick)) {
+                            pick = n;
+                        }
+                    }
+                    Some(CondValue::Num(*pick))
+                }
+                CondValue::Str(first) => {
+                    let mut pick = first;
+                    for arg in rest {
+                        let CondValue::Str(s) = arg else { return None };
+                        if beats(s.to_ascii_lowercase().cmp(&pick.to_ascii_lowercase())) {
+                            pick = s;
+                        }
+                    }
+                    Some(CondValue::Str(pick.clone()))
+                }
+                _ => None,
+            }
         }
         "SUBSTRING" | "SUBSTR" => {
             let (s, start, len) = match args {
@@ -1013,12 +1198,15 @@ mod tests {
     use super::*;
 
     fn eval_in(condition: &str, vars: &PreprocVarTable, proversion: Option<&str>) -> Evaluation {
+        let config = PreprocessorConfig {
+            proversion: proversion.map(str::to_string),
+            ..PreprocessorConfig::default()
+        };
         super::evaluate(
             condition,
             &Environment {
                 vars,
-                opsys: "UNIX",
-                proversion,
+                config: &config,
             },
         )
     }
@@ -1251,10 +1439,14 @@ mod tests {
     fn opsys_and_proversion_come_from_the_environment() {
         let vars = PreprocVarTable::new();
         let win = |c: &str| {
+            let config = PreprocessorConfig {
+                opsys: "WIN32".into(),
+                proversion: Some("12.8".into()),
+                ..PreprocessorConfig::default()
+            };
             let env = Environment {
                 vars: &vars,
-                opsys: "WIN32",
-                proversion: Some("12.8"),
+                config: &config,
             };
             let e = super::evaluate(c, &env);
             assert!(e.gaps.is_empty(), "{c}: {:?}", e.gaps);
@@ -1290,13 +1482,18 @@ mod tests {
     #[test]
     fn defined_tells_a_define_from_an_include_argument() {
         let mut vars = PreprocVarTable::new();
-        vars.define("d", "x");
+        vars.define("s", "x");
+        vars.define_global("g", "x");
         vars.define_argument("a", "x");
-        assert!(evaluate_exact("DEFINED(d) = 1", &vars));
+        assert!(evaluate_exact("DEFINED(g) = 1", &vars));
         assert!(evaluate_exact("DEFINED(a) = 2", &vars));
+        assert!(evaluate_exact("DEFINED(s) = 3", &vars));
+        assert!(!evaluate_exact("DEFINED(s) = 1", &vars));
+        assert!(!evaluate_exact("DEFINED(g) = 3", &vars));
+        assert!(evaluate_exact("DEFINED(s) >= 2 AND DEFINED(g) < 2", &vars));
         assert!(evaluate_exact("DEFINED(a) <> 1 AND DEFINED(a) > 0", &vars));
         assert!(evaluate_exact("DEFINED(nothing) = 0", &vars));
-        // Both at once: only "above zero" is certain.
+        // More than one at once: only "above zero" is certain.
         vars.define("a", "y");
         assert!(evaluate_exact("DEFINED(a) > 0 AND DEFINED(a) <> 0", &vars));
         assert!(evaluate_exact("0 < DEFINED(a)", &vars));
@@ -1323,7 +1520,48 @@ mod tests {
         assert!(exact("12.10 < 12.8"));
         assert!(exact("12.80 = 12.8"));
         assert!(exact("-1.5 < 0"));
-        assert!(exact(r#"12.8 >= "12""#));
+    }
+
+    #[test]
+    fn two_strings_compare_as_text_however_they_look() {
+        assert!(exact(r#""9" >= "10""#));
+        assert!(!exact(r#""9" < "10""#));
+        assert!(exact(r#""12.8" > "12.10""#));
+        assert!(exact(r#"ENTRY(1, "9.1", ".") >= "10""#));
+        assert!(exact(r#""007" <> "7""#));
+        assert!(exact(r#"STRING(9) > STRING(10)"#));
+        let vars = vars_with(&[("a", "9"), ("b", "10")]);
+        assert!(evaluate_exact(r#""{&a}" > "{&b}""#, &vars));
+        // Two numbers still compare as numbers.
+        assert!(exact("9 < 10"));
+        assert!(!exact("9 >= 10"));
+        assert!(exact("12.8 > 12.10"));
+        assert!(exact("INTEGER(ENTRY(1, \"9.1\", \".\")) < 10"));
+    }
+
+    #[test]
+    fn a_string_and_a_number_are_not_comparable() {
+        for condition in [
+            r#"12.8 >= "12""#,
+            r#""5" = 5"#,
+            r#"LENGTH("ab") = "2""#,
+            r#"PROVERSION >= 12"#,
+            "TRUE = 1",
+            r#"LOGICAL("yes") = "yes""#,
+        ] {
+            assert_eq!(gaps(condition).len(), 1, "{condition}");
+        }
+    }
+
+    #[test]
+    fn maximum_and_minimum_keep_the_value_type() {
+        assert!(exact(r#"MAXIMUM("10", "9") = "9""#));
+        assert!(exact(r#"MINIMUM("10", "9") = "10""#));
+        assert!(exact(r#"MAXIMUM("a", "B", "c") = "c""#));
+        assert!(exact("MAXIMUM(10, 9) = 10"));
+        assert!(exact("MINIMUM(10, 9, 11) = 9"));
+        assert_eq!(gaps(r#"MAXIMUM(1, "2") = 2"#).len(), 1);
+        assert_eq!(gaps(r#"MINIMUM("1", 2) = 1"#).len(), 1);
     }
 
     #[test]
@@ -1402,10 +1640,220 @@ mod tests {
     }
 
     #[test]
+    fn an_operand_after_a_settled_result_records_no_gap() {
+        let decided = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(
+                (e.value, e.gaps.as_slice()),
+                (value, &[][..]),
+                "{condition}"
+            );
+        };
+        decided(r#"TRUE OR SEARCH("a") = 1"#, true);
+        decided(r#"FALSE AND SEARCH("a") = 1"#, false);
+        decided(r#"FALSE OR TRUE OR SEARCH("a") = 1"#, true);
+        decided(r#"TRUE AND FALSE AND SEARCH("a") = 1"#, false);
+        decided(r#"DEFINED(x) = 0 OR SEARCH("a") = 1"#, true);
+        decided(r#"(TRUE OR SEARCH("a") = 1) AND TRUE"#, true);
+        decided(r#"NOT (TRUE OR SEARCH("a") = 1) OR TRUE"#, true);
+    }
+
+    #[test]
+    fn an_operand_that_can_change_the_result_still_records_its_gap() {
+        for condition in [
+            r#"FALSE OR SEARCH("a") = 1"#,
+            r#"TRUE AND SEARCH("a") = 1"#,
+            r#"SEARCH("a") = 1 OR FALSE"#,
+            // The first operand is true only by a guess.
+            r#""yes-ish" OR SEARCH("a") = 1"#,
+            r#"SEARCH("a") = 1 OR SEARCH("b") = 1"#,
+            r#"TRUE AND (FALSE OR SEARCH("a") = 1)"#,
+        ] {
+            assert!(!gaps(condition).is_empty(), "{condition}");
+        }
+        // A gap before the settling operand stays; one after it does not.
+        let e = eval(r#"SEARCH("a") = 1 OR TRUE OR KEYWORD("b") = "x""#);
+        assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
+    }
+
+    #[test]
+    fn defined_takes_any_whitespace_before_its_parenthesis() {
+        let vars = vars_with(&[("x", "1")]);
+        for condition in [
+            "DEFINED (x) = 3",
+            "DEFINED\t(x) = 3",
+            "DEFINED\n(x) = 3",
+            "DEFINED \r\n  (x) = 3",
+            "DEFINED( \n x \n ) = 3",
+        ] {
+            assert!(evaluate_exact(condition, &vars), "{condition:?}");
+        }
+        assert!(evaluate_exact("DEFINED\n(nothing) = 0", &vars));
+        assert_eq!(gaps("DEFINED = 1").len(), 1);
+    }
+
+    #[test]
     fn an_unmodelled_call_swallows_its_arguments() {
         let e = eval(r#"SEARCH("a,b.i") = ? OR TRUE"#);
         assert!(e.value);
-        assert_eq!(e.gaps.len(), 2);
+        assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
+    }
+
+    #[test]
+    fn the_unknown_value_equals_only_itself() {
+        assert!(exact("? = ?"));
+        assert!(!exact("? <> ?"));
+        assert!(!exact(r#""a" = ?"#));
+        assert!(exact(r#""a" <> ?"#));
+        assert!(!exact("1 = ?"));
+        assert!(exact("? <> 1"));
+        assert!(!exact("TRUE = ?"));
+        assert!(exact(r#"LENGTH("a") NE ?"#));
+        assert!(exact("12.5 ne ?"));
+        assert!(exact("-1 <> ?"));
+        assert!(exact(r#"? EQ ?"#));
+    }
+
+    #[test]
+    fn any_other_comparison_with_the_unknown_value_is_false() {
+        for condition in [
+            "1 < ?",
+            "1 > ?",
+            "1 <= ?",
+            "? >= 1",
+            "? < ?",
+            "? >= ?",
+            r#""a" BEGINS ?"#,
+            r#"? MATCHES "*""#,
+        ] {
+            assert!(!exact(condition), "{condition}");
+        }
+    }
+
+    #[test]
+    fn the_unknown_value_is_a_third_truth_value() {
+        // An unknown comparison stays unknown through NOT, so no branch is taken.
+        assert!(!exact("NOT (1 < ?)"));
+        assert!(!exact("NOT ?"));
+        assert!(!exact("?"));
+        assert!(exact("NOT ? OR TRUE"));
+        assert!(exact("? OR TRUE"));
+        assert!(exact("TRUE OR ?"));
+        assert!(!exact("? AND FALSE"));
+        assert!(!exact("FALSE AND ?"));
+        assert!(!exact("? AND TRUE"));
+        assert!(!exact("? OR FALSE"));
+        assert!(!exact("NOT (? OR FALSE)"));
+        assert!(exact("NOT (? AND FALSE)"));
+        assert!(exact("NOT ((1 < ?) AND FALSE)"));
+    }
+
+    #[test]
+    fn the_unknown_value_in_a_function_or_arithmetic_is_a_gap() {
+        for condition in [
+            "? + 1 = 1",
+            "LENGTH(?) = 0",
+            r#"STRING(?) = "?""#,
+            "LOGICAL(?)",
+            "INTEGER(?) = 0",
+            "MAXIMUM(?, 1) = 1",
+        ] {
+            assert!(!gaps(condition).is_empty(), "{condition}");
+        }
+        // The leftover `?` after a complete expression is still reported.
+        assert_eq!(gaps(r#""a" = "a" ?"#).len(), 1);
+    }
+
+    fn eval_databases(condition: &str, databases: Option<&[&str]>) -> Evaluation {
+        let config = PreprocessorConfig {
+            databases: databases.map(|d| d.iter().map(|d| d.to_string()).collect()),
+            database_types: [("STOCK".to_string(), "ORACLE".to_string())].into(),
+            ..PreprocessorConfig::default()
+        };
+        let vars = PreprocVarTable::new();
+        super::evaluate(
+            condition,
+            &Environment {
+                vars: &vars,
+                config: &config,
+            },
+        )
+    }
+
+    #[test]
+    fn the_database_functions_answer_from_the_listed_databases() {
+        let listed = Some(&["ledger_db", "Stock"][..]);
+        let exact = |condition: &str| {
+            let e = eval_databases(condition, listed);
+            assert!(e.gaps.is_empty(), "{condition}: {:?}", e.gaps);
+            e.value
+        };
+        assert!(exact(r#"DBTYPE("ledger_db") NE ?"#));
+        assert!(exact(r#"DBTYPE("LEDGER_DB") = "PROGRESS""#));
+        assert!(exact(r#"DBTYPE("stock") = "ORACLE""#));
+        assert!(!exact(r#"DBTYPE("other") NE ?"#));
+        assert!(exact(r#"DBTYPE("other") = ?"#));
+        assert!(exact(r#"CONNECTED("ledger_db")"#));
+        assert!(exact(r#"CONNECTED("STOCK") AND NOT CONNECTED("other")"#));
+        assert!(exact(r#"LDBNAME("STOCK") = "Stock""#));
+        assert!(exact(r#"LDBNAME("other") = ?"#));
+        assert!(!exact(r#"LDBNAME("other") NE ?"#));
+        assert!(exact(
+            r#"DBTYPE("ledger_db") = "progress" AND DBTYPE("x") = ?"#
+        ));
+        // No branch is taken on an unknown answer.
+        assert!(!exact(r#"DBTYPE("other") > "A""#));
+        assert!(!exact(r#"NOT (DBTYPE("other") > "A")"#));
+    }
+
+    #[test]
+    fn an_empty_database_list_connects_nothing() {
+        let e = eval_databases(r#"CONNECTED("ledger_db")"#, Some(&[]));
+        assert!(!e.value && e.gaps.is_empty());
+        let e = eval_databases(r#"DBTYPE("ledger_db") NE ?"#, Some(&[]));
+        assert!(!e.value && e.gaps.is_empty());
+    }
+
+    #[test]
+    fn the_database_functions_are_a_gap_without_a_list() {
+        for condition in [
+            r#"DBTYPE("ledger_db") NE ?"#,
+            r#"CONNECTED("ledger_db")"#,
+            r#"LDBNAME("ledger_db") = "ledger_db""#,
+        ] {
+            let e = eval_databases(condition, None);
+            assert_eq!(e.gaps.len(), 1, "{condition}");
+            let Gap::Unmodelled(what) = &e.gaps[0] else {
+                panic!("{:?}", e.gaps)
+            };
+            assert!(what.contains("`databases`"), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_sequence_number_or_a_non_name_is_a_gap_whatever_is_listed() {
+        for condition in [
+            "LDBNAME(1) = \"ledger_db\"",
+            "DBTYPE(1) = \"PROGRESS\"",
+            "CONNECTED(TRUE)",
+            "CONNECTED()",
+            r#"CONNECTED("a", "b")"#,
+            "DBTYPE(?) = ?",
+        ] {
+            let e = eval_databases(condition, Some(&["ledger_db"]));
+            assert_eq!(e.gaps.len(), 1, "{condition}: {:?}", e.gaps);
+        }
+    }
+
+    #[test]
+    fn a_decided_condition_never_asks_for_the_database_list() {
+        for (condition, value) in [
+            (r#"TRUE OR DBTYPE("x") NE ?"#, true),
+            (r#"FALSE AND DBTYPE("x") NE ?"#, false),
+        ] {
+            let e = eval_databases(condition, None);
+            assert_eq!((e.value, e.gaps.is_empty()), (value, true), "{condition}");
+        }
     }
 
     #[test]

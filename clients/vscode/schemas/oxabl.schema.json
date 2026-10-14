@@ -167,12 +167,31 @@
     },
     "PreprocessorConfig": {
       "additionalProperties": false,
-      "description": "The `[workspace.preprocessor]` table: the compile environment behind the AVM's predefined preprocessor names.\n\nThe AVM answers `{&OPSYS}`, `{&WINDOW-SYSTEM}`, `{&BATCH-MODE}`, `{&PROCESS-ARCHITECTURE}` and `{&PROVERSION}` from the machine it compiles on. A static analyzer has no such machine, so the environment is stated here and every `&IF` over one of these names is decided against it. The defaults describe a 64-bit Unix batch compile with a character (TTY) UI; set the keys to describe the environment your code is really compiled in.\n\n`{&FILE-NAME}`, `{&LINE-NUMBER}` and `{&SEQUENCE}` are computed from the source and take no configuration.\n\nContainer-level `#[serde(default)]` lets a partial table fall back per key, and `deny_unknown_fields` makes a misspelled key a hard error rather than a silently wrong branch.",
+      "description": "The `[workspace.preprocessor]` table: the compile environment behind the AVM's predefined preprocessor names.\n\nThe AVM answers `{&OPSYS}`, `{&WINDOW-SYSTEM}`, `{&BATCH-MODE}`, `{&PROCESS-ARCHITECTURE}` and `{&PROVERSION}` from the machine it compiles on. A static analyzer has no such machine, so the environment is stated here and every `&IF` over one of these names is decided against it. The defaults describe a 64-bit Unix batch compile with a character (TTY) UI; set the keys to describe the environment your code is really compiled in.\n\n`{&FILE-NAME}`, `{&LINE-NUMBER}` and `{&SEQUENCE}` are computed from the source and take no configuration.\n\nThe `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` ask which databases are connected, which only a compile knows. `databases` states them.\n\nContainer-level `#[serde(default)]` lets a partial table fall back per key, and `deny_unknown_fields` makes a misspelled key a hard error rather than a silently wrong branch.",
       "properties": {
         "batch-mode": {
           "default": true,
           "description": "Whether the compile is a batch compile; `{&BATCH-MODE}` expands to `yes` or `no`. Default `true`.",
           "type": "boolean"
+        },
+        "database-types": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "The `DBTYPE` of a connected database, by logical name, for example `{ ledger = \"ORACLE\" }`. A database that is not named here is `PROGRESS`.",
+          "type": "object"
+        },
+        "databases": {
+          "default": null,
+          "description": "The logical names of the databases connected when the code compiles. The `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` answer from this list, so `DBTYPE(\"ledger\") NE ?` is true when `ledger` is listed.\n\nWhen the key is absent, the `[workspace.schema]` files name the databases: the file name without `.df` is the logical name, so `schema/ledger.df` connects `ledger`. Set the key when a logical name differs from its file name, or to `[]` for a compile with no database connected. While neither a list nor a schema is given, an `&IF` that calls one of these functions raises `PREPROC010` instead of deciding on a guess.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "opsys": {
           "default": "UNIX",
@@ -601,6 +620,8 @@
           ],
           "default": {
             "batch-mode": true,
+            "database-types": {},
+            "databases": null,
             "opsys": "UNIX",
             "process-architecture": 64,
             "proversion": null,

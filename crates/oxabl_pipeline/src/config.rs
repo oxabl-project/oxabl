@@ -350,7 +350,7 @@ fn derive(
         })
     }));
     warnings.extend(lint_name_warnings(&config.workspace.lint));
-    let preprocessor = config.workspace.preprocessor.clone();
+    let mut preprocessor = config.workspace.preprocessor.clone();
     let run_extensions = normalize_run_extensions(&config.workspace.sources.run_extensions);
     warnings.extend(
         run_extensions
@@ -406,6 +406,11 @@ fn derive(
     let (schema, schema_loaded) = if files.is_empty() {
         (Schema::empty(), false)
     } else {
+        // The databases the schema describes are the ones connected, unless the
+        // config says which are.
+        if preprocessor.databases.is_none() {
+            preprocessor.databases = Some(logical_database_names(&files));
+        }
         let (schema, diags) = SchemaLoader::load_files(&files, &RealFileSystem);
         warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
         (schema, true)
@@ -453,6 +458,19 @@ fn lint_name_warnings(lint: &LintConfig) -> Vec<ConfigWarning> {
         }
     }
     warnings
+}
+
+/// The logical database names that `.df` files stand for: each file name without
+/// its extension, once per name however it is cased.
+fn logical_database_names(files: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for stem in files.iter().filter_map(|f| f.file_stem()) {
+        let stem = stem.to_string_lossy();
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(&stem)) {
+            names.push(stem.into_owned());
+        }
+    }
+    names
 }
 
 /// Expand one schema entry — a `--schema` path or a `[workspace.schema].files`
@@ -880,6 +898,92 @@ mod tests {
         let (config, _) =
             PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
         assert!(!config.schema_loaded, "no schema path supplied");
+    }
+
+    fn databases_of(table: &str, overrides: &ConfigOverrides) -> Option<Vec<String>> {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("schema")).unwrap();
+        for name in ["ledger.df", "Stock.DF", "STOCK.df", "notes.txt"] {
+            write(&root.join("schema"), name, "");
+        }
+        write(root, "main.p", "");
+        write(
+            root,
+            "oxabl.toml",
+            &format!("[workspace]\nname = \"p\"\n{table}"),
+        );
+        let (config, _) = PipelineConfig::resolve(&root.join("main.p"), overrides);
+        config.preprocessor.databases
+    }
+
+    const SCHEMA_FILES: &str = "[workspace.schema]\nfiles = [\"schema/ledger.df\", \"schema/Stock.DF\", \"schema/STOCK.df\"]\n";
+
+    /// The schema files are the databases the code compiles against, so each
+    /// one's name is a connected logical database, once however it is cased.
+    #[test]
+    fn databases_default_to_the_names_of_the_schema_files() {
+        let names = |dbs: Option<Vec<String>>| dbs.unwrap();
+        assert_eq!(
+            names(databases_of(SCHEMA_FILES, &ConfigOverrides::default())),
+            ["ledger", "Stock"]
+        );
+    }
+
+    #[test]
+    fn a_schema_directory_names_a_database_per_df_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("schema")).unwrap();
+        write(&root.join("schema"), "ledger.df", "");
+        write(&root.join("schema"), "stock.df", "");
+        write(&root.join("schema"), "readme.txt", "");
+        write(root, "main.p", "");
+
+        let overrides = ConfigOverrides {
+            schema_path: Some(root.join("schema")),
+            ..Default::default()
+        };
+        let (config, _) = PipelineConfig::resolve(&root.join("main.p"), &overrides);
+        assert_eq!(config.preprocessor.databases.unwrap(), ["ledger", "stock"]);
+
+        let overrides = ConfigOverrides {
+            schema_path: Some(root.join("schema/stock.df")),
+            ..Default::default()
+        };
+        let (config, _) = PipelineConfig::resolve(&root.join("main.p"), &overrides);
+        assert_eq!(config.preprocessor.databases.unwrap(), ["stock"]);
+    }
+
+    #[test]
+    fn a_configured_database_list_replaces_the_schema_names() {
+        let table = format!("{SCHEMA_FILES}[workspace.preprocessor]\ndatabases = [\"main\"]\n");
+        assert_eq!(
+            databases_of(&table, &ConfigOverrides::default()).unwrap(),
+            ["main"]
+        );
+        let table = format!("{SCHEMA_FILES}[workspace.preprocessor]\ndatabases = []\n");
+        assert_eq!(
+            databases_of(&table, &ConfigOverrides::default()).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn no_schema_and_no_list_leave_the_databases_unknown() {
+        assert_eq!(databases_of("", &ConfigOverrides::default()), None);
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "main.p", "");
+        write(
+            root,
+            "oxabl.toml",
+            &format!("[workspace]\nname = \"p\"\n{SCHEMA_FILES}"),
+        );
+        let (config, _) =
+            PipelineConfig::resolve_style_only(&root.join("main.p"), &ConfigOverrides::default());
+        assert_eq!(config.preprocessor.databases, None);
     }
 
     /// A `--schema` *directory* holding no `.df` file is a misconfiguration, not

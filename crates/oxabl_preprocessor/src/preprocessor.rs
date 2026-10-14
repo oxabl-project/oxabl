@@ -7,7 +7,7 @@ use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 use crate::PreprocVarTable;
-use crate::condition::{Environment, Gap, evaluate};
+use crate::condition::{Environment, Gap, evaluate, skip_comment};
 use crate::span_tree::{
     PreprocessedFile, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
@@ -59,15 +59,15 @@ impl ComputedName {
 
 /// Define the predefined names that [`PreprocessorConfig`] answers.
 fn define_configured_names(vars: &mut PreprocVarTable, config: &PreprocessorConfig) {
-    vars.define("OPSYS", &config.opsys);
-    vars.define("WINDOW-SYSTEM", &config.window_system);
-    vars.define("BATCH-MODE", if config.batch_mode { "yes" } else { "no" });
-    vars.define(
+    vars.define_global("OPSYS", &config.opsys);
+    vars.define_global("WINDOW-SYSTEM", &config.window_system);
+    vars.define_global("BATCH-MODE", if config.batch_mode { "yes" } else { "no" });
+    vars.define_global(
         "PROCESS-ARCHITECTURE",
         &config.process_architecture.to_string(),
     );
     if let Some(version) = &config.proversion {
-        vars.define("PROVERSION", version);
+        vars.define_global("PROVERSION", version);
     }
 }
 
@@ -130,8 +130,7 @@ impl<'fs> Preprocessor<'fs> {
             fs: self.fs,
             include_paths: self.include_paths,
             vars,
-            opsys: self.predefined.opsys.clone(),
-            proversion: self.predefined.proversion.clone(),
+            predefined: self.predefined.clone(),
             file_names: vec![name.map(str::to_string)],
             sequence: 0,
             global_vars: PreprocVarTable::new(),
@@ -180,9 +179,8 @@ struct ProcessContext<'fs> {
     fs: &'fs dyn FileSystem,
     include_paths: &'fs [PathBuf],
     vars: PreprocVarTable,
-    /// What the `OPSYS` and `PROVERSION` functions answer in a condition.
-    opsys: String,
-    proversion: Option<String>,
+    /// What the functions of an `&IF` condition answer from.
+    predefined: PreprocessorConfig,
     /// The name `{&FILE-NAME}` reports for each file being processed, innermost
     /// last. The root's is `None` when the caller supplied no name.
     file_names: Vec<Option<String>>,
@@ -350,8 +348,8 @@ impl<'fs> ProcessContext<'fs> {
                                     let expanded = self
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
-                                    self.vars.define(name, &expanded);
-                                    self.global_vars.define(name, &expanded);
+                                    self.vars.define_global(name, &expanded);
+                                    self.global_vars.define_global(name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -790,8 +788,7 @@ impl<'fs> ProcessContext<'fs> {
             &condition,
             &Environment {
                 vars: &self.vars,
-                opsys: &self.opsys,
-                proversion: self.proversion.as_deref(),
+                config: &self.predefined,
             },
         );
         let mut unmodelled = Vec::new();
@@ -1153,14 +1150,20 @@ impl<'fs> ProcessContext<'fs> {
             "SCOPED-DEFINE" | "SCOPED" | "SCOP" => {
                 let (name, value, end) = parse_define_body(source, i + j);
                 Some(Directive {
-                    kind: DirectiveKind::ScopedDefine { name, value },
+                    kind: DirectiveKind::ScopedDefine {
+                        name,
+                        value: strip_comments(&value),
+                    },
                     end,
                 })
             }
             "GLOBAL-DEFINE" | "GLOBAL" | "GLOB" => {
                 let (name, value, end) = parse_define_body(source, i + j);
                 Some(Directive {
-                    kind: DirectiveKind::GlobalDefine { name, value },
+                    kind: DirectiveKind::GlobalDefine {
+                        name,
+                        value: strip_comments(&value),
+                    },
                     end,
                 })
             }
@@ -1563,6 +1566,45 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let _ = value_start;
 
     (name, value, start + i)
+}
+
+/// Remove the comments from a define value: `/* */` (which nests) and `//` (to
+/// the end of the value). A comment is not part of the value, and a `//` left
+/// in one would swallow whatever the value is later substituted before. String
+/// literals are kept as written.
+fn strip_comments(value: &str) -> String {
+    if !value.contains("/*") && !value.contains("//") {
+        return value.to_string();
+    }
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut kept_from = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'"' | b'\'') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    // `~` escapes the next character.
+                    i += if bytes[i] == b'~' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                out.push_str(&value[kept_from..i]);
+                i = skip_comment(bytes, i);
+                kept_from = i;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                out.push_str(&value[kept_from..i]);
+                kept_from = bytes.len();
+                break;
+            }
+            _ => i += 1,
+        }
+    }
+    out.push_str(&value[kept_from.min(bytes.len())..]);
+    out.trim().to_string()
 }
 
 /// Parse the body of `&UNDEFINE name`.
@@ -2510,6 +2552,7 @@ mod tests {
             batch_mode: false,
             process_architecture: 32,
             proversion: Some("12.8".to_string()),
+            ..PreprocessorConfig::default()
         };
         let pp = Preprocessor::new(&fs, &include_paths).with_predefined(&config);
         let result = pp.process(FileId::new(1), ENV_SOURCE).unwrap();
@@ -2592,6 +2635,91 @@ mod tests {
     }
 
     #[test]
+    fn digit_strings_compare_as_text_and_a_mixed_comparison_is_a_guess() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF ENTRY(1, \"9.1\", \".\") >= \"10\" &THEN\ntext\n&ELSE\nnumber\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "text\n");
+        assert!(result.diagnostics.is_empty());
+
+        let source = "&IF ENTRY(1, \"9.1\", \".\") >= 10 &THEN\nx\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        let messages: Vec<_> = result.diagnostics.iter().map(|d| &d.message).collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].contains("a comparison of a string with a number"),
+            "{}",
+            messages[0]
+        );
+        assert_eq!(
+            result.text_losses[0].kind,
+            TextLossKind::UnmodelledCondition
+        );
+    }
+
+    #[test]
+    fn a_decided_condition_does_not_report_the_operand_it_never_needed() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE OR SEARCH(\"a.i\") = 1 &THEN\nyes\n&ENDIF\n\
+                      &IF FALSE AND SEARCH(\"a.i\") = 1 &THEN\nno\n&ENDIF\n\
+                      &IF DEFINED\t(missing) = 0 &THEN\nspaced\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "yes\nspaced\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.text_losses.is_empty());
+    }
+
+    #[test]
+    fn the_unknown_value_in_a_condition_is_evaluated() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF ? = ? &THEN\nequal\n&ENDIF\n\
+                      &IF \"x\" NE ? &THEN\nnot-unknown\n&ENDIF\n\
+                      &IF 1 > ? &THEN\nwrong\n&ENDIF\n\
+                      &IF NOT (1 > ?) &THEN\nwrong-not\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "equal\nnot-unknown\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn the_database_functions_read_the_listed_databases_or_report_a_guess() {
+        let fs = make_fs(&[]);
+        let source = "&IF DBTYPE(\"ledger\") NE ? &THEN\nconnected\n&ELSE\nabsent\n&ENDIF\n";
+        let with = |databases: Option<Vec<String>>| {
+            let config = PreprocessorConfig {
+                databases,
+                ..PreprocessorConfig::default()
+            };
+            Preprocessor::new(&fs, &[])
+                .with_predefined(&config)
+                .process(FileId::new(1), source)
+                .unwrap()
+        };
+
+        let result = with(Some(vec!["ledger".into()]));
+        assert_eq!(&*result.to_text(), "connected\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+
+        let result = with(Some(vec![]));
+        assert_eq!(&*result.to_text(), "absent\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+
+        let result = with(None);
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code.0, "PREPROC010");
+        assert!(result.diagnostics[0].message.contains("DBTYPE"));
+        assert_eq!(
+            result.text_losses[0].kind,
+            TextLossKind::UnmodelledCondition
+        );
+    }
+
+    #[test]
     fn an_unmodelled_function_in_a_condition_is_reported_once_per_condition() {
         let fs = make_fs(&[]);
         let pp = Preprocessor::new(&fs, &[]);
@@ -2616,18 +2744,67 @@ mod tests {
     }
 
     #[test]
-    fn defined_tells_an_include_argument_from_a_define() {
+    fn defined_tells_global_argument_and_scoped_names_apart() {
         let fs = make_fs(&[(
             "/inc/d.i",
-            "&IF DEFINED(arg) = 2 &THEN\nargument\n&ENDIF\n&IF DEFINED(def) = 1 &THEN\ndefine\n&ENDIF\n",
+            "&IF DEFINED(arg) = 2 &THEN\nargument\n&ENDIF\n\
+             &IF DEFINED(scoped) = 3 &THEN\nscoped\n&ENDIF\n\
+             &IF DEFINED(scoped) = 1 &THEN\nwrong-scoped\n&ENDIF\n\
+             &IF DEFINED(glob) = 1 &THEN\nglobal\n&ENDIF\n\
+             &IF DEFINED(glob) = 3 &THEN\nwrong-global\n&ENDIF\n\
+             &GLOBAL-DEFINE fromi yes\n",
         )]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
-        let source = "&SCOPED-DEFINE def yes\n{d.i &arg=1}";
+        let source = "&SCOPED-DEFINE scoped yes\n&GLOBAL-DEFINE glob yes\n{d.i &arg=1}\
+                      &IF DEFINED(fromi) = 1 &THEN\nfrom-include\n&ENDIF\n\
+                      &IF DEFINED(nothing) = 0 &THEN\nnothing\n&ENDIF\n";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "argument\ndefine\n");
+        assert_eq!(
+            &*result.to_text(),
+            "argument\nscoped\nglobal\nfrom-include\nnothing\n"
+        );
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_line_comment_in_a_define_value_cannot_swallow_the_condition() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&GLOBAL-DEFINE x 5 // note\n\
+                      &IF {&x} = 6 &THEN\nwrong\n&ELSE\nsix-is-false\n&ENDIF\n\
+                      &IF {&x} = 5 AND FALSE &THEN\nwrong\n&ELSE\nand-is-false\n&ENDIF\n\
+                      &IF {&x} = 5 &THEN\nfive\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "six-is-false\nand-is-false\nfive\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_comment_is_not_part_of_a_define_value() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE a 1 /* one */\n&SCOPED-DEFINE b /* none */\n\
+                      &SCOPED-DEFINE c x /* a /* nested */ b */ y // z\n\
+                      [{&a}][{&b}][{&c}]\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[1][][x  y]\n");
+    }
+
+    #[test]
+    fn comment_markers_in_a_define_string_stay() {
+        assert_eq!(
+            strip_comments(r#""http://a/*b*/" // c"#),
+            r#""http://a/*b*/""#
+        );
+        assert_eq!(strip_comments(r#"'a//b' /* c */ 'd'"#), "'a//b'  'd'");
+        assert_eq!(strip_comments(r#""a~"//b" // c"#), r#""a~"//b""#);
+        assert_eq!(strip_comments("plain"), "plain");
+        assert_eq!(strip_comments("x /* never closed"), "x");
+        assert_eq!(strip_comments("\"unclosed // c"), "\"unclosed // c");
     }
 
     #[test]
