@@ -631,6 +631,7 @@ impl<'a> FileIndex<'a> {
                 name,
                 body,
                 is_prototype,
+                ..
             } => {
                 // `IN SUPER`, `IN h` and `EXTERNAL` run code of another file.
                 if !is_prototype {

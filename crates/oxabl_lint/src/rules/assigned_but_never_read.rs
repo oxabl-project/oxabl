@@ -597,6 +597,7 @@ mod tests {
         let stmts = vec![stmt(StatementKind::Procedure {
             name: id("p"),
             is_prototype: false,
+            is_external: false,
             body: vec![
                 stmt(StatementKind::DefineParameter {
                     direction: ParameterDirection::Output,

@@ -3380,12 +3380,14 @@ impl Parser<'_> {
         }
 
         let mut is_prototype = false;
+        let mut is_external = false;
         // Skip optional EXTERNAL "dll-name" [calling-convention] [PERSISTENT] clause
         // e.g. PROCEDURE foo EXTERNAL "mylib.dll" cdecl:
         // The DLL name may also be a preprocessor reference: EXTERNAL {&DLL_NAME}
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
             is_prototype = true;
+            is_external = true;
             // DLL name: string literal or preprocessor/include reference
             if self.check(Kind::StringLiteral)
                 || self.check(Kind::Preprop)
@@ -3444,6 +3446,7 @@ impl Parser<'_> {
                     name,
                     body: Vec::new(),
                     is_prototype,
+                    is_external,
                 }));
             }
         }
@@ -3486,6 +3489,7 @@ impl Parser<'_> {
             name,
             body,
             is_prototype,
+            is_external,
         }))
     }
 
