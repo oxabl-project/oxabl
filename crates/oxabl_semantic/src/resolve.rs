@@ -2534,6 +2534,7 @@ impl<'a> ResolveWalker<'a> {
                 to,
                 by,
                 while_condition,
+                on_actions,
                 body,
                 ..
             } => {
@@ -2565,10 +2566,14 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(e) = while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
+                for e in on_actions {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
                 self.walk_block(body, bs);
             }
             StatementKind::Repeat {
                 while_condition,
+                on_actions,
                 body,
             } => {
                 let bs = self
@@ -2577,12 +2582,16 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(e) = while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
+                for e in on_actions {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
                 self.walk_block(body, bs);
             }
             StatementKind::ForEach {
                 buffer,
                 of_relation,
                 where_clause,
+                on_actions,
                 body,
                 ..
             } => {
@@ -2607,6 +2616,9 @@ impl<'a> ResolveWalker<'a> {
                 }
                 if let Some(w) = where_clause {
                     self.walk_expression(w, bs, AccessMode::Read);
+                }
+                for e in on_actions {
+                    self.walk_expression(e, bs, AccessMode::Read);
                 }
                 self.walk_block(body, bs);
             }
@@ -6051,6 +6063,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![],
         })]);
         // Counter must not leak into file scope.
@@ -6089,6 +6102,7 @@ mod tests {
                 by: None,
                 while_condition: None,
                 transaction: false,
+                on_actions: Vec::new(),
                 body: vec![],
             }),
         ];
@@ -6122,6 +6136,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![],
         })]);
         assert!(find_symbol(&tree, &symbols, NamespaceId::Buffers, "Customer").is_none());
@@ -6148,6 +6163,7 @@ mod tests {
                 by: None,
                 while_condition: None,
                 transaction: false,
+                on_actions: Vec::new(),
                 body: vec![var_stmt("x", DataType::Character)],
             }),
         ]);
@@ -6189,6 +6205,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![var_stmt("x", DataType::Integer)],
         });
         let b_block = stmt(StatementKind::Do {
@@ -6198,6 +6215,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![var_stmt("x", DataType::Integer)],
         });
         let (_tree, _symbols, diags) = run(vec![
@@ -7313,6 +7331,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![stmt_n(StatementKind::ExpressionStatement(inner_use))],
         });
         let stmts = vec![var_stmt_n("outer", DataType::Integer), do_block];
@@ -7343,6 +7362,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![stmt_n(StatementKind::ExpressionStatement(block_use))],
         });
         let stmts = vec![var_stmt_n("x", DataType::Character), do_block];
@@ -7759,6 +7779,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![],
         })];
         let ctx = ctx("", &schema);
@@ -8502,6 +8523,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![],
         })];
         let (_t, symbols, _r, _) = run_full(&stmts);

@@ -112,28 +112,42 @@ impl Visitor<'_> {
                 to,
                 by,
                 while_condition,
+                on_actions,
                 body,
                 ..
             } => {
                 for e in [from, to, by, while_condition].into_iter().flatten() {
                     self.walk_expression(e);
                 }
+                for e in on_actions {
+                    self.walk_expression(e);
+                }
                 self.walk_block(body);
             }
             StatementKind::Repeat {
                 while_condition,
+                on_actions,
                 body,
             } => {
                 if let Some(e) = while_condition {
                     self.walk_expression(e);
                 }
+                for e in on_actions {
+                    self.walk_expression(e);
+                }
                 self.walk_block(body);
             }
             StatementKind::ForEach {
-                where_clause, body, ..
+                where_clause,
+                on_actions,
+                body,
+                ..
             } => {
                 if let Some(w) = where_clause {
                     self.walk_expression(w);
+                }
+                for e in on_actions {
+                    self.walk_expression(e);
                 }
                 self.walk_block(body);
             }

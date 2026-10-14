@@ -466,6 +466,7 @@ mod tests {
                 by: None,
                 while_condition: None,
                 transaction: false,
+                on_actions: Vec::new(),
                 body: vec![],
             }),
         ];

@@ -3055,6 +3055,7 @@ fn parse_simple_repeat() {
         StatementKind::Repeat {
             body,
             while_condition,
+            ..
         } => {
             assert!(while_condition.is_none());
             assert_eq!(body.len(), 2);
@@ -3241,6 +3242,7 @@ fn parse_simple_for_each() {
             where_clause,
             lock_type,
             body,
+            ..
         } => {
             assert_eq!(buffer.name, "Customer");
             assert!(of_relation.is_none());
@@ -3471,6 +3473,7 @@ fn parse_simple_for_each_no_lock_space() {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![]
         }
     );
@@ -3493,6 +3496,7 @@ fn parse_simple_for_each_share_lock_space() {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::ShareLock,
+            on_actions: Vec::new(),
             body: vec![]
         }
     );
@@ -3515,6 +3519,7 @@ fn parse_simple_for_each_exclusive_lock_space() {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::ExclusiveLock,
+            on_actions: Vec::new(),
             body: vec![]
         }
     );
@@ -11959,5 +11964,49 @@ fn define_work_table_is_skipped_like_workfile() {
             program.statements[0].kind,
             StatementKind::Skipped { .. }
         ));
+    }
+}
+
+#[test]
+fn a_block_header_on_phrase_keeps_its_action_expression() {
+    for source in [
+        "DO ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "DO ON ERROR UNDO, THROW NEW pkg.Err(): END.",
+        "DO ON ENDKEY UNDO, LEAVE ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "REPEAT ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "FOR EACH Customer NO-LOCK ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "FOR EACH Customer NO-LOCK BY Customer.Name ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "DO ON ERROR UNDO, RETURN ERROR \"bad\" + STRING(1): END.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        let on_actions = match &program.statements[0].kind {
+            StatementKind::Do { on_actions, .. }
+            | StatementKind::Repeat { on_actions, .. }
+            | StatementKind::ForEach { on_actions, .. } => on_actions,
+            other => panic!("{source}: expected a block, got {other:?}"),
+        };
+        assert_eq!(on_actions.len(), 1, "{source}");
+    }
+}
+
+#[test]
+fn a_block_header_on_phrase_without_a_value_keeps_no_action_expression() {
+    for source in [
+        "DO ON ERROR UNDO, RETURN ERROR: END.",
+        "DO ON ERROR UNDO, THROW: END.",
+        "DO ON ERROR UNDO, RETURN NO-APPLY: END.",
+        "REPEAT ON STOP UNDO, RETURN ERROR ON QUIT UNDO, NEXT: END.",
+        "FOR EACH Customer NO-LOCK ON ERROR UNDO, LEAVE: END.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        let on_actions = match &program.statements[0].kind {
+            StatementKind::Do { on_actions, .. }
+            | StatementKind::Repeat { on_actions, .. }
+            | StatementKind::ForEach { on_actions, .. } => on_actions,
+            other => panic!("{source}: expected a block, got {other:?}"),
+        };
+        assert!(on_actions.is_empty(), "{source}");
     }
 }
