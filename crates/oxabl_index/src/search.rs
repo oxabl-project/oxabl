@@ -287,6 +287,64 @@ pub fn find_name_with<E: AsRef<str>>(
     find_spellings(fs, include_paths, &written, &folded, policy)
 }
 
+/// [`find_name_with`]'s fallback for a workspace that opted into case-insensitive
+/// lookup: match the relative path against the real directory contents ignoring
+/// ASCII case, via [`FileSystem::find_ignoring_case`].
+///
+/// Call it after the exact search answered [`IndexAnswer::NotFound`]. The same
+/// rules hold: the extension policy, no escaping the include paths, and exactly
+/// one distinct file across every entry and candidate extension, else
+/// [`IndexAnswer::Unknowable`].
+pub fn find_name_ignoring_case<E: AsRef<str>>(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    name: &IndexName,
+    kind: NameKind,
+    bare_extensions: &[E],
+) -> IndexAnswer<PathBuf> {
+    let mut candidates: Vec<(PathBuf, ExtensionPolicy)> = Vec::new();
+    match kind {
+        NameKind::Class => candidates.push((class_path(name), ExtensionPolicy::WalkRoots)),
+        NameKind::Program if has_extension(name.as_written()) => {
+            candidates.push((program_path(name), ExtensionPolicy::AnyButInclude));
+        }
+        NameKind::Program => {
+            for extension in bare_extensions {
+                if let Some(extension) = normalize_run_extension(extension.as_ref()) {
+                    candidates.push((
+                        with_extension(name.as_written(), extension),
+                        ExtensionPolicy::AnyButInclude,
+                    ));
+                }
+            }
+        }
+    }
+    // The first extension that finds anything decides, as in the exact search.
+    for (relative, policy) in candidates {
+        if !policy.admits(&relative)
+            || relative.is_absolute()
+            || relative.has_root()
+            || normalize_lexically(&relative).starts_with("..")
+        {
+            continue;
+        }
+        let mut found: Vec<PathBuf> = Vec::new();
+        for dir in include_paths {
+            for path in fs.find_ignoring_case(dir, &relative) {
+                if !found.contains(&path) {
+                    found.push(path);
+                }
+            }
+        }
+        match found.len() {
+            0 => {}
+            1 => return IndexAnswer::Found(found.remove(0)),
+            _ => return IndexAnswer::Unknowable,
+        }
+    }
+    IndexAnswer::NotFound
+}
+
 fn with_extension(target: &str, extension: &str) -> PathBuf {
     program_relative(&format!("{target}.{extension}"))
 }
@@ -963,5 +1021,70 @@ mod tests {
                 "{target}"
             );
         }
+    }
+
+    fn ci(fs: &InMemoryFileSystem, name: &str, kind: NameKind) -> IndexAnswer<PathBuf> {
+        find_name_ignoring_case(
+            fs,
+            &dirs(&["/src"]),
+            &IndexName::new(name),
+            kind,
+            BARE_PROGRAM_EXTENSIONS,
+        )
+    }
+
+    #[test]
+    fn a_third_casing_misses_the_exact_search_and_hits_the_fallback() {
+        let fs = fs_with(&["/src/pkg/Util.cls", "/src/sub/Prog.p"]);
+        let paths = dirs(&["/src"]);
+        let class = IndexName::new("pkg.UTIL");
+        let program = IndexName::new("SUB/prog.p");
+        assert_eq!(
+            find_name(&fs, &paths, &class, NameKind::Class),
+            IndexAnswer::NotFound
+        );
+        assert_eq!(
+            find_name(&fs, &paths, &program, NameKind::Program),
+            IndexAnswer::NotFound
+        );
+        assert_eq!(
+            ci(&fs, "pkg.UTIL", NameKind::Class),
+            IndexAnswer::Found(PathBuf::from("/src/pkg/Util.cls"))
+        );
+        assert_eq!(
+            ci(&fs, "SUB/prog.p", NameKind::Program),
+            IndexAnswer::Found(PathBuf::from("/src/sub/Prog.p"))
+        );
+    }
+
+    #[test]
+    fn the_fallback_tries_bare_extensions_in_order() {
+        let fs = fs_with(&["/src/sub/Prog.w"]);
+        assert_eq!(
+            ci(&fs, "SUB/prog", NameKind::Program),
+            IndexAnswer::Found(PathBuf::from("/src/sub/Prog.w"))
+        );
+    }
+
+    #[test]
+    fn two_case_variants_are_unknowable() {
+        let fs = fs_with(&["/src/sub/prog.p", "/src/SUB/Prog.p"]);
+        assert_eq!(
+            ci(&fs, "Sub/PROG.p", NameKind::Program),
+            IndexAnswer::Unknowable
+        );
+    }
+
+    #[test]
+    fn the_fallback_keeps_the_include_and_escape_rules() {
+        let fs = fs_with(&["/src/shared.i", "/outside/thing.p"]);
+        assert_eq!(
+            ci(&fs, "SHARED.i", NameKind::Program),
+            IndexAnswer::NotFound
+        );
+        assert_eq!(
+            ci(&fs, "../OUTSIDE/thing.p", NameKind::Program),
+            IndexAnswer::NotFound
+        );
     }
 }
