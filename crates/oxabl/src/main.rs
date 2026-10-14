@@ -124,6 +124,23 @@ enum Cli {
         /// the exit code.
         #[arg(long, requires = "baseline", conflicts_with = "no_lint")]
         update_baseline: bool,
+
+        /// Also report the semantic and lint findings that sit in an include.
+        ///
+        /// Each one is a finding about **one root after expansion**, never about
+        /// the workspace: "unused" means unused in that root's compilation unit,
+        /// and another root may read the variable. It is reported at the include
+        /// file's own path and line, with the root and the include chain that
+        /// produced it. An include that several roots include is reported once
+        /// per root; an include that one root expands several times is reported
+        /// once per distinct finding, listing every expansion.
+        ///
+        /// Off by default, so a plain run keeps its findings, ordering and exit
+        /// code. The findings count toward the exit code when it is on. Not
+        /// combinable with `--baseline`. `--json` adds an `include_diagnostics`
+        /// array.
+        #[arg(long, conflicts_with = "baseline")]
+        include_findings: bool,
     },
     /// Walk a tree and report the parser's conformance: how many files parse,
     /// which ones fail and where, and the ranked error patterns behind the
@@ -414,6 +431,7 @@ fn main() -> ExitCode {
             no_format,
             baseline,
             update_baseline,
+            include_findings,
         } => run_check(
             &path,
             json,
@@ -426,6 +444,7 @@ fn main() -> ExitCode {
             no_lint,
             no_format,
             baseline.as_deref().map(|file| (file, update_baseline)),
+            include_findings,
         ),
         Cli::Conformance {
             path,
@@ -777,6 +796,11 @@ struct CheckJsonReport {
     /// withheld. Omitted for ordinary walks to keep their JSON stable.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     fragment_roots: Vec<String>,
+    /// Findings in an include, each for one root's compilation unit. Present only
+    /// with `--include-findings` and when there are any; they count toward the
+    /// exit code.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    include_diagnostics: Vec<CheckJsonIncludeFinding>,
     failures: Vec<CheckJsonFailure>,
     /// Present only with `--baseline`; `diagnostics` then holds new findings
     /// only.
@@ -812,6 +836,54 @@ struct CheckJsonDiagnostic {
     start: Option<CheckJsonPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end: Option<CheckJsonPosition>,
+}
+
+/// One finding in an include, as a result for one root's compilation unit.
+///
+/// `path` is the physical include file and `span`/`start`/`end` are in its own
+/// bytes. `root` is the checked file whose expansion produced it, which is what
+/// separates this from a claim about the workspace: a declaration unused here
+/// can be read by another root. `scope` says so in the data.
+#[derive(Serialize)]
+struct CheckJsonIncludeFinding {
+    path: String,
+    root: String,
+    scope: &'static str,
+    code: String,
+    severity: &'static str,
+    source: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    span: CheckJsonSpan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<CheckJsonPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<CheckJsonPosition>,
+    expansions: Vec<CheckJsonExpansion>,
+}
+
+/// One expansion of the include that produced a finding.
+#[derive(Serialize)]
+struct CheckJsonExpansion {
+    /// This expansion's place among the root's expansions of that file, from 1.
+    occurrence: u32,
+    occurrences: u32,
+    /// Root first. Each step is a file and the reference that included it.
+    chain: Vec<CheckJsonChainStep>,
+}
+
+#[derive(Serialize)]
+struct CheckJsonChainStep {
+    path: String,
+    /// The reference, in the bytes of the file that wrote it. Omitted when the
+    /// reference sits in `{&name}` substitution text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    site: Option<CheckJsonSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -898,6 +970,7 @@ fn run_check(
     no_lint: bool,
     no_format: bool,
     baseline_file: Option<(&Path, bool)>,
+    include_findings: bool,
 ) -> ExitCode {
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
     // `.df` it names, so doing it inside the loop would re-parse the schema for
@@ -1011,6 +1084,8 @@ fn run_check(
     let mut drifted: Vec<String> = Vec::new();
     let mut unjudged = 0usize;
     let mut fragment_roots = Vec::new();
+    let mut include_diagnostics: Vec<CheckJsonIncludeFinding> = Vec::new();
+    let mut include_texts = IncludeTexts::default();
 
     for (file, indexed_path) in files.iter().zip(&indexed) {
         let display = file.display().to_string();
@@ -1085,6 +1160,21 @@ fn run_check(
                 json_output,
                 &mut diagnostics,
             );
+
+            if include_findings {
+                let mut shown = result.include_origin().to_vec();
+                if no_lint {
+                    shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
+                }
+                report_include_findings(
+                    &display,
+                    &source,
+                    &shown,
+                    &mut include_texts,
+                    json_output,
+                    &mut include_diagnostics,
+                );
+            }
 
             // The unjudged-symbol note is a statement about the *count-gated lint
             // rules'* coverage, so it has nothing to qualify when those findings
@@ -1200,6 +1290,7 @@ fn run_check(
             preproc,
             unjudged_symbols: unjudged,
             fragment_roots,
+            include_diagnostics,
             failures,
             baseline,
         };
@@ -1212,7 +1303,7 @@ fn run_check(
         }
         // The report owns every count now, so recompute the exit from it.
         return check_exit_code(
-            report.diagnostics.len(),
+            report.diagnostics.len() + report.include_diagnostics.len(),
             report.format.drifted_count,
             report.failures.len(),
         );
@@ -1241,7 +1332,11 @@ fn run_check(
     //
     // Text mode only: `--json` already carries `files_checked`, and a prose line
     // beside the document would make stdout unparseable.
-    if diagnostics.is_empty() && drifted.is_empty() && failures.is_empty() {
+    if diagnostics.is_empty()
+        && include_diagnostics.is_empty()
+        && drifted.is_empty()
+        && failures.is_empty()
+    {
         let plural = if files.len() == 1 { "file" } else { "files" };
         let includes = match include_files_checked {
             0 => String::new(),
@@ -1264,7 +1359,11 @@ fn run_check(
         );
     }
 
-    check_exit_code(diagnostics.len(), drifted.len(), failures.len())
+    check_exit_code(
+        diagnostics.len() + include_diagnostics.len(),
+        drifted.len(),
+        failures.len(),
+    )
 }
 
 /// The baseline counts, on stderr: they qualify the run like the coverage notes
@@ -1347,6 +1446,145 @@ fn report_findings(
     let map = SourceMap::new(source);
     for collected in reported.all() {
         rows.push(check_json_diagnostic(display, &map, collected));
+    }
+}
+
+/// Include files read for `--include-findings`, each at most once per run.
+#[derive(Default)]
+struct IncludeTexts(HashMap<PathBuf, Option<String>>);
+
+impl IncludeTexts {
+    fn get(&mut self, path: &Path) -> Option<&str> {
+        self.0
+            .entry(path.to_path_buf())
+            .or_insert_with(|| std::fs::read_to_string(path).ok())
+            .as_deref()
+    }
+}
+
+/// `path:line:col` of a reference at `at` in `text`, or just `path` when the
+/// text is not known.
+fn site_label(path: &str, text: Option<&str>, at: Option<oxabl_ast::Span>) -> String {
+    match (text, at) {
+        (Some(text), Some(at)) => {
+            let (line, column) = SourceMap::new(text).lookup(at.start as usize);
+            format!("{path}:{line}:{column}")
+        }
+        (_, None) => format!("{path} (`{{&...}}` substitution)"),
+        _ => path.to_string(),
+    }
+}
+
+/// Print (text mode) and collect (JSON rows) the findings in includes that
+/// `root`'s expansion produced.
+///
+/// Positions come from the physical include file, read from disk. A file that
+/// cannot be read keeps its byte span and loses line and column.
+fn report_include_findings(
+    root: &str,
+    root_source: &str,
+    found: &[oxabl_analyze::IncludeOriginDiagnostic],
+    texts: &mut IncludeTexts,
+    json_output: bool,
+    rows: &mut Vec<CheckJsonIncludeFinding>,
+) {
+    for finding in found {
+        let display = finding.path.display().to_string();
+        let mut diagnostic = finding.diagnostic.clone();
+        diagnostic.span.file = ROOT_FILE_ID;
+        let text = texts.get(&finding.path).map(str::to_owned);
+        if !json_output {
+            let resolver = SourceResolver::new(
+                if text.is_some() {
+                    ROOT_FILE_ID
+                } else {
+                    FileId::UNKNOWN
+                },
+                display.clone(),
+                text.as_deref().unwrap_or(""),
+            );
+            print!("{}", render_diagnostics(&[diagnostic.clone()], &resolver));
+            for expansion in &finding.expansions {
+                // Each site is in the file that wrote it: the root, then the
+                // include before it in the chain.
+                let mut previous = (root.to_string(), Some(root_source.to_string()));
+                let mut via = Vec::new();
+                for step in &expansion.chain {
+                    via.push(site_label(&previous.0, previous.1.as_deref(), step.site));
+                    previous = (
+                        step.path.display().to_string(),
+                        texts.get(&step.path).map(str::to_owned),
+                    );
+                }
+                let nth = if expansion.occurrences > 1 {
+                    format!(
+                        " (expansion {} of {})",
+                        expansion.occurrence, expansion.occurrences
+                    )
+                } else {
+                    String::new()
+                };
+                println!(
+                    "  note: in the compilation unit of {root}, not a workspace-wide result; \
+                     reached through {}{nth}",
+                    via.join(" -> ")
+                );
+            }
+        }
+        let resolved = text
+            .as_deref()
+            .map(|text| position::resolve_diagnostic(&SourceMap::new(text), &diagnostic));
+        let expansions = finding
+            .expansions
+            .iter()
+            .map(|expansion| {
+                let mut previous = Some(root_source.to_string());
+                let chain = expansion
+                    .chain
+                    .iter()
+                    .map(|step| {
+                        let position = match (&previous, step.site) {
+                            (Some(text), Some(at)) => {
+                                Some(SourceMap::new(text).lookup(at.start as usize))
+                            }
+                            _ => None,
+                        };
+                        previous = texts.get(&step.path).map(str::to_owned);
+                        CheckJsonChainStep {
+                            path: step.path.display().to_string(),
+                            site: step.site.map(|at| CheckJsonSpan {
+                                start: at.start,
+                                end: at.end,
+                            }),
+                            line: position.map(|(line, _)| line),
+                            column: position.map(|(_, column)| column),
+                        }
+                    })
+                    .collect();
+                CheckJsonExpansion {
+                    occurrence: expansion.occurrence,
+                    occurrences: expansion.occurrences,
+                    chain,
+                }
+            })
+            .collect();
+        rows.push(CheckJsonIncludeFinding {
+            path: display,
+            root: root.to_string(),
+            scope: "compilation-unit",
+            code: diagnostic.code.0.to_string(),
+            severity: diagnostic.severity.as_str(),
+            source: finding.source.as_str(),
+            message: diagnostic.message.clone(),
+            help: diagnostic.help.clone(),
+            span: CheckJsonSpan {
+                start: diagnostic.span.span.start,
+                end: diagnostic.span.span.end,
+            },
+            start: resolved.map(|r| r.start.into()),
+            end: resolved.map(|r| r.end.into()),
+            expansions,
+        });
     }
 }
 

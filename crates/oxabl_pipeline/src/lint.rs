@@ -82,7 +82,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, RuleSelection, UnresolvedInclude, analyze_from_expanded,
+    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, UnresolvedInclude, analyze_from_expanded,
     collect_from_expanded_selecting, expand_source_with,
 };
 
@@ -295,11 +295,24 @@ impl LintResult {
         static NONE: &CollectedDiagnostics = &CollectedDiagnostics {
             diagnostics: Vec::new(),
             parse_recovered: false,
+            include_origin: Vec::new(),
         };
         match &self.outcome {
             Outcome::Computed { diagnostics, .. } => diagnostics,
             Outcome::Failed(_) => NONE,
         }
+    }
+
+    /// The semantic and lint findings that sit in an include, each with the
+    /// include chain of this run's root that produced it. Empty on a failed run.
+    ///
+    /// They are results for **this root after expansion**, kept apart from
+    /// [`all`](Self::all) so a client that renders only root-origin findings
+    /// is unchanged. A declaration unused here can be read by another root that
+    /// includes the same file. See [`IncludeOriginDiagnostic`] for the
+    /// repeated-expansion policy.
+    pub fn include_origin(&self) -> &[IncludeOriginDiagnostic] {
+        &self.diagnostics().include_origin
     }
 
     /// Every diagnostic, in pipeline order.
@@ -941,6 +954,7 @@ impl<'a> LintPipeline<'a> {
         let diagnostics = CollectedDiagnostics {
             diagnostics: Vec::new(),
             parse_recovered,
+            include_origin: Vec::new(),
         };
         LintResult::computed(Some(Box::new(semantic)), diagnostics, dependency_paths)
     }
@@ -1028,6 +1042,7 @@ impl<'a> LintPipeline<'a> {
                         })
                         .collect(),
                     parse_recovered: false,
+                    include_origin: Vec::new(),
                 };
                 LintResult::computed(None, diagnostics, dependency_paths)
             }
