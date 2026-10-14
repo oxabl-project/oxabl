@@ -124,7 +124,7 @@ impl<'fs> Preprocessor<'fs> {
         name: Option<&str>,
         source: &str,
     ) -> Result<PreprocessedFile, Vec<Diagnostic>> {
-        let mut vars = PreprocVarTable::new();
+        let mut vars = PreprocVarTable::with_capacity(16);
         define_configured_names(&mut vars, &self.predefined);
         let mut ctx = ProcessContext {
             fs: self.fs,
@@ -1416,8 +1416,8 @@ impl<'fs> ProcessContext<'fs> {
         self.sources.push((include_file_id, content.clone()));
         self.dependencies.push(include_file_id);
 
-        // Scope isolation: save current vars, inject named args
-        let saved_vars = self.vars.clone();
+        // Scope isolation: open a variable scope, inject named args
+        let scope = self.vars.begin_scope();
         for (name, value) in &args.named {
             self.vars.define_argument(name, value);
         }
@@ -1433,7 +1433,7 @@ impl<'fs> ProcessContext<'fs> {
 
         // Restore vars (named args don't leak to parent)
         // But preserve any &GLOBAL-DEFINE changes
-        self.vars = saved_vars;
+        self.vars.end_scope(scope);
         self.vars.merge_globals(&self.global_vars);
 
         self.include_stack.remove(&path);
