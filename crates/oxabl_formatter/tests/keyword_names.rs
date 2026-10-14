@@ -328,3 +328,20 @@ fn a_field_named_like_an_introducer_does_not_protect_the_next_word() {
     let upper = "IF b.CLASS EQ \"x\" THEN MESSAGE \"y\".\nRUN fill.p.\nRUN Fill.p (INPUT 1).\n";
     assert_eq!(fmt(src, KeywordCase::Uppercase), upper);
 }
+
+#[test]
+fn the_type_list_scan_stays_linear() {
+    // Every entry after a comma asks whether it is in an `IMPLEMENTS` list; a
+    // scan back over each statement, or over the whole file, is quadratic.
+    let mut src = "on choose of a, b in frame f return no-apply.\n".repeat(8000);
+    src.push_str("on choose of a0");
+    for i in 1..8000 {
+        src.push_str(&format!(", a{i}"));
+    }
+    src.push_str(" in frame f return no-apply.\n");
+    let start = std::time::Instant::now();
+    let out = fmt(&src, KeywordCase::Uppercase);
+    let took = start.elapsed();
+    assert!(out.starts_with("ON CHOOSE OF a, b IN FRAME f RETURN NO-APPLY.\n"));
+    assert!(took.as_millis() < 3000, "{took:?}");
+}

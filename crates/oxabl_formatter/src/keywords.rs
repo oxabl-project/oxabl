@@ -233,6 +233,7 @@ pub(crate) fn name_uses(source: &str, toks: &[Token]) -> Vec<bool> {
             .is_some_and(|c| c.is_alphabetic() || c == '_')
     };
     let touches = |a: usize, b: usize| toks[a].end == toks[b].start;
+    let in_list = type_list_entries(toks, &sig, &word_like, &touches);
 
     let mut is_name = vec![false; toks.len()];
     for (p, &i) in sig.iter().enumerate() {
@@ -260,7 +261,7 @@ pub(crate) fn name_uses(source: &str, toks: &[Token]) -> Vec<bool> {
                 && touches(i, n)
                 && touches(n, a)
                 && word_like(a));
-        let in_list = toks[q].kind == Kind::Comma && in_type_list(toks, &sig, p, &word_like);
+        let in_list = toks[q].kind == Kind::Comma && in_list[p];
         // `tt.CLASS EQ "x"`: a field named like the introducer introduces nothing.
         let member = p >= 2
             && matches!(toks[q].kind, Kind::Class | Kind::Interface)
@@ -278,20 +279,32 @@ pub(crate) fn name_uses(source: &str, toks: &[Token]) -> Vec<bool> {
     is_name
 }
 
-/// Whether `sig[p]`, which follows a comma, is an entry of an `INHERITS` or
-/// `IMPLEMENTS` list.
-fn in_type_list(
+/// By index into `sig`: whether the token is inside an `INHERITS` or
+/// `IMPLEMENTS` list, that is, only words, commas and the periods of dotted
+/// names come between the two. One pass, so a long statement stays linear.
+fn type_list_entries(
     toks: &[Token],
     sig: &[usize],
-    p: usize,
     word_like: &dyn Fn(usize) -> bool,
-) -> bool {
-    sig[..p].iter().rev().find_map(|&j| match toks[j].kind {
-        Kind::Inherits | Kind::Implements => Some(true),
-        Kind::Comma | Kind::Period => None,
-        _ if word_like(j) => None,
-        _ => Some(false),
-    }) == Some(true)
+    touches: &dyn Fn(usize, usize) -> bool,
+) -> Vec<bool> {
+    let mut entries = vec![false; sig.len()];
+    let mut open = false;
+    for (p, &j) in sig.iter().enumerate() {
+        entries[p] = open;
+        open = match toks[j].kind {
+            Kind::Inherits | Kind::Implements => true,
+            Kind::Comma => open,
+            Kind::Period => {
+                open && p > 0
+                    && sig
+                        .get(p + 1)
+                        .is_some_and(|&n| touches(sig[p - 1], j) && touches(j, n))
+            }
+            _ => open && word_like(j),
+        };
+    }
+    entries
 }
 
 /// Transform one keyword token's source text per the style.
