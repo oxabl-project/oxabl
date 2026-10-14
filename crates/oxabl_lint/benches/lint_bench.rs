@@ -11,7 +11,10 @@ use criterion::{
 };
 use oxabl_common::{FileId, LintSeverityMap};
 use oxabl_lexer::tokenize;
-use oxabl_lint::{Registry, block_var_used_outside, lint_file};
+use oxabl_lint::{
+    CL001, CL002, CL005, LINT0002, LINT0005, LINT0006, Registry, TX006, block_var_used_outside,
+    lint_file,
+};
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
 use oxabl_semantic::{AnalysisContext, analyze_file};
@@ -120,7 +123,11 @@ fn load_fixture(name: &str) -> String {
 
 /// `lint_file` and the registry on a hand-written, realistic file: once with
 /// the default rules, once with every `strict.*` group enabled.
-fn bench_realistic(c: &mut Criterion, name: &str, fixture: &str) {
+///
+/// The setup asserts that the fixture parses cleanly and that each of
+/// `expected` reports at least once, so the bench cannot silently measure a
+/// file the rules skip.
+fn bench_realistic(c: &mut Criterion, name: &str, fixture: &str, expected: &[&str]) {
     let source = load_fixture(fixture);
     let tokens = tokenize(&source);
     let program = Parser::new(&tokens, &source).parse_program();
@@ -135,6 +142,13 @@ fn bench_realistic(c: &mut Criterion, name: &str, fixture: &str) {
     let sem = analyze_file(&program.statements, &default_ctx);
 
     let registry = Registry::builtin();
+    let found = registry.run(&program.statements, &sem, &strict_ctx);
+    for code in expected {
+        assert!(
+            found.iter().any(|d| d.code.0 == *code),
+            "{fixture} must trigger {code}"
+        );
+    }
     let default_count = registry.run(&program.statements, &sem, &default_ctx).len();
     let strict_count = registry.run(&program.statements, &sem, &strict_ctx).len();
     assert!(default_count > 0, "the fixture must trigger default rules");
@@ -158,8 +172,18 @@ fn bench_realistic(c: &mut Criterion, name: &str, fixture: &str) {
 }
 
 fn realistic_benchmarks(c: &mut Criterion) {
-    bench_realistic(c, "procedural", "bench_lint_procedural.abl");
-    bench_realistic(c, "class", "bench_lint_class.abl");
+    bench_realistic(
+        c,
+        "procedural",
+        "bench_lint_procedural.abl",
+        &[LINT0002, LINT0005, CL001, CL002, CL005, TX006],
+    );
+    bench_realistic(
+        c,
+        "class",
+        "bench_lint_class.abl",
+        &[LINT0006, CL001, CL002, TX006],
+    );
 }
 
 fn lint_benchmarks(c: &mut Criterion) {
