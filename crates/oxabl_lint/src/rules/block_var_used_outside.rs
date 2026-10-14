@@ -42,9 +42,9 @@
 //! The check can only remove findings. It gives up, and the finding stays,
 //! when it cannot account for every reference to the variable, when a read
 //! is in another unit (an internal procedure or trigger can run at any time),
-//! or when an undo of a block around the assignment could restore an
-//! undoable variable. An assignment that raises an error does not count on
-//! the error path.
+//! or when an undo (an error handler or an `UNDO` statement) of a block that
+//! overlaps the defining block could restore an undoable variable. An
+//! assignment that raises an error does not count on the error path.
 //!
 //! **What is credited, and what still is not.** Statement forms the parser
 //! recognizes but does not model (`PUT`, `EXPORT`, `UPDATE`, `SET`,
@@ -637,20 +637,17 @@ mod paths {
 
         fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut bool) {
             let n = cfg.node(node);
-            match n.kind {
-                NodeKind::Stmt if n.stmt.is_some_and(|s| self.writes.contains(&s)) => {
-                    *fact = true;
-                }
-                // Undoing a block that overlaps the defining block can
-                // restore an undoable variable's earlier value.
-                NodeKind::Handler(_)
-                    if self.undoable
-                        && (cfg.block_contains(n.block, self.defined_in)
-                            || cfg.block_contains(self.defined_in, n.block)) =>
-                {
-                    *fact = false;
-                }
-                _ => {}
+            if n.kind == NodeKind::Stmt && n.stmt.is_some_and(|s| self.writes.contains(&s)) {
+                *fact = true;
+            } else if self.undoable
+                // A handler or an `UNDO` statement that undoes a block
+                // overlapping the defining block can restore an undoable
+                // variable's earlier value.
+                && cfg.undone_block(node).is_some_and(|b| {
+                    cfg.block_contains(b, self.defined_in) || cfg.block_contains(self.defined_in, b)
+                })
+            {
+                *fact = false;
             }
         }
 

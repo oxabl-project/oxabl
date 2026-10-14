@@ -271,7 +271,8 @@ pub struct Block {
     pub iterating: bool,
     /// The `TRANSACTION` keyword is on the header.
     pub transaction: bool,
-    /// `STOP-AFTER` is on the header.
+    /// `STOP-AFTER` is on the header. Every statement in the block, and in the
+    /// blocks nested in it, may then raise STOP.
     pub stop_after: bool,
     /// For a `FOR` block, the buffers of its record phrases (scoped to the
     /// block unless used outside it); for `DO FOR` / `REPEAT FOR`, the buffers
@@ -449,6 +450,10 @@ pub struct Node {
     pub stmt: Option<NodeId>,
     pub span: Span,
     pub opaque: Option<OpaqueReason>,
+    /// The block an `UNDO` statement undoes: the one it names, else the
+    /// closest with the error property (a `CATCH`'s owner, for an `UNDO` in a
+    /// `CATCH`). `None` for every other node; see [`Cfg::undone_block`].
+    pub undoes: Option<BlockId>,
 }
 
 /// Why control moves along an edge.
@@ -471,7 +476,8 @@ pub enum EdgeKind {
     Preproc,
     /// Block header to body: the first statement, or the next iteration.
     LoopBody,
-    /// Block header to after the block: the test failed or no record.
+    /// Block header to after the block: the test failed or no record. Also
+    /// the end of the only iteration of a `FOR FIRST` or `FOR LAST`.
     LoopDone,
     /// End of an iteration back to the header.
     LoopBack,
@@ -488,7 +494,8 @@ pub enum EdgeKind {
     /// `THROW`, `UNDO, THROW`, or an `ON ERROR UNDO, THROW` action.
     Throw,
     /// The source may raise this condition: an implicit error, ENDKEY from an
-    /// input statement, or the `STOP`/`QUIT` statements.
+    /// input statement, the `STOP`/`QUIT` statements, or a STOP that a
+    /// `STOP-AFTER` block or a call, lock wait or `WAIT-FOR` can bring.
     Raise(Condition),
     /// A handler hands the condition to a `CATCH` block.
     Catch,

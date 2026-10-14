@@ -9,7 +9,9 @@
 
 use std::mem;
 
-use oxabl_ast::{FindType, NodeId, OnAction, OnKind, Span, Statement, StatementKind as SK};
+use oxabl_ast::{
+    FindType, LockType, NodeId, OnAction, OnKind, Span, Statement, StatementKind as SK,
+};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -338,6 +340,9 @@ struct Frame<'a> {
     end_at: u32,
     label: Option<&'a str>,
     iterating: bool,
+    /// The body runs at most once (`FOR FIRST`, `FOR LAST`), though the block
+    /// is iterating for `NEXT` and `RETRY`.
+    single_pass: bool,
     head: NodeIx,
     end: Option<NodeIx>,
     after: Option<NodeIx>,
@@ -365,6 +370,9 @@ enum Shape<'a> {
         raises: bool,
         /// Reads input, so may raise ENDKEY.
         endkey: bool,
+        /// Runs other code, waits for a lock or waits for an event, so may
+        /// raise STOP.
+        waits: bool,
         opaque: Option<OpaqueReason>,
     },
     Leave(Option<&'a str>),
@@ -387,6 +395,7 @@ impl Shape<'_> {
         Shape::Plain {
             raises,
             endkey: false,
+            waits: false,
             opaque: None,
         }
     }
@@ -489,6 +498,7 @@ impl<'a> Builder<'a> {
             end_at: spec.span.end,
             label: None,
             iterating: false,
+            single_pass: false,
             head: entry,
             end: None,
             after: Some(exit),
@@ -529,6 +539,7 @@ impl<'a> Builder<'a> {
             stmt,
             span,
             opaque: None,
+            undoes: None,
         });
         self.cfg.succ.push(SmallVec::new());
         if let (Some(id), NodeKind::Stmt | NodeKind::Head) = (stmt, kind) {
@@ -789,6 +800,7 @@ impl<'a> Builder<'a> {
             end_at: fin.span.end,
             label: None,
             iterating: false,
+            single_pass: false,
             head,
             end: None,
             after: None,
@@ -811,6 +823,16 @@ impl<'a> Builder<'a> {
         head
     }
 
+    /// Whether the block of frame `i` handles `condition`: an `ON` phrase or
+    /// default, or a `CATCH` that may catch it.
+    fn handles(&self, i: usize, condition: Condition) -> bool {
+        let b = &self.cfg.blocks[self.frames[i].block.index()];
+        b.handling(condition).is_some()
+            || b.catches
+                .iter()
+                .any(|c| self.cfg.blocks[c.index()].may_catch(condition))
+    }
+
     /// The innermost frame at or below `start` that handles `condition`.
     /// Conditions raised in a `CATCH` or `FINALLY` pass its owner by.
     fn handler_frame(&self, start: usize, condition: Condition) -> Option<usize> {
@@ -828,17 +850,53 @@ impl<'a> Builder<'a> {
                 }
                 FrameKind::Routine | FrameKind::Block => {}
             }
-            let b = &self.cfg.blocks[f.block.index()];
-            if b.handling(condition).is_some()
-                || b.catches
-                    .iter()
-                    .any(|c| self.cfg.blocks[c.index()].may_catch(condition))
-            {
+            if self.handles(i as usize, condition) {
                 return Some(i as usize);
             }
             i -= 1;
         }
         None
+    }
+
+    /// The frame an `UNDO` with no label undoes: the closest block with the
+    /// error property. In a `CATCH` that is the `CATCH`'s owner, not a block
+    /// the owner sits in: a `CATCH` is part of its owner, and `handler_frame`'s
+    /// pass-through is for raised conditions only.
+    fn undo_frame(&self) -> usize {
+        let mut i = self.top() as isize;
+        while i >= 0 {
+            match self.frames[i as usize].kind {
+                FrameKind::Catch { owner } => return owner,
+                FrameKind::Finally => {}
+                FrameKind::Routine | FrameKind::Block => {
+                    if self.handles(i as usize, Condition::Error) {
+                        return i as usize;
+                    }
+                }
+            }
+            i -= 1;
+        }
+        0
+    }
+
+    /// Whether the code being built is in a block with `STOP-AFTER`.
+    fn under_stop_after(&self) -> bool {
+        self.frames
+            .iter()
+            .any(|f| self.cfg.blocks[f.block.index()].stop_after)
+    }
+
+    /// `n` may raise STOP. Every node under `STOP-AFTER` may. A node that runs
+    /// other code, waits for a lock or waits for an event (`waits`) may too,
+    /// but that is modelled only where this unit handles STOP: an unhandled
+    /// STOP leaves the unit, and that path is modelled only for `STOP-AFTER`
+    /// and the `STOP` statement.
+    fn may_stop(&mut self, n: NodeIx, waits: bool) {
+        let top = self.top();
+        if self.under_stop_after() || (waits && self.handler_frame(top, Condition::Stop).is_some())
+        {
+            self.raise(n, Condition::Stop, EdgeKind::Raise(Condition::Stop));
+        }
     }
 
     fn unhandled_exit(condition: Condition) -> ExitKind {
@@ -993,6 +1051,7 @@ impl<'a> Builder<'a> {
             end_at: s.span.end,
             label,
             iterating,
+            single_pass: header.single_record,
             head,
             end: None,
             after: None,
@@ -1001,6 +1060,9 @@ impl<'a> Builder<'a> {
         });
         if tests {
             self.raise(head, Condition::Error, EdgeKind::Raise(Condition::Error));
+            let waits =
+                matches!(&s.kind, SK::ForEach { lock_type, .. } if *lock_type != LockType::NoLock);
+            self.may_stop(head, waits);
             let after = self.after_node(self.top());
             self.edge(head, after, EdgeKind::LoopDone);
         }
@@ -1048,6 +1110,7 @@ impl<'a> Builder<'a> {
                 end_at: c.span.end,
                 label: None,
                 iterating: false,
+                single_pass: false,
                 head,
                 end: None,
                 after: None,
@@ -1094,7 +1157,9 @@ impl<'a> Builder<'a> {
         }
 
         if let Some(end) = self.frames[k].end {
-            if self.frames[k].iterating {
+            if self.frames[k].single_pass {
+                self.jump(end, Target::After(k), EdgeKind::LoopDone);
+            } else if self.frames[k].iterating {
                 self.jump(end, Target::Head(k), EdgeKind::LoopBack);
             } else {
                 self.jump(end, Target::After(k), EdgeKind::Normal);
@@ -1131,6 +1196,7 @@ impl<'a> Builder<'a> {
                 };
                 let n = self.place(NodeKind::Stmt, s, span);
                 self.raise(n, Condition::Error, EdgeKind::Raise(Condition::Error));
+                self.may_stop(n, false);
                 self.pending.push((n, EdgeKind::True));
                 self.stmt(then_branch);
                 let then_out = mem::take(&mut self.pending);
@@ -1147,6 +1213,7 @@ impl<'a> Builder<'a> {
             } => {
                 let n = self.place(NodeKind::Stmt, s, s.span);
                 self.raise(n, Condition::Error, EdgeKind::Raise(Condition::Error));
+                self.may_stop(n, false);
                 let mut out = Vec::new();
                 for (i, w) in when_branches.iter().enumerate() {
                     self.pending.push((n, EdgeKind::When(i as u32)));
@@ -1196,6 +1263,7 @@ impl<'a> Builder<'a> {
             Shape::Plain {
                 raises,
                 endkey,
+                waits,
                 opaque,
             } => {
                 if let Some(reason) = opaque {
@@ -1207,6 +1275,7 @@ impl<'a> Builder<'a> {
                 if endkey {
                     self.raise(n, Condition::Endkey, EdgeKind::Raise(Condition::Endkey));
                 }
+                self.may_stop(n, waits);
                 self.pending.push((n, EdgeKind::Normal));
             }
             Shape::Leave(label) => {
@@ -1222,6 +1291,7 @@ impl<'a> Builder<'a> {
             Shape::Return { raises } => {
                 if raises {
                     self.raise(n, Condition::Error, EdgeKind::Raise(Condition::Error));
+                    self.may_stop(n, false);
                 }
                 self.jump(n, Target::Exit(ExitKind::Return), EdgeKind::Return);
             }
@@ -1232,16 +1302,14 @@ impl<'a> Builder<'a> {
             Shape::Undo { label, action } => {
                 // UNDO without a label undoes the closest block with the
                 // error property; without an action it does that block's
-                // ON ERROR action.
-                let closest = self
-                    .handler_frame(self.top(), Condition::Error)
-                    .unwrap_or(0);
+                // ON ERROR action (a plain block has none: RETRY).
+                let closest = self.undo_frame();
                 let u = self.label_target(n, label.as_deref(), closest);
+                self.cfg.nodes[n.index()].undoes = Some(self.frames[u].block);
                 let action = action.unwrap_or_else(|| {
-                    match self.block(u).handling(Condition::Error).map(|h| &h.action) {
-                        Some(Action::Throw) | None => Action::Retry(None),
-                        Some(a) => a.clone(),
-                    }
+                    self.block(u)
+                        .handling(Condition::Error)
+                        .map_or(Action::Retry(None), |h| h.action.clone())
                 });
                 self.apply(n, u, &action);
             }
@@ -1282,6 +1350,7 @@ impl<'a> Builder<'a> {
                 Control::Unrecognized => Shape::Plain {
                     raises: false,
                     endkey: false,
+                    waits: false,
                     opaque: Some(OpaqueReason::UnrecognizedStatement),
                 },
             },
@@ -1301,23 +1370,31 @@ impl<'a> Builder<'a> {
             SK::Message { set_targets, .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: !set_targets.is_empty(),
+                waits: false,
                 opaque: None,
             },
             // A FIND NEXT/PREV past the last record ends the classic
             // `REPEAT: FIND NEXT ...` loop. Whether ABL raises ERROR or ENDKEY
-            // there is not modelled, so both are possible.
+            // there is not modelled, so both are possible. A FIND with a lock
+            // can wait for it.
             SK::Find {
-                find_type: FindType::Next | FindType::Prev,
-                no_error: false,
+                find_type,
+                no_error,
+                lock_type,
                 ..
             } => Shape::Plain {
-                raises: true,
-                endkey: true,
+                raises: !no_error,
+                endkey: !no_error && matches!(find_type, FindType::Next | FindType::Prev),
+                waits: *lock_type != LockType::NoLock,
                 opaque: None,
             },
-            SK::Find { no_error, .. }
-            | SK::Run { no_error, .. }
-            | SK::Create { no_error, .. }
+            SK::Run { no_error, .. } => Shape::Plain {
+                raises: !no_error,
+                endkey: false,
+                waits: true,
+                opaque: None,
+            },
+            SK::Create { no_error, .. }
             | SK::Delete { no_error, .. }
             | SK::DeleteObject { no_error, .. }
             | SK::Release { no_error, .. }
@@ -1330,24 +1407,30 @@ impl<'a> Builder<'a> {
                 _ => Shape::Plain {
                     raises: !self.no_error_text(s),
                     endkey: tokens::skipped_input(self.src, s.span) != Input::None,
+                    waits: tokens::skipped_waits(self.src, s.span),
                     opaque: Some(OpaqueReason::SkippedStatement),
                 },
             },
             SK::IncludeReference { .. } | SK::IncludeArgReference { .. } => Shape::Plain {
                 raises: true,
                 endkey: false,
+                waits: false,
                 opaque: Some(OpaqueReason::UnexpandedInclude),
             },
             SK::Leave(label) => Shape::Leave(label.as_deref()),
             SK::Next(label) => Shape::Next(label.as_deref()),
+            // The parser keeps the value of `UNDO, RETURN v`, `UNDO, RETURN
+            // ERROR v` and `UNDO, THROW v` as a `RETURN` or `THROW`.
             SK::Return(value) => match tokens::read_control(self.src, s.span) {
                 Control::ReturnError => Shape::ReturnError,
+                Control::Undo { label, action } => Shape::Undo { label, action },
                 _ => Shape::Return {
                     raises: value.is_some(),
                 },
             },
             SK::Throw(_) => match tokens::read_control(self.src, s.span) {
                 Control::ReturnError => Shape::ReturnError,
+                Control::Undo { label, action } => Shape::Undo { label, action },
                 _ => Shape::Throw,
             },
             // Structural statements are handled by `stmt`; anything new is

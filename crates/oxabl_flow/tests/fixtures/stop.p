@@ -1,0 +1,30 @@
+DEFINE VARIABLE h AS HANDLE NO-UNDO.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+DO STOP-AFTER 5 ON STOP UNDO, LEAVE:
+    CREATE QUERY h.
+    RUN slow.p.
+    DELETE OBJECT h.
+END.
+DO STOP-AFTER 5:
+    i = 1.
+END.
+DO ON STOP UNDO, LEAVE:
+    RUN other.p.
+    FIND FIRST Customer.
+    FIND FIRST Customer NO-LOCK.
+    FOR EACH Customer EXCLUSIVE-LOCK:
+        i = 2.
+    END.
+    FOR EACH Customer NO-LOCK:
+        i = 3.
+    END.
+    WAIT-FOR CLOSE OF THIS-PROCEDURE.
+END.
+RUN other.p.
+FIND FIRST Customer.
+DO STOP-AFTER 5 ON STOP UNDO, LEAVE:
+    RUN slow.p.
+    FINALLY:
+        i = 4.
+    END FINALLY.
+END.

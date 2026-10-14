@@ -533,3 +533,240 @@ fn nodes_line_up_with_the_ast() {
         }
     }
 }
+
+/// The target of the only edge out of `n`, and its kind.
+fn only_edge(cfg: &Cfg, n: NodeIx) -> (NodeIx, EdgeKind) {
+    let edges: Vec<_> = cfg.successors(n).collect();
+    assert_eq!(edges.len(), 1, "{:?}", edges);
+    (edges[0].to, edges[0].kind)
+}
+
+fn block_of_head(p: &Parsed, cfg: &Cfg, prefix: &str) -> BlockId {
+    cfg.node(p.node(cfg, prefix)).block
+}
+
+/// The handler a `throw` edge of `n` reaches.
+fn throw_handler(cfg: &Cfg, n: NodeIx) -> NodeIx {
+    let (to, kind) = only_edge(cfg, n);
+    assert_eq!(kind, EdgeKind::Throw);
+    assert_eq!(cfg.node(to).kind, NodeKind::Handler(Condition::Error));
+    to
+}
+
+fn hands_to(cfg: &Cfg, handler: NodeIx, catch_head: NodeIx) -> bool {
+    cfg.successors(handler)
+        .any(|e| e.kind == EdgeKind::Catch && e.to == catch_head)
+}
+
+#[test]
+fn an_unlabelled_undo_in_a_catch_undoes_the_block_the_catch_belongs_to() {
+    let p = parse(include_str!("fixtures/undo_catch.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let with_catch: Vec<BlockId> = cfg
+        .blocks()
+        .filter(|(_, b)| b.kind == BlockKind::Do && b.catches.len() == 1)
+        .map(|(i, _)| i)
+        .collect();
+    let (do1, do3) = (with_catch[0], with_catch[1]);
+    let each = cfg
+        .blocks()
+        .find(|(_, b)| b.kind == BlockKind::For(ForQualifier::Each))
+        .expect("FOR EACH")
+        .0;
+    // Where the single edge out of a node goes, as (kind, node kind).
+    let goes = |n: NodeIx| {
+        let (to, kind) = only_edge(cfg, n);
+        (kind, cfg.node(to).kind)
+    };
+
+    // `UNDO, LEAVE` in the CATCH of a DO inside a REPEAT leaves the DO, not
+    // the REPEAT; in a FOR EACH it leaves the loop; a plain DO inside the
+    // CATCH does not stop the search.
+    let leaves = p.nodes(cfg, "UNDO, LEAVE.");
+    let undone: Vec<_> = leaves.iter().map(|&n| cfg.node(n).undoes).collect();
+    assert_eq!(undone, [Some(do1), Some(each), Some(do3)]);
+    for (&n, b) in leaves.iter().zip([do1, each, do3]) {
+        assert_eq!(goes(n), (EdgeKind::Leave, NodeKind::After(b)));
+    }
+    let message = p.node(cfg, "MESSAGE \"after the DO");
+    assert!(
+        cfg.reachable_from(&[leaves[0]], |_| false)
+            .contains(message.index())
+    );
+
+    // NEXT and RETRY go to the next iteration of an iterating owner; a
+    // non-iterating owner is left.
+    let nexts = p.nodes(cfg, "UNDO, NEXT.");
+    assert_eq!(goes(nexts[0]), (EdgeKind::Next, NodeKind::End));
+    assert_eq!(cfg.node(nexts[0]).undoes, Some(each));
+    assert_eq!(goes(nexts[1]), (EdgeKind::Leave, NodeKind::After(do3)));
+    for text in ["UNDO, RETRY.", "UNDO."] {
+        let n = p.node(cfg, text);
+        assert_eq!(cfg.node(n).undoes, Some(each), "{text}");
+        assert_eq!(goes(n), (EdgeKind::Next, NodeKind::End), "{text}");
+    }
+}
+
+#[test]
+fn undo_throw_undoes_a_block_and_raises_outside_it() {
+    let p = parse(include_str!("fixtures/undo_throw.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+
+    // Default target: the FOR EACH. The error goes to the DO around it, and
+    // that DO's CATCH runs.
+    let undo = p.node(cfg, "UNDO, THROW NEW");
+    let for_each = cfg.node(p.node(cfg, "FOR EACH")).block;
+    assert_eq!(cfg.node(undo).undoes, Some(for_each));
+    let handler = throw_handler(cfg, undo);
+    assert_eq!(cfg.node(handler).block, cfg.block(for_each).parent.unwrap());
+    assert!(hands_to(cfg, handler, p.node(cfg, "CATCH e AS")));
+
+    // A label names the block to undo; the error leaves that block, and the
+    // routine (not the labelled block's CATCH) gets it.
+    let undo = p.node(cfg, "UNDO outer, THROW");
+    let outer = cfg
+        .blocks()
+        .find(|(_, b)| b.label.as_deref() == Some("outer"))
+        .expect("labelled block")
+        .0;
+    assert_eq!(cfg.node(undo).undoes, Some(outer));
+    let handler = throw_handler(cfg, undo);
+    assert_eq!(cfg.node(handler).block, BlockId::ROUTINE);
+    assert!(!hands_to(cfg, handler, p.node(cfg, "CATCH e2 AS")));
+
+    // The rethrow in a CATCH reaches the enclosing block's CATCH.
+    let undo = p.node(cfg, "UNDO, THROW e3");
+    let handler = throw_handler(cfg, undo);
+    assert!(hands_to(cfg, handler, p.node(cfg, "CATCH e4 AS")));
+
+    // The bare THROW statement is raised in its own block and stays there.
+    let bare = p.node(cfg, "THROW NEW");
+    assert_eq!(cfg.node(bare).undoes, None);
+    let handler = throw_handler(cfg, bare);
+    assert!(hands_to(cfg, handler, p.node(cfg, "CATCH e5 AS")));
+}
+
+#[test]
+fn undo_without_an_action_does_the_blocks_error_action() {
+    let p = parse(include_str!("fixtures/defaults_undo_statement.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let nodes = p.nodes(cfg, "UNDO.");
+    let kinds: Vec<EdgeKind> = nodes.iter().map(|&n| only_edge(cfg, n).1).collect();
+    // BLOCK-LEVEL throws; an explicit ON ERROR phrase wins.
+    assert_eq!(kinds, [EdgeKind::Throw, EdgeKind::Leave, EdgeKind::Throw]);
+}
+
+#[test]
+fn for_first_and_for_last_run_their_body_once() {
+    let p = parse(include_str!("fixtures/for_first.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let loop_backs: Vec<_> = cfg
+        .edges()
+        .iter()
+        .filter(|e| e.kind == EdgeKind::LoopBack)
+        .collect();
+    // Only the FOR FIRST that joins an EACH goes round again.
+    assert_eq!(loop_backs.len(), 1);
+    let each = block_of_head(&p, cfg, "FOR FIRST Customer NO-LOCK, EACH");
+    assert_eq!(cfg.node(loop_backs[0].from).block, each);
+
+    for prefix in [
+        "FOR FIRST Customer NO-LOCK:",
+        "FOR LAST Customer NO-LOCK:",
+        "FOR FIRST Customer NO-LOCK, LAST",
+    ] {
+        let b = block_of_head(&p, cfg, prefix);
+        assert!(
+            cfg.block(b).iterating,
+            "{prefix}: NEXT and RETRY still apply"
+        );
+        let end = cfg
+            .nodes()
+            .find(|(_, n)| n.kind == NodeKind::End && n.block == b)
+            .expect("end node")
+            .0;
+        let (to, kind) = only_edge(cfg, end);
+        assert_eq!(kind, EdgeKind::LoopDone, "{prefix}");
+        assert_eq!(cfg.node(to).kind, NodeKind::After(b), "{prefix}");
+    }
+
+    // A NEXT in a FOR LAST ends the loop.
+    let next = p.node(cfg, "NEXT.");
+    let (end, kind) = only_edge(cfg, next);
+    assert_eq!((kind, cfg.node(end).kind), (EdgeKind::Next, NodeKind::End));
+}
+
+/// The kinds of the `Raise(Stop)` edges out of `n`, with their targets.
+fn stop_targets(cfg: &Cfg, n: NodeIx) -> Vec<NodeKind> {
+    cfg.successors(n)
+        .filter(|e| e.kind == EdgeKind::Raise(Condition::Stop))
+        .map(|e| cfg.node(e.to).kind)
+        .collect()
+}
+
+#[test]
+fn stop_after_and_waiting_statements_may_raise_stop() {
+    let p = parse(include_str!("fixtures/stop.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let handled = [NodeKind::Handler(Condition::Stop)];
+
+    // Every statement of a STOP-AFTER block raises, and its ON STOP phrase
+    // is live; without a phrase the STOP leaves the unit.
+    let after = cfg.node(p.nodes(cfg, "DO STOP-AFTER 5 ON STOP")[0]).block;
+    assert!(cfg.block(after).stop_after);
+    assert!(cfg.block(after).handling(Condition::Stop).is_some());
+    let slow = p.nodes(cfg, "RUN slow.p.");
+    for n in [
+        p.node(cfg, "CREATE QUERY h."),
+        slow[0],
+        p.node(cfg, "DELETE OBJECT h."),
+    ] {
+        assert_eq!(stop_targets(cfg, n), handled);
+    }
+    assert_eq!(
+        stop_targets(cfg, p.node(cfg, "i = 1.")),
+        [NodeKind::Exit(ExitKind::Stop)]
+    );
+
+    // A call, a lock wait and WAIT-FOR raise where a handler acts on it.
+    let runs = p.nodes(cfg, "RUN other.p.");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(stop_targets(cfg, runs[0]), handled);
+    let finds = p.nodes(cfg, "FIND FIRST Customer");
+    assert_eq!(finds.len(), 3);
+    assert_eq!(stop_targets(cfg, finds[0]), handled);
+    assert_eq!(stop_targets(cfg, finds[1]), []);
+    let for_each = p.node(cfg, "FOR EACH Customer EXCL");
+    assert_eq!(stop_targets(cfg, for_each), handled);
+    let no_lock = p.node(cfg, "FOR EACH Customer NO-LOCK");
+    assert_eq!(stop_targets(cfg, no_lock), []);
+    assert_eq!(stop_targets(cfg, p.node(cfg, "WAIT-FOR")), handled);
+
+    // Nowhere else: an unhandled STOP is not modelled for them.
+    assert_eq!(stop_targets(cfg, runs[1]), []);
+    assert_eq!(stop_targets(cfg, finds[2]), []);
+
+    // The STOP leaves the block through its FINALLY.
+    let guarded = cfg
+        .blocks()
+        .find(|(_, b)| b.stop_after && b.finally.is_some())
+        .expect("STOP-AFTER block with a FINALLY")
+        .0;
+    assert_eq!(stop_targets(cfg, slow[1]), handled);
+    let finally = p.nodes(cfg, "i = 4.");
+    assert!(cfg.runs_on_every_exit(guarded, &finally));
+    let stop_edge = cfg
+        .successors(slow[1])
+        .find(|e| e.kind == EdgeKind::Raise(Condition::Stop))
+        .expect("stop edge");
+    let handler = stop_edge.to;
+    // The handler's LEAVE goes to a copy of the FINALLY.
+    let (via, _) = only_edge(cfg, handler);
+    assert_eq!(cfg.node(via).kind, NodeKind::Head);
+    assert!(cfg.successors(via).any(|e| finally.contains(&e.to)));
+}

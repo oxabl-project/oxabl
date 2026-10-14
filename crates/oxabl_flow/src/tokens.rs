@@ -175,6 +175,9 @@ pub(crate) struct Header {
     pub has_while: bool,
     pub has_to: bool,
     pub for_qualifier: Option<ForQualifier>,
+    /// Every record phrase of a `FOR` is `FIRST` or `LAST`, so the body runs
+    /// at most once. Unsure counts as `false`.
+    pub single_record: bool,
     /// `FOR` record-phrase buffers, or `DO FOR`/`REPEAT FOR` buffers.
     pub buffers: Vec<String>,
     pub phrases: SmallVec<[(Condition, Handling); 2]>,
@@ -200,6 +203,10 @@ pub(crate) fn read_header(src: &str, span: Span) -> Header {
             2
         };
         h.buffers.extend(t.name(at));
+        h.single_record = matches!(
+            h.for_qualifier,
+            Some(ForQualifier::First | ForQualifier::Last)
+        );
     }
     let mut depth = 0u32;
     let mut i = 1;
@@ -210,14 +217,17 @@ pub(crate) fn read_header(src: &str, span: Span) -> Header {
             Kind::RightParen | Kind::RightBracket => depth = depth.saturating_sub(1),
             _ if depth > 0 => {}
             // A joined record phrase: `, EACH order OF customer`.
-            Kind::Comma
-                if for_block
-                    && matches!(
-                        t.kind(i + 1),
-                        Some(Kind::Each | Kind::First | Kind::Last | Kind::Next | Kind::Prev)
-                    ) =>
-            {
-                h.buffers.extend(t.name(i + 2));
+            Kind::Comma if for_block => {
+                let next = t.kind(i + 1);
+                if matches!(
+                    next,
+                    Some(Kind::Each | Kind::First | Kind::Last | Kind::Next | Kind::Prev)
+                ) {
+                    h.buffers.extend(t.name(i + 2));
+                }
+                if !matches!(next, Some(Kind::First | Kind::Last)) {
+                    h.single_record = false;
+                }
             }
             // `DO FOR b1, b2` / `REPEAT FOR b1`: strongly scoped buffers.
             Kind::KwFor if !for_block => {
@@ -303,10 +313,20 @@ fn on_phrase(t: &Toks, i: usize) -> Option<(Condition, Handling, usize)> {
     };
     let handling = Handling {
         undo,
-        action: action.unwrap_or(Action::Retry(None)),
+        action: action.unwrap_or_else(|| phrase_default(condition)),
         origin: Origin::Phrase,
     };
     Some((condition, handling, next.max(i + 2)))
+}
+
+/// The action of `ON <condition> UNDO` when none is written: the action the
+/// condition has by default. Recalled, not checked against a reference; see
+/// the flow section of `docs/design/strict-analysis-open-questions.md`.
+fn phrase_default(condition: Condition) -> Action {
+    match condition {
+        Condition::Error | Condition::Stop => Action::Retry(None),
+        Condition::Endkey | Condition::Quit => Action::Leave(None),
+    }
 }
 
 /// A statement the AST keeps lossily, read from its tokens.
@@ -314,16 +334,16 @@ fn on_phrase(t: &Toks, i: usize) -> Option<(Condition, Handling, usize)> {
 pub(crate) enum Control {
     /// Nothing to model: `.`, an orphan `END`, a stray preprocessor token.
     Plain,
-    /// `UNDO [label] [, action]`.
+    /// `UNDO [label] [, action]`, whatever the action.
     Undo {
         label: Option<String>,
         action: Option<Action>,
     },
     Quit,
     Stop,
-    /// `THROW expr` or `UNDO, THROW [expr]`.
+    /// `THROW expr`.
     Throw,
-    /// `RETURN ERROR [expr]` or `UNDO, RETURN ERROR [expr]`.
+    /// `RETURN ERROR [expr]`.
     ReturnError,
     Directive(ErrorDirective),
     /// Tokens that are none of the above.
@@ -348,11 +368,7 @@ pub(crate) fn read_control(src: &str, span: Span) -> Control {
         Some(Kind::Throw) => Control::Throw,
         Some(Kind::Undo) => {
             let (label, action, _) = t.undo_clause(0);
-            match action {
-                Some(Action::Throw) => Control::Throw,
-                Some(Action::Return(ReturnKind::Error)) => Control::ReturnError,
-                action => Control::Undo { label, action },
-            }
+            Control::Undo { label, action }
         }
         Some(Kind::KwReturn) if t.is_word(1, "error") => Control::ReturnError,
         // `BLOCK-LEVEL ON ERROR UNDO , THROW`
@@ -394,6 +410,11 @@ pub(crate) fn skipped_input(src: &str, span: Span) -> Input {
         Some(Kind::Import | Kind::Pause) => Input::Endkey,
         _ => Input::None,
     }
+}
+
+/// Whether a skipped statement is `WAIT-FOR`, which the user can interrupt.
+pub(crate) fn skipped_waits(src: &str, span: Span) -> bool {
+    Toks::new(src, span, 1).kind(0) == Some(Kind::WaitFor)
 }
 
 /// Whether the statement text ends in `NO-ERROR` (before the period). For
@@ -468,9 +489,19 @@ mod tests {
     }
 
     #[test]
-    fn an_on_phrase_without_an_action_retries() {
-        let h = header("REPEAT ON ERROR UNDO:");
-        assert_eq!(h.phrases[0].1.action, Action::Retry(None));
+    fn an_on_phrase_without_an_action_takes_the_conditions_default() {
+        let h = header("REPEAT ON ERROR UNDO ON ENDKEY UNDO ON STOP UNDO ON QUIT UNDO:");
+        let got: Vec<(Condition, &Action)> =
+            h.phrases.iter().map(|(c, h)| (*c, &h.action)).collect();
+        assert_eq!(
+            got,
+            [
+                (Condition::Error, &Action::Retry(None)),
+                (Condition::Endkey, &Action::Leave(None)),
+                (Condition::Stop, &Action::Retry(None)),
+                (Condition::Quit, &Action::Leave(None)),
+            ]
+        );
     }
 
     #[test]
@@ -491,6 +522,12 @@ mod tests {
             header("FOR c WHERE c.x = 1:").for_qualifier,
             Some(ForQualifier::Unqualified)
         );
+        assert!(header("FOR FIRST c, LAST o OF c:").single_record);
+        assert!(!header("FOR FIRST c, EACH o OF c:").single_record);
+        assert!(!header("FOR FIRST c, o OF c:").single_record);
+        assert!(!header("FOR EACH c:").single_record);
+        assert!(!header("REPEAT:").single_record);
+        assert!(header("FOR FIRST c ON ERROR UNDO, LEAVE:").single_record);
         assert!(header("REPEAT i = 1 TO 3:").has_to);
         assert!(header("REPEAT WHILE x:").has_while);
         assert!(header("DO STOP-AFTER 5:").stop_after);
@@ -515,9 +552,28 @@ mod tests {
         assert_eq!(c("END."), Control::Plain);
         assert_eq!(c("QUIT."), Control::Quit);
         assert_eq!(c("THROW e."), Control::Throw);
-        assert_eq!(c("UNDO, THROW."), Control::Throw);
+        assert_eq!(
+            c("UNDO, THROW."),
+            Control::Undo {
+                label: None,
+                action: Some(Action::Throw)
+            }
+        );
+        assert_eq!(
+            c("UNDO lbl, THROW e."),
+            Control::Undo {
+                label: Some("lbl".into()),
+                action: Some(Action::Throw)
+            }
+        );
         assert_eq!(c("RETURN ERROR."), Control::ReturnError);
-        assert_eq!(c("UNDO lbl, RETURN ERROR \"x\"."), Control::ReturnError);
+        assert_eq!(
+            c("UNDO lbl, RETURN ERROR \"x\"."),
+            Control::Undo {
+                label: Some("lbl".into()),
+                action: Some(Action::Return(ReturnKind::Error))
+            }
+        );
         assert_eq!(
             c("UNDO lbl, NEXT lbl."),
             Control::Undo {

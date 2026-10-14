@@ -157,3 +157,70 @@ END PROCEDURE.
 ";
     assert_eq!(lint0005(src), 1);
 }
+
+#[test]
+fn an_undo_statement_can_restore_an_undoable_variable() {
+    // `UNDO, LEAVE` rolls `v` back to its value before the iteration, so the
+    // read after the loop can see the default value.
+    let src = "\
+DEFINE VARIABLE x AS LOGICAL NO-UNDO.
+REPEAT:
+    DEFINE VARIABLE v AS INTEGER.
+    v = 1.
+    IF x THEN UNDO, LEAVE.
+    LEAVE.
+END.
+MESSAGE v.
+";
+    assert_eq!(lint0005(src), 1);
+    // Same with the loop's own ON ENDKEY phrase beside it.
+    assert_eq!(
+        lint0005(&src.replace("REPEAT:", "REPEAT ON ENDKEY UNDO, LEAVE:")),
+        1
+    );
+    // NO-UNDO keeps the value, so every path to the read assigns it.
+    assert_eq!(
+        lint0005(&src.replace("AS INTEGER.", "AS INTEGER NO-UNDO.")),
+        0
+    );
+}
+
+#[test]
+fn an_undo_of_a_block_that_does_not_overlap_the_variable_is_ignored() {
+    // The REPEAT neither contains nor sits in the DO that defines `v`.
+    let src = "\
+DEFINE VARIABLE x AS LOGICAL NO-UNDO.
+DO:
+    DEFINE VARIABLE v AS INTEGER.
+    v = 1.
+END.
+REPEAT:
+    IF x THEN UNDO, LEAVE.
+    LEAVE.
+END.
+MESSAGE v.
+";
+    assert_eq!(lint0005(src), 0);
+}
+
+#[test]
+fn an_undo_that_names_an_enclosing_block_restores_its_variables() {
+    let src = "\
+DEFINE VARIABLE x AS LOGICAL NO-UNDO.
+outer:
+REPEAT:
+    DEFINE VARIABLE v AS INTEGER.
+    v = 1.
+    DO:
+        IF x THEN UNDO outer, LEAVE outer.
+    END.
+    LEAVE.
+END.
+MESSAGE v.
+";
+    assert_eq!(lint0005(src), 1);
+    assert_eq!(
+        lint0005(&src.replace("AS INTEGER.", "AS INTEGER NO-UNDO.")),
+        0
+    );
+}
