@@ -867,10 +867,28 @@ impl Parser<'_> {
 
         // DYNAMIC-NEW expr([args]) — dynamic object instantiation where the class name
         // is a runtime expression (variable or string), not a static identifier.
+        // Modelled like DYNAMIC-FUNCTION: the class expression comes first, then the
+        // constructor arguments.
         if self.check(Kind::DynamicNew) {
-            self.advance(); // consume DYNAMIC-NEW
-            // Parse the class name expression (typically an identifier or string)
-            let _class_expr = self.parse_primary()?;
+            let token = self.advance();
+            let (ts, te) = (token.start, token.end);
+            let name = Identifier {
+                span: Span {
+                    start: ts as u32,
+                    end: te as u32,
+                },
+                name: self.source[ts..te].to_string(),
+            };
+            // `DYNAMIC-NEW cls (args)`: a name before `(` is the class operand,
+            // not a function call, so it is taken as a plain identifier.
+            let class =
+                if Self::can_be_identifier(self.peek().kind) && self.check_at(1, Kind::LeftParen) {
+                    let id = self.parse_identifier()?;
+                    self.expr(ExpressionKind::Identifier(id))
+                } else {
+                    self.parse_primary()?
+                };
+            let mut arguments = vec![class];
             // Parse optional argument list
             if self.check(Kind::LeftParen) {
                 self.advance();
@@ -882,7 +900,9 @@ impl Parser<'_> {
                         ) {
                             self.advance();
                         }
-                        self.parse_expression().ok();
+                        if let Ok(arg) = self.parse_expression() {
+                            arguments.push(arg);
+                        }
                         if !self.check(Kind::Comma) {
                             break;
                         }
@@ -891,11 +911,8 @@ impl Parser<'_> {
                 }
                 self.expect_kind(Kind::RightParen, "Expected ')' after DYNAMIC-NEW arguments")?;
             }
-            // Return as an empty expression (we don't have a DynamicNew AST node yet)
-            return Ok(self.expr(ExpressionKind::Identifier(Identifier {
-                span: self.current_span(),
-                name: "dynamic-new".to_string(),
-            })));
+            debug_assert_expr_sibling_order(&arguments);
+            return Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }));
         }
 
         // DYNAMIC-FUNCTION("func-name" [IN handle] [, arg1, arg2, ...])

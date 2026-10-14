@@ -10,7 +10,7 @@
 //! (`AVAILABLE` -> `AVAIL`, ...) are registered under every legal
 //! prefix, not just the full name.
 
-/// Sorted, ASCII-lowercased names of all built-in ABL functions (324 entries).
+/// Sorted, ASCII-lowercased names of all built-in ABL functions (325 entries).
 pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "abs",
     "abso",
@@ -93,6 +93,7 @@ pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "dynamic-enum",
     "dynamic-function",
     "dynamic-invoke",
+    "dynamic-new",
     "dynamic-next-value",
     "dynamic-property",
     "encode",

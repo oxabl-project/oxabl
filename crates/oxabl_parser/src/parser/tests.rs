@@ -11683,3 +11683,83 @@ fn lone_at_signs_are_reported_at_the_first_one() {
 fn annotation_named_at_is_a_name() {
     assert_eq!(only_annotation("@at.").name.name, "at");
 }
+
+#[test]
+fn create_call_is_a_handle_create() {
+    let stmts = parse_program_stmts("CREATE CALL hCall IN WIDGET-POOL \"p\" NO-ERROR.");
+    assert_eq!(stmts.len(), 1);
+    match &stmts[0].kind {
+        StatementKind::Create {
+            target:
+                CreateTarget::Handle {
+                    kind,
+                    handle,
+                    widget_pool,
+                },
+            no_error,
+        } => {
+            assert_eq!(*kind, CreateTargetKind::Call);
+            assert_eq!(handle.name, "hCall");
+            assert!(widget_pool.is_some());
+            assert!(*no_error);
+        }
+        other => panic!("expected CREATE CALL, got {other:?}"),
+    }
+}
+
+#[test]
+fn create_on_a_table_named_call_stays_a_record_create() {
+    let stmts = parse_program_stmts("CREATE call.");
+    assert!(matches!(
+        &stmts[0].kind,
+        StatementKind::Create {
+            target: CreateTarget::Name(_),
+            ..
+        } | StatementKind::Skipped { .. }
+    ));
+}
+
+#[test]
+fn no_undo_after_view_as_is_recorded() {
+    let stmts = parse_program_stmts(
+        "DEFINE VARIABLE fi AS CHARACTER FORMAT \"x(8)\" VIEW-AS FILL-IN SIZE 10 BY 1 NO-UNDO.",
+    );
+    assert!(matches!(
+        &stmts[0].kind,
+        StatementKind::VariableDeclaration { no_undo: true, .. }
+    ));
+    let stmts =
+        parse_program_stmts("DEFINE VARIABLE fi AS CHARACTER VIEW-AS FILL-IN SIZE 10 BY 1.");
+    assert!(matches!(
+        &stmts[0].kind,
+        StatementKind::VariableDeclaration { no_undo: false, .. }
+    ));
+}
+
+#[test]
+fn dynamic_new_is_a_function_call_over_the_class_and_arguments() {
+    let stmts = parse_program_stmts("h = DYNAMIC-NEW cls (1, x).");
+    let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+        panic!("expected assignment, got {:?}", stmts[0].kind);
+    };
+    let ExpressionKind::FunctionCall { name, arguments } = &value.kind else {
+        panic!("expected a call, got {:?}", value.kind);
+    };
+    assert_eq!(name.name, "DYNAMIC-NEW");
+    assert!(!arguments.is_empty());
+}
+
+#[test]
+fn define_work_table_is_skipped_like_workfile() {
+    for source in [
+        "DEFINE WORK-TABLE wt FIELD a AS INTEGER.",
+        "DEFINE SHARED WORKFILE wf FIELD a AS INTEGER.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert!(matches!(
+            program.statements[0].kind,
+            StatementKind::Skipped { .. }
+        ));
+    }
+}

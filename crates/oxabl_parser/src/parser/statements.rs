@@ -1105,9 +1105,9 @@ impl Parser<'_> {
             return Ok(self.skipped_table_stmt(hi));
         }
 
-        // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to statement end.
-        // Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
-        if self.check(Kind::Workfile) {
+        // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE, skip to
+        // statement end. Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
+        if self.check(Kind::Workfile) || self.check(Kind::WorkTable) {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
@@ -1230,7 +1230,9 @@ impl Parser<'_> {
                 // end using the field-access-aware helper so that dots inside numeric
                 // size specs (e.g. 24.4 or .62) are not mistaken for the terminator.
                 Kind::ViewAs | Kind::Size => {
-                    let _ = self.skip_to_statement_end();
+                    // AppBuilder-style declarations put NO-UNDO after the UI options.
+                    let (lo, hi) = self.skip_to_statement_end();
+                    no_undo |= self.tokens[lo..hi].iter().any(|t| t.kind == Kind::NoUndo);
                     return Ok(self.stmt(StatementKind::VariableDeclaration {
                         name,
                         type_source,
@@ -5529,6 +5531,10 @@ impl Parser<'_> {
             Kind::TempTable => Some(CreateTargetKind::TempTable),
             Kind::Buffer => Some(CreateTargetKind::Buffer),
             Kind::Query => Some(CreateTargetKind::Query),
+            // `CREATE call.` can also be a record create on a table named `call`.
+            Kind::Call if Self::can_be_identifier(self.peek_at(1).kind) => {
+                Some(CreateTargetKind::Call)
+            }
             _ => None,
         }
     }
