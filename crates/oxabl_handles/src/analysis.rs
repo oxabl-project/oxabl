@@ -17,8 +17,8 @@ use oxabl_flow::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::events::{self, Callee, Effect, Place, PoolRef};
-use crate::index::{CallableKind, FileIndex, Name};
+use crate::events::{self, Effect, Place, PoolRef};
+use crate::index::{FileIndex, Name, Passed};
 use crate::model::*;
 
 /// More walk states than this for one object marks it opaque.
@@ -289,11 +289,15 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                             var: v,
                             callee,
                             pos,
-                        } => match pass(index, *callee, *pos) {
+                        } => match index.passed(unit_stmt, *callee, *pos) {
                             Passed::Borrow => {}
                             Passed::Frees => out.push(Fx::Escape {
                                 var: var(v),
                                 kind: EscapeKind::FreedByCallee,
+                            }),
+                            Passed::Keeps => out.push(Fx::Escape {
+                                var: var(v),
+                                kind: EscapeKind::KeptByCallee,
                             }),
                             Passed::Unknown => out.push(Fx::Opaque {
                                 var: var(v),
@@ -915,7 +919,9 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                     if (!raised
                         || matches!(
                             kind,
-                            EscapeKind::DerivedHandle | EscapeKind::FreedByCallee
+                            EscapeKind::DerivedHandle
+                                | EscapeKind::FreedByCallee
+                                | EscapeKind::KeptByCallee
                         ))
                         && h & self.bit(*var) != 0 =>
                 {
@@ -1160,30 +1166,5 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             Verdict::Unknown
         };
         self.out
-    }
-}
-
-enum Passed {
-    /// The callee only uses the handle.
-    Borrow,
-    /// The callee frees its parameter.
-    Frees,
-    /// The file does not show what the callee does.
-    Unknown,
-}
-
-/// What an `INPUT` handle argument of a call does, from the file's own units.
-fn pass(index: &FileIndex, callee: Callee, pos: usize) -> Passed {
-    let (kind, name) = match callee {
-        Callee::Procedure(n) => (CallableKind::Procedure, n),
-        Callee::Function(n) => (CallableKind::Function, n),
-        Callee::Method(n) => (CallableKind::Method, n),
-        Callee::External => return Passed::Unknown,
-    };
-    match index.callee_frees(kind, name, pos) {
-        Some(true) => Passed::Frees,
-        Some(false) => Passed::Borrow,
-        None if kind == CallableKind::Method && events::is_builtin_method(name) => Passed::Borrow,
-        None => Passed::Unknown,
     }
 }

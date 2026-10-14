@@ -16,7 +16,7 @@
 //! * a persistent procedure: `RUN p PERSISTENT SET h`. Without `SET` no handle
 //!   is kept, and the verdict is [`Verdict::Uncaptured`];
 //! * a MEMPTR: `SET-SIZE(m) = n`, where `n` is not the literal 0, or
-//!   `COPY-LOB ... TO m` for a variable declared `AS MEMPTR`;
+//!   `COPY-LOB ... TO m` where the `m` it names is declared `AS MEMPTR`;
 //! * a class instance (`NEW`, `DYNAMIC-NEW`). The AVM counts references to
 //!   these and frees them, so they get [`Verdict::Collected`] and are not
 //!   followed. Reference cycles are out of scope.
@@ -57,11 +57,26 @@
 //! `INPUT-OUTPUT` argument, a `PUBLISH` argument or a `SUBSCRIBE PROCEDURE`. A handle derived
 //! from the object (`h:DEFAULT-BUFFER-HANDLE`, `h:GET-BUFFER-HANDLE(n)`) that is returned or
 //! stored in such a place hands the object over too ([`EscapeKind::DerivedHandle`]). An `INPUT` argument
-//! of `RUN`, a function or a method is passed to a callee. If the file defines
-//! the callee and it frees that parameter, the object escapes
-//! ([`EscapeKind::FreedByCallee`]). If the file defines it and it does not, or
-//! the callee is a built-in, the callee borrows the handle: a use. Any other
-//! callee is [`OpaqueReason::Callee`].
+//! of `RUN`, a function or a method is passed to a callee. When the file
+//! defines the callee (not a prototype such as `PROCEDURE p IN SUPER` or
+//! `FUNCTION f ... IN h`), what the callee does with that parameter, or with a
+//! local copy of it, decides:
+//!
+//! * it frees it: the object escapes ([`EscapeKind::FreedByCallee`]);
+//! * it stores it where it outlives the call, returns it, or hands it on in
+//!   another way listed above: the object escapes
+//!   ([`EscapeKind::KeptByCallee`]);
+//! * it passes it to a callee the file does not define, or a skipped
+//!   statement or dynamic call names it: [`OpaqueReason::Callee`];
+//! * none of these: the callee borrows the handle, a use.
+//!
+//! A callee that passes it on to another callee of the file takes that
+//! callee's fate, a few calls deep. A method resolves by its receiver: a
+//! built-in method of a handle (a variable declared `AS HANDLE` or
+//! `WIDGET-HANDLE`, a static buffer, a system handle, `x:HANDLE`) borrows; a call with no
+//! receiver, on `THIS-OBJECT`, or on a variable of this class's type names a
+//! method of the file. A built-in function borrows. Any other callee is
+//! [`OpaqueReason::Callee`].
 //!
 //! Each [`Leak`] has its path. A path is *normal* when it raises no condition
 //! and takes no `THROW` or `RETURN ERROR`. An object whose every leak is not

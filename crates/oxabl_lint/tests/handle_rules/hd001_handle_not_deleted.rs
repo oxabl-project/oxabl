@@ -271,3 +271,73 @@ END PROCEDURE.
 ";
     assert_eq!(lines(kept, &check(run, kept)), [2]);
 }
+
+#[test]
+fn a_handle_passed_to_a_prototype_is_not_reported() {
+    let src = "\
+DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
+PROCEDURE killp IN SUPER:
+    DEFINE INPUT PARAMETER ph AS HANDLE NO-UNDO.
+END PROCEDURE.
+FUNCTION killq RETURNS LOGICAL (INPUT ph AS HANDLE) IN hLib.
+PROCEDURE a:
+    DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+    CREATE QUERY hq.
+    RUN killp (INPUT hq).
+END PROCEDURE.
+PROCEDURE b:
+    DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+    CREATE QUERY hq.
+    killq(hq).
+END PROCEDURE.
+";
+    assert!(check(run, src).is_empty());
+}
+
+#[test]
+fn a_handle_a_callee_keeps_or_hands_on_is_not_reported() {
+    let src = "\
+DEFINE VARIABLE ghq AS HANDLE NO-UNDO.
+PROCEDURE setq:
+    DEFINE INPUT PARAMETER ph AS HANDLE NO-UNDO.
+    ghq = ph.
+END PROCEDURE.
+PROCEDURE finish:
+    DEFINE INPUT PARAMETER ph AS HANDLE NO-UNDO.
+    RUN lib/destroy.p (INPUT ph).
+END PROCEDURE.
+PROCEDURE a:
+    DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+    CREATE QUERY hq.
+    RUN setq (INPUT hq).
+END PROCEDURE.
+PROCEDURE b:
+    DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+    CREATE QUERY hq.
+    RUN finish (INPUT hq).
+END PROCEDURE.
+";
+    assert!(check(run, src).is_empty());
+}
+
+#[test]
+fn a_handle_passed_to_a_method_of_another_class_is_not_reported() {
+    let src = "\
+CLASS Svc:
+    DEFINE PRIVATE VARIABLE oRepo AS Progress.Lang.Object NO-UNDO.
+    METHOD PUBLIC VOID Work():
+        DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+        CREATE QUERY hq.
+        oRepo:Save(hq).
+    END METHOD.
+    METHOD PUBLIC VOID Work2():
+        DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+        CREATE QUERY hq.
+        THIS-OBJECT:Show(hq).
+    END METHOD.
+    METHOD PRIVATE VOID Show(INPUT ph AS HANDLE):
+    END METHOD.
+END CLASS.
+";
+    assert_eq!(lines(src, &check(run, src)), [10]);
+}

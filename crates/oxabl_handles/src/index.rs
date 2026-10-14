@@ -3,6 +3,7 @@
 //! (which units free a name, which widget pools the file creates). The
 //! per-statement facts are kept only for units that create something.
 
+use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 
 use oxabl_ast::{
@@ -12,7 +13,7 @@ use oxabl_ast::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::events::{self, Effect, Effects, Guards, Place, PoolRef};
+use crate::events::{self, Callee, Effect, Effects, Guards, Place, PoolRef, Receiver};
 use crate::model::{EscapeKind, ObjectKind};
 
 /// How a variable name resolves from one unit.
@@ -26,6 +27,23 @@ enum VarClass {
     Shared,
     /// A data member or property of the class.
     Member,
+}
+
+/// The declared type of a variable, as far as the analysis reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VarType<'a> {
+    /// `HANDLE`, `WIDGET-HANDLE`, or a buffer, table or dataset parameter: its
+    /// methods are built in.
+    Handle,
+    Memptr,
+    Class(&'a str),
+    Other,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Def<'a> {
+    class: VarClass,
+    ty: VarType<'a>,
 }
 
 /// A name compared without ASCII case, as ABL compares names.
@@ -50,7 +68,7 @@ impl Hash for Name<'_> {
 
 /// What a call by name can run in this file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CallableKind {
+enum CallableKind {
     Procedure,
     Function,
     Method,
@@ -65,7 +83,56 @@ struct Callable {
 #[derive(Default)]
 struct Scope<'a> {
     parent: Option<NodeId>,
-    defs: FxHashMap<Name<'a>, VarClass>,
+    defs: FxHashMap<Name<'a>, Def<'a>>,
+    /// Static buffers, temp-tables, datasets, data-sources and frames.
+    statics: FxHashSet<Name<'a>>,
+}
+
+/// What a callee does with a handle passed to it, weakest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Passed {
+    /// The callee only uses the handle.
+    Borrow,
+    /// The file does not show what the callee does.
+    Unknown,
+    /// The callee stores it outside itself, returns it or hands it on.
+    Keeps,
+    /// The callee frees it.
+    Frees,
+}
+
+/// How many calls deep a handle handed on from callee to callee is followed.
+const CALL_DEPTH: u8 = 4;
+
+/// What a unit does with a variable, for the units a call can run.
+#[derive(Debug, Clone, Copy)]
+enum Use<'a> {
+    Free(&'a str),
+    /// `to = from`, `from` a plain variable.
+    Copy {
+        to: Place<'a>,
+        from: &'a str,
+    },
+    /// `to = from:ATTR`, a handle derived from `from`.
+    Derived {
+        to: Place<'a>,
+        from: &'a str,
+    },
+    Escape(&'a str),
+    Opaque(&'a str),
+    Skipped(&'a [Identifier]),
+    /// `recv:ADD-BUFFER(var)`.
+    Attach {
+        recv: &'a str,
+        var: &'a str,
+    },
+    /// `CREATE DATASET var`.
+    Dataset(&'a str),
+    Pass {
+        var: &'a str,
+        callee: Callee<'a>,
+        pos: usize,
+    },
 }
 
 /// What the analysis reads about one statement of a unit that creates
@@ -99,9 +166,15 @@ pub(crate) struct FileIndex<'a> {
     callables: FxHashMap<Name<'a>, SmallVec<[Callable; 1]>>,
     /// The parameter names of each unit, in order.
     params: FxHashMap<NodeId, Vec<&'a str>>,
-    /// Variables and parameters declared `AS MEMPTR`, by name for the whole
-    /// file: the target of a `COPY-LOB` is a MEMPTR when its name is one.
-    memptrs: FxHashSet<Name<'a>>,
+    /// What each unit other than the main block does with variables.
+    uses: FxHashMap<NodeId, Vec<Use<'a>>>,
+    /// What a call's callee does with an argument, by callee unit and
+    /// position.
+    fates: RefCell<FxHashMap<(NodeId, usize), Passed>>,
+    /// The parameters whose fate is being read, innermost last.
+    reading: RefCell<SmallVec<[(NodeId, usize); 4]>>,
+    /// The name of the file's class.
+    class_name: Option<&'a str>,
     /// The main block creates an unnamed widget pool.
     pub(crate) main_pool: bool,
     /// The file's class has `USE-WIDGET-POOL`.
@@ -122,7 +195,10 @@ impl<'a> FileIndex<'a> {
             frees: FxHashMap::default(),
             callables: FxHashMap::default(),
             params: FxHashMap::default(),
-            memptrs: FxHashSet::default(),
+            uses: FxHashMap::default(),
+            fates: RefCell::default(),
+            reading: RefCell::default(),
+            class_name: None,
             main_pool: false,
             class_pool: false,
             named_pools: FxHashMap::default(),
@@ -154,8 +230,8 @@ impl<'a> FileIndex<'a> {
             let Some(scope) = self.scopes.get(&u) else {
                 break;
             };
-            if let Some(&class) = scope.defs.get(&key) {
-                return match (class, own) {
+            if let Some(def) = scope.defs.get(&key) {
+                return match (def.class, own) {
                     (VarClass::Local, true) => None,
                     (VarClass::OutputParameter, true) => Some(EscapeKind::OutputParameter),
                     (VarClass::Local | VarClass::OutputParameter, false) => {
@@ -187,6 +263,28 @@ impl<'a> FileIndex<'a> {
         None
     }
 
+    /// The definition `name` resolves to from `unit`.
+    fn def_of(&self, unit: NodeId, name: &str) -> Option<Def<'a>> {
+        let u = self.defining_unit(unit, name)?;
+        self.scopes.get(&u)?.defs.get(&Name(name)).copied()
+    }
+
+    /// Whether `name` is a static object visible from `unit`.
+    fn is_static(&self, unit: NodeId, name: &str) -> bool {
+        let key = Name(name);
+        let mut cur = Some(unit);
+        while let Some(u) = cur {
+            let Some(scope) = self.scopes.get(&u) else {
+                return false;
+            };
+            if scope.statics.contains(&key) {
+                return true;
+            }
+            cur = scope.parent;
+        }
+        false
+    }
+
     /// Whether a unit other than `unit` frees the variable `name` resolves to
     /// from `unit`. A same-named variable of another unit is a different
     /// variable.
@@ -199,36 +297,183 @@ impl<'a> FileIndex<'a> {
         })
     }
 
-    /// Whether a call by name that passes a handle as its `pos`-th argument
-    /// hands it to a unit of this file that frees that parameter: `None` when
-    /// the file defines nothing of that name.
-    pub(crate) fn callee_frees(&self, kind: CallableKind, name: &str, pos: usize) -> Option<bool> {
-        let mut defined = false;
-        // A call with no receiver in a class may name one of its methods.
+    /// What the callee of a call from `unit` does with a handle passed as its
+    /// `pos`-th `INPUT` argument.
+    pub(crate) fn passed(&self, unit: NodeId, callee: Callee, pos: usize) -> Passed {
+        self.resolve(unit, callee, pos, 0)
+    }
+
+    fn resolve(&self, unit: NodeId, callee: Callee, pos: usize, depth: u8) -> Passed {
+        let defined = match callee {
+            Callee::External => None,
+            Callee::Procedure(name) => self.defined(name, CallableKind::Procedure, pos, depth),
+            // A call with no receiver in a class may name one of its methods.
+            Callee::Function(name) => self.defined(name, CallableKind::Function, pos, depth),
+            Callee::Method { name, recv } => return self.method(unit, name, recv, pos, depth),
+        };
+        defined.unwrap_or(Passed::Unknown)
+    }
+
+    /// A method call: a built-in method of a handle, a method of this class,
+    /// or code the file does not show.
+    fn method(&self, unit: NodeId, name: &str, recv: Receiver, pos: usize, depth: u8) -> Passed {
+        let builtin = || {
+            if events::is_builtin_method(name) {
+                Passed::Borrow
+            } else {
+                Passed::Unknown
+            }
+        };
+        let (root, chained) = match recv {
+            Receiver::Name(n) => (n, false),
+            Receiver::Chain(n) => (n, true),
+            Receiver::Handle => return builtin(),
+            Receiver::Other => return Passed::Unknown,
+        };
+        match self.def_of(unit, root).map(|d| d.ty) {
+            Some(VarType::Handle) => builtin(),
+            Some(VarType::Class(ty)) if !chained && self.is_this_class(ty) => self
+                .defined(name, CallableKind::Method, pos, depth)
+                .unwrap_or(Passed::Unknown),
+            Some(_) => Passed::Unknown,
+            None if root.eq_ignore_ascii_case("THIS-OBJECT") => {
+                if chained {
+                    Passed::Unknown
+                } else {
+                    self.defined(name, CallableKind::Method, pos, depth)
+                        .unwrap_or(Passed::Unknown)
+                }
+            }
+            None if self.is_static(unit, root) || events::is_system_handle(root) => builtin(),
+            None => Passed::Unknown,
+        }
+    }
+
+    fn is_this_class(&self, ty: &str) -> bool {
+        let Some(class) = self.class_name else {
+            return false;
+        };
+        fn last(n: &str) -> &str {
+            n.rsplit('.').next().unwrap_or(n)
+        }
+        class.eq_ignore_ascii_case(ty)
+            || ((!class.contains('.') || !ty.contains('.'))
+                && last(class).eq_ignore_ascii_case(last(ty)))
+    }
+
+    /// The strongest fate over the callables of that name the file defines;
+    /// `None` when it defines none.
+    fn defined(&self, name: &str, kind: CallableKind, pos: usize, depth: u8) -> Option<Passed> {
         let named = |c: &&Callable| {
             c.kind == kind || (kind == CallableKind::Function && c.kind == CallableKind::Method)
         };
-        for c in self.callables.get(&Name(name))?.iter().filter(named) {
-            defined = true;
-            let freed = self
-                .params
-                .get(&c.unit)
-                .and_then(|p| p.get(pos))
-                .and_then(|p| self.frees.get(&Name(p)))
-                .is_some_and(|units| units.contains(&c.unit));
-            if freed {
-                return Some(true);
+        self.callables
+            .get(&Name(name))?
+            .iter()
+            .filter(named)
+            .map(|c| self.fate(c.unit, pos, depth))
+            .max()
+    }
+
+    /// What the callable `unit` does with its `pos`-th parameter: one walk of
+    /// its uses, without regard to order, following plain copies to its own
+    /// variables. A call back into a parameter being read adds nothing.
+    fn fate(&self, unit: NodeId, pos: usize, depth: u8) -> Passed {
+        if depth == 0
+            && let Some(&f) = self.fates.borrow().get(&(unit, pos))
+        {
+            return f;
+        }
+        if self.reading.borrow().contains(&(unit, pos)) {
+            return Passed::Borrow;
+        }
+        self.reading.borrow_mut().push((unit, pos));
+        let fate = self.read_fate(unit, pos, depth);
+        self.reading.borrow_mut().pop();
+        if depth == 0 {
+            self.fates.borrow_mut().insert((unit, pos), fate);
+        }
+        fate
+    }
+
+    fn read_fate(&self, unit: NodeId, pos: usize, depth: u8) -> Passed {
+        let Some(&param) = self.params.get(&unit).and_then(|p| p.get(pos)) else {
+            return Passed::Unknown;
+        };
+        let uses = self.uses.get(&unit).map_or(&[][..], Vec::as_slice);
+        let mut holders: SmallVec<[Name; 4]> = SmallVec::new();
+        holders.push(Name(param));
+        let holds = |h: &SmallVec<[Name; 4]>, v: &str| h.contains(&Name(v));
+        let local = |v: &str| self.escape_of(unit, v).is_none();
+        loop {
+            let before = holders.len();
+            for u in uses {
+                if let Use::Copy {
+                    to: Place::Var(w),
+                    from,
+                } = *u
+                    && holds(&holders, from)
+                    && !holds(&holders, w)
+                    && local(w)
+                {
+                    holders.push(Name(w));
+                }
+            }
+            if holders.len() == before {
+                break;
             }
         }
-        defined.then_some(false)
+        let mut fate = Passed::Borrow;
+        for u in uses {
+            let f = match *u {
+                Use::Free(v) if holds(&holders, v) => Passed::Frees,
+                Use::Copy { to, from } | Use::Derived { to, from } if holds(&holders, from) => {
+                    match to {
+                        Place::Var(w) if local(w) => Passed::Borrow,
+                        _ => Passed::Keeps,
+                    }
+                }
+                Use::Escape(v) if holds(&holders, v) => Passed::Keeps,
+                // As in the caller: a dataset the unit creates owns it.
+                Use::Attach { recv, var }
+                    if holds(&holders, var)
+                        && uses
+                            .iter()
+                            .any(|u| matches!(*u, Use::Dataset(d) if Name(d) == Name(recv))) =>
+                {
+                    Passed::Keeps
+                }
+                Use::Opaque(v) if holds(&holders, v) => Passed::Unknown,
+                Use::Skipped(names) if names.iter().any(|n| holds(&holders, &n.name)) => {
+                    Passed::Unknown
+                }
+                Use::Pass { var, callee, pos } if holds(&holders, var) => {
+                    if depth + 1 >= CALL_DEPTH {
+                        Passed::Unknown
+                    } else {
+                        self.resolve(unit, callee, pos, depth + 1)
+                    }
+                }
+                _ => Passed::Borrow,
+            };
+            fate = fate.max(f);
+            if fate == Passed::Frees {
+                break;
+            }
+        }
+        fate
     }
 
     /// A `COPY-LOB ... TO m` of a MEMPTR allocates it; any other target
-    /// changes nothing this crate tracks.
-    fn resolve_copy_lob(&self, effects: &mut Effects<'a>) {
+    /// changes nothing this crate tracks. `m` is the definition it resolves to
+    /// from `unit`.
+    fn resolve_copy_lob(&self, unit: NodeId, effects: &mut Effects<'a>) {
         for e in effects.iter_mut() {
             if let Effect::CopyLob { to, no_error } = *e
-                && let Some(var) = to.filter(|t| self.memptrs.contains(&Name(t)))
+                && let Some(var) = to.filter(|t| {
+                    self.def_of(unit, t)
+                        .is_some_and(|d| d.ty == VarType::Memptr)
+                })
             {
                 *e = Effect::Create {
                     kind: ObjectKind::Memptr,
@@ -249,12 +494,49 @@ impl<'a> FileIndex<'a> {
             .push(Callable { kind, unit });
     }
 
-    fn define(&mut self, unit: NodeId, name: &'a str, class: VarClass) {
+    fn define(&mut self, unit: NodeId, name: &'a str, class: VarClass, ty: VarType<'a>) {
         self.scopes
             .entry(unit)
             .or_default()
             .defs
-            .insert(Name(name), class);
+            .insert(Name(name), Def { class, ty });
+    }
+
+    fn define_static(&mut self, unit: NodeId, name: &'a Identifier) {
+        self.scopes
+            .entry(unit)
+            .or_default()
+            .statics
+            .insert(Name(&name.name));
+    }
+
+    /// Keep what a unit that a call can run does with variables.
+    fn record_uses(&mut self, unit: NodeId, effects: &Effects<'a>) {
+        let uses = effects.iter().filter_map(|e| {
+            Some(match *e {
+                Effect::Free { var, .. } => Use::Free(var),
+                Effect::Assign {
+                    to,
+                    from: Some(from),
+                } => Use::Copy { to, from },
+                Effect::DerivedAssign { to, from } => Use::Derived { to, from },
+                Effect::Escape { var, .. } => Use::Escape(var),
+                Effect::Opaque { var, .. } => Use::Opaque(var),
+                Effect::Attach { recv, var } => Use::Attach { recv, var },
+                Effect::Create {
+                    kind: ObjectKind::Dataset,
+                    into: Some(Place::Var(var)),
+                    ..
+                } => Use::Dataset(var),
+                Effect::Skipped(names) => Use::Skipped(names),
+                Effect::Pass { var, callee, pos } => Use::Pass { var, callee, pos },
+                _ => return None,
+            })
+        });
+        let mut uses = uses.peekable();
+        if uses.peek().is_some() {
+            self.uses.entry(unit).or_default().extend(uses);
+        }
     }
 
     /// Walk the statements of the unit `unit` defines, nested in `parent`.
@@ -277,9 +559,12 @@ impl<'a> FileIndex<'a> {
 
     fn visit(&mut self, s: &'a Statement, unit: NodeId, member: bool, src: &str) {
         let mut effects = events::effects(s, src);
-        self.resolve_copy_lob(&mut effects);
+        self.resolve_copy_lob(unit, &mut effects);
         if !effects.is_empty() {
             self.note(s.id, unit, &effects);
+            if unit != NodeId::PROGRAM {
+                self.record_uses(unit, &effects);
+            }
         }
         let safe = events::cannot_raise(s);
         let guards = match &s.kind {
@@ -315,34 +600,42 @@ impl<'a> FileIndex<'a> {
                 } else {
                     VarClass::Local
                 };
-                if is_memptr(type_source) {
-                    self.memptrs.insert(Name(&name.name));
-                }
-                self.define(unit, &name.name, class);
+                self.define(unit, &name.name, class, var_type(type_source));
             }
             SK::DefineParameter {
                 direction,
                 param_type,
             } => {
-                let name = match param_type {
-                    ParameterType::Variable { name, .. }
-                    | ParameterType::Handle { name, .. }
-                    | ParameterType::Buffer { name, .. } => name,
+                let (name, ty) = match param_type {
+                    ParameterType::Variable {
+                        name, type_source, ..
+                    } => (name, var_type(type_source)),
+                    // A table or dataset parameter names a static object.
+                    ParameterType::Handle { name, .. } | ParameterType::Buffer { name, .. } => {
+                        (name, VarType::Handle)
+                    }
                 };
-                if let ParameterType::Variable { type_source, .. } = param_type
-                    && is_memptr(type_source)
-                {
-                    self.memptrs.insert(Name(&name.name));
-                }
                 self.params.entry(unit).or_default().push(&name.name);
                 let class = match direction {
                     ParameterDirection::Input => VarClass::Local,
                     _ => VarClass::OutputParameter,
                 };
-                self.define(unit, &name.name, class);
+                self.define(unit, &name.name, class, ty);
             }
-            SK::Procedure { name, body, .. } => {
-                self.callable(name, CallableKind::Procedure, s.id);
+            SK::DefineBuffer { name, .. }
+            | SK::DefineTempTable { name, .. }
+            | SK::DefineDataset { name, .. }
+            | SK::DefineDataSource { name, .. }
+            | SK::DefineFrame { name, .. } => self.define_static(unit, name),
+            SK::Procedure {
+                name,
+                body,
+                is_prototype,
+            } => {
+                // `IN SUPER`, `IN h` and `EXTERNAL` run code of another file.
+                if !is_prototype {
+                    self.callable(name, CallableKind::Procedure, s.id);
+                }
                 self.unit(s.id, unit, |ix| ix.walk(body, s.id, false, src));
             }
             SK::Destructor { body } => {
@@ -354,7 +647,11 @@ impl<'a> FileIndex<'a> {
                 prototype_parameters,
                 ..
             } => {
-                self.callable(name, CallableKind::Function, s.id);
+                // A `FORWARD`, `IN` or `MAP TO` prototype has no body. Only a
+                // `FORWARD` one is defined in the file, by its own definition.
+                if !body.is_empty() {
+                    self.callable(name, CallableKind::Function, s.id);
+                }
                 self.unit(s.id, unit, |ix| {
                     ix.walk(prototype_parameters, s.id, false, src);
                     ix.walk(body, s.id, false, src);
@@ -382,13 +679,14 @@ impl<'a> FileIndex<'a> {
             }
             SK::Property {
                 name,
+                data_type,
                 get_body,
                 set_body,
                 set_parameters,
                 ..
             } => {
                 if member {
-                    self.define(unit, &name.name, VarClass::Member);
+                    self.define(unit, &name.name, VarClass::Member, data_var_type(data_type));
                 }
                 self.unit(s.id, unit, |ix| {
                     ix.walk(set_parameters, s.id, false, src);
@@ -398,10 +696,12 @@ impl<'a> FileIndex<'a> {
                 });
             }
             SK::Class {
+                name,
                 body,
                 use_widget_pool,
                 ..
             } => {
+                self.class_name = Some(&name.name);
                 self.class_pool |= *use_widget_pool;
                 self.walk(body, unit, true, src)
             }
@@ -489,8 +789,21 @@ impl<'a> FileIndex<'a> {
     }
 }
 
-fn is_memptr(t: &TypeSource) -> bool {
-    matches!(t, TypeSource::Explicit(DataType::Memptr))
+fn var_type(t: &TypeSource) -> VarType<'_> {
+    match t {
+        TypeSource::Explicit(d) => data_var_type(d),
+        TypeSource::Like { .. } => VarType::Other,
+    }
+}
+
+fn data_var_type(d: &DataType) -> VarType<'_> {
+    match d {
+        DataType::Handle => VarType::Handle,
+        DataType::Memptr => VarType::Memptr,
+        // The parser reads `WIDGET-HANDLE` as a class name.
+        DataType::Class(n) if n.eq_ignore_ascii_case("WIDGET-HANDLE") => VarType::Handle,
+        _ => d.class_name().map_or(VarType::Other, VarType::Class),
+    }
 }
 
 fn trigger_block(kind: &OnKind) -> Option<&Statement> {

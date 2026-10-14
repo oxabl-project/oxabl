@@ -116,3 +116,18 @@ mData = mOther.
 ";
     assert_eq!(check(run, src).len(), 1);
 }
+
+#[test]
+fn a_copy_lob_to_a_longchar_is_not_an_allocation() {
+    let src = "\
+PROCEDURE a:
+    DEFINE VARIABLE m AS MEMPTR NO-UNDO.
+    SET-SIZE(m) = 0.
+END PROCEDURE.
+PROCEDURE b:
+    DEFINE VARIABLE m AS LONGCHAR NO-UNDO.
+    COPY-LOB FROM FILE \"x\" TO m.
+END PROCEDURE.
+";
+    assert!(check(run, src).is_empty());
+}
