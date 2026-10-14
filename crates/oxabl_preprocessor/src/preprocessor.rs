@@ -625,6 +625,7 @@ impl ProcessContext<'_> {
                                 // node even when its content is empty: the edge
                                 // "this file includes that one" is a fact about
                                 // the source, not about how much text arrived.
+                                let unresolved_before = self.unresolved_includes.len();
                                 if let Some((path, children)) =
                                     self.expand_include(&include_name, include_site, inner, depth)
                                 {
@@ -632,6 +633,17 @@ impl ProcessContext<'_> {
                                         site: include_site,
                                         path: Some(path),
                                         children,
+                                    });
+                                } else if self.unresolved_includes.len() > unresolved_before
+                                    && in_list_position(bytes, i, ref_end)
+                                {
+                                    // Keep the reference as text so the parser sees
+                                    // an opaque include node, as it does on a raw
+                                    // parse, rather than a hole in a list.
+                                    nodes.push(SpanNode::Chunk {
+                                        file,
+                                        start: i as u32,
+                                        end: ref_end as u32,
                                     });
                                 }
 
@@ -1914,6 +1926,18 @@ fn find_same_line_if_boundary(source: &str, from: usize) -> Option<usize> {
         }
     }
     best.map(|p| from + p)
+}
+
+/// Whether the reference at `start..end` sits between list punctuation: a
+/// `(` or `,` before it, or a `,` or `)` after it. Dropping it there would
+/// leave an empty list element.
+fn in_list_position(bytes: &[u8], start: usize, end: usize) -> bool {
+    let before = bytes[..start]
+        .iter()
+        .rev()
+        .find(|b| !b.is_ascii_whitespace());
+    let after = bytes[end..].iter().find(|b| !b.is_ascii_whitespace());
+    matches!(before, Some(b'(' | b',')) || matches!(after, Some(b',' | b')'))
 }
 
 /// Whether the `{` at `open` starts a file include reference: optional

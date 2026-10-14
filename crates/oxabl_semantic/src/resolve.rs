@@ -9295,6 +9295,42 @@ mod tests {
         assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 1);
     }
 
+    /// The inline-signature buffer parameter whose name equals its target keeps
+    /// the same self-credit guard as `DEFINE BUFFER`.
+    #[test]
+    fn same_name_buffer_parameter_does_not_self_credit() {
+        let stmts = vec![stmt_n(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Buffer {
+                name: id("Customer"),
+                target: id("Customer"),
+            },
+        })];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "Customer"), 0);
+    }
+
+    #[test]
+    fn declare_buffer_parameter_links_schema_table_id() {
+        let schema = test_schema();
+        let stmts = vec![stmt_n(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Buffer {
+                name: id("bCust"),
+                target: id("Customer"),
+            },
+        })];
+        let ctx = ctx("", &schema);
+        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let bsym = tree
+            .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("bcust"))
+            .expect("buffer declared");
+        assert_eq!(
+            symbols.get(bsym).table_id,
+            schema.table_id(&fold_atom("customer"))
+        );
+    }
+
     /// Other parameter shapes are untouched: a scalar parameter names no table,
     /// and must not acquire a read on anything.
     #[test]

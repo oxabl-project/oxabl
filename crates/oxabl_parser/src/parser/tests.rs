@@ -12204,3 +12204,50 @@ fn var_statement_class_type() {
         StatementKind::VariableDeclarationList(d) if d.len() == 2
     ));
 }
+
+fn first_param_type(source: &str) -> ParameterType {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { body, .. } => match &body[0].kind {
+            StatementKind::DefineParameter { param_type, .. } => param_type.clone(),
+            other => panic!("Expected DefineParameter, got {other:?}"),
+        },
+        other => panic!("Expected Function, got {other:?}"),
+    }
+}
+
+#[test]
+fn procedure_signature_buffer_param_keeps_its_table() {
+    for source in [
+        "FUNCTION f RETURNS INTEGER (BUFFER bItem FOR ttItem):\nRETURN 1.\nEND FUNCTION.",
+        "FUNCTION f RETURNS INTEGER (BUFFER bItem FOR TEMP-TABLE ttItem):\nRETURN 1.\nEND FUNCTION.",
+    ] {
+        match first_param_type(source) {
+            ParameterType::Buffer { name, target } => {
+                assert_eq!(name.name, "bItem");
+                assert_eq!(target.name, "ttItem");
+            }
+            other => panic!("Expected Buffer, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn unresolved_include_in_call_argument_position_does_not_break_the_list() {
+    use oxabl_common::FileId;
+    use oxabl_preprocessor::Preprocessor;
+    let source = "RUN foo.p({inc/args.i},\n          INPUT RECID(item)).\n";
+    let fs = oxabl_workspace::InMemoryFileSystem::new();
+    let include_paths = Vec::new();
+    let result = Preprocessor::new(&fs, &include_paths)
+        .process(FileId::new(1), source)
+        .unwrap();
+    assert_eq!(result.unresolved_includes.len(), 1);
+    let text = result.to_text();
+    let tokens = tokenize(&text);
+    let mut parser = Parser::new(&tokens, &text);
+    let program = parser.parse_program();
+    assert!(program.is_ok(), "got {:?}", program.first_error());
+}
