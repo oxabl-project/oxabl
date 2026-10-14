@@ -43,6 +43,7 @@ use oxabl_preprocessor::{
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, NullIndex, Semantic, SourceContext, WorkspaceIndex, analyze_file,
+    analyze_file_untyped,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
@@ -1027,6 +1028,32 @@ pub fn collect_from_expanded_selecting(
     }
 
     (Some(sem), out)
+}
+
+/// Parse and analyze `expanded` and return the semantic model and whether the
+/// parse recovered an error, with no lint rule run and no finding collected.
+///
+/// What a client needs when it reads the model and nothing else, such as one
+/// that builds a dependency edge set. It does the work of
+/// [`collect_from_expanded_with_source_context`] up to the model and stops there.
+/// The model is that one, bar the type of each expression: the type-check pass is
+/// skipped (see [`analyze_file_untyped`]).
+pub fn analyze_from_expanded(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+) -> (Semantic, bool) {
+    let tokens = tokenize(&expanded.text);
+    let mut parser = Parser::new(&tokens, &expanded.text);
+    let program = parser.parse_program();
+    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
+        .with_index(index)
+        .with_source_context(source_context);
+    ctx.schema_loaded = schema_loaded;
+    let sem = analyze_file_untyped(&program.statements, &ctx);
+    (sem, !program.errors.is_empty())
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,

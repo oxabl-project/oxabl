@@ -202,6 +202,20 @@ pub struct Semantic {
 /// type-check (Phase 4b). The resulting `Semantic` carries fully populated
 /// scope tree, symbol table, reference map, and type map.
 pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> Semantic {
+    analyze(program, ctx, true)
+}
+
+/// [`analyze_file`] without the type-check pass.
+///
+/// The scope tree, symbol table and reference map are the ones `analyze_file`
+/// builds: the type-check pass only reads them. The `types` table holds the
+/// declaration entries and none for an expression, so use this only where no
+/// reader looks an expression's type up, as when only dependency edges are wanted.
+pub fn analyze_file_untyped(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> Semantic {
+    analyze(program, ctx, false)
+}
+
+fn analyze(program: &[oxabl_ast::Statement], ctx: &AnalysisContext, type_check: bool) -> Semantic {
     let (scope_tree, mut symbols, mut diagnostics, declare_revision) = declare_pass(program, ctx);
     let (mut references, mut types, resolve_diags) =
         resolve_pass(program, ctx, &scope_tree, &mut symbols, declare_revision);
@@ -209,8 +223,10 @@ pub fn analyze_file(program: &[oxabl_ast::Statement], ctx: &AnalysisContext) -> 
     if ctx.source_context.is_include_fragment() {
         soften_includer_dependent_misses(&mut references);
     }
-    let check_diags = check_pass(program, ctx, &scope_tree, &symbols, &references, &mut types);
-    diagnostics.extend(check_diags);
+    if type_check {
+        let check_diags = check_pass(program, ctx, &scope_tree, &symbols, &references, &mut types);
+        diagnostics.extend(check_diags);
+    }
     Semantic {
         scope_tree,
         symbols,
@@ -317,6 +333,28 @@ mod tests {
         let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         assert!(!ctx.index_loaded);
         assert_eq!(ctx.index.revision(), IndexRevision::ABSENT);
+    }
+
+    #[test]
+    fn the_untyped_analysis_builds_the_same_symbols_references_and_diagnostics() {
+        let schema = Schema::empty();
+        let source = "DEFINE VARIABLE n AS INTEGER NO-UNDO.\nn = 1 + 2.\nMESSAGE missing.";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+
+        let typed = analyze_file(&program.statements, &ctx);
+        let untyped = analyze_file_untyped(&program.statements, &ctx);
+
+        assert_eq!(untyped.symbols.iter().count(), typed.symbols.iter().count());
+        let resolutions = |sem: &Semantic| -> Vec<_> {
+            sem.references
+                .iter()
+                .map(|(id, resolution)| (id, resolution.clone()))
+                .collect()
+        };
+        assert_eq!(resolutions(&untyped), resolutions(&typed));
+        assert_eq!(untyped.diagnostics.len(), typed.diagnostics.len());
     }
 
     #[test]
