@@ -167,10 +167,10 @@ pub struct PreprocessorConfig {
     /// Value of `{&PROCESS-ARCHITECTURE}`: `32` or `64`. Default `64`.
     pub process_architecture: u32,
 
-    /// Value of `{&PROVERSION}`, for example `"12.8"`. There is no default: the
-    /// version is not something a tool can guess. While it is unset, an `&IF`
-    /// condition that reads `{&PROVERSION}` raises `PREPROC009` instead of
-    /// silently deciding against an empty string.
+    /// Value of `{&PROVERSION}` and of the `PROVERSION` function, for example
+    /// `"12.8"`. There is no default: the version is not something a tool can
+    /// guess. While it is unset, an `&IF` condition that reads either form
+    /// raises `PREPROC009` instead of silently deciding against an empty string.
     pub proversion: Option<String>,
 }
 
