@@ -150,7 +150,8 @@ impl LintConfig {
 /// source and take no configuration.
 ///
 /// The `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` ask which
-/// databases are connected, which only a compile knows. `databases` states them.
+/// databases are connected, which only a compile knows. `databases` states them;
+/// without it the `[workspace.schema]` file names stand in, as a partial list.
 ///
 /// Container-level `#[serde(default)]` lets a partial table fall back per key,
 /// and `deny_unknown_fields` makes a misspelled key a hard error rather than a
@@ -177,17 +178,33 @@ pub struct PreprocessorConfig {
     /// raises `PREPROC009` instead of silently deciding against an empty string.
     pub proversion: Option<String>,
 
-    /// The logical names of the databases connected when the code compiles. The
-    /// `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` answer from this
-    /// list, so `DBTYPE("ledger") NE ?` is true when `ledger` is listed.
+    /// The logical names of the databases connected when the code compiles, in
+    /// the order of connection. The `DBTYPE`, `CONNECTED` and `LDBNAME` functions
+    /// of an `&IF` answer from this list, so `DBTYPE("ledger") NE ?` is true when
+    /// `ledger` is listed. The list is complete: a name that is not in it is not
+    /// connected, so `DBTYPE` answers `?` and `CONNECTED` answers false. Use `[]`
+    /// for a compile with no database connected. `DICTDB`, the alias the AVM gives
+    /// the first connected database, answers as the first name in the list.
     ///
     /// When the key is absent, the `[workspace.schema]` files name the databases:
     /// the file name without `.df` is the logical name, so `schema/ledger.df`
-    /// connects `ledger`. Set the key when a logical name differs from its file
-    /// name, or to `[]` for a compile with no database connected. While neither
-    /// a list nor a schema is given, an `&IF` that calls one of these functions
-    /// raises `PREPROC010` instead of deciding on a guess.
+    /// connects `ledger`. A file name can differ from the logical name, and the
+    /// files are in the order of `[workspace.schema]`, not of connection. So this
+    /// list is not complete and not ordered: a name that is not in it raises
+    /// `PREPROC010` instead of deciding that the database is absent, and so do
+    /// `LDBNAME("DICTDB")` and `DBTYPE("DICTDB")`. `CONNECTED("DICTDB")` is true
+    /// when the list is not empty. Set the key when a logical name
+    /// differs from its file name. While neither a list nor a schema is given, an
+    /// `&IF` that calls one of these functions raises `PREPROC010` instead of
+    /// deciding on a guess.
     pub databases: Option<Vec<String>>,
+
+    /// The logical names that the `[workspace.schema]` files stand for, which the
+    /// database functions use when `databases` is absent. Set when the workspace
+    /// is resolved, never from `oxabl.toml`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub inferred_databases: Option<Vec<String>>,
 
     /// The `DBTYPE` of a connected database, by logical name, for example
     /// `{ ledger = "ORACLE" }`. A database that is not named here is `PROGRESS`.
@@ -203,6 +220,7 @@ impl Default for PreprocessorConfig {
             process_architecture: 64,
             proversion: None,
             databases: None,
+            inferred_databases: None,
             database_types: BTreeMap::new(),
         }
     }
@@ -390,7 +408,19 @@ files = ["schema/sports2000.df"]
         assert_eq!(pp.process_architecture, 64);
         assert_eq!(pp.proversion, None);
         assert_eq!(pp.databases, None);
+        assert_eq!(pp.inferred_databases, None);
         assert!(pp.database_types.is_empty());
+    }
+
+    /// The names a schema file stands for are set by the resolver, so a key for
+    /// them is a misspelling like any other.
+    #[test]
+    fn the_inferred_databases_are_not_a_config_key() {
+        for key in ["inferred-databases", "inferred_databases"] {
+            let toml =
+                format!("[workspace]\nname = \"p\"\n[workspace.preprocessor]\n{key} = [\"a\"]\n");
+            assert!(WorkspaceConfig::from_toml(&toml).is_err(), "{key}");
+        }
     }
 
     #[test]
