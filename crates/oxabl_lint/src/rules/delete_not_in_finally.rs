@@ -67,7 +67,7 @@ use oxabl_handles::FileHandles;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD002;
-use super::handle_support::{describe, quote, warning};
+use super::handle_support::{describe, not_judged, quote, warning};
 use super::syntactic::file_span;
 
 /// Kebab-case rule name.
@@ -86,6 +86,9 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 /// The findings over an analysed file.
 pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    if not_judged(ctx) {
+        return Vec::new();
+    }
     let mut diags = Vec::new();
     for (_, o) in handles.objects() {
         if !o.leaks_on_abnormal_path_only() || o.frees.is_empty() {

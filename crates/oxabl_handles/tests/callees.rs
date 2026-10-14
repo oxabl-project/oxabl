@@ -393,6 +393,26 @@ fn a_private_static_or_final_class_method_is_bound_to_its_body() {
 }
 
 #[test]
+fn a_parameter_that_cannot_take_the_argument_is_not_the_callee() {
+    // The call may bind to an inherited overload that takes the handle.
+    for ty in ["CHARACTER", "INTEGER", "Progress.Lang.Object"] {
+        let consume = format!("METHOD PRIVATE VOID Consume(INPUT pc AS {ty}):\n  END METHOD.");
+        let o = consumer("CLASS Svc", &consume, "Consume(hq).");
+        assert_eq!(o.verdict, Verdict::Unknown, "{ty}");
+        assert_eq!(reasons(&o), [OpaqueReason::Callee], "{ty}");
+    }
+}
+
+#[test]
+fn a_parameter_that_takes_a_handle_or_a_memptr_is_read() {
+    for ty in ["HANDLE", "WIDGET-HANDLE", "COM-HANDLE", "MEMPTR"] {
+        let consume = format!("METHOD PRIVATE VOID Consume(INPUT ph AS {ty}):\n  END METHOD.");
+        let o = consumer("CLASS Svc", &consume, "Consume(hq).");
+        assert_eq!(o.verdict, Verdict::Leaks, "{ty}");
+    }
+}
+
+#[test]
 fn a_method_of_an_object_of_another_class_is_unknown() {
     for call in [
         "CAST(oRepo, pkg.Repo):Save(hq).",

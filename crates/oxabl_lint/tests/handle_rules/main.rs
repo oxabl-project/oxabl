@@ -11,6 +11,7 @@ mod hd002_delete_not_in_finally;
 mod hd003_persistent_procedure_leak;
 mod hd004_memptr_not_freed;
 mod hd005_missing_widget_pool;
+mod recovered_parse;
 mod registry_run;
 
 use oxabl_common::{Diagnostic, FileId};
@@ -57,6 +58,33 @@ fn check_in(rule: RuleFn, source: &str, context: SourceContext) -> Vec<Diagnosti
     );
     let schema = Schema::empty();
     let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_source_context(context);
+    let sem = analyze_file(&program.statements, &ctx);
+    rule(&program.statements, &sem, &ctx)
+}
+
+/// Run one rule over `source`, which the parser must recover from. The
+/// context says so when `flagged`, and is an include fragment when `fragment`.
+pub fn check_recovered(
+    rule: RuleFn,
+    source: &str,
+    flagged: bool,
+    fragment: bool,
+) -> Vec<Diagnostic> {
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(
+        !program.errors.is_empty(),
+        "fixture must need parse recovery\n{source}"
+    );
+    let schema = Schema::empty();
+    let context = if fragment {
+        SourceContext::IncludeFragment
+    } else {
+        SourceContext::CompilationUnit
+    };
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+        .with_source_context(context)
+        .with_parse_recovered(flagged);
     let sem = analyze_file(&program.statements, &ctx);
     rule(&program.statements, &sem, &ctx)
 }

@@ -185,7 +185,9 @@ pub(crate) struct FileIndex<'a> {
     /// Procedures, functions and methods the file defines, by name.
     callables: FxHashMap<Name<'a>, SmallVec<[Callable; 1]>>,
     /// The parameter names of each unit, in order.
-    params: FxHashMap<NodeId, Vec<&'a str>>,
+    /// Per callable, its parameters in order: the name, and whether the
+    /// declared type can take a handle or a MEMPTR.
+    params: FxHashMap<NodeId, Vec<(&'a str, bool)>>,
     /// What each unit other than the main block does with variables.
     uses: FxHashMap<NodeId, Vec<Use<'a>>>,
     /// What a call's callee does with an argument, by callee unit and
@@ -432,9 +434,13 @@ impl<'a> FileIndex<'a> {
     }
 
     fn read_fate(&self, unit: NodeId, pos: usize, depth: u8) -> Passed {
-        let Some(&param) = self.params.get(&unit).and_then(|p| p.get(pos)) else {
+        let Some(&(param, takes)) = self.params.get(&unit).and_then(|p| p.get(pos)) else {
             return Passed::Unknown;
         };
+        // The call may bind to an overload this body is not.
+        if !takes {
+            return Passed::Unknown;
+        }
         let uses = self.uses.get(&unit).map_or(&[][..], Vec::as_slice);
         let mut holders: SmallVec<[Name; 4]> = SmallVec::new();
         holders.push(Name(param));
@@ -647,16 +653,19 @@ impl<'a> FileIndex<'a> {
                 direction,
                 param_type,
             } => {
-                let (name, ty) = match param_type {
+                let (name, ty, takes) = match param_type {
                     ParameterType::Variable {
                         name, type_source, ..
-                    } => (name, var_type(type_source)),
+                    } => (name, var_type(type_source), takes_object(type_source)),
                     // A table or dataset parameter names a static object.
                     ParameterType::Handle { name, .. } | ParameterType::Buffer { name, .. } => {
-                        (name, VarType::Handle)
+                        (name, VarType::Handle, true)
                     }
                 };
-                self.params.entry(unit).or_default().push(&name.name);
+                self.params
+                    .entry(unit)
+                    .or_default()
+                    .push((&name.name, takes));
                 let class = match direction {
                     ParameterDirection::Input => VarClass::Local,
                     _ => VarClass::OutputParameter,
@@ -850,6 +859,17 @@ fn var_type(t: &TypeSource) -> VarType<'_> {
     match t {
         TypeSource::Explicit(d) => data_var_type(d),
         TypeSource::Like { .. } => VarType::Other,
+    }
+}
+
+/// Whether a parameter of this type can take a handle or a MEMPTR.
+fn takes_object(t: &TypeSource) -> bool {
+    match t {
+        TypeSource::Explicit(d) => {
+            matches!(d, DataType::Handle | DataType::Memptr | DataType::Com)
+                || matches!(d, DataType::Class(n) if n.eq_ignore_ascii_case("WIDGET-HANDLE"))
+        }
+        TypeSource::Like { .. } => false,
     }
 }
 

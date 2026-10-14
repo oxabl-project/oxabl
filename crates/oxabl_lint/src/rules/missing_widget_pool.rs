@@ -67,7 +67,7 @@ use oxabl_handles::{FileHandles, Placement};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD005;
-use super::handle_support::{warning, with_fragment_note};
+use super::handle_support::{not_judged, warning, with_fragment_note};
 
 /// Kebab-case rule name.
 pub const NAME: &str = "missing-widget-pool";
@@ -85,6 +85,9 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 /// The findings over an analysed file.
 pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    if not_judged(ctx) {
+        return Vec::new();
+    }
     let unpooled: Vec<_> = handles
         .objects()
         .map(|(_, o)| o)

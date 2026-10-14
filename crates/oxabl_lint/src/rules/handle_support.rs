@@ -78,6 +78,14 @@ pub(super) fn quote(source: &str, span: Span) -> String {
     out
 }
 
+/// Whether the file is left unjudged. Parse recovery can close a unit early
+/// and move a free out of it. An include fragment is exempt: it is partial by
+/// nature, its parse often recovers, and its findings are reported once, in
+/// the include.
+pub(super) fn not_judged(ctx: &AnalysisContext) -> bool {
+    ctx.parse_recovered && !ctx.source_context.is_include_fragment()
+}
+
 /// The first leak that happens without a raised condition.
 pub(super) fn first_normal_leak(o: &Object) -> Option<&Leak> {
     o.leaks.iter().find(|l| l.normal)

@@ -129,6 +129,9 @@ pub struct AnalysisContext<'a> {
     /// and disjoint. Empty when nothing was expanded or the source is the
     /// root's own text.
     pub include_regions: &'a [Span],
+    /// Whether the parser recovered from an error in this file. A rule that
+    /// needs the file's statements to be where the author put them reads this.
+    pub parse_recovered: bool,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -150,7 +153,15 @@ impl<'a> AnalysisContext<'a> {
             lint_severities: LintSeverityMap::new(),
             source_context: SourceContext::CompilationUnit,
             include_regions: &[],
+            parse_recovered: false,
         }
+    }
+
+    /// Record that the parser recovered from an error in the file
+    /// (builder-style).
+    pub fn with_parse_recovered(mut self, recovered: bool) -> Self {
+        self.parse_recovered = recovered;
+        self
     }
 
     /// Record which parts of the source an include file wrote (builder-style).
