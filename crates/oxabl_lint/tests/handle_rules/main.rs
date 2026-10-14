@@ -31,6 +31,21 @@ pub fn check_fragment(rule: RuleFn, source: &str) -> Vec<Diagnostic> {
     check_in(rule, source, SourceContext::IncludeFragment)
 }
 
+/// [`check`] for a root whose first `include_len` bytes an include wrote.
+pub fn check_with_include(rule: RuleFn, source: &str, include_len: u32) -> Vec<Diagnostic> {
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let schema = Schema::empty();
+    let regions = [oxabl_ast::Span {
+        start: 0,
+        end: include_len,
+    }];
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_include_regions(&regions);
+    let sem = analyze_file(&program.statements, &ctx);
+    rule(&program.statements, &sem, &ctx)
+}
+
 fn check_in(rule: RuleFn, source: &str, context: SourceContext) -> Vec<Diagnostic> {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();

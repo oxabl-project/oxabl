@@ -1,0 +1,10 @@
+unit u0 main
+  memptr @7 unknown holder=mA
+    opaque output-argument @8
+    leak exit-return @15 normal path 7>8>10>11>14>15
+  memptr @10 unknown holder=mB
+    escape input-output-argument @11
+    opaque output-argument @11
+    leak exit-return @11 abnormal via raise(error)@11 path 10>11
+  memptr @14 leaks holder=mC
+    leak overwrite @15 normal path 14>15

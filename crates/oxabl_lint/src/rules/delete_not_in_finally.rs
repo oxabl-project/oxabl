@@ -42,7 +42,9 @@
 //! # What is and is not reported
 //!
 //! One diagnostic per delete statement, anchored on the delete. The message
-//! names the first statement after which an error can skip it (`via`). Any
+//! names the first statement after which an error can skip it (`via`): the first `RUN`, call, method, attribute or
+//! database statement on a path that loses the object, else the first statement that
+//! can raise. Any
 //! delete form counts: `DELETE OBJECT`, `DELETE PROCEDURE`, `DELETE WIDGET`,
 //! `RELEASE OBJECT`, `SET-SIZE(m) = 0`, `APPLY "CLOSE"`.
 //!
@@ -92,8 +94,9 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
         let via = o
             .leaks
             .iter()
-            .filter_map(|l| l.via)
-            .min_by_key(|s| s.span.start);
+            .filter_map(|l| l.via_call.map(|s| (0, s)).or(l.via.map(|s| (1, s))))
+            .min_by_key(|(rank, s)| (*rank, s.span.start))
+            .map(|(_, s)| s);
         let mut seen = Vec::new();
         for free in o.frees.iter().filter(|f| !f.in_finally) {
             if seen.contains(&free.site.span) {

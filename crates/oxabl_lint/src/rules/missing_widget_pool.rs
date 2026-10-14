@@ -55,10 +55,10 @@
 //!
 //! # Include files
 //!
-//! The diagnostic is reported where its first create is. A root file reports
-//! only a create that is in the root file itself, so when the first such
-//! create sits in an include, the include reports it and the root reports
-//! nothing. An include may count on a pool that its includer creates, so a
+//! Each file counts and reports its own creates. A root file leaves out the
+//! creates that an include wrote and reports at its own first create, even
+//! when an include creates earlier. The include reports its own when it is
+//! checked. An include may count on a pool that its includer creates, so a
 //! finding in an include says so and is lower confidence.
 
 use oxabl_ast::Statement;
@@ -89,7 +89,10 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
         .objects()
         .map(|(_, o)| o)
         .filter(|o| {
-            o.kind.uses_widget_pool() && o.placement == Placement::Unscoped && o.escapes.is_empty()
+            o.kind.uses_widget_pool()
+                && o.placement == Placement::Unscoped
+                && o.escapes.is_empty()
+                && !ctx.in_include(o.create.span)
         })
         .collect();
     let Some(first) = unpooled.iter().min_by_key(|o| o.create.span.start) else {

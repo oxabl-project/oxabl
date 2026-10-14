@@ -189,6 +189,10 @@ pub enum EscapeKind {
     /// A widget put under a parent widget (`ASSIGN FRAME = f`, `h:PARENT =
     /// w`): deleting the parent deletes it.
     WidgetParent,
+    /// A handle derived from the object (`h:DEFAULT-BUFFER-HANDLE`,
+    /// `h:GET-BUFFER-HANDLE(n)`) is returned or stored where it outlives the
+    /// unit; the root object is taken as handed over too. Low confidence.
+    DerivedHandle,
 }
 
 impl EscapeKind {
@@ -213,6 +217,7 @@ impl EscapeKind {
             EscapeKind::PersistentPool => "persistent-pool",
             EscapeKind::FreedByOtherUnit => "freed-by-other-unit",
             EscapeKind::WidgetParent => "widget-parent",
+            EscapeKind::DerivedHandle => "derived-handle",
         }
     }
 }
@@ -254,9 +259,14 @@ pub enum OpaqueReason {
     /// walking a procedure list (`FIRST-PROCEDURE`, `NEXT-SIBLING`), which may
     /// include it.
     ProcedureSweep,
-    /// `RUN destroy IN h` (or `destroyObject`): by a common convention the
+    /// `RUN destroy... IN h` (a name starting with `destroy`, or ADM's
+    /// `RUN dispatch IN h ('destroy')`): by a common convention the
     /// procedure deletes itself there, but nothing in this file shows it.
     DestroyCall,
+    /// The object is a MEMPTR passed as an `OUTPUT` or `INPUT-OUTPUT`
+    /// argument: whether that replaces the pointer or fills the block is not
+    /// known.
+    OutputArgument,
 }
 
 impl OpaqueReason {
@@ -271,6 +281,7 @@ impl OpaqueReason {
             OpaqueReason::TooComplex => "too-complex",
             OpaqueReason::ProcedureSweep => "procedure-sweep",
             OpaqueReason::DestroyCall => "destroy-call",
+            OpaqueReason::OutputArgument => "output-argument",
         }
     }
 }
@@ -313,6 +324,10 @@ pub struct Leak {
     /// The first transfer that raises a condition, for a path that is not
     /// normal: its edge kind and the node it leaves.
     pub via: Option<Step>,
+    /// The first transfer that raises out of a `RUN`, a call, a method or
+    /// attribute, or a database statement, on some path that loses the object
+    /// here. `via` may be a plainer statement on another path.
+    pub via_call: Option<Step>,
     /// From the create to the loss, without the synthetic entry, end and exit
     /// nodes.
     pub path: Vec<Step>,

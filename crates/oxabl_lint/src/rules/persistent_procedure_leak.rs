@@ -40,8 +40,9 @@
 //! - a handle that is deleted on every path, passed back in an `OUTPUT`
 //!   parameter, stored in a shared or outer variable, a class member or a
 //!   field, or given to `ADD-SUPER-PROCEDURE`;
-//! - a handle that the procedure passes to `RUN destroy IN h`: by convention the
-//!   procedure deletes itself there, so the state is unknown;
+//! - a handle that the procedure passes to `RUN destroy... IN h` (any name that
+//!   starts with `destroy`, or `RUN dispatch IN h ('destroy')`): by convention
+//!   the procedure deletes itself there, so the state is unknown;
 //! - a procedure that sweeps `FIRST-PROCEDURE` / `NEXT-SIBLING`, which may
 //!   delete any persistent procedure.
 //!

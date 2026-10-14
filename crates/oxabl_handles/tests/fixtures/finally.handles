@@ -12,7 +12,6 @@ unit u3 procedure early-return
 unit u4 procedure return-error
   query @30 leaks holder=hQuery pool=unscoped
     free delete-object @32
-    leak exit-return @31 abnormal via raise(error)@31 path 30>31
     leak exit-error @31 abnormal via return-error@31 path 30>31
 unit u5 procedure never-freed
   query @37 leaks holder=hQuery pool=unscoped

@@ -109,3 +109,59 @@ END PROCEDURE.
 ";
     assert!(check(run, src).is_empty());
 }
+
+#[test]
+fn a_plain_test_is_not_the_cause() {
+    let src = "\
+PROCEDURE p:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    DEFINE VARIABLE lGo AS LOGICAL NO-UNDO.
+    CREATE QUERY hQuery.
+    IF lGo THEN lGo = NO.
+    hQuery:QUERY-PREPARE(\"for each customer\").
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(diags.len(), 1);
+    let message = &diags[0].message;
+    assert!(message.contains("hQuery:QUERY-PREPARE"), "{message}");
+}
+
+#[test]
+fn a_call_in_a_test_is_a_cause() {
+    let src = "\
+PROCEDURE p:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    CREATE QUERY hQuery.
+    IF LENGTH(\"x\") > 5 THEN RETURN.
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert!(
+        diags.iter().all(|d| d.message.contains("LENGTH")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn a_run_is_named_before_an_earlier_plain_statement() {
+    let src = "\
+PROCEDURE p:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    DEFINE VARIABLE iA AS INTEGER NO-UNDO.
+    CREATE QUERY hQuery.
+    iA = iA + 1.
+    RUN work.p.
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(diags.len(), 1);
+    assert!(
+        diags[0].message.contains("RUN work.p"),
+        "{}",
+        diags[0].message
+    );
+}

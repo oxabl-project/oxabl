@@ -1,0 +1,12 @@
+unit u0 main
+  persistent-procedure @6 unknown holder=hA
+    opaque destroy-call @7
+    leak exit-return @19 normal path 6>7>9>10>13>14>17>18>19
+  persistent-procedure @9 unknown holder=hB
+    opaque destroy-call @10
+    leak exit-return @19 normal path 9>10>13>14>17>18>19
+  persistent-procedure @13 unknown holder=hC
+    opaque destroy-call @14
+    leak exit-return @19 normal path 13>14>17>18>19
+  persistent-procedure @17 leaks holder=hD
+    leak exit-return @19 normal path 17>18>19

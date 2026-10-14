@@ -95,3 +95,24 @@ SET-SIZE(m) = 16.
     assert_eq!(diags.len(), 1);
     assert!(help(&diags[0]).contains("This file is an include"));
 }
+
+#[test]
+fn an_output_argument_leaves_the_memptr_unknown() {
+    let src = "\
+DEFINE VARIABLE mData AS MEMPTR NO-UNDO.
+SET-SIZE(mData) = 100.
+RUN fill.p (INPUT mData, OUTPUT mData).
+";
+    assert!(check(run, src).is_empty());
+}
+
+#[test]
+fn copying_another_pointer_over_it_still_loses_the_block() {
+    let src = "\
+DEFINE VARIABLE mData AS MEMPTR NO-UNDO.
+DEFINE VARIABLE mOther AS MEMPTR NO-UNDO.
+SET-SIZE(mData) = 100.
+mData = mOther.
+";
+    assert_eq!(check(run, src).len(), 1);
+}

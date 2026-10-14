@@ -332,6 +332,17 @@ impl ExpandedFile {
         Some(self.include_regions[found].site)
     }
 
+    /// The parts of the expanded text that include files wrote, in order.
+    pub fn include_spans(&self) -> Vec<Span> {
+        self.include_regions
+            .iter()
+            .map(|r| Span {
+                start: r.virt_start,
+                end: r.virt_end,
+            })
+            .collect()
+    }
+
     /// The chunk containing virtual offset `virt`, or `None` past the end of the
     /// expansion.
     ///
@@ -978,7 +989,9 @@ pub fn collect_from_expanded_selecting(
     // workspace or merely "we did not look". Only `schema_loaded` is assigned
     // directly: `new` infers it from an empty schema, and this path is handed the
     // caller's explicit answer, which is the whole point of the flag.
+    let include_spans = expanded.include_spans();
     let mut ctx = AnalysisContext::new(root, &expanded.text, schema)
+        .with_include_regions(&include_spans)
         .with_lint_severities(lint_severities.clone())
         .with_index(index)
         .with_source_context(source_context);

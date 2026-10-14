@@ -108,3 +108,33 @@ RUN lib.p PERSISTENT SET hLib.
     assert_eq!(diags.len(), 1);
     assert!(help(&diags[0]).contains("This file is an include"));
 }
+
+#[test]
+fn a_procedure_named_destroy_something_leaves_the_state_unknown() {
+    let src = "\
+DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
+RUN lib.p PERSISTENT SET hLib.
+RUN DestroyThis IN hLib.
+";
+    assert!(check(run, src).is_empty());
+}
+
+#[test]
+fn the_adm_dispatch_destroy_leaves_the_state_unknown() {
+    let src = "\
+DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
+RUN lib.p PERSISTENT SET hLib.
+RUN dispatch IN hLib ('destroy').
+";
+    assert!(check(run, src).is_empty());
+}
+
+#[test]
+fn another_dispatch_method_does_not_hide_the_leak() {
+    let src = "\
+DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
+RUN lib.p PERSISTENT SET hLib.
+RUN dispatch IN hLib ('initialize').
+";
+    assert_eq!(check(run, src).len(), 1);
+}

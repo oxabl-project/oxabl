@@ -201,3 +201,28 @@ END PROCEDURE.
         diags[0].message
     );
 }
+
+#[test]
+fn a_derived_handle_returned_hands_the_object_over() {
+    let src = "\
+FUNCTION make-table RETURNS HANDLE ():
+    DEFINE VARIABLE hTt AS HANDLE NO-UNDO.
+    CREATE TEMP-TABLE hTt.
+    RETURN hTt:DEFAULT-BUFFER-HANDLE.
+END FUNCTION.
+";
+    assert!(check(run, src).is_empty());
+}
+
+#[test]
+fn a_derived_handle_used_locally_is_only_a_use() {
+    let src = "\
+PROCEDURE p:
+    DEFINE VARIABLE hTt AS HANDLE NO-UNDO.
+    DEFINE VARIABLE hBuf AS HANDLE NO-UNDO.
+    CREATE TEMP-TABLE hTt.
+    hBuf = hTt:DEFAULT-BUFFER-HANDLE.
+END PROCEDURE.
+";
+    assert_eq!(check(run, src).len(), 1);
+}

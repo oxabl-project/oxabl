@@ -7,6 +7,7 @@
 //! makes aliases and overwrites exact along each path, which a merged dataflow
 //! fact would not.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 
 use oxabl_ast::{Identifier, NodeId};
@@ -16,7 +17,7 @@ use oxabl_flow::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::events::{Effect, Place, PoolRef};
+use crate::events::{self, Effect, Place, PoolRef};
 use crate::index::{FileIndex, Name};
 use crate::model::*;
 
@@ -52,6 +53,13 @@ enum Fx {
         var: u32,
         reason: OpaqueReason,
     },
+    Output {
+        var: u32,
+    },
+    DerivedAssign {
+        to: Into,
+        from: u32,
+    },
     DeletePool {
         name: Option<String>,
     },
@@ -83,8 +91,8 @@ struct Obj {
     nodes: SmallVec<[NodeIx; 1]>,
 }
 
-pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex) -> UnitHandles {
-    let mut u = UnitWalk::new(cfg, index);
+pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex, src: &str) -> UnitHandles {
+    let mut u = UnitWalk::new(cfg, index, src);
     let mut objects: Vec<Object> = (0..u.objs.len()).map(|o| u.object(o as u32)).collect();
     objects.sort_by_key(|o| o.create.span.start);
     UnitHandles {
@@ -100,6 +108,10 @@ pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex) -> UnitHandles {
 struct UnitWalk<'c, 'i, 'a> {
     cfg: &'c Cfg,
     index: &'i FileIndex<'a>,
+    src: &'i str,
+    /// Per node: 0 unknown, 1 plain, 2 runs or calls something. Read when a
+    /// raise edge is taken, so most nodes are never classified.
+    calls: Vec<Cell<u8>>,
     unit_stmt: NodeId,
     vars: Vec<Var>,
     fx: Vec<SmallVec<[Fx; 2]>>,
@@ -114,11 +126,13 @@ struct UnitWalk<'c, 'i, 'a> {
 }
 
 impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
-    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>) -> Self {
+    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>, src: &'i str) -> Self {
         let unit_stmt = cfg.unit().stmt;
         let mut w = UnitWalk {
             cfg,
             index,
+            src,
+            calls: vec![Cell::new(0); cfg.node_count()],
             unit_stmt,
             vars: Vec::new(),
             fx: Vec::with_capacity(cfg.node_count()),
@@ -156,7 +170,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
         let mut skipped: Vec<(NodeIx, &'a [Identifier])> = Vec::new();
         for (n, node) in cfg.nodes() {
             let mut out: SmallVec<[Fx; 2]> = SmallVec::new();
-            if let (NodeKind::Stmt, Some(stmt)) = (node.kind, node.stmt)
+            if let (NodeKind::Stmt | NodeKind::Head, Some(stmt)) = (node.kind, node.stmt)
                 && let Some(f) = facts.get(&stmt)
             {
                 let mut ordinal = 0u32;
@@ -241,6 +255,17 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                             var: var(v),
                             reason: *reason,
                         }),
+                        Effect::OutputArgument { var: v } => out.push(Fx::Output { var: var(v) }),
+                        Effect::DerivedAssign { to, from } => {
+                            let to = match to {
+                                Place::Var(v) => Into::Var(var(v)),
+                                Place::Other(k) => Into::Other(*k),
+                            };
+                            out.push(Fx::DerivedAssign {
+                                to,
+                                from: var(from),
+                            });
+                        }
                         Effect::Skipped(names) => skipped.push((n, names)),
                         Effect::Attach { recv, var: v } => {
                             if datasets.contains(&Name(recv)) {
@@ -372,6 +397,15 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
         Walker::new(self, o, out).run()
     }
 
+    fn calls(&self, n: NodeIx) -> bool {
+        let cell = &self.calls[n.index()];
+        if cell.get() == 0 {
+            let found = events::calls_something(self.src, self.cfg.node(n).span);
+            cell.set(if found { 2 } else { 1 });
+        }
+        cell.get() == 2
+    }
+
     fn in_finally(&self, n: NodeIx) -> bool {
         let mut b = Some(self.cfg.node(n).block);
         while let Some(cur) = b {
@@ -401,6 +435,8 @@ const ROOT: u8 = 4;
 /// Just after a `NO-ERROR` create, before the next statement: the object
 /// exists on this path, so `ERROR-STATUS:ERROR` is false.
 const CREATED: u8 = 8;
+/// The path took a raise edge out of a node that runs or calls something.
+const CALLING: u8 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct State {
@@ -596,6 +632,9 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             }
             if is_abnormal(kind) {
                 flags |= ABNORMAL;
+                if self.u.calls(n) {
+                    flags |= CALLING;
+                }
             }
             self.push(
                 State {
@@ -726,7 +765,50 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                         Into::Nothing => {}
                     }
                 }
-                Fx::Escape { var, kind } if !raised && h & self.bit(*var) != 0 => {
+                Fx::Output { var } => {
+                    if h & self.bit(*var) != 0 && !raised {
+                        if self.u.objs[self.o as usize].kind == ObjectKind::Memptr {
+                            self.opaque(OpaqueReason::OutputArgument, n);
+                        } else {
+                            h &= !self.bit(*var);
+                            if h == 0 {
+                                return lose(self, esc);
+                            }
+                        }
+                    }
+                }
+                Fx::DerivedAssign { to, from } => {
+                    if h & self.bit(*from) != 0 {
+                        match *to {
+                            Into::Var(w) => {
+                                if u.vars[w as usize].escape.is_some() {
+                                    esc = true;
+                                    let freed = u.vars[w as usize].freed_elsewhere;
+                                    self.escape(EscapeKind::DerivedHandle, n, freed);
+                                }
+                            }
+                            Into::Other(_) => {
+                                esc = true;
+                                self.escape(EscapeKind::DerivedHandle, n, false);
+                            }
+                            Into::Nothing => {}
+                        }
+                    }
+                    // The target takes a value that is not the object.
+                    if !raised
+                        && let Into::Var(w) = *to
+                        && h & self.bit(w) != 0
+                    {
+                        h &= !self.bit(w);
+                        if h == 0 {
+                            return lose(self, esc);
+                        }
+                    }
+                }
+                Fx::Escape { var, kind }
+                    if (!raised || *kind == EscapeKind::DerivedHandle)
+                        && h & self.bit(*var) != 0 =>
+                {
                     esc = true;
                     let freed = u.vars[*var as usize].freed_elsewhere;
                     self.escape(*kind, n, freed && *kind != EscapeKind::Return);
@@ -808,7 +890,17 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
         } else {
             &mut self.normal_leaks
         };
-        map.entry(key).or_insert(leak);
+        match map.entry(key) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(leak);
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let have = e.get_mut();
+                if have.via_call.is_none() {
+                    have.via_call = leak.via_call;
+                }
+            }
+        }
     }
 
     /// The path from the create to state `i`, where the object is lost.
@@ -831,6 +923,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
         chain.reverse();
         let mut path = Vec::new();
         let mut via = None;
+        let mut via_call = None;
         let mut at = self.out.create.span;
         for &(n, edge) in &chain {
             let node = cfg.node(n);
@@ -840,6 +933,9 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             };
             if edge.is_some_and(is_abnormal) {
                 via.get_or_insert(step);
+                if via_call.is_none() && self.u.calls(n) {
+                    via_call = Some(step);
+                }
             }
             if node.kind == NodeKind::Stmt {
                 at = node.span;
@@ -853,6 +949,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             at,
             normal: self.states[i as usize].0.flags & ABNORMAL == 0,
             via,
+            via_call,
             path,
         }
     }

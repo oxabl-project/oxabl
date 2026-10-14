@@ -137,3 +137,34 @@ DELETE OBJECT hQuery.
     assert_eq!(diags.len(), 1);
     assert!(help(&diags[0]).contains("This file is an include"));
 }
+
+#[test]
+fn a_root_reports_at_its_own_first_create_when_an_include_creates_first() {
+    let included = "\
+DEFINE VARIABLE hQ1 AS HANDLE NO-UNDO.
+CREATE QUERY hQ1.
+";
+    let own = "\
+DEFINE VARIABLE hQ2 AS HANDLE NO-UNDO.
+CREATE QUERY hQ2.
+";
+    let src = format!("{included}{own}");
+    let diags = super::check_with_include(run, &src, included.len() as u32);
+    assert_eq!(lines(&src, &diags), [4]);
+    assert!(
+        diags[0].message.starts_with("1 dynamic object is"),
+        "{}",
+        diags[0].message
+    );
+    assert!(!help(&diags[0]).contains("This file is an include"));
+}
+
+#[test]
+fn a_root_with_no_creates_of_its_own_reports_nothing() {
+    let included = "\
+DEFINE VARIABLE hQ1 AS HANDLE NO-UNDO.
+CREATE QUERY hQ1.
+";
+    let src = format!("{included}MESSAGE \"x\".\n");
+    assert!(super::check_with_include(run, &src, included.len() as u32).is_empty());
+}

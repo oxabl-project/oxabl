@@ -65,6 +65,17 @@ pub(crate) enum Effect<'a> {
         var: &'a str,
         reason: OpaqueReason,
     },
+    /// `var` is an `OUTPUT` or `INPUT-OUTPUT` argument: it is overwritten, but
+    /// for a MEMPTR the callee may fill the block it already points to.
+    OutputArgument {
+        var: &'a str,
+    },
+    /// `to = h:ATTR`, `to = h:METHOD(...)`: a handle derived from the holder
+    /// `from`. It is an escape of the holder only where `to` outlives the unit.
+    DerivedAssign {
+        to: Place<'a>,
+        from: &'a str,
+    },
     /// A statement the parser skips, with the names it passed over.
     Skipped(&'a [Identifier]),
     /// `recv:ADD-BUFFER(var)` or `recv:ADD-BUFFER(var:DEFAULT-BUFFER-HANDLE)`:
@@ -209,8 +220,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             if let Some(h) = in_handle {
                 scan(h, src, &mut out);
                 if let (oxabl_ast::RunTarget::Literal { name, .. }, Some(var)) = (target, var_of(h))
-                    && (name.eq_ignore_ascii_case("destroy")
-                        || name.eq_ignore_ascii_case("destroyObject"))
+                    && (is_destroy_name(name) || is_dispatch_destroy(name, arguments))
                 {
                     out.push(Effect::Opaque {
                         var,
@@ -236,16 +246,10 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                             var,
                             kind: EscapeKind::InputOutputArgument,
                         });
-                        out.push(Effect::Assign {
-                            to: Place::Var(var),
-                            from: None,
-                        });
+                        out.push(Effect::OutputArgument { var });
                     }
                     ParameterDirection::Output | ParameterDirection::Return => {
-                        out.push(Effect::Assign {
-                            to: Place::Var(var),
-                            from: None,
-                        })
+                        out.push(Effect::OutputArgument { var })
                     }
                 }
             }
@@ -272,6 +276,11 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 out.push(Effect::Escape {
                     var,
                     kind: EscapeKind::Return,
+                });
+            } else if let Some(var) = derived_root(e) {
+                out.push(Effect::Escape {
+                    var,
+                    kind: EscapeKind::DerivedHandle,
                 });
             }
         }
@@ -304,15 +313,53 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
 }
 
 /// Whether a statement the CFG says may raise cannot: an assignment of a
-/// plain variable or literal to a plain variable, or `RETURN` of one.
+/// plain variable or literal to a plain variable, `RETURN` of one, or a test
+/// (`IF`, `CASE`, `DO WHILE`, `REPEAT WHILE`) of variables and literals only.
 pub(crate) fn cannot_raise(s: &Statement) -> bool {
     let simple = |e: &Expression| var_of(e).is_some() || matches!(e.kind, EK::Literal(_));
     match &s.kind {
+        SK::If { condition, .. } => plain_condition(condition),
+        SK::Case {
+            expression,
+            when_branches,
+            ..
+        } => simple(expression) && when_branches.iter().all(|w| w.values.iter().all(&simple)),
+        SK::Do {
+            loop_var: None,
+            from: None,
+            to: None,
+            by: None,
+            while_condition: Some(c),
+            ..
+        }
+        | SK::Repeat {
+            while_condition: Some(c),
+            ..
+        } => plain_condition(c),
         SK::Assignment { target, value } => var_of(target).is_some() && simple(value),
         SK::Assign { assignments } => assignments
             .iter()
             .all(|p| var_of(&p.target).is_some() && simple(&p.value)),
         SK::Return(value) => value.as_ref().is_none_or(simple),
+        _ => false,
+    }
+}
+
+/// A condition of variables, literals, comparisons, `AND`, `OR` and `NOT`: no
+/// call, attribute, method, arithmetic or field.
+fn plain_condition(e: &Expression) -> bool {
+    match &e.kind {
+        EK::Literal(_) => true,
+        EK::Identifier(_) => var_of(e).is_some(),
+        EK::Not(a) => plain_condition(a),
+        EK::And(a, b)
+        | EK::Or(a, b)
+        | EK::Equal(a, b)
+        | EK::NotEqual(a, b)
+        | EK::LessThan(a, b)
+        | EK::LessThanOrEqual(a, b)
+        | EK::GreaterThan(a, b)
+        | EK::GreaterThanOrEqual(a, b) => plain_condition(a) && plain_condition(b),
         _ => false,
     }
 }
@@ -375,11 +422,69 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
         out.push(Effect::ProcedureWalk { var });
     }
     if let Some(to) = place_of(target) {
-        out.push(Effect::Assign {
-            to,
-            from: var_of(value),
-        });
+        match derived_root(value) {
+            Some(from) => out.push(Effect::DerivedAssign { to, from }),
+            None => out.push(Effect::Assign {
+                to,
+                from: var_of(value),
+            }),
+        }
     }
+}
+
+/// `RUN destroy`, `destroyObject`, `DestroyThis`: a user procedure whose name
+/// starts with `destroy`.
+fn is_destroy_name(name: &str) -> bool {
+    name.get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("destroy"))
+}
+
+/// `RUN dispatch IN h ('destroy')`, the ADM form.
+fn is_dispatch_destroy(name: &str, arguments: &[oxabl_ast::RunArgument]) -> bool {
+    name.eq_ignore_ascii_case("dispatch")
+        && arguments.first().is_some_and(|a| {
+            matches!(&a.expression.kind, EK::Literal(Literal::String(s))
+                if s.value.eq_ignore_ascii_case("destroy"))
+        })
+}
+
+/// The holder at the root of a chain whose last link yields a handle:
+/// `h:DEFAULT-BUFFER-HANDLE`, `h:HANDLE`, `h:GET-BUFFER-HANDLE(n)`, ...
+fn derived_root(e: &Expression) -> Option<&str> {
+    let (root, last) = match &e.kind {
+        EK::Identifier(id) => split_chain(&id.name)?,
+        EK::FunctionCall { name, .. } => split_chain(&name.name)?,
+        EK::MemberAccess { object, member } => (chain_start(object)?, member.name.as_str()),
+        EK::MethodCall { object, method, .. } => (chain_start(object)?, method.name.as_str()),
+        _ => return None,
+    };
+    yields_handle(last).then_some(root)
+}
+
+/// `h:A:B` is the root `h` and the last link `B`.
+fn split_chain(name: &str) -> Option<(&str, &str)> {
+    let (root, rest) = name.split_once(':')?;
+    let last = rest.rsplit(':').next()?;
+    (!root.is_empty() && !root.contains('.')).then_some((root, last))
+}
+
+fn chain_start(e: &Expression) -> Option<&str> {
+    match &e.kind {
+        EK::Identifier(id) => split_chain(&id.name).map(|(r, _)| r).or_else(|| var_of(e)),
+        EK::FunctionCall { name, .. } => split_chain(&name.name).map(|(r, _)| r),
+        EK::MemberAccess { object, .. } | EK::MethodCall { object, .. } => chain_start(object),
+        _ => None,
+    }
+}
+
+/// Attributes and methods whose value is a handle of the object they are read
+/// from.
+fn yields_handle(member: &str) -> bool {
+    let m = member.as_bytes();
+    m.windows(6).any(|w| w.eq_ignore_ascii_case(b"HANDLE"))
+        || ["QUERY", "DATASET", "PARENT", "FRAME", "WINDOW"]
+            .iter()
+            .any(|n| member.eq_ignore_ascii_case(n))
 }
 
 /// Calls inside an expression that keep, free or hide a handle argument.
@@ -722,4 +827,59 @@ fn tokens(src: &str, span: Span) -> impl Iterator<Item = Kind> + '_ {
         .map(|t| t.kind)
         .filter(|k| !matches!(k, Kind::Comment))
         .take_while(|k| *k != Kind::Eof)
+}
+
+/// Whether the statement at `span` runs a procedure, calls a function or
+/// method, reads an attribute, or touches a database record: where a raised
+/// condition most likely comes from.
+pub(crate) fn calls_something(src: &str, span: Span) -> bool {
+    let text = slice(src, span);
+    let mut prev: Option<(Kind, bool)> = None;
+    let (mut lead, mut second_is_name) = (Kind::Eof, false);
+    for (n, t) in Lexer::new(text)
+        .filter(|t| !matches!(t.kind, Kind::Comment))
+        .take_while(|t| t.kind != Kind::Eof)
+        .enumerate()
+    {
+        let word = &text[t.start..t.end];
+        match n {
+            0 => lead = t.kind,
+            1 => second_is_name = t.kind == Kind::Identifier,
+            _ => {}
+        }
+        if t.kind == Kind::Colon || (t.kind == Kind::Identifier && word.contains(':')) {
+            return true;
+        }
+        if t.kind == Kind::LeftParen
+            && let Some((k, true)) = prev
+            && !matches!(
+                k,
+                Kind::KwIf
+                    | Kind::KwWhile
+                    | Kind::KwElse
+                    | Kind::KwReturn
+                    | Kind::And
+                    | Kind::Or
+                    | Kind::Not
+                    | Kind::Then
+                    | Kind::When
+                    | Kind::Case
+                    | Kind::Do
+            )
+        {
+            return true;
+        }
+        prev = Some((t.kind, word.starts_with(|c: char| c.is_ascii_alphabetic())));
+    }
+    match lead {
+        Kind::Run
+        | Kind::Find
+        | Kind::KwFor
+        | Kind::Update
+        | Kind::Insert
+        | Kind::Validate
+        | Kind::Get => true,
+        Kind::Create | Kind::Delete => second_is_name,
+        _ => false,
+    }
 }
