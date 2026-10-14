@@ -122,8 +122,8 @@ pub struct AnalyzeOptions {
     /// PROPATH-style include search directories (only consulted when
     /// `preprocess` is `true`).
     pub include_paths: Vec<PathBuf>,
-    /// Per-rule lint severity overrides. Empty keeps every rule's built-in
-    /// severity.
+    /// Lint rule settings. Empty runs every default-group rule at its
+    /// registry default severity.
     pub lint_severities: LintSeverityMap,
     /// Whether to run preprocessor expansion (include resolution, `&IF`) before
     /// analysis.
@@ -131,20 +131,9 @@ pub struct AnalyzeOptions {
 }
 
 impl Default for AnalyzeOptions {
-    /// # Why the severity map is not empty (R19)
-    ///
-    /// An empty [`LintSeverityMap`] does not mean "the defaults" — it means *no
-    /// rule has a configured severity*, so each diagnostic keeps whatever
-    /// severity `oxabl_lint` constructs it with. For `unknown-table-or-field` and
-    /// `type-mismatch-assignment` that built-in value is `Error`, while
-    /// `[workspace.lint]`'s documented default is `Warn`.
-    ///
-    /// Leaving it empty here gave an embedding caller a *different answer for the
-    /// same input* than the CLI or the editor, both of which resolve
-    /// configuration and therefore materialize the documented defaults even with
-    /// no `oxabl.toml` present. The client is not allowed to be a variable in the
-    /// answer, so this reads from the same [`LintConfig::default`] table
-    /// [`PipelineConfig`](pipeline::PipelineConfig)'s own `Default` does.
+    /// Lint settings come from [`LintConfig::default`], the same value
+    /// [`PipelineConfig`](pipeline::PipelineConfig)'s own `Default` lowers, so
+    /// an embedding caller gets the answer the CLI and the editor give (R19).
     fn default() -> Self {
         AnalyzeOptions {
             schema: Schema::empty(),
@@ -374,9 +363,9 @@ pub mod parser {
 pub mod common {
     pub use oxabl_ast::Span;
     pub use oxabl_common::{
-        Diagnostic, DiagnosticCode, FileId, FileSet, FileSpan, InternalPanic, Label,
-        LintSeverityMap, Severity, SourceMap, SourceResolver, VirtualSpan, blank_lines_between,
-        catch_panic, render_diagnostics,
+        Diagnostic, DiagnosticCode, FileId, FileSet, FileSpan, InternalPanic, Label, LintLayer,
+        LintRuleRef, LintSeverityMap, Severity, SourceMap, SourceResolver, VirtualSpan,
+        blank_lines_between, catch_panic, render_diagnostics,
     };
 }
 
@@ -409,9 +398,13 @@ pub mod semantic {
 }
 
 /// Lint rules over the semantic model. [`lint_file`](lint::lint_file) runs the
-/// full rule set; the individual `LINT000x` codes name each rule.
+/// built-in rule set; [`Registry`](lint::Registry) enumerates rules, adds your
+/// own and runs a subset.
 pub mod lint {
-    pub use oxabl_lint::{LINT0001, LINT0002, LINT0003, LINT0004, lint_file};
+    pub use oxabl_lint::{
+        BUILTIN_GROUPS, FnRule, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006,
+        Registry, RegistryError, Rule, RuleFn, RuleGroup, RuleMeta, Stability, groups, lint_file,
+    };
 }
 
 /// Analysis dump + diagnostic collection — the JSON/text envelope over the
@@ -495,8 +488,8 @@ pub mod pipeline {
 /// policy.
 pub mod workspace {
     pub use oxabl_workspace::{
-        FileSystem, InMemoryFileSystem, LintConfig, LintSeverity, PreprocessorConfig,
-        ROOT_EXTENSIONS, RealFileSystem, Workspace, WorkspaceConfig, discover_path,
-        find_workspace_root, is_root_file, walk_directory,
+        FileSystem, InMemoryFileSystem, LintConfig, LintOverride, LintRuleSettings, LintSeverity,
+        PreprocessorConfig, ROOT_EXTENSIONS, RealFileSystem, RejectedLintPattern, Workspace,
+        WorkspaceConfig, discover_path, find_workspace_root, is_root_file, walk_directory,
     };
 }
