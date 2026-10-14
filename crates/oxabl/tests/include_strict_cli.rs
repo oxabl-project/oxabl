@@ -292,3 +292,47 @@ fn a_finding_that_depends_on_the_includer_has_the_generic_help() {
     assert!(!rows[0].1.contains("producer"), "{}", rows[0].1);
     assert_eq!(rows[1], (6, "Add `NO-UNDO` to the definition.".to_string()));
 }
+
+#[test]
+fn a_directory_of_only_includes_is_checked() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), STRICT_ALL);
+    write(&dir.path().join("inc/a.i"), INC);
+    let (exit, stdout, stderr) = check(dir.path(), &["inc", "--json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert!(!stderr.contains("no ABL files"), "{stderr}");
+    let report = json(&stdout);
+    assert_eq!(report["files_checked"], 0);
+    assert_eq!(report["include_files_checked"], 1);
+    assert!(codes_at(&report, "inc/a.i").contains(&"CL001".to_string()));
+
+    // The baseline can record it.
+    let (exit, _, stderr) = check(
+        dir.path(),
+        &["inc", "--baseline", "base.json", "--update-baseline"],
+    );
+    assert_eq!(exit, Some(0), "{stderr}");
+    let (exit, _, stderr) = check(dir.path(), &["inc", "--baseline", "base.json"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+}
+
+#[test]
+fn a_directory_with_nothing_to_check_is_still_a_usage_error() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n",
+    );
+    fs::create_dir_all(dir.path().join("empty")).unwrap();
+    write(&dir.path().join("inc/a.i"), INC);
+    // Empty, and include-only with no context-free rule on.
+    for target in ["empty", "inc"] {
+        let (exit, _, stderr) = check(dir.path(), &[target]);
+        assert_eq!(exit, Some(2), "{target}: {stderr}");
+        assert!(stderr.contains("no ABL files"), "{target}: {stderr}");
+    }
+    // Include-only with lint off.
+    write(&dir.path().join("oxabl.toml"), STRICT_ALL);
+    let (exit, _, stderr) = check(dir.path(), &["inc", "--no-lint"]);
+    assert_eq!(exit, Some(2), "{stderr}");
+}
