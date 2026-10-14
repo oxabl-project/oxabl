@@ -1856,25 +1856,41 @@ impl<'a> Parser<'a> {
     /// generic class types like `List<String>` or `Map<String, List<Integer>>`
     /// parse. A built-in type argument such as `INT64` names no class and is
     /// skipped.
+    ///
+    /// An unclosed `<` stops at a statement terminator or an unbalanced `)`,
+    /// records a parse error there and yields no type arguments.
     fn parse_generic_type_args(&mut self) -> TypeArguments {
+        self.parse_generic_type_args_inner()
+            .unwrap_or_else(|| TypeArguments(Vec::new()))
+    }
+
+    /// `None` when the `<` never closes; the error is already recorded.
+    fn parse_generic_type_args_inner(&mut self) -> Option<TypeArguments> {
         let mut args = Vec::new();
         if !self.check(Kind::LessThan) {
-            return TypeArguments(args);
+            return Some(TypeArguments(args));
         }
         self.advance(); // consume `<`
-        while !self.at_end() {
+        loop {
+            if self.at_end() || self.at_generic_stop() {
+                self.record_error(ParseError {
+                    message: "Unclosed '<' in generic type arguments".to_string(),
+                    span: self.current_span(),
+                });
+                return None;
+            }
             match self.peek().kind {
                 Kind::GreaterThan => {
                     self.advance();
-                    break;
+                    return Some(TypeArguments(args));
                 }
                 Kind::LessThan => {
                     // A `<` with no name before it: balance it and drop it.
-                    self.parse_generic_type_args();
+                    self.parse_generic_type_args_inner()?;
                 }
                 kind if self.starts_type_argument(kind) => {
                     if let Ok(name) = self.parse_class_qualified_name() {
-                        let arguments = self.parse_generic_type_args();
+                        let arguments = self.parse_generic_type_args_inner()?;
                         args.push(TypeArgument { name, arguments });
                     }
                 }
@@ -1883,7 +1899,21 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        TypeArguments(args)
+    }
+
+    /// Whether the cursor is on a statement terminator (`.` or `:` followed by
+    /// whitespace or the end of input) or a `)`, neither of which can occur
+    /// inside type arguments.
+    fn at_generic_stop(&self) -> bool {
+        let token = self.peek();
+        match token.kind {
+            Kind::RightParen => true,
+            Kind::Period | Kind::Colon => self
+                .tokens
+                .get(self.current + 1)
+                .is_none_or(|next| next.start > token.end),
+            _ => false,
+        }
     }
 
     /// Whether a token of `kind` starts a class name in a type argument list:
