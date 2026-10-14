@@ -13,7 +13,7 @@ pub use diagnostic::{
 };
 pub use file_id::{FileId, FileSet};
 pub use file_span::FileSpan;
-pub use lint_severity::LintSeverityMap;
+pub use lint_severity::{LintLayer, LintRuleRef, LintSeverityMap};
 pub use panic_guard::{
     InternalPanic, TEST_PANIC_MARKER, catch_panic, panic_if_injected, panic_sites,
 };

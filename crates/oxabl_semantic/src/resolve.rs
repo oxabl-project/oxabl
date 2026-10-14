@@ -3000,7 +3000,8 @@ impl<'a> ResolveWalker<'a> {
             } => self.resolve_using(*id, type_name, *name_span, *source),
             StatementKind::Leave(_) | StatementKind::Next(_) => {}
             StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => {}
-            StatementKind::Empty => {}
+            // Annotation names and attributes are metadata: nothing to resolve.
+            StatementKind::Empty | StatementKind::Annotation(_) => {}
             StatementKind::Skipped {
                 names,
                 may_reference_tables,

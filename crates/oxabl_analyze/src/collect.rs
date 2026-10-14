@@ -907,10 +907,49 @@ pub fn collect_from_expanded_with_source_context(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    collect_from_expanded_selecting(
+        expanded,
+        schema,
+        schema_loaded,
+        lint_severities,
+        index,
+        source_context,
+        RuleSelection::All,
+    )
+}
+
+/// Which findings a run reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleSelection {
+    /// Every preprocessor, parse, semantic and lint finding.
+    All,
+    /// Only the findings of context-free lint rules
+    /// ([`RuleMeta::context_free`](oxabl_lint::RuleMeta::context_free)). Nothing
+    /// else is reported, so a buffer that does not parse or resolve alone, such
+    /// as an include fragment, yields no noise.
+    ContextFree,
+}
+
+/// [`collect_from_expanded_with_source_context`] with a choice of what to
+/// report.
+///
+/// With [`RuleSelection::ContextFree`] the analysis still runs in full, because
+/// the rules take the semantic model, but only the lint findings of
+/// context-free rules that the configuration enables come back.
+pub fn collect_from_expanded_selecting(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    selection: RuleSelection,
+) -> (Option<Semantic>, CollectedDiagnostics) {
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
+    let everything = selection == RuleSelection::All;
 
-    for d in &expanded.preproc {
+    for d in expanded.preproc.iter().filter(|_| everything) {
         out.diagnostics.push(CollectedDiagnostic {
             diagnostic: d.clone(),
             source: DiagnosticSource::Preproc,
@@ -922,7 +961,7 @@ pub fn collect_from_expanded_with_source_context(
     let program = parser.parse_program();
     out.parse_recovered = !program.errors.is_empty();
 
-    for err in program.errors {
+    for err in program.errors.into_iter().filter(|_| everything) {
         let virt = err.into_diagnostic(root);
         if let Some(resolved) = resolve_diagnostic(virt, expanded) {
             out.diagnostics.push(CollectedDiagnostic {
@@ -946,7 +985,7 @@ pub fn collect_from_expanded_with_source_context(
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 
-    for d in &sem.diagnostics {
+    for d in sem.diagnostics.iter().filter(|_| everything) {
         if let Some(resolved) = resolve_diagnostic(d.clone(), expanded) {
             out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
@@ -955,7 +994,16 @@ pub fn collect_from_expanded_with_source_context(
         }
     }
 
-    for d in oxabl_lint::lint_file(&program.statements, &sem, &ctx) {
+    let linted = match selection {
+        RuleSelection::All => oxabl_lint::lint_file(&program.statements, &sem, &ctx),
+        RuleSelection::ContextFree => oxabl_lint::Registry::builtin_shared().run_where(
+            &program.statements,
+            &sem,
+            &ctx,
+            |meta| meta.context_free,
+        ),
+    };
+    for d in linted {
         if let Some(resolved) = resolve_diagnostic(d, expanded) {
             out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,

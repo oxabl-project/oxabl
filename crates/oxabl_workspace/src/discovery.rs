@@ -124,6 +124,20 @@ fn is_hidden_directory(entry: &walkdir::DirEntry) -> bool {
 /// the caller named is exempt: pointing the walk *at* `.hidden/` is an explicit
 /// instruction, and honoring the prefix there would silently find nothing.
 pub fn walk_directory(dir: &Path) -> Vec<PathBuf> {
+    walk_matching(dir, is_root_file)
+}
+
+/// Recursively collect the include fragments (`.i`) under `dir`, sorted and
+/// deduplicated, by the same walk as [`walk_directory`].
+///
+/// A walk of roots never volunteers these (R9). A client that checks an
+/// include file for findings that need no includer, such as the context-free
+/// strict rules, asks for them here and nowhere else.
+pub fn walk_include_fragments(dir: &Path) -> Vec<PathBuf> {
+    walk_matching(dir, is_include_fragment)
+}
+
+fn walk_matching(dir: &Path, wanted: fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .follow_links(true)
         .into_iter()
@@ -132,7 +146,7 @@ pub fn walk_directory(dir: &Path) -> Vec<PathBuf> {
         .filter_entry(|entry| entry.depth() == 0 || !is_hidden_directory(entry))
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| is_root_file(entry.path()))
+        .filter(|entry| wanted(entry.path()))
         .map(walkdir::DirEntry::into_path)
         .collect();
     files.sort();
@@ -260,6 +274,18 @@ mod tests {
         let mut sorted = found.clone();
         sorted.sort();
         assert_eq!(found, sorted, "walk_directory must return sorted paths");
+    }
+
+    #[test]
+    fn include_walk_returns_only_fragments_sorted_and_prunes_hidden_directories() {
+        let tmp = fixture_tree();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/hook.i"), "").unwrap();
+        std::fs::write(tmp.path().join("Upper.I"), "").unwrap();
+        assert_eq!(
+            file_names(&walk_include_fragments(tmp.path())),
+            vec!["Upper.I", "fragment.i", "nested-fragment.i"]
+        );
     }
 
     #[test]

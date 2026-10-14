@@ -992,6 +992,10 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
     // name so expression-position VALUE(...) does not fire LINT0001 (#58).
     names.push("value".to_string());
 
+    // DYNAMIC-NEW is a function in expression position but is indexed as a
+    // statement, so it is registered by hand like VALUE.
+    names.push("dynamic-new".to_string());
+
     names.sort();
     names.dedup();
 

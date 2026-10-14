@@ -22,6 +22,7 @@
     "crates/oxabl_daemon_protocol": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_daemon": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_lsp": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
-    "crates/oxabl_wasm": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
+    "crates/oxabl_wasm": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_flow": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
   }
 }

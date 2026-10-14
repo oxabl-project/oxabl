@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+mod baseline;
+
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
@@ -13,7 +15,7 @@ use oxabl_pipeline::{
 };
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{RealFileSystem, discover_path};
+use oxabl_workspace::{RealFileSystem, discover_path, walk_include_fragments};
 use serde::Serialize;
 
 #[derive(ClapParser)]
@@ -34,8 +36,9 @@ enum Cli {
     /// A config error means an `oxabl.toml` this run could not **use** — which is
     /// broader than malformed TOML. Parsing is strict (unknown fields are
     /// rejected), so a syntactically valid file naming a key oxabl does not know —
-    /// a misspelled or not-yet-released `[workspace.lint]` rule, say — is a config
-    /// error too. Alone among the subcommands, `check` refuses to run on one rather
+    /// a misspelled `[workspace.style]` key, say — is a config error too. An
+    /// unknown `[workspace.lint]` rule or group name is only a warning: that one
+    /// entry is ignored and the rest of the table still applies. Alone among the subcommands, `check` refuses to run on one rather
     /// than degrading to defaults: those defaults would drop the project's
     /// `[workspace.lint]` severities, `off` included, so the gate would report
     /// findings for switched-off rules and could still exit 0 — a wrong answer
@@ -102,6 +105,25 @@ enum Cli {
         /// Suppress the format-drift channel: report lint findings only (R16).
         #[arg(long)]
         no_format: bool,
+
+        /// Do not report findings recorded in this baseline file, so the gate
+        /// fails only on new ones.
+        ///
+        /// A finding matches by rule code, workspace-relative path and a hash
+        /// of the flagged source line, so edits elsewhere in the file do not
+        /// unmatch it. Counts of new, baselined and stale (fixed) entries go to
+        /// stderr. A missing or unreadable file is a usage error (exit 2).
+        #[arg(long, value_name = "FILE")]
+        baseline: Option<PathBuf>,
+
+        /// Write every current finding to the `--baseline` file, then report
+        /// none of them.
+        ///
+        /// Entries for files outside this run are kept, and entries for fixed
+        /// findings are removed. Format drift and per-file failures still set
+        /// the exit code.
+        #[arg(long, requires = "baseline", conflicts_with = "no_lint")]
+        update_baseline: bool,
     },
     /// Walk a tree and report the parser's conformance: how many files parse,
     /// which ones fail and where, and the ranked error patterns behind the
@@ -390,6 +412,8 @@ fn main() -> ExitCode {
             schema,
             no_lint,
             no_format,
+            baseline,
+            update_baseline,
         } => run_check(
             &path,
             json,
@@ -401,6 +425,7 @@ fn main() -> ExitCode {
             schema.as_deref(),
             no_lint,
             no_format,
+            baseline.as_deref().map(|file| (file, update_baseline)),
         ),
         Cli::Conformance {
             path,
@@ -733,6 +758,11 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 struct CheckJsonReport {
     version: u32,
     files_checked: usize,
+    /// Include files (`.i`) of a walked directory that were checked for
+    /// context-free rules, and are not in `files_checked`. Omitted when none
+    /// was, so ordinary walks keep their JSON.
+    #[serde(skip_serializing_if = "is_zero")]
+    include_files_checked: usize,
     /// Whether lint findings are reported (`false` under `--no-lint`), so an
     /// empty `diagnostics` cannot be misread as "clean". The pipeline itself runs
     /// either way — parse and semantic diagnostics are never suppressed (A1).
@@ -748,6 +778,10 @@ struct CheckJsonReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     fragment_roots: Vec<String>,
     failures: Vec<CheckJsonFailure>,
+    /// Present only with `--baseline`; `diagnostics` then holds new findings
+    /// only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline: Option<baseline::Report>,
 }
 
 /// One lint finding, carrying the pipeline's **byte** span and, when the span is
@@ -854,6 +888,7 @@ struct CheckJsonFailure {
 /// unguarded on purpose so the language server's cancellation can travel as an
 /// unwind; a non-incremental caller like this one wants the guard, and it is
 /// what makes "report and continue" possible at all.
+#[allow(clippy::too_many_arguments)]
 fn run_check(
     path: &Path,
     json_output: bool,
@@ -862,6 +897,7 @@ fn run_check(
     schema_path: Option<&Path>,
     no_lint: bool,
     no_format: bool,
+    baseline_file: Option<(&Path, bool)>,
 ) -> ExitCode {
     // Discovery through the shared walker: a named file is checked regardless of
     // extension, a directory is walked under the root-extension policy. A
@@ -874,10 +910,6 @@ fn run_check(
             return ExitCode::from(2);
         }
     };
-    if files.is_empty() {
-        eprintln!("error: no ABL files found in {}", path.display());
-        return ExitCode::from(2);
-    }
 
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
     // `.df` it names, so doing it inside the loop would re-parse the schema for
@@ -900,11 +932,10 @@ fn run_check(
     // LSP keep degrading with a warning: none of them answers a pass/fail
     // question, so none of them can answer it wrongly.
     //
-    // "Could not use" is broader than "malformed TOML": `LintConfig` and
-    // `StyleGuide` deny unknown fields, so a syntactically valid file naming a key
-    // oxabl does not know — a typo'd or not-yet-released rule name — lands here
-    // too. That is the intended answer, for the same reason: the gate would
-    // otherwise run on a configuration the user never wrote.
+    // "Could not use" is broader than "malformed TOML": `StyleGuide` denies
+    // unknown fields, so a syntactically valid file naming a key oxabl does not
+    // know lands here too. An unknown lint rule or group name does not: it is a
+    // `ConfigWarning::Lint`, and the rest of `[workspace.lint]` still applies.
     //
     // Every other warning stays a warning. A `.df` that would not load, or a
     // `--schema` directory that matched nothing (A2), leaves the rest of the
@@ -919,6 +950,16 @@ fn run_check(
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
+
+    let mut baseline =
+        match baseline_file.map(|(file, update)| baseline::Run::open(file, update, path)) {
+            None => None,
+            Some(Ok(run)) => Some(run),
+            Some(Err(msg)) => {
+                eprintln!("error: {msg}");
+                return ExitCode::from(2);
+            }
+        };
 
     // Absolute spellings of the discovered files, for the index alone. The
     // display paths below stay exactly as the user typed them; these exist
@@ -944,6 +985,25 @@ fn run_check(
     // The format pipeline is built from the resolved style and nothing else, so
     // it *cannot* see expanded macro text however this walk is configured (R4).
     let format = FormatPipeline::new(config.style.clone());
+
+    // Include files in a walked directory. They count as ABL files here: a
+    // directory of nothing else is checked, not a usage error.
+    let fragments: Vec<(PathBuf, PathBuf)> = if !no_lint && path.is_dir() {
+        walk_include_fragments(path)
+            .into_iter()
+            .map(|file| {
+                let indexed_path = std::path::absolute(&file).unwrap_or_else(|_| file.clone());
+                (file, indexed_path)
+            })
+            .filter(|(_, indexed_path)| lint.with_file(indexed_path).context_free_rules_enabled())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if files.is_empty() && fragments.is_empty() {
+        eprintln!("error: no ABL files found in {}", path.display());
+        return ExitCode::from(2);
+    }
 
     let mut diagnostics: Vec<CheckJsonDiagnostic> = Vec::new();
     let mut preproc: Vec<CheckJsonDiagnostic> = Vec::new();
@@ -1016,19 +1076,15 @@ fn run_check(
             } else {
                 reported
             };
-            if !reported.diagnostics.is_empty() {
-                if !json_output {
-                    let resolver =
-                        SourceResolver::new(ROOT_FILE_ID, display.clone(), source.as_str());
-                    let rendered: Vec<Diagnostic> =
-                        reported.all().map(|c| c.diagnostic.clone()).collect();
-                    print!("{}", render_diagnostics(&rendered, &resolver));
-                }
-                let map = SourceMap::new(&source);
-                for collected in reported.all() {
-                    diagnostics.push(check_json_diagnostic(&display, &map, collected));
-                }
-            }
+            report_findings(
+                &display,
+                indexed_path,
+                &source,
+                reported,
+                baseline.as_mut(),
+                json_output,
+                &mut diagnostics,
+            );
 
             // The unjudged-symbol note is a statement about the *count-gated lint
             // rules'* coverage, so it has nothing to qualify when those findings
@@ -1070,6 +1126,62 @@ fn run_check(
         }
     }
 
+    // Include files in a walked directory: only the context-free rules report
+    // there, once, in the file itself. A root's own run drops findings that come
+    // from an include, so nothing is reported twice. Nothing else about an
+    // include is checked: it often does not parse or resolve without its includer.
+    let mut include_files_checked = 0usize;
+    for (file, indexed_path) in &fragments {
+        let handle = lint.with_file(indexed_path);
+        let display = file.display().to_string();
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read {display}: {e}");
+                failures.push(CheckJsonFailure {
+                    path: display,
+                    reason: format!("cannot read: {e}"),
+                });
+                continue;
+            }
+        };
+        let result = handle.run_context_free(&source);
+        if let Some(panic) = result.failure() {
+            eprintln!("error: analysis failed on {display}: {panic}");
+            failures.push(CheckJsonFailure {
+                path: display,
+                reason: panic.to_string(),
+            });
+            continue;
+        }
+        include_files_checked += 1;
+        report_findings(
+            &display,
+            indexed_path,
+            &source,
+            result.into_diagnostics(),
+            baseline.as_mut(),
+            json_output,
+            &mut diagnostics,
+        );
+    }
+
+    let baseline = match baseline.map(|run| run.finish(!no_lint)) {
+        None => None,
+        Some(Ok(report)) => {
+            surface_baseline(&report);
+            Some(report)
+        }
+        Some(Err(msg)) => {
+            eprintln!("error: {msg}");
+            failures.push(CheckJsonFailure {
+                path: baseline_file.map_or_else(String::new, |(f, _)| f.display().to_string()),
+                reason: msg,
+            });
+            None
+        }
+    };
+
     if json_output {
         let report = CheckJsonReport {
             // 2: `preproc_diagnostics` became `preproc`, matching `analyze`'s
@@ -1077,6 +1189,7 @@ fn run_check(
             // 3: a diagnostic row carries its `help` line when it has one.
             version: 3,
             files_checked: files.len(),
+            include_files_checked,
             lint_enabled: !no_lint,
             diagnostics,
             format_enabled: !no_format,
@@ -1088,6 +1201,7 @@ fn run_check(
             unjudged_symbols: unjudged,
             fragment_roots,
             failures,
+            baseline,
         };
         match serde_json::to_string_pretty(&report) {
             Ok(s) => println!("{s}"),
@@ -1129,6 +1243,11 @@ fn run_check(
     // beside the document would make stdout unparseable.
     if diagnostics.is_empty() && drifted.is_empty() && failures.is_empty() {
         let plural = if files.len() == 1 { "file" } else { "files" };
+        let includes = match include_files_checked {
+            0 => String::new(),
+            1 => " and 1 include file".to_string(),
+            n => format!(" and {n} include files"),
+        };
         let lint_channel = if no_lint {
             "lint suppressed"
         } else {
@@ -1140,12 +1259,48 @@ fn run_check(
             "no drift"
         };
         println!(
-            "checked {} {plural}: {lint_channel}, {format_channel}",
+            "checked {} {plural}{includes}: {lint_channel}, {format_channel}",
             files.len()
         );
     }
 
     check_exit_code(diagnostics.len(), drifted.len(), failures.len())
+}
+
+/// The baseline counts, on stderr: they qualify the run like the coverage notes
+/// do, so `--json` stdout stays one document.
+fn surface_baseline(report: &baseline::Report) {
+    let stale = report.stale.unwrap_or(0);
+    if report.updated {
+        eprintln!(
+            "baseline: updated {} ({} added, {stale} removed)",
+            report.path, report.new
+        );
+        if report.outside_root > 0 {
+            eprintln!("{}", outside_root_note(report));
+        }
+        return;
+    }
+    let stale_note = match report.stale {
+        None => "stale not counted under --no-lint".to_string(),
+        Some(0) => "0 stale".to_string(),
+        Some(n) => format!("{n} stale (fixed; run with --update-baseline to remove them)"),
+    };
+    eprintln!(
+        "baseline: {} new, {} baselined, {stale_note}",
+        report.new, report.baselined
+    );
+    if report.outside_root > 0 {
+        eprintln!("{}", outside_root_note(report));
+    }
+}
+
+/// The note for findings in files outside the baseline root.
+fn outside_root_note(report: &baseline::Report) -> String {
+    format!(
+        "baseline: {} finding(s) in files outside the baseline root were reported, not recorded",
+        report.outside_root
+    )
 }
 
 /// `check`'s exit code (R15): `1` when either channel produced something or a
@@ -1159,6 +1314,39 @@ fn check_exit_code(findings: usize, drifted: usize, failures: usize) -> ExitCode
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Apply the baseline to one file's findings, then print them (text mode) and
+/// add them to the report rows.
+fn report_findings(
+    display: &str,
+    indexed_path: &Path,
+    source: &str,
+    reported: CollectedDiagnostics,
+    baseline: Option<&mut baseline::Run>,
+    json_output: bool,
+    rows: &mut Vec<CheckJsonDiagnostic>,
+) {
+    let reported = match baseline {
+        Some(run) => run.filter(indexed_path, source, reported),
+        None => reported,
+    };
+    if reported.diagnostics.is_empty() {
+        return;
+    }
+    if !json_output {
+        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), source);
+        let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
+        print!("{}", render_diagnostics(&rendered, &resolver));
+    }
+    let map = SourceMap::new(source);
+    for collected in reported.all() {
+        rows.push(check_json_diagnostic(display, &map, collected));
     }
 }
 

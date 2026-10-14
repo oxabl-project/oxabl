@@ -984,8 +984,8 @@ pub const PARITY_ROOT: &str = "/parity";
 /// empty, which is not "the defaults" but "no rule has a configured severity",
 /// so `unknown-table-or-field` and `type-mismatch-assignment` came back at the
 /// severity `oxabl_lint` constructs them with (`error`) instead of the
-/// `[workspace.lint]` default a resolution materializes (`warn`). One table
-/// closed that; `browser_expected` and the browser leg's
+/// `[workspace.lint]` default a resolution materializes (`warn`). Default
+/// severities now live only in the rule registry, which closed that; `browser_expected` and the browser leg's
 /// `browser_severity_matches_every_other_client` keep it closed.
 ///
 /// So this function exists as the parity table's **named anchor**, not as a
@@ -1060,10 +1060,7 @@ pub fn config_with_override() -> PipelineConfig {
     // `LintSeverityMap`, so this is the same *kind* of value a resolved config
     // is: `to_severity_map` stays the single lowering.
     let mut lint = LintConfig::default();
-    assert!(
-        lint.set_by_name(OVERRIDE_RULE, LintSeverity::Info),
-        "`{OVERRIDE_RULE}` must be a known rule name"
-    );
+    lint.set_rule(OVERRIDE_RULE, LintSeverity::Info);
     PipelineConfig {
         lint_severities: lint.to_severity_map(),
         ..canonical_config()
@@ -1375,19 +1372,20 @@ pub const FIXTURES: &[ParityFixture] = &[
         needs: &[],
         edges: &[],
     },
-    // Defined inside the DO block, assigned only there, read outside it.
+    // Defined inside a conditional DO block, assigned only there, read outside
+    // it: the read sees the default value whenever the block was skipped.
     ParityFixture {
         name: "block_var_used_outside",
         root_file: "main.p",
         siblings: &[],
         resolutions: &[],
-        source: "DO:\n    DEFINE VARIABLE tally AS INTEGER NO-UNDO.\n    tally = 1.\nEND.\nMESSAGE tally.\n",
+        source: "DEFINE VARIABLE ok AS LOGICAL NO-UNDO.\nIF ok THEN DO:\n    DEFINE VARIABLE tally AS INTEGER NO-UNDO.\n    tally = 1.\nEND.\nMESSAGE tally.\n",
         diagnostics: &[ExpectedDiagnostic {
             code: "LINT0005",
             severity: Severity::Info,
             source: DiagnosticSource::Lint,
-            start: 24,
-            end: 29,
+            start: 74,
+            end: 79,
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],
