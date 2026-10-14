@@ -1150,6 +1150,8 @@ impl<'a> Parser<'a> {
                     // Memory manipulation functions (usable in assignment LHS / expression position)
                     | Kind::PutByte
                     | Kind::GetByte
+                    | Kind::GetCodepage
+                    | Kind::GetCodepages
                     // Handle attribute names (e.g. builder:Library)
                     | Kind::Library
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
@@ -1246,7 +1248,7 @@ impl<'a> Parser<'a> {
         Self::can_be_identifier(kind)
             || matches!(
                 kind,
-                Kind::Begins | Kind::Contains | Kind::Matches | Kind::Current
+                Kind::Begins | Kind::Contains | Kind::Matches | Kind::Current | Kind::Null
             )
     }
 

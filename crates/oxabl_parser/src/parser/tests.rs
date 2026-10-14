@@ -12029,3 +12029,30 @@ fn accum_aggregate_word_is_not_an_argument() {
     };
     assert_eq!(arguments.len(), 1);
 }
+
+#[test]
+fn get_codepage_and_get_codepages_parse_as_expressions() {
+    let source = "cPage = GET-CODEPAGE(lcText).\ncPages = GET-CODEPAGES.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 2);
+}
+
+#[test]
+fn member_reference_named_null_parses() {
+    let source = "IF oObj:GetType(\"v\") = JsonDataType:NULL THEN MESSAGE \"null\".";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+}
+
+#[test]
+fn class_header_accepts_serializable() {
+    for source in [
+        "CLASS Failure INHERITS Progress.Lang.AppError SERIALIZABLE:\nEND CLASS.",
+        "CLASS Failure FINAL SERIALIZABLE:\nEND CLASS.",
+        "CLASS Failure USE-WIDGET-POOL SERIALIZABLE:\nEND CLASS.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+    }
+}
