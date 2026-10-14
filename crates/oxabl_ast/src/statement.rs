@@ -668,7 +668,9 @@ pub enum StatementKind {
     /// deliberately broad — ABL lexes a variable named `value` as a keyword kind,
     /// so option keywords are kept as candidate names and the semantic pass's
     /// non-diagnostic lookup is the real filter. Over-inclusion can only silence
-    /// a diagnostic, never invent one.
+    /// a diagnostic, never invent one. Under a loaded schema, a name that is a
+    /// schema table and nothing local also gives the file a dependency on that
+    /// table, so an over-inclusive name can add a dependency edge.
     ///
     /// `may_reference_tables` is a narrow marker, `false` for every ordinary
     /// unmodelled form. `true` means the form is one whose grammar names a table
