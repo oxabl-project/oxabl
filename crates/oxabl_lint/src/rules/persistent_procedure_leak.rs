@@ -61,7 +61,9 @@ use oxabl_handles::{FileHandles, ObjectKind};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD003;
-use super::handle_support::{includer_may_free, quote, reported_leak, warning, with_fragment_note};
+use super::handle_support::{
+    includer_may_free, not_judged, quote, reported_leak, warning, with_fragment_note,
+};
 
 /// Kebab-case rule name.
 pub const NAME: &str = "persistent-procedure-leak";
@@ -79,6 +81,9 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 /// The findings over an analysed file.
 pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    if not_judged(ctx) {
+        return Vec::new();
+    }
     let mut diags = Vec::new();
     for (unit, o) in handles.objects() {
         if o.kind != ObjectKind::PersistentProcedure || !o.leaks_on_normal_path() {

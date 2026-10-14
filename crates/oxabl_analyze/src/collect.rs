@@ -1106,7 +1106,8 @@ pub fn collect_from_expanded_selecting(
         .with_include_regions(&include_spans)
         .with_lint_severities(lint_severities.clone())
         .with_index(index)
-        .with_source_context(source_context);
+        .with_source_context(source_context)
+        .with_parse_recovered(out.parse_recovered);
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 

@@ -60,11 +60,19 @@
 //!   the parser skips that names the handle, a dynamic call that receives it, a
 //!   call the file does not define (`RUN other.p (INPUT h)`, `RUN p IN hLib
 //!   (h)`, a prototype such as `PROCEDURE p IN SUPER`, a method of an object of
-//!   another class) that receives it, a delete of something that is not the
+//!   another class, an `ABSTRACT` method or one a subclass can override, a
+//!   method whose parameter is not declared as a handle) that receives it, an
+//!   `ADD-BUFFER` call on a receiver the procedure did not create (it may be a
+//!   dataset that owns the buffer), a delete of something that is not the
 //!   handle itself, or an include that was not expanded. An `INPUT` handle
 //!   passed to a procedure, function or method of the file that deletes its
 //!   parameter counts as a delete; one that stores, returns or hands on its
-//!   parameter is an owner outside the procedure.
+//!   parameter is an owner outside the procedure;
+//! - a file the parser had to recover from: recovery can move a statement out
+//!   of its unit, so the file is not judged.
+//!
+//! An `INPUT` handle passed to an `EXTERNAL` library procedure is only used:
+//! the library does not delete it, so the object is still reported.
 //!
 //! `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` counts as a delete on every
 //! path: a live object has a valid handle.
@@ -93,7 +101,8 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD001;
 use super::handle_support::{
-    describe, includer_may_free, noun, quote, reported_leak, scope, warning, with_fragment_note,
+    describe, includer_may_free, not_judged, noun, quote, reported_leak, scope, warning,
+    with_fragment_note,
 };
 use super::syntactic::file_span;
 
@@ -113,6 +122,9 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 /// The findings over an analysed file.
 pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    if not_judged(ctx) {
+        return Vec::new();
+    }
     let mut diags = Vec::new();
     for (unit, o) in handles.objects() {
         if matches!(o.kind, ObjectKind::PersistentProcedure | ObjectKind::Memptr)

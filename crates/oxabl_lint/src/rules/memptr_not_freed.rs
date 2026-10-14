@@ -40,8 +40,14 @@
 //! - a MEMPTR that leaves the procedure: an `OUTPUT` parameter, a class member,
 //!   a shared or outer variable, a field;
 //! - a size set to the literal 0, which is the free itself;
+//! - a MEMPTR passed to a callee whose code the file does not show (a method
+//!   that a subclass can override, `RUN other.p`), or as an `OUTPUT` argument;
 //! - a loss only on a path that raises an error (`delete-not-in-finally`,
-//!   HD002, covers a free that exists).
+//!   HD002, covers a free that exists);
+//! - a file the parser had to recover from.
+//!
+//! A MEMPTR passed `INPUT` to an `EXTERNAL` library procedure is only used:
+//! the library does not free it, so it is still reported.
 //!
 //! Assigning a MEMPTR copies the pointer, not the memory, so a free through
 //! either variable counts. `SET-SIZE` allocates, and so does `COPY-LOB ... TO m`
@@ -61,7 +67,9 @@ use oxabl_handles::{FileHandles, ObjectKind};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD004;
-use super::handle_support::{includer_may_free, quote, reported_leak, warning, with_fragment_note};
+use super::handle_support::{
+    includer_may_free, not_judged, quote, reported_leak, warning, with_fragment_note,
+};
 
 /// Kebab-case rule name.
 pub const NAME: &str = "memptr-not-freed";
@@ -79,6 +87,9 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 /// The findings over an analysed file.
 pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    if not_judged(ctx) {
+        return Vec::new();
+    }
     let mut diags = Vec::new();
     for (unit, o) in handles.objects() {
         if o.kind != ObjectKind::Memptr || !o.leaks_on_normal_path() {
