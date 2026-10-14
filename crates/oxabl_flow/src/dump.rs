@@ -100,6 +100,9 @@ fn unit(out: &mut String, cfg: &Cfg, source: &str, lines: &LineIndex) {
                 snippet(source, n.span)
             );
         }
+        if let Some(b) = n.undoes {
+            let _ = write!(out, " undoes=b{}", b.index());
+        }
         if let Some(r) = n.opaque {
             let _ = write!(out, " opaque={}", r.as_str());
         }

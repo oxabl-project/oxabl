@@ -32,6 +32,19 @@
 //! statements, so the builder reads them from the lexer's tokens over each
 //! statement's span. That is why [`build_file`] takes the source text.
 //!
+//! # `UNDO`
+//!
+//! An `UNDO` statement undoes the block it names, else the closest block with
+//! the error property. In a `CATCH` that is the block the `CATCH` belongs to.
+//! The node records it ([`Node::undoes`]). The action then runs as an `ON`
+//! phrase action would. `THROW` raises ERROR in the block that encloses the
+//! undone block, so the undone block's own `CATCH` blocks never see it.
+//! Without an action, `UNDO` does the undone block's `ON ERROR` action.
+//!
+//! Where ABL's behaviour is uncertain, the model's choice is written down with
+//! a confidence mark in `docs/design/strict-analysis-open-questions.md`, and
+//! each has a fixture under `tests/fixtures`.
+//!
 //! # Queries
 //!
 //! Graph access, reachability, path search and block exits are methods on

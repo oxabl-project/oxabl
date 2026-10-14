@@ -529,6 +529,7 @@ impl<'a> Builder<'a> {
             stmt,
             span,
             opaque: None,
+            undoes: None,
         });
         self.cfg.succ.push(SmallVec::new());
         if let (Some(id), NodeKind::Stmt | NodeKind::Head) = (stmt, kind) {
@@ -811,6 +812,16 @@ impl<'a> Builder<'a> {
         head
     }
 
+    /// Whether the block of frame `i` handles `condition`: an `ON` phrase or
+    /// default, or a `CATCH` that may catch it.
+    fn handles(&self, i: usize, condition: Condition) -> bool {
+        let b = &self.cfg.blocks[self.frames[i].block.index()];
+        b.handling(condition).is_some()
+            || b.catches
+                .iter()
+                .any(|c| self.cfg.blocks[c.index()].may_catch(condition))
+    }
+
     /// The innermost frame at or below `start` that handles `condition`.
     /// Conditions raised in a `CATCH` or `FINALLY` pass its owner by.
     fn handler_frame(&self, start: usize, condition: Condition) -> Option<usize> {
@@ -828,17 +839,33 @@ impl<'a> Builder<'a> {
                 }
                 FrameKind::Routine | FrameKind::Block => {}
             }
-            let b = &self.cfg.blocks[f.block.index()];
-            if b.handling(condition).is_some()
-                || b.catches
-                    .iter()
-                    .any(|c| self.cfg.blocks[c.index()].may_catch(condition))
-            {
+            if self.handles(i as usize, condition) {
                 return Some(i as usize);
             }
             i -= 1;
         }
         None
+    }
+
+    /// The frame an `UNDO` with no label undoes: the closest block with the
+    /// error property. In a `CATCH` that is the `CATCH`'s owner, not a block
+    /// the owner sits in: a `CATCH` is part of its owner, and `handler_frame`'s
+    /// pass-through is for raised conditions only.
+    fn undo_frame(&self) -> usize {
+        let mut i = self.top() as isize;
+        while i >= 0 {
+            match self.frames[i as usize].kind {
+                FrameKind::Catch { owner } => return owner,
+                FrameKind::Finally => {}
+                FrameKind::Routine | FrameKind::Block => {
+                    if self.handles(i as usize, Condition::Error) {
+                        return i as usize;
+                    }
+                }
+            }
+            i -= 1;
+        }
+        0
     }
 
     fn unhandled_exit(condition: Condition) -> ExitKind {
@@ -1232,16 +1259,14 @@ impl<'a> Builder<'a> {
             Shape::Undo { label, action } => {
                 // UNDO without a label undoes the closest block with the
                 // error property; without an action it does that block's
-                // ON ERROR action.
-                let closest = self
-                    .handler_frame(self.top(), Condition::Error)
-                    .unwrap_or(0);
+                // ON ERROR action (a plain block has none: RETRY).
+                let closest = self.undo_frame();
                 let u = self.label_target(n, label.as_deref(), closest);
+                self.cfg.nodes[n.index()].undoes = Some(self.frames[u].block);
                 let action = action.unwrap_or_else(|| {
-                    match self.block(u).handling(Condition::Error).map(|h| &h.action) {
-                        Some(Action::Throw) | None => Action::Retry(None),
-                        Some(a) => a.clone(),
-                    }
+                    self.block(u)
+                        .handling(Condition::Error)
+                        .map_or(Action::Retry(None), |h| h.action.clone())
                 });
                 self.apply(n, u, &action);
             }
@@ -1340,14 +1365,18 @@ impl<'a> Builder<'a> {
             },
             SK::Leave(label) => Shape::Leave(label.as_deref()),
             SK::Next(label) => Shape::Next(label.as_deref()),
+            // The parser keeps the value of `UNDO, RETURN v`, `UNDO, RETURN
+            // ERROR v` and `UNDO, THROW v` as a `RETURN` or `THROW`.
             SK::Return(value) => match tokens::read_control(self.src, s.span) {
                 Control::ReturnError => Shape::ReturnError,
+                Control::Undo { label, action } => Shape::Undo { label, action },
                 _ => Shape::Return {
                     raises: value.is_some(),
                 },
             },
             SK::Throw(_) => match tokens::read_control(self.src, s.span) {
                 Control::ReturnError => Shape::ReturnError,
+                Control::Undo { label, action } => Shape::Undo { label, action },
                 _ => Shape::Throw,
             },
             // Structural statements are handled by `stmt`; anything new is

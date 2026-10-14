@@ -449,6 +449,10 @@ pub struct Node {
     pub stmt: Option<NodeId>,
     pub span: Span,
     pub opaque: Option<OpaqueReason>,
+    /// The block an `UNDO` statement undoes: the one it names, else the
+    /// closest with the error property (a `CATCH`'s owner, for an `UNDO` in a
+    /// `CATCH`). `None` for every other node; see [`Cfg::undone_block`].
+    pub undoes: Option<BlockId>,
 }
 
 /// Why control moves along an edge.

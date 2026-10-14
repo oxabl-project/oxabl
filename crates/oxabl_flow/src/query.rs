@@ -99,6 +99,17 @@ impl Cfg {
         self.stmt_block.get(&stmt).copied()
     }
 
+    /// The block `n` undoes. A handler undoes its own block; an `UNDO`
+    /// statement undoes the block it targets ([`Node::undoes`]). Reaching an
+    /// undo is how a path rolls back the undoable variables of that block.
+    pub fn undone_block(&self, n: NodeIx) -> Option<BlockId> {
+        let node = &self.nodes[n.index()];
+        match node.kind {
+            NodeKind::Handler(_) => Some(node.block),
+            _ => node.undoes,
+        }
+    }
+
     /// Opaque nodes with their reasons.
     pub fn opaque_nodes(&self) -> impl Iterator<Item = (NodeIx, OpaqueReason)> + '_ {
         self.nodes()
