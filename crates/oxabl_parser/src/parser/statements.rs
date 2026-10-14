@@ -4793,16 +4793,14 @@ impl Parser<'_> {
 
         // Skip trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
         loop {
-            if self.check(Kind::Serializable) {
-                self.advance();
-            } else if self.check(Kind::Identifier)
-                && self.source[self.peek().start..self.peek().end]
-                    .eq_ignore_ascii_case("use-widget-pool")
-            {
-                self.advance();
-            } else {
+            let is_option = self.check(Kind::Serializable)
+                || (self.check(Kind::Identifier)
+                    && self.source[self.peek().start..self.peek().end]
+                        .eq_ignore_ascii_case("use-widget-pool"));
+            if !is_option {
                 break;
             }
+            self.advance();
         }
 
         // Expect colon to start body
