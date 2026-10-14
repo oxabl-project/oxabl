@@ -843,7 +843,7 @@ impl ProcessContext<'_> {
         for gap in &evaluation.gaps {
             match gap {
                 Gap::UnsetProversion => self.report_unknown_predefined("PROVERSION", site),
-                Gap::Unmodelled(what) => unmodelled.push(what.as_str()),
+                Gap::Unmodelled(what) | Gap::Invalid(what) => unmodelled.push(what.as_str()),
             }
         }
         if !unmodelled.is_empty() {
@@ -2884,6 +2884,43 @@ mod tests {
                 .collect::<Vec<_>>(),
             [TextLossKind::UnmodelledCondition]
         );
+    }
+
+    #[test]
+    fn a_guess_beside_an_operand_that_settles_the_condition_is_not_reported() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF (TRUE OR SEARCH(\"a\") = 1) OR SEARCH(\"b\") = 1 &THEN\nfirst\n&ENDIF\n\
+                      &IF SEARCH(\"a\") = 1 OR TRUE &THEN\nsecond\n&ENDIF\n\
+                      &IF SEARCH(\"a\") = 1 AND FALSE &THEN\nwrong\n&ELSE\nthird\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "first\nsecond\nthird\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.text_losses.is_empty());
+    }
+
+    #[test]
+    fn a_syntax_error_beside_an_operand_that_settles_the_condition_is_reported() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        for condition in ["TRUE OR 1 +", "TRUE OR \"5\" = 5"] {
+            let source = format!("&IF {condition} &THEN\nthen\n&ENDIF\n");
+            let result = pp.process(FileId::new(1), &source).unwrap();
+
+            assert_eq!(&*result.to_text(), "then\n", "{condition}");
+            assert_eq!(result.diagnostics.len(), 1, "{condition}");
+            assert_eq!(result.diagnostics[0].code.0, "PREPROC010", "{condition}");
+            assert_eq!(
+                result
+                    .text_losses
+                    .iter()
+                    .map(|l| l.kind)
+                    .collect::<Vec<_>>(),
+                [TextLossKind::UnmodelledCondition],
+                "{condition}"
+            );
+        }
     }
 
     #[test]

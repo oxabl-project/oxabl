@@ -18,9 +18,13 @@ pub struct Environment<'a> {
 pub enum Gap {
     /// `PROVERSION` was read and the environment gives no version.
     UnsetProversion,
-    /// A function, name, operator or shape the evaluator does not model. Holds
-    /// the text to show.
+    /// A function, name, operator or shape the evaluator does not model, so the
+    /// value of that part is a guess. Holds the text to show.
     Unmodelled(String),
+    /// A syntax error, or a comparison of values of different types. The AVM
+    /// rejects such a condition, whatever else is in it, so no operand settles it
+    /// and it is never dropped like a guess. Holds the text to show.
+    Invalid(String),
 }
 
 /// The outcome of one condition: the branch taken and every gap behind it.
@@ -63,6 +67,12 @@ pub struct Evaluation {
 /// caller must treat it as a guess. That covers every other function (`SEARCH`
 /// asks whether a file exists, which no evaluator here can know), every bare
 /// name, `/`, arithmetic on decimals, and any token left over once the expression ends.
+///
+/// `AND` and `OR` are read as a whole. When an operand gives the value that
+/// settles the chain (false for `AND`, true for `OR`) without a guess, the guesses
+/// in the other operands, before it or after it, cannot change the result and
+/// raise no gap. A syntax error or a mixed-type comparison is [`Gap::Invalid`]
+/// and always stays.
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
@@ -75,7 +85,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     };
     let value = parser.parse_or();
     if parser.pos < tokens.len() {
-        parser.gap(format!("unexpected {}", describe(&tokens[parser.pos])));
+        parser.invalid(format!("unexpected {}", describe(&tokens[parser.pos])));
     }
     let value = parser.truth(&value);
     Evaluation {
@@ -506,7 +516,8 @@ struct CondParser<'a> {
     pos: usize,
     env: &'a Environment<'a>,
     gaps: Vec<Gap>,
-    /// How many times a guess was made, counting repeats that `gaps` folds.
+    /// How many times a guess was made, counting repeats that `gaps` folds. A
+    /// [`Gap::Invalid`] is no guess and is not counted.
     guesses: usize,
 }
 
@@ -528,8 +539,14 @@ impl<'a> CondParser<'a> {
         self.record(Gap::Unmodelled(what));
     }
 
+    fn invalid(&mut self, what: String) {
+        self.record(Gap::Invalid(what));
+    }
+
     fn record(&mut self, gap: Gap) {
-        self.guesses += 1;
+        if !matches!(gap, Gap::Invalid(_)) {
+            self.guesses += 1;
+        }
         if !self.gaps.contains(&gap) {
             self.gaps.push(gap);
         }
@@ -571,27 +588,24 @@ impl<'a> CondParser<'a> {
 
     /// `operand (op operand)*` for `AND` or `OR`, read left to right.
     ///
-    /// Once an operand has settled the result without a guess (`true` for `OR`,
-    /// `false` for `AND`), the operands after it cannot change the result, so
-    /// the gaps they would record are dropped.
+    /// When an operand gives the value that settles the chain without a guess
+    /// (`true` for `OR`, `false` for `AND`), the result is that value whatever the
+    /// other operands are, so the guesses they made, before or after it, are
+    /// dropped. A [`Gap::Invalid`] is kept.
     fn parse_chain(&mut self, operand: fn(&mut Self) -> CondValue, op: CondToken) -> CondValue {
         let settling = op == CondToken::Or;
-        let guesses = self.guesses;
+        let (gaps_before, guesses_before) = (self.gaps.len(), self.guesses);
         let first = operand(self);
         if self.peek() != Some(&op) {
             return first;
         }
         let mut result = self.tri(&first);
-        let mut settled = result == Some(settling) && self.guesses == guesses;
+        let mut settled = result == Some(settling) && self.guesses == guesses_before;
         while self.eat(&op) {
-            let (gaps, guesses) = (self.gaps.len(), self.guesses);
+            let guesses = self.guesses;
             let rhs = operand(self);
             let rhs = self.tri(&rhs);
-            if settled {
-                self.gaps.truncate(gaps);
-            } else {
-                settled = rhs == Some(settling) && self.guesses == guesses;
-            }
+            settled |= rhs == Some(settling) && self.guesses == guesses;
             // Three-valued: an operand of the settling value decides the result,
             // otherwise an unknown operand leaves it unknown.
             result = match (result, rhs) {
@@ -599,6 +613,15 @@ impl<'a> CondParser<'a> {
                 (Some(_), Some(_)) => Some(!settling),
                 _ => None,
             };
+        }
+        if settled {
+            let mut index = 0;
+            self.gaps.retain(|gap| {
+                index += 1;
+                index <= gaps_before || matches!(gap, Gap::Invalid(_))
+            });
+            // What is left of the guesses is what came before the chain.
+            self.guesses = guesses_before;
         }
         logical(result)
     }
@@ -688,7 +711,7 @@ impl<'a> CondParser<'a> {
 
     fn parse_primary(&mut self) -> CondValue {
         let Some(token) = self.tokens.get(self.pos) else {
-            self.gap("an expression that ends early".into());
+            self.invalid("an expression that ends early".into());
             return CondValue::Unknown;
         };
         self.pos += 1;
@@ -702,13 +725,13 @@ impl<'a> CondParser<'a> {
                 Some(Origin::Mixed) => CondValue::Positive,
             },
             CondToken::BareDefined => {
-                self.gap("DEFINED without a name in parentheses".into());
+                self.invalid("DEFINED without a name in parentheses".into());
                 CondValue::Unknown
             }
             CondToken::LParen => {
                 let result = self.parse_or();
                 if !self.eat(&CondToken::RParen) {
-                    self.gap("a missing ')'".into());
+                    self.invalid("a missing ')'".into());
                 }
                 result
             }
@@ -737,7 +760,7 @@ impl<'a> CondParser<'a> {
             },
             CondToken::Ident(name) => self.parse_name(name),
             other => {
-                self.gap(format!("unexpected {}", describe(other)));
+                self.invalid(format!("unexpected {}", describe(other)));
                 CondValue::Unknown
             }
         }
@@ -774,7 +797,7 @@ impl<'a> CondParser<'a> {
                     continue;
                 }
                 if !self.eat(&CondToken::RParen) {
-                    self.gap("a missing ')'".into());
+                    self.invalid("a missing ')'".into());
                 }
                 break;
             }
@@ -896,7 +919,7 @@ impl<'a> CondParser<'a> {
         Some(match (type_of(lhs), type_of(rhs)) {
             // The AVM rejects it. The branch is a guess, read the loose way.
             (Some(a), Some(b)) if a != b => {
-                self.gap(format!(
+                self.invalid(format!(
                     "a comparison of {} with {}",
                     a.describe(),
                     b.describe()
@@ -1731,12 +1754,144 @@ mod tests {
             r#""yes-ish" OR SEARCH("a") = 1"#,
             r#"SEARCH("a") = 1 OR SEARCH("b") = 1"#,
             r#"TRUE AND (FALSE OR SEARCH("a") = 1)"#,
+            r#"? OR SEARCH("a") = 1"#,
         ] {
             assert!(!gaps(condition).is_empty(), "{condition}");
         }
-        // A gap before the settling operand stays; one after it does not.
-        let e = eval(r#"SEARCH("a") = 1 OR TRUE OR KEYWORD("b") = "x""#);
-        assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
+    }
+
+    /// The gap of a call to a function the evaluator does not model.
+    fn unmodelled_function(name: &str) -> Gap {
+        Gap::Unmodelled(format!("the function {name}"))
+    }
+
+    /// The result is the settling value whatever an operand guesses, so a guess
+    /// raises nothing wherever it stands in the chain.
+    #[test]
+    fn a_guess_beside_an_operand_that_settles_the_result_raises_no_gap() {
+        let decided = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(
+                (e.value, e.gaps.as_slice()),
+                (value, &[][..]),
+                "{condition}"
+            );
+        };
+        decided(r#"SEARCH("a") = 1 OR TRUE"#, true);
+        decided(r#"SEARCH("a") = 1 AND FALSE"#, false);
+        decided(r#"SEARCH("a") = 1 OR TRUE OR KEYWORD("b") = "x""#, true);
+        decided(r#"SEARCH("a") = 1 OR SEARCH("b") = 1 OR TRUE"#, true);
+        decided(
+            r#"SEARCH("a") = 1 AND TRUE AND FALSE AND SEARCH("b") = 1"#,
+            false,
+        );
+        decided(r#"SEARCH("a") = 1 AND SEARCH("b") = 1 OR TRUE"#, true);
+        decided(
+            r#"SEARCH("a") = 1 OR SEARCH("b") = 1 AND FALSE OR TRUE"#,
+            true,
+        );
+        decided(r#"NOT (SEARCH("a") = 1 AND FALSE)"#, true);
+        decided(
+            r#"SEARCH("a") = 1 OR TRUE AND SEARCH("b") = 1 OR TRUE"#,
+            true,
+        );
+    }
+
+    #[test]
+    fn a_settled_chain_inside_another_settles_the_outer_one_too() {
+        let decided = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(
+                (e.value, e.gaps.as_slice()),
+                (value, &[][..]),
+                "{condition}"
+            );
+        };
+        decided(r#"(TRUE OR SEARCH("a") = 1) OR SEARCH("b") = 1"#, true);
+        decided(r#"SEARCH("b") = 1 OR (TRUE OR SEARCH("a") = 1)"#, true);
+        decided(
+            r#"((TRUE OR SEARCH("a") = 1) OR SEARCH("b") = 1) OR SEARCH("c") = 1"#,
+            true,
+        );
+        decided(r#"(FALSE AND SEARCH("a") = 1) AND SEARCH("b") = 1"#, false);
+        decided(
+            r#"(SEARCH("a") = 1 OR TRUE) AND (SEARCH("b") = 1 OR TRUE)"#,
+            true,
+        );
+        decided(r#"(SEARCH("a") = 1 AND FALSE) OR TRUE"#, true);
+        decided(
+            r#"NOT (TRUE OR SEARCH("a") = 1) OR (TRUE OR SEARCH("b") = 1)"#,
+            true,
+        );
+        decided(r#"DBTYPE("x") = "y" OR (TRUE OR SEARCH("a") = 1)"#, true);
+    }
+
+    #[test]
+    fn a_chain_that_settles_cannot_hide_the_guess_of_one_that_does_not() {
+        let search = || unmodelled_function("SEARCH");
+        let keyword = || unmodelled_function("KEYWORD");
+        // The inner chain settles for itself, but not for the chain around it.
+        let e = eval(r#"(SEARCH("a") = 1 AND FALSE) OR KEYWORD("b") = "x""#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [keyword()]);
+
+        let e = eval(r#"SEARCH("a") = 1 OR (FALSE AND KEYWORD("b") = "x")"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+
+        let e = eval(r#"SEARCH("a") = 1 AND (TRUE OR KEYWORD("b") = "x")"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+
+        let e = eval(r#"SEARCH("a") = 1 AND (FALSE OR KEYWORD("b") = "x" OR TRUE)"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+
+        // An inner chain keeps a guess that the operand before it already made.
+        let e = eval(r#"SEARCH("a") = 1 AND (FALSE OR SEARCH("b") = 1 OR TRUE)"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+    }
+
+    #[test]
+    fn an_operand_that_is_true_only_by_a_guess_settles_nothing() {
+        let string_as_logical = Gap::Unmodelled("a string used as a logical".into());
+        for condition in [
+            r#""yes-ish" OR SEARCH("a") = 1"#,
+            r#"SEARCH("a") = 1 OR "yes-ish""#,
+        ] {
+            let e = eval(condition);
+            assert!(e.gaps.contains(&string_as_logical), "{condition}");
+            assert!(
+                e.gaps.contains(&unmodelled_function("SEARCH")),
+                "{condition}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_syntax_error_or_a_mixed_comparison_is_never_dropped() {
+        let invalid = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(e.value, value, "{condition}");
+            assert!(
+                !e.gaps.is_empty() && e.gaps.iter().all(|g| matches!(g, Gap::Invalid(_))),
+                "{condition}: {:?}",
+                e.gaps
+            );
+        };
+        invalid("TRUE OR 1 +", true);
+        invalid(r#"TRUE OR "5" = 5"#, true);
+        invalid(r#""5" = 5 OR TRUE"#, true);
+        invalid("FALSE AND (1 = 1", false);
+        invalid("TRUE OR 1 = 1 2", true);
+        invalid("TRUE OR DEFINED = 1", true);
+        invalid("TRUE OR", true);
+        // Beside a guess, only the guess goes.
+        invalid(r#"TRUE OR SEARCH("a") = 1 OR "5" = 5"#, true);
+        invalid(r#"(TRUE OR "5" = 5) OR SEARCH("a") = 1"#, true);
+        invalid(r#"SEARCH("a") = 1 OR TRUE OR 1 +"#, true);
+        invalid(r#"FALSE AND SEARCH("a") = 1 AND "5" = 5"#, false);
     }
 
     #[test]
@@ -1757,7 +1912,7 @@ mod tests {
 
     #[test]
     fn an_unmodelled_call_swallows_its_arguments() {
-        let e = eval(r#"SEARCH("a,b.i") = ? OR TRUE"#);
+        let e = eval(r#"NOT (SEARCH("a,b.i") = ?)"#);
         assert!(e.value);
         assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
     }
