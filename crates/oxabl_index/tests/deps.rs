@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use oxabl_ast::Span;
 use oxabl_common::{FileId, VirtualSpan};
 use oxabl_index::{
-    BatchIndex, Completeness, DegradedReason, DependencyEdges, DirectIncludeInput, EdgeInputs,
-    EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
-    UnresolvedIncludeInput, build_edge_set,
+    BatchIndex, BranchKind, Completeness, ConditionalBranch, ConditionalInclude, DegradedReason,
+    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
+    NestedUnresolvedIncludeInput, UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
@@ -709,4 +709,50 @@ fn an_absent_run_target_row_keeps_the_whole_written_name() {
         assert_eq!(rows[0].name, target.to_lowercase(), "{target}");
         assert_eq!(rows[0].reason, UnresolvedReason::AbsentFromWorkspace);
     }
+}
+
+fn conditional(name: &str, at: Option<u32>) -> ConditionalInclude {
+    ConditionalInclude {
+        name: name.to_string(),
+        span: at.map(|start| Span {
+            start,
+            end: start + 5,
+        }),
+        include_site: None,
+        branches: vec![ConditionalBranch {
+            kind: BranchKind::If,
+            condition: "FALSE".to_string(),
+        }],
+        computed_name: false,
+    }
+}
+
+#[test]
+fn conditional_includes_are_never_edges_and_come_back_ordered_and_once() {
+    let edges = DependencyEdges::default().with_conditional_includes(vec![
+        conditional("b.i", Some(20)),
+        conditional("a.i", Some(10)),
+        conditional("b.i", Some(20)),
+        conditional("c.i", None),
+    ]);
+
+    let got: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(got, ["a.i", "b.i", "c.i"]);
+    assert!(edges.edges().is_empty());
+    assert!(edges.unresolved().is_empty());
+    assert!(edges.is_empty());
+    assert!(edges.completeness().is_complete());
+}
+
+#[test]
+fn a_set_without_conditional_includes_compares_equal_to_the_default() {
+    assert!(DependencyEdges::default().conditional_includes().is_empty());
+    assert_eq!(
+        DependencyEdges::default().with_conditional_includes(Vec::new()),
+        DependencyEdges::default()
+    );
 }

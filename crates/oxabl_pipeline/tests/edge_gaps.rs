@@ -1110,3 +1110,110 @@ fn an_indexed_class_names_its_parent_through_its_own_using() {
         edges.unresolved()
     );
 }
+
+/// The edge set of `source` as `/proj/main.p`, beside `files`.
+fn edges_beside(source: &str, files: &[(&str, &str)]) -> oxabl_pipeline::DependencyEdges {
+    let mut fs = InMemoryFileSystem::new();
+    for (path, text) in files {
+        fs.insert(PathBuf::from(format!("/proj/{path}")), *text);
+    }
+    let config = config("/proj");
+    LintPipeline::new(&config, &fs)
+        .with_file("/proj/main.p")
+        .edge_set(source)
+        .expect("edge set")
+}
+
+fn text_at(source: &str, span: Option<oxabl_ast::Span>) -> &str {
+    let span = span.expect("a site");
+    &source[span.start as usize..span.end as usize]
+}
+
+#[test]
+fn an_include_in_a_not_taken_branch_is_a_conditional_include_not_an_edge() {
+    let source = "&IF DEFINED(nope) &THEN\n{b.i &PASS}\n&ENDIF\n";
+    let edges = edges_beside(source, &[("b.i", "MESSAGE 1.\n")]);
+
+    assert!(edges.edges().is_empty(), "{:?}", edges.edges());
+    assert!(edges.unresolved().is_empty());
+    assert!(edges.completeness().is_complete());
+    let [conditional] = edges.conditional_includes() else {
+        panic!("got {:?}", edges.conditional_includes());
+    };
+    assert_eq!(conditional.name, "b.i");
+    assert_eq!(text_at(source, conditional.span), "{b.i &PASS}");
+    assert_eq!(conditional.include_site, None);
+    assert!(!conditional.computed_name);
+    assert_eq!(conditional.branches.len(), 1);
+    assert_eq!(conditional.branches[0].kind, oxabl_pipeline::BranchKind::If);
+    assert_eq!(conditional.branches[0].condition, "DEFINED(nope)");
+}
+
+#[test]
+fn every_not_taken_branch_of_a_chain_and_a_nested_one_is_listed_in_order() {
+    let source = "\
+&IF TRUE &THEN
+&IF FALSE &THEN
+{inner.i}
+&ENDIF
+&ELSEIF FALSE &THEN
+{middle.i}
+&ELSE
+{last.i}
+&ENDIF
+";
+    let edges = edges_beside(source, &[]);
+    let names: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| (c.name.as_str(), c.branches.len()))
+        .collect();
+    assert_eq!(names, [("inner.i", 2), ("middle.i", 1), ("last.i", 1)]);
+}
+
+#[test]
+fn a_not_taken_branch_in_a_taken_include_is_placed_by_the_chain_that_reached_it() {
+    let source = "MESSAGE 1.\n{outer.i}\n";
+    let edges = edges_beside(
+        source,
+        &[("outer.i", "&IF FALSE &THEN\n{deep.i}\n&ENDIF\n")],
+    );
+
+    let [conditional] = edges.conditional_includes() else {
+        panic!("got {:?}", edges.conditional_includes());
+    };
+    assert_eq!(conditional.name, "deep.i");
+    assert_eq!(conditional.span, None);
+    assert_eq!(text_at(source, conditional.include_site), "{outer.i}");
+    assert!(
+        edges
+            .of_kind(EdgeKind::DirectInclude)
+            .any(|e| e.target.key().ends_with("outer.i"))
+    );
+}
+
+#[test]
+fn a_not_taken_include_name_with_a_reference_is_computed_and_left_as_written() {
+    let source = "&IF FALSE &THEN\n{gl/{&dir}/g.i &PASS}\n{gl/{1}.i}\n&ENDIF\n";
+    let edges = edges_beside(source, &[]);
+    let got: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| (c.name.as_str(), c.computed_name))
+        .collect();
+    assert_eq!(got, [("gl/{&dir}/g.i", true), ("gl/{1}.i", true)]);
+}
+
+#[test]
+fn an_include_reached_from_two_sites_lists_its_not_taken_reference_per_site() {
+    let source = "{a.i}\n{a.i}\n";
+    let edges = edges_beside(source, &[("a.i", "&IF FALSE &THEN\n{deep.i}\n&ENDIF\n")]);
+    // Two root sites reached it: one row for each, none repeated.
+    let sites: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| c.include_site.map(|s| s.start))
+        .collect();
+    assert_eq!(sites.len(), 2);
+    assert_ne!(sites[0], sites[1]);
+}

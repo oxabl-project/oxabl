@@ -81,16 +81,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
-    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    RuleSelection, UnresolvedInclude, collect_from_expanded_selecting, expand_source_with,
+    BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
+    ExpandedFile, RuleSelection, UnresolvedInclude, collect_from_expanded_selecting,
+    expand_source_with,
 };
 
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, IncludeOriginInput, NestedUnresolvedIncludeInput,
-    UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
+    BatchIndex, BranchKind, ConditionalBranch, ConditionalInclude, DirectIncludeInput, EdgeInputs,
+    IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
+    UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
 use oxabl_workspace::{FileSystem, is_include_fragment};
@@ -749,7 +751,32 @@ impl<'a> LintPipeline<'a> {
             })
         };
 
-        Ok(build_edge_set(&EdgeInputs {
+        // A skipped include written in the root has a site in the root's bytes; one
+        // in an include is placed by the chain that reached it.
+        let conditional: Vec<ConditionalInclude> = expanded
+            .skipped_includes()
+            .iter()
+            .map(|skipped| ConditionalInclude {
+                name: skipped.name.clone(),
+                span: (skipped.site.file == ROOT_FILE_ID).then_some(skipped.site.span),
+                include_site: chain_site(&skipped.via),
+                branches: skipped
+                    .branches
+                    .iter()
+                    .map(|branch| ConditionalBranch {
+                        kind: match branch.directive {
+                            BranchDirective::If => BranchKind::If,
+                            BranchDirective::ElseIf => BranchKind::ElseIf,
+                            BranchDirective::Else => BranchKind::Else,
+                        },
+                        condition: branch.condition.clone(),
+                    })
+                    .collect(),
+                computed_name: skipped.computed_name,
+            })
+            .collect();
+
+        let edges = build_edge_set(&EdgeInputs {
             semantic,
             schema: &self.config.schema,
             direct_includes: &direct,
@@ -762,7 +789,8 @@ impl<'a> LintPipeline<'a> {
             preprocessor_loss: !expanded.text_losses().is_empty(),
             resolve_span: &resolve_span,
             include_site: &include_site,
-        }))
+        });
+        Ok(edges.with_conditional_includes(conditional))
     }
 
     /// Run `with` against this handle's index, viewed as the file being analysed.

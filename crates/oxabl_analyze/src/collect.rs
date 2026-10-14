@@ -37,7 +37,9 @@ use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
-use oxabl_preprocessor::{Preprocessor, SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude};
+use oxabl_preprocessor::{
+    Preprocessor, SkippedInclude, SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude,
+};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, NullIndex, Semantic, SourceContext, WorkspaceIndex, analyze_file,
@@ -235,6 +237,9 @@ pub struct ExpandedFile {
     /// through the root's own `{&var}` substitutions carries the substitution as
     /// its site.
     unreadable_includes: Vec<UnreadableInclude>,
+    /// Include references, at any depth, written in a branch that was not taken.
+    /// Never expanded.
+    skipped_includes: Vec<SkippedInclude>,
     /// Places, at any depth, where the preprocessor dropped text or decided a
     /// branch without the facts to decide it.
     text_losses: Vec<TextLoss>,
@@ -288,6 +293,13 @@ impl ExpandedFile {
     /// could not be read. The file exists, but what it includes is unknown.
     pub fn unreadable_includes(&self) -> &[UnreadableInclude] {
         &self.unreadable_includes
+    }
+
+    /// Include references, at any depth, written in a branch the preprocessor did
+    /// not take. They are not expanded and have no resolved path. A reference in
+    /// an included file carries the chain of sites that reached it.
+    pub fn skipped_includes(&self) -> &[SkippedInclude] {
+        &self.skipped_includes
     }
 
     /// Where the preprocessor dropped text or chose a branch on a guess: an
@@ -494,6 +506,7 @@ pub fn expand_source_with(
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
+            skipped_includes: Vec::new(),
             text_losses: Vec::new(),
             root,
         });
@@ -596,6 +609,7 @@ pub fn expand_source_with(
                 unresolved_includes,
                 nested_unresolved_includes,
                 unreadable_includes,
+                skipped_includes: pf.skipped_includes.clone(),
                 text_losses: pf.text_losses.clone(),
                 root,
             })
@@ -1160,6 +1174,7 @@ mod tests {
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
+            skipped_includes: Vec::new(),
             text_losses: Vec::new(),
             root: ROOT,
         }
