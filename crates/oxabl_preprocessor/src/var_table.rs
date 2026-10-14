@@ -270,20 +270,18 @@ impl PreprocVarTable {
         with_folded(name, |key| self.entry(key).is_some())
     }
 
-    /// Merge all variables from `other` into `self`.
+    /// Copy every variable of `other` into `self`, replacing the ones it holds.
     ///
-    /// A scoped name or an include argument of `self` is kept: it takes
-    /// precedence over a global name of the same name in its scope.
+    /// The preprocessor no longer calls this: it applies the global defines of an
+    /// include itself, and a scoped name or an include argument keeps its
+    /// precedence over them.
+    #[deprecated(note = "the preprocessor applies global defines itself; define each name instead")]
     pub fn merge_globals(&mut self, other: &PreprocVarTable) {
         for (key, theirs) in other.names() {
-            let ours = self.entry(key);
-            let shadowed = matches!(
-                ours.map(|e| e.origin),
-                Some(Origin::Scoped | Origin::Mixed | Origin::Argument)
-            );
-            let unchanged =
-                ours.is_some_and(|ours| ours.origin == theirs.origin && ours.value == theirs.value);
-            if !shadowed && !unchanged {
+            let unchanged = self
+                .entry(key)
+                .is_some_and(|ours| ours.origin == theirs.origin && ours.value == theirs.value);
+            if !unchanged {
                 self.store(key, Some(key), Some(theirs.clone()));
             }
         }
@@ -342,42 +340,18 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_globals() {
         let mut parent = PreprocVarTable::new();
-        parent.define_global("A", "1");
+        parent.define("A", "1");
 
         let mut child = PreprocVarTable::new();
-        child.define_global("B", "2");
-        child.define_global("A", "overridden");
+        child.define("B", "2");
+        child.define("A", "overridden");
 
         parent.merge_globals(&child);
         assert_eq!(parent.get("A").map(|v| &**v), Some("overridden"));
         assert_eq!(parent.get("B").map(|v| &**v), Some("2"));
-    }
-
-    #[test]
-    fn merge_globals_keeps_a_scoped_name_an_argument_and_a_mixed_name() {
-        let mut parent = PreprocVarTable::new();
-        parent.define("S", "scoped");
-        parent.define_argument("ARG", "argument");
-        parent.define("M", "mixed");
-        parent.define_global("M", "mixed");
-        parent.define_global("G", "global");
-
-        let mut child = PreprocVarTable::new();
-        for name in ["S", "ARG", "M", "G"] {
-            child.define_global(name, "other");
-        }
-
-        parent.merge_globals(&child);
-        let value = |name| parent.get(name).map(|v| &**v);
-        assert_eq!(value("S"), Some("scoped"));
-        assert_eq!(value("ARG"), Some("argument"));
-        assert_eq!(value("M"), Some("mixed"));
-        assert_eq!(value("G"), Some("other"));
-        assert_eq!(parent.origin("S"), Some(Origin::Scoped));
-        assert_eq!(parent.origin("ARG"), Some(Origin::Argument));
-        assert_eq!(parent.origin("M"), Some(Origin::Mixed));
     }
 
     #[test]
@@ -556,6 +530,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_globals_inside_a_scope_is_undone_with_it() {
         let mut globals = PreprocVarTable::new();
         globals.define_global("G", "1");
@@ -640,6 +615,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_globals_carries_the_names_of_a_base_too() {
         let base = base_of(&[("A", "1")]);
         let from = PreprocVarTable::over(&base);
