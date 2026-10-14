@@ -12,7 +12,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
@@ -20,7 +20,7 @@ use oxabl_semantic::{
     MemberDescriptor, WorkspaceIndex,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::facts::{ClassFacts, FileFacts};
 use crate::producers::{SharedProducers, mentions_shared};
@@ -148,6 +148,9 @@ struct Memo {
     /// else from the list. A flag rather than "is `facts` empty": the list may
     /// add nothing, and the scan must not run again on every lookup.
     known_indexed: bool,
+    /// The ids of the [`ProducerSource::Files`] list, once `known_indexed` is
+    /// set: the files any view may find a producer in.
+    seeded: FxHashSet<IndexedFileId>,
 }
 
 impl<'a> BatchIndex<'a> {
@@ -174,6 +177,7 @@ impl<'a> BatchIndex<'a> {
                 programs: FxHashMap::default(),
                 next_file_id: 1,
                 known_indexed: false,
+                seeded: FxHashSet::default(),
             }),
         }
     }
@@ -312,7 +316,11 @@ impl<'a> BatchIndex<'a> {
     /// makes the shared-dependency dedup stop paying: a hundred files inheriting
     /// one base would read that base a hundred times.
     pub fn excluding<'v>(&'v self, path: Option<&'v Path>) -> ExcludingFile<'v, 'a> {
-        ExcludingFile { index: self, path }
+        ExcludingFile {
+            index: self,
+            path,
+            reached: Mutex::default(),
+        }
     }
 
     /// The id this run assigned to `path`, or `None` if nothing has indexed it.
@@ -357,6 +365,75 @@ impl<'a> BatchIndex<'a> {
         self.memo
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The file that produces the `SHARED` name `name`, answered from the run's
+    /// known files plus either every file this run has indexed (`reached` is
+    /// `None`) or only the files in `reached`.
+    ///
+    /// Not memoized. A `SHARED` name maps onto no path — unlike a class name or a
+    /// `RUN` target, there is nothing to derive a candidate file from — so the
+    /// only ways to answer are to enumerate the workspace or to consult files the
+    /// run already knows. Enumerating is exactly the whole-workspace scan R6
+    /// forbids, and the `FileSystem` trait offers no directory listing to do it
+    /// with. The known files are the walk's own list, scanned once into a
+    /// producer map; the rest are the files lookups pulled in. Caching the
+    /// answer would freeze a `NotFound` that a later `RUN` lookup could have
+    /// turned into a hit, so the question is asked each time, over the
+    /// producers of this one name and the handful of files this run pulled in.
+    ///
+    /// Which files the run has pulled in depends on which files it analysed
+    /// before, so [`ExcludingFile`] passes the files its own lookups reached:
+    /// one file's answer then does not depend on what the run did for others.
+    ///
+    /// Two producers of one name is an ambiguity of the same shape the
+    /// literal-`RUN` rule refuses to guess at, so it declines rather than
+    /// picking whichever file happened to be indexed first — which also keeps
+    /// the answer independent of `HashMap` iteration order.
+    fn shared_producer_among(
+        &self,
+        name: &IndexName,
+        reached: Option<&FxHashSet<IndexedFileId>>,
+    ) -> IndexAnswer<IndexedFileId> {
+        let mut memo = self.memo();
+        let predefined = self.predefined();
+        let mut listed: &[PathBuf] = &[];
+        match self.producers {
+            ProducerSource::None => {}
+            ProducerSource::Shared(map) => listed = map.producers_of(name),
+            // Scanned on first ask. This is the only query the list feeds, and
+            // deferring it to here is what keeps a run that consumes no `SHARED`
+            // name from reading the whole walk.
+            ProducerSource::Files(files) => {
+                if !memo.known_indexed {
+                    memo.known_indexed = true;
+                    memo.index_possible_producers(&self.includes(&predefined), files);
+                }
+            }
+        }
+        let mut found = None;
+        let mut consider = |file: IndexedFileId| match found {
+            Some(first) if first != file => false,
+            _ => {
+                found = Some(file);
+                true
+            }
+        };
+        for path in listed {
+            let facts = memo.facts_for(&self.includes(&predefined), path);
+            if facts.defines_shared(name) && !consider(facts.file) {
+                return IndexAnswer::Unknowable;
+            }
+        }
+        for facts in memo.facts.values() {
+            let candidate = reached.is_none_or(|reached| {
+                reached.contains(&facts.file) || memo.seeded.contains(&facts.file)
+            });
+            if candidate && facts.defines_shared(name) && !consider(facts.file) {
+                return IndexAnswer::Unknowable;
+            }
+        }
+        found.map_or(IndexAnswer::NotFound, IndexAnswer::Found)
     }
 
     /// Resolve `name` to the facts of the class it names, memoized per key.
@@ -446,18 +523,21 @@ impl Memo {
     }
 
     /// Index the files of `files` that can produce a `SHARED` name, reading each
-    /// once. A file this index already knows is left as it is.
+    /// once, and remember them as seeded. A file this index already knows is
+    /// left as it is.
     fn index_possible_producers(&mut self, includes: &IncludeContext<'_>, files: &[PathBuf]) {
         for path in files {
             let key = search::normalize_lexically(path);
-            if self.facts.contains_key(&key) {
+            if let Some(known) = self.facts.get(&key) {
+                self.seeded.insert(known.file);
                 continue;
             }
             let Ok(source) = includes.fs.read(path) else {
                 continue;
             };
             if mentions_shared(&source) {
-                self.insert_facts(key, Some(&source), includes);
+                let file = self.insert_facts(key, Some(&source), includes).file;
+                self.seeded.insert(file);
             }
         }
     }
@@ -507,60 +587,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
     }
 
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
-        // Answered from the files this run knows of, and deliberately not memoized.
-        //
-        // A `SHARED` name maps onto no path — unlike a class name or a `RUN`
-        // target, there is nothing to derive a candidate file from — so the only
-        // ways to answer are to enumerate the workspace or to consult files the
-        // run already knows. Enumerating is exactly the whole-workspace scan R6
-        // forbids, and the `FileSystem` trait offers no directory listing to do
-        // it with. The known files are the walk's own list, scanned once into a
-        // producer map; the rest are the files other lookups pulled in. Caching
-        // the answer would freeze a `NotFound` that a later `RUN` lookup could
-        // have turned into a hit, so the question is asked each time, and it is
-        // over the producers of this one name and the handful of files this run
-        // actually pulled in.
-        //
-        // Two producers of one name is an ambiguity of the same shape the
-        // literal-`RUN` rule refuses to guess at, so it declines rather than
-        // picking whichever file happened to be indexed first — which also keeps
-        // the answer independent of `HashMap` iteration order.
-        let mut memo = self.memo();
-        let predefined = self.predefined();
-        let mut listed: &[PathBuf] = &[];
-        match self.producers {
-            ProducerSource::None => {}
-            ProducerSource::Shared(map) => listed = map.producers_of(name),
-            // Scanned on first ask. This is the only query the list feeds, and
-            // deferring it to here is what keeps a run that consumes no `SHARED`
-            // name from reading the whole walk.
-            ProducerSource::Files(files) => {
-                if !memo.known_indexed {
-                    memo.known_indexed = true;
-                    memo.index_possible_producers(&self.includes(&predefined), files);
-                }
-            }
-        }
-        let mut found = None;
-        let mut consider = |file: IndexedFileId| match found {
-            Some(first) if first != file => false,
-            _ => {
-                found = Some(file);
-                true
-            }
-        };
-        for path in listed {
-            let facts = memo.facts_for(&self.includes(&predefined), path);
-            if facts.defines_shared(name) && !consider(facts.file) {
-                return IndexAnswer::Unknowable;
-            }
-        }
-        for facts in memo.facts.values() {
-            if facts.defines_shared(name) && !consider(facts.file) {
-                return IndexAnswer::Unknowable;
-            }
-        }
-        found.map_or(IndexAnswer::NotFound, IndexAnswer::Found)
+        self.shared_producer_among(name, None)
     }
 
     fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
@@ -622,9 +649,19 @@ pub struct ExcludingFile<'v, 'a> {
     index: &'v BatchIndex<'a>,
     /// The analysed file, or `None` for a client with no path for its buffer.
     path: Option<&'v Path>,
+    /// Every file this view's own lookups answered with: the files besides the
+    /// seeded set that `shared_producer` may name.
+    reached: Mutex<FxHashSet<IndexedFileId>>,
 }
 
 impl ExcludingFile<'_, '_> {
+    fn reach(&self, file: IndexedFileId) {
+        self.reached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(file);
+    }
+
     /// Whether `file` is the analysed file. `false` whenever there is no
     /// identity to compare against, which is what makes the no-path client's
     /// behavior identical to an unexcluded index.
@@ -637,7 +674,11 @@ impl ExcludingFile<'_, '_> {
 
 impl WorkspaceIndex for ExcludingFile<'_, '_> {
     fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
-        match self.index.class(name) {
+        let answer = self.index.class(name);
+        if let IndexAnswer::Found(descriptor) = &answer {
+            self.reach(descriptor.file);
+        }
+        match answer {
             // `Unusable`, not `NotFound`: the file exists and is simply not usable
             // as a *foreign* file, because it is the one being analysed. Answering
             // `NotFound` would let a consumer report a name whose declaration is in
@@ -653,25 +694,34 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
         // The member list carries no file id of its own, so the owning class is
         // asked for one first. That costs nothing: both queries read the same
         // memo entry, so the pair is still one search and one parse.
-        if let IndexAnswer::Found(descriptor) = self.index.class(class)
-            && self.is_analysed(descriptor.file)
-        {
-            // Same answer `class` gives for the same reason: the file exists and
-            // is not usable as a foreign one.
-            return IndexAnswer::Unusable;
+        if let IndexAnswer::Found(descriptor) = self.index.class(class) {
+            self.reach(descriptor.file);
+            if self.is_analysed(descriptor.file) {
+                // Same answer `class` gives for the same reason: the file exists and
+                // is not usable as a foreign one.
+                return IndexAnswer::Unusable;
+            }
         }
         self.index.class_members(class)
     }
 
     fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
-        match self.index.program(target) {
+        let answer = self.index.program(target);
+        if let IndexAnswer::Found(file) = answer {
+            self.reach(file);
+        }
+        match answer {
             IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::Unusable,
             other => other,
         }
     }
 
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
-        match self.index.shared_producer(name) {
+        let reached = self
+            .reached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match self.index.shared_producer_among(name, Some(&reached)) {
             // Deliberately `NotFound` rather than `Unusable`: an unlinked `SHARED`
             // consumer produces no diagnostic either way, and a producer that is
             // really the analysed file's own earlier revision is not a producer at
@@ -682,7 +732,11 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
     }
 
     fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
-        match self.index.located(kind, name) {
+        let answer = self.index.located(kind, name);
+        if let Located::In(file) = answer {
+            self.reach(file);
+        }
+        match answer {
             Located::In(file) if self.is_analysed(file) => Located::Itself,
             other => other,
         }
@@ -1111,6 +1165,32 @@ mod tests {
             index.shared_producer(&IndexName::new("v-never-defined")),
             IndexAnswer::NotFound
         );
+    }
+
+    #[test]
+    fn a_view_names_only_a_producer_its_own_lookups_reached() {
+        let fs = CountingFs::new(&[(
+            "/src/init-globals.p",
+            "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.",
+        )]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let shared = IndexName::new("v-site-code");
+
+        let earlier = index.excluding(Some(Path::new("/src/starter.p")));
+        let IndexAnswer::Found(file) = earlier.program(&IndexName::new("init-globals.p")) else {
+            panic!("the program is on the paths");
+        };
+        assert_eq!(earlier.shared_producer(&shared), IndexAnswer::Found(file));
+
+        // The memo now holds the producer, but this file never reached it.
+        let later = index.excluding(Some(Path::new("/src/report.p")));
+        assert_eq!(later.shared_producer(&shared), IndexAnswer::NotFound);
+        assert_eq!(
+            later.program(&IndexName::new("init-globals.p")),
+            IndexAnswer::Found(file)
+        );
+        assert_eq!(later.shared_producer(&shared), IndexAnswer::Found(file));
     }
 
     #[test]
