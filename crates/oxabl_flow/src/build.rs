@@ -174,7 +174,7 @@ fn collect_units<'a>(
 ) {
     for s in stmts {
         match &s.kind {
-            SK::Procedure { name, body } => {
+            SK::Procedure { name, body, .. } => {
                 let id = push_unit(out, s, parent, UnitKind::Procedure, Some(&name.name), body);
                 collect_units(body, id, src, out);
             }

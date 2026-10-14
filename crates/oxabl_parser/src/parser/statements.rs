@@ -3332,11 +3332,13 @@ impl Parser<'_> {
             }
         }
 
+        let mut is_prototype = false;
         // Skip optional EXTERNAL "dll-name" [calling-convention] [PERSISTENT] clause
         // e.g. PROCEDURE foo EXTERNAL "mylib.dll" cdecl:
         // The DLL name may also be a preprocessor reference: EXTERNAL {&DLL_NAME}
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
+            is_prototype = true;
             // DLL name: string literal or preprocessor/include reference
             if self.check(Kind::StringLiteral)
                 || self.check(Kind::Preprop)
@@ -3370,6 +3372,7 @@ impl Parser<'_> {
         // ADM2 prototype includes (smrtprto.i, qryprto.i, …) rely on this form (#65).
         if self.check(Kind::KwIn) {
             self.advance(); // consume IN
+            is_prototype = true;
             if self.check(Kind::ThisProcedure)
                 || self.check(Kind::StringLiteral)
                 || self.check(Kind::Preprop)
@@ -3393,6 +3396,7 @@ impl Parser<'_> {
                 return Ok(self.stmt(StatementKind::Procedure {
                     name,
                     body: Vec::new(),
+                    is_prototype,
                 }));
             }
         }
@@ -3431,7 +3435,11 @@ impl Parser<'_> {
             });
         }
 
-        Ok(self.stmt(StatementKind::Procedure { name, body }))
+        Ok(self.stmt(StatementKind::Procedure {
+            name,
+            body,
+            is_prototype,
+        }))
     }
 
     // parse RUN statements

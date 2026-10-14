@@ -406,7 +406,11 @@ impl<'a> Walker<'a> {
             }
 
             // ---- Procedure / Function -------------------------------------
-            StatementKind::Procedure { name, body } => {
+            StatementKind::Procedure {
+                name,
+                body,
+                is_prototype,
+            } => {
                 self.declare(
                     stmt,
                     scope,
@@ -414,7 +418,11 @@ impl<'a> Walker<'a> {
                     NamespaceId::Procedures,
                     SymbolKind::Procedure,
                     None,
-                    SymbolFlags::empty(),
+                    if *is_prototype {
+                        SymbolFlags::PROTOTYPE
+                    } else {
+                        SymbolFlags::empty()
+                    },
                     None,
                 );
                 let proc_scope = self.tree.push(ScopeKind::Procedure, scope, stmt.id);
@@ -555,7 +563,7 @@ impl<'a> Walker<'a> {
                     NamespaceId::Values,
                     SymbolKind::Variable,
                     Some(ResolvedType::Unknown),
-                    SymbolFlags::empty(),
+                    SymbolFlags::CATCH_VARIABLE,
                     None,
                 );
                 self.walk_block(body, cs);
@@ -5853,6 +5861,7 @@ mod tests {
         let (tree, symbols, diags) = run(vec![stmt(StatementKind::Procedure {
             name: id("doThing"),
             body: vec![var_stmt("local", DataType::Integer)],
+            is_prototype: false,
         })]);
         assert!(diags.is_empty());
         let proc = find_symbol(&tree, &symbols, NamespaceId::Procedures, "doThing").unwrap();
@@ -6197,10 +6206,12 @@ mod tests {
             stmt(StatementKind::Procedure {
                 name: id("a"),
                 body: vec![a_block],
+                is_prototype: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("b"),
                 body: vec![b_block],
+                is_prototype: false,
             }),
         ]);
         assert!(
@@ -6245,10 +6256,12 @@ mod tests {
             stmt(StatementKind::Procedure {
                 name: id("p"),
                 body: vec![],
+                is_prototype: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("p"),
                 body: vec![],
+                is_prototype: false,
             }),
         ]);
         assert_eq!(diags.len(), 1);
@@ -8917,6 +8930,7 @@ mod tests {
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
+            is_prototype: false,
         });
         let stmts = vec![var_stmt_n("outer", DataType::Integer), proc];
         let (_t, _s, refs, _) = run_full(&stmts);
@@ -9043,6 +9057,7 @@ mod tests {
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(use_s))],
+            is_prototype: false,
         });
         let stmts = vec![proc];
         let (_t, symbols, refs, _) = run_full(&stmts);

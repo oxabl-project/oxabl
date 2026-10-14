@@ -4222,7 +4222,7 @@ END PROCEDURE.
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "my-proc");
             assert_eq!(body.len(), 3);
             // First statement should be input parameter
@@ -4276,7 +4276,7 @@ END PROCEDURE.
         .parse_statement()
         .expect("PROCEDURE … IN SUPER: must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "assignDBRow");
             assert_eq!(body.len(), 1);
             match &body[0].kind {
@@ -4299,7 +4299,7 @@ fn parse_procedure_in_super_period_only_empty_body() {
         .parse_statement()
         .expect("PROCEDURE … IN SUPER. must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "assignDBRow");
             assert!(body.is_empty(), "period form has empty body");
         }
@@ -4319,7 +4319,7 @@ END PROCEDURE.
         .parse_statement()
         .expect("PROCEDURE … IN THIS-PROCEDURE: must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "local-hook");
             assert!(body.is_empty());
         }
@@ -4339,7 +4339,7 @@ END PROCEDURE.
         .parse_statement()
         .expect("PROCEDURE … IN hSuper: must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "doWork");
             assert!(body.is_empty());
         }
@@ -4366,14 +4366,14 @@ END PROCEDURE.
     );
     assert_eq!(program.statements.len(), 2);
     match &program.statements[0].kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "a");
             assert!(body.is_empty());
         }
         _ => panic!("Expected first Procedure"),
     }
     match &program.statements[1].kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "b");
             assert_eq!(body.len(), 1);
         }
@@ -10418,7 +10418,7 @@ END PROCEDURE."#;
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "myProc");
             assert_eq!(body.len(), 1);
             assert!(matches!(body[0].kind, StatementKind::On { .. }));
@@ -10608,7 +10608,7 @@ fn parse_include_inside_procedure() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "my-proc");
             assert_eq!(body.len(), 1);
             assert!(matches!(

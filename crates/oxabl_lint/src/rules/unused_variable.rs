@@ -763,6 +763,7 @@ mod tests {
         let diags = analyze_and_lint(vec![stmt(StatementKind::Procedure {
             name: id("p"),
             body: vec![],
+            is_prototype: false,
         })]);
         assert!(diags.is_empty());
     }

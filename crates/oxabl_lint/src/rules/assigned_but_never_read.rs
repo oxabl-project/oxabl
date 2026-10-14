@@ -485,6 +485,7 @@ mod tests {
         // Shared skip-list: writing is an OUTPUT parameter's whole contract.
         let stmts = vec![stmt(StatementKind::Procedure {
             name: id("p"),
+            is_prototype: false,
             body: vec![
                 stmt(StatementKind::DefineParameter {
                     direction: ParameterDirection::Output,
