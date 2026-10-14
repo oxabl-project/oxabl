@@ -312,7 +312,7 @@ fn tokenize(input: &str) -> Vec<CondToken> {
 }
 
 /// The offset after the block comment that starts at `start`. Comments nest.
-fn skip_comment(bytes: &[u8], start: usize) -> usize {
+pub(crate) fn skip_comment(bytes: &[u8], start: usize) -> usize {
     let mut depth = 0;
     let mut i = start;
     while i < bytes.len() {
