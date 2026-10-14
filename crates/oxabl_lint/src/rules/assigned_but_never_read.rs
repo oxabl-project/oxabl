@@ -61,15 +61,13 @@
 //! counts stay exact: the flag says "these counts are incomplete", it does not
 //! fabricate an access.
 //!
-//! Two gaps remain, and one property of the fix is worth knowing:
+//! A modelled statement that discards a trailing region (`DISPLAY … WITH FRAME f
+//! TITLE x`, `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing content, …) offers the
+//! identifiers of that region on `Statement::skipped_tail`, and the resolve pass
+//! marks them the same way.
 //!
-//! - **Skipped tails inside *modelled* statements.** Around a dozen sites parse
-//!   a real statement and then discard a trailing region that can contain
-//!   genuine reads — `DISPLAY … WITH FRAME f` options (which routinely hold
-//!   `title "x" + table.field`), `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing
-//!   content, `ASSIGN FRAME f`, `FUNCTION … IN super`, and the stream-I/O option
-//!   tails. Same root cause, but the statement node is already occupied, so the
-//!   payload shape used here does not transfer. Tracked by #134.
+//! One gap remains, and one property of the fix is worth knowing:
+//!
 //! - **Keyword collisions.** The harvest keeps unreserved option keywords
 //!   (`VALUE`, `FORMAT`, `LABEL`, `FRAME`, `TITLE`, …) as candidate names,
 //!   because ABL lexes a user's variable named `value` as `Kind::Value` and the

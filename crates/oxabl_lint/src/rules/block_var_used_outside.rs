@@ -61,15 +61,12 @@
 //! [`is_skipped`](super::unused_symbol_shared::is_skipped) predicate, the same
 //! one LINT0002 and LINT0006 use.
 //!
-//! Two gaps remain, and both are quiet rather than loud — they cost findings,
-//! not correctness:
+//! Names in a skipped tail of a *modelled* statement (`Statement::skipped_tail`)
+//! are marked the same way.
 //!
-//! - **Skipped tails inside *modelled* statements.** Around a dozen sites parse
-//!   a real statement and then discard a trailing region that can contain
-//!   genuine reads (`DISPLAY … WITH FRAME f (title "x" + v-name)`, `DEFINE
-//!   VARIABLE … VIEW-AS`, `RUN` trailing content). The statement node is already
-//!   occupied, so the harvest payload used here does not transfer. Tracked by
-//!   #134.
+//! One gap remains, and it is quiet rather than loud — it costs findings, not
+//! correctness:
+//!
 //! - **Keyword collisions.** The harvest keeps unreserved option keywords as
 //!   candidate names, because ABL lexes a user's variable named `value` as
 //!   `Kind::Value` and the parser cannot tell them apart inside a statement

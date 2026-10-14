@@ -24,11 +24,11 @@ pub struct PreprocIf<T> {
 const _: () = assert!(std::mem::size_of::<StatementKind>() <= 720);
 
 // Lock the `Statement` wrapper size deliberately (KTD4). The wrapper adds a
-// `NodeId` (4 bytes) and a `Span` (8 bytes) on top of `StatementKind`; padding
-// keeps the total at `size_of::<StatementKind>() + 16`. Bump the bound
-// deliberately if the wrapper legitimately grows.
+// `NodeId` (4 bytes), a `Span` (8 bytes) and the one-pointer `skipped_tail` on
+// top of `StatementKind`, padded to alignment. Bump the bound deliberately if
+// the wrapper legitimately grows.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Statement>() <= 720 + 16);
+const _: () = assert!(std::mem::size_of::<Statement>() <= 720 + 24);
 
 /// A statement in ABL — an executable unit that performs an action.
 /// All statements are terminated by a period.
@@ -728,6 +728,24 @@ pub struct Statement {
     /// parser stamps a real span. Excluded from `PartialEq`
     /// (`docs/design/ast-invariants.md` §1).
     pub span: Span,
+    /// Identifier-shaped tokens of a trailing range the parser skipped without
+    /// modelling, on a statement that is itself modelled (`DISPLAY ... WITH
+    /// FRAME f TITLE x`, `RETURN ERROR msg`, the `VIEW-AS` tail of a `DEFINE
+    /// VARIABLE`, ...). `None` when nothing was skipped or the range held no
+    /// identifier. [`StatementKind::Skipped`] is the equivalent for a statement
+    /// that is skipped whole.
+    ///
+    /// Filtered lexically, exactly as [`StatementKind::Skipped::names`] is, and
+    /// meant only for the semantic pass's best-effort lookup: a name here can
+    /// silence a diagnostic, never raise one. Excluded from `PartialEq`.
+    pub skipped_tail: Option<Box<SkippedTail>>,
+}
+
+/// The identifiers of a [`Statement::skipped_tail`]. A named struct so the field
+/// is one pointer wide: `Statement` is the element type of every block body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedTail {
+    pub names: Vec<Identifier>,
 }
 
 impl Statement {
@@ -742,6 +760,7 @@ impl Statement {
             id: NodeId::DUMMY,
             kind,
             span: Span::DUMMY,
+            skipped_tail: None,
         }
     }
 
@@ -750,7 +769,12 @@ impl Statement {
     /// Used by the parser; external callers should prefer [`Statement::new`].
     #[inline]
     pub fn with_id(id: NodeId, span: Span, kind: StatementKind) -> Self {
-        Statement { id, kind, span }
+        Statement {
+            id,
+            kind,
+            span,
+            skipped_tail: None,
+        }
     }
 }
 

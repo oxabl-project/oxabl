@@ -349,28 +349,6 @@ v-known = v-ghost-in-expression.
     );
 }
 
-/// The deferred class, pinned. `DISPLAY … WITH FRAME f` parses to a real
-/// `Display` node and discards its option tail, so a read living in that tail is
-/// still invisible and `v-title-part` is still falsely reported.
-///
-/// This test asserts the *bug*, on purpose. It is the visible marker for #134,
-/// and it will fail — loudly, in the right file — when that work lands.
-#[test]
-fn deferred_modelled_tail_class_is_still_a_false_positive() {
-    let src = "\
-DEFINE VARIABLE v-title-part AS CHARACTER NO-UNDO.
-DEFINE VARIABLE v-shown AS INTEGER NO-UNDO.
-v-title-part = \"Orders\".
-DISPLAY v-shown WITH FRAME f-main TITLE \"Report: \" + v-title-part.
-";
-    let diags = lint_all(src, LintSeverityMap::new());
-    let dead = of_code(&diags, LINT0006);
-    assert!(
-        dead.iter().any(|d| d.1.contains("v-title-part")),
-        "#134 has landed — delete this test and credit the tail read instead: {diags:?}"
-    );
-}
-
 /// Severity config is orthogonal to the new suppression: turning a rule off
 /// still turns it off.
 #[test]

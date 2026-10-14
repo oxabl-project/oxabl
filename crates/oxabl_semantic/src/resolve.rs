@@ -2491,6 +2491,9 @@ impl<'a> ResolveWalker<'a> {
     }
 
     fn walk_statement(&mut self, stmt: &Statement, scope: ScopeId) {
+        if let Some(tail) = &stmt.skipped_tail {
+            self.credit_unmodelled_names(&tail.names, scope);
+        }
         match &stmt.kind {
             // ---- Declarations with initializers --------------------------
             StatementKind::VariableDeclaration {

@@ -11,10 +11,10 @@ use oxabl_ast::{
     CreateTarget, CreateTargetKind, DataRelation, DataSourceBuffer, DataSourceKeys, DbTriggerEvent,
     DisplayItem, Expression, ExpressionKind, FindType, HandleParamKind, HandlePassingOptions,
     Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
-    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SortDirection, Span,
-    Statement, StatementKind, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget,
-    TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource,
-    UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
+    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SkippedTail, SortDirection,
+    Span, Statement, StatementKind, StreamDirection, StreamOperation, StringLiteral,
+    SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
+    TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
     XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
@@ -82,6 +82,9 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
             | Kind::Insert
     )
 }
+
+/// The pairs of an `ASSIGN`, and the tail a missing `=` made the parser skip.
+type AssignPairs = (SmallVec<[AssignPair; 4]>, Option<Box<SkippedTail>>);
 
 impl Parser<'_> {
     /// Parse one statement and stamp its full-extent span (`lo..prev_end`,
@@ -975,8 +978,8 @@ impl Parser<'_> {
                 && self.block_keyword_follows_label_colon();
 
             if !next_is_new_statement && !next_is_block_label {
-                let _ = self.skip_to_statement_end();
-                return Ok(self.stmt(StatementKind::ExpressionStatement(expr)));
+                let tail = self.skip_tail_to_statement_end();
+                return Ok(self.stmt_with_tail(StatementKind::ExpressionStatement(expr), tail));
             }
             // Next token is a new statement — treat current expression as
             // already-terminated (preprop macro expanded its own period).
@@ -1310,16 +1313,20 @@ impl Parser<'_> {
                     // AppBuilder-style declarations put NO-UNDO after the UI options.
                     let (lo, hi) = self.skip_to_statement_end();
                     no_undo |= self.tokens[lo..hi].iter().any(|t| t.kind == Kind::NoUndo);
-                    return Ok(self.stmt(StatementKind::VariableDeclaration {
-                        name,
-                        type_source,
-                        initial_value,
-                        no_undo,
-                        extent,
-                        is_new_shared,
-                        is_shared,
-                        is_new_global_shared,
-                    }));
+                    let tail = self.skipped_tail((lo, hi));
+                    return Ok(self.stmt_with_tail(
+                        StatementKind::VariableDeclaration {
+                            name,
+                            type_source,
+                            initial_value,
+                            no_undo,
+                            extent,
+                            is_new_shared,
+                            is_shared,
+                            is_new_global_shared,
+                        },
+                        tail,
+                    ));
                 }
                 _ => break,
             }
@@ -2942,8 +2949,8 @@ impl Parser<'_> {
                 }
                 self.current = after_modifier;
             }
-            let _ = self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Return(None)));
+            let tail = self.skip_tail_to_statement_end();
+            return Ok(self.stmt_with_tail(StatementKind::Return(None), tail));
         }
 
         // RETURN NO-APPLY. — standard UI-trigger return keyword. Consumed as a
@@ -3856,23 +3863,27 @@ impl Parser<'_> {
 
         // Skip any trailing content before the period (e.g. hold-code.hold-logic or extra ')')
         // and consume the terminating period.
+        let mut tail = None;
         if !self.check(Kind::Period) && !self.at_end() {
-            let _ = self.skip_to_statement_end();
+            tail = self.skip_tail_to_statement_end();
         } else {
             self.expect_period("Expected '.' after RUN statement")?;
         }
 
-        Ok(self.stmt(StatementKind::Run {
-            target,
-            arguments,
-            in_handle,
-            persistent,
-            persistent_handle,
-            asynchronous,
-            async_handle,
-            event_procedure,
-            no_error,
-        }))
+        Ok(self.stmt_with_tail(
+            StatementKind::Run {
+                target,
+                arguments,
+                in_handle,
+                persistent,
+                persistent_handle,
+                asynchronous,
+                async_handle,
+                event_procedure,
+                no_error,
+            },
+            tail,
+        ))
     }
 
     /// Parse a handle expression for `RUN ... IN <handle>`.
@@ -4074,13 +4085,16 @@ impl Parser<'_> {
             frame = Some(self.parse_identifier()?);
             // Use skip_to_statement_end() to avoid stopping at field-access dots
             // inside expressions (e.g. title "..." + table.field + "...").
-            let _ = self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Display {
-                stream_name,
-                items,
-                except,
-                frame,
-            }));
+            let tail = self.skip_tail_to_statement_end();
+            return Ok(self.stmt_with_tail(
+                StatementKind::Display {
+                    stream_name,
+                    items,
+                    except,
+                    frame,
+                },
+                tail,
+            ));
         }
 
         // Parse optional WITH FRAME clause
@@ -4092,13 +4106,16 @@ impl Parser<'_> {
             }
             // Skip all WITH options to statement end (handles field-access dots in
             // expressions like `title "prefix" + table.field + "suffix"`).
-            let _ = self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Display {
-                stream_name,
-                items,
-                except,
-                frame,
-            }));
+            let tail = self.skip_tail_to_statement_end();
+            return Ok(self.stmt_with_tail(
+                StatementKind::Display {
+                    stream_name,
+                    items,
+                    except,
+                    frame,
+                },
+                tail,
+            ));
         }
 
         self.expect_period("Expected '.' after DISPLAY statement")?;
@@ -4201,12 +4218,16 @@ impl Parser<'_> {
         // ASSIGN FRAME framename [field...] -- frame-field assignment form (no = pairs)
         // skip_to_period() already consumes the terminating period
         if self.check(Kind::Frame) {
-            let _ = self.skip_to_period();
-            return Ok(self.stmt(StatementKind::Assign {
-                assignments: SmallVec::new(),
-            }));
+            let range = self.skip_to_period();
+            let tail = self.skipped_tail(range);
+            return Ok(self.stmt_with_tail(
+                StatementKind::Assign {
+                    assignments: SmallVec::new(),
+                },
+                tail,
+            ));
         }
-        let assignments = self.parse_assign_pairs()?;
+        let (assignments, tail) = self.parse_assign_pairs()?;
         // Optional NO-ERROR after ASSIGN
         if self.check(Kind::NoError) {
             self.advance();
@@ -4216,14 +4237,18 @@ impl Parser<'_> {
         if self.check(Kind::Period) {
             self.advance();
         }
-        Ok(self.stmt(StatementKind::Assign { assignments }))
+        Ok(self.stmt_with_tail(StatementKind::Assign { assignments }, tail))
     }
 
     /// Parse one or more `target = value` pairs for ASSIGN and BUFFER-COPY ASSIGN clauses.
     /// Stops at period, NO-ERROR, or end of input.
-    fn parse_assign_pairs(&mut self) -> ParseResult<SmallVec<[AssignPair; 4]>> {
+    ///
+    /// The tail is what a missing `=` made it skip, if anything; the caller
+    /// attaches it to its statement.
+    fn parse_assign_pairs(&mut self) -> ParseResult<AssignPairs> {
         let mut assignments = SmallVec::new();
         while !self.check(Kind::Period) && !self.check(Kind::NoError) && !self.at_end() {
+            let pair_start = self.current;
             let target = self.parse_additive()?;
             // Optional IN FRAME/BROWSE before '=': widget:attr IN FRAME f = value
             if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse)
@@ -4235,9 +4260,11 @@ impl Parser<'_> {
             // If '=' is missing, the target expression consumed more than just the LHS
             // (e.g. MENU widget-name:HANDLE where MENU is an identifier prefix).
             // Skip to statement end and return accumulated pairs rather than erroring.
+            // The dropped target is part of the tail.
             if !self.check(Kind::Equals) {
-                let _ = self.skip_to_statement_end();
-                return Ok(assignments);
+                let (_, hi) = self.skip_to_statement_end();
+                let tail = self.skipped_tail((pair_start, hi));
+                return Ok((assignments, tail));
             }
             self.advance(); // consume '='
             // Handle "ASSIGN x = ." — assignment with no value, period terminates.
@@ -4274,7 +4301,7 @@ impl Parser<'_> {
             }
             assignments.push(AssignPair { target, value });
         }
-        Ok(assignments)
+        Ok((assignments, None))
     }
 
     /// Parse the RHS of `target = value` for ASSIGN and bare assignment.
@@ -4496,13 +4523,16 @@ impl Parser<'_> {
         // IN super|this-procedure|handle — external function reference (forward declaration)
         // e.g. "function name returns type (params) in super."
         if self.check(Kind::KwIn) {
-            let _ = self.skip_to_statement_end();
-            return Ok(self.stmt(StatementKind::Function {
-                name,
-                return_type,
-                body: Vec::new(),
-                prototype_parameters: signature_params,
-            }));
+            let tail = self.skip_tail_to_statement_end();
+            return Ok(self.stmt_with_tail(
+                StatementKind::Function {
+                    name,
+                    return_type,
+                    body: Vec::new(),
+                    prototype_parameters: signature_params,
+                },
+                tail,
+            ));
         }
 
         // MAP TO name IN handle — external function mapping (class context)
@@ -5906,22 +5936,25 @@ impl Parser<'_> {
         let target = self.parse_identifier()?;
 
         // Optional ASSIGN clause
-        let assignments = if self.check(Kind::Assign) {
+        let (assignments, tail) = if self.check(Kind::Assign) {
             self.advance(); // consume ASSIGN
             self.parse_assign_pairs()?
         } else {
-            SmallVec::new()
+            (SmallVec::new(), None)
         };
 
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after BUFFER-COPY statement")?;
 
-        Ok(self.stmt(StatementKind::BufferCopy {
-            source,
-            target,
-            assignments,
-            no_error,
-        }))
+        Ok(self.stmt_with_tail(
+            StatementKind::BufferCopy {
+                source,
+                target,
+                assignments,
+                no_error,
+            },
+            tail,
+        ))
     }
 
     // BUFFER-COMPARE source TO target [SAVE RESULT IN lvar] [NO-ERROR].
@@ -6239,8 +6272,8 @@ impl Parser<'_> {
         self.advance(); // consume STREAM
         let name = self.parse_identifier()?;
         // Skip any options or include files before the terminating period
-        let _ = self.skip_to_statement_end();
-        Ok(self.stmt(StatementKind::DefineStream { name }))
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::DefineStream { name }, tail))
     }
 
     /// Parse DEFINE FRAME frame-name ... .
@@ -6255,18 +6288,14 @@ impl Parser<'_> {
         // Skip frame phrase content.  Use skip_to_statement_end() so that field-access dots
         // inside VALIDATE expressions (e.g. t-pc-center.company) are not mistaken for
         // the terminating period.
-        // The harvest range is discarded here: this site keeps a real
-        // `DefineFrame` node, so there is no `Skipped` payload to hang the names
-        // on. The frame-phrase reads it drops are the deferred modelled-tail
-        // class tracked by #134.
-        let _ = self.skip_to_statement_end();
+        let tail = self.skip_tail_to_statement_end();
         let raw_end = self.tokens[self.current - 1].start as u32;
         let raw_span = Span {
             start: raw_start,
             end: raw_end,
         };
 
-        Ok(self.stmt(StatementKind::DefineFrame { name, raw_span }))
+        Ok(self.stmt_with_tail(StatementKind::DefineFrame { name, raw_span }, tail))
     }
 
     /// Parse INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.
@@ -6360,21 +6389,28 @@ impl Parser<'_> {
             // contains tokens invalid in ABL expressions (%, etc.). Try to parse
             // as an expression; if it fails, skip to the statement end and use an
             // Unknown placeholder so the rest of the file can still be parsed.
+            let target_start = self.current;
             let target = match self.parse_expression() {
                 Ok(expr) => expr,
                 Err(_) => {
-                    let _ = self.skip_to_statement_end();
+                    // The failed expression may have consumed tokens before it
+                    // gave up, so the tail starts where it did.
+                    let (_, hi) = self.skip_to_statement_end();
+                    let tail = self.skipped_tail((target_start, hi));
                     let span = self.current_span();
                     let dummy_expr = self.spanned_expr(
                         span.start,
                         span.end,
                         ExpressionKind::Literal(Literal::Unknown(UnknownLiteral { span })),
                     );
-                    return Ok(self.stmt(StatementKind::StreamIo {
-                        direction,
-                        stream_name,
-                        operation: StreamOperation::Through(dummy_expr),
-                    }));
+                    return Ok(self.stmt_with_tail(
+                        StatementKind::StreamIo {
+                            direction,
+                            stream_name,
+                            operation: StreamOperation::Through(dummy_expr),
+                        },
+                        tail,
+                    ));
                 }
             };
             StreamOperation::Through(target)
@@ -6394,13 +6430,16 @@ impl Parser<'_> {
         // Skip optional trailing clauses: NO-ECHO, CONVERT TARGET "...", PAGE-SIZE n, etc.
         // Use skip_to_statement_end to avoid stopping at field-access dots
         // inside VALUE() arguments (e.g. VALUE(warehouse.remote-host-name)).
-        let _ = self.skip_to_statement_end();
+        let tail = self.skip_tail_to_statement_end();
 
-        Ok(self.stmt(StatementKind::StreamIo {
-            direction,
-            stream_name,
-            operation,
-        }))
+        Ok(self.stmt_with_tail(
+            StatementKind::StreamIo {
+                direction,
+                stream_name,
+                operation,
+            },
+            tail,
+        ))
     }
 
     // ── Preprocessor parsing ─────────────────────────────────────────
