@@ -1482,31 +1482,47 @@ mod tests {
     /// disk.
     #[test]
     fn a_buffer_does_not_resolve_a_class_to_its_own_file_on_disk() {
+        // An unread parent leaves the inherited call silent, so resolution is
+        // observed through the type mismatch only a resolved call can produce.
+        const MISMATCHED_CHILD: &str = "CLASS orders.child INHERITS orders.calc-base:\n\
+                                        METHOD PUBLIC VOID run-it():\n\
+                                        DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n\
+                                        v-flag = calc-total().\n\
+                                        MESSAGE v-flag.\n\
+                                        END METHOD.\n\
+                                        END CLASS.";
+        fn judged(diagnostics: &CollectedDiagnostics) -> bool {
+            diagnostics.all().any(|c| c.diagnostic.code.0 == "LINT0004")
+        }
         let fs = EditableFs::new(&[(PARENT_PATH, PARENT)]);
         let db = AnalysisDatabase::new(searching_config(Arc::clone(&fs) as Arc<dyn FileSystem>));
         let schema = SchemaHandle::new(&db, 0);
 
         let itself = Buffer::new(
             &db,
-            CHILD.to_string(),
+            MISMATCHED_CHILD.to_string(),
             Some(PathBuf::from("/src/orders/./calc-base.cls")),
         );
         assert!(
-            undefined(&compute_diagnostics(&db, itself, schema).unwrap()),
+            !judged(&compute_diagnostics(&db, itself, schema).unwrap()),
             "a file must not resolve a class to itself — including through a \
              differently spelled path"
         );
 
         // The control: any other file's buffer still resolves it.
-        let neighbour = Buffer::new(&db, CHILD.to_string(), Some(PathBuf::from(CHILD_PATH)));
-        assert!(!undefined(
+        let neighbour = Buffer::new(
+            &db,
+            MISMATCHED_CHILD.to_string(),
+            Some(PathBuf::from(CHILD_PATH)),
+        );
+        assert!(judged(
             &compute_diagnostics(&db, neighbour, schema).unwrap()
         ));
 
         // And a document with no path at all behaves like an unexcluded index,
         // which is the browser-shaped case.
-        let anonymous = Buffer::new(&db, CHILD.to_string(), None);
-        assert!(!undefined(
+        let anonymous = Buffer::new(&db, MISMATCHED_CHILD.to_string(), None);
+        assert!(judged(
             &compute_diagnostics(&db, anonymous, schema).unwrap()
         ));
     }

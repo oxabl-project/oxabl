@@ -3055,6 +3055,7 @@ fn parse_simple_repeat() {
         StatementKind::Repeat {
             body,
             while_condition,
+            ..
         } => {
             assert!(while_condition.is_none());
             assert_eq!(body.len(), 2);
@@ -3241,6 +3242,7 @@ fn parse_simple_for_each() {
             where_clause,
             lock_type,
             body,
+            ..
         } => {
             assert_eq!(buffer.name, "Customer");
             assert!(of_relation.is_none());
@@ -3471,6 +3473,7 @@ fn parse_simple_for_each_no_lock_space() {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![]
         }
     );
@@ -3493,6 +3496,7 @@ fn parse_simple_for_each_share_lock_space() {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::ShareLock,
+            on_actions: Vec::new(),
             body: vec![]
         }
     );
@@ -3515,6 +3519,7 @@ fn parse_simple_for_each_exclusive_lock_space() {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::ExclusiveLock,
+            on_actions: Vec::new(),
             body: vec![]
         }
     );
@@ -4222,7 +4227,7 @@ END PROCEDURE.
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "my-proc");
             assert_eq!(body.len(), 3);
             // First statement should be input parameter
@@ -4276,7 +4281,7 @@ END PROCEDURE.
         .parse_statement()
         .expect("PROCEDURE … IN SUPER: must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "assignDBRow");
             assert_eq!(body.len(), 1);
             match &body[0].kind {
@@ -4299,7 +4304,7 @@ fn parse_procedure_in_super_period_only_empty_body() {
         .parse_statement()
         .expect("PROCEDURE … IN SUPER. must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "assignDBRow");
             assert!(body.is_empty(), "period form has empty body");
         }
@@ -4319,7 +4324,7 @@ END PROCEDURE.
         .parse_statement()
         .expect("PROCEDURE … IN THIS-PROCEDURE: must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "local-hook");
             assert!(body.is_empty());
         }
@@ -4339,7 +4344,7 @@ END PROCEDURE.
         .parse_statement()
         .expect("PROCEDURE … IN hSuper: must parse");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "doWork");
             assert!(body.is_empty());
         }
@@ -4366,14 +4371,14 @@ END PROCEDURE.
     );
     assert_eq!(program.statements.len(), 2);
     match &program.statements[0].kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "a");
             assert!(body.is_empty());
         }
         _ => panic!("Expected first Procedure"),
     }
     match &program.statements[1].kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "b");
             assert_eq!(body.len(), 1);
         }
@@ -10418,7 +10423,7 @@ END PROCEDURE."#;
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "myProc");
             assert_eq!(body.len(), 1);
             assert!(matches!(body[0].kind, StatementKind::On { .. }));
@@ -10608,7 +10613,7 @@ fn parse_include_inside_procedure() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Procedure { name, body } => {
+        StatementKind::Procedure { name, body, .. } => {
             assert_eq!(name.name, "my-proc");
             assert_eq!(body.len(), 1);
             assert!(matches!(
@@ -11948,16 +11953,301 @@ fn dynamic_new_is_a_function_call_over_the_class_and_arguments() {
 }
 
 #[test]
-fn define_work_table_is_skipped_like_workfile() {
+fn define_workfile_declares_a_temp_table() {
     for source in [
-        "DEFINE WORK-TABLE wt FIELD a AS INTEGER.",
-        "DEFINE SHARED WORKFILE wf FIELD a AS INTEGER.",
+        "DEFINE WORK-TABLE wt FIELD a AS INTEGER FIELD b LIKE t.f.",
+        "DEFINE SHARED WORKFILE wt FIELD a AS INTEGER FIELD b LIKE t.f.",
     ] {
         let program = Parser::new(&tokenize(source), source).parse_program();
         assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
-        assert!(matches!(
-            program.statements[0].kind,
-            StatementKind::Skipped { .. }
-        ));
+        let StatementKind::DefineTempTable { name, fields, .. } = &program.statements[0].kind
+        else {
+            panic!(
+                "expected DefineTempTable, got {:?}",
+                program.statements[0].kind
+            );
+        };
+        assert_eq!(name.name, "wt");
+        assert_eq!(fields.len(), 2);
     }
+}
+
+#[test]
+fn a_block_header_on_phrase_keeps_its_action_expression() {
+    for source in [
+        "DO ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "DO ON ERROR UNDO, THROW NEW pkg.Err(): END.",
+        "DO ON ENDKEY UNDO, LEAVE ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "REPEAT ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "FOR EACH Customer NO-LOCK ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "FOR EACH Customer NO-LOCK BY Customer.Name ON ERROR UNDO, RETURN ERROR NEW pkg.Err(): END.",
+        "DO ON ERROR UNDO, RETURN ERROR \"bad\" + STRING(1): END.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        let on_actions = match &program.statements[0].kind {
+            StatementKind::Do { on_actions, .. }
+            | StatementKind::Repeat { on_actions, .. }
+            | StatementKind::ForEach { on_actions, .. } => on_actions,
+            other => panic!("{source}: expected a block, got {other:?}"),
+        };
+        assert_eq!(on_actions.len(), 1, "{source}");
+    }
+}
+
+#[test]
+fn a_block_header_on_phrase_without_a_value_keeps_no_action_expression() {
+    for source in [
+        "DO ON ERROR UNDO, RETURN ERROR: END.",
+        "DO ON ERROR UNDO, THROW: END.",
+        "DO ON ERROR UNDO, RETURN NO-APPLY: END.",
+        "REPEAT ON STOP UNDO, RETURN ERROR ON QUIT UNDO, NEXT: END.",
+        "FOR EACH Customer NO-LOCK ON ERROR UNDO, LEAVE: END.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        let on_actions = match &program.statements[0].kind {
+            StatementKind::Do { on_actions, .. }
+            | StatementKind::Repeat { on_actions, .. }
+            | StatementKind::ForEach { on_actions, .. } => on_actions,
+            other => panic!("{source}: expected a block, got {other:?}"),
+        };
+        assert!(on_actions.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn accum_aggregate_word_is_not_an_argument() {
+    let source = "DISPLAY ACCUM TOTAL BY t.cust t.amount.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let StatementKind::Display { items, .. } = &program.statements[0].kind else {
+        panic!("expected DISPLAY, got {:?}", program.statements[0].kind);
+    };
+    let ExpressionKind::FunctionCall { arguments, .. } = &items[0].expression.kind else {
+        panic!("expected ACCUM call, got {:?}", items[0].expression.kind);
+    };
+    assert_eq!(arguments.len(), 1);
+}
+
+#[test]
+fn get_codepage_and_get_codepages_parse_as_expressions() {
+    let source = "cPage = GET-CODEPAGE(lcText).\ncPages = GET-CODEPAGES.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 2);
+}
+
+#[test]
+fn member_reference_named_null_parses() {
+    let source = "IF oObj:GetType(\"v\") = JsonDataType:NULL THEN MESSAGE \"null\".";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+}
+
+#[test]
+fn class_header_accepts_serializable() {
+    for source in [
+        "CLASS Failure INHERITS Progress.Lang.AppError SERIALIZABLE:\nEND CLASS.",
+        "CLASS Failure FINAL SERIALIZABLE:\nEND CLASS.",
+        "CLASS Failure USE-WIDGET-POOL SERIALIZABLE:\nEND CLASS.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+    }
+}
+
+#[test]
+fn run_target_takes_every_path_shape_the_avm_accepts() {
+    for (source, expected) in [
+        ("RUN a/b.c.p.", "a/b.c.p"),
+        ("RUN a.b/c.p.", "a.b/c.p"),
+        ("RUN a.b.c.", "a.b.c"),
+        ("RUN comm\\expdist.p.", "comm\\expdist.p"),
+        ("RUN x\\y\\z.p (1).", "x\\y\\z.p"),
+        ("RUN 3rd/x.p.", "3rd/x.p"),
+        ("RUN 3rd.p.", "3rd.p"),
+        ("RUN ./sub2.p.", "./sub2.p"),
+        ("RUN ../x/y.p.", "../x/y.p"),
+        ("RUN ./../x/y.p.", "./../x/y.p"),
+        ("RUN ../../x.p.", "../../x.p"),
+        ("RUN ..\\x\\y.p.", "..\\x\\y.p"),
+        ("RUN .\\x.p.", ".\\x.p"),
+        ("RUN a/b.c.p PERSISTENT SET h.", "a/b.c.p"),
+        ("RUN a/b.c.p(1).", "a/b.c.p"),
+        ("RUN a/b.c.p. RUN d.p.", "a/b.c.p"),
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        let StatementKind::Run {
+            target: RunTarget::Literal {
+                name, name_span, ..
+            },
+            ..
+        } = &program.statements[0].kind
+        else {
+            panic!("{source}: {:?}", program.statements[0].kind);
+        };
+        assert_eq!(name, expected, "{source}");
+        assert_eq!(
+            &source[name_span.start as usize..name_span.end as usize],
+            expected,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_bare_number_is_not_a_run_target() {
+    let source = "RUN 12.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(!program.errors.is_empty());
+}
+
+fn parse_clean(source: &str) -> Vec<Statement> {
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+    program.statements
+}
+
+#[test]
+fn using_import_makes_keyword_named_class_a_data_type() {
+    let stmts = parse_clean(
+        "USING Progress.Reflect.Method.\n\
+         USING Progress.Reflect.Property.\n\
+         DEFINE VARIABLE oMethod AS Method NO-UNDO.\n\
+         DEFINE VARIABLE aProps AS Property EXTENT NO-UNDO.\n\
+         DEFINE VARIABLE oLower AS method NO-UNDO.",
+    );
+    let types: Vec<_> = stmts
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StatementKind::VariableDeclaration {
+                type_source: TypeSource::Explicit(t),
+                ..
+            } => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        types,
+        [
+            DataType::Class("Method".into()),
+            DataType::Class("Property".into()),
+            DataType::Class("method".into()),
+        ]
+    );
+}
+
+#[test]
+fn keyword_named_class_without_using_is_still_rejected() {
+    let source = "DEFINE VARIABLE oMethod AS Method NO-UNDO.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
+fn using_import_keyword_class_in_var_statement() {
+    let stmts = parse_clean("USING Progress.Reflect.Method.\nVAR Method oMethod.");
+    assert!(matches!(
+        &stmts[1].kind,
+        StatementKind::VariableDeclaration {
+            type_source: TypeSource::Explicit(DataType::Class(c)),
+            ..
+        } if c == "Method"
+    ));
+}
+
+#[test]
+fn var_statement_comma_separated_names() {
+    let source = "VAR LOGICAL a, b = TRUE, c.";
+    let stmts = parse_clean(source);
+    assert_eq!(stmts.len(), 1);
+    let StatementKind::VariableDeclarationList(decls) = &stmts[0].kind else {
+        panic!("expected a list, got {:?}", stmts[0].kind);
+    };
+    let names: Vec<_> = decls
+        .iter()
+        .map(|d| match &d.kind {
+            StatementKind::VariableDeclaration {
+                name,
+                type_source: TypeSource::Explicit(DataType::Logical),
+                initial_value,
+                no_undo: true,
+                ..
+            } => (name.name.as_str(), initial_value.is_some()),
+            other => panic!("expected a logical declaration, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, [("a", false), ("b", true), ("c", false)]);
+    assert_eq!(
+        &source[decls[1].span.start as usize..decls[1].span.end as usize],
+        "b = TRUE"
+    );
+}
+
+#[test]
+fn var_statement_class_type() {
+    let stmts = parse_clean("VAR CLASS Foo.Bar baz.\nVAR CLASS Foo.Bar x, y.");
+    assert!(matches!(
+        &stmts[0].kind,
+        StatementKind::VariableDeclaration {
+            type_source: TypeSource::Explicit(DataType::Class(c)),
+            name,
+            ..
+        } if c == "Foo.Bar" && name.name == "baz"
+    ));
+    assert!(matches!(
+        &stmts[1].kind,
+        StatementKind::VariableDeclarationList(d) if d.len() == 2
+    ));
+}
+
+fn first_param_type(source: &str) -> ParameterType {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Function { body, .. } => match &body[0].kind {
+            StatementKind::DefineParameter { param_type, .. } => param_type.clone(),
+            other => panic!("Expected DefineParameter, got {other:?}"),
+        },
+        other => panic!("Expected Function, got {other:?}"),
+    }
+}
+
+#[test]
+fn procedure_signature_buffer_param_keeps_its_table() {
+    for source in [
+        "FUNCTION f RETURNS INTEGER (BUFFER bItem FOR ttItem):\nRETURN 1.\nEND FUNCTION.",
+        "FUNCTION f RETURNS INTEGER (BUFFER bItem FOR TEMP-TABLE ttItem):\nRETURN 1.\nEND FUNCTION.",
+    ] {
+        match first_param_type(source) {
+            ParameterType::Buffer { name, target } => {
+                assert_eq!(name.name, "bItem");
+                assert_eq!(target.name, "ttItem");
+            }
+            other => panic!("Expected Buffer, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn unresolved_include_in_call_argument_position_does_not_break_the_list() {
+    use oxabl_common::FileId;
+    use oxabl_preprocessor::Preprocessor;
+    let source = "RUN foo.p({inc/args.i},\n          INPUT RECID(item)).\n";
+    let fs = oxabl_workspace::InMemoryFileSystem::new();
+    let include_paths = Vec::new();
+    let result = Preprocessor::new(&fs, &include_paths)
+        .process(FileId::new(1), source)
+        .unwrap();
+    assert_eq!(result.unresolved_includes.len(), 1);
+    let text = result.to_text();
+    let tokens = tokenize(&text);
+    let mut parser = Parser::new(&tokens, &text);
+    let program = parser.parse_program();
+    assert!(program.is_ok(), "got {:?}", program.first_error());
 }

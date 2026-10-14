@@ -222,3 +222,63 @@ fn unused_scalar_beside_a_credited_table_still_warns() {
         assert!(diags[0].contains("v-spare"), "{diags:?}");
     }
 }
+
+#[test]
+fn catch_variable_that_is_never_read_is_silent() {
+    let src = "\
+DO ON ERROR UNDO, LEAVE:
+    RUN missing.p.
+    CATCH e AS Progress.Lang.Error:
+        MESSAGE \"failed\".
+    END CATCH.
+END.
+";
+    assert!(lint0002(src).is_empty(), "{:?}", lint0002(src));
+}
+
+#[test]
+fn variable_declared_inside_catch_is_still_reported() {
+    let src = "\
+DO ON ERROR UNDO, LEAVE:
+    RUN missing.p.
+    CATCH e AS Progress.Lang.Error:
+        DEFINE VARIABLE spare AS INTEGER NO-UNDO.
+        MESSAGE e:GetMessage(1).
+    END CATCH.
+END.
+";
+    let found = lint0002(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("spare"), "{found:?}");
+}
+
+#[test]
+fn external_procedure_parameters_are_silent() {
+    let src = "\
+PROCEDURE example_sleep EXTERNAL \"libexample.so\" CDECL PERSISTENT:
+    DEFINE INPUT  PARAMETER pMs AS INT64.
+    DEFINE RETURN PARAMETER pRc AS INT64.
+END PROCEDURE.
+";
+    assert!(lint0002(src).is_empty(), "{:?}", lint0002(src));
+}
+
+#[test]
+fn in_super_procedure_parameters_are_silent() {
+    let src = "\
+PROCEDURE proto IN SUPER:
+    DEFINE INPUT PARAMETER pIn AS INTEGER.
+END PROCEDURE.
+";
+    assert!(lint0002(src).is_empty(), "{:?}", lint0002(src));
+}
+
+#[test]
+fn ordinary_procedure_unused_parameter_is_still_reported() {
+    let src = "\
+PROCEDURE real-one:
+    DEFINE INPUT PARAMETER pIn AS INTEGER.
+END PROCEDURE.
+";
+    assert_eq!(lint0002(src).len(), 1);
+}

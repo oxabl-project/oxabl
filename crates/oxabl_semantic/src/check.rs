@@ -169,6 +169,7 @@ impl<'a> CheckWalker<'a> {
                 to,
                 by,
                 while_condition,
+                on_actions,
                 body,
                 ..
             } => {
@@ -178,10 +179,14 @@ impl<'a> CheckWalker<'a> {
                 for e in [from, to, by, while_condition].into_iter().flatten() {
                     self.check_expression(e, bs);
                 }
+                for e in on_actions {
+                    self.check_expression(e, bs);
+                }
                 self.walk_block(body, bs);
             }
             StatementKind::Repeat {
                 while_condition,
+                on_actions,
                 body,
             } => {
                 let bs = self
@@ -190,16 +195,25 @@ impl<'a> CheckWalker<'a> {
                 if let Some(e) = while_condition {
                     self.check_expression(e, bs);
                 }
+                for e in on_actions {
+                    self.check_expression(e, bs);
+                }
                 self.walk_block(body, bs);
             }
             StatementKind::ForEach {
-                where_clause, body, ..
+                where_clause,
+                on_actions,
+                body,
+                ..
             } => {
                 let bs = self
                     .find_child_scope(scope, stmt, ScopeKind::Block)
                     .unwrap_or(scope);
                 if let Some(w) = where_clause {
                     self.check_expression(w, bs);
+                }
+                for e in on_actions {
+                    self.check_expression(e, bs);
                 }
                 self.walk_block(body, bs);
             }
@@ -242,7 +256,7 @@ impl<'a> CheckWalker<'a> {
                     self.walk_block(o, scope);
                 }
             }
-            StatementKind::Block(body) => self.walk_block(body, scope),
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => self.walk_block(body, scope),
             StatementKind::Label { body, .. } => self.walk_statement(body, scope),
 
             // ---- Trigger / preprocessor ----------------------------------

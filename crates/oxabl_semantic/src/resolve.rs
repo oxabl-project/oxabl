@@ -36,8 +36,10 @@ use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 
 use crate::index::ImportCandidate;
+use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
     LocateKind, Located, MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType,
@@ -147,7 +149,9 @@ pub enum UnresolvedReason {
     /// an inherited member the class declares but does not expose here
     /// (`PRIVATE`, or `PROTECTED` from outside the chain); a member lookup that
     /// came up empty against a class the index *did* answer for; and a file that
-    /// was located but could not be read or parsed.
+    /// was located but could not be read or parsed. One local case shares it:
+    /// an unqualified field name that two records in scope both have. ABL
+    /// rejects it as ambiguous, and the resolver does not pick one.
     ///
     /// Split out of the reason that became [`Self::AbsentFromWorkspace`], which
     /// named all of these plus the genuine misses. That was harmless while every
@@ -165,12 +169,53 @@ pub enum UnresolvedReason {
     Unknowable,
 }
 
+/// Outcome of [`ResolveWalker::resolve_bare_block_field`].
+enum BareField {
+    /// Exactly one record at the nearest level has the field.
+    Field(SymbolId),
+    /// Two or more records at that level have it.
+    Ambiguous,
+    /// A buffer whose table is unknown may have it too.
+    Unknown,
+    /// No record in scope has it.
+    Absent,
+}
+
+/// A field found in a record: a temp-table's declared `FIELD`, or a schema
+/// field with its type.
+#[derive(Clone)]
+enum FieldHit {
+    Declared(SymbolId),
+    Schema(TableId, ResolvedType),
+}
+
+/// How a name matched the fields of one record.
+enum RecordField {
+    Exact(FieldHit),
+    /// A unique abbreviation.
+    Prefix(FieldHit),
+    /// An abbreviation of two or more fields.
+    Ambiguous,
+    NotFound,
+}
+
 /// Whether the last segment of a `RUN` target carries an extension. The last
 /// segment only, so a dotted *package*-looking directory is not mistaken for one.
 fn has_run_extension(raw: &str) -> bool {
     raw.rsplit(['/', '\\'])
         .next()
         .is_some_and(|last| last.contains('.'))
+}
+
+/// Whether a `RUN` target climbs out of its own directory with a leading `..`.
+/// It is relative to a directory the workspace search paths do not cover, so a
+/// miss proves nothing.
+fn climbs_out(raw: &str) -> bool {
+    let mut rest = raw;
+    while let Some(tail) = rest.strip_prefix("./").or_else(|| rest.strip_prefix(".\\")) {
+        rest = tail;
+    }
+    rest.starts_with("../") || rest.starts_with("..\\")
 }
 
 /// A `RUN` target that is a single name: no extension and no path separator.
@@ -206,11 +251,18 @@ pub fn declare_pass(
 // Walker state
 // ---------------------------------------------------------------------------
 
+/// The `&IF` statement and arm index a declaration sits in, outermost first.
+type ArmPath = Vec<(NodeId, u32)>;
+
 struct Walker<'a> {
     ctx: &'a AnalysisContext<'a>,
     tree: ScopeTree,
     symbols: SymbolTable,
     diagnostics: Vec<Diagnostic>,
+    /// Arms of the `&IF` statements being walked.
+    arm_path: ArmPath,
+    /// Arm path of each symbol declared inside an `&IF` arm.
+    decl_arms: FxHashMap<SymbolId, ArmPath>,
 }
 
 impl<'a> Walker<'a> {
@@ -223,7 +275,21 @@ impl<'a> Walker<'a> {
             tree,
             symbols,
             diagnostics: Vec::new(),
+            arm_path: Vec::new(),
+            decl_arms: FxHashMap::default(),
         }
+    }
+
+    /// Whether `prior` and a declaration made now sit in different arms of one
+    /// `&IF`. Only one such arm is compiled, so they cannot collide.
+    fn in_exclusive_arm(&self, prior: SymbolId) -> bool {
+        self.decl_arms.get(&prior).is_some_and(|prior_path| {
+            prior_path.iter().any(|(pif, arm)| {
+                self.arm_path
+                    .iter()
+                    .any(|(cur_pif, cur_arm)| cur_pif == pif && cur_arm != arm)
+            })
+        })
     }
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
@@ -331,13 +397,17 @@ impl<'a> Walker<'a> {
             StatementKind::DefineTempTable {
                 name,
                 fields,
+                like_table,
                 is_new_shared,
                 is_shared,
                 is_new_global_shared,
                 ..
             } => {
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
-                self.declare_temp_table(stmt, scope, name, fields, flags);
+                let like = like_table
+                    .as_ref()
+                    .and_then(|t| self.record_source_of(t, scope));
+                self.declare_temp_table(stmt, scope, name, fields, like, flags);
             }
 
             // ---- Buffer ---------------------------------------------------
@@ -352,24 +422,16 @@ impl<'a> Walker<'a> {
                 is_new_global_shared,
                 ..
             } => {
-                // Link the buffer to its backing schema table so the resolve
-                // pass can validate and type field accesses. Temp-table
-                // targets have no schema table.
-                let table_id = match target {
-                    BufferTarget::Table(table) => self.schema_table_id(table),
-                    BufferTarget::TempTable(_) => None,
+                // Link the buffer to the record it reads, so the resolve pass
+                // can validate and type field accesses through it.
+                let source = match target {
+                    BufferTarget::Table(table) => self.record_source_of(table, scope),
+                    BufferTarget::TempTable(table) => self
+                        .record_source_of(table, scope)
+                        .filter(|s| matches!(s, RecordSource::TempTable(_))),
                 };
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
-                self.declare(
-                    stmt,
-                    scope,
-                    name,
-                    NamespaceId::Buffers,
-                    SymbolKind::Buffer,
-                    None,
-                    flags,
-                    table_id,
-                );
+                self.declare_buffer(stmt, scope, name, flags, source);
             }
 
             // ---- Dataset / Data-source ------------------------------------
@@ -406,7 +468,11 @@ impl<'a> Walker<'a> {
             }
 
             // ---- Procedure / Function -------------------------------------
-            StatementKind::Procedure { name, body } => {
+            StatementKind::Procedure {
+                name,
+                body,
+                is_prototype,
+            } => {
                 self.declare(
                     stmt,
                     scope,
@@ -414,7 +480,11 @@ impl<'a> Walker<'a> {
                     NamespaceId::Procedures,
                     SymbolKind::Procedure,
                     None,
-                    SymbolFlags::empty(),
+                    if *is_prototype {
+                        SymbolFlags::PROTOTYPE
+                    } else {
+                        SymbolFlags::empty()
+                    },
                     None,
                 );
                 let proc_scope = self.tree.push(ScopeKind::Procedure, scope, stmt.id);
@@ -555,7 +625,7 @@ impl<'a> Walker<'a> {
                     NamespaceId::Values,
                     SymbolKind::Variable,
                     Some(ResolvedType::Unknown),
-                    SymbolFlags::empty(),
+                    SymbolFlags::CATCH_VARIABLE,
                     None,
                 );
                 self.walk_block(body, cs);
@@ -602,22 +672,33 @@ impl<'a> Walker<'a> {
             }
             StatementKind::ForEach { buffer, body, .. } => {
                 let bs = self.tree.push(ScopeKind::Block, scope, stmt.id);
-                // FOR EACH introduces an implicit buffer at block scope. Its
-                // name is the table name, so link it to the schema table.
-                let table_id = self.schema_table_id(buffer);
-                self.declare(
-                    stmt,
-                    bs,
-                    buffer,
-                    NamespaceId::Buffers,
-                    SymbolKind::Buffer,
-                    None,
-                    SymbolFlags::empty(),
-                    table_id,
-                );
+                // The record phrase names a *buffer*. A buffer of that name
+                // already in scope (`DEFINE BUFFER`, a parameter buffer, a
+                // temp-table's default buffer, an enclosing FOR EACH) is the one
+                // read, whatever table shares its name; FOR EACH only scopes it
+                // to this block, so bind that same symbol here. Only a name no
+                // buffer answers to is a schema table's default buffer, which is
+                // minted at block scope.
+                let atom = fold_atom(&buffer.name);
+                if let Some(existing) = self.tree.resolve(scope, NamespaceId::Buffers, &atom) {
+                    self.tree.get_mut(bs).bindings[NamespaceId::Buffers.index()]
+                        .insert(atom, existing);
+                } else {
+                    let table_id = self.schema_table_id(buffer);
+                    self.declare(
+                        stmt,
+                        bs,
+                        buffer,
+                        NamespaceId::Buffers,
+                        SymbolKind::Buffer,
+                        None,
+                        SymbolFlags::empty(),
+                        table_id,
+                    );
+                }
                 self.walk_block(body, bs);
             }
-            StatementKind::Block(body) => {
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
                 self.walk_block(body, scope);
             }
             StatementKind::If {
@@ -669,12 +750,13 @@ impl<'a> Walker<'a> {
             // branch are visible to the resolve pass. Ties into the plan's
             // PreprocIf invariant.
             StatementKind::PreprocIf(pif) => {
-                self.walk_block(&pif.then_branch, scope);
-                for (_, branch) in &pif.elseif_branches {
+                let arms = std::iter::once(&pif.then_branch)
+                    .chain(pif.elseif_branches.iter().map(|(_, branch)| branch))
+                    .chain(pif.else_branch.as_ref());
+                for (arm, branch) in (0u32..).zip(arms) {
+                    self.arm_path.push((stmt.id, arm));
                     self.walk_block(branch, scope);
-                }
-                if let Some(eb) = &pif.else_branch {
-                    self.walk_block(eb, scope);
+                    self.arm_path.pop();
                 }
             }
 
@@ -786,18 +868,9 @@ impl<'a> Walker<'a> {
             }
             ParameterType::Buffer { name, target } => {
                 // `DEFINE PARAMETER BUFFER b FOR <table>` — link the backing
-                // schema table like any other buffer-introducing site.
-                let table_id = self.schema_table_id(target);
-                self.declare(
-                    stmt,
-                    scope,
-                    name,
-                    NamespaceId::Buffers,
-                    SymbolKind::Buffer,
-                    None,
-                    dir_flag,
-                    table_id,
-                );
+                // record like any other buffer-introducing site.
+                let source = self.record_source_of(target, scope);
+                self.declare_buffer(stmt, scope, name, dir_flag, source);
             }
             ParameterType::Handle { kind, name, .. } => {
                 // All four handle-ish forms declare the same way — a `HANDLE`
@@ -827,6 +900,7 @@ impl<'a> Walker<'a> {
         scope: ScopeId,
         name: &Identifier,
         fields: &[oxabl_ast::TempTableField],
+        like: Option<RecordSource>,
         flags: SymbolFlags,
     ) {
         let tt_sym = self.declare(
@@ -848,10 +922,11 @@ impl<'a> Walker<'a> {
         // twice in the *same* temp-table still raises SEM0001 within this
         // scope. Namespace `Values` is a simplification for v1 — Phase 4a
         // will likely route field lookups through the temp-table symbol.
-        if tt_sym.is_none() {
+        let Some(tt_sym) = tt_sym else {
             return;
-        }
+        };
         let field_scope = self.tree.push(ScopeKind::TempTable, scope, stmt.id);
+        self.symbols.record_temp_table(tt_sym, field_scope, like);
         for field in fields {
             let data_type = match &field.type_source {
                 TypeSource::Explicit(dt) => {
@@ -890,6 +965,47 @@ impl<'a> Walker<'a> {
             SymbolFlags::empty(),
             None,
         );
+    }
+
+    /// Declare a `Buffer` symbol reading from `source`.
+    fn declare_buffer(
+        &mut self,
+        stmt: &Statement,
+        scope: ScopeId,
+        name: &Identifier,
+        flags: SymbolFlags,
+        source: Option<RecordSource>,
+    ) {
+        let table_id = match source {
+            Some(RecordSource::Schema(tid)) => Some(tid),
+            _ => None,
+        };
+        let sym = self.declare(
+            stmt,
+            scope,
+            name,
+            NamespaceId::Buffers,
+            SymbolKind::Buffer,
+            None,
+            flags,
+            table_id,
+        );
+        if let (Some(sym), Some(RecordSource::TempTable(tt))) = (sym, source) {
+            self.symbols.record_buffer_for(sym, tt);
+        }
+    }
+
+    /// The record a table name in a `FOR` / `LIKE` clause names: a temp-table
+    /// visible from `scope` wins over a schema table of the same name, as in
+    /// ABL.
+    fn record_source_of(&self, table: &Identifier, scope: ScopeId) -> Option<RecordSource> {
+        let atom = fold_atom(&table.name);
+        if let Some(sym) = self.tree.resolve(scope, NamespaceId::Buffers, &atom)
+            && self.symbols.get(sym).kind == SymbolKind::TempTable
+        {
+            return Some(RecordSource::TempTable(sym));
+        }
+        self.schema_table_id(table).map(RecordSource::Schema)
     }
 
     /// Case-insensitive schema lookup of a table-name identifier. Returns
@@ -937,6 +1053,10 @@ impl<'a> Walker<'a> {
             // re-declaring `session` or `error-status` is permitted in the
             // plan's v1 cut; Phase 4a may tighten this.
             let prior_kind = self.symbols.get(prior).kind;
+            if prior_kind != SymbolKind::BuiltIn && self.in_exclusive_arm(prior) {
+                // The first arm's declaration stands in for this one.
+                return None;
+            }
             if prior_kind != SymbolKind::BuiltIn {
                 // FUNCTION prototype + definition reconciliation (#69).
                 // Methods share SymbolKind::Function but never set PROTOTYPE,
@@ -980,6 +1100,9 @@ impl<'a> Walker<'a> {
         };
         let id = self.symbols.insert(symbol);
         self.tree.get_mut(scope).bindings[ns.index()].insert(atom, id);
+        if !self.arm_path.is_empty() {
+            self.decl_arms.insert(id, self.arm_path.clone());
+        }
         Some(id)
     }
 
@@ -1019,10 +1142,15 @@ impl<'a> Walker<'a> {
             .symbols
             .method_overloads(anchor)
             .map_or_else(|| vec![anchor], |members| members.to_vec());
-        if members
+        let matching: Vec<SymbolId> = members
             .iter()
-            .any(|member| self.symbols.method_signature(*member) == Some(signature.as_slice()))
-        {
+            .copied()
+            .filter(|member| self.symbols.method_signature(*member) == Some(signature.as_slice()))
+            .collect();
+        if !matching.is_empty() {
+            if matching.iter().all(|member| self.in_exclusive_arm(*member)) {
+                return None;
+            }
             let prior_span = self.symbols.get(anchor).name_span;
             self.diagnostics.push(
                 Diagnostic::error(
@@ -1056,6 +1184,9 @@ impl<'a> Walker<'a> {
         });
         self.symbols.record_method_signature(sym, signature);
         self.symbols.record_method_overload(anchor, sym);
+        if !self.arm_path.is_empty() {
+            self.decl_arms.insert(sym, self.arm_path.clone());
+        }
         Some(sym)
     }
 
@@ -1182,6 +1313,7 @@ pub fn resolve_pass(
     walker.resolve_supertype_edges();
     walker.upgrade_class_types(program);
     walker.walk_block(program, ScopeId::ROOT);
+    walker.soften_opaque_misses();
     // After the walk, never during it: the only files the index can answer a
     // `SHARED` producer question from are the ones the walk's `RUN` lookups
     // pulled in. See `link_shared_consumers`.
@@ -1287,6 +1419,9 @@ struct ResolveWalker<'a> {
     /// Dedup cache for synthesized default-buffer symbols: one symbol per
     /// schema table referenced by bare name.
     synth_buffers: FxHashMap<TableId, SymbolId>,
+    /// Dedup cache for synthesized sequence symbols.
+    /// Boxed and lazy: most files never reference a sequence.
+    synth_sequences: Option<Box<FxHashMap<OxablAtom, SymbolId>>>,
     /// The class whose body the walk is currently inside, if any. An inherited
     /// member is only reachable from within its subclass, so this is the gate on
     /// consulting [`CrossFileState::inherited`] at all.
@@ -1332,6 +1467,16 @@ struct CrossFileState {
     /// or a .NET assembly supplies is not the workspace's to supply, and does not
     /// count.
     incomplete_surfaces: FxHashSet<SymbolId>,
+    /// Classes whose `INHERITS` chain reaches an ancestor whose members were not
+    /// read: one the index could not supply, or a shipped class, whose members
+    /// oxabl does not model. Such an ancestor may declare any name the class uses
+    /// unqualified. An `IMPLEMENTS` gap does not count, since a class declares
+    /// its interfaces' members itself.
+    opaque_surfaces: FxHashSet<SymbolId>,
+    /// References recorded `NotInScope` inside a class with an opaque surface.
+    /// Softened to `External` after the walk, so the receiver path still sees
+    /// `NotInScope` and can try the name as a type first.
+    opaque_misses: Vec<NodeId>,
     /// The folded names the file's text puts after a keyword that introduces a
     /// handle-like object (`QUERY q`, `FRAME f`, `BUFFER b`, `NEW BUFFER nb`).
     /// Built from the source on first use. None of them is a class.
@@ -1546,6 +1691,7 @@ impl<'a> ResolveWalker<'a> {
             track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
+            synth_sequences: None,
             current_class: None,
             // Deliberately not created here, not even when an index *is*
             // attached: the first cross-file write creates it, so the cost is
@@ -1787,13 +1933,14 @@ impl<'a> ResolveWalker<'a> {
     /// registration nor persistent handles, so a miss here is inconclusive rather
     /// than a fact about the workspace, and the honest answer is
     /// [`UnresolvedReason::External`]. `RUN post-order.p` names a file and is
-    /// judged normally.
+    /// judged normally. A target that starts with `..` is relative to a directory
+    /// the search paths do not cover, so it is inconclusive too.
     ///
     /// Measured, not guessed: without it the great majority of a real codebase's
     /// new findings were extension-less internal calls, every one of them correct
     /// ABL.
     fn run_miss_reason(&self, raw: &str, name: &OxablAtom) -> UnresolvedReason {
-        if !has_run_extension(raw) {
+        if !has_run_extension(raw) || climbs_out(raw) {
             return UnresolvedReason::External;
         }
         self.absent_reason(name)
@@ -2250,7 +2397,7 @@ impl<'a> ResolveWalker<'a> {
                         self.collect_class_upgrades(body, fs, out);
                     }
                 }
-                StatementKind::Block(body) => {
+                StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
                     self.collect_class_upgrades(body, scope, out);
                 }
                 StatementKind::If {
@@ -2463,17 +2610,11 @@ impl<'a> ResolveWalker<'a> {
                     // inherits. Saved and restored rather than assigned, so a
                     // nested declaration cannot leak its class outward.
                     let outer = self.current_class;
-                    // Gated, because the only reader is `lookup_inherited`, which
-                    // returns `Absent` without an index. Left `None` on a
-                    // single-file run this costs nothing; ungated it would intern
-                    // an atom and walk the scope chain once per `CLASS` for an
-                    // answer nothing would ever ask for.
-                    self.current_class = if self.ctx.index_loaded {
+                    // Not gated on the index: a single-file run reads it too, to
+                    // tell whether the class inherits a parent it never reads.
+                    self.current_class =
                         self.tree
-                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name))
-                    } else {
-                        None
-                    };
+                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name));
                     self.walk_block(body, cs);
                     self.current_class = outer;
                 }
@@ -2534,6 +2675,7 @@ impl<'a> ResolveWalker<'a> {
                 to,
                 by,
                 while_condition,
+                on_actions,
                 body,
                 ..
             } => {
@@ -2565,10 +2707,14 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(e) = while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
+                for e in on_actions {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
                 self.walk_block(body, bs);
             }
             StatementKind::Repeat {
                 while_condition,
+                on_actions,
                 body,
             } => {
                 let bs = self
@@ -2577,12 +2723,16 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(e) = while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
+                for e in on_actions {
+                    self.walk_expression(e, bs, AccessMode::Read);
+                }
                 self.walk_block(body, bs);
             }
             StatementKind::ForEach {
                 buffer,
                 of_relation,
                 where_clause,
+                on_actions,
                 body,
                 ..
             } => {
@@ -2607,6 +2757,9 @@ impl<'a> ResolveWalker<'a> {
                 }
                 if let Some(w) = where_clause {
                     self.walk_expression(w, bs, AccessMode::Read);
+                }
+                for e in on_actions {
+                    self.walk_expression(e, bs, AccessMode::Read);
                 }
                 self.walk_block(body, bs);
             }
@@ -2656,7 +2809,7 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_block(o, scope);
                 }
             }
-            StatementKind::Block(body) => {
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
                 self.walk_block(body, scope);
             }
             StatementKind::Label { body, .. } => {
@@ -3074,15 +3227,30 @@ impl<'a> ResolveWalker<'a> {
                     &[NamespaceId::Functions, NamespaceId::Procedures],
                     AccessMode::Read,
                 );
-                for a in arguments {
-                    self.walk_expression(a, scope, AccessMode::Read);
+                let sequence = crate::sequence_operand(name, arguments);
+                if let Some(op) = &sequence {
+                    self.resolve_sequence_operand(op);
                 }
-                if self.ctx.index_loaded
-                    && let Some(operand) = type_operand(name, arguments)
-                    && let Some(raw) = dotted_name(operand)
-                {
-                    let span = VirtualSpan::new(operand.span.start, operand.span.end);
-                    self.note_class_name(&raw, scope, span);
+                // A user function never takes a type operand, so the built-in
+                // reading applies only when the callee did not resolve here.
+                let type_name =
+                    if matches!(self.references.get(expr.id), Some(Resolution::Resolved(_))) {
+                        None
+                    } else {
+                        type_operand(name, arguments)
+                            .and_then(|operand| Some((operand.id, dotted_name(operand)?)))
+                    };
+                // The arguments of `NEXT-VALUE` / `CURRENT-VALUE` are a sequence
+                // name and a logical database name, neither a symbol.
+                if !sequence.is_some_and(|op| op.is_static) {
+                    for a in arguments {
+                        match &type_name {
+                            Some((id, raw)) if *id == a.id => {
+                                self.resolve_type_operand(a, raw, scope);
+                            }
+                            _ => self.walk_expression(a, scope, AccessMode::Read),
+                        }
+                    }
                 }
             }
             ExpressionKind::MethodCall {
@@ -3371,13 +3539,25 @@ impl<'a> ResolveWalker<'a> {
         // expression and lands here). Gated on `Buffers` being a candidate
         // namespace so call names (Functions/Procedures) never resolve as
         // fields, and tried only after local values, buffers, built-ins and
-        // schema table names, so a real declaration always wins.
-        if namespaces.contains(&NamespaceId::Buffers)
-            && let Some(fsym) = self.resolve_bare_block_field(&atom, id, scope)
-        {
-            self.references.insert(expr_id, Resolution::Resolved(fsym));
-            self.bump_count(fsym, mode);
-            return;
+        // schema table names, so a real declaration always wins. An ambiguous
+        // or unverifiable field is recorded with a reason no rule reports.
+        if namespaces.contains(&NamespaceId::Buffers) {
+            let reason = match self.resolve_bare_block_field(&atom, id, scope) {
+                BareField::Field(fsym) => {
+                    self.references.insert(expr_id, Resolution::Resolved(fsym));
+                    self.bump_count(fsym, mode);
+                    return;
+                }
+                BareField::Ambiguous => Some(UnresolvedReason::PresentButUnusable),
+                BareField::Unknown if self.ctx.schema_loaded => Some(UnresolvedReason::External),
+                BareField::Unknown => Some(UnresolvedReason::NoSchema),
+                BareField::Absent => None,
+            };
+            if let Some(reason) = reason {
+                self.references
+                    .insert(expr_id, Resolution::Unresolved { name: atom, reason });
+                return;
+            }
         }
         self.references.insert(
             expr_id,
@@ -3386,6 +3566,59 @@ impl<'a> ResolveWalker<'a> {
                 reason: UnresolvedReason::NotInScope,
             },
         );
+        self.note_miss_in_opaque_class(expr_id);
+    }
+
+    /// Note a `NotInScope` reference made inside a class with an opaque surface
+    /// (see [`CrossFileState::opaque_surfaces`]): an ancestor whose members were
+    /// not read may declare the name, so the miss proves nothing.
+    ///
+    /// With no index no ancestor is read, so any parent this file does not
+    /// declare makes the surface opaque. No receiver is then tried as a type, so
+    /// the miss is softened at once.
+    fn note_miss_in_opaque_class(&mut self, expr_id: NodeId) {
+        let Some(class) = self.current_class else {
+            return;
+        };
+        if !self.ctx.index_loaded {
+            if self.inherits_unread_parent(class) {
+                self.soften_unresolved_to_external(expr_id);
+            }
+            return;
+        }
+        self.walk_member_surface(class);
+        let cf = self.cross_file_mut();
+        if cf.opaque_surfaces.contains(&class) {
+            cf.opaque_misses.push(expr_id);
+        }
+    }
+
+    /// Whether `class` inherits a parent this file does not declare, other than
+    /// `Progress.Lang.Object`.
+    fn inherits_unread_parent(&self, class: SymbolId) -> bool {
+        let Some(parent) = self
+            .symbols
+            .supertypes(class)
+            .and_then(|supers| supers.inherits.as_ref())
+        else {
+            return false;
+        };
+        !names_root_object(&ImportContext::default(), parent.name.as_written())
+            && self
+                .tree
+                .resolve(ScopeId::ROOT, NamespaceId::Types, parent.name.as_atom())
+                .is_none()
+    }
+
+    /// Soften every [`Self::note_miss_in_opaque_class`] reference that is still
+    /// `NotInScope` after the walk to `External`.
+    fn soften_opaque_misses(&mut self) {
+        let Some(cf) = self.cross_file.as_mut() else {
+            return;
+        };
+        for id in std::mem::take(&mut cf.opaque_misses) {
+            self.soften_unresolved_to_external(id);
+        }
     }
 
     /// Resolve a `USING` import and record the answer as a reference entry on
@@ -4001,44 +4234,125 @@ impl<'a> ResolveWalker<'a> {
         lookup
     }
 
-    /// Try to resolve a bare identifier as an unqualified field of a buffer
-    /// visible from `scope`. Walks every buffer bound in `scope` and its
-    /// ancestors (`FOR EACH` implicit buffers, `DEFINE BUFFER`, synthesized
-    /// default buffers) and, for the first whose backing schema table has a
-    /// field matching `atom`, synthesizes (or reuses) the typed `Field`
-    /// symbol. Requires a loaded schema — field validation needs the table's
-    /// column list; without one there is nothing to check the name against.
-    /// A field shared by two in-scope buffers is technically ambiguous in
-    /// ABL, but resolving to the first match is the right call for lint: it
-    /// avoids a false `undefined-symbol`, and this pass does not adjudicate
-    /// ambiguity.
+    /// Resolve a bare identifier as an unqualified field of a record in scope.
+    ///
+    /// ABL lets a field be named without its buffer when the compiler can tell
+    /// which buffer is meant. The rule modelled here:
+    ///
+    /// * **Candidates** are the buffers bound in `scope` and its ancestors:
+    ///   `FOR EACH` buffers (bound in the loop's block scope, so the record
+    ///   phrase's buffer is the nearest), `DEFINE BUFFER` and parameter
+    ///   buffers, and temp-tables, whose default buffer is always available.
+    ///   Schema-backed and temp-table-backed buffers are searched alike.
+    /// * **The nearest level wins.** Scopes are searched innermost first; the
+    ///   first scope where any candidate has the field decides.
+    /// * **Ambiguity is never resolved.** Two different records at that level
+    ///   with the field is a compile error in ABL, so the answer is
+    ///   [`BareField::Ambiguous`], not the first match. Buffers for the same
+    ///   record count once. An exact name beats an abbreviation.
+    /// * **An unknown record blocks the answer.** A buffer whose table is not in
+    ///   the schema (or with no schema loaded) may have the field too, so a hit
+    ///   at or beyond its level is [`BareField::Unknown`].
     fn resolve_bare_block_field(
         &mut self,
         atom: &OxablAtom,
         id: &Identifier,
         scope: ScopeId,
-    ) -> Option<SymbolId> {
-        if !self.ctx.schema_loaded {
-            return None;
-        }
-        // `ctx.schema` is a shared reference copied out of `self`, keeping the
-        // field lookup independent of the `&mut self` synthesis below.
-        let schema = self.ctx.schema;
-        let mut hit: Option<(TableId, ResolvedType)> = None;
-        'scan: for sid in self.tree.ancestors(scope) {
-            let buffers = &self.tree.get(sid).bindings[NamespaceId::Buffers.index()];
-            for (_name, bsym) in buffers.iter() {
-                if let Some(tid) = self.symbols.get(bsym).table_id
-                    && let Some(table) = schema.get_by_id(tid)
-                    && let FieldResolution::Unique(f) = table.resolve_field(atom)
-                {
-                    hit = Some((tid, ResolvedType::from_schema_field(f)));
-                    break 'scan;
+    ) -> BareField {
+        let mut opaque = false;
+        for sid in self.tree.ancestors(scope) {
+            let mut records: SmallVec<[RecordSource; 4]> = SmallVec::new();
+            for (_name, bsym) in self.tree.get(sid).bindings[NamespaceId::Buffers.index()].iter() {
+                match self.symbols.record_source(bsym) {
+                    Some(r) if !records.contains(&r) => records.push(r),
+                    Some(_) => {}
+                    None => opaque = true,
                 }
             }
+            let mut exact: SmallVec<[FieldHit; 1]> = SmallVec::new();
+            let mut prefix: SmallVec<[FieldHit; 1]> = SmallVec::new();
+            let mut ambiguous = false;
+            for r in records {
+                match self.record_field(r, atom) {
+                    RecordField::Exact(hit) => exact.push(hit),
+                    RecordField::Prefix(hit) => prefix.push(hit),
+                    RecordField::Ambiguous => ambiguous = true,
+                    RecordField::NotFound => {}
+                }
+            }
+            let (hits, ambiguous) = if exact.is_empty() {
+                (prefix, ambiguous)
+            } else {
+                (exact, false)
+            };
+            if hits.is_empty() && !ambiguous {
+                continue;
+            }
+            if opaque {
+                return BareField::Unknown;
+            }
+            return match (hits.as_slice(), ambiguous) {
+                ([hit], false) => BareField::Field(self.field_hit_symbol(hit.clone(), atom, id)),
+                _ => BareField::Ambiguous,
+            };
         }
-        let (tid, ty) = hit?;
-        Some(self.synth_field_symbol(tid, atom, ty, id))
+        BareField::Absent
+    }
+
+    /// Look `atom` up among the fields of `record`. A schema table takes an
+    /// exact name, then a unique leading abbreviation. A temp-table takes its
+    /// own `FIELD`s and the fields its `LIKE` copies, by exact name only.
+    fn record_field(&self, record: RecordSource, atom: &OxablAtom) -> RecordField {
+        match record {
+            RecordSource::Schema(tid) => {
+                let Some(table) = self.ctx.schema.get_by_id(tid) else {
+                    return RecordField::NotFound;
+                };
+                match table.resolve_field(atom) {
+                    FieldResolution::Unique(f) => {
+                        let hit = FieldHit::Schema(tid, ResolvedType::from_schema_field(f));
+                        if f.name == *atom {
+                            RecordField::Exact(hit)
+                        } else {
+                            RecordField::Prefix(hit)
+                        }
+                    }
+                    FieldResolution::Ambiguous => RecordField::Ambiguous,
+                    FieldResolution::NotFound => RecordField::NotFound,
+                }
+            }
+            RecordSource::TempTable(tt) => self
+                .temp_table_field(tt, atom, 0)
+                .map_or(RecordField::NotFound, RecordField::Exact),
+        }
+    }
+
+    fn temp_table_field(&self, tt: SymbolId, atom: &OxablAtom, depth: u8) -> Option<FieldHit> {
+        if let Some(fields) = self.symbols.temp_table_fields(tt)
+            && let Some(sym) = self.tree.get(fields).get_in(NamespaceId::Values, atom)
+        {
+            return Some(FieldHit::Declared(sym));
+        }
+        // A `LIKE` chain is short; the bound only guards a malformed cycle.
+        if depth > 8 {
+            return None;
+        }
+        match self.symbols.temp_table_like(tt)? {
+            RecordSource::TempTable(like) => self.temp_table_field(like, atom, depth + 1),
+            RecordSource::Schema(tid) => {
+                let f = self.ctx.schema.get_by_id(tid)?.get_field(atom)?;
+                Some(FieldHit::Schema(tid, ResolvedType::from_schema_field(f)))
+            }
+        }
+    }
+
+    /// The symbol a field hit binds to: the temp-table's own `FIELD` symbol, or
+    /// the synthesized symbol for a schema field.
+    fn field_hit_symbol(&mut self, hit: FieldHit, atom: &OxablAtom, id: &Identifier) -> SymbolId {
+        match hit {
+            FieldHit::Declared(sym) => sym,
+            FieldHit::Schema(tid, ty) => self.synth_field_symbol(tid, atom, ty, id),
+        }
     }
 
     /// Walk an expression used as a method/member *receiver*. Unresolved
@@ -4075,9 +4389,16 @@ impl<'a> ResolveWalker<'a> {
                     self.try_dotted_receiver_type(expr, scope);
                 }
             }
-            ExpressionKind::MemberAccess { object, .. }
-            | ExpressionKind::MethodCall { object, .. } => {
+            ExpressionKind::MemberAccess { object, .. } => {
                 self.walk_receiver(object, scope);
+            }
+            ExpressionKind::MethodCall {
+                object, arguments, ..
+            } => {
+                self.walk_receiver(object, scope);
+                for a in arguments {
+                    self.walk_expression(a, scope, AccessMode::Read);
+                }
             }
             ExpressionKind::ArrayAccess { array, index } => {
                 self.walk_receiver_link(array, scope, false);
@@ -4104,6 +4425,39 @@ impl<'a> ResolveWalker<'a> {
                 },
             );
         }
+    }
+
+    /// Resolve the type-name operand `raw` of a `CAST`, `TYPE-OF` or
+    /// `GET-CLASS` call in the `Types` namespace, the way a `NEW` operand is, and
+    /// record the answer on the operand's node.
+    fn resolve_type_operand(&mut self, operand: &Expression, raw: &str, scope: ScopeId) {
+        let span = VirtualSpan::new(operand.span.start, operand.span.end);
+        let lookup = self.resolve_type_name(raw, scope, span);
+        self.note_class_site(raw, lookup, span);
+        let atom = fold_atom(raw);
+        let resolution = match lookup {
+            TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => {
+                self.bump_count(sym, AccessMode::Read);
+                Resolution::Resolved(sym)
+            }
+            TypeLookup::NotFound => Resolution::Unresolved {
+                reason: self.absent_type_reason(raw, &atom),
+                name: atom,
+            },
+            TypeLookup::Unusable => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::PresentButUnusable,
+            },
+            TypeLookup::Unknowable => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::Unknowable,
+            },
+            TypeLookup::External | TypeLookup::NotLooked => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::External,
+            },
+        };
+        self.references.insert(operand.id, resolution);
     }
 
     /// Resolve an `Identifier` in a **statement** position (buffer name in
@@ -4362,6 +4716,10 @@ impl<'a> ResolveWalker<'a> {
                         reason,
                     },
                 );
+                if reason == UnresolvedReason::NotInScope {
+                    self.note_miss_in_opaque_class(qualifier.id);
+                    self.note_miss_in_opaque_class(expr_id);
+                }
             }
         }
     }
@@ -4543,6 +4901,43 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
+    /// Resolve a sequence operand against the loaded schema's sequences.
+    ///
+    /// Without a schema nothing is known about sequences, so the answer is
+    /// `NoSchema` rather than a claim that the name is undefined.
+    fn resolve_sequence_operand(&mut self, op: &crate::SequenceOperand) {
+        let atom = fold_atom(op.name);
+        let resolution = if !self.ctx.schema_loaded {
+            Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::NoSchema,
+            }
+        } else if self.ctx.schema.get_sequence(&atom).is_some() {
+            let cache = self.synth_sequences.get_or_insert_with(Default::default);
+            let sym = match cache.get(&atom) {
+                Some(&sym) => sym,
+                None => {
+                    let sym = self.symbols.insert(Symbol::synthesized(
+                        atom.clone(),
+                        NamespaceId::Values,
+                        SymbolKind::Sequence,
+                        VirtualSpan::new(op.span.start, op.span.end),
+                    ));
+                    cache.insert(atom, sym);
+                    sym
+                }
+            };
+            self.bump_count(sym, AccessMode::Read);
+            Resolution::Resolved(sym)
+        } else {
+            Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::NotInScope,
+            }
+        };
+        self.references.insert(op.expr.id, resolution);
+    }
+
     /// Return the synthesized `Field` symbol for `(tid, field_atom)`,
     /// minting one on first use. [`Symbol::synthesized`] carries the conventions
     /// — a dummy declaration marking it non-user-declared, the same convention as
@@ -4674,22 +5069,34 @@ impl<'a> ResolveWalker<'a> {
     /// the walk records the answer. A name every candidate missed is recorded here
     /// as absent, unless it is the AVM's to supply, or as unknowable when the file
     /// may import more than the index read.
+    ///
+    /// `superclass` is whether `raw` is on `class`'s `INHERITS` chain. A miss
+    /// there, shipped or not, makes the surface opaque.
     fn queue_supertype(
         &mut self,
         class: SymbolId,
         imports: &ImportContext,
         raw: &str,
-        queue: &mut VecDeque<IndexName>,
+        superclass: bool,
+        queue: &mut VecDeque<(IndexName, bool)>,
     ) {
         let index = self.ctx.index;
         for candidate in imports.candidates(raw) {
             let ImportCandidate::Name(name) = candidate else {
+                if superclass {
+                    self.cross_file_mut().opaque_surfaces.insert(class);
+                }
                 return;
             };
             if !matches!(index.class(&name), IndexAnswer::NotFound) {
-                queue.push_back(name);
+                queue.push_back((name, superclass));
                 return;
             }
+        }
+        // `Progress.Lang.Object` is every class's root, written or not, so
+        // naming it hides nothing an unwritten root does not.
+        if superclass && !names_root_object(imports, raw) {
+            self.cross_file_mut().opaque_surfaces.insert(class);
         }
         if names_shipped_class(imports, raw) {
             return;
@@ -4741,7 +5148,8 @@ impl<'a> ResolveWalker<'a> {
         // Copied out so no borrow of `self` is held across the synthesis below.
         let index = self.ctx.index;
         let mut visited: FxHashSet<IndexName> = FxHashSet::default();
-        let mut queue: VecDeque<IndexName> = VecDeque::new();
+        // Each name with whether it is on the `INHERITS` chain.
+        let mut queue: VecDeque<(IndexName, bool)> = VecDeque::new();
         // Cloned out rather than borrowed: the `None` arm below reads
         // `self.symbols`, and the loop after it takes `&mut self`.
         let indexed_name = self
@@ -4750,32 +5158,35 @@ impl<'a> ResolveWalker<'a> {
             .cloned();
         let role = match indexed_name {
             Some(name) => {
-                queue.push_back(name);
+                queue.push_back((name, true));
                 MemberRole::Outside
             }
             None => {
                 visited.insert(IndexName::new(&self.symbols.get(class).name));
-                let authored: Vec<SupertypeRef> = self
+                let authored: Vec<(SupertypeRef, bool)> = self
                     .symbols
                     .supertypes(class)
                     .map(|supers| {
-                        supers
-                            .inherits
-                            .iter()
-                            .chain(&supers.implements)
-                            .cloned()
-                            .collect()
+                        let inherits = supers.inherits.iter().map(|s| (s.clone(), true));
+                        let implements = supers.implements.iter().map(|s| (s.clone(), false));
+                        inherits.chain(implements).collect()
                     })
                     .unwrap_or_default();
                 let imports = self.imports();
-                for parent in authored {
-                    self.queue_supertype(class, &imports, parent.name.as_written(), &mut queue);
+                for (parent, superclass) in authored {
+                    self.queue_supertype(
+                        class,
+                        &imports,
+                        parent.name.as_written(),
+                        superclass,
+                        &mut queue,
+                    );
                 }
                 MemberRole::Subclass
             }
         };
 
-        while let Some(name) = queue.pop_front() {
+        while let Some((name, superclass)) = queue.pop_front() {
             if !visited.insert(name.clone()) {
                 continue;
             }
@@ -4792,11 +5203,14 @@ impl<'a> ResolveWalker<'a> {
                         .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
                     // An interface's methods contribute exactly as a superclass's
                     // do, so the walk does not branch on `descriptor.kind`.
-                    for supertype in descriptor.inherits.iter().chain(&descriptor.implements) {
+                    let inherits = descriptor.inherits.iter().map(|s| (s, superclass));
+                    let implements = descriptor.implements.iter().map(|s| (s, false));
+                    for (supertype, on_chain) in inherits.chain(implements) {
                         self.queue_supertype(
                             class,
                             &descriptor.imports,
                             supertype.as_written(),
+                            on_chain,
                             &mut queue,
                         );
                     }
@@ -4808,6 +5222,9 @@ impl<'a> ResolveWalker<'a> {
                 // A shipped class is not the workspace's to supply, so its miss
                 // is no gap in it either.
                 IndexAnswer::NotFound => {
+                    if superclass {
+                        self.cross_file_mut().opaque_surfaces.insert(class);
+                    }
                     if !is_system_namespace(name.as_atom()) {
                         self.cross_file_mut().incomplete_surfaces.insert(class);
                         self.symbols
@@ -4821,7 +5238,11 @@ impl<'a> ResolveWalker<'a> {
                 // did not resolve, and this one is oxabl's gap rather than a
                 // missing file.
                 IndexAnswer::Unusable => {
-                    self.cross_file_mut().incomplete_surfaces.insert(class);
+                    let cf = self.cross_file_mut();
+                    cf.incomplete_surfaces.insert(class);
+                    if superclass {
+                        cf.opaque_surfaces.insert(class);
+                    }
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unusable);
                     if let Located::In(file) = index.located(LocateKind::Class, &name) {
@@ -4831,7 +5252,11 @@ impl<'a> ResolveWalker<'a> {
                     continue;
                 }
                 IndexAnswer::Unknowable => {
-                    self.cross_file_mut().incomplete_surfaces.insert(class);
+                    let cf = self.cross_file_mut();
+                    cf.incomplete_surfaces.insert(class);
+                    if superclass {
+                        cf.opaque_surfaces.insert(class);
+                    }
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
                     continue;
@@ -4928,7 +5353,11 @@ impl<'a> ResolveWalker<'a> {
                             });
                     }
                 }
-                IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {}
+                IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {
+                    if superclass {
+                        self.cross_file_mut().opaque_surfaces.insert(class);
+                    }
+                }
             }
         }
     }
@@ -5397,6 +5826,18 @@ fn names_shipped_class(imports: &ImportContext, raw: &str) -> bool {
         || imports.implicit_lang_class(raw).is_some()
 }
 
+/// Whether the supertype name `raw`, written in a file with `imports`, is
+/// `Progress.Lang.Object`.
+fn names_root_object(imports: &ImportContext, raw: &str) -> bool {
+    match imports.explicit(raw) {
+        Some(qualified) => qualified.as_atom().as_ref() == "progress.lang.object",
+        None => {
+            let folded = fold_atom(raw);
+            folded.as_ref() == "progress.lang.object" || folded.as_ref() == "object"
+        }
+    }
+}
+
 /// The name a class that did not resolve is reported under, for `raw` written in
 /// a file with `imports`. See [`ResolveWalker::class_miss_key`].
 fn miss_key(imports: &ImportContext, raw: &str) -> OxablAtom {
@@ -5853,6 +6294,7 @@ mod tests {
         let (tree, symbols, diags) = run(vec![stmt(StatementKind::Procedure {
             name: id("doThing"),
             body: vec![var_stmt("local", DataType::Integer)],
+            is_prototype: false,
         })]);
         assert!(diags.is_empty());
         let proc = find_symbol(&tree, &symbols, NamespaceId::Procedures, "doThing").unwrap();
@@ -6044,6 +6486,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![],
         })]);
         // Counter must not leak into file scope.
@@ -6082,6 +6525,7 @@ mod tests {
                 by: None,
                 while_condition: None,
                 transaction: false,
+                on_actions: Vec::new(),
                 body: vec![],
             }),
         ];
@@ -6115,6 +6559,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![],
         })]);
         assert!(find_symbol(&tree, &symbols, NamespaceId::Buffers, "Customer").is_none());
@@ -6141,6 +6586,7 @@ mod tests {
                 by: None,
                 while_condition: None,
                 transaction: false,
+                on_actions: Vec::new(),
                 body: vec![var_stmt("x", DataType::Character)],
             }),
         ]);
@@ -6182,6 +6628,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![var_stmt("x", DataType::Integer)],
         });
         let b_block = stmt(StatementKind::Do {
@@ -6191,16 +6638,19 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![var_stmt("x", DataType::Integer)],
         });
         let (_tree, _symbols, diags) = run(vec![
             stmt(StatementKind::Procedure {
                 name: id("a"),
                 body: vec![a_block],
+                is_prototype: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("b"),
                 body: vec![b_block],
+                is_prototype: false,
             }),
         ]);
         assert!(
@@ -6245,10 +6695,12 @@ mod tests {
             stmt(StatementKind::Procedure {
                 name: id("p"),
                 body: vec![],
+                is_prototype: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("p"),
                 body: vec![],
+                is_prototype: false,
             }),
         ]);
         assert_eq!(diags.len(), 1);
@@ -7306,6 +7758,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![stmt_n(StatementKind::ExpressionStatement(inner_use))],
         });
         let stmts = vec![var_stmt_n("outer", DataType::Integer), do_block];
@@ -7336,6 +7789,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body: vec![stmt_n(StatementKind::ExpressionStatement(block_use))],
         });
         let stmts = vec![var_stmt_n("x", DataType::Character), do_block];
@@ -7752,6 +8206,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![],
         })];
         let ctx = ctx("", &schema);
@@ -8495,6 +8950,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
+            on_actions: Vec::new(),
             body: vec![],
         })];
         let (_t, symbols, _r, _) = run_full(&stmts);
@@ -8917,6 +9373,7 @@ mod tests {
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
+            is_prototype: false,
         });
         let stmts = vec![var_stmt_n("outer", DataType::Integer), proc];
         let (_t, _s, refs, _) = run_full(&stmts);
@@ -9043,6 +9500,7 @@ mod tests {
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(use_s))],
+            is_prototype: false,
         });
         let stmts = vec![proc];
         let (_t, symbols, refs, _) = run_full(&stmts);
@@ -9151,6 +9609,42 @@ mod tests {
         ];
         let (tree, symbols, _r, _ty) = run_full(&stmts);
         assert_eq!(buffer_reads(&tree, &symbols, "ttItem"), 1);
+    }
+
+    /// The inline-signature buffer parameter whose name equals its target keeps
+    /// the same self-credit guard as `DEFINE BUFFER`.
+    #[test]
+    fn same_name_buffer_parameter_does_not_self_credit() {
+        let stmts = vec![stmt_n(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Buffer {
+                name: id("Customer"),
+                target: id("Customer"),
+            },
+        })];
+        let (tree, symbols, _r, _ty) = run_full(&stmts);
+        assert_eq!(buffer_reads(&tree, &symbols, "Customer"), 0);
+    }
+
+    #[test]
+    fn declare_buffer_parameter_links_schema_table_id() {
+        let schema = test_schema();
+        let stmts = vec![stmt_n(StatementKind::DefineParameter {
+            direction: ParameterDirection::Input,
+            param_type: ParameterType::Buffer {
+                name: id("bCust"),
+                target: id("Customer"),
+            },
+        })];
+        let ctx = ctx("", &schema);
+        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let bsym = tree
+            .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("bcust"))
+            .expect("buffer declared");
+        assert_eq!(
+            symbols.get(bsym).table_id,
+            schema.table_id(&fold_atom("customer"))
+        );
     }
 
     /// Other parameter shapes are untouched: a scalar parameter names no table,
@@ -9538,5 +10032,86 @@ mod db_qualifier_tests {
         assert_eq!(strip_db_qualifier(".Customer"), None);
         assert_eq!(strip_db_qualifier("dictdb."), None);
         assert_eq!(strip_db_qualifier(""), None);
+    }
+}
+
+#[cfg(test)]
+mod preproc_arm_tests {
+    use super::*;
+    use oxabl_common::FileId;
+    use oxabl_schema::Schema;
+
+    /// `SEM0001` messages from the declare pass over `source`, preprocessing off.
+    fn sem0001_messages(source: &str) -> Vec<String> {
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(
+            program.errors.is_empty(),
+            "fixture must parse cleanly: {:?}",
+            program.errors
+        );
+        let (_, _, diags, _) = declare_pass(&program.statements, &ctx);
+        diags
+            .into_iter()
+            .filter(|d| d.code.0 == diagnostics::SEM0001)
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn same_stream_in_both_preproc_arms_is_not_a_duplicate() {
+        let src =
+            "&IF DEFINED(F) <> 0 &THEN\nDEFINE STREAM sOut.\n&ELSE\nDEFINE STREAM sOut.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn same_variable_in_both_preproc_arms_is_not_a_duplicate() {
+        let src = "&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn same_variable_in_three_preproc_arms_is_not_a_duplicate() {
+        let src = "&IF DEFINED(A) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSEIF DEFINED(B) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn duplicate_inside_one_preproc_arm_still_fires() {
+        let src = "&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn preproc_arm_declaration_colliding_with_outside_one_still_fires() {
+        let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\n&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE w AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn declaration_after_preproc_if_collides_with_an_arm_declaration() {
+        let src = "&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn same_variable_in_nested_preproc_arms_is_not_a_duplicate() {
+        let src = "&IF DEFINED(A) <> 0 &THEN\n&IF DEFINED(B) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn same_method_in_both_preproc_arms_is_not_a_duplicate() {
+        let src = "CLASS Foo:\n&IF DEFINED(F) <> 0 &THEN\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ELSE\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ENDIF\nEND CLASS.\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn duplicate_method_inside_one_preproc_arm_still_fires() {
+        let src = "CLASS Foo:\n&IF DEFINED(F) <> 0 &THEN\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ENDIF\nEND CLASS.\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
     }
 }

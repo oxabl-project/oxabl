@@ -1054,3 +1054,59 @@ fn a_generic_type_in_a_position_the_parser_skips_is_never_silent() {
         );
     }
 }
+
+#[test]
+fn a_class_in_a_block_headers_on_phrase_action_is_a_class_site() {
+    for header in [
+        "DO ON ERROR UNDO, RETURN ERROR NEW pkg.Thing()",
+        "DO ON ERROR UNDO, THROW NEW pkg.Thing()",
+        "REPEAT ON ERROR UNDO, RETURN ERROR NEW pkg.Thing()",
+        "FOR EACH Customer NO-LOCK ON ERROR UNDO, RETURN ERROR NEW pkg.Thing()",
+    ] {
+        let source = format!("{header}:\n    LEAVE.\nEND.\n");
+        let (targets, rows) = class_rows(
+            "p.p",
+            &source,
+            &[("pkg/Thing.cls", "CLASS pkg.Thing:\nEND CLASS.\n")],
+        );
+        assert_eq!(targets, ["pkg.thing"], "{header}: got {rows:?}");
+
+        let lost = source.replace("pkg.Thing", "pkg.Gone");
+        let (_, rows) = class_rows("p.p", &lost, &[]);
+        assert!(
+            has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+            "{header}: got {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn an_indexed_class_names_its_parent_through_its_own_using() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/pkg/Base.cls"),
+        "CLASS pkg.Base:\n  METHOD PUBLIC VOID Hello():\n  END METHOD.\nEND CLASS.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/pkg/Mid.cls"),
+        "USING pkg.*.\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/user.p");
+
+    let edges = pipeline
+        .edge_set("DEFINE VARIABLE o AS pkg.Mid NO-UNDO.\no = NEW pkg.Mid().\no:Hello().\n")
+        .expect("edge set");
+
+    let classes: Vec<_> = edges
+        .of_kind(EdgeKind::ClassReference)
+        .map(|e| e.target.key().to_string())
+        .collect();
+    assert_eq!(classes, ["pkg.base", "pkg.mid"]);
+    assert!(
+        edges.unresolved().is_empty(),
+        "got {:?}",
+        edges.unresolved()
+    );
+}

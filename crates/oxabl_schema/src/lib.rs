@@ -3,7 +3,7 @@
 //! The `.df` format is the standard textual schema interchange for Progress
 //! databases (see Riverside Software's `DumpFileGrammar.g4`). `oxabl_schema`
 //! parses a subset sufficient for semantic analysis — `ADD TABLE`,
-//! `ADD FIELD`, `ADD INDEX`, and their attributes. Unrecognised directives
+//! `ADD FIELD`, `ADD INDEX`, `ADD SEQUENCE`, and their attributes. Unrecognised directives
 //! and unknown attributes round-trip silently so that format drift across
 //! OpenEdge versions never hard-errors the loader.
 //!
@@ -35,5 +35,6 @@ pub use loader::{LOAD_FIELD_CAP, LOAD_TABLE_CAP, SchemaLoader, df_files_in_dir};
 pub use metaschema::{METASCHEMA_DF, metaschema};
 pub use parser::{ParseOutcome, parse_df};
 pub use schema::{
-    Field, FieldResolution, Index, IndexField, Schema, SchemaRevision, SchemaType, Table, TableId,
+    Field, FieldResolution, Index, IndexField, Schema, SchemaRevision, SchemaType, Sequence, Table,
+    TableId,
 };

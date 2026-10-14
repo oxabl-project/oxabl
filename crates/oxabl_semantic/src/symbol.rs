@@ -61,6 +61,9 @@ pub enum SymbolKind {
     /// dump output, but with no declared type.
     Dataset,
     DataSource,
+    /// A database sequence from the loaded schema, synthesized on first
+    /// reference like a schema field.
+    Sequence,
 }
 
 bitflags! {
@@ -158,6 +161,10 @@ bitflags! {
         /// the head-parsing issue (#136); the flag retires when only `FORM`,
         /// embedded SQL, `EDITING:` bodies and option tails still reach it.
         const TOUCHED_BY_UNMODELLED_STATEMENT = 1 << 21;
+        /// The variable a `CATCH` header names. ABL requires the name even when
+        /// the handler only cares about the error's type, so never reading it
+        /// is not a defect.
+        const CATCH_VARIABLE = 1 << 22;
     }
 }
 
@@ -442,6 +449,30 @@ pub struct SymbolTable {
     /// which is the same answer an empty map gives, so no consumer can tell the
     /// difference.
     side: Option<Box<SymbolSideMaps>>,
+    /// How temp-tables, and buffers for them, reach their fields. Boxed and
+    /// created on first write, like [`Self::side`], so a file with no
+    /// temp-table pays one word.
+    records: Option<Box<RecordLinks>>,
+}
+
+/// The record a buffer reads from: a schema table, or a temp-table this file
+/// declares (identified by its `TempTable` symbol).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum RecordSource {
+    Schema(oxabl_schema::TableId),
+    TempTable(SymbolId),
+}
+
+/// Declare-pass facts about temp-table records. `Symbol::table_id` covers a
+/// schema-backed buffer; these cover everything a temp-table needs.
+#[derive(Debug, Default)]
+struct RecordLinks {
+    /// A `Buffer` symbol → the `TempTable` symbol it is a buffer for.
+    buffer_for: FxHashMap<SymbolId, SymbolId>,
+    /// A `TempTable` symbol → the scope holding its `FIELD` symbols.
+    fields: FxHashMap<SymbolId, ScopeId>,
+    /// A `TempTable` symbol → the record its `LIKE` clause copies.
+    like: FxHashMap<SymbolId, RecordSource>,
 }
 
 /// The `SymbolTable` side maps only a class-bearing file or an index-backed run
@@ -819,6 +850,54 @@ impl SymbolTable {
     /// the block-var-used-outside analysis (LINT0005) has nothing to track.
     pub fn has_block_scoped_var(&self) -> bool {
         !self.block_defined.is_empty()
+    }
+
+    fn records_mut(&mut self) -> &mut RecordLinks {
+        self.records.get_or_insert_with(Default::default)
+    }
+
+    /// Record that buffer `buffer` is a buffer for temp-table `temp_table`.
+    pub(crate) fn record_buffer_for(&mut self, buffer: SymbolId, temp_table: SymbolId) {
+        self.records_mut().buffer_for.insert(buffer, temp_table);
+    }
+
+    /// Record the field scope, and the `LIKE` source if any, of `temp_table`.
+    pub(crate) fn record_temp_table(
+        &mut self,
+        temp_table: SymbolId,
+        fields: ScopeId,
+        like: Option<RecordSource>,
+    ) {
+        let records = self.records_mut();
+        records.fields.insert(temp_table, fields);
+        if let Some(like) = like {
+            records.like.insert(temp_table, like);
+        }
+    }
+
+    /// The record buffer-like symbol `sym` reads from: its schema table, the
+    /// temp-table itself, or the temp-table a buffer was defined for. `None`
+    /// for a buffer whose table is unknown.
+    pub(crate) fn record_source(&self, sym: SymbolId) -> Option<RecordSource> {
+        let symbol = self.get(sym);
+        if let Some(tid) = symbol.table_id {
+            return Some(RecordSource::Schema(tid));
+        }
+        if symbol.kind == SymbolKind::TempTable {
+            return Some(RecordSource::TempTable(sym));
+        }
+        let tt = self.records.as_deref()?.buffer_for.get(&sym)?;
+        Some(RecordSource::TempTable(*tt))
+    }
+
+    /// The scope holding `temp_table`'s own `FIELD` symbols.
+    pub(crate) fn temp_table_fields(&self, temp_table: SymbolId) -> Option<ScopeId> {
+        self.records.as_deref()?.fields.get(&temp_table).copied()
+    }
+
+    /// The record `temp_table`'s `LIKE` clause copies, when it names one.
+    pub(crate) fn temp_table_like(&self, temp_table: SymbolId) -> Option<RecordSource> {
+        self.records.as_deref()?.like.get(&temp_table).copied()
     }
 }
 

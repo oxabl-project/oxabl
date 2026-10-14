@@ -802,3 +802,43 @@ fn stop_after_and_waiting_statements_may_raise_stop() {
     assert_eq!(cfg.node(via).kind, NodeKind::Head);
     assert!(cfg.successors(via).any(|e| finally.contains(&e.to)));
 }
+
+#[test]
+fn an_on_phrase_action_with_an_expression_still_reads_from_the_header() {
+    let p = parse(
+        "\
+DO ON ERROR UNDO, RETURN ERROR NEW pkg.Err(\"a\") ON ENDKEY UNDO, LEAVE:
+END.
+REPEAT ON ERROR UNDO, THROW NEW pkg.Err():
+    LEAVE.
+END.
+FOR EACH Customer NO-LOCK ON ERROR UNDO, RETURN ERROR \"bad\" + STRING(1):
+END.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let blocks: Vec<_> = cfg.blocks().map(|(_, b)| b).collect();
+
+    let d = blocks[1];
+    assert_eq!(d.kind, BlockKind::Do);
+    assert_eq!(
+        d.handling(Condition::Error).unwrap().action,
+        Action::Return(oxabl_flow::ReturnKind::Error)
+    );
+    assert_eq!(
+        d.handling(Condition::Endkey).unwrap().action,
+        Action::Leave(None)
+    );
+
+    let r = blocks[2];
+    assert_eq!(r.kind, BlockKind::Repeat);
+    assert_eq!(r.handling(Condition::Error).unwrap().action, Action::Throw);
+
+    let f = blocks[3];
+    assert_eq!(f.kind, BlockKind::For(ForQualifier::Each));
+    assert_eq!(
+        f.handling(Condition::Error).unwrap().action,
+        Action::Return(oxabl_flow::ReturnKind::Error)
+    );
+}

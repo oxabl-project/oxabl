@@ -172,11 +172,11 @@ pub struct SiblingFile {
 pub enum CrossFileEffect {
     /// A sibling supplies the name, and the resolution is visible in the shared
     /// diagnostic channel: the finding below fires when the siblings are
-    /// **withheld** and must not fire when they are supplied. This is the
-    /// subclass-to-parent false positive cross-file resolution removes.
+    /// **withheld** and must not fire when they are supplied, such as a variable
+    /// only an include declares.
     ///
     /// The withheld-half finding here is one the *single-file* run produces on its
-    /// own — an inherited call is `NotInScope` when nothing resolves it — so it
+    /// own — a name nothing declares is `NotInScope` — so it
     /// arrives whether or not a search path is configured. Contrast
     /// [`Self::ResolvedFromWorkspaceMiss`].
     Resolved(ExpectedDiagnostic),
@@ -1691,10 +1691,9 @@ pub const FIXTURES: &[ParityFixture] = &[
     },
     // --- Cross-file rows (R7) ---------------------------------------------
     //
-    // The parent class below is what makes cross-file resolution observable at
-    // all: without it the inherited call is an `undefined-symbol` finding — the
-    // false positive this line of work removes — so the *removal* is the shared
-    // fact all four clients are held to.
+    // The parent class below supplies the inherited call. Withheld, the parent
+    // is unread and the call is unknowable rather than undefined, so the
+    // diagnostics agree either way and the edges carry the difference.
     ParityFixture {
         name: "cross_file_inheritance",
         root_file: "orders/child.cls",
@@ -1704,15 +1703,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         }],
         resolutions: &[CrossFileResolution {
             name: "calc-total",
-            // Withheld, the inherited call is undefined. Supplied, the row is
-            // clean — which is why `diagnostics` below is empty.
-            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
-                code: "LINT0001",
-                severity: Severity::Error,
-                source: DiagnosticSource::Lint,
-                start: 149,
-                end: 159,
-            }),
+            effect: CrossFileEffect::ResolvedSilently,
         }],
         source: "CLASS orders.child INHERITS orders.calc-base:\n    \
                  METHOD PUBLIC VOID run-it():\n        \
@@ -1851,34 +1842,19 @@ pub const FIXTURES: &[ParityFixture] = &[
             path: "orders/calc-base.cls",
             source: CALC_BASE,
         }],
-        // One name, both directions — which is the whole shape of this row. With
-        // the sibling withheld the call resolves to nothing and is an
-        // `undefined-symbol`; with it supplied that finding goes away and a type
-        // mismatch takes its place. A resolver that quietly stopped resolving
-        // would trip the first arm, and one that resolved without typing would
-        // trip the second.
-        resolutions: &[
-            CrossFileResolution {
-                name: "calc-total",
-                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
-                    code: "LINT0001",
-                    severity: Severity::Error,
-                    source: DiagnosticSource::Lint,
-                    start: 150,
-                    end: 160,
-                }),
-            },
-            CrossFileResolution {
-                name: "calc-total",
-                effect: CrossFileEffect::Judged(ExpectedDiagnostic {
-                    code: "LINT0004",
-                    severity: Severity::Warning,
-                    source: DiagnosticSource::Lint,
-                    start: 141,
-                    end: 147,
-                }),
-            },
-        ],
+        // With the sibling withheld the call is unknowable and has no type; with
+        // it supplied the call is typed and the mismatch appears. A resolver that
+        // resolved without typing would miss the finding.
+        resolutions: &[CrossFileResolution {
+            name: "calc-total",
+            effect: CrossFileEffect::Judged(ExpectedDiagnostic {
+                code: "LINT0004",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Lint,
+                start: 141,
+                end: 147,
+            }),
+        }],
         source: "CLASS orders.mismatch INHERITS orders.calc-base:\n    \
                  METHOD PUBLIC VOID run-it():\n        \
                  DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n        \
@@ -1936,9 +1912,9 @@ pub const FIXTURES: &[ParityFixture] = &[
         })],
     },
     // A parent no supplied file declares. A sibling *is* supplied — a different
-    // class in the same package — so the row distinguishes "the search found
-    // nothing" from "the search never ran": the finding must stand, identically,
-    // with the siblings supplied and without them.
+    // class in the same package — and must not be taken for the parent. The
+    // parent is unread either way, so the inherited call is unknowable, not
+    // undefined.
     ParityFixture {
         name: "cross_file_absent_parent",
         root_file: "orders/orphan.cls",
@@ -1956,13 +1932,7 @@ pub const FIXTURES: &[ParityFixture] = &[
                  v-total = calc-total().\n        \
                  MESSAGE v-total.\n    \
                  END METHOD.\nEND CLASS.\n",
-        diagnostics: &[ExpectedDiagnostic {
-            code: "LINT0001",
-            severity: Severity::Error,
-            source: DiagnosticSource::Lint,
-            start: 153,
-            end: 163,
-        }],
+        diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
         // No supplied file declares the parent, so the gap stands either way. A
@@ -2806,13 +2776,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         siblings: CALC_BASE_SIBLING,
         resolutions: &[CrossFileResolution {
             name: "calc-total",
-            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
-                code: "LINT0001",
-                severity: Severity::Error,
-                source: DiagnosticSource::Lint,
-                start: 158,
-                end: 168,
-            }),
+            effect: CrossFileEffect::ResolvedSilently,
         }],
         source: "USING orders.*.\n\
                  CLASS orders.child INHERITS calc-base:\n    \
@@ -2986,14 +2950,8 @@ pub const FIXTURES: &[ParityFixture] = &[
                  AddMessage(\"x\", 1).\n    \
                  END METHOD.\nEND CLASS.\n",
         // The shipped parent's own members are not modelled, so the inherited call
-        // is undefined either way. That is the shipped-library gap, not this row's.
-        diagnostics: &[ExpectedDiagnostic {
-            code: "LINT0001",
-            severity: Severity::Error,
-            source: DiagnosticSource::Lint,
-            start: 196,
-            end: 206,
-        }],
+        // is unknowable either way, not undefined.
+        diagnostics: &[],
         needs: &[],
         target: "orders.calc-base",
         withheld: "orders.calc-base",
@@ -3674,13 +3632,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         siblings: PRICE_RULE_CHAIN_SIBLINGS,
         resolutions: &[CrossFileResolution {
             name: "rule-total",
-            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
-                code: "LINT0001",
-                severity: Severity::Error,
-                source: DiagnosticSource::Lint,
-                start: 88,
-                end: 98,
-            }),
+            effect: CrossFileEffect::ResolvedSilently,
         }],
         source: "CLASS orders.my-calc INHERITS orders.calc-mid:\n    \
                  METHOD PUBLIC VOID run-it():\n        \
@@ -3751,13 +3703,8 @@ pub const FIXTURES: &[ParityFixture] = &[
                  MESSAGE VALID-OBJECT(v-calc).\n        \
                  AddMessage(\"x\", 1).\n    \
                  END METHOD.\nEND CLASS.\n",
-        diagnostics: &[ExpectedDiagnostic {
-            code: "LINT0001",
-            severity: Severity::Error,
-            source: DiagnosticSource::Lint,
-            start: 182,
-            end: 192,
-        }],
+        // As for the qualified spelling: the inherited call is unknowable.
+        diagnostics: &[],
         needs: &[],
         target: "orders.calc-base",
         withheld: "orders.calc-base",
@@ -4110,13 +4057,7 @@ pub const FIXTURES: &[ParityFixture] = &[
                  METHOD PUBLIC VOID run-it():\n        \
                  base-total().\n    \
                  END METHOD.\nEND CLASS.\n",
-        diagnostics: &[ExpectedDiagnostic {
-            code: "LINT0001",
-            severity: Severity::Error,
-            source: DiagnosticSource::Lint,
-            start: 105,
-            end: 115,
-        }],
+        diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
         edges: &[
@@ -4468,17 +4409,11 @@ const CHAIN_EXPLICIT_SIBLINGS: &[SiblingFile] = &[
     RULES_PRICE_BASE,
 ];
 
-/// The call `CHAIN_CHILD` makes is an undefined symbol until the grandparent is
-/// found.
+/// The call `CHAIN_CHILD` makes resolves once the grandparent is found, and is
+/// unknowable while the parent is unread.
 const CHAIN_BASE_TOTAL: &[CrossFileResolution] = &[CrossFileResolution {
     name: "base-total",
-    effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
-        code: "LINT0001",
-        severity: Severity::Error,
-        source: DiagnosticSource::Lint,
-        start: 105,
-        end: 115,
-    }),
+    effect: CrossFileEffect::ResolvedSilently,
 }];
 
 /// What `CHAIN_CHILD` claims over a parent that reaches the grandparent: the

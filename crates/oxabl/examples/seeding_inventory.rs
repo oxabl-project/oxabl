@@ -207,7 +207,7 @@ fn walk_routines(
             SK::Interface { name, body, .. } => {
                 walk_routines(body, Some(&name.name), true, ctx, out);
             }
-            SK::Procedure { name, body } => {
+            SK::Procedure { name, body, .. } => {
                 out.push(build_routine(
                     ctx,
                     "Procedure",
@@ -582,7 +582,7 @@ fn block_ends_of(s: &Statement) -> Option<usize> {
             Some(c)
         }
         SK::Label { body, .. } => block_ends_of(body),
-        SK::Block(body) => count_block_ends(body),
+        SK::Block(body) | SK::VariableDeclarationList(body) => count_block_ends(body),
         // `&IF …&THEN …&ELSE …&ENDIF` emits no `END` tokens, but its branches are
         // all present in unpreprocessed source — count the block ENDs in each.
         SK::PreprocIf(p) => {

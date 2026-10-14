@@ -53,6 +53,11 @@ pub enum StatementKind {
         is_new_global_shared: bool,
     },
 
+    /// `VAR <type> a [= x], b [= y].` — one declaration per name, sharing the
+    /// type. Each child is a [`StatementKind::VariableDeclaration`] spanning
+    /// `name [= initial]`. A single-name `VAR` is a plain `VariableDeclaration`.
+    VariableDeclarationList(Vec<Statement>),
+
     /// Assignment
     Assignment {
         target: Expression,
@@ -78,6 +83,8 @@ pub enum StatementKind {
         while_condition: Option<Expression>,
         /// Whether the block runs inside a transaction (DO TRANSACTION:)
         transaction: bool,
+        /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
+        on_actions: Vec<Expression>,
         body: Vec<Statement>,
     },
 
@@ -91,6 +98,8 @@ pub enum StatementKind {
     /// REPEAT block
     Repeat {
         while_condition: Option<Expression>,
+        /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
+        on_actions: Vec<Expression>,
         body: Vec<Statement>,
     },
 
@@ -101,6 +110,8 @@ pub enum StatementKind {
         of_relation: Option<Identifier>,
         where_clause: Option<Expression>,
         lock_type: LockType,
+        /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
+        on_actions: Vec<Expression>,
         body: Vec<Statement>,
     },
 
@@ -126,6 +137,9 @@ pub enum StatementKind {
     Procedure {
         name: Identifier,
         body: Vec<Statement>, // parameters are parsed as DEFINE PARAMTER statements
+        /// An `EXTERNAL` or `IN ...` declaration: a signature with no ABL body,
+        /// so its parameters are never referenced by name.
+        is_prototype: bool,
     },
 
     /// Define input/output params

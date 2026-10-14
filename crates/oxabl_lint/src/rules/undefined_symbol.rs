@@ -28,7 +28,7 @@ use oxabl_ast::{
     SubscribeTarget,
 };
 use oxabl_common::{Diagnostic, FileSpan};
-use oxabl_semantic::{AnalysisContext, Resolution, Semantic, UnresolvedReason};
+use oxabl_semantic::{AnalysisContext, Resolution, Semantic, UnresolvedReason, sequence_operand};
 
 use super::LINT0001;
 
@@ -112,28 +112,42 @@ impl Visitor<'_> {
                 to,
                 by,
                 while_condition,
+                on_actions,
                 body,
                 ..
             } => {
                 for e in [from, to, by, while_condition].into_iter().flatten() {
                     self.walk_expression(e);
                 }
+                for e in on_actions {
+                    self.walk_expression(e);
+                }
                 self.walk_block(body);
             }
             StatementKind::Repeat {
                 while_condition,
+                on_actions,
                 body,
             } => {
                 if let Some(e) = while_condition {
                     self.walk_expression(e);
                 }
+                for e in on_actions {
+                    self.walk_expression(e);
+                }
                 self.walk_block(body);
             }
             StatementKind::ForEach {
-                where_clause, body, ..
+                where_clause,
+                on_actions,
+                body,
+                ..
             } => {
                 if let Some(w) = where_clause {
                     self.walk_expression(w);
+                }
+                for e in on_actions {
+                    self.walk_expression(e);
                 }
                 self.walk_block(body);
             }
@@ -176,7 +190,7 @@ impl Visitor<'_> {
                     self.walk_block(o);
                 }
             }
-            StatementKind::Block(body) => self.walk_block(body),
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => self.walk_block(body),
             StatementKind::Label { body, .. } => self.walk_statement(body),
 
             // ---- Trigger / preprocessor ---------------------------------
@@ -383,6 +397,10 @@ impl Visitor<'_> {
             }
             ExpressionKind::FunctionCall { name, arguments } => {
                 self.check(expr.id.to_owned_id(), &name.name, name.span);
+                // A sequence name is not a symbol; an unknown one is LINT0003's.
+                if sequence_operand(name, arguments).is_some_and(|op| op.is_static) {
+                    return;
+                }
                 for a in arguments {
                     self.walk_expression(a);
                 }
@@ -676,6 +694,7 @@ mod tests {
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
+            is_prototype: false,
         });
         let diags = analyze_and_lint(vec![var_decl("outer", DataType::Integer), proc]);
         assert!(diags.is_empty());

@@ -9,12 +9,16 @@
 use criterion::{
     BenchmarkGroup, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
-use oxabl_common::FileId;
+use oxabl_common::{FileId, LintSeverityMap};
 use oxabl_lexer::tokenize;
-use oxabl_lint::{block_var_used_outside, lint_file};
+use oxabl_lint::{
+    CL001, CL002, CL005, LINT0002, LINT0005, LINT0006, Registry, TX006, block_var_used_outside,
+    lint_file,
+};
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
 use oxabl_semantic::{AnalysisContext, analyze_file};
+use std::path::Path;
 
 /// A file of `routines` internal procedures. Each has:
 ///
@@ -109,6 +113,79 @@ fn bench_source(
     });
 }
 
+/// Load a fixture file from the workspace `resources/` directory.
+fn load_fixture(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../resources")
+        .join(name);
+    std::fs::read_to_string(path).unwrap()
+}
+
+/// `lint_file` and the registry on a hand-written, realistic file: once with
+/// the default rules, once with every `strict.*` group enabled.
+///
+/// The setup asserts that the fixture parses cleanly and that each of
+/// `expected` reports at least once, so the bench cannot silently measure a
+/// file the rules skip.
+fn bench_realistic(c: &mut Criterion, name: &str, fixture: &str, expected: &[&str]) {
+    let source = load_fixture(fixture);
+    let tokens = tokenize(&source);
+    let program = Parser::new(&tokens, &source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let schema = Schema::empty();
+
+    let default_ctx = AnalysisContext::new(FileId::new(1), &source, &schema);
+    let mut strict = LintSeverityMap::new();
+    strict.base_mut().enable_group("strict");
+    let strict_ctx =
+        AnalysisContext::new(FileId::new(1), &source, &schema).with_lint_severities(strict);
+    let sem = analyze_file(&program.statements, &default_ctx);
+
+    let registry = Registry::builtin();
+    let found = registry.run(&program.statements, &sem, &strict_ctx);
+    for code in expected {
+        assert!(
+            found.iter().any(|d| d.code.0 == *code),
+            "{fixture} must trigger {code}"
+        );
+    }
+    let default_count = registry.run(&program.statements, &sem, &default_ctx).len();
+    let strict_count = registry.run(&program.statements, &sem, &strict_ctx).len();
+    assert!(default_count > 0, "the fixture must trigger default rules");
+    assert!(
+        strict_count > default_count,
+        "the fixture must trigger strict rules"
+    );
+
+    let mut group = c.benchmark_group(format!("lint_realistic/{name}"));
+    group.throughput(Throughput::Bytes(source.len() as u64));
+    group.bench_function("lint_file", |b| {
+        b.iter(|| black_box(lint_file(&program.statements, &sem, &default_ctx)))
+    });
+    group.bench_function("registry_default", |b| {
+        b.iter(|| black_box(registry.run(&program.statements, &sem, &default_ctx)))
+    });
+    group.bench_function("registry_strict", |b| {
+        b.iter(|| black_box(registry.run(&program.statements, &sem, &strict_ctx)))
+    });
+    group.finish();
+}
+
+fn realistic_benchmarks(c: &mut Criterion) {
+    bench_realistic(
+        c,
+        "procedural",
+        "bench_lint_procedural.abl",
+        &[LINT0002, LINT0005, CL001, CL002, CL005, TX006],
+    );
+    bench_realistic(
+        c,
+        "class",
+        "bench_lint_class.abl",
+        &[LINT0006, CL001, CL002, TX006],
+    );
+}
+
 fn lint_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("lint");
     // `h1`, `h2` and `l` of every routine, and `shared-count` once.
@@ -118,5 +195,5 @@ fn lint_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, lint_benchmarks);
+criterion_group!(benches, lint_benchmarks, realistic_benchmarks);
 criterion_main!(benches);

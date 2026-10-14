@@ -189,6 +189,10 @@ pub struct Parser<'a> {
     /// `COMPILE` do — so anchoring on the statement start is what lets one
     /// uniform "drop index 0" rule strip the dispatch keyword in both shapes.
     stmt_start_token: usize,
+    /// Byte ranges of the short names imported by non-wildcard `USING`
+    /// statements seen so far. A word token spelled like one of these is a class
+    /// name in a type position even when it is also a keyword (`Method`).
+    imported_classes: Vec<(usize, usize)>,
 }
 
 impl<'a> Parser<'a> {
@@ -210,6 +214,7 @@ impl<'a> Parser<'a> {
             node_ids: NodeIdAllocator::new(),
             errors: Vec::new(),
             stmt_start_token: current,
+            imported_classes: Vec::new(),
         }
     }
 
@@ -271,8 +276,20 @@ impl<'a> Parser<'a> {
     /// Prevents infinite loops when error recovery cannot make progress.
     const MAX_ERRORS: usize = 50;
 
+    /// Upper bound on the initial capacity of the top-level statement list.
+    const PRESIZED_STATEMENTS: usize = 64;
+
     pub fn parse_program(&mut self) -> Program {
-        let mut statements = Vec::new();
+        // Every top-level statement ends at a period, so the capped period
+        // count sizes the list without reallocating large statements as it
+        // grows. Nested statements make it an overestimate; the slack is
+        // released below.
+        let estimate = self.tokens[self.current..]
+            .iter()
+            .filter(|t| t.kind == Kind::Period)
+            .take(Self::PRESIZED_STATEMENTS)
+            .count();
+        let mut statements = Vec::with_capacity(estimate);
 
         while !self.at_end() {
             if self.errors.len() >= Self::MAX_ERRORS {
@@ -303,6 +320,7 @@ impl<'a> Parser<'a> {
         // parse_statement calls. This preserves the aggregate error-reporting
         // contract even though block bodies now recover instead of bubbling.
         debug_assert_stmt_sibling_order(&statements);
+        statements.shrink_to_fit();
         let comments = self.collect_comments();
         Program {
             statements,
@@ -1150,6 +1168,8 @@ impl<'a> Parser<'a> {
                     // Memory manipulation functions (usable in assignment LHS / expression position)
                     | Kind::PutByte
                     | Kind::GetByte
+                    | Kind::GetCodepage
+                    | Kind::GetCodepages
                     // Handle attribute names (e.g. builder:Library)
                     | Kind::Library
                     // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
@@ -1246,7 +1266,7 @@ impl<'a> Parser<'a> {
         Self::can_be_identifier(kind)
             || matches!(
                 kind,
-                Kind::Begins | Kind::Contains | Kind::Matches | Kind::Current
+                Kind::Begins | Kind::Contains | Kind::Matches | Kind::Current | Kind::Null
             )
     }
 
@@ -1599,16 +1619,20 @@ impl<'a> Parser<'a> {
                 if self.check(Kind::Buffer) {
                     self.advance(); // consume BUFFER
                     let name = self.parse_identifier()?; // buffer name
+                    let mut target = name.clone();
                     if self.check(Kind::KwFor) {
                         self.advance(); // consume FOR
-                        self.parse_identifier().ok(); // table name
+                        // FOR TEMP-TABLE tt is the explicit spelling of FOR tt.
+                        if self.check(Kind::TempTable) {
+                            self.advance();
+                        }
+                        if let Ok(table) = self.parse_identifier() {
+                            target = table;
+                        }
                     }
                     params.push(self.stmt(StatementKind::DefineParameter {
                         direction,
-                        param_type: ParameterType::Buffer {
-                            name: name.clone(),
-                            target: name,
-                        },
+                        param_type: ParameterType::Buffer { name, target },
                     }));
                     if !self.check(Kind::Comma) {
                         break;
@@ -1934,6 +1958,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether `token` is spelled like the short name of a `USING` import.
+    fn is_imported_class(&self, token: &Token) -> bool {
+        let text = &self.source[token.start..token.end];
+        self.imported_classes
+            .iter()
+            .any(|&(start, end)| self.source[start..end].eq_ignore_ascii_case(text))
+    }
+
     /// The type of a class name, generic when it carries type arguments.
     fn class_data_type(class: String, arguments: TypeArguments) -> DataType {
         if arguments.0.is_empty() {
@@ -1995,6 +2027,12 @@ impl<'a> Parser<'a> {
                     .get(self.current + 1)
                     .is_some_and(|t| t.kind == Kind::Period) =>
             {
+                let class_name = self.parse_class_qualified_name()?;
+                let arguments = self.parse_generic_type_args();
+                return Ok(Self::class_data_type(class_name.name, arguments));
+            }
+            // A keyword-spelled short name imported by `USING` (e.g. `Method`).
+            _ if Self::is_word_kind(token.kind) && self.is_imported_class(token) => {
                 let class_name = self.parse_class_qualified_name()?;
                 let arguments = self.parse_generic_type_args();
                 return Ok(Self::class_data_type(class_name.name, arguments));

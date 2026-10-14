@@ -127,7 +127,9 @@ impl<'a> Visitor<'a> {
                     self.walk_block(o);
                 }
             }
-            StatementKind::Block(body) => self.walk_block(body),
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
+                self.walk_block(body)
+            }
             StatementKind::Label { body, .. } => self.walk_statement(body),
             StatementKind::PreprocIf(pif) => {
                 self.walk_block(&pif.then_branch);
@@ -208,12 +210,20 @@ impl<'a> Visitor<'a> {
             }
         }
 
+        // A scalar assigned to an array assigns every element, so it is judged
+        // against the element type; messages still name the declared type.
+        let judged = match (from, to) {
+            (ResolvedType::Array { .. }, _) => to,
+            (_, ResolvedType::Array { element, .. }) => element,
+            _ => to,
+        };
+
         // The lattice is the file's own symbol table: assignability between two
         // class types is a question about the inheritance graph recorded there,
         // not about the two types. Constructed here rather than held on the
         // visitor because it is a one-pointer `Copy` view — there is nothing to
         // amortize, and a stored copy would only add a lifetime.
-        if !assignable(from, to, ClassLattice::new(&self.sem.symbols)) {
+        if !assignable(from, judged, ClassLattice::new(&self.sem.symbols)) {
             self.diags.push(Diagnostic::error(
                 LINT0004,
                 format!(
@@ -223,7 +233,7 @@ impl<'a> Visitor<'a> {
                 ),
                 *span,
             ));
-        } else if is_narrowing_warning(from, to) {
+        } else if is_narrowing_warning(from, judged) {
             self.diags.push(Diagnostic::warning(
                 LINT0004,
                 format!(

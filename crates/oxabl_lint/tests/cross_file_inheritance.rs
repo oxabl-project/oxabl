@@ -25,7 +25,7 @@
 mod support;
 
 use oxabl_ast::NodeId;
-use oxabl_lint::LINT0004;
+use oxabl_lint::{LINT0001, LINT0004};
 use oxabl_semantic::{NamespaceId, PrimitiveTy, ResolvedType, SymbolKind, UnresolvedReason};
 
 use support::*;
@@ -106,8 +106,8 @@ END CLASS."#;
     assert!(resolved_to(&plain, "calc-total").is_empty());
     assert_eq!(
         unresolved_reasons(&plain, "calc-total"),
-        vec![UnresolvedReason::NotInScope],
-        "today's answer for a name only the parent file declares"
+        vec![UnresolvedReason::External],
+        "the parent is unread, so a name only it declares is unknowable"
     );
     assert!(
         symbols_named(&plain, "calc-total").is_empty(),
@@ -192,8 +192,8 @@ END CLASS."#;
     let (_stmts, plain) = without_index(child);
     assert_eq!(
         unresolved_reasons(&plain, "calc-secret"),
-        vec![UnresolvedReason::NotInScope],
-        "with no index nothing was looked at, so today's answer stands"
+        vec![UnresolvedReason::External],
+        "with no index the parent is unread, so the name is unknowable"
     );
 }
 
@@ -228,13 +228,8 @@ END CLASS."#;
         1,
         "and the finding survives — LINT0001 renders `NotInScope` only"
     );
-    // Exactly today's answer, which is the other half of the property: the fix
-    // restores a finding rather than adding one.
-    assert_eq!(
-        lint0001_without_index(child).len(),
-        1,
-        "the same finding the single-file run produces"
-    );
+    // With no index the parent is unread, so the single-file run cannot tell.
+    assert!(lint0001_without_index(child).is_empty());
 
     // The sibling shape that proves the softening still works where it should: the
     // *same* private name **called**, which is a functions-namespace reference, is
@@ -652,7 +647,7 @@ END CLASS."#
             .to_string(),
     ];
     // Everything else: type-matched assignments, a private ancestor member, a
-    // typo, the two inheritance cycles, an unresolvable parent, and the
+    // self-inheriting class, an unresolvable parent, and the
     // twenty-reference fixture. Each stays exactly as silent as it was — resolving
     // a name across files is not, on its own, a reason to say anything.
     let silent = [
@@ -679,8 +674,7 @@ END CLASS."#
     END METHOD.
 END CLASS."#
             .to_string(),
-        // A private ancestor member, and a typo — the two shapes that must stay
-        // exactly as undefined (or as silent) as they are today.
+        // A private ancestor member, which stays silent either way.
         r#"CLASS orders.child INHERITS orders.calc-base:
     METHOD PUBLIC VOID run-it():
         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
@@ -688,14 +682,7 @@ END CLASS."#
     END METHOD.
 END CLASS."#
             .to_string(),
-        r#"CLASS orders.child INHERITS orders.calc-base:
-    METHOD PUBLIC VOID run-it():
-        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
-        v-total = calc-totl().
-    END METHOD.
-END CLASS."#
-            .to_string(),
-        // A three-level chain, a self-inheriting class, and a two-class cycle.
+        // A three-level chain and a self-inheriting class.
         r#"CLASS orders.child INHERITS orders.middle:
     METHOD PUBLIC VOID run-it():
         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
@@ -707,14 +694,6 @@ END CLASS."#
     METHOD PUBLIC VOID run-it():
         DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
         v-total = calc-total().
-    END METHOD.
-END CLASS."#
-            .to_string(),
-        r#"CLASS orders.a INHERITS orders.b:
-    METHOD PUBLIC VOID run-it():
-        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
-        v-total = from-b().
-        v-total = ghost-member().
     END METHOD.
 END CLASS."#
             .to_string(),
@@ -766,6 +745,32 @@ END PROCEDURE."#
             codes_added_by_index(source, &workspace),
             Vec::<&str>::new(),
             "silent scenario {i} must gain nothing:\n{source}"
+        );
+    }
+
+    // A typo, and a name no class in a two-class cycle declares. With no index
+    // the parent is unread and the name may be one of its members; with one the
+    // whole chain is read, and the name is undefined.
+    let found = [
+        r#"CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = calc-totl().
+    END METHOD.
+END CLASS."#,
+        r#"CLASS orders.a INHERITS orders.b:
+    METHOD PUBLIC VOID run-it():
+        DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
+        v-total = from-b().
+        v-total = ghost-member().
+    END METHOD.
+END CLASS."#,
+    ];
+    for (i, source) in found.iter().enumerate() {
+        assert_eq!(
+            codes_added_by_index(source, &workspace),
+            vec![LINT0001],
+            "found scenario {i} must gain exactly one undefined-symbol finding:\n{source}"
         );
     }
 }

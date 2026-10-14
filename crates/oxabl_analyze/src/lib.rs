@@ -617,7 +617,9 @@ fn symbol_origin(sem: &Semantic, id: SymbolId, sym: &oxabl_semantic::Symbol) -> 
         // nothing else synthesizes into these namespaces.
         SymbolKind::Function | SymbolKind::Property | SymbolKind::Procedure => "cross_file",
         // What the resolve pass synthesizes from a loaded schema.
-        SymbolKind::Field | SymbolKind::Buffer | SymbolKind::TempTable => "schema",
+        SymbolKind::Field | SymbolKind::Buffer | SymbolKind::TempTable | SymbolKind::Sequence => {
+            "schema"
+        }
         // No pass synthesizes these; a DUMMY declaration on one is a bug
         // somewhere else, and saying so beats guessing a world for it.
         SymbolKind::Variable
@@ -978,6 +980,7 @@ fn symbol_kind_str(k: SymbolKind) -> &'static str {
         SymbolKind::BuiltIn => "builtin",
         SymbolKind::Dataset => "dataset",
         SymbolKind::DataSource => "data_source",
+        SymbolKind::Sequence => "sequence",
     }
 }
 

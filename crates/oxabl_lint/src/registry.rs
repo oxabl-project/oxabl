@@ -240,7 +240,7 @@ pub const BUILTIN_RULES: &[FnRule] = &[
             LINT0003,
             "unknown-table-or-field",
             groups::DEFAULT,
-            "A table or field the loaded schema does not declare.",
+            "A table, field or sequence the loaded schema does not declare.",
         ),
         unknown_table_or_field::run,
     ),

@@ -742,7 +742,11 @@ impl Parser<'_> {
         if self.check(Kind::Variable)
             && (Self::is_data_type_kind(self.peek_at(1).kind)
                 || self.check_at(1, Kind::Like)
-                || self.peek_at(1).kind == Kind::Identifier)
+                || self.peek_at(1).kind == Kind::Identifier
+                || (self.check_at(1, Kind::Class) && Self::is_word_kind(self.peek_at(2).kind))
+                || (Self::is_word_kind(self.peek_at(1).kind)
+                    && self.is_imported_class(self.peek_at(1))
+                    && Self::can_be_identifier(self.peek_at(2).kind)))
         {
             return self.parse_var_statement();
         }
@@ -1110,11 +1114,9 @@ impl Parser<'_> {
             return Ok(self.skipped_table_stmt(hi));
         }
 
-        // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE, skip to
-        // statement end. Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
+        // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE.
         if self.check(Kind::Workfile) || self.check(Kind::WorkTable) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_define_temp_table(is_new_shared, is_shared, is_new_global_shared);
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
@@ -1267,7 +1269,7 @@ impl Parser<'_> {
         }))
     }
 
-    /// Parse: VAR type name [= value].
+    /// Parse: VAR type name [= value] [, name [= value]]....
     fn parse_var_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume VAR
 
@@ -1282,14 +1284,33 @@ impl Parser<'_> {
             TypeSource::Explicit(self.parse_data_type()?)
         };
 
-        // Parse variable name
+        // A single name, the common case, needs no list and no type clone.
+        let first = self.parse_var_declarator()?;
+        if !self.check(Kind::Comma) {
+            let stmt = self.var_declaration(first, type_source);
+            self.expect_period("Expected '.' to end statement")?;
+            return Ok(stmt);
+        }
+
+        let mut declarations = vec![self.var_declaration(first, type_source.clone())];
+        while self.check(Kind::Comma) {
+            self.advance(); // consume ,
+            let next = self.parse_var_declarator()?;
+            declarations.push(self.var_declaration(next, type_source.clone()));
+        }
+
+        self.expect_period("Expected '.' to end statement")?;
+
+        Ok(self.stmt(StatementKind::VariableDeclarationList(declarations)))
+    }
+
+    /// Parse one `name [= value]` of a VAR statement. Returns the name, the
+    /// initial value and the declarator's span.
+    fn parse_var_declarator(&mut self) -> ParseResult<(Identifier, Option<Expression>, Span)> {
         if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected variable name".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
+                span: self.current_span(),
             });
         }
         let name_token = self.advance().clone();
@@ -1301,7 +1322,6 @@ impl Parser<'_> {
             name: self.source[name_token.start..name_token.end].to_string(),
         };
 
-        // Optional initial value
         let initial_value = if self.check(Kind::Equals) {
             self.advance();
             Some(self.parse_expression()?)
@@ -1309,9 +1329,20 @@ impl Parser<'_> {
             None
         };
 
-        self.expect_period("Expected '.' to end statement")?;
+        let span = Span {
+            start: name_token.start as u32,
+            end: self.prev_end(),
+        };
+        Ok((name, initial_value, span))
+    }
 
-        Ok(self.stmt(StatementKind::VariableDeclaration {
+    /// The `VariableDeclaration` of one VAR declarator.
+    fn var_declaration(
+        &mut self,
+        (name, initial_value, span): (Identifier, Option<Expression>, Span),
+        type_source: TypeSource,
+    ) -> Statement {
+        let mut stmt = self.stmt(StatementKind::VariableDeclaration {
             name,
             type_source,
             initial_value,
@@ -1321,7 +1352,9 @@ impl Parser<'_> {
             is_new_shared: false,
             is_shared: false,
             is_new_global_shared: false,
-        }))
+        });
+        stmt.span = span;
+        stmt
     }
 
     fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
@@ -1575,7 +1608,9 @@ impl Parser<'_> {
         is_shared: bool,
         is_new_global_shared: bool,
     ) -> ParseResult<Statement> {
-        self.advance(); // consume TEMP-TABLE
+        // A workfile is never undo-able, so it counts as NO-UNDO.
+        let is_workfile = self.check(Kind::Workfile) || self.check(Kind::WorkTable);
+        self.advance(); // consume TEMP-TABLE, WORKFILE or WORK-TABLE
 
         let name = self.parse_identifier()?;
 
@@ -1584,7 +1619,7 @@ impl Parser<'_> {
             self.advance();
             true
         } else {
-            false
+            is_workfile
         };
 
         // Parse XML/serialize options (NAMESPACE-URI, SERIALIZE-NAME, etc.)
@@ -2464,42 +2499,7 @@ impl Parser<'_> {
             }
         }
 
-        // Skip DO/REPEAT block-header ON phrases: ON ERROR UNDO, RETRY / LEAVE / etc.
-        // These are complex error-handling annotations on block headers; we consume them
-        // without building AST nodes for now.
-        while self.check(Kind::On) {
-            self.advance(); // consume ON
-            // consume the condition (e.g., ERROR, ENDKEY, STOP, QUIT — keyword or identifier)
-            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
-                self.advance(); // consume condition keyword/identifier
-            }
-            // consume UNDO and optional label: UNDO [label]
-            if self.check(Kind::Undo) {
-                self.advance();
-                // consume optional block label after UNDO (e.g. UNDO TRANS-BLOCK, ...)
-                if Self::can_be_identifier(self.peek().kind)
-                    && !self.check(Kind::Colon)
-                    && !self.check(Kind::Comma)
-                {
-                    self.advance();
-                }
-            }
-            // consume optional action after comma: , LEAVE / RETRY / NEXT / RETURN [label]
-            if self.check(Kind::Comma) {
-                self.advance(); // consume ','
-                // consume action keyword (LEAVE, RETRY, NEXT, RETURN, THROW)
-                if matches!(
-                    self.peek().kind,
-                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn | Kind::Throw
-                ) {
-                    self.advance();
-                    // consume optional label or throw expression
-                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
-                        self.advance();
-                    }
-                }
-            }
-        }
+        let on_actions = self.parse_block_on_phrases();
 
         // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
         // The WITH clause can contain many frame options; consume everything until the
@@ -2527,6 +2527,7 @@ impl Parser<'_> {
             by,
             while_condition,
             transaction,
+            on_actions,
             body,
         }))
     }
@@ -2684,34 +2685,7 @@ impl Parser<'_> {
             None
         };
 
-        // Consume ON phrase(s) same as DO (ON ERROR UNDO [label] [, action [label]])
-        while self.check(Kind::On) {
-            self.advance();
-            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
-                self.advance();
-            }
-            if self.check(Kind::Undo) {
-                self.advance();
-                if Self::can_be_identifier(self.peek().kind)
-                    && !self.check(Kind::Colon)
-                    && !self.check(Kind::Comma)
-                {
-                    self.advance();
-                }
-            }
-            if self.check(Kind::Comma) {
-                self.advance();
-                if matches!(
-                    self.peek().kind,
-                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn | Kind::Throw
-                ) {
-                    self.advance();
-                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
-                        self.advance();
-                    }
-                }
-            }
-        }
+        let on_actions = self.parse_block_on_phrases();
 
         // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:)
         if self.check(Kind::Transaction) {
@@ -2787,6 +2761,7 @@ impl Parser<'_> {
 
         Ok(self.stmt(StatementKind::Repeat {
             while_condition,
+            on_actions,
             body,
         }))
     }
@@ -2805,6 +2780,69 @@ impl Parser<'_> {
     /// Parse the expression after RETURN/THROW unless the statement ends first.
     fn parse_optional_value(&mut self) -> Option<Expression> {
         if self.check(Kind::Period) || self.at_end() {
+            return None;
+        }
+        self.parse_expression().ok()
+    }
+
+    /// Parse the `ON {ERROR|ENDKEY|STOP|QUIT} [UNDO [label]] [, action]` phrases of a
+    /// block header. Returns the expression of each `RETURN`/`THROW` action; the
+    /// flow builder reads the rest of the phrase from the tokens.
+    fn parse_block_on_phrases(&mut self) -> Vec<Expression> {
+        let mut actions = Vec::new();
+        while self.check(Kind::On) {
+            self.advance(); // consume ON
+            // the condition (ERROR, ENDKEY, STOP, QUIT: keyword or identifier)
+            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
+                self.advance();
+            }
+            if self.check(Kind::Undo) {
+                self.advance();
+                // optional block label: UNDO TRANS-BLOCK, ...
+                if Self::can_be_identifier(self.peek().kind)
+                    && !self.check(Kind::Colon)
+                    && !self.check(Kind::Comma)
+                {
+                    self.advance();
+                }
+            }
+            if !self.check(Kind::Comma) {
+                continue;
+            }
+            self.advance(); // consume ','
+            match self.peek().kind {
+                Kind::Leave | Kind::Retry | Kind::Next => {
+                    self.advance();
+                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
+                        self.advance();
+                    }
+                }
+                Kind::KwReturn => {
+                    self.advance();
+                    if !self.eat_error_modifier() && self.check(Kind::NoApply) {
+                        self.advance();
+                    }
+                    actions.extend(self.parse_on_action_value());
+                }
+                Kind::Throw => {
+                    self.advance();
+                    actions.extend(self.parse_on_action_value());
+                }
+                _ => {}
+            }
+        }
+        actions
+    }
+
+    /// The value of an `ON` phrase `RETURN`/`THROW` action, absent when the phrase
+    /// or the header ends first.
+    fn parse_on_action_value(&mut self) -> Option<Expression> {
+        if self.at_end()
+            || matches!(
+                self.peek().kind,
+                Kind::Colon | Kind::Period | Kind::On | Kind::With | Kind::Transaction
+            )
+        {
             return None;
         }
         self.parse_expression().ok()
@@ -3004,7 +3042,9 @@ impl Parser<'_> {
             }
         }
 
-        // Handle optional BREAK, GROUP, BY, TRANSACTION, and WHILE clauses in any order.
+        let mut on_actions = Vec::new();
+
+        // Handle optional BREAK, GROUP, BY, TRANSACTION, WHILE and ON clauses in any order.
         // ABL allows these interleaved, e.g. TRANSACTION BY field: or BY field TRANSACTION:
         // GROUP BY is a less common sort grouping clause that behaves like BREAK BY.
         loop {
@@ -3025,6 +3065,8 @@ impl Parser<'_> {
                 self.parse_expression().ok(); // parse the condition
             } else if self.check(Kind::Transaction) {
                 self.advance();
+            } else if self.check(Kind::On) {
+                on_actions.append(&mut self.parse_block_on_phrases());
             } else {
                 break;
             }
@@ -3066,6 +3108,7 @@ impl Parser<'_> {
             of_relation,
             where_clause,
             lock_type,
+            on_actions,
             body,
         }))
     }
@@ -3332,11 +3375,13 @@ impl Parser<'_> {
             }
         }
 
+        let mut is_prototype = false;
         // Skip optional EXTERNAL "dll-name" [calling-convention] [PERSISTENT] clause
         // e.g. PROCEDURE foo EXTERNAL "mylib.dll" cdecl:
         // The DLL name may also be a preprocessor reference: EXTERNAL {&DLL_NAME}
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
+            is_prototype = true;
             // DLL name: string literal or preprocessor/include reference
             if self.check(Kind::StringLiteral)
                 || self.check(Kind::Preprop)
@@ -3370,6 +3415,7 @@ impl Parser<'_> {
         // ADM2 prototype includes (smrtprto.i, qryprto.i, …) rely on this form (#65).
         if self.check(Kind::KwIn) {
             self.advance(); // consume IN
+            is_prototype = true;
             if self.check(Kind::ThisProcedure)
                 || self.check(Kind::StringLiteral)
                 || self.check(Kind::Preprop)
@@ -3393,6 +3439,7 @@ impl Parser<'_> {
                 return Ok(self.stmt(StatementKind::Procedure {
                     name,
                     body: Vec::new(),
+                    is_prototype,
                 }));
             }
         }
@@ -3431,7 +3478,11 @@ impl Parser<'_> {
             });
         }
 
-        Ok(self.stmt(StatementKind::Procedure { name, body }))
+        Ok(self.stmt(StatementKind::Procedure {
+            name,
+            body,
+            is_prototype,
+        }))
     }
 
     // parse RUN statements
@@ -4580,9 +4631,23 @@ impl Parser<'_> {
     /// comment, so a period followed by whitespace is the statement terminator.
     fn parse_procedure_name(&mut self) -> ParseResult<(String, Span)> {
         // Procedure names are file paths and can start with any word-like token,
-        // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`).
-        // Absolute UNIX paths starting with `/` are also valid (e.g., `RUN /opt/app/batch.p`).
-        if !Self::is_word_kind(self.peek().kind) && !self.check(Kind::Slash) {
+        // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`),
+        // a digit (`3rd/x.p`), a `/` (`RUN /opt/app/batch.p`) or `./` / `../`.
+        let first = self.peek().kind;
+        let leading_dot = first == Kind::Period
+            && matches!(self.peek_at(1).kind, Kind::Period | Kind::Slash)
+            && self.peek_at(1).start == self.peek().end;
+        let backslash_after_dot = first == Kind::Period
+            && self.peek_at(1).kind == Kind::Identifier
+            && self.peek_at(1).start == self.peek().end
+            && self.source[self.peek_at(1).start..].starts_with('\\');
+        let numeric_start = matches!(first, Kind::IntegerLiteral | Kind::DecimalLiteral);
+        if !Self::is_word_kind(first)
+            && first != Kind::Slash
+            && !leading_dot
+            && !backslash_after_dot
+            && !numeric_start
+        {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
                 span: Span {
@@ -4605,57 +4670,74 @@ impl Parser<'_> {
             };
             tok.start == before
         };
-        // For absolute paths, consume the leading `/` then the first path segment
-        if self.check(Kind::Slash) {
-            self.advance(); // consume leading '/'
-            if Self::is_word_kind(self.peek().kind) && touches(self, 0) {
-                self.advance(); // consume first path segment
-            }
-        } else {
-            self.advance(); // consume the first identifier token
-        }
-
-        // Consume additional path components separated by `/` (e.g., `orders/calc_total.p`)
-        // Path components may start with digits (e.g., `rpt/170summary.p`), so also allow
-        // IntegerLiteral and DecimalLiteral as path segment starts.
-        while self.check(Kind::Slash)
-            && touches(self, 0)
+        // Leading `./`, `../` and `./../` components.
+        while matches!(self.peek().kind, Kind::Period | Kind::Slash)
+            && matches!(self.peek_at(1).kind, Kind::Period | Kind::Slash)
             && touches(self, 1)
-            && (Self::is_word_kind(self.peek_at(1).kind)
-                || matches!(
-                    self.peek_at(1).kind,
-                    Kind::IntegerLiteral | Kind::DecimalLiteral
-                ))
         {
-            self.advance(); // consume '/'
-            self.advance(); // consume next path component
-            // A digit-leading component like "170summary" is lexed as two tokens:
-            // IntegerLiteral("170") + Identifier("summary"). Consume the rest.
-            while Self::is_word_kind(self.peek().kind)
-                && !self.check(Kind::Slash)
-                && !self.check(Kind::Period)
-                && touches(self, 0)
-            {
+            self.advance();
+        }
+        if self.check(Kind::Slash) {
+            // Absolute path (or the `/` after leading dots): consume the `/` and
+            // the first path segment.
+            self.advance();
+            if self.at_segment_start() && touches(self, 0) {
                 self.advance();
             }
+        } else if self.check(Kind::Period) {
+            // `.\x.p`: the lexer folds the backslash into the identifier.
+            self.advance();
+            self.advance();
+        } else {
+            self.advance(); // consume the first token
         }
+        self.consume_touching_words();
 
-        // Check for dotted extension (e.g., my-proc.p) or dotted method name (e.g., Dataset.Fill).
+        // Further path components (`orders/calc_total.p`, `a.b/c.p`) and dotted
+        // extensions or method names (`my-proc.p`, `Dataset.Fill`, `a/b.c.p`). A
+        // component may start with a digit (`rpt/170summary.p`), which lexes as
+        // an IntegerLiteral followed by an Identifier.
+        //
         // The period and the word after it must both touch their neighbours: a
         // statement-terminating period is followed by whitespace, and `RUN` is
         // usable as an identifier, so `RUN write-header. RUN build-list.` must
         // not fold the next statement into the target. Block-terminating keywords
         // like END, WHEN, THEN are excluded even when adjacent.
-        if self.check(Kind::Period)
-            && (self.check_at(1, Kind::Identifier) || Self::can_be_identifier(self.peek_at(1).kind))
-            && touches(self, 0)
-            && touches(self, 1)
-        {
-            self.advance(); // consume the period
-            self.advance(); // consume the extension or method name
+        loop {
+            if self.check(Kind::Slash)
+                && touches(self, 0)
+                && touches(self, 1)
+                && self.at_segment_start_at(1)
+            {
+                self.advance(); // consume '/'
+                self.advance(); // consume next path component
+                self.consume_touching_words();
+            } else if self.check(Kind::Period)
+                && touches(self, 0)
+                && touches(self, 1)
+                && (self.check_at(1, Kind::Identifier)
+                    || Self::can_be_identifier(self.peek_at(1).kind)
+                    || self.check_at(1, Kind::IntegerLiteral))
+            {
+                self.advance(); // consume the period
+                self.advance(); // consume the extension or method name
+                self.consume_touching_words();
+            } else {
+                break;
+            }
         }
 
         let end = self.prev_end() as usize;
+        // A bare number is no program name.
+        if numeric_start && self.source[start..end].bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ParseError {
+                message: "Expected procedure name after RUN".to_string(),
+                span: Span {
+                    start: start as u32,
+                    end: end as u32,
+                },
+            });
+        }
         Ok((
             self.source[start..end].to_string(),
             Span {
@@ -4663,6 +4745,25 @@ impl Parser<'_> {
                 end: end as u32,
             },
         ))
+    }
+
+    /// Whether the token `offset` ahead can start a `RUN` path component.
+    fn at_segment_start_at(&self, offset: usize) -> bool {
+        let kind = self.peek_at(offset).kind;
+        Self::is_word_kind(kind) || matches!(kind, Kind::IntegerLiteral | Kind::DecimalLiteral)
+    }
+
+    fn at_segment_start(&self) -> bool {
+        self.at_segment_start_at(0)
+    }
+
+    /// Consume word tokens that touch the previous one: the rest of a component
+    /// the lexer split in two, like `170summary`.
+    fn consume_touching_words(&mut self) {
+        while Self::is_word_kind(self.peek().kind) && self.peek().start == self.prev_end() as usize
+        {
+            self.advance();
+        }
     }
 
     /// Check if the current token is the start of a find clause (WHERE, lock, no-error, terminator)
@@ -4743,40 +4844,34 @@ impl Parser<'_> {
     ///     body
     /// END CLASS.
     /// ```
+    fn parse_class_modifiers(&mut self, is_abstract: &mut bool, is_final: &mut bool) {
+        loop {
+            if self.check(Kind::Abstract) {
+                self.advance();
+                *is_abstract = true;
+            } else if self.check(Kind::Final) {
+                self.advance();
+                *is_final = true;
+            } else {
+                break;
+            }
+        }
+    }
+
     fn parse_class(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CLASS
 
         // Parse optional ABSTRACT/FINAL flags (before name, in any order)
         let mut is_abstract = false;
         let mut is_final = false;
-        loop {
-            if self.check(Kind::Abstract) {
-                self.advance();
-                is_abstract = true;
-            } else if self.check(Kind::Final) {
-                self.advance();
-                is_final = true;
-            } else {
-                break;
-            }
-        }
+        self.parse_class_modifiers(&mut is_abstract, &mut is_final);
 
         // Parse class name (dotted). Use parse_class_qualified_name() so that reserved
         // keywords used as namespace prefixes (e.g. `do.wsdo800obj`) are accepted.
         let name = self.parse_class_qualified_name()?;
 
         // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
-        loop {
-            if self.check(Kind::Abstract) {
-                self.advance();
-                is_abstract = true;
-            } else if self.check(Kind::Final) {
-                self.advance();
-                is_final = true;
-            } else {
-                break;
-            }
-        }
+        self.parse_class_modifiers(&mut is_abstract, &mut is_final);
 
         // Parse optional INHERITS
         let inherits = if self.check(Kind::Inherits) {
@@ -4797,13 +4892,16 @@ impl Parser<'_> {
             }
         }
 
-        // Skip optional USE-WIDGET-POOL clause (AppBuilder / legacy ABL)
-        if self.check(Kind::Identifier) {
-            let tok = self.peek().clone();
-            let text = &self.source[tok.start..tok.end];
-            if text.eq_ignore_ascii_case("use-widget-pool") {
-                self.advance();
+        // Skip trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
+        loop {
+            let is_option = self.check(Kind::Serializable)
+                || (self.check(Kind::Identifier)
+                    && self.source[self.peek().start..self.peek().end]
+                        .eq_ignore_ascii_case("use-widget-pool"));
+            if !is_option {
+                break;
             }
+            self.advance();
         }
 
         // Expect colon to start body
@@ -5348,6 +5446,7 @@ impl Parser<'_> {
         // Tracks the end of the name itself, so the recorded span stops before
         // any `FROM PROPATH` clause and the statement terminator.
         let mut name_end = first_token.end;
+        let mut short_start = first_token.start;
 
         // Consume .segment parts, including .* wildcard
         while self.check(Kind::Period) {
@@ -5373,6 +5472,7 @@ impl Parser<'_> {
                 type_name.push('.');
                 type_name.push_str(&self.source[seg.start..seg.end]);
                 name_end = seg.end;
+                short_start = seg.start;
             } else if next_kind == Kind::Star {
                 self.advance(); // consume .
                 let star = self.advance().clone(); // consume *
@@ -5407,6 +5507,10 @@ impl Parser<'_> {
         }
 
         self.expect_period("Expected '.' after USING statement")?;
+
+        if !type_name.ends_with('*') {
+            self.imported_classes.push((short_start, name_end));
+        }
 
         let id = self.node_id();
         Ok(self.stmt(StatementKind::Using {
