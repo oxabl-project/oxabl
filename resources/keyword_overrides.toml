@@ -582,6 +582,11 @@ keyword_type = "Option"
 name = "WIDGET-POOL"
 keyword_type = "Option"
 
+# CLASS ... USE-WIDGET-POOL
+[[add]]
+name = "USE-WIDGET-POOL"
+keyword_type = "Option"
+
 # DEFINE PARAMETER typed variants
 [[add]]
 name = "TABLE-HANDLE"

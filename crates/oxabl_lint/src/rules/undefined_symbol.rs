@@ -778,6 +778,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![method],
         })]);
         assert_eq!(diags.len(), 1);

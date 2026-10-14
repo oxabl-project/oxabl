@@ -99,6 +99,44 @@ DELETE WIDGET hBtn.
 }
 
 #[test]
+fn a_widget_created_under_a_frame_or_parent_is_owned_and_not_dead() {
+    assert_clean(
+        "\
+DEFINE VARIABLE hFrame AS HANDLE NO-UNDO.
+DEFINE VARIABLE hBtn AS HANDLE NO-UNDO.
+DEFINE VARIABLE hFld AS HANDLE NO-UNDO.
+hFrame = FRAME f1:HANDLE.
+CREATE BUTTON hBtn ASSIGN FRAME = hFrame.
+CREATE FILL-IN hFld ASSIGN PARENT = hFrame.
+",
+    );
+}
+
+#[test]
+fn a_widget_assigned_a_frame_later_is_owned_and_not_dead() {
+    assert_clean(
+        "\
+DEFINE VARIABLE hFrame AS HANDLE NO-UNDO.
+DEFINE VARIABLE hBtn AS HANDLE NO-UNDO.
+hFrame = FRAME f1:HANDLE.
+CREATE BUTTON hBtn.
+hBtn:FRAME = hFrame.
+",
+    );
+}
+
+#[test]
+fn a_widget_created_without_a_parent_and_never_read_is_dead() {
+    let diags = lint_all(
+        "\
+DEFINE VARIABLE hBtn AS HANDLE NO-UNDO.
+CREATE BUTTON hBtn ASSIGN LABEL = \"x\".
+",
+    );
+    assert!(diags.iter().any(|(c, _)| c == LINT0006), "{diags:?}");
+}
+
+#[test]
 fn create_widget_trigger_bodies_are_analyzed() {
     let source = "\
 DEFINE VARIABLE iClicks AS INTEGER NO-UNDO.

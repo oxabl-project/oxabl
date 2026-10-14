@@ -357,6 +357,7 @@ mod tests {
             implements: vec![],
             is_abstract: true,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -403,6 +404,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,

@@ -1067,6 +1067,7 @@ impl<'a> Parser<'a> {
                     | Kind::ParentFieldsBefore
                     | Kind::ParentFieldsAfter
                     | Kind::WidgetPool
+                    | Kind::UseWidgetPool
                     | Kind::TableHandle
                     | Kind::Bind
                     | Kind::ByValue

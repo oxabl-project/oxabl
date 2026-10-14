@@ -341,6 +341,8 @@ pub enum StatementKind {
         is_abstract: bool,
         /// Whether FINAL was specified.
         is_final: bool,
+        /// Whether `USE-WIDGET-POOL` was specified.
+        use_widget_pool: bool,
         /// Class body statements (methods, properties, variables, constructors).
         body: Vec<Statement>,
     },

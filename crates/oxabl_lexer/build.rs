@@ -634,6 +634,7 @@ fn main() {
             "up",
             "update",
             "use-index",
+            "use-widget-pool",
             "userid",
             "using",
             "v6frame",

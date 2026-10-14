@@ -526,6 +526,7 @@ impl<'a> Walker<'a> {
                 is_abstract,
                 is_final,
                 body,
+                ..
             } => {
                 let flags = flag_if(*is_abstract, SymbolFlags::ABSTRACT)
                     | flag_if(*is_final, SymbolFlags::FINAL);
@@ -3102,7 +3103,18 @@ impl<'a> ResolveWalker<'a> {
                     for_table,
                     ..
                 } => {
-                    self.walk_expression(handle, scope, AccessMode::Write);
+                    // Under a FRAME or PARENT the widget tree owns the widget, so
+                    // the handle needs no later read.
+                    let owned = assignments.iter().any(|a| {
+                        a.attribute.name.eq_ignore_ascii_case("FRAME")
+                            || a.attribute.name.eq_ignore_ascii_case("PARENT")
+                    });
+                    let mode = if owned {
+                        AccessMode::ReadWrite
+                    } else {
+                        AccessMode::Write
+                    };
+                    self.walk_expression(handle, scope, mode);
                     if let Some(t) = for_table {
                         self.walk_lenient_operand(t, scope);
                     }
@@ -6404,6 +6416,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![],
         })]);
         let c = find_symbol(&tree, &symbols, NamespaceId::Types, "Foo").unwrap();
@@ -6419,6 +6432,7 @@ mod tests {
             implements: vec![],
             is_abstract: true,
             is_final: true,
+            use_widget_pool: false,
             body: vec![],
         })]);
         let c = find_symbol(&tree, &symbols, NamespaceId::Types, "Base").unwrap();
@@ -6445,6 +6459,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -6467,6 +6482,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Constructor {
                 access: AccessModifier::Public,
                 parameters: vec![],
@@ -6484,6 +6500,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Destructor { body: vec![] })],
         })]);
         assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::Destructor));
@@ -6993,6 +7010,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
                     access: AccessModifier::Private,
@@ -7030,6 +7048,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
                     access: AccessModifier::Public,
@@ -7386,6 +7405,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -7427,6 +7447,7 @@ mod tests {
             implements: vec![],
             is_abstract: true,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -7457,6 +7478,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -7487,6 +7509,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Property {
                 access: AccessModifier::Public,
                 is_static: true,
@@ -8011,6 +8034,7 @@ mod tests {
                 implements: vec![],
                 is_abstract: false,
                 is_final: false,
+                use_widget_pool: false,
                 body: vec![],
             }),
             stmt_n(StatementKind::ExpressionStatement(new_expr)),
@@ -9273,6 +9297,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![pdecl],
         })];
         let (_t, _s, _r, types) = run_full(&stmts);
@@ -9310,6 +9335,7 @@ mod tests {
                 implements: vec![],
                 is_abstract: false,
                 is_final: false,
+                use_widget_pool: false,
                 body: vec![],
             }),
             var_stmt_n("svc", DataType::Class("Foo".into())),
@@ -9479,6 +9505,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![method],
         })];
         let (_t, _s, refs, _) = run_full(&stmts);

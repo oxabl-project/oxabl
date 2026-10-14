@@ -4896,13 +4896,12 @@ impl Parser<'_> {
             }
         }
 
-        // Skip trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
+        // Trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
+        let mut use_widget_pool = false;
         loop {
-            let is_option = self.check(Kind::Serializable)
-                || (self.check(Kind::Identifier)
-                    && self.source[self.peek().start..self.peek().end]
-                        .eq_ignore_ascii_case("use-widget-pool"));
-            if !is_option {
+            if self.check(Kind::UseWidgetPool) {
+                use_widget_pool = true;
+            } else if !self.check(Kind::Serializable) {
                 break;
             }
             self.advance();
@@ -4935,6 +4934,7 @@ impl Parser<'_> {
             implements,
             is_abstract,
             is_final,
+            use_widget_pool,
             body,
         }))
     }

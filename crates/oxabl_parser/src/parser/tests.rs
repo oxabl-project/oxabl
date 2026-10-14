@@ -6618,14 +6618,35 @@ fn parse_simple_class() {
             implements,
             is_abstract,
             is_final,
+            use_widget_pool,
             body,
         } => {
             assert_eq!(name.name, "MyClass");
+            assert!(!use_widget_pool);
             assert!(inherits.is_none());
             assert!(implements.is_empty());
             assert!(!is_abstract);
             assert!(!is_final);
             assert!(body.is_empty());
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_use_widget_pool() {
+    let source = "CLASS MyClass INHERITS Base USE-WIDGET-POOL: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt.kind {
+        StatementKind::Class {
+            inherits,
+            use_widget_pool,
+            ..
+        } => {
+            assert_eq!(inherits.unwrap().name, "Base");
+            assert!(use_widget_pool);
         }
         _ => panic!("Expected Class statement"),
     }
