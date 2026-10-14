@@ -9,7 +9,8 @@ date: 2026-10-14
 This note answers two of the three open questions in
 [`strict-analysis-plan.md`](strict-analysis-plan.md): where annotations may appear, and where
 diagnostics inside include files are reported. The third (PROPATH and include resolution parity
-with the AVM) stays open. Section 4 records one ABL fact that a rule depends on.
+with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
+lists the block semantics that the flow graph (`oxabl_flow`) models without a reference.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -256,3 +257,34 @@ SHARED`) producer in another file.
   change to that test.
 - **Still to check against a licensed install:** compile a producer with `NO-UNDO` and a consumer
   without it, and the reverse, for a variable and for a temp-table.
+
+## 5. Flow graph: block semantics modelled without a reference
+
+`oxabl_flow` builds a control-flow graph with ABL's block rules: which block an `UNDO` undoes,
+what a condition does to a block, what `CATCH` and `FINALLY` do. No ABL reference was available,
+so each rule below is a reading, not a fact. Every row has a fixture in
+`crates/oxabl_flow/tests/fixtures/`. If a rule turns out wrong, fix it in `oxabl_flow` and
+re-bless the fixtures (`OXABL_BLESS=1 cargo test -p oxabl_flow --test snapshots`). The diff shows
+every graph that changes.
+
+The marks are the ones defined at the top. A rule marked **Changed** was different in an earlier
+draft, and its row says what it was.
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| F1 | Default `ON ERROR` is `UNDO, RETRY` for a routine, `REPEAT`, `FOR` and `DO TRANSACTION`. Default `ON ENDKEY` is `UNDO, LEAVE` for the same blocks. A plain `DO` handles neither. STOP and QUIT have no default: they pass to the enclosing block, and out of the unit when none handles them. | Recalled. High for ERROR, medium for ENDKEY. | `phrases.p`, `loops.p` |
+| F2 | `RETRY` in a block with no input-blocking statement does not retry: an iterating block goes to its next iteration, any other block is left (infinite-loop protection). | Recalled. | `statements.p`, `loops.p` |
+| F3 | After a `CATCH` ends, its block goes on with the next iteration if it iterates, else it is left. | Recalled. | `defaults_catch_end.p` |
+| F4 | `CATCH` and `FINALLY` blocks have an implicit `ON ERROR UNDO, THROW`. A condition raised inside them skips their owner's handlers and `CATCH` blocks. | Recalled. | `undo_catch.p`, `catch_finally.p` |
+| F5 | An unlabelled `UNDO` in a `CATCH` undoes the block the `CATCH` belongs to, so `UNDO, LEAVE` leaves that block and `UNDO, NEXT` goes to its next iteration. A plain `DO` nested in the `CATCH` does not change this. The other reading, that the `CATCH` is the undone block, differs only for an iterating owner: `UNDO, LEAVE` would then end the `CATCH`, and the loop would go on. **Changed:** it used the closest block outside the owner, which left the enclosing loop. | Proposed. Low: roughly 60/40 over the other reading. | `undo_catch.p` |
+| F6 | `UNDO [label], THROW` undoes the labelled block, else the closest with the error property, and raises ERROR in the block that encloses it. The undone block's own `CATCH` blocks do not see it. This is the graph of `ON ERROR UNDO, THROW`, and it makes `CATCH e: UNDO, THROW e.` a rethrow. The bare `THROW` statement raises in the current block, so its own `CATCH` sees it. **Changed:** `UNDO, THROW` was a bare `THROW`, and lost its label. | Recalled. Medium. | `undo_throw.p`, `throws.p` |
+| F7 | `UNDO.` with no action does the `ON ERROR` action of the block it undoes. Under `BLOCK-LEVEL` or `ROUTINE-LEVEL` that is `THROW`. A block with no action (a plain `DO` with a `CATCH`) gives `RETRY`. **Changed:** an action of `THROW` was turned into `RETRY`. The other reading is that `UNDO.` is `UNDO, RETRY` whatever the directive. The model keeps the `THROW` path because an extra path that leaves the block is the safe side for cleanup rules. | Proposed. Low. | `defaults_undo_statement.p` |
+| F8 | `ON <condition> UNDO` with no action takes the action of the condition: ERROR `RETRY`, ENDKEY `LEAVE`, STOP `RETRY`, QUIT `LEAVE`. **Changed:** all four were `RETRY`. For a block with no input, `RETRY` becomes `NEXT` in a loop, so the two readings differ in loop exits. | Recalled. ERROR: high. ENDKEY: medium. STOP: low. QUIT: Proposed, low. | `defaults_on_phrase.p` |
+| F9 | `RETURN ERROR` is not caught by a `CATCH` in the same routine. The `FINALLY` blocks it leaves still run. | Recalled. | `defaults_catch_end.p` |
+| F10 | `ROUTINE-LEVEL` and `BLOCK-LEVEL` do not apply to a destructor. They do apply to the block of an `ON ... DO` trigger, as a routine block. `BLOCK-LEVEL` also reaches `REPEAT`, `FOR` and `DO TRANSACTION`, never a plain `DO`. | Recalled, uncertain for the destructor. Proposed for triggers: not checked. | `defaults_directive_class.cls`, `defaults_directive_trigger.p`, `block_level.p`, `routine_level.p` |
+| F11 | `FIND NEXT` and `FIND PREV` may raise both ERROR and ENDKEY. `IMPORT` and `PAUSE` raise ENDKEY. | Proposed for `FIND` (it is the safe side). Recalled for the others. | `input.p` |
+| F12 | `FOR FIRST` and `FOR LAST` run their body once: the end of the body goes to the point after the block, not back to the header. The block still counts as iterating, so `NEXT` and `RETRY` work. A joined `EACH` (`FOR FIRST a, EACH b OF a`) iterates, and keeps its loop-back. **Changed:** every `FOR` looped back. | Recalled. Medium. | `for_first.p`, `loops.p` |
+| F13 | STOP sources. Every statement under `STOP-AFTER` may raise STOP, and the header of an iterating block too. `RUN`, a `FIND` or `FOR` with a lock, and `WAIT-FOR` may raise STOP, but only where a block or `CATCH` of the unit handles STOP. STOP runs the `FINALLY` blocks it leaves, as any jump does. Not modelled: STOP from a function or method call, a user interrupt, a lock wait in other statements, and an unhandled STOP from `RUN` and the others (it leaves the unit). **Changed:** only the `STOP` statement raised STOP, so an `ON STOP` phrase on a `STOP-AFTER` block was dead. The handler-only limit keeps the graph of ordinary code unchanged. Raising STOP from every such statement adds a STOP exit to each unit that has a `RUN` or a lock wait. On a large corpus that grew the graphs by 0.8% in nodes and 1.6% in edges, and no rule asks for those paths yet. | Recalled for `STOP-AFTER` and for lock waits. Proposed for the rest. Low for the `FINALLY` rule. | `stop.p` |
+
+**Still to verify against a licensed install:** F5, F7 and F8 for STOP and QUIT first, because
+the readings differ in graph shape. Then F10 (destructor and trigger blocks) and F13.
