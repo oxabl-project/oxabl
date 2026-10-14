@@ -520,3 +520,29 @@ fn same_line_wrapped_branch_keeps_its_continuation_offset() {
         "DO:\n    IF c THEN x = x +\n    \"y\".\nEND.\n"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Annotations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn annotations_are_indented_with_their_members_and_otherwise_untouched() {
+    let src = "CLASS C:\n@Test (expected=\"X\").\n        METHOD PUBLIC VOID M():\n        END METHOD.\nEND CLASS.\n";
+    let out = fmt(src, &StyleGuide::default_base());
+    assert_eq!(
+        out,
+        "CLASS C:\n    @Test (expected=\"X\").\n    METHOD PUBLIC VOID M():\n    END METHOD.\nEND CLASS.\n"
+    );
+}
+
+#[test]
+fn annotation_text_keeps_its_case_and_spelling() {
+    let src = "@Strict.Effects(Reads=\"Customer\").\nPROCEDURE p:\nEND PROCEDURE.\n";
+    for style in [StyleGuide::default_base(), StyleGuide::oestandards()] {
+        let out = fmt(src, &style);
+        assert!(
+            out.starts_with("@Strict.Effects(Reads=\"Customer\").\n"),
+            "{out}"
+        );
+    }
+}

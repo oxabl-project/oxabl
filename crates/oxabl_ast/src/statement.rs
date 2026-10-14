@@ -1,4 +1,4 @@
-use crate::{Expression, Identifier, NodeId, Span};
+use crate::{Annotation, Expression, Identifier, NodeId, Span};
 use smallvec::SmallVec;
 
 /// Preprocessor conditional block, generic over the content type.
@@ -667,6 +667,12 @@ pub enum StatementKind {
         names: Vec<Identifier>,
         may_reference_tables: bool,
     },
+
+    /// An annotation: `@Name.` or `@Name(attr="value").`
+    ///
+    /// Standalone, not attached to the statement it precedes; use
+    /// [`associate_annotations`](crate::associate_annotations) to pair them.
+    Annotation(Annotation),
 
     /// A labeled block: `LABEL: DO: ... END.` or `LABEL: REPEAT: ... END.`
     /// The label can be referenced by LEAVE and NEXT statements.

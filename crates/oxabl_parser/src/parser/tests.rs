@@ -11508,3 +11508,178 @@ fn on_trigger_do_block_carries_its_real_span() {
         other => panic!("expected ON, got {other:?}"),
     }
 }
+
+// ---- annotations -----------------------------------------------------------
+
+fn parse_with_errors(source: &str) -> Program {
+    let tokens = tokenize(source);
+    Parser::new(&tokens, source).parse_program()
+}
+
+#[track_caller]
+fn only_annotation(source: &str) -> oxabl_ast::Annotation {
+    let program = parse_with_errors(source);
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 1, "{source}");
+    match &program.statements[0].kind {
+        StatementKind::Annotation(a) => a.clone(),
+        other => panic!("expected an annotation, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_annotation_parses() {
+    let a = only_annotation("@Test.");
+    assert_eq!(a.name.name, "Test");
+    assert!(a.qualifier.is_none());
+    assert!(a.attributes.is_empty());
+}
+
+#[test]
+fn annotation_span_covers_at_through_period() {
+    let source = "MESSAGE 1.\n  @Test.\nMESSAGE 2.";
+    let stmts = parse_program_stmts(source);
+    assert_eq!(stmts.len(), 3);
+    assert_span_covers(source, stmts[1].span, "@Test.");
+}
+
+#[test]
+fn annotation_name_span_excludes_the_at_sign() {
+    let source = "@strict.effects(reads=\"Customer\").";
+    let a = only_annotation(source);
+    assert_span_covers(source, a.name.span, "strict.effects");
+}
+
+#[test]
+fn annotation_with_attributes() {
+    let a = only_annotation("@Test (expected=\"Progress.Lang.AppError\", ignore=\"x\").");
+    assert_eq!(a.attributes.len(), 2);
+    assert_eq!(a.attributes[0].name.name, "expected");
+    assert_eq!(
+        a.attributes[0].value,
+        oxabl_ast::AnnotationValue::String("Progress.Lang.AppError".into())
+    );
+    assert_eq!(a.attribute("IGNORE").unwrap().value.as_str(), "x");
+}
+
+#[test]
+fn dotted_annotation_name_with_attributes() {
+    let a = only_annotation("@strict.effects(reads=\"Customer\", writes=\"Order\").");
+    assert_eq!(a.name.name, "strict.effects");
+    assert_eq!(a.attribute("reads").unwrap().value.as_str(), "Customer");
+    assert_eq!(a.attribute("writes").unwrap().value.as_str(), "Order");
+}
+
+#[test]
+fn annotation_name_may_contain_reserved_words() {
+    let a = only_annotation("@openapi.openedge.export(type=\"REST\").");
+    assert_eq!(a.name.name, "openapi.openedge.export");
+    assert_eq!(a.attribute("type").unwrap().value.as_str(), "REST");
+}
+
+#[test]
+fn annotation_with_qualifier() {
+    let a =
+        only_annotation("@openapi.openedge.export FILE(type=\"REST\", useReturnValue=\"false\").");
+    assert_eq!(a.name.name, "openapi.openedge.export");
+    assert_eq!(a.qualifier.as_ref().unwrap().name, "FILE");
+    assert_eq!(a.attributes.len(), 2);
+}
+
+#[test]
+fn annotation_empty_parens_and_single_quotes() {
+    assert!(only_annotation("@Test().").attributes.is_empty());
+    let a = only_annotation("@Test(a='x').");
+    assert_eq!(a.attribute("a").unwrap().value.as_str(), "x");
+}
+
+#[test]
+fn annotation_unquoted_value_is_kept_bare() {
+    let a = only_annotation("@Test(count=3, flag=yes).");
+    assert_eq!(
+        a.attribute("count").unwrap().value,
+        oxabl_ast::AnnotationValue::Bare("3".into())
+    );
+    assert_eq!(
+        a.attribute("flag").unwrap().value,
+        oxabl_ast::AnnotationValue::Bare("yes".into())
+    );
+}
+
+#[test]
+fn trailing_period_is_not_part_of_the_name() {
+    let source = "@Test.\nPROCEDURE p:\nEND PROCEDURE.";
+    let program = parse_with_errors(source);
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 2);
+    assert!(matches!(
+        &program.statements[0].kind,
+        StatementKind::Annotation(a) if a.name.name == "Test"
+    ));
+    assert!(matches!(
+        program.statements[1].kind,
+        StatementKind::Procedure { .. }
+    ));
+}
+
+#[test]
+fn annotations_inside_a_class_body() {
+    let source = "CLASS Sample:\n  @Test.\n  METHOD PUBLIC VOID Works():\n  END METHOD.\n\n  \
+                  @Test (expected=\"X\").\n  METHOD PUBLIC VOID Fails():\n  END METHOD.\nEND CLASS.";
+    let program = parse_with_errors(source);
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let StatementKind::Class { body, .. } = &program.statements[0].kind else {
+        panic!("expected a class");
+    };
+    let pairs = oxabl_ast::associate_annotations(body);
+    assert_eq!(pairs.len(), 2);
+    assert!(
+        pairs
+            .iter()
+            .all(|p| matches!(p.target.unwrap().kind, StatementKind::Method { .. }))
+    );
+}
+
+#[test]
+fn annotation_without_final_period_at_eof() {
+    assert_eq!(only_annotation("@Test").name.name, "Test");
+}
+
+#[test]
+fn malformed_annotation_is_an_error_and_recovers() {
+    for source in [
+        "@.\nMESSAGE 1.",
+        "@Test(expected).\nMESSAGE 1.",
+        "@Test(expected=).\nMESSAGE 1.",
+        "@Test(a=\"x\" b=\"y\").\nMESSAGE 1.",
+        "@Test(a=\"x\".\nMESSAGE 1.",
+    ] {
+        let program = parse_with_errors(source);
+        assert!(!program.errors.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn field_format_at_sign_is_unaffected() {
+    let program = parse_with_errors("DISPLAY x @ y.");
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert!(
+        !program
+            .statements
+            .iter()
+            .any(|s| matches!(s.kind, StatementKind::Annotation(_)))
+    );
+}
+
+#[test]
+fn lone_at_signs_are_reported_at_the_first_one() {
+    let source = "@ @ @\nMESSAGE 1.";
+    let program = parse_with_errors(source);
+    assert_eq!(program.errors.len(), 1, "{:?}", program.errors);
+    assert_eq!(program.errors[0].span.start, 0);
+}
+
+#[test]
+fn annotation_named_at_is_a_name() {
+    assert_eq!(only_annotation("@at.").name.name, "at");
+}

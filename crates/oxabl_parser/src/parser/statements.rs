@@ -7,14 +7,15 @@
 //! LEAVE, NEXT, and RETURN statements.
 
 use oxabl_ast::{
-    AccessModifier, AssignPair, BufferTarget, CreateTarget, CreateTargetKind, DataRelation,
-    DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DisplayItem, Expression, ExpressionKind,
-    FindType, HandleParamKind, HandlePassingOptions, Identifier, IndexField, Literal, LockType,
-    OnAction, OnEventClause, OnKind, ParameterDirection, ParameterType, ParentIdRelation,
-    PreprocIf, RunArgument, RunTarget, SortDirection, Span, Statement, StatementKind,
-    StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TempTableField,
-    TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex,
-    UsingSource, WhenBranch, WidgetQualifier, WidgetRef, XmlSerializeOptions,
+    AccessModifier, Annotation, AnnotationAttribute, AnnotationValue, AssignPair, BufferTarget,
+    CreateTarget, CreateTargetKind, DataRelation, DataSourceBuffer, DataSourceKeys, DbTriggerEvent,
+    DisplayItem, Expression, ExpressionKind, FindType, HandleParamKind, HandlePassingOptions,
+    Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
+    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SortDirection, Span,
+    Statement, StatementKind, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget,
+    TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource,
+    UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
+    XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
@@ -114,6 +115,11 @@ impl Parser<'_> {
         if self.check(Kind::Period) {
             self.advance();
             return Ok(self.stmt(StatementKind::Empty));
+        }
+
+        // `@` opens an annotation; the field-format `@` only occurs mid-statement.
+        if self.check(Kind::At) {
+            return self.parse_annotation();
         }
 
         // CATCH / FINALLY blocks — must be checked before the block-label heuristic because
@@ -6721,6 +6727,113 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(event)
+    }
+
+    /// Parse an annotation: `@name[ qualifier][(attr="value", ...)].`
+    fn parse_annotation(&mut self) -> ParseResult<Statement> {
+        // A lone `@` is reported at the `@` itself, before any token is consumed.
+        if !self.is_annotation_word(self.peek_at(1)) {
+            return Err(ParseError {
+                message: "Expected annotation name after '@'".to_string(),
+                span: self.current_span(),
+            });
+        }
+        self.advance(); // consume @
+        let name = self.parse_annotation_name("Expected annotation name after '@'")?;
+
+        // A bare word before `(` is a qualifier, as in `@x.export FILE(...)`.
+        let qualifier = if self.is_annotation_word(self.peek())
+            && self.check_at(1, Kind::LeftParen)
+            && !self.source[self.prev_end() as usize..self.peek().start].contains('\n')
+        {
+            Some(self.parse_annotation_name("Expected annotation qualifier")?)
+        } else {
+            None
+        };
+
+        let mut attributes = Vec::new();
+        if self.check(Kind::LeftParen) {
+            self.advance();
+            while !self.check(Kind::RightParen) {
+                attributes.push(self.parse_annotation_attribute()?);
+                if self.check(Kind::Comma) {
+                    self.advance();
+                } else if !self.check(Kind::RightParen) {
+                    return Err(ParseError {
+                        message: "Expected ',' or ')' in annotation attributes".to_string(),
+                        span: self.current_span(),
+                    });
+                }
+            }
+            self.advance(); // consume )
+        }
+        self.expect_period("Expected '.' after annotation")?;
+
+        Ok(self.stmt(StatementKind::Annotation(Annotation {
+            name,
+            qualifier,
+            attributes,
+        })))
+    }
+
+    /// A token that can be part of an annotation name. The lexer gives both `@`
+    /// and the word `at` the kind `At`, so the source text decides.
+    fn is_annotation_word(&self, token: &oxabl_lexer::Token) -> bool {
+        Self::is_word_kind(token.kind) && !self.source[token.start..token.end].starts_with('@')
+    }
+
+    /// Parse a dotted annotation or attribute name. Segments must be directly
+    /// adjacent, so the period ending `@Test.` is not read as a separator.
+    fn parse_annotation_name(&mut self, msg: &str) -> ParseResult<Identifier> {
+        if !self.is_annotation_word(self.peek()) {
+            return Err(ParseError {
+                message: msg.to_string(),
+                span: self.current_span(),
+            });
+        }
+        let first = self.advance().clone();
+        let start = first.start;
+        let mut end = first.end;
+        while let (Some(dot), Some(next)) = (
+            self.tokens.get(self.current),
+            self.tokens.get(self.current + 1),
+        ) {
+            if dot.kind != Kind::Period
+                || dot.start != end
+                || next.start != dot.end
+                || !self.is_annotation_word(next)
+            {
+                break;
+            }
+            self.advance(); // consume '.'
+            end = self.advance().end;
+        }
+        Ok(Identifier {
+            span: Span {
+                start: start as u32,
+                end: end as u32,
+            },
+            name: self.identifier_source(start, end),
+        })
+    }
+
+    /// Parse one `name = value` annotation attribute.
+    fn parse_annotation_attribute(&mut self) -> ParseResult<AnnotationAttribute> {
+        let name = self.parse_annotation_name("Expected annotation attribute name")?;
+        self.expect_kind(Kind::Equals, "Expected '=' after annotation attribute name")?;
+        let token = self.peek().clone();
+        let value = match (token.kind, &token.value) {
+            (Kind::StringLiteral, TokenValue::String(v)) => AnnotationValue::String(v.to_string()),
+            (Kind::Eof | Kind::Invalid | Kind::Comma | Kind::RightParen | Kind::Period, _) => {
+                return Err(ParseError {
+                    message: "Expected annotation attribute value".to_string(),
+                    span: self.current_span(),
+                });
+            }
+            _ => AnnotationValue::Bare(self.source[token.start..token.end].to_string()),
+        };
+        self.advance();
+        Ok(AnnotationAttribute { name, value })
     }
 
     /// Parse a dotted name like `table.field` for ASSIGN OF targets.
