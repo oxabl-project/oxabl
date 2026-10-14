@@ -1606,16 +1606,20 @@ impl<'a> Parser<'a> {
                 if self.check(Kind::Buffer) {
                     self.advance(); // consume BUFFER
                     let name = self.parse_identifier()?; // buffer name
+                    let mut target = name.clone();
                     if self.check(Kind::KwFor) {
                         self.advance(); // consume FOR
-                        self.parse_identifier().ok(); // table name
+                        // FOR TEMP-TABLE tt is the explicit spelling of FOR tt.
+                        if self.check(Kind::TempTable) {
+                            self.advance();
+                        }
+                        if let Ok(table) = self.parse_identifier() {
+                            target = table;
+                        }
                     }
                     params.push(self.stmt(StatementKind::DefineParameter {
                         direction,
-                        param_type: ParameterType::Buffer {
-                            name: name.clone(),
-                            target: name,
-                        },
+                        param_type: ParameterType::Buffer { name, target },
                     }));
                     if !self.check(Kind::Comma) {
                         break;
