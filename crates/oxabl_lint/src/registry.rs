@@ -62,9 +62,12 @@ pub struct RuleMeta {
     /// Whether the rule needs the whole compilation unit, so it is skipped on
     /// an include fragment opened without its includer.
     pub requires_compilation_unit: bool,
-    /// Whether the rule's answer depends only on the tokens of the file a
+    /// Whether the rule's answer depends only on the text of the file a
     /// finding sits in, not on the code around an include. A context-free
-    /// finding inside an include can be reported once, in the include.
+    /// finding inside an include can be reported once, in the include. That
+    /// text is expanded with no arguments and no includer defines, so a finding
+    /// on a statement with a `{...}` reference or an `&IF` is lower confidence
+    /// ([`fragment`](crate::fragment)).
     pub context_free: bool,
 }
 

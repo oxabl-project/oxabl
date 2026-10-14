@@ -152,9 +152,11 @@ own root. Since M1, a directory walk does that for the context-free strict rules
   (`discovery.rs:54`). Since M1, `check <dir>` also lints the `.i` files of the walked tree for
   context-free rules only (see "What shipped in M1" below).
 - **Checking an include as a root is deliberately quieter.** The pipeline marks it
-  `SourceContext::IncludeFragment` (`crates/oxabl_pipeline/src/lint.rs:819`). Unresolved local
-  names count as external, and the unused-variable, dead-store and block-variable rules stay
-  silent (`crates/oxabl_semantic/src/lib.rs:207`, `crates/oxabl_lint/src/lib.rs:54`). A fragment
+  `SourceContext::IncludeFragment` (`LintPipeline::collect_selecting` in
+  `crates/oxabl_pipeline/src/lint.rs`). Unresolved local names count as external
+  (`soften_includer_dependent_misses`, called from `analyze_file` in
+  `crates/oxabl_semantic/src/lib.rs`), and the unused-variable, dead-store and block-variable rules
+  stay silent (`RuleMeta::requires_compilation_unit` in `crates/oxabl_lint/src/registry.rs`). A fragment
   often does not parse alone or does not see its includer's declarations.
 
 Confirmed on a synthetic example: an unused variable, an undefined name and a syntax error inside
@@ -202,8 +204,10 @@ findings.
 ### What shipped in M1 (verified)
 
 Recommendation 1 is implemented in a simpler form, and recommendations 2 and 3 are not needed yet,
-because all four M1 rules are context-free (CL001, CL002, CL005 and TX006 read only the tokens of
-their own file; `RuleMeta::context_free` is set for each).
+because all four M1 rules are context-free (CL001, CL002, CL005 and TX006 are context-free over the
+fragment's own text, expanded with no arguments and no includer defines; `RuleMeta::context_free`
+is set for each). That is exact for a fragment that no includer parametrises. It is not exact for
+one that does: see "Parametrised fragments" below.
 
 - `oxabl check <dir>` also walks the `.i` files of the tree (`walk_include_fragments`). It checks
   each one as a file of its own, with `SourceContext::IncludeFragment`, and reports **only** the
@@ -231,6 +235,40 @@ Limits of the shipped form:
 - An include that no program includes is checked all the same.
 - `files_checked` in the JSON report still counts roots. `include_files_checked` counts the
   include files, and is omitted when it is zero.
+
+### Parametrised fragments (proposed; confidence medium)
+
+The walk expands each fragment alone, so `{1}`, `{&name}` and `&IF DEFINED(...)` resolve against
+no includer. A fragment `DEFINE {&mod} VARIABLE x ...`, included with `&mod="NEW SHARED"`, is a
+`NEW SHARED` definition only in that includer. The run then reports a finding that the compiled
+code does not have (TX006 on `DEFINE VARIABLE y AS INTEGER {&nu}.` when the includer passes
+`NO-UNDO`), and it misses one that the compiled code has (CL005 on the `{&mod}` definition, CL001
+on a `RUN VALUE` under an `&IF` that is true only in the includer). On a large real corpus a
+share of the include findings sit on a line with a reference; the share is small for TX006 and
+large for CL005.
+
+M1 keeps the finding and lowers its confidence. A finding of a context-free rule whose statement
+holds a `{...}` reference, or sits under an `&IF`, in an include fragment:
+
+- has the generic help of its rule, never help chosen from a modifier. TX006 gives the "producer and
+  every consumer" help only for a definition that says `SHARED` itself, and a statement with a
+  reference gets the plain help even then;
+- ends its help with a note that it depends on the including file;
+- is **not autofixable**. `oxabl_lint::fragment::autofixable` is `false` for it, and the future
+  autofix must ask that function first. The answer is in the help text, so it survives every
+  client. Replace it with a typed field when a diagnostic gains one.
+
+The statement is found lexically in the fragment's own text (`IncludeDependence::scan`): it ends at
+a period, or at a colon followed by white space, and an `&IF` that is open at any of its tokens
+counts. A whole-file include guard (`&IF DEFINED(x) = 0 &THEN ... &ENDIF`) therefore lowers every
+finding below it. That is the safe side. Pinned by
+`a_finding_that_depends_on_the_includer_is_lower_confidence` in `oxabl_pipeline` and by
+`a_finding_that_depends_on_the_includer_has_the_generic_help` in `oxabl` (the `inc.i` shape).
+
+Not done: finding the includer's arguments (the other branch is "recommendation 2" above, which
+reports the finding at the use site) and so recovering the missing findings. The `run` that an
+editor starts through the incremental path does not lower the confidence; the editor does not show
+help.
 
 Open points for later: how the language server shows an include finding while the includer is
 open, how an include with several roots in one run picks its context for rules that are "mostly"

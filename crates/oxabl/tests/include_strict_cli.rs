@@ -250,3 +250,45 @@ fn an_include_finding_is_baselined_under_the_include_path() {
     assert_eq!(report["baseline"]["new"], 0, "{report}");
     assert_eq!(report["baseline"]["stale"], 0);
 }
+
+/// A parametrised fragment: the includer supplies the modifier and `NO-UNDO`.
+const PARAMETRISED: &str = "\
+DEFINE {&mod} VARIABLE x AS INTEGER NO-UNDO.
+DEFINE VARIABLE y AS INTEGER {&nu}.
+&IF DEFINED(want-run) &THEN
+RUN VALUE(y).
+&ENDIF
+DEFINE VARIABLE z AS INTEGER.
+";
+
+#[test]
+fn a_finding_that_depends_on_the_includer_has_the_generic_help() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), STRICT_ALL);
+    write(&dir.path().join("src/inc.i"), PARAMETRISED);
+    write(
+        &dir.path().join("src/a.p"),
+        "{inc.i &mod=\"NEW SHARED\" &nu=\"NO-UNDO\" &want-run=1}\nMESSAGE x y.\n",
+    );
+    let (_, stdout, stderr) = check(dir.path(), &["src", "--json"]);
+    let report = json(&stdout);
+    let rows: Vec<(u64, String)> = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["path"].as_str().unwrap().ends_with("inc.i"))
+        .map(|d| {
+            (
+                d["start"]["line"].as_u64().unwrap(),
+                d["help"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    // `y` depends on `{&nu}`, which the fragment alone leaves empty; `z` is
+    // plain. The compiled `x` (NEW SHARED) and `RUN VALUE` are not seen.
+    assert_eq!(rows.len(), 2, "{rows:?}\n{stderr}");
+    assert_eq!(rows[0].0, 2);
+    assert!(rows[0].1.contains("including file"), "{}", rows[0].1);
+    assert!(!rows[0].1.contains("producer"), "{}", rows[0].1);
+    assert_eq!(rows[1], (6, "Add `NO-UNDO` to the definition.".to_string()));
+}
