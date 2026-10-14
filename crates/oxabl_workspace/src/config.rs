@@ -399,6 +399,17 @@ pub struct SourcesConfig {
     /// bare name at all.
     #[serde(default = "default_run_extensions")]
     pub run_extensions: Vec<String>,
+
+    /// When a class or `RUN` target is not found under the spelling the source
+    /// used or its lower-case fold, look for a file whose path matches ignoring
+    /// case. Default `false`.
+    ///
+    /// Meant for a case-sensitive filesystem holding a tree written for a
+    /// case-insensitive one (`RUN Sub/Prog.p` stored as `sub/prog.p`). It lists
+    /// directories on every miss, so it costs more than the default lookup. Two
+    /// distinct matches still leave the name unresolved.
+    #[serde(default)]
+    pub case_insensitive_lookup: bool,
 }
 
 /// The extensions an extensionless `RUN` target is tried with.
@@ -452,6 +463,7 @@ impl Default for SourcesConfig {
             directories: Vec::new(),
             include_paths: Vec::new(),
             run_extensions: default_run_extensions(),
+            case_insensitive_lookup: false,
         }
     }
 }
@@ -618,6 +630,16 @@ proversion = "12.8"
         assert_eq!(pp.window_system, "TTY");
         assert!(!pp.batch_mode);
         assert_eq!(pp.proversion.as_deref(), Some("12.8"));
+    }
+
+    #[test]
+    fn case_insensitive_lookup_defaults_off_and_can_be_enabled() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert!(!config.workspace.sources.case_insensitive_lookup);
+        let toml =
+            "[workspace]\nname = \"p\"\n[workspace.sources]\ncase_insensitive_lookup = true\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert!(config.workspace.sources.case_insensitive_lookup);
     }
 
     #[test]

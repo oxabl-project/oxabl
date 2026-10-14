@@ -238,6 +238,11 @@
     "SourcesConfig": {
       "description": "The `[workspace.sources]` section.",
       "properties": {
+        "case_insensitive_lookup": {
+          "default": false,
+          "description": "When a class or `RUN` target is not found under the spelling the source used or its lower-case fold, look for a file whose path matches ignoring case. Default `false`.\n\nMeant for a case-sensitive filesystem holding a tree written for a case-insensitive one (`RUN Sub/Prog.p` stored as `sub/prog.p`). It lists directories on every miss, so it costs more than the default lookup. Two distinct matches still leave the name unresolved.",
+          "type": "boolean"
+        },
         "directories": {
           "default": [],
           "description": "Directories to walk for ABL *root* files — `.p`, `.w`, `.cls`, and `.v`, matched case-insensitively. `.i` is deliberately not among them: an include fragment is never a root, and `is_root_file` is the one policy that decides.",

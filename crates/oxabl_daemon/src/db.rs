@@ -625,6 +625,29 @@ fn indexed_defines_shared(db: &dyn AblDatabase, file: IndexedFile, name: IndexNa
     indexed_facts(db, file).defines_shared(&name)
 }
 
+/// Locate `name` on the configured search paths, falling back to a
+/// case-insensitive search when the workspace asked for one.
+fn find_path(config: &AnalysisConfig, name: &IndexName, kind: NameKind) -> IndexAnswer<PathBuf> {
+    let pipeline = &config.pipeline;
+    let answer = search::find_name_with(
+        &*config.fs,
+        &pipeline.include_paths,
+        name,
+        kind,
+        &pipeline.run_extensions,
+    );
+    if pipeline.case_insensitive_lookup && answer == IndexAnswer::NotFound {
+        return search::find_name_ignoring_case(
+            &*config.fs,
+            &pipeline.include_paths,
+            name,
+            kind,
+            &pipeline.run_extensions,
+        );
+    }
+    answer
+}
+
 /// The [`WorkspaceIndex`] the language server answers from: the shared questions,
 /// the shared search, and the shared extraction — memoized by salsa, per file.
 ///
@@ -676,13 +699,7 @@ impl<'db> SnapshotIndex<'db> {
     /// to a producer that is really its own earlier revision.
     fn locate(&self, name: &IndexName, kind: NameKind) -> IndexAnswer<IndexedFile> {
         let config = self.db.config();
-        match search::find_name_with(
-            &*config.fs,
-            &config.pipeline.include_paths,
-            name,
-            kind,
-            &config.pipeline.run_extensions,
-        ) {
+        match find_path(config, name, kind) {
             IndexAnswer::Found(path) => {
                 if self.is_analysed(&path) {
                     // `Unusable`, not `NotFound` — the file exists, it just cannot
@@ -744,13 +761,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
             LocateKind::Class => NameKind::Class,
             LocateKind::Program => NameKind::Program,
         };
-        match search::find_name_with(
-            &*config.fs,
-            &config.pipeline.include_paths,
-            name,
-            kind,
-            &config.pipeline.run_extensions,
-        ) {
+        match find_path(config, name, kind) {
             IndexAnswer::Found(path) if self.is_analysed(&path) => Located::Itself,
             IndexAnswer::Found(path) => {
                 let file = config.index.file_for(self.db, &path);

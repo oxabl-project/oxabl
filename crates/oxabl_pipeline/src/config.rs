@@ -172,6 +172,10 @@ pub struct PipelineConfig {
     /// Extensions an extensionless `RUN` target is tried with, in order and
     /// without the dot (`[workspace.sources].run_extensions`). Default `p`, `w`.
     pub run_extensions: Vec<String>,
+
+    /// Resolve classes and `RUN` targets ignoring case when the exact spellings
+    /// miss (`[workspace.sources].case_insensitive_lookup`). Default `false`.
+    pub case_insensitive_lookup: bool,
 }
 
 impl Default for PipelineConfig {
@@ -194,6 +198,7 @@ impl Default for PipelineConfig {
             schema_loaded: false,
             preprocessor: PreprocessorConfig::default(),
             run_extensions: default_run_extensions(),
+            case_insensitive_lookup: false,
         }
     }
 }
@@ -374,6 +379,7 @@ fn derive(
                     schema_loaded: false,
                     preprocessor,
                     run_extensions,
+                    case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
                 },
                 warnings,
             );
@@ -426,6 +432,7 @@ fn derive(
             schema_loaded,
             preprocessor,
             run_extensions,
+            case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
         },
         warnings,
     )

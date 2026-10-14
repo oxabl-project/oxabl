@@ -49,6 +49,8 @@ pub struct BatchIndex<'a> {
     /// Extensions an extensionless `RUN` target is tried with, in order; `None`
     /// is [`search::BARE_PROGRAM_EXTENSIONS`].
     run_extensions: Option<&'a [String]>,
+    /// Whether a lookup that misses falls back to a case-insensitive search.
+    case_insensitive: bool,
     /// The environment the predefined names answer for; `None` is
     /// [`PreprocessorConfig::default`].
     preprocessor: Option<&'a PreprocessorConfig>,
@@ -165,6 +167,7 @@ impl<'a> BatchIndex<'a> {
             fs,
             include_paths,
             run_extensions: None,
+            case_insensitive: false,
             preprocessor: None,
             known_files: &[],
             memo: RwLock::new(Memo {
@@ -198,6 +201,16 @@ impl<'a> BatchIndex<'a> {
         self
     }
 
+    /// Fall back to a case-insensitive file search when the as-written and
+    /// folded spellings of a class or `RUN` target both miss. Off by default.
+    ///
+    /// Apply before any lookup.
+    #[must_use]
+    pub fn with_case_insensitive_lookup(mut self, enabled: bool) -> Self {
+        self.case_insensitive = enabled;
+        self
+    }
+
     fn predefined(&self) -> Cow<'a, PreprocessorConfig> {
         match self.preprocessor {
             Some(config) => Cow::Borrowed(config),
@@ -206,12 +219,33 @@ impl<'a> BatchIndex<'a> {
     }
 
     fn find_path(&self, name: &IndexName, kind: search::NameKind) -> IndexAnswer<PathBuf> {
+        self.find_name(name, kind)
+    }
+
+    fn find_name(&self, name: &IndexName, kind: search::NameKind) -> IndexAnswer<PathBuf> {
         match self.run_extensions {
-            Some(extensions) => {
-                search::find_name_with(self.fs, self.include_paths, name, kind, extensions)
-            }
-            None => search::find_name(self.fs, self.include_paths, name, kind),
+            Some(extensions) => self.find_name_in(name, kind, extensions),
+            None => self.find_name_in(name, kind, search::BARE_PROGRAM_EXTENSIONS),
         }
+    }
+
+    fn find_name_in<E: AsRef<str>>(
+        &self,
+        name: &IndexName,
+        kind: search::NameKind,
+        extensions: &[E],
+    ) -> IndexAnswer<PathBuf> {
+        let answer = search::find_name_with(self.fs, self.include_paths, name, kind, extensions);
+        if self.case_insensitive && answer == IndexAnswer::NotFound {
+            return search::find_name_ignoring_case(
+                self.fs,
+                self.include_paths,
+                name,
+                kind,
+                extensions,
+            );
+        }
+        answer
     }
 
     /// Tell the index which files the run already knows it will read.
@@ -303,37 +337,36 @@ impl<'a> BatchIndex<'a> {
             return hit.clone();
         }
 
-        let answer =
-            match search::find_name(self.fs, self.include_paths, name, search::NameKind::Class) {
-                IndexAnswer::Found(path) => {
-                    let facts = memo.facts_for(self.fs, &self.predefined(), &path);
-                    // A file *was* located at the path the class name derives, and
-                    // it does not visibly declare the class. That is `Unusable`,
-                    // not `NotFound`, and the difference decides whether a
-                    // consumer may tell a user the name does not exist — which
-                    // here it may not, because the file plainly exists.
-                    //
-                    // Three causes, and the index cannot distinguish them: the
-                    // parse recovered errors; the declaration is spliced in from
-                    // an `{include}`, which this crate deliberately does not
-                    // expand; or the class header is genuinely mis-namespaced.
-                    // Only the third is the user's mistake, and it is the rarest —
-                    // an include-built class is an ordinary ABL idiom. `NotFound`
-                    // stays reserved for the one case that *is* conclusive: no
-                    // file at the derived path at all.
-                    //
-                    // The class comparison is case-insensitive, since the
-                    // declaring file is free to spell the name differently from
-                    // the reference.
-                    match facts.class(name).cloned() {
-                        Some(class) => IndexAnswer::Found(class),
-                        None => IndexAnswer::Unusable,
-                    }
+        let answer = match self.find_name(name, search::NameKind::Class) {
+            IndexAnswer::Found(path) => {
+                let facts = memo.facts_for(self.fs, &self.predefined(), &path);
+                // A file *was* located at the path the class name derives, and
+                // it does not visibly declare the class. That is `Unusable`,
+                // not `NotFound`, and the difference decides whether a
+                // consumer may tell a user the name does not exist — which
+                // here it may not, because the file plainly exists.
+                //
+                // Three causes, and the index cannot distinguish them: the
+                // parse recovered errors; the declaration is spliced in from
+                // an `{include}`, which this crate deliberately does not
+                // expand; or the class header is genuinely mis-namespaced.
+                // Only the third is the user's mistake, and it is the rarest —
+                // an include-built class is an ordinary ABL idiom. `NotFound`
+                // stays reserved for the one case that *is* conclusive: no
+                // file at the derived path at all.
+                //
+                // The class comparison is case-insensitive, since the
+                // declaring file is free to spell the name differently from
+                // the reference.
+                match facts.class(name).cloned() {
+                    Some(class) => IndexAnswer::Found(class),
+                    None => IndexAnswer::Unusable,
                 }
-                IndexAnswer::NotFound => IndexAnswer::NotFound,
-                IndexAnswer::Unusable => IndexAnswer::Unusable,
-                IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-            };
+            }
+            IndexAnswer::NotFound => IndexAnswer::NotFound,
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
+            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
+        };
         memo.classes
             .insert(name.as_written_atom().clone(), answer.clone());
         answer
@@ -1246,5 +1279,26 @@ mod tests {
             index.class(&IndexName::new("orders.absent")),
             IndexAnswer::NotFound
         );
+    }
+
+    #[test]
+    fn case_insensitive_lookup_is_off_by_default_and_opt_in() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(
+            PathBuf::from("/src/pkg/Foo.cls"),
+            "CLASS pkg.Foo: END CLASS.",
+        );
+        fs.insert(PathBuf::from("/src/sub/Prog.p"), "MESSAGE 1.");
+        let paths = dirs(&["/src"]);
+        let class = IndexName::new("pkg.FOO");
+        let program = IndexName::new("SUB/prog.p");
+
+        let off = BatchIndex::new(&fs, &paths);
+        assert_eq!(off.class(&class), IndexAnswer::NotFound);
+        assert_eq!(off.program(&program), IndexAnswer::NotFound);
+
+        let on = BatchIndex::new(&fs, &paths).with_case_insensitive_lookup(true);
+        assert!(matches!(on.class(&class), IndexAnswer::Found(_)));
+        assert!(matches!(on.program(&program), IndexAnswer::Found(_)));
     }
 }

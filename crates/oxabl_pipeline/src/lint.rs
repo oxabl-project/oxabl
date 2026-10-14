@@ -482,6 +482,7 @@ impl<'a> LintPipeline<'a> {
             index: RunIndex::Owned(Box::new(
                 BatchIndex::new(fs, &config.include_paths)
                     .with_run_extensions(&config.run_extensions)
+                    .with_case_insensitive_lookup(config.case_insensitive_lookup)
                     .with_preprocessor(&config.preprocessor),
             )),
             file: None,

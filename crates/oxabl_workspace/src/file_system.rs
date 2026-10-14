@@ -39,6 +39,30 @@ pub trait FileSystem: Send + Sync {
         }
         None
     }
+
+    /// Every existing file under `dir` whose path below `dir` equals `relative`
+    /// when each component is compared ignoring ASCII case. The returned paths
+    /// carry the on-disk spelling.
+    ///
+    /// The default finds nothing, which is right for a filesystem that is
+    /// already case-insensitive or one that cannot list directories. Callers
+    /// reach for it only after an exact lookup missed, and only when the
+    /// workspace opted in.
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        let _ = (dir, relative);
+        Vec::new()
+    }
+}
+
+/// Components of `relative` as text; `None` when one is not a plain name.
+fn plain_components(relative: &Path) -> Option<Vec<&std::ffi::OsStr>> {
+    relative
+        .components()
+        .map(|c| match c {
+            std::path::Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect()
 }
 
 /// [`FileSystem`] implementation that reads from the real filesystem.
@@ -53,6 +77,32 @@ impl FileSystem for RealFileSystem {
 
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        let Some(parts) = plain_components(relative) else {
+            return Vec::new();
+        };
+        let mut level = vec![dir.to_path_buf()];
+        for part in parts {
+            let mut next = Vec::new();
+            for parent in &level {
+                let Ok(entries) = std::fs::read_dir(parent) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    if entry.file_name().eq_ignore_ascii_case(part) {
+                        next.push(entry.path());
+                    }
+                }
+            }
+            if next.is_empty() {
+                return next;
+            }
+            level = next;
+        }
+        level.sort();
+        level
     }
 }
 
@@ -91,6 +141,28 @@ impl FileSystem for InMemoryFileSystem {
 
     fn exists(&self, path: &Path) -> bool {
         self.files.contains_key(path)
+    }
+
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        let Some(parts) = plain_components(relative) else {
+            return Vec::new();
+        };
+        let mut found: Vec<PathBuf> = self
+            .files
+            .keys()
+            .filter(|path| {
+                let Ok(below) = path.strip_prefix(dir) else {
+                    return false;
+                };
+                let mut actual = below.components();
+                parts.iter().all(|part| {
+                    matches!(actual.next(), Some(std::path::Component::Normal(a)) if a.eq_ignore_ascii_case(part))
+                }) && actual.next().is_none()
+            })
+            .cloned()
+            .collect();
+        found.sort();
+        found
     }
 }
 
@@ -158,5 +230,43 @@ mod tests {
 
         let content = fs.read(Path::new("/a.p")).unwrap();
         assert_eq!(&*content, "new");
+    }
+
+    #[test]
+    fn find_ignoring_case_matches_every_component_on_a_real_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/prog.p"), "").unwrap();
+        let fs = RealFileSystem;
+        assert_eq!(
+            fs.find_ignoring_case(dir.path(), Path::new("Sub/Prog.p")),
+            [dir.path().join("sub/prog.p")]
+        );
+        assert!(
+            fs.find_ignoring_case(dir.path(), Path::new("Sub/Other.p"))
+                .is_empty()
+        );
+        assert!(
+            fs.find_ignoring_case(dir.path(), Path::new("../x.p"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn find_ignoring_case_default_finds_nothing() {
+        struct Plain;
+        impl FileSystem for Plain {
+            fn read(&self, _: &Path) -> Result<Arc<str>, io::Error> {
+                Err(io::ErrorKind::NotFound.into())
+            }
+            fn exists(&self, _: &Path) -> bool {
+                true
+            }
+        }
+        assert!(
+            Plain
+                .find_ignoring_case(Path::new("/"), Path::new("a.p"))
+                .is_empty()
+        );
     }
 }
