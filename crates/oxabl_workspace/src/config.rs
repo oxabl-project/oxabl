@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use oxabl_common::{LintSeverityMap, Severity};
@@ -38,6 +39,11 @@ pub struct WorkspaceSection {
     /// parse error.
     #[serde(default)]
     pub style: StyleGuide,
+
+    /// The compile environment the preprocessor reports through its predefined
+    /// names (`[workspace.preprocessor]`).
+    #[serde(default)]
+    pub preprocessor: PreprocessorConfig,
 }
 
 /// A user-facing severity level for a lint rule (`[workspace.lint]`).
@@ -130,8 +136,80 @@ impl LintConfig {
     }
 }
 
+/// The `[workspace.preprocessor]` table: the compile environment behind the
+/// AVM's predefined preprocessor names.
+///
+/// The AVM answers `{&OPSYS}`, `{&WINDOW-SYSTEM}`, `{&BATCH-MODE}`,
+/// `{&PROCESS-ARCHITECTURE}` and `{&PROVERSION}` from the machine it compiles
+/// on. A static analyzer has no such machine, so the environment is stated here
+/// and every `&IF` over one of these names is decided against it. The defaults
+/// describe a 64-bit Unix batch compile with a character (TTY) UI; set the keys
+/// to describe the environment your code is really compiled in.
+///
+/// `{&FILE-NAME}`, `{&LINE-NUMBER}` and `{&SEQUENCE}` are computed from the
+/// source and take no configuration.
+///
+/// The `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` ask which
+/// databases are connected, which only a compile knows. `databases` states them.
+///
+/// Container-level `#[serde(default)]` lets a partial table fall back per key,
+/// and `deny_unknown_fields` makes a misspelled key a hard error rather than a
+/// silently wrong branch.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PreprocessorConfig {
+    /// Value of `{&OPSYS}`: `UNIX` or `WIN32`. Default `UNIX`.
+    pub opsys: String,
+
+    /// Value of `{&WINDOW-SYSTEM}`: `TTY` or `MS-WINDOWS`. Default `TTY`.
+    pub window_system: String,
+
+    /// Whether the compile is a batch compile; `{&BATCH-MODE}` expands to `yes`
+    /// or `no`. Default `true`.
+    pub batch_mode: bool,
+
+    /// Value of `{&PROCESS-ARCHITECTURE}`: `32` or `64`. Default `64`.
+    pub process_architecture: u32,
+
+    /// Value of `{&PROVERSION}` and of the `PROVERSION` function, for example
+    /// `"12.8"`. There is no default: the version is not something a tool can
+    /// guess. While it is unset, an `&IF` condition that reads either form
+    /// raises `PREPROC009` instead of silently deciding against an empty string.
+    pub proversion: Option<String>,
+
+    /// The logical names of the databases connected when the code compiles. The
+    /// `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` answer from this
+    /// list, so `DBTYPE("ledger") NE ?` is true when `ledger` is listed.
+    ///
+    /// When the key is absent, the `[workspace.schema]` files name the databases:
+    /// the file name without `.df` is the logical name, so `schema/ledger.df`
+    /// connects `ledger`. Set the key when a logical name differs from its file
+    /// name, or to `[]` for a compile with no database connected. While neither
+    /// a list nor a schema is given, an `&IF` that calls one of these functions
+    /// raises `PREPROC010` instead of deciding on a guess.
+    pub databases: Option<Vec<String>>,
+
+    /// The `DBTYPE` of a connected database, by logical name, for example
+    /// `{ ledger = "ORACLE" }`. A database that is not named here is `PROGRESS`.
+    pub database_types: BTreeMap<String, String>,
+}
+
+impl Default for PreprocessorConfig {
+    fn default() -> Self {
+        PreprocessorConfig {
+            opsys: "UNIX".to_string(),
+            window_system: "TTY".to_string(),
+            batch_mode: true,
+            process_architecture: 64,
+            proversion: None,
+            databases: None,
+            database_types: BTreeMap::new(),
+        }
+    }
+}
+
 /// The `[workspace.sources]` section.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SourcesConfig {
     /// Directories to walk for ABL *root* files — `.p`, `.w`, `.cls`, and `.v`,
     /// matched case-insensitively. `.i` is deliberately not among them: an
@@ -143,6 +221,74 @@ pub struct SourcesConfig {
     /// Include search paths, searched in order (PROPATH equivalent).
     #[serde(default)]
     pub include_paths: Vec<PathBuf>,
+
+    /// Extensions tried, in order, for a `RUN` target written without one
+    /// (`RUN post-order`), written without the dot. Default `["p", "w"]`.
+    ///
+    /// A leading dot is ignored, and an entry that is empty or holds a path
+    /// separator is dropped with a warning. Each extension is tried as written and
+    /// then in lower case, against the name as written and then folded.
+    ///
+    /// The first extension that finds a file wins. A list that omits an
+    /// extension never links a bare name to such a file; an empty list links no
+    /// bare name at all.
+    #[serde(default = "default_run_extensions")]
+    pub run_extensions: Vec<String>,
+}
+
+/// The extensions an extensionless `RUN` target is tried with.
+pub fn default_run_extensions() -> Vec<String> {
+    vec!["p".to_string(), "w".to_string()]
+}
+
+/// The usable entries of a `run_extensions` list, and the ones that were not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunExtensions {
+    /// Entries in configured order, without a leading dot, each once.
+    pub extensions: Vec<String>,
+    /// Entries dropped because no file name can end in them: empty, or holding a
+    /// path separator. As written.
+    pub rejected: Vec<String>,
+}
+
+/// One `run_extensions` entry as a file extension, or `None` when no file name
+/// can end in it.
+///
+/// Surrounding whitespace and a leading dot are stripped (` .p ` means `p`).
+/// Case is kept: the lookup tries the configured spelling and the lower-case one.
+pub fn normalize_run_extension(entry: &str) -> Option<&str> {
+    let extension = entry.trim().trim_start_matches('.');
+    (!extension.is_empty() && !extension.contains(['/', '\\'])).then_some(extension)
+}
+
+/// Normalize a `run_extensions` list as the search needs it: each entry through
+/// [`normalize_run_extension`], repeats dropped.
+pub fn normalize_run_extensions(entries: &[String]) -> RunExtensions {
+    let mut extensions: Vec<String> = Vec::new();
+    let mut rejected = Vec::new();
+    for entry in entries {
+        match normalize_run_extension(entry) {
+            None => rejected.push(entry.clone()),
+            Some(extension) if !extensions.iter().any(|seen| seen == extension) => {
+                extensions.push(extension.to_string());
+            }
+            Some(_) => {}
+        }
+    }
+    RunExtensions {
+        extensions,
+        rejected,
+    }
+}
+
+impl Default for SourcesConfig {
+    fn default() -> Self {
+        SourcesConfig {
+            directories: Vec::new(),
+            include_paths: Vec::new(),
+            run_extensions: default_run_extensions(),
+        }
+    }
 }
 
 /// The `[workspace.schema]` section.
@@ -171,6 +317,7 @@ impl WorkspaceConfig {
                 schema: SchemaConfig::default(),
                 lint: LintConfig::default(),
                 style: StyleGuide::default_base(),
+                preprocessor: PreprocessorConfig::default(),
             },
         }
     }
@@ -231,6 +378,100 @@ files = ["schema/sports2000.df"]
             config.workspace.schema.files[0],
             PathBuf::from("schema/sports2000.df")
         );
+    }
+
+    #[test]
+    fn preprocessor_table_defaults_to_a_unix_tty_batch_compile() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        let pp = &config.workspace.preprocessor;
+        assert_eq!(pp.opsys, "UNIX");
+        assert_eq!(pp.window_system, "TTY");
+        assert!(pp.batch_mode);
+        assert_eq!(pp.process_architecture, 64);
+        assert_eq!(pp.proversion, None);
+        assert_eq!(pp.databases, None);
+        assert!(pp.database_types.is_empty());
+    }
+
+    #[test]
+    fn preprocessor_table_lists_the_connected_databases() {
+        let toml = r#"
+[workspace]
+name = "p"
+
+[workspace.preprocessor]
+databases = ["ledger", "stock"]
+database-types = { stock = "ORACLE" }
+"#;
+        let pp = WorkspaceConfig::from_toml(toml)
+            .unwrap()
+            .workspace
+            .preprocessor;
+        assert_eq!(
+            pp.databases.as_deref(),
+            Some(&["ledger".into(), "stock".into()][..])
+        );
+        assert_eq!(pp.database_types["stock"], "ORACLE");
+
+        let toml = "[workspace]\nname = \"p\"\n[workspace.preprocessor]\ndatabases = []\n";
+        let pp = WorkspaceConfig::from_toml(toml)
+            .unwrap()
+            .workspace
+            .preprocessor;
+        assert_eq!(pp.databases.as_deref(), Some(&[][..]));
+    }
+
+    #[test]
+    fn preprocessor_table_overrides_per_key() {
+        let toml = r#"
+[workspace]
+name = "p"
+
+[workspace.preprocessor]
+opsys = "WIN32"
+batch-mode = false
+proversion = "12.8"
+"#;
+        let pp = WorkspaceConfig::from_toml(toml)
+            .unwrap()
+            .workspace
+            .preprocessor;
+        assert_eq!(pp.opsys, "WIN32");
+        assert_eq!(pp.window_system, "TTY");
+        assert!(!pp.batch_mode);
+        assert_eq!(pp.proversion.as_deref(), Some("12.8"));
+    }
+
+    #[test]
+    fn preprocessor_table_rejects_unknown_keys() {
+        let toml = "[workspace]\nname = \"p\"\n[workspace.preprocessor]\nopsis = \"UNIX\"\n";
+        assert!(WorkspaceConfig::from_toml(toml).is_err());
+    }
+
+    #[test]
+    fn run_extensions_default_to_p_then_w_and_override_as_a_list() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert_eq!(config.workspace.sources.run_extensions, ["p", "w"]);
+
+        let toml = "[workspace]\nname = \"p\"\n[workspace.sources]\nrun_extensions = [\"w\", \"p\", \"pp\"]\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert_eq!(config.workspace.sources.run_extensions, ["w", "p", "pp"]);
+    }
+
+    #[test]
+    fn run_extensions_lose_a_leading_dot_and_repeats() {
+        let entries = |list: &[&str]| list.iter().map(|e| e.to_string()).collect::<Vec<_>>();
+        let normalized = normalize_run_extensions(&entries(&[".p", "w", "p", " .W "]));
+        assert_eq!(normalized.extensions, ["p", "w", "W"]);
+        assert!(normalized.rejected.is_empty());
+    }
+
+    #[test]
+    fn run_extensions_reject_what_no_file_name_ends_in() {
+        let entries = |list: &[&str]| list.iter().map(|e| e.to_string()).collect::<Vec<_>>();
+        let normalized = normalize_run_extensions(&entries(&["", ".", "a/b", "a\\b", "p"]));
+        assert_eq!(normalized.extensions, ["p"]);
+        assert_eq!(normalized.rejected, ["", ".", "a/b", "a\\b"]);
     }
 
     #[test]

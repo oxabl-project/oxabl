@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rustc_hash::FxBuildHasher;
+
 /// Preprocessor variable table tracking `&SCOPED-DEFINE` and `&GLOBAL-DEFINE` values.
 ///
 /// `&SCOPED-DEFINE` variables are file-local — they do not propagate to the
@@ -11,17 +13,59 @@ use std::sync::Arc;
 /// case-insensitive).
 #[derive(Debug, Clone, Default)]
 pub struct PreprocVarTable {
-    vars: HashMap<AsciiLowerName, Arc<str>>,
+    /// The names the table started with, shared by every table made over them.
+    base: Option<BaseVars>,
+    /// The changes made to `base`, keyed by the lowercase form of the name.
+    vars: HashMap<Arc<[u8]>, Slot, FxBuildHasher>,
+    /// What each name held in `vars` before it changed (`None`: nothing), newest
+    /// last, while a scope is open. Undoing it restores the table without
+    /// copying it.
+    journal: Vec<(Arc<[u8]>, Option<Slot>)>,
+    /// How many scopes are open; nothing is journaled at zero.
+    scopes: usize,
 }
 
-/// Case-insensitive key: stores the lowercase form for hashing/comparison.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct AsciiLowerName(String);
+/// A change to a name of the base: its new entry, or `None` for a name of the
+/// base that was undefined.
+type Slot = Option<Entry>;
 
-impl AsciiLowerName {
-    fn new(name: &str) -> Self {
-        AsciiLowerName(name.to_ascii_lowercase())
+/// The names a table starts with.
+#[derive(Debug, Clone)]
+pub(crate) struct BaseVars(Arc<HashMap<Arc<[u8]>, Entry, FxBuildHasher>>);
+
+#[derive(Debug, Clone)]
+struct Entry {
+    value: Arc<str>,
+    origin: Origin,
+}
+
+/// How a name came to be defined; the `DEFINED` function tells them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// `&GLOBAL-DEFINE` or a predefined name.
+    Global,
+    /// `&SCOPED-DEFINE`.
+    Scoped,
+    /// A named argument of the include being expanded.
+    Argument,
+    /// More than one of the above at once.
+    Mixed,
+}
+
+/// The longest name folded on the stack; a longer one is folded on the heap.
+const STACK_NAME: usize = 64;
+
+/// Run `f` on the ASCII-lowercase form of `name`.
+fn with_folded<R>(name: &str, f: impl FnOnce(&[u8]) -> R) -> R {
+    let bytes = name.as_bytes();
+    if bytes.len() > STACK_NAME {
+        return f(&bytes.to_ascii_lowercase());
     }
+    let mut buf = [0u8; STACK_NAME];
+    let folded = &mut buf[..bytes.len()];
+    folded.copy_from_slice(bytes);
+    folded.make_ascii_lowercase();
+    f(folded)
 }
 
 impl PreprocVarTable {
@@ -29,25 +73,142 @@ impl PreprocVarTable {
         Self::default()
     }
 
-    /// Define a preprocessor variable (from `&SCOPED-DEFINE` or `&GLOBAL-DEFINE`).
+    /// An empty table that starts with the names of `base`.
+    pub(crate) fn over(base: &BaseVars) -> Self {
+        PreprocVarTable {
+            base: Some(base.clone()),
+            ..Self::default()
+        }
+    }
+
+    /// The names of this table, for [`Self::over`]. Anything it started from is
+    /// not kept.
+    pub(crate) fn into_base(self) -> BaseVars {
+        let names = self
+            .vars
+            .into_iter()
+            .filter_map(|(key, entry)| Some((key, entry?)))
+            .collect();
+        BaseVars(Arc::new(names))
+    }
+
+    /// Define a preprocessor variable as `&SCOPED-DEFINE` does.
     pub fn define(&mut self, name: &str, value: &str) {
-        self.vars
-            .insert(AsciiLowerName::new(name), Arc::from(value));
+        self.insert(name, value, Origin::Scoped);
+    }
+
+    /// Define a preprocessor variable as `&GLOBAL-DEFINE` does.
+    pub fn define_global(&mut self, name: &str, value: &str) {
+        self.insert(name, value, Origin::Global);
+    }
+
+    /// Define a named include argument (`{file.i &name=value}`).
+    pub(crate) fn define_argument(&mut self, name: &str, value: &str) {
+        self.insert(name, value, Origin::Argument);
+    }
+
+    fn insert(&mut self, name: &str, value: &str, origin: Origin) {
+        with_folded(name, |key| {
+            let origin = match self.entry(key).map(|e| e.origin) {
+                Some(prev) if prev != origin => Origin::Mixed,
+                _ => origin,
+            };
+            let entry = Entry {
+                value: Arc::from(value),
+                origin,
+            };
+            self.store(key, None, Some(entry));
+        });
+    }
+
+    /// The entry of the folded name `key`, if it is defined.
+    fn entry(&self, key: &[u8]) -> Option<&Entry> {
+        match self.vars.get(key) {
+            Some(changed) => changed.as_ref(),
+            None => self.base.as_ref()?.0.get(key),
+        }
+    }
+
+    /// Set the entry under the folded name `key` (`None` removes it), recording
+    /// the old one when a scope is open. `shared` is a ready `Arc` of `key`, to
+    /// avoid allocating one for a new name.
+    fn store(&mut self, key: &[u8], shared: Option<&Arc<[u8]>>, new: Option<Entry>) {
+        // A name of the base is hidden rather than removed.
+        let slot = match new {
+            Some(entry) => Some(Some(entry)),
+            None if self.base.as_ref().is_some_and(|b| b.0.contains_key(key)) => Some(None),
+            None => None,
+        };
+        if self.scopes == 0 {
+            match slot {
+                Some(slot) => match self.vars.get_mut(key) {
+                    Some(current) => *current = slot,
+                    None => {
+                        let key = shared.map_or_else(|| Arc::from(key), Arc::clone);
+                        self.vars.insert(key, slot);
+                    }
+                },
+                None => {
+                    self.vars.remove(key);
+                }
+            }
+            return;
+        }
+        let (key, old) = match self.vars.remove_entry(key) {
+            Some((key, old)) => (key, Some(old)),
+            None if slot.is_none() => return,
+            None => (shared.map_or_else(|| Arc::from(key), Arc::clone), None),
+        };
+        self.journal.push((Arc::clone(&key), old));
+        if let Some(slot) = slot {
+            self.vars.insert(key, slot);
+        }
+    }
+
+    /// Open a scope: every change from here until [`Self::end_scope`] is undone
+    /// by it. Scopes nest.
+    pub(crate) fn begin_scope(&mut self) -> usize {
+        self.scopes += 1;
+        self.journal.len()
+    }
+
+    /// Close the scope that [`Self::begin_scope`] opened as `mark`, restoring
+    /// the table to how it was then.
+    pub(crate) fn end_scope(&mut self, mark: usize) {
+        while self.journal.len() > mark {
+            let Some((key, old)) = self.journal.pop() else {
+                break;
+            };
+            match old {
+                Some(slot) => {
+                    self.vars.insert(key, slot);
+                }
+                None => {
+                    self.vars.remove(&*key);
+                }
+            }
+        }
+        self.scopes -= 1;
+    }
+
+    /// How `name` was defined; `None` if it is not defined.
+    pub(crate) fn origin(&self, name: &str) -> Option<Origin> {
+        with_folded(name, |key| self.entry(key).map(|e| e.origin))
     }
 
     /// Remove a preprocessor variable (from `&UNDEFINE`).
     pub fn undefine(&mut self, name: &str) {
-        self.vars.remove(&AsciiLowerName::new(name));
+        with_folded(name, |key| self.store(key, None, None));
     }
 
     /// Look up a variable's value. Returns `None` if not defined.
     pub fn get(&self, name: &str) -> Option<&Arc<str>> {
-        self.vars.get(&AsciiLowerName::new(name))
+        with_folded(name, |key| self.entry(key).map(|e| &e.value))
     }
 
     /// Check whether a variable is defined.
     pub fn is_defined(&self, name: &str) -> bool {
-        self.vars.contains_key(&AsciiLowerName::new(name))
+        with_folded(name, |key| self.entry(key).is_some())
     }
 
     /// Merge all variables from `other` into `self`.
@@ -55,9 +216,28 @@ impl PreprocVarTable {
     /// Used to propagate `&GLOBAL-DEFINE` variables from an included file
     /// back to the parent.
     pub fn merge_globals(&mut self, other: &PreprocVarTable) {
-        for (k, v) in &other.vars {
-            self.vars.insert(k.clone(), v.clone());
+        for (key, theirs) in other.names() {
+            let unchanged = self
+                .entry(key)
+                .is_some_and(|ours| ours.origin == theirs.origin && ours.value == theirs.value);
+            if !unchanged {
+                self.store(key, Some(key), Some(theirs.clone()));
+            }
         }
+    }
+
+    /// Every defined name, folded, with its entry.
+    fn names(&self) -> impl Iterator<Item = (&Arc<[u8]>, &Entry)> {
+        let base = self
+            .base
+            .iter()
+            .flat_map(|base| base.0.iter())
+            .filter(|(key, _)| !self.vars.contains_key(&***key));
+        let changed = self
+            .vars
+            .iter()
+            .filter_map(|(key, entry)| Some((key, entry.as_ref()?)));
+        base.chain(changed)
     }
 }
 
@@ -110,5 +290,134 @@ mod tests {
         parent.merge_globals(&child);
         assert_eq!(parent.get("A").map(|v| &**v), Some("overridden"));
         assert_eq!(parent.get("B").map(|v| &**v), Some("2"));
+    }
+
+    #[test]
+    fn end_scope_restores_changed_removed_and_added_names() {
+        let mut table = PreprocVarTable::new();
+        table.define("KEPT", "1");
+        table.define_global("GONE", "2");
+        let outer = table.begin_scope();
+        table.define("kept", "changed");
+        table.undefine("GONE");
+        table.define("ADDED", "3");
+        let inner = table.begin_scope();
+        table.define("ADDED", "4");
+        table.undefine("kept");
+        table.end_scope(inner);
+        assert_eq!(table.get("ADDED").map(|v| &**v), Some("3"));
+        assert_eq!(table.get("KEPT").map(|v| &**v), Some("changed"));
+        table.end_scope(outer);
+        assert_eq!(table.get("KEPT").map(|v| &**v), Some("1"));
+        assert_eq!(table.get("GONE").map(|v| &**v), Some("2"));
+        assert!(!table.is_defined("ADDED"));
+        assert_eq!(table.origin("KEPT"), Some(Origin::Scoped));
+        assert_eq!(table.origin("GONE"), Some(Origin::Global));
+    }
+
+    #[test]
+    fn end_scope_restores_the_origin_of_a_redefined_name() {
+        let mut table = PreprocVarTable::new();
+        table.define("X", "1");
+        let scope = table.begin_scope();
+        table.define_global("X", "2");
+        assert_eq!(table.origin("X"), Some(Origin::Mixed));
+        table.end_scope(scope);
+        assert_eq!(table.origin("X"), Some(Origin::Scoped));
+    }
+
+    #[test]
+    fn a_name_longer_than_the_stack_buffer_is_case_insensitive() {
+        let name = "Long-Name".repeat(12);
+        let mut table = PreprocVarTable::new();
+        table.define(&name, "v");
+        assert_eq!(
+            table.get(&name.to_ascii_uppercase()).map(|v| &**v),
+            Some("v")
+        );
+    }
+
+    #[test]
+    fn merge_globals_inside_a_scope_is_undone_with_it() {
+        let mut globals = PreprocVarTable::new();
+        globals.define_global("G", "1");
+        let mut table = PreprocVarTable::new();
+        let scope = table.begin_scope();
+        table.merge_globals(&globals);
+        assert!(table.is_defined("g"));
+        table.end_scope(scope);
+        assert!(!table.is_defined("g"));
+    }
+
+    fn base_of(names: &[(&str, &str)]) -> BaseVars {
+        let mut table = PreprocVarTable::new();
+        for (name, value) in names {
+            table.define_global(name, value);
+        }
+        table.into_base()
+    }
+
+    #[test]
+    fn a_table_over_a_base_starts_with_its_names() {
+        let base = base_of(&[("OPSYS", "UNIX")]);
+        let table = PreprocVarTable::over(&base);
+        assert_eq!(table.get("opsys").map(|v| &**v), Some("UNIX"));
+        assert!(table.is_defined("OpSys"));
+        assert_eq!(table.origin("OPSYS"), Some(Origin::Global));
+    }
+
+    #[test]
+    fn undefining_a_base_name_hides_it_until_it_is_defined_again() {
+        let base = base_of(&[("OPSYS", "UNIX")]);
+        let mut table = PreprocVarTable::over(&base);
+        table.undefine("opsys");
+        assert!(!table.is_defined("OPSYS"));
+        assert!(table.get("OPSYS").is_none());
+        table.define("OPSYS", "mine");
+        assert_eq!(table.origin("OPSYS"), Some(Origin::Scoped));
+        assert_eq!(table.get("OPSYS").map(|v| &**v), Some("mine"));
+    }
+
+    #[test]
+    fn defining_over_a_base_name_mixes_the_origin() {
+        let base = base_of(&[("OPSYS", "UNIX")]);
+        let mut table = PreprocVarTable::over(&base);
+        table.define("OPSYS", "mine");
+        assert_eq!(table.origin("OPSYS"), Some(Origin::Mixed));
+    }
+
+    #[test]
+    fn end_scope_restores_a_base_name_that_was_hidden_or_changed() {
+        let base = base_of(&[("A", "1"), ("B", "2")]);
+        let mut table = PreprocVarTable::over(&base);
+        let scope = table.begin_scope();
+        table.undefine("A");
+        table.define("B", "changed");
+        table.define("C", "3");
+        table.end_scope(scope);
+        assert_eq!(table.get("A").map(|v| &**v), Some("1"));
+        assert_eq!(table.get("B").map(|v| &**v), Some("2"));
+        assert_eq!(table.origin("B"), Some(Origin::Global));
+        assert!(!table.is_defined("C"));
+    }
+
+    #[test]
+    fn tables_over_one_base_do_not_see_each_others_changes() {
+        let base = base_of(&[("A", "1")]);
+        let mut first = PreprocVarTable::over(&base);
+        first.undefine("A");
+        first.define("B", "2");
+        let second = PreprocVarTable::over(&base);
+        assert_eq!(second.get("A").map(|v| &**v), Some("1"));
+        assert!(!second.is_defined("B"));
+    }
+
+    #[test]
+    fn merge_globals_carries_the_names_of_a_base_too() {
+        let base = base_of(&[("A", "1")]);
+        let from = PreprocVarTable::over(&base);
+        let mut table = PreprocVarTable::new();
+        table.merge_globals(&from);
+        assert_eq!(table.get("A").map(|v| &**v), Some("1"));
     }
 }

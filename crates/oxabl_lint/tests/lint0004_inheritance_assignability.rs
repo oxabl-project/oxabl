@@ -440,6 +440,66 @@ v-ghost = v-n.
 }
 
 // ---------------------------------------------------------------------------
+// A parent's own header is read in the parent's file
+// ---------------------------------------------------------------------------
+
+/// A parent that imports its own parent by wildcard, and the grandparent.
+const MID_WORKSPACE: [(&str, &str); 2] = [
+    (
+        "/src/orders/calc-mid.cls",
+        "USING rules.*.\nCLASS orders.calc-mid INHERITS price-base: END CLASS.",
+    ),
+    (
+        "/src/rules/price-base.cls",
+        "CLASS rules.price-base: END CLASS.",
+    ),
+];
+
+#[test]
+fn a_cross_file_child_reaches_its_grandparent_through_the_parents_imports() {
+    // `price-base` means `rules.price-base` in the file that wrote it. Read through
+    // this file, which imports nothing, it names no class and the climb stopped at
+    // the parent: a legal widening reported as a mismatch.
+    let source = r#"DEFINE VARIABLE v-base AS CLASS rules.price-base NO-UNDO.
+v-base = NEW orders.calc-mid().
+"#;
+    let (_stmts, _sem, diags) = lint_with_index(source, &MID_WORKSPACE);
+    assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+}
+
+#[test]
+fn a_parents_name_is_not_read_through_the_analysed_files_imports() {
+    // This file imports another package that has a `price-base` of its own. The
+    // parent never meant that one, so the assignment is a real mismatch.
+    let source = r#"USING other.*.
+DEFINE VARIABLE v-wrong AS CLASS other.price-base NO-UNDO.
+v-wrong = NEW orders.calc-mid().
+"#;
+    let mut workspace = MID_WORKSPACE.to_vec();
+    workspace.push((
+        "/src/other/price-base.cls",
+        "CLASS other.price-base: END CLASS.",
+    ));
+    let (_stmts, _sem, diags) = lint_with_index(source, &workspace);
+    assert_eq!(diags.len(), 1, "one mismatch: {diags:?}");
+}
+
+#[test]
+fn a_grandparent_declared_in_the_analysed_file_is_found_through_the_parents_imports() {
+    // The file under analysis declares the class the parent names bare, and no
+    // search path holds it: the local declaration is what the parent's import
+    // leads to.
+    let source = r#"CLASS rules.price-base:
+END CLASS.
+
+DEFINE VARIABLE v-base AS CLASS rules.price-base NO-UNDO.
+v-base = NEW orders.calc-mid().
+"#;
+    let (_stmts, _sem, diags) = lint_with_index(source, &MID_WORKSPACE[..1]);
+    assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+}
+
+// ---------------------------------------------------------------------------
 // The declaration's own type, promoted out of the side map
 // ---------------------------------------------------------------------------
 

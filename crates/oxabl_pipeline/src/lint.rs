@@ -79,14 +79,15 @@ use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    UnresolvedInclude, collect_from_expanded_with_source_context, expand_source,
+    UnresolvedInclude, collect_from_expanded_with_source_context, expand_source_with,
 };
 
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, UnresolvedIncludeInput, build_edge_set,
+    BatchIndex, DirectIncludeInput, EdgeInputs, IncludeOriginInput, NestedUnresolvedIncludeInput,
+    UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
 use oxabl_workspace::{FileSystem, is_include_fragment};
@@ -288,6 +289,7 @@ impl LintResult {
     pub fn diagnostics(&self) -> &CollectedDiagnostics {
         static NONE: &CollectedDiagnostics = &CollectedDiagnostics {
             diagnostics: Vec::new(),
+            parse_recovered: false,
         };
         match &self.outcome {
             Outcome::Computed { diagnostics, .. } => diagnostics,
@@ -451,7 +453,7 @@ pub struct LintPipeline<'a> {
 /// semantic layer already takes — so the *questions* stay shared (R7) while the
 /// memoization differs, which is the whole shape of KTD2.
 enum RunIndex<'a> {
-    Owned(BatchIndex<'a>),
+    Owned(Box<BatchIndex<'a>>),
     Shared(&'a BatchIndex<'a>),
     External(&'a dyn WorkspaceIndex),
 }
@@ -472,7 +474,11 @@ impl<'a> LintPipeline<'a> {
             // The index reads nothing until a name is looked up (R6), so building
             // it here costs a pair of borrows and no I/O — which is what lets it
             // be unconditional rather than another thing a client can forget.
-            index: RunIndex::Owned(BatchIndex::new(fs, &config.include_paths)),
+            index: RunIndex::Owned(Box::new(
+                BatchIndex::new(fs, &config.include_paths)
+                    .with_run_extensions(&config.run_extensions)
+                    .with_preprocessor(&config.preprocessor),
+            )),
             file: None,
         }
     }
@@ -504,7 +510,7 @@ impl<'a> LintPipeline<'a> {
     #[must_use]
     pub fn with_known_files(mut self, files: &'a [PathBuf]) -> Self {
         self.index = match self.index {
-            RunIndex::Owned(index) => RunIndex::Owned(index.seeded_with(files)),
+            RunIndex::Owned(index) => RunIndex::Owned(Box::new((*index).seeded_with(files))),
             // A sibling does not own the index it answers from, so it cannot
             // change what that index knows — and must not, since the run handle
             // has already told it. Explicit arm rather than a catch-all so a
@@ -682,12 +688,47 @@ impl<'a> LintPipeline<'a> {
                 site: include.site,
             })
             .collect();
+        let origins: Vec<IncludeOriginInput<'_>> = expanded
+            .include_origins()
+            .iter()
+            .map(|origin| IncludeOriginInput {
+                path: origin.path.as_path(),
+                site: origin.site,
+            })
+            .collect();
         let unresolved_includes: Vec<UnresolvedIncludeInput<'_>> = expanded
             .unresolved_includes()
             .iter()
             .map(|include| UnresolvedIncludeInput {
                 name: include.name.as_str(),
                 site: include.site.span,
+                unterminated: include.unterminated,
+            })
+            .collect();
+        // The chain's first site is the one coordinate in the root's own bytes.
+        let chain_site = |via: &[oxabl_common::FileSpan]| {
+            via.first()
+                .filter(|site| site.file == ROOT_FILE_ID)
+                .map(|site| site.span)
+        };
+        let nested_unresolved: Vec<NestedUnresolvedIncludeInput<'_>> = expanded
+            .nested_unresolved_includes()
+            .iter()
+            .map(|include| NestedUnresolvedIncludeInput {
+                name: include.name.as_str(),
+                include_site: chain_site(&include.via),
+            })
+            .collect();
+        // An unreadable include written at the root has a site in the root's
+        // bytes; a nested one does not, and is a transitive edge.
+        let unreadable: Vec<UnreadableIncludeInput<'_>> = expanded
+            .unreadable_includes()
+            .iter()
+            .map(|include| UnreadableIncludeInput {
+                name: include.name.as_str(),
+                path: include.path.as_path(),
+                site: (include.site.file == ROOT_FILE_ID).then_some(include.site.span),
+                include_site: chain_site(&include.via),
             })
             .collect();
         // The model's spans are post-expansion; an edge must carry the dependent
@@ -698,14 +739,26 @@ impl<'a> LintPipeline<'a> {
                 end: span.end,
             })
         };
+        let include_site = |span: oxabl_common::VirtualSpan| {
+            expanded.resolve_include_site(oxabl_ast::Span {
+                start: span.start,
+                end: span.end,
+            })
+        };
 
         Ok(build_edge_set(&EdgeInputs {
             semantic,
             schema: &self.config.schema,
             direct_includes: &direct,
             transitive_includes: expansion.dependency_paths(),
+            include_origins: &origins,
             unresolved_includes: &unresolved_includes,
+            nested_unresolved_includes: &nested_unresolved,
+            unreadable_includes: &unreadable,
+            parse_recovered: result.diagnostics().parse_recovered,
+            preprocessor_loss: !expanded.text_losses().is_empty(),
             resolve_span: &resolve_span,
+            include_site: &include_site,
         }))
     }
 
@@ -742,11 +795,13 @@ impl<'a> LintPipeline<'a> {
         // must escape.
         panic_if_injected(panic_sites::ANALYZE, source);
         Expansion {
-            inner: expand_source(
+            inner: expand_source_with(
                 ROOT_FILE_ID,
+                self.file().and_then(Path::to_str),
                 source,
                 self.fs,
                 &self.config.include_paths,
+                &self.config.preprocessor,
                 self.preprocess,
             ),
         }
@@ -789,6 +844,7 @@ impl<'a> LintPipeline<'a> {
                             source: DiagnosticSource::Preproc,
                         })
                         .collect(),
+                    parse_recovered: false,
                 };
                 LintResult::computed(None, diagnostics, dependency_paths)
             }

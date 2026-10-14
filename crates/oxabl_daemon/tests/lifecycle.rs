@@ -424,11 +424,13 @@ fn two_clients_probing_one_root_start_exactly_one_daemon() {
     with_base_dir(|_| {
         let root = tempfile::tempdir().expect("a workspace root");
         let (report, results) = mpsc::channel();
+        let both_tried = std::sync::Arc::new(std::sync::Barrier::new(2));
 
         let starters: Vec<_> = (0..2)
             .map(|_| {
                 let path = root.path().to_path_buf();
                 let report = report.clone();
+                let both_tried = both_tried.clone();
                 std::thread::spawn(move || {
                     // What a client does: probe, and start a daemon only if nothing is
                     // there. Both may well see nothing — the lock is what settles it.
@@ -436,11 +438,12 @@ fn two_clients_probing_one_root_start_exactly_one_daemon() {
                     let outcome = oxabl_daemon::Listener::bind(&path);
                     let started = outcome.is_ok();
                     report
-                        .send(outcome.err().map(|error| error.to_string()))
+                        .send(outcome.as_ref().err().map(|error| error.to_string()))
                         .expect("report the outcome");
                     // Hold the listener until both have tried, so the winner cannot
                     // release the root and let the loser succeed too.
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    both_tried.wait();
+                    drop(outcome);
                     started
                 })
             })

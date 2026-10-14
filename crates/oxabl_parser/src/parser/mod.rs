@@ -13,9 +13,9 @@ pub(crate) mod statements;
 mod tests;
 
 use oxabl_ast::{
-    AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, HandleParamKind,
-    HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection, ParameterType,
-    Span, Statement, StatementKind, TypeSource,
+    AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, GenericClass,
+    HandleParamKind, HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection,
+    ParameterType, Span, Statement, StatementKind, TypeArgument, TypeArguments, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -509,16 +509,9 @@ impl<'a> Parser<'a> {
     pub(crate) fn skip_to_statement_end(&mut self) -> (usize, usize) {
         let start = self.current;
         while !self.at_end() {
-            if self.check(Kind::Period) {
-                let period_end = self.tokens[self.current].end;
-                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
-                        && !self.source[period_end..t.start].contains('\n')
-                });
-                if !is_field_access {
-                    self.advance(); // consume the terminating period
-                    return self.skip_range(start);
-                }
+            if self.check(Kind::Period) && !self.period_is_field_access() {
+                self.advance(); // consume the terminating period
+                return self.skip_range(start);
             }
             self.advance();
         }
@@ -558,16 +551,9 @@ impl<'a> Parser<'a> {
                 return self.skip_range(start);
             }
             // Normal statement-end detection.
-            if self.check(Kind::Period) {
-                let period_end = self.tokens[self.current].end;
-                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
-                        && !self.source[period_end..t.start].contains('\n')
-                });
-                if !is_field_access {
-                    self.advance(); // consume the terminating period
-                    return self.skip_range(start);
-                }
+            if self.check(Kind::Period) && !self.period_is_field_access() {
+                self.advance(); // consume the terminating period
+                return self.skip_range(start);
             }
             self.advance();
         }
@@ -623,20 +609,24 @@ impl<'a> Parser<'a> {
                 return self.skip_range(start);
             }
             // Normal statement-end detection.
-            if self.check(Kind::Period) {
-                let period_end = self.tokens[self.current].end;
-                let is_field_access = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_identifier(t.kind)
-                        && !self.source[period_end..t.start].contains('\n')
-                });
-                if !is_field_access {
-                    self.advance(); // consume the terminating period
-                    return self.skip_range(start);
-                }
+            if self.check(Kind::Period) && !self.period_is_field_access() {
+                self.advance(); // consume the terminating period
+                return self.skip_range(start);
             }
             self.advance();
         }
         self.skip_range(start)
+    }
+
+    /// Whether the period at the cursor joins a field access (`table.field`)
+    /// rather than ending the statement. A qualifier's period is byte-adjacent to
+    /// the name after it; a period followed by whitespace ends the statement, so
+    /// `DISPLAY x WITH FRAME f. y = 1.` is two statements.
+    fn period_is_field_access(&self) -> bool {
+        let period_end = self.tokens[self.current].end;
+        self.tokens
+            .get(self.current + 1)
+            .is_some_and(|t| t.start == period_end && Self::can_be_identifier(t.kind))
     }
 
     /// The half-open token range a skip helper consumed, `[start, self.current)`.
@@ -1861,23 +1851,95 @@ impl<'a> Parser<'a> {
     }
 
     /// If the current token is `<`, consume tokens through the matching `>`,
-    /// balancing nested `<...>` pairs. Used after class-name parsing in data
-    /// type position so generic class types like `List<String>` or
-    /// `Map<String, List<Integer>>` parse. Generic type arguments aren't yet
-    /// modeled in the AST — this is a syntactic skip.
-    fn consume_generic_type_args(&mut self) {
+    /// balancing nested `<...>` pairs, and return the class names written
+    /// between them. Used after class-name parsing in data type position so
+    /// generic class types like `List<String>` or `Map<String, List<Integer>>`
+    /// parse. A built-in type argument such as `INT64` names no class and is
+    /// skipped.
+    ///
+    /// An unclosed `<` stops at a statement terminator or an unbalanced `)`,
+    /// records a parse error there and yields no type arguments.
+    fn parse_generic_type_args(&mut self) -> TypeArguments {
+        self.parse_generic_type_args_inner()
+            .unwrap_or_else(|| TypeArguments(Vec::new()))
+    }
+
+    /// `None` when the `<` never closes; the error is already recorded.
+    fn parse_generic_type_args_inner(&mut self) -> Option<TypeArguments> {
+        let mut args = Vec::new();
         if !self.check(Kind::LessThan) {
-            return;
+            return Some(TypeArguments(args));
         }
         self.advance(); // consume `<`
-        let mut depth: i32 = 1;
-        while !self.at_end() && depth > 0 {
-            match self.peek().kind {
-                Kind::LessThan => depth += 1,
-                Kind::GreaterThan => depth -= 1,
-                _ => {}
+        loop {
+            if self.at_end() || self.at_generic_stop() {
+                self.record_error(ParseError {
+                    message: "Unclosed '<' in generic type arguments".to_string(),
+                    span: self.current_span(),
+                });
+                return None;
             }
-            self.advance();
+            match self.peek().kind {
+                Kind::GreaterThan => {
+                    self.advance();
+                    return Some(TypeArguments(args));
+                }
+                Kind::LessThan => {
+                    // A `<` with no name before it: balance it and drop it.
+                    self.parse_generic_type_args_inner()?;
+                }
+                kind if self.starts_type_argument(kind) => {
+                    if let Ok(name) = self.parse_class_qualified_name() {
+                        let arguments = self.parse_generic_type_args_inner()?;
+                        args.push(TypeArgument { name, arguments });
+                    }
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /// Whether the cursor is on a statement terminator (`.` or `:` followed by
+    /// whitespace or the end of input) or a `)`, neither of which can occur
+    /// inside type arguments.
+    fn at_generic_stop(&self) -> bool {
+        let token = self.peek();
+        match token.kind {
+            Kind::RightParen => true,
+            Kind::Period | Kind::Colon => self
+                .tokens
+                .get(self.current + 1)
+                .is_none_or(|next| next.start > token.end),
+            _ => false,
+        }
+    }
+
+    /// Whether a token of `kind` starts a class name in a type argument list:
+    /// an identifier, the `Progress` namespace, or a reserved word that
+    /// qualifies a class name with a period.
+    fn starts_type_argument(&self, kind: Kind) -> bool {
+        match kind {
+            Kind::Identifier | Kind::Progress => true,
+            Kind::LessThan | Kind::GreaterThan => false,
+            _ => {
+                Self::is_word_kind(kind)
+                    && !Self::is_data_type_kind(kind)
+                    && self
+                        .tokens
+                        .get(self.current + 1)
+                        .is_some_and(|t| t.kind == Kind::Period)
+            }
+        }
+    }
+
+    /// The type of a class name, generic when it carries type arguments.
+    fn class_data_type(class: String, arguments: TypeArguments) -> DataType {
+        if arguments.0.is_empty() {
+            DataType::Class(class)
+        } else {
+            DataType::Generic(Box::new(GenericClass { class, arguments }))
         }
     }
 
@@ -1904,15 +1966,15 @@ impl<'a> Parser<'a> {
             Kind::Class => {
                 self.advance(); // consume CLASS
                 let class_name = self.parse_class_qualified_name()?;
-                self.consume_generic_type_args();
-                return Ok(DataType::Class(class_name.name));
+                let arguments = self.parse_generic_type_args();
+                return Ok(Self::class_data_type(class_name.name, arguments));
             }
             // ABL allows `AS ClassName` (without CLASS keyword) for class types.
             // Dotted names like `forms.deco_proof_form` are class references.
             Kind::Identifier => {
                 let class_name = self.parse_class_qualified_name()?;
-                self.consume_generic_type_args();
-                return Ok(DataType::Class(class_name.name));
+                let arguments = self.parse_generic_type_args();
+                return Ok(Self::class_data_type(class_name.name, arguments));
             }
             // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
             Kind::KwIn => DataType::Integer,
@@ -1920,8 +1982,8 @@ impl<'a> Parser<'a> {
             // (e.g. "Progress.Json.ObjectModel.JsonObject")
             Kind::Progress => {
                 let class_name = self.parse_class_qualified_name()?;
-                self.consume_generic_type_args();
-                return Ok(DataType::Class(class_name.name));
+                let arguments = self.parse_generic_type_args();
+                return Ok(Self::class_data_type(class_name.name, arguments));
             }
             // Reserved keywords used as namespace prefixes in OO-ABL class names.
             // ABL class files live in directories whose names may be reserved keywords
@@ -1934,8 +1996,8 @@ impl<'a> Parser<'a> {
                     .is_some_and(|t| t.kind == Kind::Period) =>
             {
                 let class_name = self.parse_class_qualified_name()?;
-                self.consume_generic_type_args();
-                return Ok(DataType::Class(class_name.name));
+                let arguments = self.parse_generic_type_args();
+                return Ok(Self::class_data_type(class_name.name, arguments));
             }
             Kind::PreprocIf => {
                 self.advance(); // consume &IF

@@ -274,14 +274,18 @@ impl Parser<'_> {
                 self.advance();
             }
             // consume optional action
+            let mut kind = StatementKind::Empty;
             if self.check(Kind::Comma) {
                 self.advance();
                 if self.check(Kind::KwReturn) {
                     self.advance();
                     // RETURN may have a value expression (e.g. UNDO, RETURN false.)
-                    if !self.check(Kind::Period) && !self.at_end() {
-                        self.parse_expression().ok();
-                    }
+                    let is_error = self.eat_error_modifier();
+                    kind = match (is_error, self.parse_optional_value()) {
+                        (true, Some(value)) => StatementKind::Throw(value),
+                        (false, Some(value)) => StatementKind::Return(Some(value)),
+                        (_, None) => StatementKind::Empty,
+                    };
                 } else if matches!(self.peek().kind, Kind::Leave | Kind::Retry | Kind::Next) {
                     self.advance();
                     // consume optional label
@@ -290,14 +294,14 @@ impl Parser<'_> {
                     }
                 } else if self.check(Kind::Throw) {
                     self.advance(); // consume THROW
-                    // parse the thrown expression (e.g. NEW Progress.Lang.AppError(...))
-                    if !self.check(Kind::Period) && !self.at_end() {
-                        self.parse_expression().ok();
+                    // the thrown expression (e.g. NEW Progress.Lang.AppError(...))
+                    if let Some(value) = self.parse_optional_value() {
+                        kind = StatementKind::Throw(value);
                     }
                 }
             }
             self.expect_period("Expected '.' after UNDO statement")?;
-            return Ok(self.stmt(StatementKind::Empty));
+            return Ok(self.stmt(kind));
         }
 
         // Return
@@ -428,11 +432,9 @@ impl Parser<'_> {
         // THROW expr. — raise an exception.
         if self.check(Kind::Throw) {
             self.advance(); // consume THROW
-            if !self.check(Kind::Period) && !self.at_end() {
-                self.parse_expression().ok();
-            }
+            let value = self.parse_optional_value();
             self.expect_period("Expected '.' after THROW")?;
-            return Ok(self.stmt(StatementKind::Empty));
+            return Ok(self.stmt(value.map_or(StatementKind::Empty, StatementKind::Throw)));
         }
 
         // ASSIGN statement
@@ -2776,14 +2778,42 @@ impl Parser<'_> {
         }))
     }
 
+    /// Consume the `ERROR` modifier of `RETURN ERROR`; it lexes as an identifier.
+    fn eat_error_modifier(&mut self) -> bool {
+        let tok = self.peek();
+        let is_error = Self::can_be_identifier(tok.kind)
+            && self.source[tok.start..tok.end].eq_ignore_ascii_case("error");
+        if is_error {
+            self.advance();
+        }
+        is_error
+    }
+
+    /// Parse the expression after RETURN/THROW unless the statement ends first.
+    fn parse_optional_value(&mut self) -> Option<Expression> {
+        if self.check(Kind::Period) || self.at_end() {
+            return None;
+        }
+        self.parse_expression().ok()
+    }
+
     fn parse_return_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume RETURN
 
-        // RETURN ERROR expr. — ABL error-throw syntax; ERROR is an identifier modifier.
-        // Skip ERROR keyword and parse the rest as a return value expression, or skip to period.
-        if Self::can_be_identifier(self.peek().kind)
-            && self.source[self.peek().start..self.peek().end].eq_ignore_ascii_case("error")
-        {
+        // RETURN ERROR [expr]. — ABL error-throw syntax; ERROR is an identifier modifier.
+        // A value that parses cleanly is a throw; anything else is skipped to the period.
+        if self.eat_error_modifier() {
+            let after_modifier = self.current;
+            if let Some(value) = self.parse_optional_value() {
+                if self.check(Kind::NoError) {
+                    self.advance();
+                }
+                if self.check(Kind::Period) {
+                    self.advance();
+                    return Ok(self.stmt(StatementKind::Throw(value)));
+                }
+                self.current = after_modifier;
+            }
             let _ = self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Return(None)));
         }
@@ -4268,8 +4298,9 @@ impl Parser<'_> {
         // Optional parameter list in parentheses. Signature params become
         // DefineParameter statements prepended onto the function body so the
         // semantic declare pass binds them into ScopeKind::Function (#68).
-        // Prototypes (FORWARD / IN … / MAP TO …) parse params then discard them
-        // so prototype-only symbols do not collide with a later definition.
+        // Prototypes (FORWARD / IN … / MAP TO …) keep them apart from the body,
+        // which stays empty, so prototype-only symbols do not collide with a
+        // later definition.
         let signature_params = if self.check(Kind::LeftParen) {
             self.parse_parenthesized_params()?
         } else {
@@ -4283,7 +4314,6 @@ impl Parser<'_> {
             self.source[tok.start..tok.end].eq_ignore_ascii_case("forward")
         };
         if is_forward {
-            let _ = signature_params; // discard — prototype has empty body
             self.advance(); // consume FORWARD
             // FORWARD declarations may end with '.' or ':' (legacy ABL uses ':')
             if self.check(Kind::Period) || self.check(Kind::Colon) {
@@ -4298,24 +4328,24 @@ impl Parser<'_> {
                 name,
                 return_type,
                 body: Vec::new(),
+                prototype_parameters: signature_params,
             }));
         }
 
         // IN super|this-procedure|handle — external function reference (forward declaration)
         // e.g. "function name returns type (params) in super."
         if self.check(Kind::KwIn) {
-            let _ = signature_params; // discard — prototype has empty body
             let _ = self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Function {
                 name,
                 return_type,
                 body: Vec::new(),
+                prototype_parameters: signature_params,
             }));
         }
 
         // MAP TO name IN handle — external function mapping (class context)
         if self.check(Kind::Map) {
-            let _ = signature_params; // discard — prototype has empty body
             while !self.check(Kind::Period) && !self.at_end() {
                 self.advance();
             }
@@ -4324,6 +4354,7 @@ impl Parser<'_> {
                 name,
                 return_type,
                 body: Vec::new(),
+                prototype_parameters: signature_params,
             }));
         }
 
@@ -4353,6 +4384,7 @@ impl Parser<'_> {
             name,
             return_type,
             body,
+            prototype_parameters: Vec::new(),
         }))
     }
 
@@ -4531,9 +4563,8 @@ impl Parser<'_> {
     /// Parse a RUN target name, returning it alongside its own byte extent.
     ///
     /// ABL procedure names can contain hyphens (e.g., `calculate-total`) and may have
-    /// file extensions (e.g., `my-proc.p`). Known ABL extensions are `.p`, `.w`, `.r`,
-    /// `.i`, and `.cls`. A period followed by a non-extension token is treated as the
-    /// statement terminator, not part of the name.
+    /// file extensions (e.g., `my-proc.p`). The name ends at the first whitespace or
+    /// comment, so a period followed by whitespace is the statement terminator.
     fn parse_procedure_name(&mut self) -> ParseResult<(String, Span)> {
         // Procedure names are file paths and can start with any word-like token,
         // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`).
@@ -4549,10 +4580,22 @@ impl Parser<'_> {
         }
 
         let start = self.peek().start;
+        // A name never holds whitespace or a comment, so every later token
+        // must touch the one before it. The check stops the target at
+        // `PERSISTENT`, `ON`, `(`, a comment or the next statement.
+        let touches = |p: &Self, i: usize| {
+            let tok = p.peek_at(i);
+            let before = if i == 0 {
+                p.prev_end() as usize
+            } else {
+                p.peek_at(i - 1).end
+            };
+            tok.start == before
+        };
         // For absolute paths, consume the leading `/` then the first path segment
         if self.check(Kind::Slash) {
             self.advance(); // consume leading '/'
-            if Self::is_word_kind(self.peek().kind) {
+            if Self::is_word_kind(self.peek().kind) && touches(self, 0) {
                 self.advance(); // consume first path segment
             }
         } else {
@@ -4563,6 +4606,8 @@ impl Parser<'_> {
         // Path components may start with digits (e.g., `rpt/170summary.p`), so also allow
         // IntegerLiteral and DecimalLiteral as path segment starts.
         while self.check(Kind::Slash)
+            && touches(self, 0)
+            && touches(self, 1)
             && (Self::is_word_kind(self.peek_at(1).kind)
                 || matches!(
                     self.peek_at(1).kind,
@@ -4576,49 +4621,28 @@ impl Parser<'_> {
             while Self::is_word_kind(self.peek().kind)
                 && !self.check(Kind::Slash)
                 && !self.check(Kind::Period)
+                && touches(self, 0)
             {
                 self.advance();
             }
         }
 
         // Check for dotted extension (e.g., my-proc.p) or dotted method name (e.g., Dataset.Fill).
-        // Only consume if the next token is a plain identifier or a keyword safe to use as an
-        // identifier (via can_be_identifier). Block-terminating keywords like END, WHEN, THEN
-        // must NOT be consumed here, even if on the same line.
-        // Use check_at (safe) before peek_at (panics on OOB).
+        // The period and the word after it must both touch their neighbours: a
+        // statement-terminating period is followed by whitespace, and `RUN` is
+        // usable as an identifier, so `RUN write-header. RUN build-list.` must
+        // not fold the next statement into the target. Block-terminating keywords
+        // like END, WHEN, THEN are excluded even when adjacent.
         if self.check(Kind::Period)
             && (self.check_at(1, Kind::Identifier) || Self::can_be_identifier(self.peek_at(1).kind))
+            && touches(self, 0)
+            && touches(self, 1)
         {
-            let next = self.peek_at(1);
-            let ext = &self.source[next.start..next.end];
-            let ext_bytes = ext.as_bytes();
-            let is_file_ext = match ext_bytes.len() {
-                1 => matches!(ext_bytes[0] | 0x20, b'p' | b'w' | b'r' | b'i'),
-                2 => ext.eq_ignore_ascii_case("pp"), // preprocessed procedure files (.pp)
-                3 => ext.eq_ignore_ascii_case("cls"),
-                _ => false,
-            };
-            // Also accept a dotted method name (e.g. `Dataset.Fill`) — but only
-            // when it is written **adjacent** to the period, with no gap. A dotted
-            // name never has whitespace inside it, while a statement-terminating
-            // period is followed by one; that lexical difference is what tells the
-            // two apart without having to classify the following keyword.
-            //
-            // The rule used to be "anywhere on the same line", and `RUN` is usable
-            // as an identifier, so `RUN write-header. RUN build-list.`
-            // consumed the period and the next statement's keyword into the target
-            // name — yielding `write-header. RUN`, a name nobody wrote, which
-            // became a diagnostic once `undefined-symbol` began reporting absent
-            // targets.
-            let period_end = self.tokens[self.current].end;
-            let adjacent = next.start == period_end;
-            if is_file_ext || adjacent {
-                self.advance(); // consume the period
-                self.advance(); // consume the extension or method name
-            }
+            self.advance(); // consume the period
+            self.advance(); // consume the extension or method name
         }
 
-        let end = self.tokens[self.current - 1].end;
+        let end = self.prev_end() as usize;
         Ok((
             self.source[start..end].to_string(),
             Span {

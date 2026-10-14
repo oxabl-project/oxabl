@@ -3136,6 +3136,72 @@ fn parse_return_no_apply() {
 }
 
 #[test]
+fn parse_throw_forms_keep_the_thrown_expression() {
+    for source in [
+        "THROW NEW Err().",
+        "UNDO, THROW NEW Err().",
+        "RETURN ERROR NEW Err().",
+        "UNDO, RETURN ERROR NEW Err().",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        assert!(
+            matches!(&stmt.kind, StatementKind::Throw(e) if matches!(e.kind, ExpressionKind::New { .. })),
+            "{source}: {:?}",
+            stmt.kind
+        );
+    }
+}
+
+#[test]
+fn parse_return_error_without_value_is_a_bare_return() {
+    let source = "RETURN ERROR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    assert_eq!(stmt.kind, StatementKind::Return(None));
+}
+
+#[test]
+fn run_target_stops_at_whitespace_and_comments() {
+    for (source, expected) in [
+        ("RUN comm/expdist PERSISTENT SET h (1).", "comm/expdist"),
+        ("RUN comm/expdist\n  PERSISTENT SET h.", "comm/expdist"),
+        ("RUN sub2 /* c */.", "sub2"),
+        ("RUN sub2 // c\n.", "sub2"),
+        ("RUN sub2.p /* c */.", "sub2.p"),
+        ("RUN sub2.\ni = 1.", "sub2"),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("Expected a statement");
+        match stmt.kind {
+            StatementKind::Run {
+                target: RunTarget::Literal { name, .. },
+                ..
+            } => assert_eq!(name, expected, "{source}"),
+            other => panic!("{source}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_keyword_segment_is_a_field_access() {
+    let source = "x = pkg.Color:Red.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Assignment { value, .. } = stmt.kind else {
+        panic!("{:?}", stmt.kind);
+    };
+    let ExpressionKind::MemberAccess { object, .. } = value.kind else {
+        panic!("{:?}", value.kind);
+    };
+    assert!(matches!(object.kind, ExpressionKind::FieldAccess { .. }));
+}
+
+#[test]
 fn parse_loop_with_leave_and_next() {
     let source = "DO i = 1 TO 100: IF l_done THEN LEAVE. IF l_skip THEN NEXT. l_process(i). END.";
     let tokens = tokenize(source);
@@ -4304,6 +4370,61 @@ END PROCEDURE.
     }
 }
 
+/// The prototype's parameter types, and whether its body is empty.
+fn prototype_parameter_types(source: &str) -> (Vec<DataType>, bool) {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("prototype must parse");
+    let StatementKind::Function {
+        body,
+        prototype_parameters,
+        ..
+    } = stmt.kind
+    else {
+        panic!("Expected Function statement");
+    };
+    let types = prototype_parameters
+        .iter()
+        .map(|param| match &param.kind {
+            StatementKind::DefineParameter {
+                param_type:
+                    ParameterType::Variable {
+                        type_source: TypeSource::Explicit(data_type),
+                        ..
+                    },
+                ..
+            } => data_type.clone(),
+            other => panic!("Expected a typed parameter, got {other:?}"),
+        })
+        .collect();
+    (types, body.is_empty())
+}
+
+#[test]
+fn a_function_prototype_keeps_its_parameters_apart_from_its_body() {
+    for tail in ["FORWARD", "IN SUPER", "IN h", "MAP TO g2 IN h"] {
+        let source = format!(
+            "FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Thing, INPUT n AS INTEGER) {tail}."
+        );
+        let (types, body_is_empty) = prototype_parameter_types(&source);
+        assert_eq!(
+            types,
+            [DataType::Class("pkg.Thing".into()), DataType::Integer],
+            "{tail}"
+        );
+        assert!(body_is_empty, "{tail}");
+    }
+}
+
+#[test]
+fn a_function_definition_has_no_prototype_parameters() {
+    let source =
+        "FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Thing):\n  RETURN TRUE.\nEND FUNCTION.";
+    let (types, body_is_empty) = prototype_parameter_types(source);
+    assert!(types.is_empty());
+    assert!(!body_is_empty);
+}
+
 #[test]
 fn parse_function_in_super_still_works() {
     let source = "FUNCTION getX RETURNS CHARACTER IN SUPER.";
@@ -4317,6 +4438,7 @@ fn parse_function_in_super_still_works() {
             name,
             return_type,
             body,
+            ..
         } => {
             assert_eq!(name.name, "getX");
             assert_eq!(return_type, DataType::Character);
@@ -4365,6 +4487,42 @@ fn parse_display_with_frame() {
         }
         _ => panic!("Expected Display statement"),
     }
+}
+
+/// A period followed by whitespace ends the statement, so a statement on the
+/// same line after `WITH FRAME x.` is its own statement and not swallowed into
+/// the frame phrase.
+#[test]
+fn a_same_line_statement_after_a_frame_phrase_is_its_own_statement() {
+    for source in [
+        "DISPLAY x WITH FRAME a. y = 1.",
+        "DISPLAY x FRAME a. y = 1.",
+        "UPDATE x WITH FRAME a. y = 1.",
+        "DISPLAY x WITH FRAME a.\ny = 1.",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(
+            program.errors.is_empty(),
+            "{source:?}: {:?}",
+            program.errors
+        );
+        assert_eq!(program.statements.len(), 2, "for {source:?}");
+        assert!(
+            matches!(program.statements[1].kind, StatementKind::Assignment { .. }),
+            "for {source:?}: {:?}",
+            program.statements[1].kind
+        );
+    }
+}
+
+/// A byte-adjacent period still joins a field access inside the frame phrase.
+#[test]
+fn a_qualified_name_inside_a_frame_phrase_does_not_end_the_statement() {
+    let source = "DISPLAY x WITH FRAME a TITLE \"t\" + tbl.fld + \"u\". y = 1.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert_eq!(program.statements.len(), 2);
 }
 
 #[test]
@@ -5965,6 +6123,7 @@ END FUNCTION.
             name,
             return_type,
             body,
+            ..
         } => {
             assert_eq!(name.name, "get-greeting");
             assert_eq!(return_type, DataType::Character);
@@ -5989,6 +6148,7 @@ END FUNCTION.
             name,
             return_type,
             body,
+            ..
         } => {
             assert_eq!(name.name, "calc-total");
             assert_eq!(return_type, DataType::Integer);
@@ -6603,8 +6763,6 @@ fn parse_method_with_preproc_access_modifier() {
 #[test]
 fn parse_generic_class_data_type() {
     // `List<String>`, `IIterator<String>` — OO-ABL generic class references.
-    // Generic type arguments aren't modeled in the AST; they're accepted
-    // syntactically so property/variable declarations parse.
     let source = "DEF PUBLIC PROPERTY mode_list AS List<String> NO-UNDO GET. PRIVATE SET.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
@@ -6618,6 +6776,137 @@ fn parse_new_with_generic_class() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     parser.parse_statement().expect("expected assignment");
+}
+
+/// The type arguments written back out, nested ones in their own brackets.
+fn render_args(arguments: &TypeArguments) -> String {
+    arguments
+        .0
+        .iter()
+        .map(|arg| {
+            if arg.arguments.0.is_empty() {
+                arg.name.name.clone()
+            } else {
+                format!("{}<{}>", arg.name.name, render_args(&arg.arguments))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The class and type arguments of the variable `DEFINE VARIABLE v AS <ty>.`
+fn declared_generic(ty: &str) -> (String, String) {
+    let source = format!("DEFINE VARIABLE v AS {ty} NO-UNDO.");
+    let tokens = tokenize(&source);
+    let mut parser = Parser::new(&tokens, &source);
+    let stmt = parser.parse_statement().expect("expected a declaration");
+    match stmt.kind {
+        StatementKind::VariableDeclaration {
+            type_source: TypeSource::Explicit(DataType::Generic(generic)),
+            ..
+        } => (generic.class.clone(), render_args(&generic.arguments)),
+        other => panic!("Expected a generic declaration, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_generic_type_keeps_the_class_names_between_its_brackets() {
+    let generic = |class: &str, args: &str| (class.to_string(), args.to_string());
+    assert_eq!(
+        declared_generic("List<pkg.Thing>"),
+        generic("List", "pkg.Thing")
+    );
+    assert_eq!(
+        declared_generic("Progress.Collections.HashMap<Thing, pkg.Gone>"),
+        generic("Progress.Collections.HashMap", "Thing, pkg.Gone")
+    );
+}
+
+#[test]
+fn nested_type_arguments_stay_nested() {
+    assert_eq!(
+        declared_generic("HashMap<A, List<pkg.B>>"),
+        ("HashMap".to_string(), "A, List<pkg.B>".to_string())
+    );
+}
+
+#[test]
+fn a_built_in_type_argument_is_dropped() {
+    assert_eq!(
+        declared_generic("HashMap<INTEGER, pkg.Thing>"),
+        ("HashMap".to_string(), "pkg.Thing".to_string())
+    );
+    let source = "DEFINE VARIABLE v AS HashMap<INT64, CHARACTER> NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("expected a declaration");
+    assert!(matches!(
+        stmt.kind,
+        StatementKind::VariableDeclaration {
+            type_source: TypeSource::Explicit(DataType::Class(_)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_type_argument_carries_the_span_of_its_name() {
+    let source = "DEFINE VARIABLE v AS List<pkg.Thing> NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("expected a declaration");
+    let StatementKind::VariableDeclaration {
+        type_source: TypeSource::Explicit(DataType::Generic(generic)),
+        ..
+    } = stmt.kind
+    else {
+        panic!("Expected a generic declaration");
+    };
+    let span = generic.arguments.0[0].name.span;
+    assert_eq!(&source[span.start as usize..span.end as usize], "pkg.Thing");
+}
+
+#[test]
+fn a_class_with_no_type_arguments_is_not_generic() {
+    let source = "DEFINE VARIABLE v AS pkg.Thing NO-UNDO.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("expected a declaration");
+    assert!(matches!(
+        stmt.kind,
+        StatementKind::VariableDeclaration {
+            type_source: TypeSource::Explicit(DataType::Class(_)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_new_expression_keeps_its_type_arguments() {
+    let new_of = |source: &str| {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect("expected an assignment");
+        let StatementKind::Assignment { value, .. } = stmt.kind else {
+            panic!("Expected Assignment");
+        };
+        match value.kind {
+            ExpressionKind::New {
+                class_name,
+                type_arguments,
+                ..
+            } => (class_name, type_arguments.map(|args| render_args(&args))),
+            other => panic!("Expected New, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        new_of("x = NEW List<pkg.Thing>()."),
+        ("List".to_string(), Some("pkg.Thing".to_string()))
+    );
+    assert_eq!(
+        new_of("x = NEW pkg.Thing()."),
+        ("pkg.Thing".to_string(), None)
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! Expressions are parsed with the following precedence (lowest to highest):
 //! ternary (IF/THEN/ELSE) > OR > AND > comparison > additive > multiplicative > unary > postfix > primary.
 
-use crate::{FindType, Literal, LockType, NodeId, PreprocIf, Span};
+use crate::{FindType, Literal, LockType, NodeId, PreprocIf, Span, TypeArguments};
 
 /// A named identifier with its source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +89,8 @@ pub enum ExpressionKind {
     New {
         /// The class name, possibly dotted (e.g., "oe.wsdeco")
         class_name: String,
+        /// The type arguments of a generic class, as in `NEW List<pkg.Thing>()`.
+        type_arguments: Option<Box<TypeArguments>>,
         arguments: Vec<Expression>,
     },
     /// CAN-FIND record phrase: `CAN-FIND([FIRST|LAST] table [WHERE expr] [lock] [NO-ERROR])`

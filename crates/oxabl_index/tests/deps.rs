@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use oxabl_ast::Span;
 use oxabl_common::{FileId, VirtualSpan};
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, UnresolvedIncludeInput,
-    build_edge_set,
+    BatchIndex, Completeness, DegradedReason, DependencyEdges, DirectIncludeInput, EdgeInputs,
+    EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
+    UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
@@ -72,6 +73,12 @@ fn identity(span: VirtualSpan) -> Option<Span> {
     })
 }
 
+/// The include-site mapping for an unpreprocessed buffer: nothing came from an
+/// include.
+fn no_include(_span: VirtualSpan) -> Option<Span> {
+    None
+}
+
 fn inputs<'a>(
     semantic: &'a Semantic,
     schema: &'a Schema,
@@ -84,9 +91,19 @@ fn inputs<'a>(
         schema,
         direct_includes: direct,
         transitive_includes: transitive,
+        include_origins: &[],
         unresolved_includes,
+        nested_unresolved_includes: &[],
+        unreadable_includes: &[],
+        parse_recovered: false,
+        preprocessor_loss: false,
         resolve_span: &identity,
+        include_site: &no_include,
     }
+}
+
+fn nested(name: &str, include_site: Option<Span>) -> NestedUnresolvedIncludeInput<'_> {
+    NestedUnresolvedIncludeInput { name, include_site }
 }
 
 fn dirs(entries: &[&str]) -> Vec<PathBuf> {
@@ -183,6 +200,44 @@ fn direct_and_transitive_includes_are_not_confused() {
 }
 
 #[test]
+fn a_transitive_include_carries_the_site_of_the_chain_that_reached_it() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let site = Span { start: 0, end: 9 };
+    let direct = [DirectIncludeInput {
+        path: Path::new("/proj/outer.i"),
+        site,
+    }];
+    let transitive = dirs(&["/proj/outer.i", "/proj/inner.i", "/proj/orphan.i"]);
+    let origins = [
+        IncludeOriginInput {
+            path: Path::new("/proj/outer.i"),
+            site,
+        },
+        IncludeOriginInput {
+            path: Path::new("/proj/inner.i"),
+            site,
+        },
+    ];
+    let edges = build_edge_set(&EdgeInputs {
+        include_origins: &origins,
+        ..inputs(&semantic, &schema, &direct, &transitive, &[])
+    });
+
+    let sites: Vec<_> = edges
+        .of_kind(EdgeKind::TransitiveInclude)
+        .map(|edge| (edge.target.key().to_string(), edge.span, edge.include_site))
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("/proj/inner.i".to_string(), None, Some(site)),
+            ("/proj/orphan.i".to_string(), None, None),
+        ]
+    );
+}
+
+#[test]
 fn a_resolved_class_reference_becomes_an_edge_carrying_its_span() {
     let mut fs = InMemoryFileSystem::new();
     fs.insert(PathBuf::from(CALC_BASE_PATH), CALC_BASE);
@@ -190,8 +245,8 @@ fn a_resolved_class_reference_becomes_an_edge_carrying_its_span() {
     let index = BatchIndex::new(&fs, &paths);
     let schema = Schema::empty();
 
-    // The body calls the inherited method, so the supertype chain walk actually
-    // runs — a header alone asks the index nothing.
+    // The header names the class, and the body's inherited call walks to it as
+    // well; both reach one edge.
     let source = CHILD;
     let semantic = analyse(source, &schema, &index);
     let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
@@ -212,13 +267,9 @@ fn a_resolved_class_reference_becomes_an_edge_carrying_its_span() {
     );
 }
 
-/// A class whose spans were previously recovered by rescanning the whole symbol
-/// table per lookup still reports the same span, with a body large enough that a
-/// scan and a map could plausibly differ.
-///
-/// The map is built once per file and keyed first-write-wins, in the order the scan
-/// searched — symbols in table order, `INHERITS` before `IMPLEMENTS`. This pins that
-/// the reorganisation did not move which occurrence a name resolves to.
+/// A class named in a header, with a body large enough that a scan and a map
+/// could plausibly differ, reports the header's span: the earliest place the
+/// file names it.
 #[test]
 fn a_class_name_span_is_unchanged_by_the_per_file_map() {
     let mut fs = InMemoryFileSystem::new();
@@ -335,6 +386,7 @@ fn an_unresolvable_include_is_its_own_row_with_a_reason() {
     let unresolved_includes = [UnresolvedIncludeInput {
         name: "nowhere.i",
         site: Span { start: 0, end: 11 },
+        unterminated: false,
     }];
     let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &unresolved_includes));
 
@@ -393,4 +445,208 @@ fn two_edge_sets_from_identical_input_compare_equal() {
         build_edge_set(&inputs(&semantic, &schema, &direct, &transitive, &[]))
     };
     assert_eq!(build(), build());
+}
+
+#[test]
+fn an_edge_set_built_from_nothing_is_complete() {
+    assert_eq!(
+        DependencyEdges::default().completeness(),
+        &Completeness::Complete
+    );
+    assert!(
+        DependencyEdges::default()
+            .completeness()
+            .reasons()
+            .is_empty()
+    );
+
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+    assert!(edges.completeness().is_complete());
+}
+
+#[test]
+fn each_way_of_losing_source_degrades_the_set_for_its_own_reason() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let reasons = |inputs: EdgeInputs<'_>| build_edge_set(&inputs).completeness().clone();
+
+    let base = || inputs(&semantic, &schema, &[], &[], &[]);
+    assert_eq!(
+        reasons(EdgeInputs {
+            parse_recovered: true,
+            ..base()
+        }),
+        Completeness::Degraded {
+            reasons: vec![DegradedReason::ParseRecovered]
+        }
+    );
+    assert_eq!(
+        reasons(EdgeInputs {
+            nested_unresolved_includes: &[nested("deep.i", None)],
+            ..base()
+        }),
+        Completeness::Degraded {
+            reasons: vec![DegradedReason::UnresolvedInclude]
+        }
+    );
+    assert_eq!(
+        reasons(EdgeInputs {
+            unreadable_includes: &[UnreadableIncludeInput {
+                name: "latin.i",
+                path: Path::new("/src/latin.i"),
+                site: None,
+                include_site: None,
+            }],
+            ..base()
+        }),
+        Completeness::Degraded {
+            reasons: vec![DegradedReason::UnreadableInclude]
+        }
+    );
+}
+
+#[test]
+fn reasons_are_sorted_and_not_repeated() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let unresolved = [UnresolvedIncludeInput {
+        name: "a.i",
+        site: Span { start: 0, end: 5 },
+        unterminated: false,
+    }];
+    let edges = build_edge_set(&EdgeInputs {
+        parse_recovered: true,
+        nested_unresolved_includes: &[nested("b.i", None)],
+        ..inputs(&semantic, &schema, &[], &[], &unresolved)
+    });
+    assert_eq!(
+        edges.completeness().reasons(),
+        [
+            DegradedReason::ParseRecovered,
+            DegradedReason::UnresolvedInclude
+        ]
+    );
+}
+
+#[test]
+fn a_nested_unresolved_include_is_a_transitive_row_with_no_site() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let edges = build_edge_set(&EdgeInputs {
+        nested_unresolved_includes: &[nested("deep.i", None), nested("deep.i", None)],
+        ..inputs(&semantic, &schema, &[], &[], &[])
+    });
+
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 1, "one name reached twice is one row: {rows:?}");
+    assert_eq!(rows[0].kind, EdgeKind::TransitiveInclude);
+    assert_eq!(rows[0].name, "deep.i");
+    assert_eq!(rows[0].reason, UnresolvedReason::AbsentFromWorkspace);
+    assert_eq!(rows[0].span, None);
+}
+
+#[test]
+fn an_unreadable_include_keeps_its_edge_and_adds_a_row() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let site = Span { start: 0, end: 9 };
+    let edges = build_edge_set(&EdgeInputs {
+        unreadable_includes: &[
+            UnreadableIncludeInput {
+                name: "latin.i",
+                path: Path::new("/src/latin.i"),
+                site: Some(site),
+                include_site: None,
+            },
+            UnreadableIncludeInput {
+                name: "deep.i",
+                path: Path::new("/src/deep.i"),
+                site: None,
+                include_site: None,
+            },
+        ],
+        ..inputs(&semantic, &schema, &[], &[], &[])
+    });
+
+    assert_eq!(targets(EdgeKind::DirectInclude, &edges), ["/src/latin.i"]);
+    assert_eq!(
+        targets(EdgeKind::TransitiveInclude, &edges),
+        ["/src/deep.i"]
+    );
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 2, "got {rows:?}");
+    assert!(
+        rows.iter()
+            .all(|row| row.reason == UnresolvedReason::PresentButUnusable)
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.kind == EdgeKind::DirectInclude && row.span == Some(site))
+    );
+}
+
+#[test]
+fn an_unterminated_include_is_unknowable_not_absent() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let unresolved = [UnresolvedIncludeInput {
+        name: "a.i",
+        site: Span { start: 0, end: 1 },
+        unterminated: true,
+    }];
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &unresolved));
+
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].kind, EdgeKind::DirectInclude);
+    assert_eq!(rows[0].reason, UnresolvedReason::Unknowable);
+    assert_eq!(
+        edges.completeness().reasons(),
+        [DegradedReason::UnresolvedInclude]
+    );
+}
+
+#[test]
+fn a_nested_row_carries_the_site_of_the_chain_that_reached_it() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let chain = Span { start: 4, end: 12 };
+    let edges = build_edge_set(&EdgeInputs {
+        nested_unresolved_includes: &[nested("deep.i", Some(chain))],
+        unreadable_includes: &[UnreadableIncludeInput {
+            name: "latin.i",
+            path: Path::new("/src/latin.i"),
+            site: None,
+            include_site: Some(chain),
+        }],
+        ..inputs(&semantic, &schema, &[], &[], &[])
+    });
+
+    let rows = edges.unresolved();
+    assert_eq!(rows.len(), 2, "got {rows:?}");
+    assert!(rows.iter().all(|row| row.include_site == Some(chain)));
+    assert!(
+        edges
+            .edges()
+            .iter()
+            .all(|edge| edge.include_site == Some(chain)),
+        "the unreadable file's edge names the chain too"
+    );
+}
+
+#[test]
+fn a_preprocessor_loss_degrades_the_set_for_its_own_reason() {
+    let schema = Schema::empty();
+    let semantic = analyse("MESSAGE \"hi\".", &schema, &NullIndex);
+    let edges = build_edge_set(&EdgeInputs {
+        preprocessor_loss: true,
+        ..inputs(&semantic, &schema, &[], &[], &[])
+    });
+
+    assert_eq!(
+        edges.completeness().reasons(),
+        [DegradedReason::PreprocessorLoss]
+    );
 }

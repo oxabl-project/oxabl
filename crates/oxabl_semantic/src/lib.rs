@@ -35,8 +35,9 @@ pub use coercion::{
 };
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
 pub use index::{
-    ClassDescriptor, ClassKind, IndexAnswer, IndexName, IndexRevision, IndexedFileId,
-    MemberDescriptor, MemberType, NullIndex, PortableType, WorkspaceIndex,
+    ClassDescriptor, ClassKind, ImportContext, IndexAnswer, IndexName, IndexRevision,
+    IndexedFileId, LocateKind, Located, MemberDescriptor, MemberType, NullIndex, PortableType,
+    WorkspaceIndex,
 };
 pub use index_vec::NodeIndexVec;
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
@@ -45,6 +46,7 @@ pub use resolve::{Resolution, UnresolvedReason, declare_pass, resolve_pass};
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use symbol::{
     ClassLookup, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
+    UnlinkedRun,
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 
@@ -283,6 +285,7 @@ mod tests {
                     kind: ClassKind::Class,
                     inherits: None,
                     implements: Vec::new(),
+                    imports: Arc::default(),
                 }))
             } else {
                 IndexAnswer::NotFound

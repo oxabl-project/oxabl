@@ -127,19 +127,56 @@ fn the_shared_table_matches_the_format_pipeline() {
 // ---------------------------------------------------------------------------
 
 /// The edge set for one fixture, over `fs`.
+fn edge_set(
+    fixture: &ParityFixture,
+    config: &PipelineConfig,
+    fs: &dyn FileSystem,
+) -> oxabl_index::DependencyEdges {
+    let run = LintPipeline::new(config, fs);
+    let pipeline = run.with_file(fixture.root_path(root()));
+    let expansion = pipeline.expand(fixture.source);
+    let result = pipeline.collect(&expansion);
+    pipeline
+        .edges_of(&expansion, &result)
+        .unwrap_or_else(|reason| panic!("fixture `{}` produced no edges: {reason}", fixture.name))
+}
+
 fn edges(
     fixture: &ParityFixture,
     config: &PipelineConfig,
     fs: &dyn FileSystem,
 ) -> fixtures::ObservedEdges {
-    let run = LintPipeline::new(config, fs);
-    let pipeline = run.with_file(fixture.root_path(root()));
-    let expansion = pipeline.expand(fixture.source);
-    let result = pipeline.collect(&expansion);
-    let set = pipeline
-        .edges_of(&expansion, &result)
-        .unwrap_or_else(|reason| panic!("fixture `{}` produced no edges: {reason}", fixture.name));
-    fixtures::ObservedEdges::from_edge_set(&set, root())
+    fixtures::ObservedEdges::from_edge_set(&edge_set(fixture, config, fs), root())
+}
+
+/// Every row that claims an edge set also claims whether it is complete, and why
+/// not when it is not, with its siblings supplied and withheld.
+#[test]
+fn the_shared_table_matches_the_completeness_it_claims() {
+    let reasons = |set: &oxabl_index::DependencyEdges| -> Vec<&'static str> {
+        set.completeness()
+            .reasons()
+            .iter()
+            .map(|reason| reason.as_str())
+            .collect()
+    };
+    for fixture in FIXTURES.iter().filter(|f| f.asserts_edges()) {
+        let config = fixture.config_under(root());
+        assert_eq!(
+            reasons(&edge_set(fixture, &config, &fs(fixture))),
+            fixture.expected_degraded(),
+            "fixture `{}`: completeness diverged",
+            fixture.name
+        );
+        if fixture.is_cross_file() {
+            assert_eq!(
+                reasons(&edge_set(fixture, &config, &empty_fs())),
+                fixture.expected_degraded_without_siblings(),
+                "fixture `{}`: completeness diverged with its siblings withheld",
+                fixture.name
+            );
+        }
+    }
 }
 
 /// Every row that claims an edge set produces exactly that set — and exactly the
@@ -173,7 +210,9 @@ fn every_edge_kind_has_a_fixture_that_claims_it() {
             fixtures::EdgeExpectation::Always(edge)
             | fixtures::EdgeExpectation::OnlyWithSiblings(edge)
             | fixtures::EdgeExpectation::ResolvedWithSiblings { edge, .. } => edge.via,
-            fixtures::EdgeExpectation::AlwaysUnresolved(row) => row.via,
+            fixtures::EdgeExpectation::AlwaysUnresolved(row)
+            | fixtures::EdgeExpectation::UnresolvedOnlyWithSiblings(row) => row.via,
+            fixtures::EdgeExpectation::LocatedButUnusable { edge, .. } => edge.via,
         })
         .collect();
     for kind in [

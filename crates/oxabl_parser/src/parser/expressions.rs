@@ -505,10 +505,11 @@ impl Parser<'_> {
         // follows the period with no whitespace. A period followed by whitespace (space, newline)
         // before an identifier is a statement terminator, not a field access separator.
         // This prevents "p. var" (space after period) from being mis-parsed as "p.var".
+        // Any word-like token qualifies, so a keyword segment such as `pkg.Color` is a name.
         let period_end = self.tokens[self.current].end;
-        self.tokens
-            .get(self.current + 1)
-            .is_some_and(|t| Self::can_be_identifier(t.kind) && t.start == period_end)
+        self.tokens.get(self.current + 1).is_some_and(|t| {
+            (Self::can_be_identifier(t.kind) || Self::is_word_kind(t.kind)) && t.start == period_end
+        })
     }
 
     /// Check if an expression is string-like for implicit concatenation purposes.
@@ -539,7 +540,7 @@ impl Parser<'_> {
         self.advance(); // consume '.'
 
         // Expect identifier (or keyword used as field name) after '.'
-        if !Self::can_be_identifier(self.peek().kind) {
+        if !Self::can_be_identifier(self.peek().kind) && !Self::is_word_kind(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected field name after '.'".to_string(),
                 span: Span {
@@ -794,8 +795,9 @@ impl Parser<'_> {
             let end = self.tokens[self.current - 1].end;
             let class_name = self.source[start..end].to_string();
 
-            // Consume optional generic type args — `NEW List<String>(...)`.
-            self.consume_generic_type_args();
+            // Optional generic type args — `NEW List<String>(...)`.
+            let type_arguments = self.parse_generic_type_args();
+            let type_arguments = (!type_arguments.0.is_empty()).then(|| Box::new(type_arguments));
 
             // If no '(' follows, this is the logical NEW record-name test (boolean expression),
             // not an OO object constructor.  Return a simple identifier so parsing continues.
@@ -860,6 +862,7 @@ impl Parser<'_> {
             debug_assert_expr_sibling_order(&arguments);
             return Ok(self.expr(ExpressionKind::New {
                 class_name,
+                type_arguments,
                 arguments,
             }));
         }

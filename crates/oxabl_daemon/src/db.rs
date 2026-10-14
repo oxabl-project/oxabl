@@ -104,10 +104,10 @@ use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, index_file};
 use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
 use oxabl_semantic::{
-    ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, MemberDescriptor,
-    WorkspaceIndex,
+    ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
+    MemberDescriptor, WorkspaceIndex,
 };
-use oxabl_workspace::{FileSystem, RealFileSystem};
+use oxabl_workspace::{FileSystem, PreprocessorConfig, RealFileSystem};
 use salsa::{Setter, Storage};
 
 /// The root buffer's file id, re-exported from its single owner (KTD12).
@@ -168,6 +168,19 @@ pub struct IndexedFile {
     pub disk_revision: u32,
 }
 
+/// The environment every indexed file's own directives are applied under.
+///
+/// One input shared by all [`IndexedFile`]s rather than a copy on each: a copy
+/// is taken from whichever snapshot registers the file, and a worker on an old
+/// snapshot would store an old `[workspace.preprocessor]` for good. Read by
+/// [`indexed_facts`], so a changed value invalidates exactly the facts that
+/// depended on it.
+#[salsa::input]
+pub struct IndexEnvironment {
+    #[returns(ref)]
+    pub preprocessor: PreprocessorConfig,
+}
+
 /// Salsa input carrying a monotonically-bumped schema revision. The diagnostics
 /// query reads it so bumping it (on a `.df` change) invalidates and recomputes
 /// live (R16). The schema *value* itself is db configuration, not a salsa field.
@@ -215,6 +228,9 @@ pub struct IndexHandle {
 #[derive(Default)]
 struct Registry {
     by_path: HashMap<PathBuf, Registered>,
+    /// Created once, by whichever of registration and [`IndexHandle::set_preprocessor`]
+    /// comes first; the main loop's sync reconciles its value either way.
+    environment: Option<IndexEnvironment>,
     /// Ids are minted from 1 so a zero never reads as a real file in a dump,
     /// matching the batch index.
     next_id: u32,
@@ -319,6 +335,36 @@ impl IndexHandle {
         drop(registry);
         input.set_disk_revision(db).to(revision);
         true
+    }
+
+    /// The shared environment input, created from the snapshot's configuration if
+    /// the main loop has not installed one yet.
+    ///
+    /// A value created here from an old snapshot is corrected by the next
+    /// [`set_preprocessor`](Self::set_preprocessor), whose setter cancels that
+    /// snapshot.
+    fn environment(&self, db: &dyn AblDatabase) -> IndexEnvironment {
+        *self.registry().environment.get_or_insert_with(|| {
+            IndexEnvironment::new(db, db.config().pipeline.preprocessor.clone())
+        })
+    }
+
+    /// Install `preprocessor` as the environment of every indexed file,
+    /// invalidating the facts of the files that read a different one.
+    ///
+    /// Call after the configuration is replaced. Always reconciles the one
+    /// shared input, so no registration order leaves a stale value behind.
+    pub fn set_preprocessor(&self, db: &mut AnalysisDatabase, preprocessor: &PreprocessorConfig) {
+        let mut registry = self.registry();
+        let Some(input) = registry.environment else {
+            registry.environment = Some(IndexEnvironment::new(&*db, preprocessor.clone()));
+            return;
+        };
+        // Dropped before the write, as in `bump`: `set_*` waits for snapshots.
+        drop(registry);
+        if input.preprocessor(&*db) != preprocessor {
+            input.set_preprocessor(db).to(preprocessor.clone());
+        }
     }
 
     /// Whether `path` has been registered — i.e. whether any lookup has ever
@@ -491,6 +537,7 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     // answer below is derived from it, and it is the whole invalidation protocol
     // (R10) — so it is read unconditionally, including on the unreadable-file path.
     let _revision = file.disk_revision(db);
+    let predefined = db.config().index.environment(db).preprocessor(db);
     let id = IndexedFileId::new(*file.index_id(db));
     let path = file.path(db);
     let Ok(source) = db.config().fs.read(path) else {
@@ -507,7 +554,7 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     // in `diagnostics`: after the cheap read, before the parse. A concurrent
     // main-thread write has already made this answer irrelevant.
     db.unwind_if_revision_cancelled();
-    Arc::new(index_file(id, &source))
+    Arc::new(index_file(id, &source, predefined))
 }
 
 /// One class's descriptor, keyed per file **and per class** (R9).
@@ -629,7 +676,13 @@ impl<'db> SnapshotIndex<'db> {
     /// to a producer that is really its own earlier revision.
     fn locate(&self, name: &IndexName, kind: NameKind) -> IndexAnswer<IndexedFile> {
         let config = self.db.config();
-        match search::find_name(&*config.fs, &config.pipeline.include_paths, name, kind) {
+        match search::find_name_with(
+            &*config.fs,
+            &config.pipeline.include_paths,
+            name,
+            kind,
+            &config.pipeline.run_extensions,
+        ) {
             IndexAnswer::Found(path) => {
                 if self.is_analysed(&path) {
                     // `Unusable`, not `NotFound` — the file exists, it just cannot
@@ -685,6 +738,28 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
         }
     }
 
+    fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
+        let config = self.db.config();
+        let kind = match kind {
+            LocateKind::Class => NameKind::Class,
+            LocateKind::Program => NameKind::Program,
+        };
+        match search::find_name_with(
+            &*config.fs,
+            &config.pipeline.include_paths,
+            name,
+            kind,
+            &config.pipeline.run_extensions,
+        ) {
+            IndexAnswer::Found(path) if self.is_analysed(&path) => Located::Itself,
+            IndexAnswer::Found(path) => {
+                let file = config.index.file_for(self.db, &path);
+                Located::In(indexed_facts(self.db, file).file)
+            }
+            _ => Located::Nowhere,
+        }
+    }
+
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
         // A `SHARED` name maps onto no path, so — exactly as in the batch cache —
         // the only honest answers are "enumerate the workspace", which R6 forbids
@@ -735,7 +810,13 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
 /// making the caller handle an `Err` before it can ask a question.
 #[salsa::tracked(returns(clone))]
 fn expanded_text(db: &dyn AblDatabase, buffer: Buffer) -> Expansion {
-    db.config().lint_pipeline().expand(buffer.text(db).as_str())
+    // The file's name is part of the expansion: `{&FILE-NAME}` expands to it, and
+    // the edge set reads the same name.
+    let run = db.config().lint_pipeline();
+    match buffer.path(db).as_deref() {
+        Some(path) => run.with_file(path).expand(buffer.text(db).as_str()),
+        None => run.expand(buffer.text(db).as_str()),
+    }
 }
 
 /// Phase two: the shared pipeline's collection over the memoized expansion,
@@ -856,6 +937,15 @@ pub(crate) fn indexed_members_for_test(
     SnapshotIndex::new(db, None).class_members(&IndexName::new(class))
 }
 
+/// The class descriptor lookup, for the same reason as the members one.
+#[cfg(test)]
+pub(crate) fn indexed_class_for_test(
+    db: &AnalysisDatabase,
+    class: &str,
+) -> IndexAnswer<Arc<ClassDescriptor>> {
+    SnapshotIndex::new(db, None).class(&IndexName::new(class))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,6 +961,52 @@ mod tests {
 
     fn db_with(source_fs: oxabl_workspace::InMemoryFileSystem) -> AnalysisDatabase {
         AnalysisDatabase::new(config_with(source_fs))
+    }
+
+    /// A snapshot taken before a configuration change registers a file after it:
+    /// the file must still read the installed environment, not the snapshot's.
+    #[test]
+    fn a_file_registered_from_an_old_snapshot_reads_the_installed_environment() {
+        let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+        fs.insert(
+            PathBuf::from("/src/pkg/Mid.cls"),
+            "&IF \"{&OPSYS}\" = \"WIN32\" &THEN\n\
+             CLASS pkg.Mid INHERITS pkg.WinBase:\n\
+             &ELSE\n\
+             CLASS pkg.Mid INHERITS pkg.Base:\n\
+             &ENDIF\n\
+             END CLASS.\n",
+        );
+        let configured = |opsys: &str| {
+            let mut pipeline = PipelineConfig {
+                include_paths: vec![PathBuf::from("/src")],
+                ..PipelineConfig::default()
+            };
+            pipeline.preprocessor.opsys = opsys.to_string();
+            pipeline
+        };
+        let old = AnalysisConfig {
+            fs: Arc::new(fs),
+            pipeline: Arc::new(configured("UNIX")),
+            ..Default::default()
+        };
+        let index = Arc::clone(&old.index);
+        let mut db = AnalysisDatabase::new(old.clone());
+        let snapshot = db.clone();
+
+        let new_pipeline = configured("WIN32");
+        index.set_preprocessor(&mut db, &new_pipeline.preprocessor);
+        db.set_config(AnalysisConfig {
+            pipeline: Arc::new(new_pipeline),
+            ..old
+        });
+
+        let parent = |db: &AnalysisDatabase| match indexed_class_for_test(db, "pkg.Mid") {
+            IndexAnswer::Found(class) => class.inherits.as_ref().map(|n| n.as_str().to_string()),
+            _ => None,
+        };
+        assert_eq!(parent(&snapshot).as_deref(), Some("pkg.winbase"));
+        assert_eq!(parent(&db).as_deref(), Some("pkg.winbase"));
     }
 
     /// The shared guard both diagnostics paths go through (R8). Client-observable
@@ -977,6 +1113,26 @@ mod tests {
             "expected the unused-variable diagnostic to clear, got {:?}",
             d3.all().map(|c| c.diagnostic.code.0).collect::<Vec<_>>()
         );
+    }
+
+    /// `{&FILE-NAME}` is the buffer's own name in the expansion the diagnostics
+    /// read, as it is in the edge set: a buffer with a path decides a branch on it,
+    /// and one with none has no name to decide on.
+    #[test]
+    fn the_expansion_names_the_buffer_for_file_name() {
+        let db = db_with(oxabl_workspace::InMemoryFileSystem::new());
+        let text = "&IF \"{&FILE-NAME}\" MATCHES \"*.w\" &THEN\nMESSAGE 1.\n&ENDIF\n";
+        let has_unknown_name = |path: Option<&str>| {
+            let buffer = Buffer::new(&db, text.to_string(), path.map(std::path::PathBuf::from));
+            let schema = SchemaHandle::new(&db, 0);
+            compute_diagnostics(&db, buffer, schema)
+                .unwrap()
+                .all()
+                .any(|c| c.diagnostic.code.0 == "PREPROC009")
+        };
+
+        assert!(!has_unknown_name(Some("/proj/main.w")));
+        assert!(has_unknown_name(None));
     }
 
     #[test]

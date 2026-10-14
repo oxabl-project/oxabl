@@ -288,6 +288,7 @@ mod tests {
     #[test]
     fn skip_list_output_parameter() {
         let stmts = vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![param("out", ParameterDirection::Output)],
@@ -302,6 +303,7 @@ mod tests {
     #[test]
     fn skip_list_input_output_parameter() {
         let stmts = vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![param("io", ParameterDirection::InputOutput)],
@@ -314,6 +316,7 @@ mod tests {
     fn fires_on_unused_input_parameter() {
         // True positive: a read-free INPUT parameter is a genuine smell.
         let stmts = vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![param("in_", ParameterDirection::Input)],

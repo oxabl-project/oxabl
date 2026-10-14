@@ -27,6 +27,41 @@
 //! [`EdgeInputs::resolve_span`]. A span that does not map back — it originates
 //! inside an include, not in the dependent file — is reported as absent rather
 //! than as a plausible-looking wrong offset.
+//!
+//! # Origin
+//!
+//! A reference spliced in from an include has no offset of its own here, but it
+//! still has an origin a consumer needs: "named in this file's body" and "named
+//! in an include it pulls in" are different facts to a build tool that keys a
+//! file by its signature. So every edge and every unresolved row carries two
+//! independent sites, each in the dependent file's own bytes:
+//!
+//! - `span` — the first place the file's **own text** names the target. For a
+//!   declared type that is the declaring identifier (the variable, parameter,
+//!   property or field), because the model keeps no span for the type name;
+//! - `include_site` — the first root-level `{...}` through which an
+//!   **include** names it, at any include depth.
+//!
+//! Both are set when the target is named both ways, and neither when the file
+//! names it nowhere — an ancestor class the chain walk reached through another
+//! class's header. The caller maps include sites with [`EdgeInputs::include_site`].
+//!
+//! Class edges see every mention. The kinds read off a symbol — a schema table,
+//! a `RUN` target, a `SHARED` producer — see only the one site the symbol keeps,
+//! so at most one of the two is set on them.
+//!
+//! ## Which include rows carry which site
+//!
+//! An include is the file's own when the root writes the `{...}` or a `{&var}`
+//! whose value names it. Whether it resolved, could not be read, or resolved to no
+//! file, such an include is a [`EdgeKind::DirectInclude`] edge or row whose `span`
+//! is that reference, or the substitution for a `{&var}`, and whose `include_site`
+//! is `None`.
+//!
+//! An include reached through a file include is a [`EdgeKind::TransitiveInclude`]
+//! edge or row whose `span` is `None` and whose `include_site` is the root-level
+//! `{...}` or `{&var}` of the chain that reached it. A transitive edge has no site
+//! only for a file the expansion read through no include node.
 
 use std::path::{Path, PathBuf};
 
@@ -136,6 +171,11 @@ pub struct DependencyEdge {
     /// and a reference spliced in from an include resolves to no root-file offset.
     /// Inventing one would point a jump-out at unrelated bytes.
     pub span: Option<Span>,
+    /// The root-level `{...}` site, in this file's own bytes, through which an
+    /// include names the target — the same span as that include's
+    /// [`EdgeKind::DirectInclude`] edge. `None` when no include names it. See the
+    /// module docs on origin.
+    pub include_site: Option<Span>,
 }
 
 /// One reference that named something oxabl could not resolve.
@@ -143,6 +183,35 @@ pub struct DependencyEdge {
 /// A first-class member of the edge set rather than a dropped row or a bump to a
 /// resolved count. An impact answer that folds these in under-reports the blast
 /// radius while looking more confident, which is the worst failure this data has.
+///
+/// # What a consumer does with a `RUN` row
+///
+/// A row of kind [`EdgeKind::ProgramReference`] is a literal or computed `RUN`
+/// target that did not link to a usable file. What each [`reason`](Self::reason)
+/// tells a build tool:
+///
+/// - [`AbsentFromWorkspace`](UnresolvedReason::AbsentFromWorkspace): a named file
+///   (`RUN x.p`, `RUN a/b.p`) that no configured path supplies. There is no edge.
+///   The file lives outside the configured paths or does not exist; a consumer
+///   that tracks only workspace files cannot key on it.
+/// - [`PresentButUnusable`](UnresolvedReason::PresentButUnusable): the file was
+///   found and an edge to it is present. oxabl could not read or parse it, so what
+///   *it* depends on is unknown. Key on the edge and treat the file's own
+///   dependencies as incomplete.
+/// - [`Unknowable`](UnresolvedReason::Unknowable): the target is not a single
+///   file. Either it is computed (`RUN VALUE(...)`, named `VALUE(...)` here), or
+///   two path entries supply the same name and oxabl declines to pick. There is no
+///   edge. A consumer that needs a sound answer widens for this file.
+/// - [`External`](UnresolvedReason::External): a named file oxabl could not
+///   search for, because no search path is configured or because an extensionless
+///   path (`RUN a/b`) may also be satisfied by compiled code. There is no edge.
+///   Read it as `AbsentFromWorkspace` with less evidence.
+///
+/// A bare name with no extension and no path separator (`RUN getdata`) makes no
+/// row at all when no file supplies it. It is an internal procedure of a running
+/// program, resolved at run time, and it is never a compile input. When a file
+/// *does* supply it (`getdata.p`, then `getdata.w`), that file is an ordinary
+/// edge. `RUN x IN h` is likewise silent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedReference {
     /// Which question was asked. The kind is meaningful even though no target
@@ -154,6 +223,95 @@ pub struct UnresolvedReference {
     pub reason: UnresolvedReason,
     /// Where the dependent file names it, when it names it in its own bytes.
     pub span: Option<Span>,
+    /// The root-level `{...}` site through which an include names it, as
+    /// [`DependencyEdge::include_site`].
+    pub include_site: Option<Span>,
+}
+
+/// Why an edge set may be missing dependencies that no unresolved row names.
+///
+/// Each reason is a place the analysis lost sight of source text. A reference in
+/// that text would have produced an edge or a row, and there is nothing left to
+/// say it existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum DegradedReason {
+    /// The parser recovered from an error and skipped statements, in the file
+    /// itself or in an include.
+    ParseRecovered,
+    /// An include, at any depth, resolved to no file. Whatever it would have
+    /// declared or included is unknown.
+    UnresolvedInclude,
+    /// An include, at any depth, resolved to a file whose content could not be
+    /// read. The file is an edge, but what it includes is unknown.
+    UnreadableInclude,
+    /// The preprocessor dropped text or decided a branch without the facts to
+    /// decide it: an include past the depth limit, an `&IF` that never closes, a
+    /// condition on a predefined name that has no value. Whatever the lost text
+    /// referenced is unknown.
+    PreprocessorLoss,
+    /// A statement the parser recognizes but does not model mentions a class or a
+    /// member access (`PUT`, `EXPORT`, ...), and no class could be attributed to
+    /// it. A reference in it may have produced no edge.
+    UnmodelledStatement,
+}
+
+impl DegradedReason {
+    /// Stable snake-case tag for a wire format.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DegradedReason::ParseRecovered => "parse_recovered",
+            DegradedReason::UnresolvedInclude => "unresolved_include",
+            DegradedReason::UnreadableInclude => "unreadable_include",
+            DegradedReason::PreprocessorLoss => "preprocessor_loss",
+            DegradedReason::UnmodelledStatement => "unmodelled_statement",
+        }
+    }
+}
+
+/// Whether an edge set can be trusted to be everything the file depends on.
+///
+/// `Degraded` does not mean the edges are wrong. It means the absence of an edge
+/// proves nothing, so a consumer should widen its invalidation for this file
+/// rather than rely on the set.
+///
+/// Non-exhaustive: a consumer matching it treats an arm it does not know as
+/// degraded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Completeness {
+    /// Nothing was lost: every reference the file makes is an edge or a row.
+    #[default]
+    Complete,
+    /// Something was lost. `reasons` is sorted, with no repeats, and never empty.
+    Degraded { reasons: Vec<DegradedReason> },
+}
+
+impl Completeness {
+    /// Whether nothing was lost.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Completeness::Complete)
+    }
+
+    /// The reasons the set is degraded, empty when it is complete.
+    pub fn reasons(&self) -> &[DegradedReason] {
+        match self {
+            Completeness::Complete => &[],
+            Completeness::Degraded { reasons } => reasons,
+        }
+    }
+
+    /// `Complete` for no reasons, otherwise `Degraded` with them sorted and
+    /// deduplicated.
+    pub fn from_reasons(mut reasons: Vec<DegradedReason>) -> Self {
+        reasons.sort();
+        reasons.dedup();
+        if reasons.is_empty() {
+            Completeness::Complete
+        } else {
+            Completeness::Degraded { reasons }
+        }
+    }
 }
 
 /// Everything one file depends on, and everything it referenced but could not
@@ -162,10 +320,15 @@ pub struct UnresolvedReference {
 /// The two are separate collections on purpose. There is no accessor that returns
 /// them merged, so a caller cannot accidentally count an unresolved reference as a
 /// resolved dependency.
+///
+/// [`Self::completeness`] says whether the pair can be trusted. The default is
+/// `Complete` along with the empty collections: an edge set built from nothing
+/// lost nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DependencyEdges {
     edges: Vec<DependencyEdge>,
     unresolved: Vec<UnresolvedReference>,
+    completeness: Completeness,
 }
 
 impl DependencyEdges {
@@ -177,6 +340,11 @@ impl DependencyEdges {
     /// Every reference that resolved to nothing, in a deterministic order.
     pub fn unresolved(&self) -> &[UnresolvedReference] {
         &self.unresolved
+    }
+
+    /// Whether the edges and rows are everything the file depends on.
+    pub fn completeness(&self) -> &Completeness {
+        &self.completeness
     }
 
     /// The resolved edges of one kind.
@@ -201,12 +369,52 @@ pub struct DirectIncludeInput<'a> {
     pub site: Span,
 }
 
+/// One include file the dependent file pulls in at any depth, and the site of the
+/// chain that reached it.
+#[derive(Debug, Clone, Copy)]
+pub struct IncludeOriginInput<'a> {
+    pub path: &'a Path,
+    /// The outermost `{...}` or `{&var}` the dependent file itself writes on the
+    /// chain, already in its own bytes.
+    pub site: Span,
+}
+
 /// An include reference the preprocessor resolved to no file.
 #[derive(Debug, Clone, Copy)]
 pub struct UnresolvedIncludeInput<'a> {
     pub name: &'a str,
-    /// The `{...}` site, already in the dependent file's own bytes.
+    /// The `{...}` site, already in the dependent file's own bytes. For a
+    /// reference a `{&var}` value names, the substitution.
     pub site: Span,
+    /// The reference's `{` never closes, so `name` is only a best reading of the
+    /// text after it. The row says the reference is unknowable rather than that
+    /// the workspace lacks the file.
+    pub unterminated: bool,
+}
+
+/// An include reference written in an *included* file that resolved to no file.
+#[derive(Debug, Clone, Copy)]
+pub struct NestedUnresolvedIncludeInput<'a> {
+    pub name: &'a str,
+    /// The root-level `{...}` site, in the dependent file's own bytes, of the
+    /// include chain that reached it, when the chain starts in the dependent
+    /// file.
+    pub include_site: Option<Span>,
+}
+
+/// An include that resolved to a path whose content could not be read.
+#[derive(Debug, Clone, Copy)]
+pub struct UnreadableIncludeInput<'a> {
+    /// The include as written.
+    pub name: &'a str,
+    /// The path it resolved to.
+    pub path: &'a Path,
+    /// The `{...}` site in the dependent file's own bytes, or `None` when a
+    /// nested include names it.
+    pub site: Option<Span>,
+    /// For a nested include, the root-level `{...}` site of the chain that
+    /// reached it, in the dependent file's own bytes.
+    pub include_site: Option<Span>,
 }
 
 /// Everything [`build_edge_set`] needs, all of it from the caller.
@@ -226,11 +434,27 @@ pub struct EdgeInputs<'a> {
     /// Every include the expansion read, transitively. Paths that also appear in
     /// `direct_includes` are reported as direct, not twice.
     pub transitive_includes: &'a [PathBuf],
+    /// The root-level site of the chain that reached each include, at any depth.
+    /// Gives a transitive include edge its `include_site`.
+    pub include_origins: &'a [IncludeOriginInput<'a>],
     /// Include references that resolved to no file.
     pub unresolved_includes: &'a [UnresolvedIncludeInput<'a>],
+    /// Include references that resolved to no file, written in an *included* file.
+    /// The dependent file has no site for them, only the chain that reached them.
+    pub nested_unresolved_includes: &'a [NestedUnresolvedIncludeInput<'a>],
+    /// Includes, at any depth, that resolved to a path that could not be read.
+    pub unreadable_includes: &'a [UnreadableIncludeInput<'a>],
+    /// Whether the parser recovered from an error anywhere in the expansion.
+    pub parse_recovered: bool,
+    /// Whether the preprocessor dropped text or decided a branch on a guess.
+    pub preprocessor_loss: bool,
     /// Maps a span in the expanded buffer back to the dependent file's own bytes,
     /// or `None` when it originates in an include.
     pub resolve_span: &'a dyn Fn(VirtualSpan) -> Option<Span>,
+    /// Maps a span in the expanded buffer to the root-level `{...}` site, in the
+    /// dependent file's own bytes, of the include it originates in — or `None`
+    /// when it is written in the dependent file itself.
+    pub include_site: &'a dyn Fn(VirtualSpan) -> Option<Span>,
 }
 
 /// Build the typed edge set for one file.
@@ -250,9 +474,10 @@ pub fn build_edge_set(inputs: &EdgeInputs<'_>) -> DependencyEdges {
     let mut unresolved = Vec::new();
 
     include_edges(inputs, &mut edges);
-    unresolved_include_rows(inputs, &mut unresolved);
+    unresolved_include_rows(inputs, &mut edges, &mut unresolved);
     class_edges(inputs, &mut edges, &mut unresolved);
     symbol_linked_edges(inputs, &mut edges);
+    unlinked_run_rows(inputs, &mut edges, &mut unresolved);
     schema_edges(inputs, &mut edges);
 
     // Both collections are built partly from hash maps, so an unstable order would
@@ -264,22 +489,95 @@ pub fn build_edge_set(inputs: &EdgeInputs<'_>) -> DependencyEdges {
     // look fifty times heavier in an impact answer. The sort puts a span-carrying
     // edge ahead of a span-less one and orders by offset, so the survivor is the
     // earliest place the file creates the edge — and is the same one every time.
+    // The two sites are independent facts, so a dropped duplicate's include site
+    // is kept when the survivor has none.
     edges.sort_by(|a, b| edge_order(a).cmp(&edge_order(b)));
-    edges.dedup_by(|a, b| a.kind == b.kind && a.target == b.target);
+    edges.dedup_by(|dup, kept| {
+        let same = dup.kind == kept.kind && dup.target == kept.target;
+        if same {
+            kept.include_site = earliest(kept.include_site, dup.include_site);
+        }
+        same
+    });
     unresolved.sort_by(|a, b| unresolved_order(a).cmp(&unresolved_order(b)));
-    unresolved.dedup_by(|a, b| a.kind == b.kind && a.name == b.name);
+    unresolved.dedup_by(|dup, kept| {
+        let same = dup.kind == kept.kind && dup.name == kept.name;
+        if same {
+            kept.include_site = earliest(kept.include_site, dup.include_site);
+        }
+        same
+    });
 
-    DependencyEdges { edges, unresolved }
+    DependencyEdges {
+        edges,
+        unresolved,
+        completeness: completeness(inputs),
+    }
 }
 
-fn edge_order(e: &DependencyEdge) -> (EdgeKind, &str, bool, u32, u32) {
-    let (start, end) = e.span.map_or((0, 0), |s| (s.start, s.end));
-    (e.kind, e.target.key(), e.span.is_none(), start, end)
+fn completeness(inputs: &EdgeInputs<'_>) -> Completeness {
+    let mut reasons = Vec::new();
+    if inputs.parse_recovered {
+        reasons.push(DegradedReason::ParseRecovered);
+    }
+    if !inputs.unresolved_includes.is_empty() || !inputs.nested_unresolved_includes.is_empty() {
+        reasons.push(DegradedReason::UnresolvedInclude);
+    }
+    if inputs.preprocessor_loss {
+        reasons.push(DegradedReason::PreprocessorLoss);
+    }
+    if inputs.semantic.symbols.has_unattributed_unmodelled_use() {
+        reasons.push(DegradedReason::UnmodelledStatement);
+    }
+    if !inputs.unreadable_includes.is_empty() {
+        reasons.push(DegradedReason::UnreadableInclude);
+    }
+    Completeness::from_reasons(reasons)
 }
 
-fn unresolved_order(u: &UnresolvedReference) -> (EdgeKind, &str, bool, u32, u32) {
-    let (start, end) = u.span.map_or((0, 0), |s| (s.start, s.end));
-    (u.kind, u.name.as_str(), u.span.is_none(), start, end)
+type SiteOrder = (bool, u32, u32);
+
+fn site_order(span: Option<Span>) -> SiteOrder {
+    span.map_or((true, 0, 0), |s| (false, s.start, s.end))
+}
+
+fn edge_order(e: &DependencyEdge) -> (EdgeKind, &str, SiteOrder, SiteOrder) {
+    (
+        e.kind,
+        e.target.key(),
+        site_order(e.span),
+        site_order(e.include_site),
+    )
+}
+
+fn unresolved_order(u: &UnresolvedReference) -> (EdgeKind, &str, SiteOrder, SiteOrder) {
+    (
+        u.kind,
+        u.name.as_str(),
+        site_order(u.span),
+        site_order(u.include_site),
+    )
+}
+
+/// The earlier of two optional sites, by offset.
+fn earliest(a: Option<Span>, b: Option<Span>) -> Option<Span> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if (b.start, b.end) < (a.start, a.end) {
+            b
+        } else {
+            a
+        }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Both sites of one mention in the expanded buffer: its own offset when the
+/// dependent file writes it, and the include site it arrived through otherwise.
+fn sites_of(inputs: &EdgeInputs<'_>, span: VirtualSpan) -> (Option<Span>, Option<Span>) {
+    match (inputs.resolve_span)(span) {
+        Some(own) => (Some(own), None),
+        None => (None, (inputs.include_site)(span)),
+    }
 }
 
 /// Direct and transitive include edges. A path in both lists is direct only —
@@ -292,10 +590,21 @@ fn include_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
     // one file, and a textual comparison would call them two — emitting the same
     // include as direct *and* transitive, which is the double count the invariant
     // above exists to prevent.
+    //
+    // An unreadable include the root names is a direct edge of its own, so its
+    // path is direct here as well.
     let direct_paths: FxHashSet<PathBuf> = inputs
         .direct_includes
         .iter()
-        .map(|direct| normalize_lexically(direct.path))
+        .map(|direct| direct.path)
+        .chain(
+            inputs
+                .unreadable_includes
+                .iter()
+                .filter(|unreadable| unreadable.site.is_some())
+                .map(|unreadable| unreadable.path),
+        )
+        .map(normalize_lexically)
         .collect();
 
     for direct in inputs.direct_includes {
@@ -303,7 +612,15 @@ fn include_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
             kind: EdgeKind::DirectInclude,
             target: EdgeTarget::IncludePath(normalize_lexically(direct.path)),
             span: Some(direct.site),
+            include_site: None,
         });
+    }
+    let mut origins: FxHashMap<PathBuf, Span> = FxHashMap::default();
+    for origin in inputs.include_origins {
+        let site = origins
+            .entry(normalize_lexically(origin.path))
+            .or_insert(origin.site);
+        *site = earliest(Some(*site), Some(origin.site)).unwrap_or(*site);
     }
     for path in inputs.transitive_includes {
         let normalized = normalize_lexically(path);
@@ -312,23 +629,66 @@ fn include_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
         }
         out.push(DependencyEdge {
             kind: EdgeKind::TransitiveInclude,
+            // Named in an intermediate file, so this file has no site for it, only
+            // the one through which the chain reached it.
+            include_site: origins.get(&normalized).copied(),
             target: EdgeTarget::IncludePath(normalized),
-            // Named in an intermediate file, so this file has no site for it.
             span: None,
         });
     }
 }
 
-fn unresolved_include_rows(inputs: &EdgeInputs<'_>, out: &mut Vec<UnresolvedReference>) {
+fn unresolved_include_rows(
+    inputs: &EdgeInputs<'_>,
+    edges: &mut Vec<DependencyEdge>,
+    out: &mut Vec<UnresolvedReference>,
+) {
     for include in inputs.unresolved_includes {
         out.push(UnresolvedReference {
             kind: EdgeKind::DirectInclude,
             name: include.name.to_string(),
             // The preprocessor searched the configured paths and no file supplied
             // the name — the same fact about the workspace this reason names for a
-            // class, reached by a different question.
-            reason: UnresolvedReason::AbsentFromWorkspace,
+            // class, reached by a different question. An unterminated reference
+            // names nothing for certain, so nothing is claimed of the workspace.
+            reason: if include.unterminated {
+                UnresolvedReason::Unknowable
+            } else {
+                UnresolvedReason::AbsentFromWorkspace
+            },
             span: Some(include.site),
+            include_site: None,
+        });
+    }
+    for include in inputs.nested_unresolved_includes {
+        out.push(UnresolvedReference {
+            kind: EdgeKind::TransitiveInclude,
+            name: include.name.to_string(),
+            reason: UnresolvedReason::AbsentFromWorkspace,
+            span: None,
+            include_site: include.include_site,
+        });
+    }
+    // The file exists, so it is an edge whatever could be read from it. The row
+    // says its own includes are unknown.
+    for include in inputs.unreadable_includes {
+        let kind = if include.site.is_some() {
+            EdgeKind::DirectInclude
+        } else {
+            EdgeKind::TransitiveInclude
+        };
+        edges.push(DependencyEdge {
+            kind,
+            target: EdgeTarget::IncludePath(normalize_lexically(include.path)),
+            span: include.site,
+            include_site: include.include_site,
+        });
+        out.push(UnresolvedReference {
+            kind,
+            name: include.name.to_string(),
+            reason: UnresolvedReason::PresentButUnusable,
+            span: include.site,
+            include_site: include.include_site,
         });
     }
 }
@@ -338,80 +698,61 @@ fn class_edges(
     out: &mut Vec<DependencyEdge>,
     unresolved: &mut Vec<UnresolvedReference>,
 ) {
-    // Built once per file, and only for a file that has a class lookup at all.
-    // `class_name_span` used to walk the whole symbol table per lookup; a file with
-    // several class references therefore rescanned its own symbols once per
-    // reference. Measured at a fraction of a percent of the per-file budget, so this
-    // is hygiene rather than an optimisation: it removes a quadratic shape from a
-    // helper documented as a lookup.
-    let mut sites: Option<FxHashMap<OxablAtom, VirtualSpan>> = None;
-
-    for (name, lookup) in inputs.semantic.symbols.class_lookups() {
-        let sites = sites.get_or_insert_with(|| supertype_name_sites(inputs));
-        let span = class_name_span(inputs, sites, name);
-        match lookup {
-            ClassLookup::Linked(file) => out.push(DependencyEdge {
-                kind: EdgeKind::ClassReference,
-                target: EdgeTarget::IndexedFile {
-                    file,
-                    name: IndexName::new(name.as_ref()),
-                },
-                span,
-            }),
-            ClassLookup::Absent => unresolved.push(UnresolvedReference {
-                kind: EdgeKind::ClassReference,
-                name: name.as_ref().to_string(),
-                reason: UnresolvedReason::AbsentFromWorkspace,
-                span,
-            }),
-            ClassLookup::Unusable => unresolved.push(UnresolvedReference {
-                kind: EdgeKind::ClassReference,
-                name: name.as_ref().to_string(),
-                reason: UnresolvedReason::PresentButUnusable,
-                span,
-            }),
-            ClassLookup::Unknowable => unresolved.push(UnresolvedReference {
-                kind: EdgeKind::ClassReference,
-                name: name.as_ref().to_string(),
-                reason: UnresolvedReason::Unknowable,
-                span,
-            }),
-        }
+    let symbols = &inputs.semantic.symbols;
+    // One pass over every mention, keeping the earliest site of each kind per
+    // name, rather than a scan of the mentions per lookup.
+    let mut sites: FxHashMap<&OxablAtom, (Option<Span>, Option<Span>)> = FxHashMap::default();
+    for (name, site) in symbols.class_sites() {
+        let (own, via) = sites_of(inputs, *site);
+        let entry = sites.entry(name).or_default();
+        entry.0 = earliest(entry.0, own);
+        entry.1 = earliest(entry.1, via);
     }
-}
 
-/// Every supertype name this file writes, mapped to where it writes it.
-///
-/// One walk of the symbol table, in the order [`class_name_span`] used to search it:
-/// symbols in table order, and within a symbol the `INHERITS` references before the
-/// `IMPLEMENTS` ones. First write wins, which is what the previous `find_map` picked,
-/// so the span a repeated name resolves to is unchanged.
-fn supertype_name_sites(inputs: &EdgeInputs<'_>) -> FxHashMap<OxablAtom, VirtualSpan> {
-    let mut sites = FxHashMap::default();
-    for (id, _) in inputs.semantic.symbols.iter() {
-        let Some(supers) = inputs.semantic.symbols.supertypes(id) else {
-            continue;
+    for (name, lookup) in symbols.class_lookups() {
+        // No mention is an ancestor the chain walk reached through another
+        // class's header: this file writes it nowhere.
+        let (span, include_site) = sites.get(name).copied().unwrap_or_default();
+        let reason = match lookup {
+            ClassLookup::Linked(file) => {
+                out.push(DependencyEdge {
+                    kind: EdgeKind::ClassReference,
+                    target: EdgeTarget::IndexedFile {
+                        file,
+                        name: IndexName::new(name.as_ref()),
+                    },
+                    span,
+                    include_site,
+                });
+                continue;
+            }
+            ClassLookup::Absent => UnresolvedReason::AbsentFromWorkspace,
+            ClassLookup::Unusable => {
+                // The file was located, so it is a dependency whatever oxabl could
+                // extract from it. The row records what is missing.
+                if let Some(file) = symbols.unusable_class_file(name) {
+                    out.push(DependencyEdge {
+                        kind: EdgeKind::ClassReference,
+                        target: EdgeTarget::IndexedFile {
+                            file,
+                            name: IndexName::new(name.as_ref()),
+                        },
+                        span,
+                        include_site,
+                    });
+                }
+                UnresolvedReason::PresentButUnusable
+            }
+            ClassLookup::Unknowable => UnresolvedReason::Unknowable,
         };
-        for reference in supers.inherits.iter().chain(&supers.implements) {
-            sites
-                .entry(reference.name.as_atom().clone())
-                .or_insert(reference.name_span);
-        }
+        unresolved.push(UnresolvedReference {
+            kind: EdgeKind::ClassReference,
+            name: name.as_ref().to_string(),
+            reason,
+            span,
+            include_site,
+        });
     }
-    sites
-}
-
-/// Where the dependent file writes a class name, if it writes it at all.
-///
-/// A lookup in the map [`supertype_name_sites`] built for this file. `None` for an
-/// *ancestor* reached through a chain walk: that name is written in another file's
-/// header, and pointing at an offset in this one would name unrelated bytes.
-fn class_name_span(
-    inputs: &EdgeInputs<'_>,
-    sites: &FxHashMap<OxablAtom, VirtualSpan>,
-    folded: &OxablAtom,
-) -> Option<Span> {
-    (inputs.resolve_span)(*sites.get(folded)?)
 }
 
 /// The two edges the model records per symbol: a `RUN` target and the producer of
@@ -422,7 +763,7 @@ fn class_name_span(
 fn symbol_linked_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
     let symbols = &inputs.semantic.symbols;
     for (id, symbol) in symbols.iter() {
-        let span = (inputs.resolve_span)(symbol.name_span);
+        let (span, include_site) = sites_of(inputs, symbol.name_span);
         if let Some(file) = symbols.program_file(id) {
             out.push(DependencyEdge {
                 kind: EdgeKind::ProgramReference,
@@ -431,6 +772,7 @@ fn symbol_linked_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
                     name: IndexName::new(symbol.name.as_ref()),
                 },
                 span,
+                include_site,
             });
         }
         if let Some(file) = symbols.shared_producer(id) {
@@ -441,8 +783,47 @@ fn symbol_linked_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
                     name: IndexName::new(symbol.name.as_ref()),
                 },
                 span,
+                include_site,
             });
         }
+    }
+}
+
+/// What `RUN VALUE(...)` is called in a row: it has no name of its own.
+const COMPUTED_RUN_TARGET: &str = "VALUE(...)";
+
+/// `RUN` targets the index did not link: the edge to a located file that could
+/// not be used, and a row for every one.
+fn unlinked_run_rows(
+    inputs: &EdgeInputs<'_>,
+    edges: &mut Vec<DependencyEdge>,
+    unresolved: &mut Vec<UnresolvedReference>,
+) {
+    for run in inputs.semantic.symbols.unlinked_runs() {
+        let (span, include_site) = sites_of(inputs, run.span);
+        let name = if run.name.as_ref().is_empty() {
+            COMPUTED_RUN_TARGET.to_string()
+        } else {
+            run.name.as_ref().to_string()
+        };
+        if let Some(file) = run.located {
+            edges.push(DependencyEdge {
+                kind: EdgeKind::ProgramReference,
+                target: EdgeTarget::IndexedFile {
+                    file,
+                    name: IndexName::new(&name),
+                },
+                span,
+                include_site,
+            });
+        }
+        unresolved.push(UnresolvedReference {
+            kind: EdgeKind::ProgramReference,
+            name,
+            reason: run.reason,
+            span,
+            include_site,
+        });
     }
 }
 
@@ -462,12 +843,14 @@ fn schema_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
         let Some(table) = inputs.schema.get_by_id(table_id) else {
             continue;
         };
+        let (span, include_site) = sites_of(inputs, symbol.name_span);
         out.push(DependencyEdge {
             kind: EdgeKind::SchemaTable,
             // Already folded by the schema, so two spellings of one table name
             // arrive here as one key and dedup to one edge.
             target: EdgeTarget::SchemaTable(IndexName::new(table.name.as_ref())),
-            span: (inputs.resolve_span)(symbol.name_span),
+            span,
+            include_site,
         });
     }
 }

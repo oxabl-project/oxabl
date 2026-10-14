@@ -383,7 +383,9 @@ pub mod common {
 /// Preprocessor — include expansion and `&IF`/`&DEFINE` evaluation, with
 /// virtual-span mapping back to real source.
 pub mod preprocessor {
-    pub use oxabl_preprocessor::{PreprocVarTable, PreprocessedFile, Preprocessor, SpanNode};
+    pub use oxabl_preprocessor::{
+        PreprocVarTable, PreprocessedFile, Preprocessor, PreprocessorConfig, SpanNode,
+    };
 }
 
 /// Schema model and `.df` loader for schema-backed semantic analysis.
@@ -398,11 +400,11 @@ pub mod schema {
 /// model. [`analyze_file`](semantic::analyze_file) composes the passes.
 pub mod semantic {
     pub use oxabl_semantic::{
-        AnalysisContext, BindingMap, ClassDescriptor, ClassKind, IndexAnswer, IndexName,
-        IndexRevision, IndexedFileId, MemberDescriptor, MemberType, NamespaceId, NullIndex,
-        PortableType, PrimitiveTy, Resolution, ResolvedType, Scope, ScopeId, ScopeKind, ScopeTree,
-        Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnresolvedReason,
-        WorkspaceIndex, analyze_file, check_pass, declare_pass, resolve_pass,
+        AnalysisContext, BindingMap, ClassDescriptor, ClassKind, ImportContext, IndexAnswer,
+        IndexName, IndexRevision, IndexedFileId, MemberDescriptor, MemberType, NamespaceId,
+        NullIndex, PortableType, PrimitiveTy, Resolution, ResolvedType, Scope, ScopeId, ScopeKind,
+        ScopeTree, Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
+        UnresolvedReason, WorkspaceIndex, analyze_file, check_pass, declare_pass, resolve_pass,
     };
 }
 
@@ -418,7 +420,8 @@ pub mod analyze {
     pub use oxabl_analyze::{
         CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, ExpandedFile,
         collect_diagnostics, collect_from_expanded, collect_with_model, dump_json,
-        dump_json_with_diagnostics, dump_text, dump_text_with_diagnostics, expand_source, is_loud,
+        dump_json_with_diagnostics, dump_text, dump_text_with_diagnostics, expand_source,
+        expand_source_with, is_loud,
     };
 }
 
@@ -492,8 +495,8 @@ pub mod pipeline {
 /// policy.
 pub mod workspace {
     pub use oxabl_workspace::{
-        FileSystem, InMemoryFileSystem, LintConfig, LintSeverity, ROOT_EXTENSIONS, RealFileSystem,
-        Workspace, WorkspaceConfig, discover_path, find_workspace_root, is_root_file,
-        walk_directory,
+        FileSystem, InMemoryFileSystem, LintConfig, LintSeverity, PreprocessorConfig,
+        ROOT_EXTENSIONS, RealFileSystem, Workspace, WorkspaceConfig, discover_path,
+        find_workspace_root, is_root_file, walk_directory,
     };
 }

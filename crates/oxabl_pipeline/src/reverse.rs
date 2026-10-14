@@ -26,6 +26,11 @@
 //! that distinction is the difference between an honest impact answer and one that
 //! under-reports.
 //!
+//! A file that was analysed over a recovered parse, or past an include it could
+//! not resolve or read, keeps its edges and is recorded in
+//! [`ReverseGraph::degraded`]: what it names is right, and what it fails to name
+//! proves nothing.
+//!
 //! The same rule covers a narrower third failure. An edge can resolve and still be
 //! unnameable here, when its target is an index file id this pass cannot map back
 //! to a path — the id belongs to an index it does not own. Those are recorded in
@@ -41,7 +46,8 @@ use oxabl_analyze::{
 };
 use oxabl_ast::Span;
 use oxabl_index::{
-    DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference, search::normalize_lexically,
+    DegradedReason, DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference,
+    search::normalize_lexically,
 };
 
 use crate::LintPipeline;
@@ -66,10 +72,8 @@ pub fn dependency_section(edges: &DependencyEdges, index_revision: u32) -> Depen
                     // An include mints no index id, and a table has no file.
                     EdgeTarget::IncludePath(_) | EdgeTarget::SchemaTable(_) => None,
                 },
-                span: edge.span.map(|span| LookupSpanRow {
-                    start: span.start,
-                    end: span.end,
-                }),
+                span: edge.span.map(span_row),
+                include_site: edge.include_site.map(span_row),
             })
             .collect(),
         unresolved: edges
@@ -79,12 +83,17 @@ pub fn dependency_section(edges: &DependencyEdges, index_revision: u32) -> Depen
                 via: row.kind.as_str().to_string(),
                 name: row.name.clone(),
                 reason: unresolved_reason_str(row.reason).to_string(),
-                span: row.span.map(|span| LookupSpanRow {
-                    start: span.start,
-                    end: span.end,
-                }),
+                span: row.span.map(span_row),
+                include_site: row.include_site.map(span_row),
             })
             .collect(),
+    }
+}
+
+fn span_row(span: Span) -> LookupSpanRow {
+    LookupSpanRow {
+        start: span.start,
+        end: span.end,
     }
 }
 
@@ -158,6 +167,19 @@ pub struct Unanalysed {
     pub file: PathBuf,
     /// A short reason, for reporting rather than matching.
     pub reason: String,
+}
+
+/// A file whose edge set is known to be incomplete, and why.
+///
+/// Unlike [`Unanalysed`], the file contributed edges and rows, and they are all
+/// correct. What is missing is anything the analysis could not see, so a
+/// consumer should widen or always rebuild it rather than trust that it does not
+/// depend on a given file.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Degraded {
+    pub file: PathBuf,
+    /// Sorted, with no repeats, and never empty.
+    pub reasons: Vec<DegradedReason>,
 }
 
 /// The answer to "who depends on this".
@@ -249,18 +271,13 @@ pub struct ReverseGraph {
     unresolved_by_name: HashMap<String, Vec<UnresolvedRow>>,
     /// Files the pass could not analyse at all.
     unanalysed: Vec<Unanalysed>,
+    /// Files analysed whose edge set reports itself incomplete.
+    degraded: Vec<Degraded>,
     /// Edges whose target this pass could not name. Empty for a pass over its own
     /// batch index, which is every pass today.
     unnameable: Vec<UnnameableEdge>,
     /// Normalised paths of every file the pass covered.
     files: Vec<PathBuf>,
-    /// Folded stems that two or more covered files share, computed once per pass.
-    ///
-    /// A bare stem is how ABL spells an unqualified `RUN` target or class
-    /// reference, so it has to be a candidate. It stops being usable evidence the
-    /// moment two files answer to it: the reference genuinely may name either, and
-    /// attributing it to both invents a dependent for one of them.
-    ambiguous_stems: HashSet<String>,
     /// Total resolved edges, for the ratio below.
     edge_count: usize,
     /// Total unresolved references.
@@ -320,6 +337,15 @@ impl ReverseGraph {
                 .iter()
                 .map(|row| row.file.to_string_lossy().len() + row.reason.capacity())
                 .sum::<usize>()
+            + self.degraded.capacity() * std::mem::size_of::<Degraded>()
+            + self
+                .degraded
+                .iter()
+                .map(|row| {
+                    row.file.to_string_lossy().len()
+                        + row.reasons.capacity() * std::mem::size_of::<DegradedReason>()
+                })
+                .sum::<usize>()
             + self.files.capacity() * std::mem::size_of::<PathBuf>()
             + self
                 .files
@@ -361,9 +387,9 @@ impl ReverseGraph {
             dependents: HashMap::new(),
             unresolved_by_name: HashMap::new(),
             unanalysed: Vec::new(),
+            degraded: Vec::new(),
             unnameable: Vec::new(),
             files: files.iter().map(|p| normalize_lexically(p)).collect(),
-            ambiguous_stems: HashSet::new(),
             edge_count: 0,
             unresolved_count: 0,
             include_roots: pipeline
@@ -409,6 +435,12 @@ impl ReverseGraph {
 
     /// Invert one file's edge set into the graph.
     fn absorb(&mut self, dependent: &Path, edges: &DependencyEdges, pipeline: &LintPipeline<'_>) {
+        if !edges.completeness().is_complete() {
+            self.degraded.push(Degraded {
+                file: dependent.to_path_buf(),
+                reasons: edges.completeness().reasons().to_vec(),
+            });
+        }
         for edge in edges.edges() {
             let Some(subject) = self.subject_of(&edge.target, pipeline) else {
                 // Recorded, not dropped. The pass promises never to present a
@@ -477,22 +509,12 @@ impl ReverseGraph {
         }
         self.unanalysed.sort();
         self.unanalysed.dedup();
+        self.degraded.sort();
+        self.degraded.dedup();
         self.unnameable.sort();
         self.unnameable.dedup();
         self.files.sort();
         self.files.dedup();
-
-        // Once per pass, not once per query: a query only asks whether one stem is
-        // in the set.
-        let mut seen: HashSet<String> = HashSet::new();
-        for path in &self.files {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let folded = stem.to_ascii_lowercase();
-                if !seen.insert(folded.clone()) {
-                    self.ambiguous_stems.insert(folded);
-                }
-            }
-        }
     }
 
     /// Every file whose compilation can change when `subject` changes (R1).
@@ -549,12 +571,11 @@ impl ReverseGraph {
                     names.push((name.to_ascii_lowercase(), NameShape::Include));
                 }
                 if let Some(stem) = path.file_stem().and_then(|n| n.to_str()) {
-                    let folded = stem.to_ascii_lowercase();
-                    // Dropped when two covered files share it — see
-                    // `ambiguous_stems`.
-                    if !self.ambiguous_stems.contains(&folded) {
-                        names.push((folded, NameShape::Reference));
-                    }
+                    // Kept when two files share it: the row is an unresolved
+                    // reference that genuinely may name either, and a row
+                    // attributed to both costs a rebuild where a dropped one
+                    // costs a missed dependent.
+                    names.push((stem.to_ascii_lowercase(), NameShape::Reference));
                 }
                 // The dotted spelling a qualified class or `RUN` target uses, for
                 // each configured root this file sits under.
@@ -589,6 +610,10 @@ impl ReverseGraph {
     /// A file subject is in its own rebuild set: changing a file rebuilds it. A
     /// table subject is not, having no file. Cycles terminate and each file appears
     /// once.
+    ///
+    /// The walk starts from the files whose unresolved rows name `subject`, as
+    /// well as its resolved dependents: a file that is created or renamed into
+    /// place must rebuild the files that could not find it before.
     pub fn rebuild_set(&self, subject: &Subject) -> Vec<PathBuf> {
         let mut seen: HashSet<PathBuf> = HashSet::new();
         let mut queue: VecDeque<Subject> = VecDeque::new();
@@ -599,6 +624,15 @@ impl ReverseGraph {
         }
         queue.push_back(subject.clone());
         visited.insert(subject.clone());
+
+        for row in self.unresolved_naming(subject) {
+            if seen.insert(row.file.clone()) {
+                let owner = Subject::File(row.file);
+                if visited.insert(owner.clone()) {
+                    queue.push_back(owner);
+                }
+            }
+        }
 
         while let Some(current) = queue.pop_front() {
             let Some(rows) = self.dependents.get(&current) else {
@@ -623,6 +657,16 @@ impl ReverseGraph {
     /// Files the pass could not analyse. Never folded into "depends on nothing".
     pub fn unanalysed(&self) -> &[Unanalysed] {
         &self.unanalysed
+    }
+
+    /// Files that were analysed but whose edge set is incomplete: the parse
+    /// recovered an error, or an include could not be resolved or read. Their
+    /// edges stand, but their absence of an edge does not.
+    ///
+    /// Reported beside [`unanalysed`](Self::unanalysed) rather than inside it,
+    /// because these files do appear in [`dependents`](Self::dependents).
+    pub fn degraded(&self) -> &[Degraded] {
+        &self.degraded
     }
 
     /// Edges whose target the pass could not name, so a consumer can say the

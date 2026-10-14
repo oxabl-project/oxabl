@@ -272,6 +272,22 @@ pub enum EdgeExpectation {
     /// An unresolved reference present either way — the reference names something
     /// no sibling supplies.
     AlwaysUnresolved(ExpectedUnresolvedEdge),
+    /// An unresolved reference present only when the siblings are supplied: a
+    /// sibling names something no file supplies, so withholding the sibling
+    /// removes the reference along with it.
+    UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge),
+    /// A file the siblings supply that oxabl located but could not use. Supplied,
+    /// it is **both** an edge to the located file and a row for the facts that are
+    /// missing; withheld, it is the one row `withheld` describes.
+    ///
+    /// Both halves are pinned because either alone is the failure: the edge
+    /// without the row hides what was not extracted, and the row without the edge
+    /// loses a file the unit depends on.
+    LocatedButUnusable {
+        edge: ExpectedEdge,
+        row: ExpectedUnresolvedEdge,
+        withheld: ExpectedUnresolvedEdge,
+    },
 }
 
 /// One cross-file name a fixture exercises, and what resolving it does.
@@ -626,7 +642,12 @@ impl ParityFixture {
                 | EdgeExpectation::ResolvedWithSiblings { edge, .. } => {
                     expected.edges.push(observed_from(edge));
                 }
-                EdgeExpectation::AlwaysUnresolved(row) => {
+                EdgeExpectation::AlwaysUnresolved(row)
+                | EdgeExpectation::UnresolvedOnlyWithSiblings(row) => {
+                    expected.unresolved.push(unresolved_from(row));
+                }
+                EdgeExpectation::LocatedButUnusable { edge, row, .. } => {
+                    expected.edges.push(observed_from(edge));
                     expected.unresolved.push(unresolved_from(row));
                 }
             }
@@ -647,16 +668,39 @@ impl ParityFixture {
                 EdgeExpectation::Always(edge) => expected.edges.push(observed_from(edge)),
                 // Nothing names it once the file that named it is gone.
                 EdgeExpectation::OnlyWithSiblings(_) => {}
-                EdgeExpectation::ResolvedWithSiblings { withheld, .. } => {
+                EdgeExpectation::ResolvedWithSiblings { withheld, .. }
+                | EdgeExpectation::LocatedButUnusable { withheld, .. } => {
                     expected.unresolved.push(unresolved_from(withheld));
                 }
                 EdgeExpectation::AlwaysUnresolved(row) => {
                     expected.unresolved.push(unresolved_from(row));
                 }
+                EdgeExpectation::UnresolvedOnlyWithSiblings(_) => {}
             }
         }
         expected.normalize();
         expected
+    }
+
+    /// The reasons this row's edge set must report itself degraded for, as
+    /// [`DegradedReason::as_str`](oxabl_index::DegradedReason::as_str) spells
+    /// them. Empty means the set must be complete.
+    ///
+    /// This is the answer with the siblings supplied; see
+    /// [`Self::expected_degraded_without_siblings`].
+    pub fn expected_degraded(&self) -> &'static [&'static str] {
+        DEGRADED_FIXTURES
+            .iter()
+            .find(|(name, _)| *name == self.name)
+            .map_or(&[], |(_, degraded)| degraded.0)
+    }
+
+    /// [`Self::expected_degraded`] with the siblings withheld.
+    pub fn expected_degraded_without_siblings(&self) -> &'static [&'static str] {
+        DEGRADED_FIXTURES
+            .iter()
+            .find(|(name, _)| *name == self.name)
+            .map_or(&[], |(_, degraded)| degraded.1)
     }
 
     /// Assert an observed edge set equals what this row claims with its siblings
@@ -1065,6 +1109,125 @@ pub const NON_ASCII_CHARACTER_COLUMN: usize = 30;
 pub const NESTED_UNRESOLVABLE_INCLUDE_FIXTURE: &str = "nested_unresolvable_include";
 
 /// Every fixture, shared by all four legs.
+/// One row per class-naming site: `source` names one sibling class in one way,
+/// and the row claims exactly one class edge with the sibling supplied and
+/// exactly one `absent_from_workspace` gap, under `withheld`, without it.
+///
+/// Claimed exactly, so a site that also sprayed a row for a shipped class, or
+/// for a package segment of a dotted name, fails the row.
+macro_rules! class_site_row {
+    (
+        name: $name:literal,
+        root_file: $root_file:literal,
+        siblings: $siblings:expr,
+        resolutions: $resolutions:expr,
+        source: $source:expr,
+        diagnostics: $diagnostics:expr,
+        needs: $needs:expr,
+        target: $target:literal,
+        withheld: $withheld:literal $(,)?
+    ) => {
+        ParityFixture {
+            name: $name,
+            root_file: $root_file,
+            siblings: $siblings,
+            resolutions: $resolutions,
+            source: $source,
+            diagnostics: $diagnostics,
+            format: ExpectedFormat::Unchanged,
+            needs: $needs,
+            edges: &[EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: $target,
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: $withheld,
+                    reason: "absent_from_workspace",
+                },
+            }],
+        }
+    };
+}
+
+/// One `RUN` target spelling: `source` runs one sibling program, and the row
+/// claims exactly one program edge with the sibling supplied and exactly one gap
+/// named `withheld` with the stated reason without it. Without `withheld` and
+/// `reason`, the target is a bare name and leaves no gap without the sibling.
+macro_rules! run_target_row {
+    (
+        name: $name:literal,
+        sibling: $sibling:literal,
+        resolutions: $resolutions:expr,
+        source: $source:expr,
+        target: $target:literal $(,)?
+    ) => {
+        ParityFixture {
+            name: $name,
+            root_file: "run.p",
+            siblings: &[SiblingFile {
+                path: $sibling,
+                source: "MESSAGE 1.\n",
+            }],
+            resolutions: $resolutions,
+            source: $source,
+            diagnostics: &[],
+            format: ExpectedFormat::Unchanged,
+            needs: &[],
+            edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "program",
+                target: $target,
+            })],
+        }
+    };
+    (
+        name: $name:literal,
+        sibling: $sibling:literal,
+        resolutions: $resolutions:expr,
+        source: $source:expr,
+        target: $target:literal,
+        withheld: $withheld:literal,
+        reason: $reason:literal $(,)?
+    ) => {
+        ParityFixture {
+            name: $name,
+            root_file: "run.p",
+            siblings: &[SiblingFile {
+                path: $sibling,
+                source: "MESSAGE 1.\n",
+            }],
+            resolutions: $resolutions,
+            source: $source,
+            diagnostics: &[],
+            format: ExpectedFormat::Unchanged,
+            needs: &[],
+            edges: &[EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: $target,
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: $withheld,
+                    reason: $reason,
+                },
+            }],
+        }
+    };
+}
+
+/// No finding either way: the site's resolution shows only in the edge set.
+const SILENT: &[CrossFileResolution] = &[CrossFileResolution {
+    name: "orders.calc-base",
+    effect: CrossFileEffect::ResolvedSilently,
+}];
+
+const CALC_BASE_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/calc-base.cls",
+    source: CALC_BASE,
+}];
+
 pub const FIXTURES: &[ParityFixture] = &[
     ParityFixture {
         name: INCLUDE_FRAGMENT_FIXTURE,
@@ -1507,18 +1670,21 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        // Both edges are gone rather than reported as gaps when the sibling is
-        // withheld, and that is the honest description of what the model records: a
-        // `RUN` target and a `SHARED` producer are noted only when the index
-        // *answers*, so a miss leaves no row behind. The finding still arrives in
-        // the diagnostic channel above. Turning these misses into unresolved rows is
-        // edge-kind fidelity work tracked upstream; pinning the current shape here
-        // is what makes that change visible when it lands.
+        // A withheld `RUN` target is a gap. A `SHARED` producer is different: its
+        // name maps onto no path, so a miss leaves no row behind and the edge is
+        // simply gone.
         edges: &[
-            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
-                via: "program",
-                target: "producer.p",
-            }),
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "producer.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "producer.p",
+                    reason: "absent_from_workspace",
+                },
+            },
             EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
                 via: "shared_producer",
                 target: "v-site",
@@ -1622,16 +1788,19 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        // Withheld, this row reports no gap at all — and that is a fact worth
-        // pinning rather than hiding. A class lookup is recorded by the supertype
-        // chain walk, and nothing here inherits, so with the sibling gone there is
-        // no walk to come back empty. The finding still arrives in the diagnostic
-        // channel; the *edge set* is simply silent, which is edge-kind fidelity
-        // work tracked upstream rather than a defect this row should paper over.
-        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
-            via: "class",
-            target: "orders.calc-base",
-        })],
+        // Every site that names the class records its lookup, so withholding the
+        // sibling turns the edge into a gap rather than a silence.
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
     },
     // The one cross-file resolution still invisible in the shared diagnostic
     // channel, and it is invisible for a documented reason rather than by
@@ -1657,12 +1826,19 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        // Same shape as `cross_file_using`: the class resolves, and withholding it
-        // records no lookup because no chain walk runs.
-        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
-            via: "class",
-            target: "orders.calc-base",
-        })],
+        // Silent in the diagnostic channel, but not in the edge set: the declared
+        // type is a class-naming site, so withheld it is a gap.
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
     },
     // The direction cross-file resolution could not produce until an inherited
     // member's declared type reached the type lattice: supplying the sibling makes
@@ -1753,7 +1929,13 @@ pub const FIXTURES: &[ParityFixture] = &[
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
-        edges: &[],
+        // Supplying the file it happens to name changes nothing: the gap is the
+        // target being computed, not the file being absent.
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "program",
+            name: "VALUE(...)",
+            reason: "unknowable",
+        })],
     },
     // A parent no supplied file declares. A sibling *is* supplied — a different
     // class in the same package — so the row distinguishes "the search found
@@ -1793,7 +1975,2385 @@ pub const FIXTURES: &[ParityFixture] = &[
             reason: "absent_from_workspace",
         })],
     },
+    // Include references with whitespace inside the braces, beside a tight one.
+    // The AVM accepts all three spellings, so all three must be edges; withheld,
+    // each is a gap and a loud warning rather than a silence.
+    ParityFixture {
+        name: "edges_spaced_include_references",
+        root_file: "main.p",
+        siblings: &[
+            SiblingFile {
+                path: "a.i",
+                source: "DEFINE VARIABLE v-a AS INTEGER NO-UNDO.\n",
+            },
+            SiblingFile {
+                path: "b.i",
+                source: "DEFINE VARIABLE v-b AS INTEGER NO-UNDO.\n",
+            },
+            SiblingFile {
+                path: "c.i",
+                source: "DEFINE VARIABLE v-c AS CHARACTER NO-UNDO INITIAL \"{1}\".\n",
+            },
+        ],
+        resolutions: &[
+            CrossFileResolution {
+                name: "{ a.i }",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 0,
+                    end: 7,
+                }),
+            },
+            CrossFileResolution {
+                name: "{b.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 8,
+                    end: 13,
+                }),
+            },
+            CrossFileResolution {
+                name: "{ c.i \"X\"}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 14,
+                    end: 24,
+                }),
+            },
+            CrossFileResolution {
+                name: "v-a",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 33,
+                    end: 36,
+                }),
+            },
+            CrossFileResolution {
+                name: "v-b",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 37,
+                    end: 40,
+                }),
+            },
+            CrossFileResolution {
+                name: "v-c",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 41,
+                    end: 44,
+                }),
+            },
+        ],
+        source: "{ a.i }\n{b.i}\n{ c.i \"X\"}\nMESSAGE v-a v-b v-c.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "a.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "a.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "b.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "b.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "c.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "c.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
+    // An include reference that never closes. The text stays in the expansion and
+    // fails to parse, but the file still reads as naming an include: a gap, not
+    // a file that includes nothing.
+    ParityFixture {
+        name: "unterminated_include_reference",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "{ gone.i \"X\"\nMESSAGE \"hello\".\n",
+        diagnostics: &[
+            ExpectedDiagnostic {
+                code: "PREPROC008",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 1,
+            },
+            ExpectedDiagnostic {
+                code: "PARSE001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Parse,
+                start: 0,
+                end: 30,
+            },
+        ],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "direct_include",
+            name: "gone.i",
+            reason: "unknowable",
+        })],
+    },
+    // The AVM's predefined environment names decide which include a branch
+    // names. The canonical environment is a 64-bit Unix batch compile with a TTY
+    // window system, so the `&IF` takes `a.i`, `c.i` and `d.i` and never names
+    // `b.i`. `b.i` is planted anyway: a wrong branch would show up as an edge to
+    // it rather than hiding behind a file that happens to be absent.
+    ParityFixture {
+        name: "edges_predefined_environment_branches",
+        root_file: "main.p",
+        siblings: &[
+            SiblingFile {
+                path: "a.i",
+                source: "/* unix */\n",
+            },
+            SiblingFile {
+                path: "b.i",
+                source: "/* not unix */\n",
+            },
+            SiblingFile {
+                path: "c.i",
+                source: "/* tty */\n",
+            },
+            SiblingFile {
+                path: "d.i",
+                source: "/* batch */\n",
+            },
+        ],
+        resolutions: &[
+            CrossFileResolution {
+                name: "{a.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 30,
+                    end: 35,
+                }),
+            },
+            CrossFileResolution {
+                name: "{c.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 92,
+                    end: 97,
+                }),
+            },
+            CrossFileResolution {
+                name: "{d.i}",
+                effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                    code: "PREPROC007",
+                    severity: Severity::Warning,
+                    source: DiagnosticSource::Preproc,
+                    start: 139,
+                    end: 144,
+                }),
+            },
+        ],
+        source: "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\n{a.i}\n&ELSE\n{b.i}\n&ENDIF\n\
+                 &IF \"{&WINDOW-SYSTEM}\" = \"TTY\" &THEN\n{c.i}\n&ENDIF\n\
+                 &IF \"{&BATCH-MODE}\" = \"yes\" &THEN\n{d.i}\n&ENDIF\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Reformatted(
+            "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\n    {a.i}\n&ELSE\n    {b.i}\n&ENDIF\n\
+             &IF \"{&WINDOW-SYSTEM}\" = \"TTY\" &THEN\n    {c.i}\n&ENDIF\n\
+             &IF \"{&BATCH-MODE}\" = \"yes\" &THEN\n    {d.i}\n&ENDIF\n",
+        ),
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "a.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "a.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "c.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "c.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "d.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "d.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
+    // A predefined name the environment does not state. `PROVERSION` has no
+    // default, so the condition cannot be decided and must say so rather than
+    // quietly taking the branch an empty string selects.
+    ParityFixture {
+        name: "predefined_name_without_a_value",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "&IF \"{&PROVERSION}\" >= \"12\" &THEN\n    {a.i}\n&ENDIF\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC009",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 0,
+            end: 34,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[],
+    },
+    // An include that an *included* file names and nothing supplies, beside one
+    // the root names itself. Both are gaps, and the nested one must be a row of
+    // its own: a diagnostic alone leaves the edge set looking complete.
+    ParityFixture {
+        name: "edges_nested_unresolved_include",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "{missing.i}\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i}",
+            // Withheld, the root's own `{a.i}` is the unresolvable one; supplied,
+            // the failure moves one level down and is re-anchored on the same
+            // bytes.
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "{a.i}\n{gone.i}\nMESSAGE 1.\n",
+        diagnostics: &[
+            ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 5,
+            },
+            ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 6,
+                end: 14,
+            },
+        ],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "direct_include",
+                    target: "a.i",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "direct_include",
+                    name: "a.i",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "gone.i",
+                reason: "absent_from_workspace",
+            }),
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "transitive_include",
+                name: "missing.i",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // The three `RUN` outcomes that used to leave no trace: a target nothing
+    // supplies, a target computed at run time, and (supplied) the one that links.
+    ParityFixture {
+        name: "edges_run_outcomes",
+        root_file: "runs.p",
+        siblings: &[SiblingFile {
+            path: "sub.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[
+            CrossFileResolution {
+                name: "RUN sub.p",
+                effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                    code: "LINT0001",
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Lint,
+                    start: 4,
+                    end: 9,
+                }),
+            },
+            CrossFileResolution {
+                name: "RUN nothere.p",
+                effect: CrossFileEffect::Unresolvable,
+            },
+            CrossFileResolution {
+                name: "VALUE(\"x\" + \".p\")",
+                effect: CrossFileEffect::Unknowable,
+            },
+        ],
+        source: "RUN sub.p.\nRUN nothere.p.\nRUN VALUE(\"x\" + \".p\").\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 15,
+            end: 24,
+        }],
+        format: ExpectedFormat::Unchanged,
+        // A miss is only a fact about the workspace where a path was searched.
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "sub.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "sub.p",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "nothere.p",
+                reason: "absent_from_workspace",
+            }),
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "VALUE(...)",
+                reason: "unknowable",
+            }),
+        ],
+    },
+    // A located `RUN` target oxabl cannot parse on its own: an `&IF` that cuts
+    // across a block, with an include the file's own text cannot expand. The file
+    // is found, so it is a dependency whatever could be extracted from it.
+    ParityFixture {
+        name: "edges_run_target_needs_its_preprocessor",
+        root_file: "run.p",
+        siblings: &[SiblingFile {
+            path: "sub.p",
+            source: "&IF DEFINED(x) = 0 &THEN\nDO:\n&ENDIF\n  {nothere.i}\n  MESSAGE 1.\nEND.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 9,
+            }),
+        }],
+        source: "RUN sub.p.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "program",
+                target: "sub.p",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "sub.p",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "sub.p",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // The same for a target that is not ABL text at all, which is what an
+    // encrypted program looks like to a reader that cannot decrypt it.
+    ParityFixture {
+        name: "edges_run_target_is_not_readable_abl",
+        root_file: "run.p",
+        siblings: &[SiblingFile {
+            path: "enc.p",
+            source: "\u{1}\u{2}\u{3} 0x9f 0x00 ((( %%% .\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN enc.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 9,
+            }),
+        }],
+        source: "RUN enc.p.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "program",
+                target: "enc.p",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "enc.p",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "enc.p",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A `RUN` written without an extension resolves like the one written with it.
+    // Withheld, the bare name leaves no row: it may be an internal procedure or a
+    // super procedure that oxabl does not model, and it is never a compile input.
+    ParityFixture {
+        name: "edges_run_without_extension",
+        root_file: "noext.p",
+        siblings: &[SiblingFile {
+            path: "sub2.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 14,
+                end: 20,
+            }),
+        }],
+        source: "RUN sub2.\nRUN sub2.p.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "program",
+                target: "sub2",
+            }),
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "sub2.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "sub2.p",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
+    // A parse that recovered an error. The `RUN` after it still links, and the set
+    // says it cannot be trusted to be everything.
+    ParityFixture {
+        name: "edges_recovered_parse",
+        root_file: "broken.p",
+        siblings: &[SiblingFile {
+            path: "sub.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 9,
+            }),
+        }],
+        source: "RUN sub.p.\n@ @ @\nMESSAGE 1.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PARSE001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Parse,
+            start: 11,
+            end: 12,
+        }],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "program",
+                target: "sub.p",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "program",
+                name: "sub.p",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // --- Class-naming sites ------------------------------------------------
+    //
+    // Each row names a sibling class in exactly one way. Before every such site
+    // recorded its lookup, only a member access or a supertype walk did, so all of
+    // these were silent with the sibling withheld.
+
+    // A static member access on a package-qualified class, the commonest way a
+    // file names a class. The receiver parses as a field access, so a miss is only
+    // reported under a loaded schema, where `table.field` is told apart.
+    class_site_row! {
+        name: "class_site_static_receiver",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/tax-util.cls",
+            source: TAX_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.tax-util",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                 v-rate = orders.tax-util:rate().\n\
+                 MESSAGE v-rate.\n",
+        diagnostics: &[],
+        needs: &[Capability::Schema],
+        target: "orders.tax-util",
+        withheld: "orders.tax-util",
+    },
+    // A static receiver written as a short name a wildcard `USING` imports. A
+    // wildcard cannot say which package was meant, so the gap keeps the short name.
+    class_site_row! {
+        name: "class_site_static_receiver_using",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/tax-util.cls",
+            source: TAX_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "tax-util",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                 v-rate = tax-util:rate().\n\
+                 MESSAGE v-rate.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.tax-util",
+        withheld: "tax-util",
+    },
+    // A short name no `USING` matches is tried as a class in the unnamed package,
+    // at the root of a search path. Withheld it is silence, not a gap: with no
+    // `USING` to import it, an unresolved bare receiver is far more often a name
+    // the scope model does not see than a missing class.
+    ParityFixture {
+        name: "class_site_top_level_class",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "session-state.cls",
+            source: SESSION_STATE,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "session-state",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-id AS INTEGER NO-UNDO.\n\
+                 v-id = session-state:current-id().\n\
+                 MESSAGE v-id.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+            via: "class",
+            target: "session-state",
+        })],
+    },
+    // A parameter's declared type.
+    class_site_row! {
+        name: "class_site_parameter_type",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE INPUT PARAMETER p-calc AS orders.calc-base NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(p-calc).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A method's return type.
+    class_site_row! {
+        name: "class_site_method_return_type",
+        root_file: "orders/maker.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.maker:\n    \
+                 METHOD PUBLIC orders.calc-base make-calc():\n        \
+                 RETURN ?.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A user-defined function's return type.
+    class_site_row! {
+        name: "class_site_function_return_type",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "FUNCTION make-calc RETURNS orders.calc-base ():\n    \
+                 RETURN ?.\nEND FUNCTION.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The parameter type of a function prototype. A `FORWARD` is also covered by
+    // the definition that follows it; `IN SUPER` has none.
+    class_site_row! {
+        name: "class_site_prototype_param_forward",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "FUNCTION use-calc RETURNS LOGICAL (INPUT p-calc AS orders.calc-base) FORWARD.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    class_site_row! {
+        name: "class_site_prototype_param_in_super",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "FUNCTION use-calc RETURNS LOGICAL (INPUT p-calc AS orders.calc-base) IN SUPER.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The type argument of a generic class. The generic class itself is shipped
+    // and gives no row.
+    class_site_row! {
+        name: "class_site_generic_argument_type",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE INPUT PARAMETER p-list AS Progress.Collections.List<orders.calc-base> NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(p-list).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    class_site_row! {
+        name: "class_site_generic_argument_new",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 v-obj = NEW Progress.Collections.List<orders.calc-base>().\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A property's declared type.
+    class_site_row! {
+        name: "class_site_property_type",
+        root_file: "orders/holder.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.holder:\n    \
+                 DEFINE PUBLIC PROPERTY calc AS orders.calc-base NO-UNDO\n        \
+                 GET.\n    \
+                 SET.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A temp-table field `AS CLASS`.
+    class_site_row! {
+        name: "class_site_temp_table_field",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE TEMP-TABLE tt-calc NO-UNDO\n    \
+                 FIELD f-calc AS CLASS orders.calc-base.\n\
+                 FIND FIRST tt-calc NO-ERROR.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A `NEW` that is the only mention, into a variable typed by a shipped class.
+    // The shipped class gives no row either way.
+    class_site_row! {
+        name: "class_site_new_only",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-base()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 63,
+                end: 85,
+            }),
+        }],
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 v-obj = NEW orders.calc-base().\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A declared type written as the short name an explicit `USING` imports. The
+    // import says which class is meant, so the gap carries the qualified name.
+    class_site_row! {
+        name: "class_site_using_short_name",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "USING orders.calc-base",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 6,
+                end: 22,
+            }),
+        }],
+        source: "USING orders.calc-base.\n\
+                 DEFINE VARIABLE v-calc AS calc-base NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A bare `INHERITS`: no inherited member is used, so no chain walk runs, and
+    // the header is the only mention.
+    class_site_row! {
+        name: "class_site_bare_inherits",
+        root_file: "orders/child.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.child INHERITS orders.calc-base:\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A parent named by the short name the header's own `USING` imports. The chain
+    // walk asks about the qualified name, so the inherited call resolves.
+    class_site_row! {
+        name: "class_site_inherits_using",
+        root_file: "orders/child.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "calc-total",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 158,
+                end: 168,
+            }),
+        }],
+        source: "USING orders.*.\n\
+                 CLASS orders.child INHERITS calc-base:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\n        \
+                 v-total = calc-total().\n        \
+                 MESSAGE v-total.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "calc-base",
+    },
+    // An `IMPLEMENTS`.
+    class_site_row! {
+        name: "class_site_implements",
+        root_file: "orders/calc-impl.cls",
+        siblings: &[SiblingFile {
+            path: "orders/i-calc.cls",
+            source: I_CALC,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.i-calc",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "CLASS orders.calc-impl IMPLEMENTS orders.i-calc:\n    \
+                 METHOD PUBLIC INTEGER calc-total():\n        \
+                 RETURN 1.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.i-calc",
+        withheld: "orders.i-calc",
+    },
+    // The type operand of `CAST`.
+    class_site_row! {
+        name: "class_site_cast",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(CAST(v-obj, orders.calc-base)).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The type operand of `TYPE-OF`.
+    class_site_row! {
+        name: "class_site_type_of",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 MESSAGE TYPE-OF(v-obj, orders.calc-base).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The type operand of `GET-CLASS`.
+    class_site_row! {
+        name: "class_site_get_class",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "MESSAGE VALID-OBJECT(GET-CLASS(orders.calc-base)).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A `CATCH` variable's type.
+    class_site_row! {
+        name: "class_site_catch_type",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.calc-error",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DO ON ERROR UNDO, THROW:\n    \
+                 MESSAGE 1.\n    \
+                 CATCH e-calc AS orders.calc-error:\n        \
+                 MESSAGE VALID-OBJECT(e-calc).\n    \
+                 END CATCH.\nEND.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // A class site whose class is located and cannot be parsed: an edge to the
+    // file and a row saying what is missing, as the chain walk reports it.
+    ParityFixture {
+        name: "class_site_unusable_class",
+        root_file: "report.p",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-obj AS orders.broken NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.broken",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // The same through a wildcard import: the located file is the import's
+    // qualified name, and that is the name both the edge and the row carry.
+    ParityFixture {
+        name: "class_site_unusable_class_using",
+        root_file: "report.p",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 MESSAGE broken:describe().\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.broken",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "broken",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A subclass of a shipped class that uses an inherited member. The chain walk
+    // asks about the shipped parent and the index cannot supply it, but no
+    // workspace could, so it is no gap: the row's one claim is the workspace class.
+    class_site_row! {
+        name: "class_site_shipped_parent",
+        root_file: "orders/my-error.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.my-error INHERITS Progress.Lang.AppError:\n    \
+                 METHOD PUBLIC VOID raise-it():\n        \
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-calc).\n        \
+                 AddMessage(\"x\", 1).\n    \
+                 END METHOD.\nEND CLASS.\n",
+        // The shipped parent's own members are not modelled, so the inherited call
+        // is undefined either way. That is the shipped-library gap, not this row's.
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 196,
+            end: 206,
+        }],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // --- Class-naming sites inside exits ------------------------------------
+    //
+    // The expression after `THROW` or `RETURN ERROR` is an ordinary expression,
+    // and a `NEW` in it names a class like any other.
+
+    // `UNDO, THROW` with a thrown object.
+    class_site_row! {
+        name: "class_site_undo_throw_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 74,
+                end: 103,
+            }),
+        }],
+        source: "DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n\
+                 IF v-flag THEN\n    \
+                 UNDO, THROW NEW orders.calc-error(\"x\", 1).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // A bare `THROW`.
+    class_site_row! {
+        name: "class_site_throw_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 6,
+                end: 35,
+            }),
+        }],
+        source: "THROW NEW orders.calc-error(\"x\", 1).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // `RETURN ERROR` with an error object.
+    class_site_row! {
+        name: "class_site_return_error_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 36,
+                end: 65,
+            }),
+        }],
+        source: "PROCEDURE fail-it:\n    \
+                 RETURN ERROR NEW orders.calc-error(\"x\", 1).\n\
+                 END PROCEDURE.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // `UNDO, RETURN ERROR` with an error object.
+    class_site_row! {
+        name: "class_site_undo_return_error_new",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/calc-error.cls",
+            source: CALC_ERROR,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-error()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 81,
+                end: 110,
+            }),
+        }],
+        source: "DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.\n\
+                 IF v-flag THEN\n    \
+                 UNDO, RETURN ERROR NEW orders.calc-error(\"x\", 1).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-error",
+        withheld: "orders.calc-error",
+    },
+    // A static receiver whose class name is a keyword (`COLOR`), so the dotted
+    // name is not made of plain identifiers.
+    class_site_row! {
+        name: "class_site_keyword_segment_receiver",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/color.cls",
+            source: COLOR_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.color",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                 v-rate = orders.color:rate().\n\
+                 MESSAGE v-rate.\n",
+        diagnostics: &[],
+        needs: &[Capability::Schema],
+        target: "orders.color",
+        withheld: "orders.color",
+    },
+    // --- `RUN` targets bounded at their own text ----------------------------
+    //
+    // A target ends at whitespace, a comment, `(`, or the next statement. Before
+    // that, each of these swallowed what followed it into the name, so the lookup
+    // asked for a file nobody wrote.
+
+    // A path target followed by `PERSISTENT SET`.
+    run_target_row! {
+        name: "edges_run_path_persistent_set",
+        sibling: "comm/expdist.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN comm/expdist",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE h-proc AS HANDLE NO-UNDO.\n\
+                 RUN comm/expdist PERSISTENT SET h-proc (1).\n\
+                 MESSAGE VALID-HANDLE(h-proc).\n",
+        target: "comm/expdist",
+        withheld: "comm/expdist",
+        reason: "external",
+    },
+    // A target split over lines.
+    run_target_row! {
+        name: "edges_run_multiline_target",
+        sibling: "comm/expdist.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN comm/expdist",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE h-proc AS HANDLE NO-UNDO.\n\
+                 RUN comm/expdist\n    \
+                 PERSISTENT\n    \
+                 SET h-proc.\n\
+                 MESSAGE VALID-HANDLE(h-proc).\n",
+        target: "comm/expdist",
+        withheld: "comm/expdist",
+        reason: "external",
+    },
+    // A block comment after the target.
+    run_target_row! {
+        name: "edges_run_target_block_comment",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "RUN sub2 /* note */.\n",
+        target: "sub2",
+    },
+    // A line comment after the target.
+    run_target_row! {
+        name: "edges_run_target_line_comment",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "RUN sub2 // note\n.\n",
+        target: "sub2",
+    },
+    // A comment after a target that has an extension.
+    run_target_row! {
+        name: "edges_run_target_extension_comment",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 4,
+                end: 10,
+            }),
+        }],
+        source: "RUN sub2.p /* note */.\n",
+        target: "sub2.p",
+        withheld: "sub2.p",
+        reason: "absent_from_workspace",
+    },
+    // A one-letter variable on the next line is not an extension.
+    run_target_row! {
+        name: "edges_run_target_next_statement",
+        sibling: "sub2.p",
+        resolutions: &[CrossFileResolution {
+            name: "RUN sub2",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE i AS INTEGER NO-UNDO.\n\
+                 RUN sub2.\n\
+                 i = 1.\n\
+                 MESSAGE i.\n",
+        target: "sub2",
+    },
+    // A class declared with an `ENUM`. The file declares the type, so it is a usable
+    // class: an edge and no row, at the declaration and at a static member access.
+    class_site_row! {
+        name: "class_site_enum",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/shade.cls",
+            source: "ENUM orders.shade:\n    DEFINE ENUM light dark.\nEND ENUM.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.shade",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-shade AS orders.shade NO-UNDO.\n\
+                 v-shade = orders.shade:dark.\n\
+                 MESSAGE v-shade.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.shade",
+        withheld: "orders.shade",
+    },
+    // A class whose header is built from the file's own `&GLOBAL-DEFINE`. The raw
+    // text does not parse; the file's own directives are enough to read the header.
+    class_site_row! {
+        name: "class_site_directive_built_class",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/built.cls",
+            source: "&GLOBAL-DEFINE fullName orders.built\nCLASS {&fullName}:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.built",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "DEFINE VARIABLE v-built AS orders.built NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-built).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.built",
+        withheld: "orders.built",
+    },
+    // Three `RUN`s that nothing supplies. A bare name is an internal procedure of a
+    // running program and leaves no row. A path without an extension and a named
+    // file with one are file references and do.
+    ParityFixture {
+        name: "edges_run_unsupplied_targets",
+        root_file: "runs.p",
+        siblings: &[SiblingFile {
+            path: "lib/real.p",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "RUN lib/real.p",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 53,
+                end: 63,
+            }),
+        }],
+        source: "RUN getdata.\nRUN lib/getdata.\nRUN lib/nothere.p.\nRUN lib/real.p.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 34,
+            end: 47,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "program",
+                    target: "lib/real.p",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "program",
+                    name: "lib/real.p",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "lib/getdata",
+                reason: "external",
+            }),
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "program",
+                name: "lib/nothere.p",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // --- Unmodelled statements and the same-line frame phrase --------------
+    //
+    // A statement the parser recognizes but does not model has no expressions to
+    // walk, so a class it names reached neither an edge nor a row.
+
+    // A static member access inside `PUT`. Withheld, the dotted receiver cannot be
+    // told from a table field, so it is no row; the set says so instead.
+    ParityFixture {
+        name: "edges_put_static_receiver",
+        root_file: "report.p",
+        siblings: &[SiblingFile {
+            path: "orders/tax-util.cls",
+            source: TAX_UTIL,
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.tax-util",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "PUT UNFORMATTED orders.tax-util:rate() SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+            via: "class",
+            target: "orders.tax-util",
+        })],
+    },
+    // A constructor inside `EXPORT` is a class and nothing else, so a miss is a
+    // gap.
+    class_site_row! {
+        name: "class_site_export_new",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "EXPORT DELIMITER \",\" NEW orders.calc-base():calc-total().\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The unmodelled statement names something no lookup can attribute, beside a
+    // class that resolves. The one edge is no reason to call the set complete.
+    ParityFixture {
+        name: "edges_unmodelled_statement_unattributed",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n\
+                 PUT UNFORMATTED mystery.helper:run() SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A handle is not a class: the receiver is a variable and a keyword, and the
+    // statement carries no gap.
+    ParityFixture {
+        name: "edges_put_handle_receivers_are_no_gap",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 DEFINE VARIABLE h-widget AS HANDLE NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n\
+                 PUT UNFORMATTED h-widget:name SESSION:date-format SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A statement on the same line after `WITH FRAME x.` was swallowed into the
+    // frame phrase, so the class it names left no trace.
+    class_site_row! {
+           name: "class_site_after_same_line_frame_phrase",
+           root_file: "report.p",
+           siblings: &[SiblingFile {
+               path: "orders/tax-util.cls",
+               source: TAX_UTIL,
+           }],
+           resolutions: &[CrossFileResolution {
+               name: "NEW orders.tax-util()",
+    effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic { code: "LINT0001", severity: Severity::Error, source: DiagnosticSource::Lint, start: 86, end: 107 }),
+           }],
+           source: "DEFINE VARIABLE v-rate AS INTEGER NO-UNDO.\n\
+                    DISPLAY v-rate WITH FRAME f-rate. v-rate = NEW orders.tax-util():rate().\n",
+           diagnostics: &[],
+           needs: &[],
+           target: "orders.tax-util",
+           withheld: "orders.tax-util",
+       },
+    // --- Text the preprocessor loses ------------------------------------------
+
+    // A branch decided on a predefined name with no value. The `&IF` is taken or
+    // not on a guess, so the set cannot say `a.i` is no dependency.
+    ParityFixture {
+        name: "edges_valueless_predefined_branch",
+        root_file: "main.p",
+        siblings: &[
+            SiblingFile {
+                path: "a.i",
+                source: "/* gated */\n",
+            },
+            SiblingFile {
+                path: "b.i",
+                source: "/* plain */\n",
+            },
+        ],
+        resolutions: &[CrossFileResolution {
+            name: "{b.i}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 51,
+                end: 56,
+            }),
+        }],
+        source: "&IF \"{&PROVERSION}\" BEGINS \"12\" &THEN\n{a.i}\n&ENDIF\n{b.i}\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC009",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 0,
+            end: 38,
+        }],
+        format: ExpectedFormat::Reformatted(
+            "&IF \"{&PROVERSION}\" BEGINS \"12\" &THEN\n    {a.i}\n&ENDIF\n{b.i}\n",
+        ),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "b.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "b.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // An `&IF` that never closes: the rest of the file hangs on a branch with no
+    // end.
+    ParityFixture {
+        name: "edges_unclosed_conditional",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "/* gated */\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 15,
+                end: 20,
+            }),
+        }],
+        source: "&IF TRUE &THEN\n{a.i}\nMESSAGE 1.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC002",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 0,
+            end: 32,
+        }],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A define whose value is an include reference includes the file where the
+    // define is referenced.
+    ParityFixture {
+        name: "edges_include_through_define",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "MESSAGE 1.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{&INC}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 25,
+                end: 31,
+            }),
+        }],
+        source: "&SCOPED-DEFINE INC {a.i}\n{&INC}\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A brace inside a quoted include argument does not close the reference.
+    ParityFixture {
+        name: "edges_quoted_brace_in_include_argument",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "MESSAGE \"{1}\".\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 9,
+            }),
+        }],
+        source: "{a.i \"}\"}\nMESSAGE 2.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // An unterminated reference whose file exists is still an edge to that file,
+    // and the row says only that the reference is unknowable.
+    ParityFixture {
+        name: "edges_unterminated_include_of_located_file",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "/* plain */\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "{ a.i \"X\"\nMESSAGE \"hello\".\n",
+        diagnostics: &[
+            ExpectedDiagnostic {
+                code: "PREPROC008",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 0,
+                end: 1,
+            },
+            ExpectedDiagnostic {
+                code: "PARSE001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Parse,
+                start: 0,
+                end: 27,
+            },
+        ],
+        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "unknowable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "unknowable",
+            },
+        }],
+    },
+    // Two spellings of one class whose file name carries capitals: the exact one
+    // finds it, the other is a case mismatch a case-sensitive file system rejects.
+    // They share one record, so the miss must not displace the link.
+    class_site_row! {
+        name: "class_site_mixed_spellings_miss_last",
+        root_file: "report.p",
+        siblings: PRICE_RULE_SIBLING,
+        resolutions: SILENT_PRICE_RULE,
+        source: "DEFINE VARIABLE v-exact AS orders.Price-Rule NO-UNDO.\n\
+                 DEFINE VARIABLE v-mixed AS orders.price-rule NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-exact) VALID-OBJECT(v-mixed).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.price-rule",
+        withheld: "orders.price-rule",
+    },
+    // The same two spellings in the other order: the answer does not depend on
+    // which one the file writes first.
+    class_site_row! {
+        name: "class_site_mixed_spellings_miss_first",
+        root_file: "report.p",
+        siblings: PRICE_RULE_SIBLING,
+        resolutions: SILENT_PRICE_RULE,
+        source: "DEFINE VARIABLE v-mixed AS orders.price-rule NO-UNDO.\n\
+                 DEFINE VARIABLE v-exact AS orders.Price-Rule NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-exact) VALID-OBJECT(v-mixed).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.price-rule",
+        withheld: "orders.price-rule",
+    },
+    // An ancestor the chain walk links, named again in a case the file system
+    // rejects. The walk's link must survive the later miss.
+    ParityFixture {
+        name: "class_site_chain_walk_mixed_spelling",
+        root_file: "orders/my-calc.cls",
+        siblings: PRICE_RULE_CHAIN_SIBLINGS,
+        resolutions: &[CrossFileResolution {
+            name: "rule-total",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 88,
+                end: 98,
+            }),
+        }],
+        source: "CLASS orders.my-calc INHERITS orders.calc-mid:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 rule-total().\n        \
+                 DEFINE VARIABLE v-rule AS orders.price-rule NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-rule).\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.price-rule",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.price-rule",
+                    reason: "absent_from_workspace",
+                },
+            },
+        ],
+    },
+    // Bare names of the `Progress.Lang` classes, which the AVM imports into every
+    // file. None is a workspace class, so none is a gap; the one real class in the
+    // file is still claimed exactly.
+    class_site_row! {
+        name: "class_site_implicit_lang_import",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE INPUT PARAMETER p-err AS AppError NO-UNDO.\n\
+                 DEFINE VARIABLE v-obj AS Object NO-UNDO.\n\
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 DO ON ERROR UNDO, THROW:\n    \
+                 v-obj = NEW Object().\n    \
+                 CATCH e-sys AS SysError:\n        \
+                 MESSAGE VALID-OBJECT(e-sys) VALID-OBJECT(p-err) VALID-OBJECT(v-calc).\n    \
+                 END CATCH.\nEND.\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A bare `Progress.Lang` parent. The chain walk asks about it under its
+    // qualified name, which is shipped and so gives no row.
+    class_site_row! {
+        name: "class_site_implicit_lang_parent",
+        root_file: "orders/my-error.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "CLASS orders.my-error INHERITS AppError:\n    \
+                 METHOD PUBLIC VOID raise-it():\n        \
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-calc).\n        \
+                 AddMessage(\"x\", 1).\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 182,
+            end: 192,
+        }],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // Receivers that are database objects, not classes, under a loaded schema: a
+    // table with a field that is not there, a database-qualified table, and a
+    // frame-qualified widget.
+    ParityFixture {
+        name: "class_site_receiver_schema_names",
+        root_file: "report.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "DEFINE VARIABLE h-obj AS HANDLE NO-UNDO.\n\
+                 FORM Customer.Name WITH FRAME f-cust.\n\
+                 MESSAGE Customer.Nme:LABEL.\n\
+                 MESSAGE sports.Customer:AVAILABLE.\n\
+                 h-obj = f-cust.Name:HANDLE.\n\
+                 MESSAGE h-obj.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[EdgeExpectation::Always(ExpectedEdge {
+            via: "schema_table",
+            target: "customer",
+        })],
+    },
+    // Receivers that name a query, a frame or a buffer the scope model does not
+    // hold, in a file whose `USING` would let a class be named. The parser drops
+    // the keyword in front of each, so only the text still says what it is. The
+    // one real class is claimed exactly, so a row for any receiver fails the row.
+    class_site_row! {
+        name: "class_site_receiver_keyword_objects",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "USING orders.*.\n\
+                 DEFINE VARIABLE h-obj AS HANDLE NO-UNDO.\n\
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 DEFINE QUERY q-cust FOR cust-tab.\n\
+                 h-obj = QUERY q-cust:HANDLE.\n\
+                 h-obj = FRAME f-main:HANDLE.\n\
+                 h-obj = BUFFER b-new:HANDLE.\n\
+                 MESSAGE h-obj VALID-OBJECT(v-calc).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A name the class does not declare, in a class whose parent the workspace
+    // holds but oxabl cannot read. The name is most likely one of the parent's
+    // members, so it is no missing class; the parent itself is claimed.
+    ParityFixture {
+        name: "class_site_receiver_inherited_from_unusable_parent",
+        root_file: "orders/my-child.cls",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-child INHERITS orders.broken:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 v-inherited:describe().\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::LocatedButUnusable {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.broken",
+            },
+            row: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "present_but_unusable",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.broken",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // Built-in types the parser reads as class names: abbreviations the lexer has
+    // no entry for, and a keyword where `AS CLASS` found no name.
+    class_site_row! {
+        name: "class_site_builtin_type_names",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-char AS cha NO-UNDO.\n\
+                 DEFINE VARIABLE v-widget AS WIDGET NO-UNDO.\n\
+                 DEFINE VARIABLE v-none AS CLASS NO-UNDO.\n\
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 MESSAGE v-char v-widget v-none VALID-OBJECT(v-calc).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // A type whose name merely starts like a long type keyword is a class, not a
+    // built-in: `Hand` abbreviates nothing.
+    class_site_row! {
+        name: "class_site_declared_type_not_abbreviation",
+        root_file: "report.p",
+        siblings: HAND_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.hand",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 DEFINE VARIABLE v-hand AS Hand NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(v-hand).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.hand",
+        withheld: "hand",
+    },
+    // A frame or query receiver in an unmodelled statement is no class, so the
+    // edge set stays complete beside the one class that resolves.
+    ParityFixture {
+        name: "edges_put_widget_receivers_are_no_gap",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
+                 DEFINE FRAME f-main WITH 1 DOWN.\n\
+                 DEFINE QUERY q-cust FOR cust-tab.\n\
+                 MESSAGE VALID-OBJECT(v-calc).\n\
+                 PUT UNFORMATTED FRAME f-main:TITLE SKIP.\n\
+                 PUT UNFORMATTED QUERY q-cust:NUM-RESULTS SKIP.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "class",
+                target: "orders.calc-base",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.calc-base",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A missing dotted receiver in a class under a shipped parent is still a gap,
+    // and so is one under a parent oxabl cannot read: ABL reaches an inherited
+    // member with a bare name, never a dotted one.
+    ParityFixture {
+        name: "class_site_dotted_receiver_shipped_parent",
+        root_file: "orders/my-error.cls",
+        siblings: &[],
+        resolutions: &[],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-error INHERITS Progress.Lang.AppError:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-num AS INTEGER NO-UNDO.\n        \
+                 v-num = orders.gone:rate().\n        \
+                 MESSAGE v-num.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "class",
+            name: "orders.gone",
+            reason: "absent_from_workspace",
+        })],
+    },
+    // A bare missing receiver under a shipped parent: the shipped surface is not
+    // the workspace's, so the name is a missing class.
+    ParityFixture {
+        name: "class_site_bare_receiver_shipped_parent",
+        root_file: "orders/my-error.cls",
+        siblings: &[],
+        resolutions: &[],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-error INHERITS Progress.Lang.AppError:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-num AS INTEGER NO-UNDO.\n        \
+                 v-num = gone:rate().\n        \
+                 MESSAGE v-num.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "class",
+            name: "gone",
+            reason: "absent_from_workspace",
+        })],
+    },
+    ParityFixture {
+        name: "class_site_dotted_receiver_unusable_parent",
+        root_file: "orders/my-child.cls",
+        siblings: BROKEN_CLASS_SIBLING,
+        resolutions: &[CrossFileResolution {
+            name: "orders.broken",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-child INHERITS orders.broken:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-num AS INTEGER NO-UNDO.\n        \
+                 v-num = orders.gone:rate().\n        \
+                 MESSAGE v-num.\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[
+            EdgeExpectation::LocatedButUnusable {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.broken",
+                },
+                row: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.broken",
+                    reason: "present_but_unusable",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.broken",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "orders.gone",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // A define whose value names an include nothing supplies. The root writes the
+    // substitution, so the gap is its own, as when the file is found.
+    ParityFixture {
+        name: "edges_unresolved_include_through_define",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "&SCOPED-DEFINE INC {gone.i}\n{&INC}\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "PREPROC007",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Preproc,
+            start: 28,
+            end: 34,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+            via: "direct_include",
+            name: "gone.i",
+            reason: "absent_from_workspace",
+        })],
+    },
+    // A grandparent the parent names bare under its own wildcard `USING`. The
+    // child's imports could not find it, so the walk once recorded a row under the
+    // bare name and the real file was no edge. The call to the grandparent's
+    // method resolves, and the receiver that no class supplies is a row, which
+    // the false row had silenced.
+    ParityFixture {
+        name: "class_chain_grandparent_wildcard_using",
+        root_file: "orders/my-child.cls",
+        siblings: CHAIN_WILDCARD_SIBLINGS,
+        resolutions: CHAIN_BASE_TOTAL,
+        source: CHAIN_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_EDGES,
+    },
+    // The same grandparent through an explicit `USING` in the parent.
+    ParityFixture {
+        name: "class_chain_grandparent_explicit_using",
+        root_file: "orders/my-child.cls",
+        siblings: CHAIN_EXPLICIT_SIBLINGS,
+        resolutions: CHAIN_BASE_TOTAL,
+        source: CHAIN_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_EDGES,
+    },
+    // A parent that implements an interface its own `USING` names.
+    ParityFixture {
+        name: "class_chain_parent_implements_through_using",
+        root_file: "orders/my-child.cls",
+        siblings: &[
+            SiblingFile {
+                path: "orders/calc-mid.cls",
+                source: "USING rules.*.\nCLASS orders.calc-mid IMPLEMENTS i-price:\nEND CLASS.\n",
+            },
+            SiblingFile {
+                path: "rules/i-price.cls",
+                source: "INTERFACE rules.i-price:\n    \
+                         METHOD PUBLIC INTEGER base-total().\nEND INTERFACE.\n",
+            },
+        ],
+        resolutions: &[CrossFileResolution {
+            name: "rules.i-price",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+                via: "class",
+                target: "rules.i-price",
+            }),
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "gone",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // A grandparent that no file supplies is a gap under the qualified name the
+    // parent's `USING` gives it, not under the bare name no file has.
+    ParityFixture {
+        name: "class_chain_grandparent_absent_explicit_using",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "USING rules.price-base.\n\
+                     CLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "rules.price-base",
+            effect: CrossFileEffect::Unresolvable,
+        }],
+        source: "USING orders.*.\n\
+                 CLASS orders.my-child INHERITS orders.calc-mid:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 base-total().\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0001",
+            severity: Severity::Error,
+            source: DiagnosticSource::Lint,
+            start: 105,
+            end: 115,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "rules.price-base",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
+    // A parent whose imports may come from an include the index does not read:
+    // what its own parent is cannot be told, so it is unknowable, not absent.
+    ParityFixture {
+        name: "class_chain_parent_imports_in_include",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "{rules/usings.i}\nCLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "price-base",
+            effect: CrossFileEffect::Unresolvable,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-mid",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-mid",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "price-base",
+                reason: "unknowable",
+            }),
+        ],
+    },
+    // A shipped parent named bare under a shipped wildcard `USING` is the AVM's to
+    // supply, so the walk records no gap for it.
+    class_site_row! {
+        name: "class_chain_shipped_parent_through_wildcard",
+        root_file: "orders/my-handler.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "USING OpenEdge.Web.*.\n\
+                 CLASS orders.my-handler INHERITS WebHandler:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-calc).\n        \
+                 Gone:Foo().\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    // The same name one level up: a workspace parent whose own parent is shipped.
+    // The receiver no class supplies stays a row, because a shipped class is no
+    // workspace type the index failed to read.
+    ParityFixture {
+        name: "class_chain_shipped_grandparent_through_wildcard",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "USING OpenEdge.Web.*.\nCLASS orders.calc-mid INHERITS WebHandler:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.calc-mid",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_SHIPPED_EDGES,
+    },
+    // And a `Progress.Lang` parent, which no `USING` is needed for.
+    ParityFixture {
+        name: "class_chain_implicit_lang_grandparent",
+        root_file: "orders/my-child.cls",
+        siblings: &[SiblingFile {
+            path: "orders/calc-mid.cls",
+            source: "CLASS orders.calc-mid INHERITS AppError:\nEND CLASS.\n",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "orders.calc-mid",
+            effect: CrossFileEffect::ResolvedSilently,
+        }],
+        source: CHAIN_RECEIVER_CHILD,
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: CHAIN_SHIPPED_EDGES,
+    },
+    // A parent that a .NET assembly supplies is no workspace gap either. The
+    // receiver no class supplies is a row, as under a shipped parent.
+    ParityFixture {
+        name: "class_chain_assembly_parent",
+        root_file: "orders/my-gauge.cls",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "USING Dotnet.Gauge FROM ASSEMBLY.\n\
+                 USING orders.*.\n\
+                 CLASS orders.my-gauge INHERITS Gauge:\n    \
+                 METHOD PUBLIC VOID run-it():\n        \
+                 DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n        \
+                 MESSAGE VALID-OBJECT(v-calc).\n        \
+                 Gone:Foo().\n    \
+                 END METHOD.\nEND CLASS.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[
+            EdgeExpectation::ResolvedWithSiblings {
+                edge: ExpectedEdge {
+                    via: "class",
+                    target: "orders.calc-base",
+                },
+                withheld: ExpectedUnresolvedEdge {
+                    via: "class",
+                    name: "orders.calc-base",
+                    reason: "absent_from_workspace",
+                },
+            },
+            EdgeExpectation::AlwaysUnresolved(ExpectedUnresolvedEdge {
+                via: "class",
+                name: "gone",
+                reason: "absent_from_workspace",
+            }),
+        ],
+    },
 ];
+
+/// The rows whose edge set must report itself degraded, and for what. Every other
+/// row that claims an edge set must report it complete, so a degradation that
+/// leaks onto a clean file fails the suite as surely as one that goes missing.
+const DEGRADED_FIXTURES: &[(&str, Degraded)] = &[
+    // The reasons with the siblings supplied, then withheld.
+    (
+        "unresolvable_include",
+        Degraded(&["unresolved_include"], &["unresolved_include"]),
+    ),
+    (
+        "edges_nested_unresolved_include",
+        Degraded(&["unresolved_include"], &["unresolved_include"]),
+    ),
+    // Withholding the intermediate include makes the root's own include the gap.
+    (
+        "edges_nested_include",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "unterminated_include_reference",
+        Degraded(
+            &["parse_recovered", "unresolved_include"],
+            &["parse_recovered", "unresolved_include"],
+        ),
+    ),
+    (
+        "edges_spaced_include_references",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_predefined_environment_branches",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_recovered_parse",
+        Degraded(&["parse_recovered"], &["parse_recovered"]),
+    ),
+    (
+        "edges_put_static_receiver",
+        Degraded(&[], &["unmodelled_statement"]),
+    ),
+    (
+        "edges_unmodelled_statement_unattributed",
+        Degraded(&["unmodelled_statement"], &["unmodelled_statement"]),
+    ),
+    (
+        "edges_valueless_predefined_branch",
+        Degraded(
+            &["preprocessor_loss"],
+            &["unresolved_include", "preprocessor_loss"],
+        ),
+    ),
+    (
+        "edges_unclosed_conditional",
+        Degraded(
+            &["preprocessor_loss"],
+            &["unresolved_include", "preprocessor_loss"],
+        ),
+    ),
+    (
+        "edges_include_through_define",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_unresolved_include_through_define",
+        Degraded(&["unresolved_include"], &["unresolved_include"]),
+    ),
+    (
+        "edges_quoted_brace_in_include_argument",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_unterminated_include_of_located_file",
+        Degraded(
+            &["parse_recovered", "unresolved_include"],
+            &["parse_recovered", "unresolved_include"],
+        ),
+    ),
+];
+
+/// The degraded reasons a row expects, with its siblings supplied and withheld.
+struct Degraded(&'static [&'static str], &'static [&'static str]);
 
 /// The parent class two cross-file rows resolve to: one public method with a
 /// return type, and nothing else. Synthetic.
@@ -1801,6 +4361,176 @@ const CALC_BASE: &str = "CLASS orders.calc-base:\n    \
                          METHOD PUBLIC INTEGER calc-total():\n        \
                          RETURN 0.\n    \
                          END METHOD.\nEND CLASS.\n";
+
+/// A class whose name starts like a built-in type keyword.
+const HAND_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/hand.cls",
+    source: "CLASS orders.hand:\nEND CLASS.\n",
+}];
+
+/// A class whose only member is static, named through a static member access.
+const TAX_UTIL: &str = "CLASS orders.tax-util:\n    \
+                        METHOD PUBLIC STATIC INTEGER rate():\n        \
+                        RETURN 2.\n    \
+                        END METHOD.\nEND CLASS.\n";
+
+/// A class in the unnamed package, at the root of the search path.
+const SESSION_STATE: &str = "CLASS session-state:\n    \
+                             METHOD PUBLIC STATIC INTEGER current-id():\n        \
+                             RETURN 1.\n    \
+                             END METHOD.\nEND CLASS.\n";
+
+/// A class whose name is a keyword, with one static member.
+const COLOR_UTIL: &str = "CLASS orders.color:\n    \
+                          METHOD PUBLIC STATIC INTEGER rate():\n        \
+                          RETURN 2.\n    \
+                          END METHOD.\nEND CLASS.\n";
+
+/// An interface with one method, for the `IMPLEMENTS` row.
+const I_CALC: &str = "INTERFACE orders.i-calc:\n    \
+                      METHOD PUBLIC INTEGER calc-total().\nEND INTERFACE.\n";
+
+/// A workspace error class, for the `CATCH` row. Its own parent is shipped.
+const CALC_ERROR: &str = "CLASS orders.calc-error INHERITS Progress.Lang.AppError:\nEND CLASS.\n";
+
+/// A class whose file name carries capitals. A case-sensitive file system finds
+/// it only for the exact spelling of its name; the folded spelling misses.
+const PRICE_RULE: &str = "CLASS orders.Price-Rule:\n    \
+                          METHOD PUBLIC INTEGER rule-total():\n        \
+                          RETURN 0.\n    \
+                          END METHOD.\nEND CLASS.\n";
+
+const PRICE_RULE_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/Price-Rule.cls",
+    source: PRICE_RULE,
+}];
+
+const SILENT_PRICE_RULE: &[CrossFileResolution] = &[CrossFileResolution {
+    name: "orders.Price-Rule",
+    effect: CrossFileEffect::ResolvedSilently,
+}];
+
+/// A class that inherits the one above, and that one: a chain of two.
+const PRICE_RULE_CHAIN_SIBLINGS: &[SiblingFile] = &[
+    SiblingFile {
+        path: "orders/calc-mid.cls",
+        source: "CLASS orders.calc-mid INHERITS orders.Price-Rule:\nEND CLASS.\n",
+    },
+    SiblingFile {
+        path: "orders/Price-Rule.cls",
+        source: PRICE_RULE,
+    },
+];
+
+/// A class file that is located and cannot be parsed.
+const BROKEN_CLASS_SIBLING: &[SiblingFile] = &[SiblingFile {
+    path: "orders/broken.cls",
+    source: "\u{1}\u{2}\u{3} 0x9f 0x00 ((( %%% .\n",
+}];
+
+/// A child of `orders.calc-mid` that calls a method only the grandparent
+/// declares, and names a receiver no class supplies.
+const CHAIN_CHILD: &str = "USING orders.*.\n\
+                           CLASS orders.my-child INHERITS orders.calc-mid:\n    \
+                           METHOD PUBLIC VOID run-it():\n        \
+                           base-total().\n        \
+                           Gone:Foo().\n    \
+                           END METHOD.\nEND CLASS.\n";
+
+/// `CHAIN_CHILD` without the call, for a parent whose chain has no method to find.
+const CHAIN_RECEIVER_CHILD: &str = "USING orders.*.\n\
+                                    CLASS orders.my-child INHERITS orders.calc-mid:\n    \
+                                    METHOD PUBLIC VOID run-it():\n        \
+                                    Gone:Foo().\n    \
+                                    END METHOD.\nEND CLASS.\n";
+
+/// The grandparent `CHAIN_CHILD` reaches through `orders.calc-mid`.
+const RULES_PRICE_BASE: SiblingFile = SiblingFile {
+    path: "rules/price-base.cls",
+    source: "CLASS rules.price-base:\n    \
+             METHOD PUBLIC INTEGER base-total():\n        \
+             RETURN 0.\n    \
+             END METHOD.\nEND CLASS.\n",
+};
+
+const CHAIN_WILDCARD_SIBLINGS: &[SiblingFile] = &[
+    SiblingFile {
+        path: "orders/calc-mid.cls",
+        source: "USING rules.*.\nCLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+    },
+    RULES_PRICE_BASE,
+];
+
+const CHAIN_EXPLICIT_SIBLINGS: &[SiblingFile] = &[
+    SiblingFile {
+        path: "orders/calc-mid.cls",
+        source: "USING rules.price-base.\n\
+                 CLASS orders.calc-mid INHERITS price-base:\nEND CLASS.\n",
+    },
+    RULES_PRICE_BASE,
+];
+
+/// The call `CHAIN_CHILD` makes is an undefined symbol until the grandparent is
+/// found.
+const CHAIN_BASE_TOTAL: &[CrossFileResolution] = &[CrossFileResolution {
+    name: "base-total",
+    effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+        code: "LINT0001",
+        severity: Severity::Error,
+        source: DiagnosticSource::Lint,
+        start: 105,
+        end: 115,
+    }),
+}];
+
+/// What `CHAIN_CHILD` claims over a parent that reaches the grandparent: the
+/// parent and the grandparent, and the receiver that no class supplies.
+///
+/// The receiver is a row only when the whole chain is known. Withheld, the parent
+/// is a workspace type the index could not read, and the receiver may be one of
+/// its members.
+const CHAIN_EDGES: &[EdgeExpectation] = &[
+    EdgeExpectation::ResolvedWithSiblings {
+        edge: ExpectedEdge {
+            via: "class",
+            target: "orders.calc-mid",
+        },
+        withheld: ExpectedUnresolvedEdge {
+            via: "class",
+            name: "orders.calc-mid",
+            reason: "absent_from_workspace",
+        },
+    },
+    EdgeExpectation::OnlyWithSiblings(ExpectedEdge {
+        via: "class",
+        target: "rules.price-base",
+    }),
+    EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+        via: "class",
+        name: "gone",
+        reason: "absent_from_workspace",
+    }),
+];
+
+/// `CHAIN_EDGES` for a parent whose own parent is shipped: no grandparent edge.
+const CHAIN_SHIPPED_EDGES: &[EdgeExpectation] = &[
+    EdgeExpectation::ResolvedWithSiblings {
+        edge: ExpectedEdge {
+            via: "class",
+            target: "orders.calc-mid",
+        },
+        withheld: ExpectedUnresolvedEdge {
+            via: "class",
+            name: "orders.calc-mid",
+            reason: "absent_from_workspace",
+        },
+    },
+    EdgeExpectation::UnresolvedOnlyWithSiblings(ExpectedUnresolvedEdge {
+        via: "class",
+        name: "gone",
+        reason: "absent_from_workspace",
+    }),
+];
 
 /// Look a fixture up by name, panicking on a typo rather than silently skipping.
 pub fn fixture(name: &str) -> &'static ParityFixture {

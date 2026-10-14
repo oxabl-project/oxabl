@@ -54,7 +54,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use oxabl_semantic::{IndexAnswer, IndexName};
-use oxabl_workspace::{FileSystem, is_root_file};
+use oxabl_workspace::{FileSystem, is_root_file, normalize_run_extension};
 
 /// Resolve `.` and `..` segments in `path` **textually**, leaving everything else
 /// byte-identical.
@@ -165,8 +165,32 @@ pub enum NameKind {
     Program,
 }
 
+/// The source extensions tried, in order, for a `RUN` target written without one,
+/// when the workspace does not configure its own (`[workspace.sources].run_extensions`).
+///
+/// The AVM tries compiled code first (`name.r`), then source. A dependency answer
+/// is about source, so `.r` is not in the list; `.p` and `.w` are the program
+/// extensions the AVM would otherwise reach.
+pub const BARE_PROGRAM_EXTENSIONS: &[&str] = &["p", "w"];
+
+/// Whether the last segment of a `RUN` target carries an extension.
+///
+/// The last segment only, so a directory named `util.d` is not mistaken for one.
+fn has_extension(target: &str) -> bool {
+    target
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|last| last.contains('.'))
+}
+
 /// Locate the file `name` names: the as-written spelling first, the folded
 /// spelling second when the two differ.
+///
+/// A program target without an extension tries each of
+/// [`BARE_PROGRAM_EXTENSIONS`] in order, stopping at the first that is not
+/// [`IndexAnswer::NotFound`]. Each extension keeps the exactly-one-match rule on
+/// its own, so a name matching `name.p` in two path entries is ambiguous even
+/// though `name.w` might exist.
 ///
 /// This is the entry point an index should call. See the module docs for why
 /// two spellings are tried, and for what happens when they match different path
@@ -177,17 +201,95 @@ pub fn find_name(
     name: &IndexName,
     kind: NameKind,
 ) -> IndexAnswer<PathBuf> {
-    let written = match kind {
-        NameKind::Class => class_path(name),
-        NameKind::Program => program_path(name),
-    };
-    let policy = match kind {
+    find_name_with(fs, include_paths, name, kind, BARE_PROGRAM_EXTENSIONS)
+}
+
+/// [`find_name`] with the extensions an extensionless program target is tried
+/// with spelled out, in order. They are ignored for a class name and for a
+/// program target that already has an extension.
+///
+/// Entries are normalized here ([`normalize_run_extension`]: a leading dot and
+/// surrounding whitespace go, unusable entries and repeats are skipped), so a
+/// caller that builds the list by hand gets the same lookup as one that went
+/// through the configuration.
+///
+/// For each extension the candidates are tried in one fixed order, with the
+/// first that is not [`IndexAnswer::NotFound`] winning: name as written with the
+/// extension as written, folded name with the lower-case extension, name as
+/// written with the lower-case extension, folded name with the extension as
+/// written. For a lower-case extension the last two repeat the first two and
+/// are skipped.
+pub fn find_name_with<E: AsRef<str>>(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    name: &IndexName,
+    kind: NameKind,
+    bare_extensions: &[E],
+) -> IndexAnswer<PathBuf> {
+    if kind == NameKind::Program && !has_extension(name.as_written()) {
+        let mut tried: Vec<&str> = Vec::with_capacity(bare_extensions.len());
+        for extension in bare_extensions {
+            let Some(extension) = normalize_run_extension(extension.as_ref()) else {
+                continue;
+            };
+            if tried.contains(&extension) {
+                continue;
+            }
+            tried.push(extension);
+            let lower = extension.to_ascii_lowercase();
+            let mut answer = find_spellings(
+                fs,
+                include_paths,
+                &with_extension(name.as_written(), extension),
+                &with_extension(name.as_str(), &lower),
+                ExtensionPolicy::AnyButInclude,
+            );
+            if answer == IndexAnswer::NotFound && lower != extension {
+                answer = find_spellings(
+                    fs,
+                    include_paths,
+                    &with_extension(name.as_written(), &lower),
+                    &with_extension(name.as_str(), extension),
+                    ExtensionPolicy::AnyButInclude,
+                );
+            }
+            if answer != IndexAnswer::NotFound {
+                return answer;
+            }
+        }
+        return IndexAnswer::NotFound;
+    }
+
+    let (written, folded, policy) = match kind {
         // A derived class path always ends in `.cls`, so either policy admits it;
         // naming the stricter one keeps the derivation honest.
-        NameKind::Class => ExtensionPolicy::WalkRoots,
-        NameKind::Program => ExtensionPolicy::AnyButInclude,
+        NameKind::Class => (
+            class_path(name),
+            folded_class_path(name),
+            ExtensionPolicy::WalkRoots,
+        ),
+        NameKind::Program => (
+            program_path(name),
+            folded_program_path(name),
+            ExtensionPolicy::AnyButInclude,
+        ),
     };
-    match find_unique_with_policy(fs, include_paths, &written, policy) {
+    find_spellings(fs, include_paths, &written, &folded, policy)
+}
+
+fn with_extension(target: &str, extension: &str) -> PathBuf {
+    PathBuf::from(format!("{target}.{extension}"))
+}
+
+/// The two-spellings search: `written` first, `folded` when it differs.
+fn find_spellings(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    written: &Path,
+    folded: &Path,
+    policy: ExtensionPolicy,
+) -> IndexAnswer<PathBuf> {
+    match find_unique_with_policy(fs, include_paths, written, policy) {
         IndexAnswer::Found(path) => return IndexAnswer::Found(path),
         // Already ambiguous under the spelling the source used; a second
         // candidate cannot un-ambiguate it.
@@ -200,16 +302,12 @@ pub fn find_name(
         IndexAnswer::NotFound => {}
     }
 
-    let folded = match kind {
-        NameKind::Class => folded_class_path(name),
-        NameKind::Program => folded_program_path(name),
-    };
     if folded == written {
         // The source already wrote the name folded, so the fallback would
         // re-run the identical search.
         return IndexAnswer::NotFound;
     }
-    find_unique_with_policy(fs, include_paths, &folded, policy)
+    find_unique_with_policy(fs, include_paths, folded, policy)
 }
 
 /// Search every entry of `include_paths` for `relative`, insisting on exactly
@@ -375,6 +473,90 @@ mod tests {
                 NameKind::Class
             ),
             IndexAnswer::Found(PathBuf::from("/src/MyApp/Cache.cls"))
+        );
+    }
+
+    #[test]
+    fn a_configured_extension_is_tried_as_written_and_then_in_lower_case() {
+        let paths = dirs(&["/src"]);
+        let name = IndexName::new("Sub");
+        let upper = ["P".to_string()];
+        assert_eq!(
+            find_name_with(
+                &fs_with(&["/src/sub.p"]),
+                &paths,
+                &name,
+                NameKind::Program,
+                &upper
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/sub.p"))
+        );
+        assert_eq!(
+            find_name_with(
+                &fs_with(&["/src/Sub.P"]),
+                &paths,
+                &name,
+                NameKind::Program,
+                &upper
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/Sub.P"))
+        );
+    }
+
+    #[test]
+    fn an_upper_case_extension_still_finds_the_name_as_written() {
+        // Written name with the lower-case extension: the same file the default
+        // list finds.
+        let name = IndexName::new("Mixed");
+        for extensions in [["P"], ["p"]] {
+            assert_eq!(
+                find_name_with(
+                    &fs_with(&["/src/Mixed.p"]),
+                    &dirs(&["/src"]),
+                    &name,
+                    NameKind::Program,
+                    &extensions
+                ),
+                IndexAnswer::Found(PathBuf::from("/src/Mixed.p")),
+                "extensions {extensions:?}"
+            );
+        }
+        // Folded name with the extension as written.
+        assert_eq!(
+            find_name_with(
+                &fs_with(&["/src/mixed.P"]),
+                &dirs(&["/src"]),
+                &name,
+                NameKind::Program,
+                &["P"]
+            ),
+            IndexAnswer::Found(PathBuf::from("/src/mixed.P"))
+        );
+    }
+
+    #[test]
+    fn a_hand_built_extension_list_is_normalized_like_a_configured_one() {
+        let paths = dirs(&["/src"]);
+        let fs = fs_with(&["/src/sub.p", "/src/sub.w"]);
+        let name = IndexName::new("sub");
+        let found =
+            |extensions: &[&str]| find_name_with(&fs, &paths, &name, NameKind::Program, extensions);
+        assert_eq!(
+            found(&[".p"]),
+            IndexAnswer::Found(PathBuf::from("/src/sub.p"))
+        );
+        assert_eq!(
+            found(&[" .w ", "p"]),
+            IndexAnswer::Found(PathBuf::from("/src/sub.w"))
+        );
+        assert_eq!(
+            found(&["", "a/b", "."]),
+            IndexAnswer::NotFound,
+            "unusable entries link nothing"
+        );
+        assert_eq!(
+            found(&["", ".p"]),
+            IndexAnswer::Found(PathBuf::from("/src/sub.p"))
         );
     }
 
@@ -663,5 +845,62 @@ mod tests {
             ),
             IndexAnswer::NotFound
         );
+    }
+
+    fn bare(fs: &InMemoryFileSystem, target: &str) -> IndexAnswer<PathBuf> {
+        find_name(
+            fs,
+            &[PathBuf::from("/src")],
+            &IndexName::new(target),
+            NameKind::Program,
+        )
+    }
+
+    #[test]
+    fn a_bare_run_target_tries_p_then_w() {
+        let fs = fs_with(&["/src/only-w.w", "/src/both.p", "/src/both.w"]);
+        assert_eq!(
+            bare(&fs, "both"),
+            IndexAnswer::Found(PathBuf::from("/src/both.p"))
+        );
+        assert_eq!(
+            bare(&fs, "only-w"),
+            IndexAnswer::Found(PathBuf::from("/src/only-w.w"))
+        );
+        assert_eq!(bare(&fs, "neither"), IndexAnswer::NotFound);
+    }
+
+    #[test]
+    fn a_bare_run_target_keeps_the_exactly_one_match_rule_per_extension() {
+        let fs = fs_with(&["/a/dup.p", "/b/dup.p", "/b/dup.w"]);
+        let paths = dirs(&["/a", "/b"]);
+        assert_eq!(
+            find_name(&fs, &paths, &IndexName::new("dup"), NameKind::Program),
+            IndexAnswer::Unknowable
+        );
+    }
+
+    #[test]
+    fn a_bare_run_target_under_a_directory_with_a_dot_is_still_bare() {
+        let fs = fs_with(&["/src/util.d/calc.p"]);
+        assert_eq!(
+            bare(&fs, "util.d/calc"),
+            IndexAnswer::Found(PathBuf::from("/src/util.d/calc.p"))
+        );
+    }
+
+    #[test]
+    fn a_bare_run_target_folds_like_a_written_one() {
+        let fs = fs_with(&["/src/calc-total.p"]);
+        assert_eq!(
+            bare(&fs, "Calc-Total"),
+            IndexAnswer::Found(PathBuf::from("/src/calc-total.p"))
+        );
+    }
+
+    #[test]
+    fn a_target_with_an_extension_is_not_extended() {
+        let fs = fs_with(&["/src/calc.p.w"]);
+        assert_eq!(bare(&fs, "calc.p"), IndexAnswer::NotFound);
     }
 }

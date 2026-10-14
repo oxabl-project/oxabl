@@ -37,12 +37,12 @@ use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
-use oxabl_preprocessor::{Preprocessor, SpanNode, UnresolvedInclude};
+use oxabl_preprocessor::{Preprocessor, SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, NullIndex, Semantic, SourceContext, WorkspaceIndex, analyze_file,
 };
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
 /// diagnostics to its own JSON channel while parse/semantic/lint feed the
@@ -79,6 +79,13 @@ pub struct CollectedDiagnostic {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CollectedDiagnostics {
     pub diagnostics: Vec<CollectedDiagnostic>,
+    /// Whether the parser recovered from at least one error, wherever in the
+    /// expansion it occurred.
+    ///
+    /// Not derivable from `diagnostics`: a parse error that originates inside an
+    /// include has no root-buffer span and is dropped from that list, while the
+    /// statements it skipped are gone from the model all the same.
+    pub parse_recovered: bool,
 }
 
 impl CollectedDiagnostics {
@@ -113,15 +120,23 @@ impl CollectedDiagnostics {
                 .filter(|d| d.source != source)
                 .cloned()
                 .collect(),
+            parse_recovered: self.parse_recovered,
         }
     }
 }
 
 /// The *loud* preprocessor surfacing rule (moved here from the CLI so both
 /// consumers share it): all errors, plus the always-loud warnings PREPROC007
-/// (unresolvable include — symbol loss) and PREPROC002 (unclosed `&IF`).
+/// (unresolvable include — symbol loss), PREPROC008 (unterminated include
+/// reference), PREPROC009 (predefined name without a value in a condition),
+/// PREPROC010 (condition part the evaluator does not model) and PREPROC002
+/// (unclosed `&IF`).
 pub fn is_loud(d: &Diagnostic) -> bool {
-    matches!(d.severity, Severity::Error) || d.code.0 == "PREPROC007" || d.code.0 == "PREPROC002"
+    matches!(d.severity, Severity::Error)
+        || matches!(
+            d.code.0,
+            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009" | "PREPROC010"
+        )
 }
 
 /// One include a file names itself, and where it names it.
@@ -147,6 +162,25 @@ struct ExpandedChunk {
     real_start: u32,
 }
 
+/// The expanded text one root-origin include site pulled in, `[virt_start,
+/// virt_end)`, and that site in the root file's own bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IncludeRegion {
+    virt_start: u32,
+    virt_end: u32,
+    site: Span,
+}
+
+/// One include file the root pulls in at any depth, and the first `{...}` or
+/// `{&var}` the root itself writes through which it arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeOrigin {
+    /// The path the preprocessor resolved the include to.
+    pub path: PathBuf,
+    /// The outermost site of the chain that reached it, in the root's own bytes.
+    pub site: Span,
+}
+
 /// The preprocessed root buffer in owned, `Update`-trivial form.
 ///
 /// Holds the expanded text, a flattened virtual→real offset table (the only
@@ -162,6 +196,11 @@ pub struct ExpandedFile {
     /// Flattened span-tree leaves in expansion order. Empty means the identity
     /// mapping (preprocessing was off): virtual == real, origin == root.
     chunks: Vec<ExpandedChunk>,
+    /// The text each `{file.i}` the root writes itself expanded to, in expansion
+    /// order. Everything nested below one of these lies inside its region, so
+    /// this is how a span from any include depth is traced to the root-file site
+    /// that brought it in.
+    include_regions: Vec<IncludeRegion>,
     /// Loud, root-origin preprocessor diagnostics (already in real coords).
     preproc: Vec<Diagnostic>,
     /// Transitively included files (for change-tracking / invalidation).
@@ -178,9 +217,27 @@ pub struct ExpandedFile {
     /// is flat and transitive, so "direct or transitive?" is unanswerable
     /// downstream.
     direct_includes: Vec<DirectInclude>,
-    /// Root-origin include references that resolved to no file. An edge set that
-    /// dropped these would under-report impact silently.
+    /// Every include file the expansion read through a resolved include node, each
+    /// once, with the root-level site of the chain that reached it.
+    include_origins: Vec<IncludeOrigin>,
+    /// Include references that resolved to no file and that the root names itself:
+    /// written in the root, or reached only through `{&var}` substitutions the root
+    /// writes. For the second kind `site` is the substitution, in the root's own
+    /// bytes, and `via` is empty. An edge set that dropped these would
+    /// under-report impact silently.
     unresolved_includes: Vec<UnresolvedInclude>,
+    /// Include references written in an *included* file that resolved to no file.
+    /// The root cannot render their own sites, so each keeps the chain of sites
+    /// that led to it.
+    nested_unresolved_includes: Vec<UnresolvedInclude>,
+    /// Include references, at any depth, that resolved to a path whose content
+    /// could not be read. As with [`Self::unresolved_includes`], one reached only
+    /// through the root's own `{&var}` substitutions carries the substitution as
+    /// its site.
+    unreadable_includes: Vec<UnreadableInclude>,
+    /// Places, at any depth, where the preprocessor dropped text or decided a
+    /// branch without the facts to decide it.
+    text_losses: Vec<TextLoss>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -205,9 +262,40 @@ impl ExpandedFile {
         &self.direct_includes
     }
 
-    /// Root-origin include references that named no locatable file.
+    /// Include references the root names itself that named no locatable file:
+    /// written in the root, or reached only through its `{&var}` substitutions.
     pub fn unresolved_includes(&self) -> &[UnresolvedInclude] {
         &self.unresolved_includes
+    }
+
+    /// Include references written in an included file that named no locatable
+    /// file, at any depth below the root.
+    pub fn nested_unresolved_includes(&self) -> &[UnresolvedInclude] {
+        &self.nested_unresolved_includes
+    }
+
+    /// Every include file this expansion read through a resolved include node, each
+    /// once, with the root-level site of the chain that reached it.
+    ///
+    /// For a direct include that is its own site. Pairs with
+    /// [`ExpandedFile::dependency_paths`]: a path that is read and absent here was
+    /// read through no include node, and has no site.
+    pub fn include_origins(&self) -> &[IncludeOrigin] {
+        &self.include_origins
+    }
+
+    /// Include references, at any depth, that resolved to a path whose content
+    /// could not be read. The file exists, but what it includes is unknown.
+    pub fn unreadable_includes(&self) -> &[UnreadableInclude] {
+        &self.unreadable_includes
+    }
+
+    /// Where the preprocessor dropped text or chose a branch on a guess: an
+    /// include past the depth limit, an `&IF` that never closes, a condition on a
+    /// predefined name with no value. Whatever the lost text referenced is
+    /// unknown, so the absence of an edge proves nothing for this file.
+    pub fn text_losses(&self) -> &[TextLoss] {
+        &self.text_losses
     }
 
     /// Map a span in the **expanded** buffer back to the root file's own bytes.
@@ -219,6 +307,29 @@ impl ExpandedFile {
     /// expansion knows the mapping back.
     pub fn resolve_root_span(&self, span: Span) -> Option<Span> {
         self.resolve_span(span).map(|fs| fs.span)
+    }
+
+    /// The `{...}` site in the root file's own bytes through which a span in the
+    /// **expanded** buffer arrived, when it originates in an include.
+    ///
+    /// The outermost site, at any include depth: a span from an include nested
+    /// three deep is attributed to the root-level `{...}` that started the chain,
+    /// since that is the one coordinate the root file owns. `None` for a span
+    /// written in the root file itself.
+    pub fn resolve_include_site(&self, span: Span) -> Option<Span> {
+        let found = self
+            .include_regions
+            .binary_search_by(|region| {
+                if span.start < region.virt_start {
+                    std::cmp::Ordering::Greater
+                } else if span.start >= region.virt_end {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()?;
+        Some(self.include_regions[found].site)
     }
 
     /// The chunk containing virtual offset `virt`, or `None` past the end of the
@@ -345,15 +456,45 @@ pub fn expand_source(
     include_paths: &[PathBuf],
     preprocess: bool,
 ) -> Result<ExpandedFile, Vec<Diagnostic>> {
+    expand_source_with(
+        root,
+        None,
+        source,
+        fs,
+        include_paths,
+        &PreprocessorConfig::default(),
+        preprocess,
+    )
+}
+
+/// [`expand_source`] with the compile environment spelled out.
+///
+/// `predefined` answers the AVM's predefined names (`{&OPSYS}` and friends), and
+/// `name` is what `{&FILE-NAME}` expands to in the root file. `expand_source` is
+/// this with [`PreprocessorConfig::default`] and no name.
+pub fn expand_source_with(
+    root: FileId,
+    name: Option<&str>,
+    source: &str,
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    predefined: &PreprocessorConfig,
+    preprocess: bool,
+) -> Result<ExpandedFile, Vec<Diagnostic>> {
     if !preprocess {
         return Ok(ExpandedFile {
             text: source.to_string(),
             chunks: Vec::new(),
+            include_regions: Vec::new(),
             preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
+            include_origins: Vec::new(),
             unresolved_includes: Vec::new(),
+            nested_unresolved_includes: Vec::new(),
+            unreadable_includes: Vec::new(),
+            text_losses: Vec::new(),
             root,
         });
     }
@@ -361,12 +502,26 @@ pub fn expand_source(
     // Wrap the filesystem to record every include path read during expansion,
     // giving the LSP watcher a precise `*.i` → buffer dependency set (R17).
     let recorder = RecordingFileSystem::new(fs);
-    let pp = Preprocessor::new(&recorder, include_paths);
-    match pp.process(root, source) {
+    let pp = Preprocessor::new(&recorder, include_paths).with_predefined(predefined);
+    let processed = match name {
+        Some(name) => pp.process_named(root, name, source),
+        None => pp.process(root, source),
+    };
+    match processed {
         Ok(pf) => {
             let mut chunks = Vec::new();
+            let mut include_regions = Vec::new();
             let mut cursor = 0u32;
-            flatten_tree(&pf.tree, &mut cursor, &mut chunks);
+            flatten_tree(
+                &pf.tree,
+                &mut cursor,
+                &mut chunks,
+                &mut RegionTracker {
+                    root,
+                    inside: false,
+                    out: &mut include_regions,
+                },
+            );
             // Loud, root-origin preprocessor diagnostics carry real spans
             // already, so they are filtered by origin directly.
             let mut preproc: Vec<Diagnostic> = pf
@@ -385,23 +540,63 @@ pub fn expand_source(
                 root,
             ));
             let mut direct_includes = Vec::new();
-            collect_direct_includes(&pf.tree, root, &mut direct_includes);
+            collect_direct_includes(&pf.tree, root, None, &mut direct_includes);
+            let mut include_origins = Vec::new();
+            collect_include_origins(
+                &pf.tree,
+                root,
+                None,
+                &mut std::collections::HashSet::new(),
+                &mut include_origins,
+            );
+            let mut substitutions = Vec::new();
+            collect_substitution_sites(&pf.tree, &mut substitutions);
             // An include that failed to resolve deeper down is that file's gap to
-            // report, not this one's — the same origin rule diagnostics follow.
-            let unresolved_includes = pf
-                .unresolved_includes
+            // report, not this one's — the same origin rule diagnostics follow. A
+            // `{&var}` the root writes is not deeper down: its value is the root's
+            // own text, so the reference is the root's and sits at the substitution.
+            let mut unresolved_includes = Vec::new();
+            let mut nested_unresolved_includes = Vec::new();
+            for include in &pf.unresolved_includes {
+                if include.site.file == root {
+                    unresolved_includes.push(include.clone());
+                } else if let Some(site) = substitution_site(&include.via, root, &substitutions) {
+                    unresolved_includes.push(UnresolvedInclude {
+                        site,
+                        via: Vec::new(),
+                        ..include.clone()
+                    });
+                } else {
+                    nested_unresolved_includes.push(include.clone());
+                }
+            }
+            let unreadable_includes = pf
+                .unreadable_includes
                 .iter()
-                .filter(|u| u.site.file == root)
-                .cloned()
+                .map(
+                    |include| match substitution_site(&include.via, root, &substitutions) {
+                        Some(site) if include.site.file != root => UnreadableInclude {
+                            site,
+                            via: Vec::new(),
+                            ..include.clone()
+                        },
+                        _ => include.clone(),
+                    },
+                )
                 .collect();
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
                 chunks,
+                include_regions,
                 preproc,
                 dependencies: pf.dependencies.clone(),
                 dependency_paths: recorder.into_reads(),
                 direct_includes,
+                include_origins,
                 unresolved_includes,
+                nested_unresolved_includes,
+                unreadable_includes,
+                text_losses: pf.text_losses.clone(),
                 root,
             })
         }
@@ -463,8 +658,11 @@ fn nested_unresolved_include_diagnostics(
     out
 }
 
-/// A [`FileSystem`] decorator that records the path of every successful `read`,
-/// used to capture an expansion's include dependency set.
+/// A [`FileSystem`] decorator that records the path of every `read` of a file
+/// that exists, used to capture an expansion's include dependency set.
+///
+/// A read that fails on an existing path is recorded too: the file is still a
+/// dependency, and a watcher has to re-run the dependent once it is fixed.
 struct RecordingFileSystem<'a> {
     inner: &'a dyn FileSystem,
     reads: Mutex<Vec<PathBuf>>,
@@ -486,7 +684,7 @@ impl<'a> RecordingFileSystem<'a> {
 impl FileSystem for RecordingFileSystem<'_> {
     fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
         let result = self.inner.read(path);
-        if result.is_ok()
+        if (result.is_ok() || self.inner.exists(path))
             && let Ok(mut reads) = self.reads.lock()
         {
             reads.push(path.to_path_buf());
@@ -499,8 +697,26 @@ impl FileSystem for RecordingFileSystem<'_> {
     }
 }
 
-/// Walk the span tree in expansion order, emitting a flat chunk per leaf.
-fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChunk>) {
+/// Where [`flatten_tree`] records root-origin include regions, and whether the
+/// walk is already inside one.
+struct RegionTracker<'a> {
+    root: FileId,
+    inside: bool,
+    out: &'a mut Vec<IncludeRegion>,
+}
+
+/// Walk the span tree in expansion order, emitting a flat chunk per leaf, and a
+/// region per outermost `{file.i}` the root writes.
+///
+/// A `{&var}` the root writes opens a region as well, so what its value includes is
+/// attributed to the reference. A `{N}` substitution only occurs inside an include,
+/// which is already inside a region.
+fn flatten_tree(
+    nodes: &[SpanNode],
+    cursor: &mut u32,
+    out: &mut Vec<ExpandedChunk>,
+    regions: &mut RegionTracker<'_>,
+) {
     for node in nodes {
         match node {
             SpanNode::Chunk { file, start, end } => {
@@ -513,8 +729,93 @@ fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChun
                 });
                 *cursor += len;
             }
-            SpanNode::Include { children, .. } => flatten_tree(children, cursor, out),
+            SpanNode::Include { site, children, .. } => {
+                let opens = !regions.inside && site.file == regions.root;
+                if !opens {
+                    flatten_tree(children, cursor, out, regions);
+                    continue;
+                }
+                let virt_start = *cursor;
+                regions.inside = true;
+                flatten_tree(children, cursor, out, regions);
+                regions.inside = false;
+                // An include that expanded to nothing covers no span, and an empty
+                // region would break the search's ordering for nothing.
+                if *cursor > virt_start {
+                    regions.out.push(IncludeRegion {
+                        virt_start,
+                        virt_end: *cursor,
+                        site: site.span,
+                    });
+                }
+            }
         }
+    }
+}
+
+/// Every `{&var}` substitution in the tree, as the file and span that wrote it.
+fn collect_substitution_sites(nodes: &[SpanNode], out: &mut Vec<FileSpan>) {
+    for node in nodes {
+        if let SpanNode::Include {
+            site,
+            path: None,
+            children,
+        } = node
+        {
+            out.push(*site);
+            collect_substitution_sites(children, out);
+        } else if let SpanNode::Include { children, .. } = node {
+            collect_substitution_sites(children, out);
+        }
+    }
+}
+
+/// The substitution in the root's own bytes through which a reference arrived,
+/// when the whole chain that led to it is `{&var}` substitutions and none is a
+/// file include.
+fn substitution_site(
+    via: &[FileSpan],
+    root: FileId,
+    substitutions: &[FileSpan],
+) -> Option<FileSpan> {
+    let first = via.first().filter(|site| site.file == root)?;
+    via.iter()
+        .all(|step| substitutions.contains(step))
+        .then_some(*first)
+}
+
+/// Every resolved include in the tree, at any depth, each path once in tree order,
+/// with the outermost site the root writes that led to it.
+///
+/// `anchor` is that outermost site once the walk is inside one. A node whose site
+/// is not in `root` and that has no anchor cannot be placed in the root's bytes
+/// and is skipped.
+fn collect_include_origins(
+    nodes: &[SpanNode],
+    root: FileId,
+    anchor: Option<Span>,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    out: &mut Vec<IncludeOrigin>,
+) {
+    for node in nodes {
+        let SpanNode::Include {
+            site,
+            path,
+            children,
+        } = node
+        else {
+            continue;
+        };
+        let origin = anchor.or((site.file == root).then_some(site.span));
+        if let (Some(path), Some(site)) = (path, origin)
+            && seen.insert(path.clone())
+        {
+            out.push(IncludeOrigin {
+                path: path.clone(),
+                site,
+            });
+        }
+        collect_include_origins(children, root, origin, seen, out);
     }
 }
 
@@ -526,10 +827,16 @@ fn flatten_tree(nodes: &[SpanNode], cursor: &mut u32, out: &mut Vec<ExpandedChun
 /// real include reached that way is still one this file names itself. A resolved
 /// include's own children are not walked: everything below it is transitive.
 ///
-/// A node whose site is not in `root` is skipped. Nothing produces one today, and
-/// the alternative to skipping is reporting a site that points at bytes of another
-/// file as though they were the root's.
-fn collect_direct_includes(nodes: &[SpanNode], root: FileId, out: &mut Vec<DirectInclude>) {
+/// An include whose site is not in `root` is one a `{&var}` value names. Its
+/// site is the substitution's, the nearest place in the root's own bytes. With no
+/// such place the node is skipped: the alternative is reporting a site that points
+/// at bytes of another file as though they were the root's.
+fn collect_direct_includes(
+    nodes: &[SpanNode],
+    root: FileId,
+    anchor: Option<Span>,
+    out: &mut Vec<DirectInclude>,
+) {
     for node in nodes {
         if let SpanNode::Include {
             site,
@@ -537,16 +844,19 @@ fn collect_direct_includes(nodes: &[SpanNode], root: FileId, out: &mut Vec<Direc
             children,
         } = node
         {
+            let own = (site.file == root).then_some(site.span);
             match path {
                 Some(path) => {
-                    if site.file == root && !out.iter().any(|d| d.path == *path) {
+                    if let Some(site) = own.or(anchor)
+                        && !out.iter().any(|d| d.path == *path)
+                    {
                         out.push(DirectInclude {
                             path: path.clone(),
-                            site: site.span,
+                            site,
                         });
                     }
                 }
-                None => collect_direct_includes(children, root, out),
+                None => collect_direct_includes(children, root, own.or(anchor), out),
             }
         }
     }
@@ -610,6 +920,7 @@ pub fn collect_from_expanded_with_source_context(
     let tokens = tokenize(&expanded.text);
     let mut parser = Parser::new(&tokens, &expanded.text);
     let program = parser.parse_program();
+    out.parse_recovered = !program.errors.is_empty();
 
     for err in program.errors {
         let virt = err.into_diagnostic(root);
@@ -792,11 +1103,16 @@ mod tests {
                     real_start: *real_start,
                 })
                 .collect(),
+            include_regions: Vec::new(),
             preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
+            include_origins: Vec::new(),
             unresolved_includes: Vec::new(),
+            nested_unresolved_includes: Vec::new(),
+            unreadable_includes: Vec::new(),
+            text_losses: Vec::new(),
             root: ROOT,
         }
     }
@@ -1208,6 +1524,34 @@ mod tests {
         assert_eq!(direct_names(&expanded), vec!["a.i"]);
     }
 
+    // Text from any include depth traces to the root-level `{...}` that pulled it
+    // in; the root's own text traces to no include at all.
+    #[test]
+    fn an_include_span_traces_to_its_outermost_root_site() {
+        let source = "MESSAGE 1.\n{a.i}\nMESSAGE 2.\n";
+        let expanded = expand_in_proj(
+            &[("a.i", "MESSAGE 3.\n{b.i}\n"), ("b.i", "MESSAGE 4.\n")],
+            source,
+        );
+        let at = |needle: &str| {
+            let start = expanded.text.find(needle).expect("in the expansion") as u32;
+            Span {
+                start,
+                end: start + needle.len() as u32,
+            }
+        };
+        let site = Span { start: 11, end: 16 };
+        assert_eq!(&source[11..16], "{a.i}");
+        assert_eq!(expanded.resolve_include_site(at("MESSAGE 1.")), None);
+        assert_eq!(expanded.resolve_include_site(at("MESSAGE 2.")), None);
+        assert_eq!(expanded.resolve_include_site(at("MESSAGE 3.")), Some(site));
+        assert_eq!(
+            expanded.resolve_include_site(at("MESSAGE 4.")),
+            Some(site),
+            "a nested include is attributed to the root-level site"
+        );
+    }
+
     // `a.i` includes `b.i`: only `a.i` is direct, but both are transitive.
     #[test]
     fn nested_include_is_transitive_not_direct() {
@@ -1376,5 +1720,24 @@ mod tests {
             "unknown bare name in FIRST-OF must still be undefined, got {:?}",
             codes(&c)
         );
+    }
+
+    // Another crate must carry a fallback arm for a kind of loss the preprocessor
+    // learns later. The denied lint fails if the attribute that requires it goes.
+    #[test]
+    fn text_loss_kinds_are_non_exhaustive() {
+        use oxabl_preprocessor::TextLossKind;
+
+        #[deny(unreachable_patterns)]
+        fn is_depth_limit(kind: TextLossKind) -> bool {
+            match kind {
+                TextLossKind::IncludeDepthLimit => true,
+                TextLossKind::UnclosedConditional
+                | TextLossKind::UnknownPredefinedName
+                | TextLossKind::UnmodelledCondition => false,
+                _ => false,
+            }
+        }
+        assert!(is_depth_limit(TextLossKind::IncludeDepthLimit));
     }
 }
