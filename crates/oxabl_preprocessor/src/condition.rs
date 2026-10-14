@@ -53,7 +53,9 @@ pub struct Evaluation {
 ///   `NUM-ENTRIES`, `LOOKUP`, `ABSOLUTE`, `MAXIMUM`, `MINIMUM`
 /// - `DBTYPE`, `CONNECTED` and `LDBNAME` of a logical database name, from the
 ///   databases the environment lists: `DBTYPE` is `PROGRESS` unless the
-///   environment says otherwise. `DICTDB` is the first database listed. A name
+///   environment says otherwise. `DICTDB` is the first database listed in a
+///   stated list; for an inferred one only `CONNECTED("DICTDB")` is known, as its
+///   order is not that of connection. A name
 ///   that a stated list does not hold is `?`; a name that a list inferred from
 ///   the schema file names does not hold is a [`Gap`], as that list may miss the
 ///   logical name. They are a [`Gap`] too while no list is known, and for a
@@ -850,15 +852,21 @@ impl<'a> CondParser<'a> {
             }
         };
         // `DICTDB` is the alias of the first database, unless one is named so.
-        let connected = databases
-            .iter()
-            .find(|d| d.eq_ignore_ascii_case(wanted))
-            .or_else(|| {
-                wanted
-                    .eq_ignore_ascii_case("DICTDB")
-                    .then(|| databases.first())
-                    .flatten()
-            });
+        let named = databases.iter().find(|d| d.eq_ignore_ascii_case(wanted));
+        let alias = named.is_none() && wanted.eq_ignore_ascii_case("DICTDB");
+        // An inferred list is in the order of the schema files, not of connection,
+        // so only the fact that some database is connected is known of the alias.
+        if alias && !stated {
+            if name == "CONNECTED" && !databases.is_empty() {
+                return CondValue::Bool(true);
+            }
+            self.gap(format!(
+                "the function {name} of 'DICTDB', which is the first connected database \
+                 (list the connected databases under `databases` in [workspace.preprocessor])"
+            ));
+            return CondValue::Unknown;
+        }
+        let connected = named.or_else(|| alias.then(|| databases.first()).flatten());
         if connected.is_none() && !stated {
             self.gap(format!(
                 "the function {name} of '{wanted}', which is not a schema file name \
@@ -2106,7 +2114,22 @@ mod tests {
         assert!(exact(r#"CONNECTED("stock")"#));
         assert!(exact(r#"LDBNAME("stock") = "Stock""#));
         assert!(exact(r#"CONNECTED("DICTDB")"#));
-        assert!(exact(r#"LDBNAME("DICTDB") = "ledger_v12""#));
+        assert!(!exact(r#"NOT CONNECTED("DICTDB")"#));
+    }
+
+    #[test]
+    fn ldbname_and_dbtype_of_dictdb_in_an_inferred_list_are_a_gap() {
+        for condition in [
+            r#"LDBNAME("DICTDB") = "ledger_v12""#,
+            r#"DBTYPE("dictdb") = "PROGRESS""#,
+            r#"DBTYPE("DICTDB") NE ?"#,
+        ] {
+            let e = eval_inferred(condition, &["ledger_v12", "Stock"], None);
+            assert_eq!(e.gaps.len(), 1, "{condition}: {:?}", e.gaps);
+        }
+        // A database that is named DICTDB is still found by its name.
+        let e = eval_inferred(r#"LDBNAME("DICTDB") = "DICTDB""#, &["a", "DICTDB"], None);
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
     }
 
     #[test]
