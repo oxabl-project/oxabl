@@ -11,8 +11,6 @@
 //! not per-line, so multi-line block comments stay a single comment token and
 //! their interior text is never mistaken for keywords.
 
-use std::collections::HashSet;
-
 use oxabl_lexer::{Kind, Token};
 use oxabl_style::{KeywordAbbreviation, KeywordCase, StyleGuide};
 
@@ -59,26 +57,9 @@ pub(crate) fn is_transformable(kind: Kind) -> bool {
     )
 }
 
-/// Keywords that open a declaration of a name; the name that follows is protected
-/// and, for these, every other spelling of it in the file too.
-fn declares_name(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::Variable
-            | Kind::Parameter
-            | Kind::Buffer
-            | Kind::TempTable
-            | Kind::Field
-            | Kind::Property
-            | Kind::Procedure
-            | Kind::Function
-            | Kind::Event
-    )
-}
-
-/// Keywords after which a name or type name follows without declaring a
-/// variable-like name.
-fn introduces_name(kind: Kind) -> bool {
+/// Keywords after which a class name or a path follows (`CLASS`, `NEW`,
+/// `INHERITS`, `IMPLEMENTS`, `USING`, `RUN`, `AS`).
+fn introduces_path(kind: Kind) -> bool {
     matches!(
         kind,
         Kind::Class
@@ -90,8 +71,14 @@ fn introduces_name(kind: Kind) -> bool {
             | Kind::Using
             | Kind::Run
             | Kind::KwAs
-            | Kind::Returns
     )
+}
+
+/// Keywords after which a bare class name follows. A name in a `RUN` or `AS`
+/// position stays a keyword (`RUN fill`, `AS PRIMARY`); only a dotted path is
+/// a name there.
+fn introduces_class(kind: Kind) -> bool {
+    introduces_path(kind) && !matches!(kind, Kind::Run | Kind::KwAs)
 }
 
 /// Keywords that can follow a name-introducing keyword and are still keywords:
@@ -145,45 +132,96 @@ fn is_structural(kind: Kind) -> bool {
     )
 }
 
-/// Keywords that head a `:` chain as a system handle or block opener, never as a
-/// user name (`THIS-OBJECT:Menu`, `DO:MESSAGE`).
-fn is_receiver_keyword(kind: Kind) -> bool {
+/// Words that lexed as identifiers before they became unreserved keywords. Each
+/// is a legal class, table or variable name, so it is recased only where it is a
+/// real keyword (see [`is_keyword_position`]).
+fn was_identifier(kind: Kind) -> bool {
     matches!(
         kind,
-        Kind::ThisObject
-            | Kind::ThisProcedure
-            | Kind::KwSelf
-            | Kind::Session
-            | Kind::ErrorStatus
-            | Kind::Focus
-            | Kind::CurrentWindow
-            | Kind::ActiveWindow
-            | Kind::DefaultWindow
-            | Kind::Compiler
-            | Kind::Clipboard
-            | Kind::LastEvent
-            | Kind::Debugger
-            | Kind::FileInfo
-            | Kind::Buffer
-            | Kind::Frame
-            | Kind::Browse
-            | Kind::Dataset
-            | Kind::Do
-            | Kind::Repeat
-            | Kind::KwElse
-            | Kind::Finally
-            | Kind::Triggers
+        Kind::Object
+            | Kind::Widget
+            | Kind::XDocument
+            | Kind::XNoderef
+            | Kind::SaxReader
+            | Kind::SaxWriter
+            | Kind::SaxAttributes
+            | Kind::Socket
+            | Kind::ServerSocket
+            | Kind::Server
+            | Kind::SoapHeader
+            | Kind::SoapHeaderEntryref
+            | Kind::ClientPrincipal
+            | Kind::Button
+            | Kind::ComboBox
+            | Kind::ControlFrame
+            | Kind::DialogBox
+            | Kind::Editor
+            | Kind::FillIn
+            | Kind::Image
+            | Kind::Menu
+            | Kind::MenuItem
+            | Kind::RadioSet
+            | Kind::SelectionList
+            | Kind::Slider
+            | Kind::SubMenu
+            | Kind::ToggleBox
     )
+}
+
+/// Operators spelled as words, which can follow a variable that is named like a
+/// keyword.
+fn is_operator_word(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Eq
+            | Kind::Ne
+            | Kind::Lt
+            | Kind::Le
+            | Kind::Gt
+            | Kind::Ge
+            | Kind::And
+            | Kind::Or
+            | Kind::Not
+            | Kind::Matches
+            | Kind::Begins
+            | Kind::Contains
+            | Kind::Modulo
+    )
+}
+
+/// Whether the [`was_identifier`] token at `sig[p]` is a keyword: the operand of
+/// `CREATE`, `DELETE`, `RELEASE` or `VIEW-AS`, or the widget type of a
+/// `DEFINE [NEW] [SHARED] ...`. After `CREATE`/`DELETE`/`RELEASE` a word that ends
+/// the statement is a table name.
+fn is_keyword_position(toks: &[Token], sig: &[usize], p: usize) -> bool {
+    let mut q = p;
+    while q > 0 {
+        q -= 1;
+        match toks[sig[q]].kind {
+            Kind::New | Kind::Shared | Kind::Global => continue,
+            Kind::Define => return true,
+            Kind::ViewAs => return q + 1 == p,
+            Kind::Create | Kind::Delete | Kind::Release => {
+                return q + 1 == p
+                    && sig
+                        .get(p + 1)
+                        .is_some_and(|&n| toks[n].kind != Kind::Period);
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Flags (by index into `toks`) the keyword tokens that are names, not keywords.
 ///
-/// An unreserved keyword such as `image` or `server` is a legal name, and the
-/// token stream alone cannot tell the two uses apart. A token is a name when it
-/// is part of a dotted or colon-qualified name, sits in a name position (after
-/// `CLASS`, `NEW`, `AS`, `DEFINE ... VARIABLE`, `PROCEDURE`, `RUN`, ...), is a
-/// method name or its return type, or is spelled like a name the file declares.
-/// A name that comes from an include file stays undetected.
+/// Every keyword is recased, except where the case of a word matters or the word
+/// is a legal name:
+/// - a word that lexed as an identifier before it became an unreserved keyword
+///   (`image`, `server`, ...) stays as written unless it is a keyword use, see
+///   [`is_keyword_position`];
+/// - a class name after `CLASS`, `NEW`, `INHERITS`, `IMPLEMENTS` (every entry) or
+///   `USING`, and a dotted path after one of these, `RUN` or `AS`, names a file.
 pub(crate) fn name_uses(source: &str, toks: &[Token]) -> Vec<bool> {
     let sig: Vec<usize> = (0..toks.len())
         .filter(|&i| !matches!(toks[i].kind, Kind::Comment | Kind::Eof))
@@ -195,94 +233,65 @@ pub(crate) fn name_uses(source: &str, toks: &[Token]) -> Vec<bool> {
             .is_some_and(|c| c.is_alphabetic() || c == '_')
     };
     let touches = |a: usize, b: usize| toks[a].end == toks[b].start;
-    let qualifier =
-        |i: usize| matches!(toks[i].kind, Kind::Period | Kind::Colon | Kind::DoubleColon);
 
     let mut is_name = vec![false; toks.len()];
-    let mut declared: HashSet<String> = HashSet::new();
-    let mut declare = |i: usize, is_name: &mut Vec<bool>, remember: bool| {
-        is_name[i] = true;
-        if remember && toks[i].kind != Kind::Identifier {
-            declared.insert(source[toks[i].start..toks[i].end].to_ascii_lowercase());
-        }
-    };
-
     for (p, &i) in sig.iter().enumerate() {
         if !word_like(i) {
             continue;
         }
-        let prev = p.checked_sub(1).map(|q| sig[q]);
-        let next = sig.get(p + 1).copied();
-
-        // `a.b`, `a:b`, `a::b`: every word of the chain is a name.
-        if prev.is_some_and(|q| qualifier(q) && touches(q, i)) {
-            is_name[i] = true;
+        if was_identifier(toks[i].kind) {
+            is_name[i] = !is_keyword_position(toks, &sig, p);
+            continue;
         }
-        if let (Some(n), Some(&after)) = (next, sig.get(p + 2))
-            && qualifier(n)
-            && !(toks[n].kind != Kind::Period && is_receiver_keyword(toks[i].kind))
-            && touches(i, n)
-            && touches(n, after)
-            && word_like(after)
-        {
-            is_name[i] = true;
+        let in_chain = p >= 2
+            && toks[sig[p - 1]].kind == Kind::Period
+            && touches(sig[p - 2], sig[p - 1])
+            && touches(sig[p - 1], i);
+        if in_chain {
+            is_name[i] = is_name[sig[p - 2]];
+            continue;
         }
-
-        if let Some(q) = prev
-            && !is_structural(toks[i].kind)
-            && !is_name[q]
-        {
-            // `DELETE PROCEDURE h` and `EXTERNAL PROCEDURE "x"` name no new thing.
-            let not_a_declaration = toks[q].kind == Kind::Procedure
-                && p >= 2
-                && matches!(toks[sig[p - 2]].kind, Kind::Delete | Kind::External);
-            if not_a_declaration {
-                // The operand is an expression; its keywords stay keywords.
-            } else if declares_name(toks[q].kind) {
-                declare(i, &mut is_name, true);
-            } else if introduces_name(toks[q].kind) {
-                declare(i, &mut is_name, false);
-            }
-        }
-
-        // `name AS type`
-        if next.is_some_and(|n| toks[n].kind == Kind::KwAs) && !is_structural(toks[i].kind) {
-            declare(i, &mut is_name, true);
-        }
-
-        // `METHOD [modifiers] type name(`: the name and the type before it.
-        if toks[i].kind == Kind::Method
-            && prev.is_none_or(|q| toks[q].kind != Kind::End)
-            && let Some(open) = sig[p + 1..]
-                .iter()
-                .take(8)
-                .position(|&j| toks[j].kind == Kind::LeftParen)
-                .map(|k| p + 1 + k)
-            && open >= p + 3
-        {
-            let name = sig[open - 1];
-            let ty = sig[open - 2];
-            if word_like(name) {
-                declare(name, &mut is_name, true);
-            }
-            if word_like(ty) && !is_structural(toks[ty].kind) {
-                is_name[ty] = true;
-            }
-        }
-    }
-
-    if !declared.is_empty() {
-        for &i in &sig {
-            if !is_name[i]
-                && toks[i].kind != Kind::Identifier
-                && word_like(i)
-                && declared.contains(&source[toks[i].start..toks[i].end].to_ascii_lowercase())
-            {
-                is_name[i] = true;
-            }
-        }
+        let Some(q) = p.checked_sub(1).map(|q| sig[q]) else {
+            continue;
+        };
+        // The first word of a dotted chain decides for the whole chain.
+        let dotted = matches!((sig.get(p + 1), sig.get(p + 2)), (Some(&n), Some(&a))
+            if toks[n].kind == Kind::Period
+                && touches(i, n)
+                && touches(n, a)
+                && word_like(a));
+        let in_list = toks[q].kind == Kind::Comma && in_type_list(toks, &sig, p, &word_like);
+        // `tt.CLASS EQ "x"`: a field named like the introducer introduces nothing.
+        let member = p >= 2
+            && matches!(toks[q].kind, Kind::Class | Kind::Interface)
+            && matches!(toks[sig[p - 2]].kind, Kind::Period | Kind::Colon)
+            && touches(sig[p - 2], q);
+        is_name[i] = if dotted {
+            introduces_path(toks[q].kind) || in_list
+        } else {
+            (introduces_class(toks[q].kind) || in_list)
+                && !member
+                && !is_structural(toks[i].kind)
+                && !is_operator_word(toks[i].kind)
+        };
     }
     is_name
+}
+
+/// Whether `sig[p]`, which follows a comma, is an entry of an `INHERITS` or
+/// `IMPLEMENTS` list.
+fn in_type_list(
+    toks: &[Token],
+    sig: &[usize],
+    p: usize,
+    word_like: &dyn Fn(usize) -> bool,
+) -> bool {
+    sig[..p].iter().rev().find_map(|&j| match toks[j].kind {
+        Kind::Inherits | Kind::Implements => Some(true),
+        Kind::Comma | Kind::Period => None,
+        _ if word_like(j) => None,
+        _ => Some(false),
+    }) == Some(true)
 }
 
 /// Transform one keyword token's source text per the style.
