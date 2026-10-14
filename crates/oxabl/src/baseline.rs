@@ -27,11 +27,16 @@
 //!
 //! - `path` is relative to the workspace root (the directory holding
 //!   `oxabl.toml`, else the directory holding the baseline file), with `/`.
-//!   `.` and `..` are resolved lexically first, so `src/sub/../a.p` and
-//!   `src/a.p` are one file. A finding in a file outside the root has no such
-//!   path: it is reported but never recorded. On Windows the root is matched
-//!   against the file without regard to case; the rest of the path keeps the
-//!   case the file system gives it.
+//!   The file is resolved through the file system first
+//!   (`std::fs::canonicalize`), so `src/sub/../a.p` and `src/a.p` are one file,
+//!   and a symlink followed by `..` names the file that is read, not the file
+//!   the lexical path suggests. On Windows that also gives the path the case
+//!   of the file system, so `SRC\A.P` and `src\a.p` are one file. A file that
+//!   does not resolve uses its lexical form, and its root is then matched
+//!   without regard to case on Windows. A finding in a file outside the root
+//!   has no path: it is reported but never recorded. A file below the root
+//!   only through a symlink that points out of it keeps its walk path, unless
+//!   the path given has a `..`.
 //! - `hash` is a 64-bit FNV-1a hash, in hex, of the flagged line and the first
 //!   line of the flagged span, each with whitespace runs collapsed and ASCII
 //!   letters folded to lower case, so a change of keyword case (`DEFINE` to
@@ -235,8 +240,6 @@ impl Run {
             Err(e) if update && e.kind() == std::io::ErrorKind::NotFound => Baseline::default(),
             Err(e) => return Err(format!("cannot read baseline {}: {e}", file.display())),
         };
-        let absolute =
-            |p: &Path| lexical(&std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()));
         let target = absolute(target);
         let start = if target.is_dir() {
             target.clone()
@@ -360,13 +363,50 @@ pub fn fingerprint<'a>(
 
 /// The workspace-relative spelling of `file` under `root`, with `/`, or `None`
 /// when `file` is not below `root`.
+///
+/// Both paths go through the file system first, so a symlink and a `..` that
+/// follows it name the file that is read, and (on Windows) the case comes from
+/// the file system. A file that is below the root only through a symlink that
+/// points out of it keeps its walk path, unless that path has a `..`: then the
+/// lexical form could name another file, and the file has no key.
 pub fn relative_path(root: &Path, file: &Path) -> Option<String> {
-    relative_key(root, file, cfg!(windows))
+    let fold_case = cfg!(windows);
+    relative_key(&canonical(root), &canonical(file), fold_case).or_else(|| {
+        let walked = !file.components().any(|c| c == Component::ParentDir);
+        walked
+            .then(|| relative_key(&absolute(root), &absolute(file), fold_case))
+            .flatten()
+    })
 }
 
-/// [`relative_path`], with the case of the `root` match chosen by the caller.
+fn absolute(path: &Path) -> PathBuf {
+    lexical(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
+}
+
+/// `std::fs::canonicalize`; for a path that does not exist, the deepest
+/// existing ancestor canonicalized plus the lexical rest.
+fn canonical(path: &Path) -> PathBuf {
+    let raw = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(found) = std::fs::canonicalize(&raw) {
+        return found;
+    }
+    let lexical = lexical(&raw);
+    let mut rest = Vec::new();
+    let mut at = lexical.as_path();
+    while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
+        rest.push(name);
+        at = parent;
+        if let Ok(mut found) = std::fs::canonicalize(at) {
+            found.extend(rest.iter().rev());
+            return found;
+        }
+    }
+    lexical
+}
+
+/// The part of `file` below `root`, both already resolved. `fold_case` makes
+/// the match ignore case, and the key then takes its case from `file`.
 fn relative_key(root: &Path, file: &Path, fold_case: bool) -> Option<String> {
-    let (root, file) = (lexical(root), lexical(file));
     let same = |a: Component, b: Component| {
         a == b
             || fold_case
@@ -599,6 +639,79 @@ mod tests {
                 relative_path(Path::new("/ws"), Path::new(file)),
                 None,
                 "{file}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    mod symlinks {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        /// `root/src/{a.p,link -> outside/x}`, `outside/{a.p,x/b.p}`.
+        fn tree() -> tempfile::TempDir {
+            let dir = tempfile::tempdir().unwrap();
+            let t = dir.path();
+            for sub in ["root/src", "outside/x"] {
+                std::fs::create_dir_all(t.join(sub)).unwrap();
+            }
+            for file in ["root/src/a.p", "outside/a.p", "outside/x/b.p"] {
+                std::fs::write(t.join(file), "").unwrap();
+            }
+            symlink(t.join("outside/x"), t.join("root/src/link")).unwrap();
+            dir
+        }
+
+        #[test]
+        fn dot_dot_after_a_symlink_names_the_file_that_is_read() {
+            let dir = tree();
+            let root = dir.path().join("root");
+            // `src/link/../a.p` is `outside/a.p`, not `src/a.p`.
+            assert_eq!(
+                relative_path(&root, &root.join("src/link/../a.p")),
+                None,
+                "the file is outside the root"
+            );
+            assert_eq!(
+                relative_path(&root, &root.join("src/a.p")).as_deref(),
+                Some("src/a.p")
+            );
+        }
+
+        #[test]
+        fn two_spellings_through_symlinks_give_one_key() {
+            let dir = tree();
+            let t = dir.path();
+            symlink(t.join("root/src"), t.join("root/alias")).unwrap();
+            symlink(t.join("root"), t.join("root-link")).unwrap();
+            let root = t.join("root");
+            for (root, file) in [
+                (root.clone(), root.join("alias/a.p")),
+                (t.join("root-link"), root.join("src/a.p")),
+                (root.clone(), t.join("root-link/src/a.p")),
+                (root.clone(), root.join("alias/../src/a.p")),
+            ] {
+                assert_eq!(
+                    relative_path(&root, &file).as_deref(),
+                    Some("src/a.p"),
+                    "{}",
+                    file.display()
+                );
+            }
+        }
+
+        #[test]
+        fn a_walked_file_in_a_linked_directory_keeps_its_walk_path() {
+            let dir = tree();
+            let root = dir.path().join("root");
+            assert_eq!(
+                relative_path(&root, &root.join("src/link/b.p")).as_deref(),
+                Some("src/link/b.p")
+            );
+            // The same file reached with a `..` has no safe lexical form.
+            assert_eq!(
+                relative_path(&root, &root.join("src/./link/../x/b.p")),
+                None
             );
         }
     }

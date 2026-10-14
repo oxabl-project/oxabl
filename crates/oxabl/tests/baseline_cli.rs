@@ -301,6 +301,30 @@ fn a_path_with_dot_dot_is_the_same_file() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn dot_dot_after_a_symlink_is_not_the_file_the_lexical_path_names() {
+    let dir = workspace();
+    let root = dir.path();
+    check(root, &["src", "--baseline", "b.json", "--update-baseline"]);
+
+    // `src/link/../a.p` reads `elsewhere/a.p`, which has the same text as
+    // `src/a.p`. It must not borrow that file's baseline entry.
+    let elsewhere = TempDir::new().unwrap();
+    fs::create_dir(elsewhere.path().join("x")).unwrap();
+    fs::copy(root.join("src/a.p"), elsewhere.path().join("a.p")).unwrap();
+    std::os::unix::fs::symlink(elsewhere.path().join("x"), root.join("src/link")).unwrap();
+
+    let (exit, report, stderr) = baselined(root, &["src/link/../a.p"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert_eq!(report["baseline"]["baselined"], 0, "{report}");
+    assert_eq!(report["baseline"]["outside_root"], 1, "{report}");
+
+    let (exit, report, stderr) = baselined(root, &["src/a.p"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert_eq!(report["baseline"]["baselined"], 1, "{report}");
+}
+
 #[test]
 fn a_crlf_file_matches_its_lf_baseline() {
     let dir = workspace();
