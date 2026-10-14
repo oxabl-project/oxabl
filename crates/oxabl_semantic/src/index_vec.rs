@@ -6,7 +6,7 @@
 //! See plan §Proposed Solution ("Side tables are stored as `IndexVec<NodeId,
 //! Option<T>>`") and CLAUDE.md's no-heap-alloc guidance.
 
-use oxabl_ast::NodeId;
+use oxabl_ast::{NodeId, Statement};
 
 /// A dense side table keyed by [`NodeId`]. Expands the backing `Vec` as
 /// needed on insert; `None` means "no entry at this NodeId". Does not grow
@@ -28,6 +28,19 @@ impl<T> NodeIndexVec<T> {
         NodeIndexVec {
             inner: Vec::with_capacity(n),
         }
+    }
+
+    /// Pre-allocate one slot for every NodeId in a parsed `program`.
+    ///
+    /// The parser gives a node its id after its children, so the last
+    /// top-level statement holds the highest id. A hand-built tree breaks
+    /// this at worst into a growing table, never a wrong one.
+    pub fn for_program(program: &[Statement]) -> Self {
+        let slots = match program.last() {
+            Some(s) if s.id != NodeId::DUMMY => s.id.as_u32() as usize + 1,
+            _ => 0,
+        };
+        Self::with_capacity(slots)
     }
 
     /// Number of slots (both populated and empty) in the backing vec.
@@ -100,6 +113,31 @@ mod tests {
         assert_eq!(v.insert(NodeId::from_u32(3), 1), None);
         assert_eq!(v.insert(NodeId::from_u32(3), 2), Some(1));
         assert_eq!(v.get(NodeId::from_u32(3)), Some(&2));
+    }
+
+    #[test]
+    fn for_program_covers_every_parsed_node_id() {
+        let source = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n\
+                      PROCEDURE p:\n  DO WHILE x < 3:\n    x = x + 1.\n  END.\nEND PROCEDURE.\n\
+                      FUNCTION f RETURNS INTEGER (): RETURN x * 2. END FUNCTION.\n";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let schema = oxabl_schema::Schema::empty();
+        let ctx = crate::AnalysisContext::new(oxabl_common::FileId::new(1), source, &schema);
+        let sem = crate::analyze_file(&program.statements, &ctx);
+
+        let slots = NodeIndexVec::<u32>::for_program(&program.statements)
+            .inner
+            .capacity();
+        assert!(sem.types.len() > 1 && sem.types.len() <= slots);
+        assert!(sem.references.len() > 1 && sem.references.len() <= slots);
+    }
+
+    #[test]
+    fn for_program_ignores_hand_built_ids() {
+        let program = [Statement::new(oxabl_ast::StatementKind::Empty)];
+        let v = NodeIndexVec::<u32>::for_program(&program);
+        assert_eq!(v.inner.capacity(), 0);
     }
 
     #[test]

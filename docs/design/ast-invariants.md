@@ -82,6 +82,9 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
 - `NodeIdAllocator::new()` starts allocation at `NodeId(1)` and is monotonic: `alloc()`
   yields dense, unique, contiguous ids. The `Parser` owns one allocator per parse, shared by
   statement and expression allocation so the id space is a single dense range.
+- Ids are post-order: `Parser::stmt(kind)` and `Parser::expr(kind)` allocate after the `kind`
+  (and so every child) is built. The last top-level statement therefore holds the highest id
+  in the tree, and `NodeIndexVec::for_program` sizes the semantic side tables from it once.
 - `Statement { id, kind }` and `Expression { id, kind }` are wrapper structs; the original
   enums are `StatementKind` and `ExpressionKind`. `Statement::new(kind)` / `Expression::new(kind)`
   construct with `id = NodeId::DUMMY` for tests; the parser uses the `&mut self` helpers
