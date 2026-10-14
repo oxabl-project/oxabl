@@ -11948,16 +11948,35 @@ fn dynamic_new_is_a_function_call_over_the_class_and_arguments() {
 }
 
 #[test]
-fn define_work_table_is_skipped_like_workfile() {
+fn define_workfile_declares_a_temp_table() {
     for source in [
-        "DEFINE WORK-TABLE wt FIELD a AS INTEGER.",
-        "DEFINE SHARED WORKFILE wf FIELD a AS INTEGER.",
+        "DEFINE WORK-TABLE wt FIELD a AS INTEGER FIELD b LIKE t.f.",
+        "DEFINE SHARED WORKFILE wt FIELD a AS INTEGER FIELD b LIKE t.f.",
     ] {
         let program = Parser::new(&tokenize(source), source).parse_program();
         assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
-        assert!(matches!(
-            program.statements[0].kind,
-            StatementKind::Skipped { .. }
-        ));
+        let StatementKind::DefineTempTable { name, fields, .. } = &program.statements[0].kind
+        else {
+            panic!(
+                "expected DefineTempTable, got {:?}",
+                program.statements[0].kind
+            );
+        };
+        assert_eq!(name.name, "wt");
+        assert_eq!(fields.len(), 2);
     }
+}
+
+#[test]
+fn accum_aggregate_word_is_not_an_argument() {
+    let source = "DISPLAY ACCUM TOTAL BY t.cust t.amount.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let StatementKind::Display { items, .. } = &program.statements[0].kind else {
+        panic!("expected DISPLAY, got {:?}", program.statements[0].kind);
+    };
+    let ExpressionKind::FunctionCall { arguments, .. } = &items[0].expression.kind else {
+        panic!("expected ACCUM call, got {:?}", items[0].expression.kind);
+    };
+    assert_eq!(arguments.len(), 1);
 }

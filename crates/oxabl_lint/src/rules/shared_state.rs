@@ -202,6 +202,9 @@ impl Visitor for SharedDefinitions<'_> {
                 *is_shared,
                 *is_new_global_shared,
             ),
+            StatementKind::DefineTempTable { name, .. } if self.is_workfile(stmt) => {
+                self.report_from_tokens(stmt, Some((&name.name, name.span)));
+            }
             StatementKind::DefineTempTable {
                 name,
                 is_new_shared,
@@ -252,6 +255,14 @@ impl Visitor for SharedDefinitions<'_> {
 }
 
 impl SharedDefinitions<'_> {
+    /// The parser models `WORKFILE` / `WORK-TABLE` as a temp-table; the
+    /// keyword is only in the tokens.
+    fn is_workfile(&self, stmt: &Statement) -> bool {
+        leading_tokens(self.ctx.source, stmt.span, 8)
+            .iter()
+            .any(|(t, _)| matches!(t.kind, Kind::Workfile | Kind::WorkTable))
+    }
+
     fn report_flags(
         &mut self,
         name: &oxabl_ast::Identifier,

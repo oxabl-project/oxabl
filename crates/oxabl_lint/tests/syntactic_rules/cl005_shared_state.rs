@@ -128,8 +128,8 @@ DEFINE SHARED WORKFILE wf FIELD a AS INTEGER.
     assert_eq!(
         messages(src),
         [
-            "`NEW SHARED` work-table is shared state",
-            "`SHARED` workfile is shared state",
+            "`NEW SHARED` work-table `wt` is shared state",
+            "`SHARED` workfile `wf` is shared state",
         ]
     );
 }

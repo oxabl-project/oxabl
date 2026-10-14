@@ -1110,11 +1110,9 @@ impl Parser<'_> {
             return Ok(self.skipped_table_stmt(hi));
         }
 
-        // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE, skip to
-        // statement end. Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
+        // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE.
         if self.check(Kind::Workfile) || self.check(Kind::WorkTable) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_define_temp_table(is_new_shared, is_shared, is_new_global_shared);
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
@@ -1575,7 +1573,9 @@ impl Parser<'_> {
         is_shared: bool,
         is_new_global_shared: bool,
     ) -> ParseResult<Statement> {
-        self.advance(); // consume TEMP-TABLE
+        // A workfile is never undo-able, so it counts as NO-UNDO.
+        let is_workfile = self.check(Kind::Workfile) || self.check(Kind::WorkTable);
+        self.advance(); // consume TEMP-TABLE, WORKFILE or WORK-TABLE
 
         let name = self.parse_identifier()?;
 
@@ -1584,7 +1584,7 @@ impl Parser<'_> {
             self.advance();
             true
         } else {
-            false
+            is_workfile
         };
 
         // Parse XML/serialize options (NAMESPACE-URI, SERIALIZE-NAME, etc.)
