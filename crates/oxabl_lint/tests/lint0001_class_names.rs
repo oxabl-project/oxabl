@@ -1,5 +1,6 @@
 //! `undefined-symbol` on class and type names: the type operand of `CAST`,
-//! `TYPE-OF` and `GET-CLASS`.
+//! `TYPE-OF` and `GET-CLASS`, and unqualified names in a class whose ancestors
+//! were not all read.
 
 mod support;
 
@@ -93,4 +94,101 @@ MESSAGE type-of(1, no-such-var).
     let found = lint0001_with_index(source, &[]);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].message.contains("no-such-var"));
+}
+
+// ---------------------------------------------------------------------------
+// Unqualified names under an unread ancestor
+// ---------------------------------------------------------------------------
+
+/// A class whose parent no file supplies.
+const ORPHAN: &str = "CLASS Foo.Bar INHERITS Foo.MissingParent:
+    METHOD PUBLIC VOID DoWork():
+        DoInheritedThing().
+        myInheritedProp = 1.
+    END METHOD.
+END CLASS.";
+
+#[test]
+fn a_name_under_a_parent_no_file_supplies_is_unknowable() {
+    assert!(lint0001_with_index(ORPHAN, &[]).is_empty());
+    assert!(lint0001_without_index(ORPHAN).is_empty());
+    let (_stmts, sem) = with_index(ORPHAN, &[]);
+    for name in ["doinheritedthing", "myinheritedprop"] {
+        assert_eq!(
+            unresolved_reasons(&sem, name),
+            vec![UnresolvedReason::External],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_name_under_a_grandparent_no_file_supplies_is_unknowable() {
+    let source = "CLASS orders.child INHERITS orders.calc-mid:
+    METHOD PUBLIC VOID run-it():
+        base-total().
+    END METHOD.
+END CLASS.";
+    let workspace = [(
+        "/src/orders/calc-mid.cls",
+        "CLASS orders.calc-mid INHERITS orders.gone: END CLASS.",
+    )];
+    assert!(lint0001_with_index(source, &workspace).is_empty());
+}
+
+#[test]
+fn a_name_under_a_shipped_parent_is_unknowable() {
+    let source = "CLASS orders.my-error INHERITS Progress.Lang.AppError:
+    METHOD PUBLIC VOID raise-it():
+        AddMessage(\"x\", 1).
+    END METHOD.
+END CLASS.";
+    assert!(lint0001_with_index(source, &[]).is_empty());
+    assert!(lint0001_without_index(source).is_empty());
+}
+
+#[test]
+fn a_name_under_a_parent_the_index_reads_is_still_reported() {
+    let source = "CLASS orders.child INHERITS orders.calc-base:
+    METHOD PUBLIC VOID run-it():
+        calc-totl().
+    END METHOD.
+END CLASS.";
+    let workspace = [(CALC_BASE_PATH, CALC_BASE)];
+    assert_eq!(lint0001_with_index(source, &workspace).len(), 1);
+}
+
+#[test]
+fn a_missing_interface_or_the_root_class_hides_no_member() {
+    // A class declares its interfaces' members itself, and every class has
+    // `Progress.Lang.Object` as its root whether it names it or not.
+    for header in [
+        "CLASS orders.impl IMPLEMENTS orders.i-gone:",
+        "CLASS orders.impl INHERITS Progress.Lang.Object:",
+        "CLASS orders.impl:",
+    ] {
+        let source = format!(
+            "{header}
+    METHOD PUBLIC VOID run-it():
+        no-such-method().
+    END METHOD.
+END CLASS."
+        );
+        assert_eq!(lint0001_with_index(&source, &[]).len(), 1, "{header}");
+        assert_eq!(lint0001_without_index(&source).len(), 1, "{header}");
+    }
+}
+
+#[test]
+fn a_receiver_under_an_unread_parent_still_resolves_as_a_class() {
+    let source = "USING orders.*.
+CLASS orders.child INHERITS orders.gone:
+    METHOD PUBLIC VOID run-it():
+        MESSAGE calc-base:calc-total().
+    END METHOD.
+END CLASS.";
+    let workspace = [(CALC_BASE_PATH, CALC_BASE)];
+    let (_stmts, sem) = with_index(source, &workspace);
+    assert_eq!(resolved_to(&sem, "orders.calc-base").len(), 1);
+    assert!(lint0001_with_index(source, &workspace).is_empty());
 }

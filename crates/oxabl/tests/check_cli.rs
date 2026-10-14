@@ -936,9 +936,6 @@ fn a_walk_with_a_search_path_resolves_an_inherited_member() {
     );
 }
 
-/// The control, and the shape of every workspace that configures no search path:
-/// nothing is reachable, so the walk answers exactly as it did before cross-file
-/// resolution existed — and the report keys are the same either way.
 #[test]
 fn an_absent_run_target_is_reported_with_its_remediation_in_both_channels() {
     // R18 through the built binary: the finding names the missing path and the help
@@ -996,8 +993,11 @@ fn an_absent_run_target_is_reported_with_its_remediation_in_both_channels() {
     );
 }
 
+/// The control, and the shape of every workspace that configures no search path:
+/// nothing is reachable, so the parent is never read and the inherited call is
+/// unknowable rather than undefined. The report keys are the same either way.
 #[test]
-fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
+fn the_same_walk_with_no_search_path_keeps_the_json_shape_and_does_not_guess() {
     let tmp = inheritance_project();
 
     let run = check([
@@ -1006,7 +1006,7 @@ fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
         tmp.path().as_os_str(),
     ]);
 
-    assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
+    assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
     let v = run.json();
     assert_eq!(v["version"], 3);
     assert_eq!(v["files_checked"], 2);
@@ -1016,8 +1016,8 @@ fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
     assert!(v["failures"].as_array().unwrap().is_empty());
     let diagnostics = v["diagnostics"].as_array().expect("diagnostics array");
     assert!(
-        diagnostics.iter().any(|d| d["code"] == "LINT0001"),
-        "with nowhere to search, the inherited call is undefined as before:\n{}",
+        !diagnostics.iter().any(|d| d["code"] == "LINT0001"),
+        "with nowhere to search, the parent was not read, so its member is not undefined:\n{}",
         run.stdout
     );
 }
