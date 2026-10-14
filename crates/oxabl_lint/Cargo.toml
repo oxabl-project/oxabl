@@ -24,4 +24,9 @@ oxabl_parser = { path = "../oxabl_parser", version = "1.0.4" }
 oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.5.2" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "1.0.3" }
 rust_decimal = "1.40.0"
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 smallvec = { version = "1", features = ["union"] }
+
+[[bench]]
+name = "lint_bench"
+harness = false
