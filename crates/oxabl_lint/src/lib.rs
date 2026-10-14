@@ -31,6 +31,20 @@
 //! severity, comes from [`AnalysisContext::lint_severities`], which
 //! `[workspace.lint]` in `oxabl.toml` configures globally and per directory.
 //! The per-rule function signatures do not change.
+//!
+//! The syntactic strict rules are standalone functions with the same
+//! signature. They are not registered in [`Registry::builtin`] yet, so
+//! [`lint_file`] does not run them; each module carries its rule's
+//! documentation and its metadata constants (`NAME`, `GROUP`,
+//! `DEFAULT_SEVERITY`, `DESCRIPTION`):
+//!
+//! | Code  | Module                      | Group                 | What it fires on                                          |
+//! |-------|-----------------------------|-----------------------|-----------------------------------------------------------|
+//! | CL001 | [`run_value`]               | `strict.calls`        | `RUN VALUE(...)`                                          |
+//! | CL002 | [`dynamic_invoke`]          | `strict.calls`        | `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `DYNAMIC-PROPERTY`, `CREATE CALL` |
+//! | CL005 | [`shared_state`]            | `strict.calls`        | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
+//! | TX006 | [`missing_no_undo`]         | `strict.transactions` | variable, parameter, temp-table or property without `NO-UNDO` |
+//!
 
 use oxabl_ast::Statement;
 use oxabl_common::Diagnostic;
@@ -44,8 +58,9 @@ pub use registry::{
     RuleMeta, Stability, groups,
 };
 pub use rules::{
-    LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, assigned_but_never_read,
-    block_var_used_outside, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
+    CL001, CL002, CL005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, TX006,
+    assigned_but_never_read, block_var_used_outside, dynamic_invoke, missing_no_undo, run_value,
+    shared_state, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
     unused_variable,
 };
 
