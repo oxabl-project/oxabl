@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -351,10 +352,7 @@ impl ProcessContext<'_> {
                     // Possible preprocessor directive
                     if let Some(directive) = self.try_parse_directive(source, i) {
                         match directive.kind {
-                            DirectiveKind::ScopedDefine {
-                                ref name,
-                                ref value,
-                            } => {
+                            DirectiveKind::ScopedDefine { name, value } => {
                                 // Emit chunk up to directive
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
@@ -371,23 +369,20 @@ impl ProcessContext<'_> {
                                     // for the lexer, matching body-scan rules.
                                     // #65 round 4.
                                     let expanded = if !positional_args.is_empty() {
-                                        expand_positional_refs(value, positional_args)
+                                        expand_positional_refs(&value, positional_args)
                                     } else {
-                                        value.clone()
+                                        value
                                     };
                                     let expanded = self
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
-                                    self.vars.define(name, &expanded);
+                                    self.vars.define(&name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
                                 continue;
                             }
-                            DirectiveKind::GlobalDefine {
-                                ref name,
-                                ref value,
-                            } => {
+                            DirectiveKind::GlobalDefine { name, value } => {
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
@@ -397,15 +392,15 @@ impl ProcessContext<'_> {
                                 }
                                 if emitting {
                                     let expanded = if !positional_args.is_empty() {
-                                        expand_positional_refs(value, positional_args)
+                                        expand_positional_refs(&value, positional_args)
                                     } else {
-                                        value.clone()
+                                        value
                                     };
                                     let expanded = self
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
-                                    self.vars.define_global(name, &expanded);
-                                    self.global_vars.define_global(name, &expanded);
+                                    self.vars.define_global(&name, &expanded);
+                                    self.global_vars.define_global(&name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -1208,7 +1203,7 @@ impl ProcessContext<'_> {
                 Some(Directive {
                     kind: DirectiveKind::ScopedDefine {
                         name,
-                        value: strip_comments(&value),
+                        value: strip_comments_owned(value),
                     },
                     end,
                 })
@@ -1218,7 +1213,7 @@ impl ProcessContext<'_> {
                 Some(Directive {
                     kind: DirectiveKind::GlobalDefine {
                         name,
-                        value: strip_comments(&value),
+                        value: strip_comments_owned(value),
                     },
                     end,
                 })
@@ -1628,11 +1623,14 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
 /// the end of the value). A comment is not part of the value, and a `//` left
 /// in one would swallow whatever the value is later substituted before. String
 /// literals are kept as written.
-fn strip_comments(value: &str) -> String {
-    if !value.contains("/*") && !value.contains("//") {
-        return value.to_string();
-    }
+fn strip_comments(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
+    if !bytes
+        .windows(2)
+        .any(|pair| pair[0] == b'/' && matches!(pair[1], b'*' | b'/'))
+    {
+        return Cow::Borrowed(value);
+    }
     let mut out = String::with_capacity(value.len());
     let mut kept_from = 0;
     let mut i = 0;
@@ -1660,7 +1658,16 @@ fn strip_comments(value: &str) -> String {
         }
     }
     out.push_str(&value[kept_from.min(bytes.len())..]);
-    out.trim().to_string()
+    Cow::Owned(out.trim().to_string())
+}
+
+/// [`strip_comments`] on a value that is owned, which it keeps when nothing
+/// needs stripping.
+fn strip_comments_owned(value: String) -> String {
+    match strip_comments(&value) {
+        Cow::Borrowed(_) => value,
+        Cow::Owned(stripped) => stripped,
+    }
 }
 
 /// Parse the body of `&UNDEFINE name`.
