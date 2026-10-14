@@ -12793,7 +12793,10 @@ fn create_buffer_accepts_buffer_name() {
                 assert!(for_table.is_some(), "{source}");
                 assert_eq!(assignments.len(), 1, "{source}");
                 assert!(
-                    assignments[0].attribute.name.eq_ignore_ascii_case("BUFFER-NAME"),
+                    assignments[0]
+                        .attribute
+                        .name
+                        .eq_ignore_ascii_case("BUFFER-NAME"),
                     "{source}"
                 );
             }
@@ -12815,7 +12818,12 @@ fn on_persistent_run_takes_in_handle_and_path_names() {
         ("PERSISTENT RUN p IN THIS-PROCEDURE.", "p", true, 0),
         ("PERSISTENT RUN p IN hLib (INPUT x).", "p", true, 1),
         ("PERSISTENT RUN dir/file.p.", "dir/file.p", false, 0),
-        ("PERSISTENT RUN dir/file.p IN hLib (x, y).", "dir/file.p", true, 2),
+        (
+            "PERSISTENT RUN dir/file.p IN hLib (x, y).",
+            "dir/file.p",
+            true,
+            2,
+        ),
     ] {
         let on = format!("ON CHOOSE OF btn {tail}{NEXT_STMT}");
         let stmts = parse_clean(&on);
@@ -12852,5 +12860,32 @@ fn on_persistent_run_takes_in_handle_and_path_names() {
             } => assert_eq!(triggers.len(), 1, "{trig}"),
             other => panic!("{trig}: got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn unreserved_keywords_are_valid_class_type_names() {
+    let class = |body: &str| format!("CLASS c:\n{body}\nEND CLASS.{NEXT_STMT}");
+    for source in [
+        "DEFINE VARIABLE o AS Object NO-UNDO.".to_string(),
+        "DEFINE VARIABLE o AS OBJECT EXTENT 3 NO-UNDO.".to_string(),
+        "DEFINE VARIABLE s AS Socket NO-UNDO.".to_string(),
+        "DEFINE VARIABLE s AS Server NO-UNDO.".to_string(),
+        "DEFINE VARIABLE i AS Image NO-UNDO.".to_string(),
+        "DEFINE VARIABLE w AS Widget NO-UNDO.".to_string(),
+        "DEFINE VARIABLE o AS CLASS Object NO-UNDO.".to_string(),
+        "DEFINE VARIABLE o AS Menu.Item NO-UNDO.".to_string(),
+        class("DEFINE PRIVATE PROPERTY body AS Object GET. SET."),
+        class("METHOD PUBLIC Object Get():\n  RETURN ?.\nEND METHOD."),
+        class("METHOD PUBLIC VOID Put(INPUT pData AS OBJECT):\nEND METHOD."),
+        class("METHOD PUBLIC VOID Put(INPUT pData AS Socket):\nEND METHOD."),
+    ] {
+        let full = if source.starts_with("CLASS") {
+            source
+        } else {
+            format!("{source}{NEXT_STMT}")
+        };
+        let stmts = parse_clean(&full);
+        assert!(stmts.len() >= 2, "{full}");
     }
 }

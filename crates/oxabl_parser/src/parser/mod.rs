@@ -2005,6 +2005,41 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The unreserved keywords of dynamic-object and widget types, plus
+    /// `OBJECT` and `WIDGET`. Each is a legal class name.
+    fn is_unreserved_type_name_kind(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Object
+                | Kind::Widget
+                | Kind::XDocument
+                | Kind::XNoderef
+                | Kind::SaxReader
+                | Kind::SaxWriter
+                | Kind::SaxAttributes
+                | Kind::Socket
+                | Kind::ServerSocket
+                | Kind::Server
+                | Kind::SoapHeader
+                | Kind::SoapHeaderEntryref
+                | Kind::ClientPrincipal
+                | Kind::Button
+                | Kind::ComboBox
+                | Kind::ControlFrame
+                | Kind::DialogBox
+                | Kind::Editor
+                | Kind::FillIn
+                | Kind::Image
+                | Kind::Menu
+                | Kind::MenuItem
+                | Kind::RadioSet
+                | Kind::SelectionList
+                | Kind::Slider
+                | Kind::SubMenu
+                | Kind::ToggleBox
+        )
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
         let data_type = match token.kind {
@@ -2040,6 +2075,13 @@ impl<'a> Parser<'a> {
             }
             // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
             Kind::KwIn => DataType::Integer,
+            // Unreserved keywords that are also legal class names (`AS Object`,
+            // `AS Socket`, `AS Server`).
+            kind if Self::is_unreserved_type_name_kind(kind) => {
+                let class_name = self.parse_class_qualified_name()?;
+                let arguments = self.parse_generic_type_args();
+                return Ok(Self::class_data_type(class_name.name, arguments));
+            }
             // Progress.* is a namespace prefix for built-in ABL classes
             // (e.g. "Progress.Json.ObjectModel.JsonObject")
             Kind::Progress => {
