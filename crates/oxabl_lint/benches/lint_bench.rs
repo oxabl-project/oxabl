@@ -52,6 +52,18 @@ fn hoisted_source(routines: usize) -> String {
     src
 }
 
+/// Many routines with no block-hoisted variable, and one with two: the rule
+/// needs the unit of that one only.
+fn sparse_source(routines: usize) -> String {
+    let mut src = plain_source(routines);
+    src.push_str("PROCEDURE hoist:\n    DEFINE INPUT PARAMETER ok AS LOGICAL NO-UNDO.\n");
+    src.push_str("    IF ok THEN DO:\n        DEFINE VARIABLE h1 AS INTEGER NO-UNDO.\n");
+    src.push_str("        DEFINE VARIABLE h2 AS INTEGER NO-UNDO.\n");
+    src.push_str("        h1 = 1.\n        h2 = 2.\n    END.\n");
+    src.push_str("    MESSAGE h1 h2.\nEND PROCEDURE.\n");
+    src
+}
+
 /// A file with no block-hoisted variable: the rule must cost nothing here.
 fn plain_source(routines: usize) -> String {
     let mut src = String::new();
@@ -101,6 +113,7 @@ fn lint_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("lint");
     // `h1`, `h2` and `l` of every routine, and `shared-count` once.
     bench_source(&mut group, "hoisted", &hoisted_source(40), 40 * 3 + 1);
+    bench_source(&mut group, "sparse", &sparse_source(40), 2);
     bench_source(&mut group, "plain", &plain_source(40), 0);
     group.finish();
 }

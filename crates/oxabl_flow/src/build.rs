@@ -39,6 +39,85 @@ pub fn build_file(program: &[Statement], source: &str) -> FileFlow {
 /// [`build_file`] with options.
 pub fn build_file_with(program: &[Statement], source: &str, options: &FlowOptions) -> FileFlow {
     let directive = file_directive(program, source).max(options.default_directive);
+    let specs = unit_specs(program, source);
+    let units = specs
+        .iter()
+        .enumerate()
+        .map(|(i, spec)| Builder::new(source, directive, UnitId(i as u32), spec).build(spec))
+        .collect();
+    FileFlow { units, directive }
+}
+
+/// Builds the units of a parsed file one at a time.
+///
+/// [`build_file`] builds every unit. A question about one block needs only the
+/// unit that holds it: [`unit_of`](Self::unit_of) says which unit a statement
+/// is in, and [`build`](Self::build) builds that unit alone. The result equals
+/// the unit of [`build_file`] with the same [`UnitId`].
+pub struct UnitBuilder<'a> {
+    source: &'a str,
+    directive: Option<ErrorDirective>,
+    specs: Vec<UnitSpec<'a>>,
+    unit_of: FxHashMap<NodeId, UnitId>,
+}
+
+impl<'a> UnitBuilder<'a> {
+    /// Find the units of `program`, which was parsed from `source`. This walks
+    /// the statements once and builds nothing.
+    pub fn new(program: &'a [Statement], source: &'a str, options: &FlowOptions) -> Self {
+        let directive = file_directive(program, source).max(options.default_directive);
+        let specs = unit_specs(program, source);
+        let mut unit_of = FxHashMap::default();
+        for (i, spec) in specs.iter().enumerate() {
+            index_stmts(spec.body, UnitId(i as u32), &mut unit_of);
+        }
+        // The unit a statement defines (and the `DO` of a trigger) is its own,
+        // not the one that registers it.
+        for (i, spec) in specs.iter().enumerate() {
+            let id = UnitId(i as u32);
+            unit_of.entry(spec.stmt).or_insert(id);
+            if let Some(h) = spec.header {
+                unit_of.entry(h.id).or_insert(id);
+            }
+        }
+        UnitBuilder {
+            source,
+            directive,
+            specs,
+            unit_of,
+        }
+    }
+
+    /// The unit whose own code holds `stmt`: a block or an ordinary statement
+    /// at any depth, but not one inside a nested unit. A statement that defines
+    /// a unit, and the `DO` of an `ON ... DO:` trigger, answer with that unit.
+    /// A property with two accessors answers with the getter. `None` when no
+    /// unit holds `stmt`.
+    pub fn unit_of(&self, stmt: NodeId) -> Option<UnitId> {
+        self.unit_of.get(&stmt).copied()
+    }
+
+    /// Build one unit.
+    pub fn build(&self, unit: UnitId) -> Cfg {
+        let spec = &self.specs[unit.index()];
+        Builder::new(self.source, self.directive, unit, spec).build(spec)
+    }
+}
+
+/// Map every statement of `stmts`, outside nested units, to `unit`.
+fn index_stmts(stmts: &[Statement], unit: UnitId, out: &mut FxHashMap<NodeId, UnitId>) {
+    for s in stmts {
+        if !is_unit_stmt(s) {
+            out.insert(s.id, unit);
+            for list in child_lists(s) {
+                index_stmts(list, unit, out);
+            }
+        }
+    }
+}
+
+/// The main block and every nested unit, in source pre-order.
+fn unit_specs<'a>(program: &'a [Statement], source: &str) -> Vec<UnitSpec<'a>> {
     let main_kind = if program
         .iter()
         .any(|s| matches!(s.kind, SK::TriggerProcedure { .. }))
@@ -60,12 +139,7 @@ pub fn build_file_with(program: &[Statement], source: &str, options: &FlowOption
         header: None,
     }];
     collect_units(program, UnitId(0), source, &mut specs);
-    let units = specs
-        .iter()
-        .enumerate()
-        .map(|(i, spec)| Builder::new(source, directive, UnitId(i as u32), spec).build(spec))
-        .collect();
-    FileFlow { units, directive }
+    specs
 }
 
 fn file_directive(program: &[Statement], source: &str) -> Option<ErrorDirective> {

@@ -9,6 +9,23 @@ use oxabl_parser::Parser;
 use oxabl_schema::Schema;
 use oxabl_semantic::{AnalysisContext, analyze_file};
 
+/// The names LINT0005 reports, as written in the message.
+fn reported(source: &str) -> Vec<String> {
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let sem = analyze_file(&program.statements, &ctx);
+    let mut names: Vec<String> = lint_file(&program.statements, &sem, &ctx)
+        .iter()
+        .filter(|d| d.code.0 == LINT0005)
+        .map(|d| d.message.split('`').nth(1).unwrap().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
 fn lint0005(source: &str) -> usize {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
@@ -223,4 +240,144 @@ MESSAGE v.
         lint0005(&src.replace("AS INTEGER.", "AS INTEGER NO-UNDO.")),
         0
     );
+}
+
+// One solve answers for every variable of a block: each keeps its own answer.
+
+#[test]
+fn the_variables_of_one_block_are_judged_apart() {
+    let src = "\
+DEFINE VARIABLE valid AS LOGICAL NO-UNDO.
+DEFINE VARIABLE c AS LOGICAL NO-UNDO.
+IF NOT valid THEN DO:
+    RETURN.
+END.
+ELSE DO:
+    DEFINE VARIABLE always AS DECIMAL NO-UNDO.
+    DEFINE VARIABLE sometimes AS DECIMAL NO-UNDO.
+    DEFINE VARIABLE never-here AS DECIMAL NO-UNDO.
+    always = 1.
+    IF c THEN sometimes = 2.
+    IF c THEN never-here = 3.
+    never-here = 4.
+END.
+DISPLAY always sometimes never-here.
+";
+    assert_eq!(reported(src), ["sometimes"]);
+}
+
+#[test]
+fn an_undo_restores_only_the_undoable_variables_of_the_block() {
+    let src = "\
+DEFINE VARIABLE x AS LOGICAL NO-UNDO.
+REPEAT:
+    DEFINE VARIABLE restored AS INTEGER.
+    DEFINE VARIABLE kept AS INTEGER NO-UNDO.
+    restored = 1.
+    kept = 1.
+    IF x THEN UNDO, LEAVE.
+    LEAVE.
+END.
+MESSAGE restored kept.
+";
+    assert_eq!(reported(src), ["restored"]);
+}
+
+#[test]
+fn a_block_with_more_variables_than_one_word_of_bits_is_judged_in_full() {
+    let mut src = String::from("DEFINE VARIABLE valid AS LOGICAL NO-UNDO.\n");
+    src.push_str("IF NOT valid THEN DO:\n    RETURN.\nEND.\nELSE DO:\n");
+    for n in 0..150 {
+        src.push_str(&format!("    DEFINE VARIABLE v{n} AS INTEGER NO-UNDO.\n"));
+    }
+    for n in 0..150 {
+        // These three are assigned on some paths only.
+        if matches!(n, 3 | 70 | 149) {
+            src.push_str(&format!("    IF valid THEN v{n} = 1.\n"));
+        } else {
+            src.push_str(&format!("    v{n} = 1.\n"));
+        }
+    }
+    src.push_str("END.\n");
+    for n in 0..150 {
+        src.push_str(&format!("MESSAGE v{n}.\n"));
+    }
+    assert_eq!(reported(&src), ["v149", "v3", "v70"]);
+}
+
+#[test]
+fn each_unit_is_judged_in_its_own_graph() {
+    let src = "\
+PROCEDURE one:
+    DEFINE INPUT PARAMETER valid AS LOGICAL NO-UNDO.
+    IF NOT valid THEN DO:
+        RETURN.
+    END.
+    ELSE DO:
+        DEFINE VARIABLE a AS INTEGER NO-UNDO.
+        a = 1.
+    END.
+    MESSAGE a.
+END PROCEDURE.
+PROCEDURE two:
+    DEFINE INPUT PARAMETER valid AS LOGICAL NO-UNDO.
+    IF valid THEN DO:
+        DEFINE VARIABLE b AS INTEGER NO-UNDO.
+        b = 1.
+    END.
+    MESSAGE b.
+END PROCEDURE.
+FUNCTION three RETURNS INTEGER (INPUT valid AS LOGICAL):
+    IF NOT valid THEN DO:
+        RETURN 0.
+    END.
+    ELSE DO:
+        DEFINE VARIABLE c AS INTEGER NO-UNDO.
+        c = 1.
+    END.
+    RETURN c.
+END FUNCTION.
+";
+    assert_eq!(reported(src), ["b"]);
+}
+
+#[test]
+fn a_read_in_another_unit_fires_whatever_the_blocks_around_it_prove() {
+    // `a` is cleared by its guard clause in the main block; `b` is read by a
+    // procedure, which can run before its block.
+    let src = "\
+DEFINE VARIABLE valid AS LOGICAL NO-UNDO.
+IF NOT valid THEN DO:
+    RETURN.
+END.
+ELSE DO:
+    DEFINE VARIABLE a AS INTEGER NO-UNDO.
+    DEFINE VARIABLE b AS INTEGER NO-UNDO.
+    a = 1.
+    b = 1.
+END.
+MESSAGE a.
+PROCEDURE show:
+    MESSAGE b.
+END PROCEDURE.
+";
+    assert_eq!(reported(src), ["b"]);
+}
+
+#[test]
+fn a_trigger_body_is_its_own_unit() {
+    let src = "\
+DEFINE VARIABLE valid AS LOGICAL NO-UNDO.
+ON CHOOSE OF b DO:
+    IF NOT valid THEN DO:
+        RETURN NO-APPLY.
+    END.
+    ELSE DO:
+        DEFINE VARIABLE t AS INTEGER NO-UNDO.
+        t = 1.
+    END.
+    MESSAGE t.
+END.
+";
+    assert_eq!(reported(src), Vec::<String>::new());
 }
