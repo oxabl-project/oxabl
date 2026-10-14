@@ -78,8 +78,8 @@ pub use reverse::{
 // Re-exported so a consumer of the reverse query need not also depend on
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{
-    Completeness, DegradedReason, DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget,
-    UnresolvedReference,
+    BranchKind, Completeness, ConditionalBranch, ConditionalInclude, DegradedReason,
+    DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference,
 };
 
 use oxabl_common::FileId;

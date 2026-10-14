@@ -87,6 +87,49 @@ pub struct UnreadableInclude {
     pub via: Vec<FileSpan>,
 }
 
+/// The directive that opens a conditional branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchDirective {
+    If,
+    ElseIf,
+    Else,
+}
+
+/// One enclosing conditional branch of a [`SkippedInclude`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedBranch {
+    pub directive: BranchDirective,
+    /// The condition as written, between `&IF`/`&ELSEIF` and `&THEN`, before any
+    /// substitution. An `&ELSE` branch carries the last condition of its chain,
+    /// the one that decided it was not reached by the chain before it.
+    pub condition: String,
+}
+
+/// An include reference written inside a branch that was not taken.
+///
+/// Kept as data, never expanded, so a build tool that keys a cache on the include
+/// set can see includes a different set of defines would reach. Only references
+/// inside a file the preprocessor did read are listed; a branch never reached
+/// because an enclosing one was not taken is listed too, with every enclosing
+/// condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedInclude {
+    /// The include name as written, with any `{...}` reference inside it left as
+    /// text.
+    pub name: String,
+    /// The `{...}` site, in the coordinates of the file that wrote it.
+    pub site: FileSpan,
+    /// The enclosing include sites that led here, outermost first. Empty when the
+    /// reference was written in the file being processed.
+    pub via: Vec<FileSpan>,
+    /// The enclosing conditional branches, outermost first. The innermost is the
+    /// branch that was not taken; the outer ones may have been.
+    pub branches: Vec<SkippedBranch>,
+    /// The name holds a `{&name}` or `{N}` reference, so the file it would name
+    /// depends on values the preprocessor did not substitute.
+    pub computed_name: bool,
+}
+
 /// Why the preprocessor lost sight of text it was asked to expand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -131,6 +174,9 @@ pub struct PreprocessedFile {
     /// Every include reference, at any depth, that resolved to a path whose
     /// content could not be read.
     pub unreadable_includes: Vec<UnreadableInclude>,
+    /// Every include reference, at any depth, written inside a branch that was not
+    /// taken. Never expanded.
+    pub skipped_includes: Vec<SkippedInclude>,
     /// Every place, at any depth, where text was dropped or a branch was chosen
     /// without the facts to choose it.
     pub text_losses: Vec<TextLoss>,
@@ -161,6 +207,7 @@ impl PreprocessedFile {
             dependencies,
             unresolved_includes,
             unreadable_includes: Vec::new(),
+            skipped_includes: Vec::new(),
             text_losses: Vec::new(),
             diagnostics,
             sources,

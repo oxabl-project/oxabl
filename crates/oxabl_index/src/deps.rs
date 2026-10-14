@@ -269,6 +269,50 @@ impl DegradedReason {
     }
 }
 
+/// The directive that opens a conditional branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BranchKind {
+    If,
+    ElseIf,
+    Else,
+}
+
+/// One conditional branch that encloses a [`ConditionalInclude`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ConditionalBranch {
+    pub kind: BranchKind,
+    /// The condition as written, before any substitution. An `&ELSE` branch
+    /// carries the last condition of its chain.
+    pub condition: String,
+}
+
+/// An include reference written in a branch the preprocessor did not take.
+///
+/// Not an edge: for the defines this analysis ran under the file does not depend
+/// on the target. It is listed because oxabl's `&IF` evaluation can disagree with
+/// the AVM's, and a different set of defines takes a different branch. A build
+/// tool that keys a cache on the include set widens it with these, and knows from
+/// the list that none was taken.
+///
+/// Never expanded, so there is no resolved path, and what the target includes is
+/// unknown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalInclude {
+    /// The include name as written; a `{...}` reference inside it is left as text.
+    pub name: String,
+    /// The `{...}` site, in the dependent file's own bytes, when the file writes
+    /// the reference itself.
+    pub span: Option<Span>,
+    /// The root-level `{...}` site, in the dependent file's own bytes, of the
+    /// include chain that reached a reference written in an include.
+    pub include_site: Option<Span>,
+    /// The enclosing branches, outermost first. The innermost was not taken.
+    pub branches: Vec<ConditionalBranch>,
+    /// The name holds a `{&name}` or `{N}` reference, so the file it names depends
+    /// on values that were not substituted.
+    pub computed_name: bool,
+}
+
 /// Whether an edge set can be trusted to be everything the file depends on.
 ///
 /// `Degraded` does not mean the edges are wrong. It means the absence of an edge
@@ -321,6 +365,9 @@ impl Completeness {
 /// them merged, so a caller cannot accidentally count an unresolved reference as a
 /// resolved dependency.
 ///
+/// Include references in branches that were not taken are a third collection,
+/// [`Self::conditional_includes`], for the same reason: they are never edges.
+///
 /// [`Self::completeness`] says whether the pair can be trusted. The default is
 /// `Complete` along with the empty collections: an edge set built from nothing
 /// lost nothing.
@@ -328,6 +375,7 @@ impl Completeness {
 pub struct DependencyEdges {
     edges: Vec<DependencyEdge>,
     unresolved: Vec<UnresolvedReference>,
+    conditional_includes: Vec<ConditionalInclude>,
     completeness: Completeness,
 }
 
@@ -340,6 +388,26 @@ impl DependencyEdges {
     /// Every reference that resolved to nothing, in a deterministic order.
     pub fn unresolved(&self) -> &[UnresolvedReference] {
         &self.unresolved
+    }
+
+    /// Every include reference written in a branch that was not taken, in a
+    /// deterministic order, each once.
+    ///
+    /// Never merged into [`Self::edges`]. Empty unless the caller attached the
+    /// list with [`Self::with_conditional_includes`].
+    pub fn conditional_includes(&self) -> &[ConditionalInclude] {
+        &self.conditional_includes
+    }
+
+    /// Attach the include references of branches that were not taken. They are
+    /// ordered by site and deduplicated, so two sets over one unchanged file
+    /// compare equal.
+    #[must_use]
+    pub fn with_conditional_includes(mut self, mut includes: Vec<ConditionalInclude>) -> Self {
+        includes.sort_by(|a, b| conditional_order(a).cmp(&conditional_order(b)));
+        includes.dedup();
+        self.conditional_includes = includes;
+        self
     }
 
     /// Whether the edges and rows are everything the file depends on.
@@ -511,6 +579,7 @@ pub fn build_edge_set(inputs: &EdgeInputs<'_>) -> DependencyEdges {
     DependencyEdges {
         edges,
         unresolved,
+        conditional_includes: Vec::new(),
         completeness: completeness(inputs),
     }
 }
@@ -556,6 +625,15 @@ fn unresolved_order(u: &UnresolvedReference) -> (EdgeKind, &str, SiteOrder, Site
         u.name.as_str(),
         site_order(u.span),
         site_order(u.include_site),
+    )
+}
+
+fn conditional_order(c: &ConditionalInclude) -> (SiteOrder, SiteOrder, &str, &[ConditionalBranch]) {
+    (
+        site_order(c.span),
+        site_order(c.include_site),
+        c.name.as_str(),
+        c.branches.as_slice(),
     )
 }
 
