@@ -98,6 +98,8 @@ pub enum TextLossKind {
     UnclosedConditional,
     /// An `&IF` was decided on a predefined name that had no value.
     UnknownPredefinedName,
+    /// An `&IF` was decided on a function or shape the evaluator does not model.
+    UnmodelledCondition,
 }
 
 /// A place where the preprocessor dropped text, or chose between branches without

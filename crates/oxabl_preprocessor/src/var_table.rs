@@ -11,7 +11,24 @@ use std::sync::Arc;
 /// case-insensitive).
 #[derive(Debug, Clone, Default)]
 pub struct PreprocVarTable {
-    vars: HashMap<AsciiLowerName, Arc<str>>,
+    vars: HashMap<AsciiLowerName, Entry>,
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    value: Arc<str>,
+    origin: Origin,
+}
+
+/// How a name came to be defined; the `DEFINED` function tells them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// `&SCOPED-DEFINE`, `&GLOBAL-DEFINE` or a predefined name.
+    Define,
+    /// A named argument of the include being expanded.
+    Argument,
+    /// Both of the above at once.
+    Both,
 }
 
 /// Case-insensitive key: stores the lowercase form for hashing/comparison.
@@ -31,8 +48,32 @@ impl PreprocVarTable {
 
     /// Define a preprocessor variable (from `&SCOPED-DEFINE` or `&GLOBAL-DEFINE`).
     pub fn define(&mut self, name: &str, value: &str) {
-        self.vars
-            .insert(AsciiLowerName::new(name), Arc::from(value));
+        self.insert(name, value, Origin::Define);
+    }
+
+    /// Define a named include argument (`{file.i &name=value}`).
+    pub(crate) fn define_argument(&mut self, name: &str, value: &str) {
+        self.insert(name, value, Origin::Argument);
+    }
+
+    fn insert(&mut self, name: &str, value: &str, origin: Origin) {
+        let key = AsciiLowerName::new(name);
+        let origin = match self.vars.get(&key).map(|e| e.origin) {
+            Some(prev) if prev != origin => Origin::Both,
+            _ => origin,
+        };
+        self.vars.insert(
+            key,
+            Entry {
+                value: Arc::from(value),
+                origin,
+            },
+        );
+    }
+
+    /// How `name` was defined; `None` if it is not defined.
+    pub(crate) fn origin(&self, name: &str) -> Option<Origin> {
+        self.vars.get(&AsciiLowerName::new(name)).map(|e| e.origin)
     }
 
     /// Remove a preprocessor variable (from `&UNDEFINE`).
@@ -42,7 +83,7 @@ impl PreprocVarTable {
 
     /// Look up a variable's value. Returns `None` if not defined.
     pub fn get(&self, name: &str) -> Option<&Arc<str>> {
-        self.vars.get(&AsciiLowerName::new(name))
+        self.vars.get(&AsciiLowerName::new(name)).map(|e| &e.value)
     }
 
     /// Check whether a variable is defined.
