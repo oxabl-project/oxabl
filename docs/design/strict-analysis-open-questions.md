@@ -128,28 +128,29 @@ includes it. It reports the diagnostic in the include only when someone checks t
 own root. Since M1, a directory walk does that for the context-free strict rules.
 
 - **Dropped at the includer.** The pipeline lints the expanded text, then maps each span back to
-  real bytes. `resolve_diagnostic` (`crates/oxabl_analyze/src/collect.rs:1020`) returns `None`
-  for any span whose first byte is not in the root file, and `resolve_span`
-  (`collect.rs:408`) is where that origin check happens. A semantic or lint finding inside an
+  real bytes. `resolve_diagnostic` (`crates/oxabl_analyze/src/collect.rs`) returns `None`
+  for any span whose first byte is not in the root file, and `ExpandedFile::resolve_span`
+  (`collect.rs`) is where that origin check happens. A semantic or lint finding inside an
   include is therefore dropped. So is a label that points into an include. A parse error inside
-  an include is dropped at the same place (`collect.rs:965-966`), although the recovery flag is
-  set first (`collect.rs:962`). The edge set still learns that the parse recovered, and the CLI
-  suppresses format drift for the file, but no diagnostic is shown.
-- **Preprocessor diagnostics follow the same rule.** Only loud diagnostics whose own span is in
-  the root file are kept (`collect.rs:529`, `collect.rs:604`).
+  an include is dropped at the same place (the parse-error loop of
+  `collect_from_expanded_selecting`), although `parse_recovered` is set first. The edge set still
+  learns that the parse recovered, and the CLI suppresses format drift for the file, but no
+  diagnostic is shown.
+- **Preprocessor diagnostics follow the same rule.** Only loud diagnostics (`is_loud`) whose own span is in
+  the root file are kept, on the success path and on the error path of `expand_source_with`.
 - **One exception, shown at the use site.** An unresolvable include found below the root is
   reported as `PREPROC007` at the outermost `{...}` in the root file that led to it, with the
-  note "reached through this include" (`collect.rs:622`). It is reported once per root site and
-  missing name. The reason is that such a gap hides symbols from the includer's own analysis.
+  note "reached through this include" (`nested_unresolved_include_diagnostics`). It is reported
+  once per root site and missing name. The reason is that such a gap hides symbols from the includer's own analysis.
 - **Use-site coordinates already exist.** `ExpandedFile::resolve_include_site`
-  (`collect.rs:318`) maps any expanded span to the root-level `{...}` that brought it in, at any
+  (`collect.rs`) maps any expanded span to the root-level `{...}` that brought it in, at any
   depth. The dependency section uses it for `include_site` on every edge row
-  (`crates/oxabl_analyze/src/lib.rs:135`, `:832`).
+  (`DependencyEdgeRow::include_site` in `crates/oxabl_analyze/src/lib.rs`).
 - **Walks do not check includes as roots.** `.i` is not a root extension, so `oxabl check <dir>`
   and workspace discovery do not volunteer include files as roots
-  (`crates/oxabl_workspace/src/discovery.rs:44-47`, the reasoning in the module docs, "R9"). A path
-  named on the command line, or a buffer open in the language server, is a root regardless
-  (`discovery.rs:54`). Since M1, `check <dir>` also lints the `.i` files of the walked tree for
+  (`ROOT_EXTENSIONS` and `is_root_file` in `crates/oxabl_workspace/src/discovery.rs`, the reasoning
+  in the module docs, "R9"). A path named on the command line, or a buffer open in the language server, is a root regardless
+  (`discover_path`). Since M1, `check <dir>` also lints the `.i` files of the walked tree for
   context-free rules only (see "What shipped in M1" below).
 - **Checking an include as a root is deliberately quieter.** The pipeline marks it
   `SourceContext::IncludeFragment` (`LintPipeline::collect_selecting` in
