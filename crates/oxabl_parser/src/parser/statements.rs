@@ -4298,8 +4298,9 @@ impl Parser<'_> {
         // Optional parameter list in parentheses. Signature params become
         // DefineParameter statements prepended onto the function body so the
         // semantic declare pass binds them into ScopeKind::Function (#68).
-        // Prototypes (FORWARD / IN … / MAP TO …) parse params then discard them
-        // so prototype-only symbols do not collide with a later definition.
+        // Prototypes (FORWARD / IN … / MAP TO …) keep them apart from the body,
+        // which stays empty, so prototype-only symbols do not collide with a
+        // later definition.
         let signature_params = if self.check(Kind::LeftParen) {
             self.parse_parenthesized_params()?
         } else {
@@ -4313,7 +4314,6 @@ impl Parser<'_> {
             self.source[tok.start..tok.end].eq_ignore_ascii_case("forward")
         };
         if is_forward {
-            let _ = signature_params; // discard — prototype has empty body
             self.advance(); // consume FORWARD
             // FORWARD declarations may end with '.' or ':' (legacy ABL uses ':')
             if self.check(Kind::Period) || self.check(Kind::Colon) {
@@ -4328,24 +4328,24 @@ impl Parser<'_> {
                 name,
                 return_type,
                 body: Vec::new(),
+                prototype_parameters: signature_params,
             }));
         }
 
         // IN super|this-procedure|handle — external function reference (forward declaration)
         // e.g. "function name returns type (params) in super."
         if self.check(Kind::KwIn) {
-            let _ = signature_params; // discard — prototype has empty body
             let _ = self.skip_to_statement_end();
             return Ok(self.stmt(StatementKind::Function {
                 name,
                 return_type,
                 body: Vec::new(),
+                prototype_parameters: signature_params,
             }));
         }
 
         // MAP TO name IN handle — external function mapping (class context)
         if self.check(Kind::Map) {
-            let _ = signature_params; // discard — prototype has empty body
             while !self.check(Kind::Period) && !self.at_end() {
                 self.advance();
             }
@@ -4354,6 +4354,7 @@ impl Parser<'_> {
                 name,
                 return_type,
                 body: Vec::new(),
+                prototype_parameters: signature_params,
             }));
         }
 
@@ -4383,6 +4384,7 @@ impl Parser<'_> {
             name,
             return_type,
             body,
+            prototype_parameters: Vec::new(),
         }))
     }
 

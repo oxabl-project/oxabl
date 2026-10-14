@@ -647,6 +647,7 @@ mod tests {
         });
         let diags = analyze_and_lint(vec![
             stmt_n(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("calc"),
                 return_type: DataType::Integer,
                 body: vec![],

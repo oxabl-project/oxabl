@@ -423,6 +423,7 @@ impl<'a> Walker<'a> {
                 name,
                 return_type,
                 body,
+                ..
             } => {
                 // Empty body marks FORWARD / IN … / MAP TO prototypes (#69).
                 // Full definitions (incl. signature params from #68) have
@@ -2430,6 +2431,7 @@ impl<'a> ResolveWalker<'a> {
                 name,
                 return_type,
                 body,
+                ..
             } => {
                 self.note_data_type(return_type, scope, identifier_span(name));
                 if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
@@ -5773,6 +5775,7 @@ mod tests {
     #[test]
     fn function_declares_return_type() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("sum"),
             return_type: DataType::Integer,
             body: vec![],
@@ -6114,6 +6117,7 @@ mod tests {
     #[test]
     fn multiple_params_ordered_in_scope() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("calc"),
             return_type: DataType::Integer,
             body: vec![
@@ -6161,6 +6165,7 @@ mod tests {
     #[test]
     fn function_forward_then_definition_no_sem0001() {
         let def = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("getVal"),
             return_type: DataType::Character,
             body: vec![param_stmt(
@@ -6172,6 +6177,7 @@ mod tests {
         let def_id = def.id;
         let (tree, symbols, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // FORWARD prototype
@@ -6194,11 +6200,13 @@ mod tests {
     fn function_in_super_then_definition_no_sem0001() {
         let (_t, _s, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // IN SUPER prototype
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![param_stmt(
@@ -6217,6 +6225,7 @@ mod tests {
     #[test]
     fn function_prototype_only_no_sem0001() {
         let (tree, symbols, diags) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("get-value"),
             return_type: DataType::Character,
             body: vec![], // IN hMisc — external only
@@ -6229,6 +6238,7 @@ mod tests {
     #[test]
     fn function_map_to_prototype_only_no_sem0001() {
         let (tree, symbols, diags) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("mappedFn"),
             return_type: DataType::Integer,
             body: vec![], // MAP TO … IN handle
@@ -6242,11 +6252,13 @@ mod tests {
     fn function_two_full_definitions_still_sem0001() {
         let (_t, _s, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![var_stmt("x", DataType::Integer)],
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![var_stmt("y", DataType::Integer)],
@@ -6259,6 +6271,7 @@ mod tests {
     #[test]
     fn function_two_prototypes_no_sem0001() {
         let proto0 = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![],
@@ -6267,6 +6280,7 @@ mod tests {
         let (tree, symbols, diags) = run(vec![
             proto0,
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -6287,6 +6301,7 @@ mod tests {
     #[test]
     fn function_definition_then_forward_no_sem0001() {
         let def = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![var_stmt("x", DataType::Integer)],
@@ -6295,6 +6310,7 @@ mod tests {
         let (tree, symbols, diags) = run(vec![
             def,
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![], // trailing FORWARD
@@ -6313,6 +6329,7 @@ mod tests {
     fn function_forward_and_in_super_then_definition_no_sem0001() {
         // WebSpeed/ADM common pattern: FORWARD + IN SUPER + definition.
         let def = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("getVal"),
             return_type: DataType::Character,
             body: vec![param_stmt(
@@ -6324,11 +6341,13 @@ mod tests {
         let def_id = def.id;
         let (tree, symbols, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // FORWARD prototype
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // IN SUPER prototype
@@ -6692,6 +6711,7 @@ mod tests {
     #[test]
     fn function_symbol_and_body_scope_distinct() {
         let (tree, _s, _d) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![var_stmt("local", DataType::Integer)],
@@ -6713,11 +6733,13 @@ mod tests {
     fn two_functions_distinct_symbols() {
         let (tree, symbols, _) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f1"),
                 return_type: DataType::Integer,
                 body: vec![],
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f2"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -7288,6 +7310,7 @@ mod tests {
         let call_id = call.id;
         let stmts = vec![
             stmt_n(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("calc"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -7329,6 +7352,7 @@ mod tests {
         });
         let stmts = vec![
             stmt_n(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("calc"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -8591,6 +8615,7 @@ mod tests {
     #[test]
     fn resolve_types_side_table_contains_function_return_type() {
         let fdecl = stmt_n(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("sum"),
             return_type: DataType::Decimal,
             body: vec![],

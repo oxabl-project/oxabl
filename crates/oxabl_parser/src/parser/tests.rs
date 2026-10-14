@@ -4370,6 +4370,61 @@ END PROCEDURE.
     }
 }
 
+/// The prototype's parameter types, and whether its body is empty.
+fn prototype_parameter_types(source: &str) -> (Vec<DataType>, bool) {
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("prototype must parse");
+    let StatementKind::Function {
+        body,
+        prototype_parameters,
+        ..
+    } = stmt.kind
+    else {
+        panic!("Expected Function statement");
+    };
+    let types = prototype_parameters
+        .iter()
+        .map(|param| match &param.kind {
+            StatementKind::DefineParameter {
+                param_type:
+                    ParameterType::Variable {
+                        type_source: TypeSource::Explicit(data_type),
+                        ..
+                    },
+                ..
+            } => data_type.clone(),
+            other => panic!("Expected a typed parameter, got {other:?}"),
+        })
+        .collect();
+    (types, body.is_empty())
+}
+
+#[test]
+fn a_function_prototype_keeps_its_parameters_apart_from_its_body() {
+    for tail in ["FORWARD", "IN SUPER", "IN h", "MAP TO g2 IN h"] {
+        let source = format!(
+            "FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Thing, INPUT n AS INTEGER) {tail}."
+        );
+        let (types, body_is_empty) = prototype_parameter_types(&source);
+        assert_eq!(
+            types,
+            [DataType::Class("pkg.Thing".into()), DataType::Integer],
+            "{tail}"
+        );
+        assert!(body_is_empty, "{tail}");
+    }
+}
+
+#[test]
+fn a_function_definition_has_no_prototype_parameters() {
+    let source =
+        "FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Thing):\n  RETURN TRUE.\nEND FUNCTION.";
+    let (types, body_is_empty) = prototype_parameter_types(source);
+    assert!(types.is_empty());
+    assert!(!body_is_empty);
+}
+
 #[test]
 fn parse_function_in_super_still_works() {
     let source = "FUNCTION getX RETURNS CHARACTER IN SUPER.";
@@ -4383,6 +4438,7 @@ fn parse_function_in_super_still_works() {
             name,
             return_type,
             body,
+            ..
         } => {
             assert_eq!(name.name, "getX");
             assert_eq!(return_type, DataType::Character);
@@ -6067,6 +6123,7 @@ END FUNCTION.
             name,
             return_type,
             body,
+            ..
         } => {
             assert_eq!(name.name, "get-greeting");
             assert_eq!(return_type, DataType::Character);
@@ -6091,6 +6148,7 @@ END FUNCTION.
             name,
             return_type,
             body,
+            ..
         } => {
             assert_eq!(name.name, "calc-total");
             assert_eq!(return_type, DataType::Integer);

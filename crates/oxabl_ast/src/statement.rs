@@ -303,6 +303,10 @@ pub enum StatementKind {
         return_type: DataType,
         /// Function body statements (parameters are parsed as DEFINE PARAMETER).
         body: Vec<Statement>,
+        /// The parameters of a `FORWARD`, `IN` or `MAP TO` prototype, which has
+        /// no body to hold them. Empty for a definition, whose parameters lead
+        /// its body.
+        prototype_parameters: Vec<Statement>,
     },
 
     /// CLASS definition.
