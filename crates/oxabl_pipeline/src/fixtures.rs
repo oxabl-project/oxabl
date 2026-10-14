@@ -4079,7 +4079,7 @@ pub const FIXTURES: &[ParityFixture] = &[
             }),
         ],
     },
-    // A parent whose imports may come from an include the index does not read:
+    // A parent whose imports may come from an include the index cannot find:
     // what its own parent is cannot be told, so it is unknowable, not absent.
     ParityFixture {
         name: "class_chain_parent_imports_in_include",

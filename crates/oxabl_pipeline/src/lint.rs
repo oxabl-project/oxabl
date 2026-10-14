@@ -560,10 +560,22 @@ impl<'a> LintPipeline<'a> {
     /// every run handle with [`with_shared_producers`](Self::with_shared_producers).
     ///
     /// Reads every file once. A client that scans on several threads can do the
-    /// per-file work itself with [`oxabl_index::definitions_in`] and join the
-    /// results with [`SharedProducers::from_definitions`].
+    /// per-file work itself with [`oxabl_index::definitions_in`] over
+    /// [`index_includes`](Self::index_includes) and join the results with
+    /// [`SharedProducers::from_definitions`].
     pub fn shared_producers(&self, files: &[PathBuf]) -> SharedProducers {
-        SharedProducers::build(self.fs, files, &self.config.preprocessor)
+        SharedProducers::build(files, &self.index_includes())
+    }
+
+    /// Where the index reads an indexed file and the includes it is expanded
+    /// through: this run's filesystem, include paths and preprocessor
+    /// configuration.
+    pub fn index_includes(&self) -> oxabl_index::IncludeContext<'_> {
+        oxabl_index::IncludeContext {
+            fs: self.fs,
+            include_paths: &self.config.include_paths,
+            predefined: &self.config.preprocessor,
+        }
     }
 
     /// Answer this run's cross-file questions from `index` instead of building a

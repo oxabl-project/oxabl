@@ -24,7 +24,7 @@ use rustc_hash::FxHashMap;
 
 use crate::facts::{ClassFacts, FileFacts};
 use crate::producers::{SharedProducers, mentions_shared};
-use crate::{index_file, search};
+use crate::{IncludeContext, index_file, search};
 
 /// The generation a batch reports.
 ///
@@ -215,6 +215,19 @@ impl<'a> BatchIndex<'a> {
         }
     }
 
+    /// Where an indexed file reads its includes from: the paths this index
+    /// searches.
+    fn includes<'p>(&self, predefined: &'p PreprocessorConfig) -> IncludeContext<'p>
+    where
+        'a: 'p,
+    {
+        IncludeContext {
+            fs: self.fs,
+            include_paths: self.include_paths,
+            predefined,
+        }
+    }
+
     fn find_path(&self, name: &IndexName, kind: search::NameKind) -> IndexAnswer<PathBuf> {
         self.find_name(name, kind)
     }
@@ -355,7 +368,7 @@ impl<'a> BatchIndex<'a> {
 
         let answer = match self.find_name(name, search::NameKind::Class) {
             IndexAnswer::Found(path) => {
-                let facts = memo.facts_for(self.fs, &self.predefined(), &path);
+                let facts = memo.facts_for(&self.includes(&self.predefined()), &path);
                 // A file *was* located at the path the class name derives, and
                 // it does not visibly declare the class. That is `Unusable`,
                 // not `NotFound`, and the difference decides whether a
@@ -364,8 +377,8 @@ impl<'a> BatchIndex<'a> {
                 //
                 // Three causes, and the index cannot distinguish them: the
                 // parse recovered errors; the declaration is spliced in from
-                // an `{include}`, which this crate deliberately does not
-                // expand; or the class header is genuinely mis-namespaced.
+                // an `{include}` the index could not read; or the class header
+                // is genuinely mis-namespaced.
                 // Only the third is the user's mistake, and it is the rarest —
                 // an include-built class is an ordinary ABL idiom. `NotFound`
                 // stays reserved for the one case that *is* conclusive: no
@@ -395,12 +408,7 @@ impl Memo {
     /// Takes `&mut self` (i.e. runs under the write guard) so the read, the
     /// extraction, and the insert are one atomic step — which is what makes the
     /// shared-dependency dedup a guarantee rather than a race.
-    fn facts_for(
-        &mut self,
-        fs: &dyn FileSystem,
-        predefined: &PreprocessorConfig,
-        path: &Path,
-    ) -> Arc<FileFacts> {
+    fn facts_for(&mut self, includes: &IncludeContext<'_>, path: &Path) -> Arc<FileFacts> {
         // Normalized *before* the probe and used for the insert as well, so the
         // two spellings of one file are one key on both halves. `path` itself is
         // what gets read: the normalized form is the key, not the I/O target, so a
@@ -413,8 +421,8 @@ impl Memo {
         // Located but unreadable is not an error case: a file we cannot read is
         // knowably unusable, and remembering that keeps us from re-attempting the
         // read on every reference to the same name.
-        let source = fs.read(path).ok();
-        self.insert_facts(key, source.as_deref(), predefined)
+        let source = includes.fs.read(path).ok();
+        self.insert_facts(key, source.as_deref(), includes)
     }
 
     /// Index `source` under `key` and remember it; `None` is an unreadable file.
@@ -422,12 +430,12 @@ impl Memo {
         &mut self,
         key: PathBuf,
         source: Option<&str>,
-        predefined: &PreprocessorConfig,
+        includes: &IncludeContext<'_>,
     ) -> Arc<FileFacts> {
         let id = IndexedFileId::new(self.next_file_id);
         self.next_file_id += 1;
         let facts = Arc::new(match source {
-            Some(source) => index_file(id, source, predefined),
+            Some(source) => index_file(id, source, includes),
             None => FileFacts::unparseable(id),
         });
         // Both halves of one mapping, inserted together: `indexed_path` is only sound
@@ -439,20 +447,17 @@ impl Memo {
 
     /// Index the files of `files` that can produce a `SHARED` name, reading each
     /// once. A file this index already knows is left as it is.
-    fn index_possible_producers(
-        &mut self,
-        fs: &dyn FileSystem,
-        predefined: &PreprocessorConfig,
-        files: &[PathBuf],
-    ) {
+    fn index_possible_producers(&mut self, includes: &IncludeContext<'_>, files: &[PathBuf]) {
         for path in files {
             let key = search::normalize_lexically(path);
             if self.facts.contains_key(&key) {
                 continue;
             }
-            let Ok(source) = fs.read(path) else { continue };
+            let Ok(source) = includes.fs.read(path) else {
+                continue;
+            };
             if mentions_shared(&source) {
-                self.insert_facts(key, Some(&source), predefined);
+                self.insert_facts(key, Some(&source), includes);
             }
         }
     }
@@ -483,7 +488,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
                 // an unusable file, and a program a file `RUN`s is the realistic
                 // producer of the `SHARED` names that file consumes — indexing it
                 // here is what gives `shared_producer` something true to say.
-                let facts = memo.facts_for(self.fs, &self.predefined(), &path);
+                let facts = memo.facts_for(&self.includes(&self.predefined()), &path);
                 if facts.parsed {
                     IndexAnswer::Found(facts.file)
                 } else {
@@ -532,7 +537,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
             ProducerSource::Files(files) => {
                 if !memo.known_indexed {
                     memo.known_indexed = true;
-                    memo.index_possible_producers(self.fs, &predefined, files);
+                    memo.index_possible_producers(&self.includes(&predefined), files);
                 }
             }
         }
@@ -545,7 +550,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
             }
         };
         for path in listed {
-            let facts = memo.facts_for(self.fs, &predefined, path);
+            let facts = memo.facts_for(&self.includes(&predefined), path);
             if facts.defines_shared(name) && !consider(facts.file) {
                 return IndexAnswer::Unknowable;
             }
@@ -566,7 +571,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
         match self.find_path(name, kind) {
             IndexAnswer::Found(path) => Located::In(
                 self.memo()
-                    .facts_for(self.fs, &self.predefined(), &path)
+                    .facts_for(&self.includes(&self.predefined()), &path)
                     .file,
             ),
             _ => Located::Nowhere,
@@ -1250,7 +1255,14 @@ mod tests {
         ]);
         let paths = dirs(&["/src"]);
         let known = dirs(&["/src/init-globals.p", "/src/report.p", "/src/quiet.p"]);
-        let map = SharedProducers::build(&fs, &known, &PreprocessorConfig::default());
+        let map = SharedProducers::build(
+            &known,
+            &IncludeContext {
+                fs: &fs,
+                include_paths: &paths,
+                predefined: &PreprocessorConfig::default(),
+            },
+        );
         let seeded = BatchIndex::new(&fs, &paths).seeded_with(&known);
         let mapped = BatchIndex::new(&fs, &paths).with_shared_producers(&map);
 
@@ -1275,7 +1287,14 @@ mod tests {
         ]);
         let paths = dirs(&["/src"]);
         let known = dirs(&["/src/init-globals.p", "/src/quiet.p"]);
-        let map = SharedProducers::build(&fs, &known, &PreprocessorConfig::default());
+        let map = SharedProducers::build(
+            &known,
+            &IncludeContext {
+                fs: &fs,
+                include_paths: &paths,
+                predefined: &PreprocessorConfig::default(),
+            },
+        );
         assert_eq!(fs.reads_of("/src/quiet.p"), 1);
 
         for _ in 0..3 {
@@ -1304,7 +1323,14 @@ mod tests {
         ]);
         let paths = dirs(&["/src", "/elsewhere"]);
         let walk = dirs(&["/src/init-globals.p"]);
-        let map = SharedProducers::build(&fs, &walk, &PreprocessorConfig::default());
+        let map = SharedProducers::build(
+            &walk,
+            &IncludeContext {
+                fs: &fs,
+                include_paths: &paths,
+                predefined: &PreprocessorConfig::default(),
+            },
+        );
         let index = BatchIndex::new(&fs, &paths).with_shared_producers(&map);
 
         assert!(matches!(

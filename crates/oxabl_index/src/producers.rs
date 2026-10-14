@@ -19,10 +19,9 @@
 use std::path::{Path, PathBuf};
 
 use oxabl_semantic::IndexName;
-use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use rustc_hash::FxHashMap;
 
-use crate::{IndexedFileId, index_file};
+use crate::{IncludeContext, IndexedFileId, index_file};
 
 /// Which files define each `DEFINE NEW [GLOBAL] SHARED` name.
 ///
@@ -40,11 +39,13 @@ impl SharedProducers {
     /// Reads every file once. For a client that wants to scan on several threads,
     /// [`definitions_in`] does one file and [`from_definitions`](Self::from_definitions)
     /// joins the results.
-    pub fn build(fs: &dyn FileSystem, files: &[PathBuf], predefined: &PreprocessorConfig) -> Self {
+    /// `includes` reads both the files and the includes a file is expanded
+    /// through, as [`index_file`] does.
+    pub fn build(files: &[PathBuf], includes: &IncludeContext<'_>) -> Self {
         Self::from_definitions(
             files
                 .iter()
-                .map(|path| (path.clone(), definitions_in(fs, path, predefined))),
+                .map(|path| (path.clone(), definitions_in(path, includes))),
         )
     }
 
@@ -88,18 +89,16 @@ impl SharedProducers {
 /// The same answer as indexing the file, reached without the parse for a file
 /// that cannot say `SHARED` at all: the keyword has no abbreviation, so a text
 /// without it defines no shared name, and that is nearly every file of a tree.
-pub fn definitions_in(
-    fs: &dyn FileSystem,
-    path: &Path,
-    predefined: &PreprocessorConfig,
-) -> Vec<IndexName> {
-    let Ok(source) = fs.read(path) else {
+/// A file is judged by its own text here, so one whose only `SHARED` definition
+/// comes from an include it is expanded through is not a producer.
+pub fn definitions_in(path: &Path, includes: &IncludeContext<'_>) -> Vec<IndexName> {
+    let Ok(source) = includes.fs.read(path) else {
         return Vec::new();
     };
     if !mentions_shared(&source) {
         return Vec::new();
     }
-    index_file(IndexedFileId::new(0), &source, predefined).shared_definitions
+    index_file(IndexedFileId::new(0), &source, includes).shared_definitions
 }
 
 /// Whether `source` holds the word `SHARED` in any case, as part of any longer
@@ -115,7 +114,23 @@ pub(crate) fn mentions_shared(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxabl_workspace::InMemoryFileSystem;
+    use oxabl_workspace::{InMemoryFileSystem, PreprocessorConfig};
+
+    fn build(fs: &InMemoryFileSystem, files: &[PathBuf]) -> SharedProducers {
+        let predefined = PreprocessorConfig::default();
+        SharedProducers::build(files, &in_fs(fs, &predefined))
+    }
+
+    fn in_fs<'a>(
+        fs: &'a InMemoryFileSystem,
+        predefined: &'a PreprocessorConfig,
+    ) -> IncludeContext<'a> {
+        IncludeContext {
+            fs,
+            include_paths: &[],
+            predefined,
+        }
+    }
 
     fn fs_with(files: &[(&str, &str)]) -> InMemoryFileSystem {
         let mut fs = InMemoryFileSystem::new();
@@ -144,7 +159,7 @@ mod tests {
             ("/d.p", "MESSAGE \"nothing\"."),
         ];
         let fs = fs_with(&files);
-        let map = SharedProducers::build(&fs, &paths(&files), &PreprocessorConfig::default());
+        let map = build(&fs, &paths(&files));
 
         assert_eq!(
             map.producers_of(&IndexName::new("v-one")),
@@ -165,10 +180,10 @@ mod tests {
             ("/a.p", "DEFINE NEW SHARED VARIABLE v-x AS INTEGER NO-UNDO."),
         ];
         let fs = fs_with(&files);
-        let forward = SharedProducers::build(&fs, &paths(&files), &PreprocessorConfig::default());
+        let forward = build(&fs, &paths(&files));
         let mut reversed = paths(&files);
         reversed.reverse();
-        let backward = SharedProducers::build(&fs, &reversed, &PreprocessorConfig::default());
+        let backward = build(&fs, &reversed);
 
         assert_eq!(forward, backward);
         assert_eq!(
@@ -183,7 +198,7 @@ mod tests {
         let fs = fs_with(&files);
         let mut listed = paths(&files);
         listed.push(PathBuf::from("/missing.p"));
-        let map = SharedProducers::build(&fs, &listed, &PreprocessorConfig::default());
+        let map = build(&fs, &listed);
 
         assert!(map.is_empty(), "{map:?}");
     }
@@ -203,8 +218,9 @@ mod tests {
             let fs = fs_with(&[("/f.p", source)]);
             let predefined = PreprocessorConfig::default();
             assert_eq!(
-                definitions_in(&fs, Path::new("/f.p"), &predefined),
-                index_file(IndexedFileId::new(0), source, &predefined).shared_definitions,
+                definitions_in(Path::new("/f.p"), &in_fs(&fs, &predefined)),
+                index_file(IndexedFileId::new(0), source, &in_fs(&fs, &predefined))
+                    .shared_definitions,
                 "{source}"
             );
         }
