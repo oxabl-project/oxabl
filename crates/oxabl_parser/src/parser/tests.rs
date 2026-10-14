@@ -11748,3 +11748,18 @@ fn dynamic_new_is_a_function_call_over_the_class_and_arguments() {
     assert_eq!(name.name, "DYNAMIC-NEW");
     assert!(!arguments.is_empty());
 }
+
+#[test]
+fn define_work_table_is_skipped_like_workfile() {
+    for source in [
+        "DEFINE WORK-TABLE wt FIELD a AS INTEGER.",
+        "DEFINE SHARED WORKFILE wf FIELD a AS INTEGER.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert!(matches!(
+            program.statements[0].kind,
+            StatementKind::Skipped { .. }
+        ));
+    }
+}

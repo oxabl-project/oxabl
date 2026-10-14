@@ -1105,9 +1105,9 @@ impl Parser<'_> {
             return Ok(self.skipped_table_stmt(hi));
         }
 
-        // DEFINE WORKFILE — legacy synonym for DEFINE TEMP-TABLE, skip to statement end.
-        // Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
-        if self.check(Kind::Workfile) {
+        // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE, skip to
+        // statement end. Uses skip_to_statement_end() to skip over .field access in LIKE clauses.
+        if self.check(Kind::Workfile) || self.check(Kind::WorkTable) {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
