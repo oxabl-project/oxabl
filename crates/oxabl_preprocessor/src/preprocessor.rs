@@ -1210,10 +1210,15 @@ impl ProcessContext<'_> {
             j += 1;
         }
         let keyword = &rest[1..j];
-        let keyword_upper = keyword.to_ascii_uppercase();
+        // The longest keyword is `SCOPED-DEFINE` or `GLOBAL-DEFINE`; a longer
+        // word is no directive.
+        let mut buf = [0u8; 16];
+        let keyword_upper = buf.get_mut(..keyword.len())?;
+        keyword_upper.copy_from_slice(keyword.as_bytes());
+        keyword_upper.make_ascii_uppercase();
 
-        match keyword_upper.as_str() {
-            "SCOPED-DEFINE" | "SCOPED" | "SCOP" => {
+        match &*keyword_upper {
+            b"SCOPED-DEFINE" | b"SCOPED" | b"SCOP" => {
                 let (name, value, end) = parse_define_body(source, i + j);
                 Some(Directive {
                     kind: DirectiveKind::ScopedDefine {
@@ -1223,7 +1228,7 @@ impl ProcessContext<'_> {
                     end,
                 })
             }
-            "GLOBAL-DEFINE" | "GLOBAL" | "GLOB" => {
+            b"GLOBAL-DEFINE" | b"GLOBAL" | b"GLOB" => {
                 let (name, value, end) = parse_define_body(source, i + j);
                 Some(Directive {
                     kind: DirectiveKind::GlobalDefine {
@@ -1233,14 +1238,14 @@ impl ProcessContext<'_> {
                     end,
                 })
             }
-            "UNDEFINE" | "UNDEF" => {
+            b"UNDEFINE" | b"UNDEF" => {
                 let (name, end) = parse_undefine_body(source, i + j);
                 Some(Directive {
                     kind: DirectiveKind::Undefine { name },
                     end,
                 })
             }
-            "IF" => {
+            b"IF" => {
                 // Find &THEN to delimit the condition
                 let (condition, end) = parse_if_condition(source, i + j);
                 Some(Directive {
@@ -1248,33 +1253,33 @@ impl ProcessContext<'_> {
                     end,
                 })
             }
-            "ELSEIF" => {
+            b"ELSEIF" => {
                 let (condition, end) = parse_if_condition(source, i + j);
                 Some(Directive {
                     kind: DirectiveKind::ElseIf { condition },
                     end,
                 })
             }
-            "ELSE" => {
+            b"ELSE" => {
                 // Mid-line `&ELSE branch` keeps the body; multi-line drops EOL.
                 Some(Directive {
                     kind: DirectiveKind::Else,
                     end: skip_after_if_keyword(source, i + j),
                 })
             }
-            "ENDIF" => {
+            b"ENDIF" => {
                 // Mid-line `&ENDIF.` keeps the period; multi-line drops EOL.
                 Some(Directive {
                     kind: DirectiveKind::EndIf,
                     end: skip_after_if_keyword(source, i + j),
                 })
             }
-            "THEN" => {
+            b"THEN" => {
                 // &THEN on its own line — already consumed by &IF parsing.
                 // Just skip the line.
                 None
             }
-            "MESSAGE" => {
+            b"MESSAGE" => {
                 // Stop before a trailing same-line `&ENDIF`/`&ELSE`/`&ELSEIF`
                 // so inline forms like `&IF … &THEN &MESSAGE … &ENDIF` close
                 // correctly (ADM2 / #65). Without a boundary, preserve the
@@ -1723,10 +1728,9 @@ fn parse_undefine_body(source: &str, start: usize) -> (String, usize) {
 /// newline.
 fn parse_if_condition(source: &str, start: usize) -> (String, usize) {
     let rest = &source[start..];
-    let upper = rest.to_ascii_uppercase();
 
     // Find &THEN
-    if let Some(then_pos) = find_keyword(&upper, "&THEN") {
+    if let Some(then_pos) = find_keyword(rest, "&THEN") {
         let condition = rest[..then_pos].trim().to_string();
         let after_then = start + then_pos + 5; // len("&THEN")
         return (condition, skip_after_if_keyword(source, after_then));
@@ -1808,17 +1812,29 @@ fn has_positional_ref(text: &str) -> bool {
         .any(|pair| pair[0] == b'{' && pair[1].is_ascii_digit())
 }
 
-/// Find a keyword in uppercase text, ensuring it's at a word boundary.
+/// Find an uppercase keyword in `text`, ignoring ASCII case, ensuring it's at a
+/// word boundary.
 fn find_keyword(text: &str, keyword: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let keyword = keyword.as_bytes();
+    let first = *keyword.first()?;
     let mut search_from = 0;
-    while let Some(pos) = text[search_from..].find(keyword) {
+    while let Some(pos) = bytes[search_from..]
+        .iter()
+        .position(|b| b.eq_ignore_ascii_case(&first))
+    {
         let abs_pos = search_from + pos;
         let after = abs_pos + keyword.len();
-        // Check it's not inside a larger word
-        let before_ok = abs_pos == 0 || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-        let after_ok = after >= text.len() || !text.as_bytes()[after].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return Some(abs_pos);
+        if bytes
+            .get(abs_pos..after)
+            .is_some_and(|c| c.eq_ignore_ascii_case(keyword))
+        {
+            // Check it's not inside a larger word
+            let before_ok = abs_pos == 0 || !bytes[abs_pos - 1].is_ascii_alphanumeric();
+            let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+            if before_ok && after_ok {
+                return Some(abs_pos);
+            }
         }
         search_from = abs_pos + 1;
     }
@@ -1859,11 +1875,10 @@ fn find_same_line_if_boundary(source: &str, from: usize) -> Option<usize> {
         return None;
     }
     let line = &rest[..line_end];
-    let upper = line.to_ascii_uppercase();
 
     let mut best: Option<usize> = None;
     for kw in ["&ELSEIF", "&ENDIF", "&ELSE"] {
-        if let Some(pos) = find_keyword(&upper, kw) {
+        if let Some(pos) = find_keyword(line, kw) {
             best = Some(match best {
                 Some(b) => b.min(pos),
                 None => pos,
@@ -2996,6 +3011,37 @@ mod tests {
         let source = "&SCOPED-DEFINE HERE {&LINE-NUMBER}\n\n\n{&HERE}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(&*result.to_text(), "\n\n1");
+    }
+
+    #[test]
+    fn find_keyword_ignores_case_and_needs_a_word_boundary() {
+        assert_eq!(find_keyword("a = 1 &then x", "&THEN"), Some(6));
+        assert_eq!(find_keyword("a &ThEn", "&THEN"), Some(2));
+        assert_eq!(find_keyword("x&THEN", "&THEN"), None);
+        assert_eq!(find_keyword("&THENX &THEN", "&THEN"), Some(7));
+        assert_eq!(find_keyword("&THE", "&THEN"), None);
+        assert_eq!(find_keyword("é &THEN", "&THEN"), Some(3));
+    }
+
+    #[test]
+    fn a_same_line_boundary_is_the_earliest_closer_in_any_case() {
+        assert_eq!(find_same_line_if_boundary("1 &Endif &else", 0), Some(2));
+        assert_eq!(find_same_line_if_boundary("1 &else &ELSEIF", 0), Some(2));
+        assert_eq!(find_same_line_if_boundary("1 &elsewhere", 0), None);
+        assert_eq!(find_same_line_if_boundary("1\n&endif", 0), None);
+    }
+
+    #[test]
+    fn a_directive_keyword_is_matched_in_any_case_and_a_long_word_is_none() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&sCoP A 1\n&Glob B 2\n&uNdEf a\n&IF defined(b) &tHeN\n{&b}\n&eNdIf\n\
+                      &scoped-defines X\n&MESSAGEPLUS\n&ELSEWHERE\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(
+            &*result.to_text(),
+            "2\n&scoped-defines X\n&MESSAGEPLUS\n&ELSEWHERE\n"
+        );
     }
 
     #[test]
