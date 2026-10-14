@@ -366,6 +366,33 @@ fn a_class_built_from_includes_is_an_edge_and_leaves_no_row() {
 }
 
 #[test]
+fn a_recovered_parse_or_a_missing_nested_include_degrades_the_set() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/sub.p"), "MESSAGE 1.\n");
+    fs.insert(PathBuf::from("/proj/outer.i"), "{inner.i}\n");
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+
+    let broken = run
+        .with_file("/proj/broken.p")
+        .edge_set("DEFINE VARIABLE i AS INTEGER NO-UNDO.\ni = 1 +.\nRUN sub.p.\n")
+        .expect("edge set");
+    assert_eq!(
+        broken.completeness().reasons(),
+        [DegradedReason::ParseRecovered]
+    );
+
+    let nested = run
+        .with_file("/proj/nested.p")
+        .edge_set("{outer.i}\nRUN sub.p.\n")
+        .expect("edge set");
+    assert_eq!(
+        nested.completeness().reasons(),
+        [DegradedReason::UnresolvedInclude]
+    );
+}
+
+#[test]
 fn the_reverse_graph_reports_degraded_files_beside_unanalysed_ones() {
     let mut fs = InMemoryFileSystem::new();
     let clean = PathBuf::from("/proj/clean.p");
