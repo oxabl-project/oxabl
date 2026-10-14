@@ -11718,3 +11718,20 @@ fn create_on_a_table_named_call_stays_a_record_create() {
         } | StatementKind::Skipped { .. }
     ));
 }
+
+#[test]
+fn no_undo_after_view_as_is_recorded() {
+    let stmts = parse_program_stmts(
+        "DEFINE VARIABLE fi AS CHARACTER FORMAT \"x(8)\" VIEW-AS FILL-IN SIZE 10 BY 1 NO-UNDO.",
+    );
+    assert!(matches!(
+        &stmts[0].kind,
+        StatementKind::VariableDeclaration { no_undo: true, .. }
+    ));
+    let stmts =
+        parse_program_stmts("DEFINE VARIABLE fi AS CHARACTER VIEW-AS FILL-IN SIZE 10 BY 1.");
+    assert!(matches!(
+        &stmts[0].kind,
+        StatementKind::VariableDeclaration { no_undo: false, .. }
+    ));
+}

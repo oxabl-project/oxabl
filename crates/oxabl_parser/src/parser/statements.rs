@@ -1230,7 +1230,9 @@ impl Parser<'_> {
                 // end using the field-access-aware helper so that dots inside numeric
                 // size specs (e.g. 24.4 or .62) are not mistaken for the terminator.
                 Kind::ViewAs | Kind::Size => {
-                    let _ = self.skip_to_statement_end();
+                    // AppBuilder-style declarations put NO-UNDO after the UI options.
+                    let (lo, hi) = self.skip_to_statement_end();
+                    no_undo |= self.tokens[lo..hi].iter().any(|t| t.kind == Kind::NoUndo);
                     return Ok(self.stmt(StatementKind::VariableDeclaration {
                         name,
                         type_source,
