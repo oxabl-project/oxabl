@@ -13011,3 +13011,50 @@ fn record_statements_take_database_qualified_names() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn buffer_definitions_take_database_qualified_tables() {
+    for source in [
+        "DEFINE BUFFER b FOR sports.customer.",
+        "DEFINE BUFFER b FOR sports.customer .",
+        "DEFINE PARAMETER BUFFER b FOR sports.customer.",
+        "DEFINE INPUT PARAMETER BUFFER b FOR sports.customer.",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        let target = match &program.statements[0].kind {
+            StatementKind::DefineBuffer {
+                target: BufferTarget::Table(t),
+                ..
+            } => &t.name,
+            StatementKind::DefineParameter {
+                param_type: ParameterType::Buffer { target, .. },
+                ..
+            } => &target.name,
+            other => panic!("{source}: {other:?}"),
+        };
+        assert_eq!(target, "sports.customer", "{source}");
+    }
+}
+
+#[test]
+fn temp_table_like_takes_a_database_qualified_table() {
+    let source = "DEFINE TEMP-TABLE tt NO-UNDO LIKE sports.customer FIELD x AS INTEGER.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 1);
+    match &program.statements[0].kind {
+        StatementKind::DefineTempTable {
+            like_table: Some(like),
+            fields,
+            ..
+        } => {
+            assert_eq!(like.name, "sports.customer");
+            assert_eq!(fields.len(), 1);
+        }
+        other => panic!("{other:?}"),
+    }
+}
