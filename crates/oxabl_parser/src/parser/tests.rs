@@ -12421,3 +12421,40 @@ fn a_method_accepts_the_package_protected_access_modifier() {
     };
     assert_eq!(*access, AccessModifier::PackageProtected);
 }
+
+#[test]
+fn an_external_procedure_accepts_its_options_in_any_order() {
+    for options in [
+        "ORDINAL 5",
+        "CDECL",
+        "PASCAL",
+        "STDCALL",
+        "PERSISTENT",
+        "THREAD-SAFE",
+        "CDECL ORDINAL 5",
+        "ORDINAL 5 CDECL",
+        "ORDINAL 5 STDCALL PERSISTENT",
+        "PERSISTENT THREAD-SAFE PASCAL ORDINAL 12",
+        "THREAD-SAFE ORDINAL {&ord} CDECL",
+    ] {
+        let source = format!(
+            "PROCEDURE p EXTERNAL \"lib.so\" {options}:\n  DEFINE INPUT PARAMETER x AS LONG.\nEND PROCEDURE.\nMESSAGE \"after\"."
+        );
+        let stmts = assert_parses_clean(&source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        let StatementKind::Procedure {
+            body, is_prototype, ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected a procedure, got {:?}", stmts[0].kind);
+        };
+        assert!(*is_prototype, "{source}");
+        assert_eq!(body.len(), 1, "{source}");
+    }
+}
+
+#[test]
+fn an_option_keyword_of_an_external_procedure_is_still_a_name() {
+    let source = "DEFINE VARIABLE ordinal AS INTEGER NO-UNDO.\nDEFINE VARIABLE cdecl AS INTEGER NO-UNDO.\nDEFINE VARIABLE pascal AS INTEGER NO-UNDO.\nDEFINE VARIABLE stdcall AS INTEGER NO-UNDO.\nordinal = cdecl + pascal * stdcall.\nMESSAGE ordinal cdecl pascal stdcall.";
+    assert_parses_clean(source);
+}

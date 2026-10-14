@@ -1036,6 +1036,10 @@ impl<'a> Parser<'a> {
                     | Kind::Protected
                     | Kind::PackagePrivate
                     | Kind::PackageProtected
+                    | Kind::Ordinal
+                    | Kind::Cdecl
+                    | Kind::Pascal
+                    | Kind::Stdcall
                     | Kind::Abstract
                     | Kind::Final
                     | Kind::Override

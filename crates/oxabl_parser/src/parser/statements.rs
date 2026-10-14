@@ -3400,8 +3400,9 @@ impl Parser<'_> {
         }
 
         let mut is_prototype = false;
-        // Skip optional EXTERNAL "dll-name" [calling-convention] [PERSISTENT] clause
-        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" cdecl:
+        // Skip optional EXTERNAL "dll-name" clause. Its options may come in any order:
+        // CDECL | PASCAL | STDCALL, ORDINAL n, PERSISTENT, THREAD-SAFE
+        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" CDECL ORDINAL 5:
         // The DLL name may also be a preprocessor reference: EXTERNAL {&DLL_NAME}
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
@@ -3413,12 +3414,26 @@ impl Parser<'_> {
             {
                 self.advance(); // consume the DLL path
             }
-            // Optional calling convention identifier (cdecl, pascal, ordinal, etc.)
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance();
-            }
-            if self.check(Kind::Persistent) {
-                self.advance();
+            loop {
+                match self.peek().kind {
+                    Kind::Cdecl
+                    | Kind::Pascal
+                    | Kind::Stdcall
+                    | Kind::Persistent
+                    | Kind::ThreadSafe => {
+                        self.advance();
+                    }
+                    Kind::Ordinal => {
+                        self.advance();
+                        if matches!(
+                            self.peek().kind,
+                            Kind::IntegerLiteral | Kind::Preprop | Kind::IncludeArgReference
+                        ) {
+                            self.advance();
+                        }
+                    }
+                    _ => break,
+                }
             }
         }
 

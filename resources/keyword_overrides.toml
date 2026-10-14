@@ -437,6 +437,23 @@ keyword_type = "Option"
 name = "PACKAGE-PROTECTED"
 keyword_type = "Option"
 
+# EXTERNAL procedure options
+[[add]]
+name = "ORDINAL"
+keyword_type = "Option"
+
+[[add]]
+name = "CDECL"
+keyword_type = "Option"
+
+[[add]]
+name = "PASCAL"
+keyword_type = "Option"
+
+[[add]]
+name = "STDCALL"
+keyword_type = "Option"
+
 # Member qualifiers
 [[add]]
 name = "ABSTRACT"
