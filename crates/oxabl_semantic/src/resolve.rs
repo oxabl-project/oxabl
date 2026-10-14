@@ -642,19 +642,30 @@ impl<'a> Walker<'a> {
             }
             StatementKind::ForEach { buffer, body, .. } => {
                 let bs = self.tree.push(ScopeKind::Block, scope, stmt.id);
-                // FOR EACH introduces an implicit buffer at block scope. Its
-                // name is the table name, so link it to the schema table.
-                let table_id = self.schema_table_id(buffer);
-                self.declare(
-                    stmt,
-                    bs,
-                    buffer,
-                    NamespaceId::Buffers,
-                    SymbolKind::Buffer,
-                    None,
-                    SymbolFlags::empty(),
-                    table_id,
-                );
+                // The record phrase names a *buffer*. A buffer of that name
+                // already in scope (`DEFINE BUFFER`, a parameter buffer, a
+                // temp-table's default buffer, an enclosing FOR EACH) is the one
+                // read, whatever table shares its name; FOR EACH only scopes it
+                // to this block, so bind that same symbol here. Only a name no
+                // buffer answers to is a schema table's default buffer, which is
+                // minted at block scope.
+                let atom = fold_atom(&buffer.name);
+                if let Some(existing) = self.tree.resolve(scope, NamespaceId::Buffers, &atom) {
+                    self.tree.get_mut(bs).bindings[NamespaceId::Buffers.index()]
+                        .insert(atom, existing);
+                } else {
+                    let table_id = self.schema_table_id(buffer);
+                    self.declare(
+                        stmt,
+                        bs,
+                        buffer,
+                        NamespaceId::Buffers,
+                        SymbolKind::Buffer,
+                        None,
+                        SymbolFlags::empty(),
+                        table_id,
+                    );
+                }
                 self.walk_block(body, bs);
             }
             StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
