@@ -650,3 +650,63 @@ fn a_preprocessor_loss_degrades_the_set_for_its_own_reason() {
         [DegradedReason::PreprocessorLoss]
     );
 }
+
+/// Every `RUN` target shape the parser takes whole, with the file that satisfies it.
+const RUN_SHAPES: &[(&str, &str)] = &[
+    ("a/b.c.p", "/src/a/b.c.p"),
+    ("comm\\expdist.p", "/src/comm/expdist.p"),
+    ("3rd/x.p", "/src/3rd/x.p"),
+    ("./sub2.p", "/src/sub2.p"),
+    ("a.b/c.p", "/src/a.b/c.p"),
+];
+
+#[test]
+fn every_run_target_shape_becomes_a_program_edge_naming_the_whole_target() {
+    for &(target, path) in RUN_SHAPES {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(PathBuf::from(path), "MESSAGE \"x\".");
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let schema = Schema::empty();
+
+        let source = format!("RUN {target}.\n");
+        let semantic = analyse(&source, &schema, &index);
+        let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+
+        let program: Vec<_> = edges.of_kind(EdgeKind::ProgramReference).collect();
+        assert_eq!(program.len(), 1, "{target}: {program:?}");
+        assert_eq!(program[0].target.key(), target.to_lowercase(), "{target}");
+        assert!(
+            matches!(program[0].target, EdgeTarget::IndexedFile { .. }),
+            "{target}: a resolved target names the file the index reached"
+        );
+        let span = program[0].span.expect("the RUN writes the name here");
+        assert_eq!(
+            &source[span.start as usize..span.end as usize],
+            target,
+            "{target}"
+        );
+        assert!(edges.unresolved().is_empty(), "{target}");
+    }
+}
+
+#[test]
+fn an_absent_run_target_row_keeps_the_whole_written_name() {
+    for &(target, _) in RUN_SHAPES {
+        let fs = InMemoryFileSystem::new();
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let schema = Schema::empty();
+
+        let source = format!("RUN {target}.\n");
+        let semantic = analyse(&source, &schema, &index);
+        let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+
+        assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 0);
+        let rows = edges.unresolved();
+        assert_eq!(rows.len(), 1, "{target}: {rows:?}");
+        assert_eq!(rows[0].kind, EdgeKind::ProgramReference);
+        assert_eq!(rows[0].name, target.to_lowercase(), "{target}");
+        assert_eq!(rows[0].reason, UnresolvedReason::AbsentFromWorkspace);
+    }
+}

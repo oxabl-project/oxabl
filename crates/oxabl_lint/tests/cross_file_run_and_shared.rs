@@ -305,6 +305,26 @@ fn a_name_no_file_on_the_paths_matches_is_absent_from_the_workspace() {
 }
 
 #[test]
+fn a_target_that_climbs_out_with_dot_dot_is_inconclusive_not_absent() {
+    for target in ["../sub/thing.p", "./../sub/thing.p", "..\\sub\\thing.p"] {
+        let source = format!("RUN {target}.\n");
+        let (stmts, sem) = with_index(&source, &WORKSPACE);
+        assert_eq!(
+            run_resolution(&stmts, &sem),
+            Some(Resolution::Unresolved {
+                name: OxablAtom::from(target),
+                reason: UnresolvedReason::External,
+            }),
+            "{target}"
+        );
+        assert!(
+            lint0001_with_index(&source, &WORKSPACE).is_empty(),
+            "{target}"
+        );
+    }
+}
+
+#[test]
 fn an_internal_procedure_resolves_locally_and_the_index_is_not_consulted() {
     // The local answer wins, and it wins *before* the index is asked — a
     // same-named program elsewhere on the paths must not be able to hijack an

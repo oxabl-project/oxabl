@@ -4596,9 +4596,23 @@ impl Parser<'_> {
     /// comment, so a period followed by whitespace is the statement terminator.
     fn parse_procedure_name(&mut self) -> ParseResult<(String, Span)> {
         // Procedure names are file paths and can start with any word-like token,
-        // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`).
-        // Absolute UNIX paths starting with `/` are also valid (e.g., `RUN /opt/app/batch.p`).
-        if !Self::is_word_kind(self.peek().kind) && !self.check(Kind::Slash) {
+        // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`),
+        // a digit (`3rd/x.p`), a `/` (`RUN /opt/app/batch.p`) or `./` / `../`.
+        let first = self.peek().kind;
+        let leading_dot = first == Kind::Period
+            && matches!(self.peek_at(1).kind, Kind::Period | Kind::Slash)
+            && self.peek_at(1).start == self.peek().end;
+        let backslash_after_dot = first == Kind::Period
+            && self.peek_at(1).kind == Kind::Identifier
+            && self.peek_at(1).start == self.peek().end
+            && self.source[self.peek_at(1).start..].starts_with('\\');
+        let numeric_start = matches!(first, Kind::IntegerLiteral | Kind::DecimalLiteral);
+        if !Self::is_word_kind(first)
+            && first != Kind::Slash
+            && !leading_dot
+            && !backslash_after_dot
+            && !numeric_start
+        {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
                 span: Span {
@@ -4621,57 +4635,74 @@ impl Parser<'_> {
             };
             tok.start == before
         };
-        // For absolute paths, consume the leading `/` then the first path segment
-        if self.check(Kind::Slash) {
-            self.advance(); // consume leading '/'
-            if Self::is_word_kind(self.peek().kind) && touches(self, 0) {
-                self.advance(); // consume first path segment
-            }
-        } else {
-            self.advance(); // consume the first identifier token
-        }
-
-        // Consume additional path components separated by `/` (e.g., `orders/calc_total.p`)
-        // Path components may start with digits (e.g., `rpt/170summary.p`), so also allow
-        // IntegerLiteral and DecimalLiteral as path segment starts.
-        while self.check(Kind::Slash)
-            && touches(self, 0)
+        // Leading `./`, `../` and `./../` components.
+        while matches!(self.peek().kind, Kind::Period | Kind::Slash)
+            && matches!(self.peek_at(1).kind, Kind::Period | Kind::Slash)
             && touches(self, 1)
-            && (Self::is_word_kind(self.peek_at(1).kind)
-                || matches!(
-                    self.peek_at(1).kind,
-                    Kind::IntegerLiteral | Kind::DecimalLiteral
-                ))
         {
-            self.advance(); // consume '/'
-            self.advance(); // consume next path component
-            // A digit-leading component like "170summary" is lexed as two tokens:
-            // IntegerLiteral("170") + Identifier("summary"). Consume the rest.
-            while Self::is_word_kind(self.peek().kind)
-                && !self.check(Kind::Slash)
-                && !self.check(Kind::Period)
-                && touches(self, 0)
-            {
+            self.advance();
+        }
+        if self.check(Kind::Slash) {
+            // Absolute path (or the `/` after leading dots): consume the `/` and
+            // the first path segment.
+            self.advance();
+            if self.at_segment_start() && touches(self, 0) {
                 self.advance();
             }
+        } else if self.check(Kind::Period) {
+            // `.\x.p`: the lexer folds the backslash into the identifier.
+            self.advance();
+            self.advance();
+        } else {
+            self.advance(); // consume the first token
         }
+        self.consume_touching_words();
 
-        // Check for dotted extension (e.g., my-proc.p) or dotted method name (e.g., Dataset.Fill).
+        // Further path components (`orders/calc_total.p`, `a.b/c.p`) and dotted
+        // extensions or method names (`my-proc.p`, `Dataset.Fill`, `a/b.c.p`). A
+        // component may start with a digit (`rpt/170summary.p`), which lexes as
+        // an IntegerLiteral followed by an Identifier.
+        //
         // The period and the word after it must both touch their neighbours: a
         // statement-terminating period is followed by whitespace, and `RUN` is
         // usable as an identifier, so `RUN write-header. RUN build-list.` must
         // not fold the next statement into the target. Block-terminating keywords
         // like END, WHEN, THEN are excluded even when adjacent.
-        if self.check(Kind::Period)
-            && (self.check_at(1, Kind::Identifier) || Self::can_be_identifier(self.peek_at(1).kind))
-            && touches(self, 0)
-            && touches(self, 1)
-        {
-            self.advance(); // consume the period
-            self.advance(); // consume the extension or method name
+        loop {
+            if self.check(Kind::Slash)
+                && touches(self, 0)
+                && touches(self, 1)
+                && self.at_segment_start_at(1)
+            {
+                self.advance(); // consume '/'
+                self.advance(); // consume next path component
+                self.consume_touching_words();
+            } else if self.check(Kind::Period)
+                && touches(self, 0)
+                && touches(self, 1)
+                && (self.check_at(1, Kind::Identifier)
+                    || Self::can_be_identifier(self.peek_at(1).kind)
+                    || self.check_at(1, Kind::IntegerLiteral))
+            {
+                self.advance(); // consume the period
+                self.advance(); // consume the extension or method name
+                self.consume_touching_words();
+            } else {
+                break;
+            }
         }
 
         let end = self.prev_end() as usize;
+        // A bare number is no program name.
+        if numeric_start && self.source[start..end].bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ParseError {
+                message: "Expected procedure name after RUN".to_string(),
+                span: Span {
+                    start: start as u32,
+                    end: end as u32,
+                },
+            });
+        }
         Ok((
             self.source[start..end].to_string(),
             Span {
@@ -4679,6 +4710,25 @@ impl Parser<'_> {
                 end: end as u32,
             },
         ))
+    }
+
+    /// Whether the token `offset` ahead can start a `RUN` path component.
+    fn at_segment_start_at(&self, offset: usize) -> bool {
+        let kind = self.peek_at(offset).kind;
+        Self::is_word_kind(kind) || matches!(kind, Kind::IntegerLiteral | Kind::DecimalLiteral)
+    }
+
+    fn at_segment_start(&self) -> bool {
+        self.at_segment_start_at(0)
+    }
+
+    /// Consume word tokens that touch the previous one: the rest of a component
+    /// the lexer split in two, like `170summary`.
+    fn consume_touching_words(&mut self) {
+        while Self::is_word_kind(self.peek().kind) && self.peek().start == self.prev_end() as usize
+        {
+            self.advance();
+        }
     }
 
     /// Check if the current token is the start of a find clause (WHERE, lock, no-error, terminator)

@@ -12056,3 +12056,52 @@ fn class_header_accepts_serializable() {
         assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
     }
 }
+
+#[test]
+fn run_target_takes_every_path_shape_the_avm_accepts() {
+    for (source, expected) in [
+        ("RUN a/b.c.p.", "a/b.c.p"),
+        ("RUN a.b/c.p.", "a.b/c.p"),
+        ("RUN a.b.c.", "a.b.c"),
+        ("RUN comm\\expdist.p.", "comm\\expdist.p"),
+        ("RUN x\\y\\z.p (1).", "x\\y\\z.p"),
+        ("RUN 3rd/x.p.", "3rd/x.p"),
+        ("RUN 3rd.p.", "3rd.p"),
+        ("RUN ./sub2.p.", "./sub2.p"),
+        ("RUN ../x/y.p.", "../x/y.p"),
+        ("RUN ./../x/y.p.", "./../x/y.p"),
+        ("RUN ../../x.p.", "../../x.p"),
+        ("RUN ..\\x\\y.p.", "..\\x\\y.p"),
+        ("RUN .\\x.p.", ".\\x.p"),
+        ("RUN a/b.c.p PERSISTENT SET h.", "a/b.c.p"),
+        ("RUN a/b.c.p(1).", "a/b.c.p"),
+        ("RUN a/b.c.p. RUN d.p.", "a/b.c.p"),
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        let StatementKind::Run {
+            target: RunTarget::Literal {
+                name, name_span, ..
+            },
+            ..
+        } = &program.statements[0].kind
+        else {
+            panic!("{source}: {:?}", program.statements[0].kind);
+        };
+        assert_eq!(name, expected, "{source}");
+        assert_eq!(
+            &source[name_span.start as usize..name_span.end as usize],
+            expected,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_bare_number_is_not_a_run_target() {
+    let source = "RUN 12.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(!program.errors.is_empty());
+}
