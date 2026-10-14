@@ -7,7 +7,7 @@ use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 use crate::PreprocVarTable;
-use crate::condition::evaluate_with_defined;
+use crate::condition::{Environment, Gap, evaluate};
 use crate::span_tree::{
     PreprocessedFile, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
@@ -130,6 +130,8 @@ impl<'fs> Preprocessor<'fs> {
             fs: self.fs,
             include_paths: self.include_paths,
             vars,
+            opsys: self.predefined.opsys.clone(),
+            proversion: self.predefined.proversion.clone(),
             file_names: vec![name.map(str::to_string)],
             sequence: 0,
             global_vars: PreprocVarTable::new(),
@@ -178,6 +180,9 @@ struct ProcessContext<'fs> {
     fs: &'fs dyn FileSystem,
     include_paths: &'fs [PathBuf],
     vars: PreprocVarTable,
+    /// What the `OPSYS` and `PROVERSION` functions answer in a condition.
+    opsys: String,
+    proversion: Option<String>,
     /// The name `{&FILE-NAME}` reports for each file being processed, innermost
     /// last. The root's is `None` when the caller supplied no name.
     file_names: Vec<Option<String>>,
@@ -766,9 +771,11 @@ impl<'fs> ProcessContext<'fs> {
     /// offset `at` of `source`.
     ///
     /// Computed predefined names are substituted first. A predefined name with no
-    /// value to substitute (`{&PROVERSION}` when the environment does not say, a
-    /// `{&FILE-NAME}` for an unnamed root) would otherwise decide the branch as
-    /// an empty string, so each one raises PREPROC009.
+    /// value to substitute (`{&PROVERSION}` or the `PROVERSION` function when the
+    /// environment does not say, a `{&FILE-NAME}` for an unnamed root) would
+    /// otherwise decide the branch as an empty string, so each one raises
+    /// PREPROC009. A part of the condition the evaluator does not model raises
+    /// PREPROC010.
     fn evaluate_condition(
         &mut self,
         condition: &str,
@@ -779,7 +786,25 @@ impl<'fs> ProcessContext<'fs> {
     ) -> bool {
         let condition = expand_positional_refs(condition, positional_args);
         let condition = self.substitute_computed_names(&condition, source, at, site);
-        evaluate_with_defined(&condition, &self.vars)
+        let evaluation = evaluate(
+            &condition,
+            &Environment {
+                vars: &self.vars,
+                opsys: &self.opsys,
+                proversion: self.proversion.as_deref(),
+            },
+        );
+        let mut unmodelled = Vec::new();
+        for gap in &evaluation.gaps {
+            match gap {
+                Gap::UnsetProversion => self.report_unknown_predefined("PROVERSION", site),
+                Gap::Unmodelled(what) => unmodelled.push(what.as_str()),
+            }
+        }
+        if !unmodelled.is_empty() {
+            self.report_unmodelled_condition(&unmodelled.join(", "), site);
+        }
+        evaluation.value
     }
 
     fn substitute_computed_names(
@@ -825,17 +850,9 @@ impl<'fs> ProcessContext<'fs> {
     }
 
     fn report_unknown_predefined(&mut self, name: &str, site: FileSpan) {
-        // Anchored on the outermost include site when nested, so the diagnostic
-        // lands in the file the caller actually analysed.
-        let nested = self.site_stack.first().copied();
         let message = format!(
-            "predefined name '{{&{}}}' has no value — the condition is decided as if it were empty{}",
+            "predefined name '{{&{}}}' has no value — the condition is decided as if it were empty",
             name.to_ascii_uppercase(),
-            if nested.is_some() {
-                " (reached through this include)"
-            } else {
-                ""
-            },
         );
         let help = if name.eq_ignore_ascii_case("FILE-NAME") {
             "pass the file's name to the preprocessor".to_string()
@@ -845,13 +862,45 @@ impl<'fs> ProcessContext<'fs> {
                 name.to_ascii_lowercase()
             )
         };
+        self.report_condition_loss(
+            "PREPROC009",
+            TextLossKind::UnknownPredefinedName,
+            message,
+            help,
+            site,
+        );
+    }
+
+    fn report_unmodelled_condition(&mut self, what: &str, site: FileSpan) {
+        self.report_condition_loss(
+            "PREPROC010",
+            TextLossKind::UnmodelledCondition,
+            format!("the condition uses {what}, which the preprocessor does not evaluate — the branch is a guess"),
+            "the files each branch includes may or may not be dependencies".to_string(),
+            site,
+        );
+    }
+
+    fn report_condition_loss(
+        &mut self,
+        code: &'static str,
+        kind: TextLossKind,
+        message: String,
+        help: String,
+        site: FileSpan,
+    ) {
+        // Anchored on the outermost include site when nested, so the diagnostic
+        // lands in the file the caller actually analysed.
+        let nested = self.site_stack.first().copied();
+        let message = if nested.is_some() {
+            format!("{message} (reached through this include)")
+        } else {
+            message
+        };
         let anchor = nested.unwrap_or(site);
         self.diagnostics
-            .push(Diagnostic::warning("PREPROC009", message, anchor).with_help(help));
-        self.text_losses.push(TextLoss {
-            kind: TextLossKind::UnknownPredefinedName,
-            site: anchor,
-        });
+            .push(Diagnostic::warning(code, message, anchor).with_help(help));
+        self.text_losses.push(TextLoss { kind, site: anchor });
     }
 
     /// Report an include reference whose `{` at byte offset `i` never closes.
@@ -1367,7 +1416,7 @@ impl<'fs> ProcessContext<'fs> {
         // Scope isolation: save current vars, inject named args
         let saved_vars = self.vars.clone();
         for (name, value) in &args.named {
-            self.vars.define(name, value);
+            self.vars.define_argument(name, value);
         }
 
         // Process recursively with positional args scoped to this include.
@@ -2504,6 +2553,81 @@ mod tests {
             .expect("PREPROC009");
         assert_eq!(diag.span.span.start, 0);
         assert!(diag.message.contains("{&PROVERSION}"));
+    }
+
+    #[test]
+    fn the_condition_functions_read_the_configured_environment() {
+        let fs = make_fs(&[]);
+        let config = PreprocessorConfig {
+            opsys: "WIN32".to_string(),
+            proversion: Some("12.8".to_string()),
+            ..Default::default()
+        };
+        let pp = Preprocessor::new(&fs, &[]).with_predefined(&config);
+        let source = "&IF OPSYS = \"UNIX\" &THEN\nunix\n&ELSEIF OPSYS = \"WIN32\" &THEN\nwin\n&ENDIF\n\
+                      &IF PROVERSION >= \"12\" &THEN\nnew\n&ELSE\nold\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "win\nnew\n");
+        assert!(result.diagnostics.is_empty());
+        assert!(result.text_losses.is_empty());
+    }
+
+    #[test]
+    fn an_unset_proversion_function_is_reported_like_the_reference() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF PROVERSION >= \"12\" &THEN\nnew\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert!(result.diagnostics.iter().any(|d| d.code.0 == "PREPROC009"));
+        assert_eq!(
+            result
+                .text_losses
+                .iter()
+                .map(|l| l.kind)
+                .collect::<Vec<_>>(),
+            [TextLossKind::UnknownPredefinedName]
+        );
+    }
+
+    #[test]
+    fn an_unmodelled_function_in_a_condition_is_reported_once_per_condition() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF SEARCH(\"a.i\") <> ? &THEN\nx\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        let diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.0 == "PREPROC010")
+            .collect();
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("SEARCH"), "{}", diags[0].message);
+        assert_eq!(
+            result
+                .text_losses
+                .iter()
+                .map(|l| l.kind)
+                .collect::<Vec<_>>(),
+            [TextLossKind::UnmodelledCondition]
+        );
+    }
+
+    #[test]
+    fn defined_tells_an_include_argument_from_a_define() {
+        let fs = make_fs(&[(
+            "/inc/d.i",
+            "&IF DEFINED(arg) = 2 &THEN\nargument\n&ENDIF\n&IF DEFINED(def) = 1 &THEN\ndefine\n&ENDIF\n",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE def yes\n{d.i &arg=1}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "argument\ndefine\n");
+        assert!(result.diagnostics.is_empty());
     }
 
     #[test]

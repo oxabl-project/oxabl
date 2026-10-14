@@ -477,7 +477,7 @@ fn declared_members(body: &[Statement]) -> Arc<[MemberDescriptor]> {
 /// declaration's type are computed by one conversion rather than two that could
 /// disagree.
 fn member_type(declared: &DataType) -> MemberType {
-    if let DataType::Class(name) = declared {
+    if let Some(name) = declared.class_name() {
         return MemberType::Named(IndexName::new(name));
     }
     // `from_data_type` yields only primitives, arrays over them, and `Unknown`

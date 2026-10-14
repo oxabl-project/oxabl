@@ -390,6 +390,7 @@ impl Visitor<'_> {
             ExpressionKind::New {
                 class_name,
                 arguments,
+                ..
             } => {
                 // The `New` expression's own id carries the class name's
                 // resolution. The span is the whole `NEW Foo(...)` expression
@@ -620,6 +621,7 @@ mod tests {
         // `NEW Bar()` without a local `Bar` resolves to External (USING-
         // imported) — LINT0001 skips External.
         let new_e = expr_n(ExpressionKind::New {
+            type_arguments: None,
             class_name: "Bar".into(),
             arguments: vec![],
         });
@@ -649,6 +651,7 @@ mod tests {
         });
         let diags = analyze_and_lint(vec![
             stmt_n(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("calc"),
                 return_type: DataType::Integer,
                 body: vec![],

@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use oxabl_pipeline::{ConfigOverrides, EdgeKind, LintPipeline, resolve_from_config};
+use oxabl_pipeline::{
+    ConfigOverrides, DegradedReason, EdgeKind, LintPipeline, resolve_from_config,
+};
 use oxabl_workspace::{InMemoryFileSystem, WorkspaceConfig};
 
 const SOURCE: &str = "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\n{unix.i}\n&ELSE\n{win.i}\n&ENDIF\n\
@@ -77,5 +79,97 @@ fn file_name_is_the_path_the_client_analysed_the_file_under() {
             "{file}"
         );
         assert!(edges.unresolved().is_empty(), "{file}");
+    }
+}
+
+/// The includes named, the loud warning codes and the completeness reasons of `source`.
+fn analyse(table: &str, source: &str) -> (Vec<String>, Vec<String>, Vec<DegradedReason>) {
+    let toml = format!("[workspace]\nname = \"p\"\n{table}");
+    let workspace = WorkspaceConfig::from_toml(&toml).expect("config parses");
+    let (mut config, _) =
+        resolve_from_config(&workspace, Path::new("/proj"), &ConfigOverrides::default());
+    config.include_paths = vec![PathBuf::from("/proj")];
+    let mut fs = InMemoryFileSystem::new();
+    for name in ["a.i", "b.i", "c.i"] {
+        fs.insert(PathBuf::from(format!("/proj/{name}")), "/* x */\n");
+    }
+    let base = LintPipeline::new(&config, &fs);
+    let pipeline = base.with_file("/proj/main.p");
+    let expansion = pipeline.expand(source);
+    let result = pipeline.collect(&expansion);
+    let edges = pipeline.edges_of(&expansion, &result).expect("edge set");
+    let mut named: Vec<String> = edges
+        .of_kind(EdgeKind::DirectInclude)
+        .map(|edge| edge.target.key().rsplit('/').next().unwrap().to_string())
+        .collect();
+    named.sort();
+    let mut codes: Vec<String> = result
+        .all()
+        .map(|d| d.diagnostic.code.0.to_string())
+        .filter(|code| code.starts_with("PREPROC"))
+        .collect();
+    codes.sort();
+    (named, codes, edges.completeness().reasons().to_vec())
+}
+
+#[test]
+fn the_opsys_function_reads_the_configured_environment() {
+    let source = "&IF OPSYS = \"UNIX\" &THEN {a.i} &ELSE {b.i} &ENDIF\n";
+    let (named, codes, reasons) = analyse("", source);
+    assert_eq!(named, ["a.i"]);
+    assert!(
+        codes.is_empty() && reasons.is_empty(),
+        "{codes:?} {reasons:?}"
+    );
+
+    let (named, codes, reasons) = analyse("[workspace.preprocessor]\nopsys = \"WIN32\"\n", source);
+    assert_eq!(named, ["b.i"]);
+    assert!(
+        codes.is_empty() && reasons.is_empty(),
+        "{codes:?} {reasons:?}"
+    );
+}
+
+#[test]
+fn the_proversion_function_reads_the_configured_version_or_degrades() {
+    let source = "&IF PROVERSION >= \"12\" &THEN {a.i} &ELSE {b.i} &ENDIF\n";
+    let (named, codes, reasons) =
+        analyse("[workspace.preprocessor]\nproversion = \"12.8\"\n", source);
+    assert_eq!(named, ["a.i"]);
+    assert!(
+        codes.is_empty() && reasons.is_empty(),
+        "{codes:?} {reasons:?}"
+    );
+
+    let (_, codes, reasons) = analyse("", source);
+    assert_eq!(codes, ["PREPROC009"]);
+    assert_eq!(reasons, [DegradedReason::PreprocessorLoss]);
+}
+
+#[test]
+fn defined_inside_logical_follows_the_defines() {
+    let source = "&IF NOT LOGICAL(DEFINED(page-flow)) &THEN {a.i} &ELSE {b.i} &ENDIF\n";
+    let (named, ..) = analyse("", source);
+    assert_eq!(named, ["a.i"]);
+    let defined = format!("&GLOBAL-DEFINE page-flow yes\n{source}");
+    let (named, codes, reasons) = analyse("", &defined);
+    assert_eq!(named, ["b.i"]);
+    assert!(
+        codes.is_empty() && reasons.is_empty(),
+        "{codes:?} {reasons:?}"
+    );
+}
+
+#[test]
+fn a_function_the_evaluator_does_not_model_degrades_the_set() {
+    for condition in [
+        "SEARCH(\"a.i\") <> ?",
+        "KEYWORD(\"def\") = \"DEFINE\"",
+        "SOMETHING = 1",
+    ] {
+        let source = format!("&IF {condition} &THEN {{a.i}} &ELSE {{b.i}} &ENDIF\n");
+        let (_, codes, reasons) = analyse("", &source);
+        assert_eq!(codes, ["PREPROC010"], "{condition}");
+        assert_eq!(reasons, [DegradedReason::PreprocessorLoss], "{condition}");
     }
 }

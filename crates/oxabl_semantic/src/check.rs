@@ -1138,6 +1138,7 @@ mod tests {
         let cid = call.id;
         let sem = analyze(vec![
             stmt_n(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: ident("calc"),
                 return_type: DataType::Decimal,
                 body: vec![],
@@ -1264,6 +1265,7 @@ mod tests {
     #[test]
     fn check_new_class_type_is_class_symbol() {
         let new_e = expr_n(ExpressionKind::New {
+            type_arguments: None,
             class_name: "Foo".into(),
             arguments: vec![],
         });
@@ -1339,6 +1341,7 @@ mod tests {
         });
         let pid = param.id;
         let func = stmt_n(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: ident("f"),
             return_type: DataType::Integer,
             body: vec![param],

@@ -795,8 +795,9 @@ impl Parser<'_> {
             let end = self.tokens[self.current - 1].end;
             let class_name = self.source[start..end].to_string();
 
-            // Consume optional generic type args — `NEW List<String>(...)`.
-            self.consume_generic_type_args();
+            // Optional generic type args — `NEW List<String>(...)`.
+            let type_arguments = self.parse_generic_type_args();
+            let type_arguments = (!type_arguments.0.is_empty()).then(|| Box::new(type_arguments));
 
             // If no '(' follows, this is the logical NEW record-name test (boolean expression),
             // not an OO object constructor.  Return a simple identifier so parsing continues.
@@ -861,6 +862,7 @@ impl Parser<'_> {
             debug_assert_expr_sibling_order(&arguments);
             return Ok(self.expr(ExpressionKind::New {
                 class_name,
+                type_arguments,
                 arguments,
             }));
         }

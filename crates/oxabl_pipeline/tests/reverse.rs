@@ -146,6 +146,24 @@ fn the_rebuild_set_of_a_leaf_is_itself() {
     );
 }
 
+// A file created into place rebuilds the files whose unresolved rows name it, and
+// what depends on those.
+#[test]
+fn the_rebuild_set_includes_the_owners_of_rows_naming_the_subject() {
+    let ws = Workspace::new(&[
+        ("hopeful.p", "{nowhere.i}\nMESSAGE 1.\n"),
+        ("caller.p", "{hopeful.p}\n"),
+        ("other.p", "MESSAGE 2.\n"),
+    ]);
+    let config = ws.config();
+    let graph = ws.graph(&config);
+
+    let rebuild = graph.rebuild_set(&Subject::file(proj("nowhere.i")));
+    assert!(rebuild.contains(&proj("hopeful.p")), "got {rebuild:?}");
+    assert!(rebuild.contains(&proj("caller.p")), "got {rebuild:?}");
+    assert!(!rebuild.contains(&proj("other.p")), "got {rebuild:?}");
+}
+
 // The rebuild set is the transitive closure, and it is a distinct answer from the
 // direct dependents.
 #[test]
@@ -423,10 +441,11 @@ const LEAF: &str = "CLASS leaf:\n\
                     END METHOD.\n\
                     END CLASS.\n";
 
-// A stem two files answer to stops being evidence. An unqualified `utils` genuinely
-// may name either file, so attributing it to both invents a dependent for one.
+// A stem two files answer to is still evidence for an unresolved reference: an
+// unqualified `utils` genuinely may name either file, and a row attributed to both
+// costs a rebuild where a dropped one costs a missed dependent.
 #[test]
-fn an_ambiguous_stem_claims_no_unresolved_reference() {
+fn an_ambiguous_stem_claims_an_unresolved_reference_for_each_file() {
     let ws = Workspace::new(&[
         ("a/utils.cls", LEAF),
         ("b/utils.cls", LEAF),
@@ -435,8 +454,6 @@ fn an_ambiguous_stem_claims_no_unresolved_reference() {
     let config = ws.config();
     let graph = ws.graph(&config);
 
-    // The reference is unresolved and stays visible at the workspace level: the
-    // tightening hides the guess, never the gap.
     assert!(
         graph
             .all_unresolved()
@@ -446,15 +463,33 @@ fn an_ambiguous_stem_claims_no_unresolved_reference() {
         graph.all_unresolved()
     );
 
-    // But neither candidate claims it.
     for candidate in ["a/utils.cls", "b/utils.cls"] {
         let answer = graph.dependents(&Subject::file(proj(candidate)));
-        assert!(
-            answer.unresolved().is_empty(),
-            "{candidate} claimed an ambiguous stem: {:?}",
-            answer.unresolved()
-        );
+        let rows = answer.unresolved();
+        assert_eq!(rows.len(), 1, "{candidate}: {rows:?}");
+        assert_eq!(rows[0].reference.name, "utils");
+        assert!(rows[0].file.ends_with("caller.cls"));
     }
+}
+
+// A wildcard-only import records a miss under the bare name. When the missing class
+// then appears under the imported package, its owner is reported even though two
+// other covered files share the stem.
+#[test]
+fn a_bare_class_row_reaches_the_class_that_appears_despite_shared_stems() {
+    let ws = Workspace::new(&[
+        ("a.p", "USING lib.*.\nDEFINE VARIABLE g AS Gone NO-UNDO.\n"),
+        ("other/Gone.cls", "CLASS other.Gone:\nEND CLASS.\n"),
+        ("x/Gone.cls", "CLASS x.Gone:\nEND CLASS.\n"),
+    ]);
+    let config = ws.config();
+    let graph = ws.graph(&config);
+
+    let appears = graph.dependents(&Subject::file(proj("lib/Gone.cls")));
+    let rows = appears.unresolved();
+    assert_eq!(rows.len(), 1, "got {rows:?}");
+    assert_eq!(rows[0].reference.name, "gone");
+    assert!(rows[0].file.ends_with("a.p"));
 }
 
 // The tightening above must not cost a genuine match. One file carries the stem, so

@@ -128,13 +128,14 @@ impl CollectedDiagnostics {
 /// The *loud* preprocessor surfacing rule (moved here from the CLI so both
 /// consumers share it): all errors, plus the always-loud warnings PREPROC007
 /// (unresolvable include — symbol loss), PREPROC008 (unterminated include
-/// reference), PREPROC009 (predefined name without a value in a condition) and
-/// PREPROC002 (unclosed `&IF`).
+/// reference), PREPROC009 (predefined name without a value in a condition),
+/// PREPROC010 (condition part the evaluator does not model) and PREPROC002
+/// (unclosed `&IF`).
 pub fn is_loud(d: &Diagnostic) -> bool {
     matches!(d.severity, Severity::Error)
         || matches!(
             d.code.0,
-            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009"
+            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009" | "PREPROC010"
         )
 }
 
@@ -1731,7 +1732,9 @@ mod tests {
         fn is_depth_limit(kind: TextLossKind) -> bool {
             match kind {
                 TextLossKind::IncludeDepthLimit => true,
-                TextLossKind::UnclosedConditional | TextLossKind::UnknownPredefinedName => false,
+                TextLossKind::UnclosedConditional
+                | TextLossKind::UnknownPredefinedName
+                | TextLossKind::UnmodelledCondition => false,
                 _ => false,
             }
         }
