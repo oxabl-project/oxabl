@@ -1079,3 +1079,34 @@ fn a_class_in_a_block_headers_on_phrase_action_is_a_class_site() {
         );
     }
 }
+
+#[test]
+fn an_indexed_class_names_its_parent_through_its_own_using() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/pkg/Base.cls"),
+        "CLASS pkg.Base:\n  METHOD PUBLIC VOID Hello():\n  END METHOD.\nEND CLASS.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/pkg/Mid.cls"),
+        "USING pkg.*.\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/user.p");
+
+    let edges = pipeline
+        .edge_set("DEFINE VARIABLE o AS pkg.Mid NO-UNDO.\no = NEW pkg.Mid().\no:Hello().\n")
+        .expect("edge set");
+
+    let classes: Vec<_> = edges
+        .of_kind(EdgeKind::ClassReference)
+        .map(|e| e.target.key().to_string())
+        .collect();
+    assert_eq!(classes, ["pkg.base", "pkg.mid"]);
+    assert!(
+        edges.unresolved().is_empty(),
+        "got {:?}",
+        edges.unresolved()
+    );
+}
