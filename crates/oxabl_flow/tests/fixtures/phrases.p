@@ -1,0 +1,26 @@
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+DO ON ERROR UNDO, LEAVE:
+    i = 1.
+END.
+FOR EACH Customer NO-LOCK ON ERROR UNDO, NEXT:
+    i = 2.
+END.
+DO TRANSACTION:
+    i = 3.
+END.
+DO:
+    i = 4.
+END.
+outer:
+REPEAT ON ENDKEY UNDO outer, LEAVE outer:
+    DO ON ERROR UNDO outer, RETRY outer:
+        i = 5.
+    END.
+    IF i > 5 THEN LEAVE.
+END.
+DO ON STOP UNDO, RETURN ERROR ON QUIT UNDO, LEAVE:
+    STOP.
+END.
+DO ON ERROR UNDO, THROW:
+    i = 6.
+END.

@@ -18,5 +18,6 @@
   "crates/oxabl_lsp": "1.0.3",
   "crates/oxabl_wasm": "1.0.3",
   "crates/oxabl_daemon_protocol": "0.3.0",
-  "crates/oxabl_daemon": "0.3.2"
+  "crates/oxabl_daemon": "0.3.2",
+  "crates/oxabl_flow": "0.1.0"
 }
