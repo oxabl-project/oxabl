@@ -333,6 +333,27 @@ open, how an include with several roots in one run picks its context for rules t
 context-free, and whether to follow includes reachable from the roots instead of walking `.i`
 files.
 
+### Handle rules in includes (M2)
+
+HD001 to HD005 are not context-free in the strict sense: whether an object leaks can depend on the
+includer. They are registered as context-free anyway, so that they follow the shipped M1 route:
+a finding whose create or delete sits in an include is reported once, in the include, and a root's own
+run drops it. The analysis of a root runs over the expanded text, so a root that includes a create
+and frees it later has no finding.
+
+An include that is checked alone cannot see its includer. Its findings are therefore lower confidence
+in two cases, with the help ending in `oxabl_lint::fragment::FRAGMENT_NOTE` (and not autofixable):
+
+- HD001, HD003 and HD004 for an object still live at the end of the include's main block. The includer
+  may free it later.
+- HD005 always. The includer may create the widget pool.
+
+A statement that holds a reference or an `&IF` is also lowered by the shared fragment rule above.
+HD002 is not lowered: only an error path is claimed, and an includer rarely changes that.
+
+Known limit: HD005 is reported once per file, on the first create. When that create is in an include,
+the include reports it and the root reports nothing, even if the root has creates of its own.
+
 ## 4. Shared definitions and `NO-UNDO`
 
 TX006 reports a variable or temp-table defined without `NO-UNDO`, and its help used to say "add

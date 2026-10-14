@@ -402,3 +402,50 @@ fn the_includer_note_marks_only_what_an_includer_can_change() {
     assert_eq!(guard.len(), 1, "{guard:?}");
     assert!(!note(&guard[0].2), "{guard:?}");
 }
+
+#[test]
+fn a_handle_finding_in_an_include_is_reported_once_and_marked_lower_confidence() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &format!(
+            "[workspace]\nname = \"p\"\n{SOURCES}[workspace.lint]\nenable = [\"strict.handles\"]\n"
+        ),
+    );
+    write(
+        &dir.path().join("src/open.i"),
+        "DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.\nCREATE QUERY hQuery.\n",
+    );
+    // One includer frees the object and one leaks it; a root reports neither.
+    write(
+        &dir.path().join("src/frees.p"),
+        "{open.i}\nDELETE OBJECT hQuery.\n",
+    );
+    write(
+        &dir.path().join("src/leaks.p"),
+        "{open.i}\nMESSAGE \"x\".\n",
+    );
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    let report = json(&stdout);
+    let mut in_include: Vec<_> = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["path"].as_str().unwrap().ends_with("open.i"))
+        .collect();
+    assert_eq!(in_include.len(), 2, "{report}\n{stderr}");
+    in_include.sort_by_key(|d| d["code"].as_str().unwrap().to_string());
+    assert_eq!(in_include[0]["code"], "HD001");
+    assert_eq!(in_include[1]["code"], "HD005");
+    for d in in_include {
+        assert!(
+            d["help"]
+                .as_str()
+                .unwrap()
+                .contains("This file is an include"),
+            "{d}"
+        );
+    }
+    assert!(codes_at(&report, "frees.p").is_empty(), "{report}");
+    assert!(codes_at(&report, "leaks.p").is_empty(), "{report}");
+}

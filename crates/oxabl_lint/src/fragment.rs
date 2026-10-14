@@ -75,6 +75,13 @@ use crate::missing_no_undo::{self, SHARED_HELP};
 pub const INCLUDER_NOTE: &str = "This statement depends on the including file (a `{...}` \
      reference or an `&IF`), which was not seen. Check each includer before you change it.";
 
+/// The sentence that ends the help of a handle finding in an include that the
+/// includer may resolve: it may delete the object later, or scope a widget
+/// pool.
+pub const FRAGMENT_NOTE: &str = "This file is an include. The including file, which was not \
+     seen, may delete the object or provide the widget pool. Check each includer before you \
+     change it.";
+
 /// Answers what only the file system and the expansion know: whether an
 /// argument-less `{file.i}` can change with the includer.
 pub trait IncludeProbe {
@@ -694,9 +701,9 @@ pub const MAYBE_SHARED_HELP: &str = "If an includer makes this definition `SHARE
 /// `false` for a finding that [`lower_confidence`] changed, and for a TX006
 /// finding on a `SHARED` definition, whose fix is in other files.
 pub fn autofixable(d: &Diagnostic) -> bool {
-    !d.help
-        .as_deref()
-        .is_some_and(|help| help == SHARED_HELP || help.ends_with(INCLUDER_NOTE))
+    !d.help.as_deref().is_some_and(|help| {
+        help == SHARED_HELP || help.ends_with(INCLUDER_NOTE) || help.ends_with(FRAGMENT_NOTE)
+    })
 }
 
 #[cfg(test)]

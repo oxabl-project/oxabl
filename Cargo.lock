@@ -1139,6 +1139,7 @@ dependencies = [
  "oxabl_ast",
  "oxabl_common",
  "oxabl_flow",
+ "oxabl_handles",
  "oxabl_index",
  "oxabl_lexer",
  "oxabl_parser",
