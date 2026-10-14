@@ -10,6 +10,7 @@
 //!                                              │
 //!                                              ▼ (one edge per file consulted)
 //!             IndexedFile(disk_revision) ──▶ indexed_facts ──▶ indexed_class
+//!       IndexedInclude(disk_revision) ──┘                  │
 //!                                                          ├─▶ indexed_class_members
 //!                                                          ├─▶ indexed_program
 //!                                                          └─▶ indexed_defines_shared
@@ -101,7 +102,7 @@ use std::sync::{Arc, RwLock};
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_index::search::{self, NameKind};
-use oxabl_index::{FileFacts, index_file};
+use oxabl_index::{FileFacts, IncludeContext, index_file_with_includes};
 use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
@@ -168,7 +169,24 @@ pub struct IndexedFile {
     pub disk_revision: u32,
 }
 
-/// The environment every indexed file's own directives are applied under.
+/// Per-file salsa input for **one include file an indexed file's facts were read
+/// through**.
+///
+/// A file whose declaration only exists after its includes are expanded is
+/// indexed through them, so an edit to one of them must invalidate its facts.
+/// Kept apart from [`IndexedFile`] because an include is no workspace file: it
+/// has no index id, and the `SHARED`-producer scan must never index it as one.
+/// `disk_revision` is bumped by [`IndexHandle::bump`], exactly as for an
+/// [`IndexedFile`].
+#[salsa::input]
+pub struct IndexedInclude {
+    #[returns(ref)]
+    pub path: PathBuf,
+    pub disk_revision: u32,
+}
+
+/// The environment every indexed file is expanded under: the predefined names
+/// its directives read, and the paths its includes are found on.
 ///
 /// One input shared by all [`IndexedFile`]s rather than a copy on each: a copy
 /// is taken from whichever snapshot registers the file, and a worker on an old
@@ -179,6 +197,8 @@ pub struct IndexedFile {
 pub struct IndexEnvironment {
     #[returns(ref)]
     pub preprocessor: PreprocessorConfig,
+    #[returns(ref)]
+    pub include_paths: Vec<PathBuf>,
 }
 
 /// Salsa input carrying a monotonically-bumped schema revision. The diagnostics
@@ -228,7 +248,10 @@ pub struct IndexHandle {
 #[derive(Default)]
 struct Registry {
     by_path: HashMap<PathBuf, Registered>,
-    /// Created once, by whichever of registration and [`IndexHandle::set_preprocessor`]
+    /// The include files some indexed file's facts were read through, and the
+    /// revision each input is set to.
+    includes: HashMap<PathBuf, (IndexedInclude, u32)>,
+    /// Created once, by whichever of registration and [`IndexHandle::set_environment`]
     /// comes first; the main loop's sync reconciles its value either way.
     environment: Option<IndexEnvironment>,
     /// Ids are minted from 1 so a zero never reads as a real file in a dump,
@@ -301,6 +324,21 @@ impl IndexHandle {
         input
     }
 
+    /// The input for the include file at `path`, registering it on first sight.
+    ///
+    /// Created from inside [`indexed_facts`], for the reason
+    /// [`file_for`](Self::file_for) gives.
+    fn include_for(&self, db: &dyn AblDatabase, path: &Path) -> IndexedInclude {
+        let key = search::normalize_lexically(path);
+        let mut registry = self.registry();
+        if let Some((input, _)) = registry.includes.get(&key) {
+            return *input;
+        }
+        let input = IndexedInclude::new(db, key.clone(), 0);
+        registry.includes.insert(key, (input, 0));
+        input
+    }
+
     /// Every registered file, as `(input, id)` pairs.
     ///
     /// Snapshotted out from under the lock so the caller can run tracked queries
@@ -314,56 +352,80 @@ impl IndexHandle {
             .collect()
     }
 
-    /// Bump the disk revision of the input for `path`, invalidating exactly the
+    /// Bump the disk revision of the inputs for `path`, invalidating exactly the
     /// queries that read that file — and nothing else (R10).
     ///
-    /// Returns `false` when `path` is not registered, which is the common case and
-    /// a genuine early-out: a file no lookup has ever reached cannot be any
-    /// buffer's dependency, so there is nothing to invalidate and no buffer to
+    /// `path` may be an indexed file, an include some indexed file was read
+    /// through, or both. Returns `false` when it is neither, which is the common
+    /// case and a genuine early-out: a file no lookup has ever reached cannot be
+    /// any buffer's dependency, so there is nothing to invalidate and no buffer to
     /// re-run.
     pub fn bump(&self, db: &mut AnalysisDatabase, path: &Path) -> bool {
         let key = search::normalize_lexically(path);
         let mut registry = self.registry();
-        let Some(entry) = registry.by_path.get_mut(&key) else {
-            return false;
-        };
-        entry.disk_revision = entry.disk_revision.wrapping_add(1);
-        let (input, revision) = (entry.input, entry.disk_revision);
+        let file = registry.by_path.get_mut(&key).map(|entry| {
+            entry.disk_revision = entry.disk_revision.wrapping_add(1);
+            (entry.input, entry.disk_revision)
+        });
+        let include = registry.includes.get_mut(&key).map(|(input, revision)| {
+            *revision = revision.wrapping_add(1);
+            (*input, *revision)
+        });
         // The guard is dropped before the write: `set_*` waits for outstanding
         // snapshots to drop, and a worker thread blocked on this very lock while
         // holding a snapshot would deadlock.
         drop(registry);
-        input.set_disk_revision(db).to(revision);
-        true
+        if let Some((input, revision)) = file {
+            input.set_disk_revision(db).to(revision);
+        }
+        if let Some((input, revision)) = include {
+            input.set_disk_revision(db).to(revision);
+        }
+        file.is_some() || include.is_some()
     }
 
     /// The shared environment input, created from the snapshot's configuration if
     /// the main loop has not installed one yet.
     ///
     /// A value created here from an old snapshot is corrected by the next
-    /// [`set_preprocessor`](Self::set_preprocessor), whose setter cancels that
+    /// [`set_environment`](Self::set_environment), whose setter cancels that
     /// snapshot.
     fn environment(&self, db: &dyn AblDatabase) -> IndexEnvironment {
         *self.registry().environment.get_or_insert_with(|| {
-            IndexEnvironment::new(db, db.config().pipeline.preprocessor.clone())
+            let pipeline = &db.config().pipeline;
+            IndexEnvironment::new(
+                db,
+                pipeline.preprocessor.clone(),
+                pipeline.include_paths.clone(),
+            )
         })
     }
 
-    /// Install `preprocessor` as the environment of every indexed file,
-    /// invalidating the facts of the files that read a different one.
+    /// Install the preprocessor configuration and include paths of `pipeline` as
+    /// the environment of every indexed file, invalidating the facts of the files
+    /// that read a different one.
     ///
     /// Call after the configuration is replaced. Always reconciles the one
     /// shared input, so no registration order leaves a stale value behind.
-    pub fn set_preprocessor(&self, db: &mut AnalysisDatabase, preprocessor: &PreprocessorConfig) {
+    pub fn set_environment(&self, db: &mut AnalysisDatabase, pipeline: &PipelineConfig) {
         let mut registry = self.registry();
         let Some(input) = registry.environment else {
-            registry.environment = Some(IndexEnvironment::new(&*db, preprocessor.clone()));
+            registry.environment = Some(IndexEnvironment::new(
+                &*db,
+                pipeline.preprocessor.clone(),
+                pipeline.include_paths.clone(),
+            ));
             return;
         };
         // Dropped before the write, as in `bump`: `set_*` waits for snapshots.
         drop(registry);
-        if input.preprocessor(&*db) != preprocessor {
-            input.set_preprocessor(db).to(preprocessor.clone());
+        if *input.preprocessor(&*db) != pipeline.preprocessor {
+            input.set_preprocessor(db).to(pipeline.preprocessor.clone());
+        }
+        if *input.include_paths(&*db) != pipeline.include_paths {
+            input
+                .set_include_paths(db)
+                .to(pipeline.include_paths.clone());
         }
     }
 
@@ -537,7 +599,7 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     // answer below is derived from it, and it is the whole invalidation protocol
     // (R10) — so it is read unconditionally, including on the unreadable-file path.
     let _revision = file.disk_revision(db);
-    let predefined = db.config().index.environment(db).preprocessor(db);
+    let environment = db.config().index.environment(db);
     let id = IndexedFileId::new(*file.index_id(db));
     let path = file.path(db);
     let Ok(source) = db.config().fs.read(path) else {
@@ -554,7 +616,19 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     // in `diagnostics`: after the cheap read, before the parse. A concurrent
     // main-thread write has already made this answer irrelevant.
     db.unwind_if_revision_cancelled();
-    Arc::new(index_file(id, &source, predefined))
+    let config = db.config();
+    let includes = IncludeContext {
+        fs: &*config.fs,
+        include_paths: environment.include_paths(db),
+        predefined: environment.preprocessor(db),
+    };
+    let (facts, read) = index_file_with_includes(id, &source, &includes);
+    // The includes are read untracked, like the file itself, so each one's
+    // revision is the edge that makes an edit to it re-extract these facts.
+    for path in read {
+        let _revision = config.index.include_for(db, &path).disk_revision(db);
+    }
+    Arc::new(facts)
 }
 
 /// One class's descriptor, keyed per file **and per class** (R9).
@@ -571,7 +645,7 @@ fn indexed_class(
 ) -> IndexAnswer<Arc<ClassDescriptor>> {
     // A located file that does not visibly declare the class is `Unusable`, not
     // `NotFound` — exactly as in the batch cache, and for the reason spelled out
-    // there: the declaration may be behind an `{include}` neither backend expands,
+    // there: the declaration may be behind an `{include}` that could not be read,
     // so "no file declares it" would be a false claim about a file that exists.
     let facts = indexed_facts(db, file);
     match facts.class(&name) {
@@ -1006,7 +1080,7 @@ mod tests {
         let snapshot = db.clone();
 
         let new_pipeline = configured("WIN32");
-        index.set_preprocessor(&mut db, &new_pipeline.preprocessor);
+        index.set_environment(&mut db, &new_pipeline);
         db.set_config(AnalysisConfig {
             pipeline: Arc::new(new_pipeline),
             ..old
@@ -1370,6 +1444,43 @@ mod tests {
             "a dependency edit must reach the dependent buffer, not be served from \
              the memo: {:?}",
             after.all().map(|c| c.diagnostic.code.0).collect::<Vec<_>>()
+        );
+    }
+
+    /// A parent whose member comes from an include is indexed through it, so an
+    /// edit to the include must reach the dependent buffer as an edit to the
+    /// parent would.
+    #[test]
+    fn an_include_the_parent_was_indexed_through_recomputes_the_dependent_buffer() {
+        const BODY_PATH: &str = "/src/orders/calc-body.i";
+        let fs = EditableFs::new(&[
+            (
+                PARENT_PATH,
+                "CLASS orders.calc-base:\n{orders/calc-body.i}\nEND CLASS.",
+            ),
+            (
+                BODY_PATH,
+                "METHOD PUBLIC INTEGER calc-total():\nRETURN 0.\nEND METHOD.\n",
+            ),
+        ]);
+        let mut db =
+            AnalysisDatabase::new(searching_config(Arc::clone(&fs) as Arc<dyn FileSystem>));
+        let buffer = Buffer::new(&db, CHILD.to_string(), Some(PathBuf::from(CHILD_PATH)));
+        let schema = SchemaHandle::new(&db, 0);
+
+        let before = compute_diagnostics(&db, buffer, schema).unwrap();
+        assert!(
+            !undefined(&before),
+            "the inherited call resolves through the include"
+        );
+
+        fs.write(BODY_PATH, "");
+        assert!(bump(&mut db, BODY_PATH), "the include was registered");
+
+        let after = compute_diagnostics(&db, buffer, schema).unwrap();
+        assert!(
+            undefined(&after),
+            "an edit to the include must reach the dependent buffer"
         );
     }
 

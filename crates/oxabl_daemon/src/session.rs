@@ -770,12 +770,11 @@ impl Session {
         self.workspace = None;
     }
 
-    /// Carry the installed `[workspace.preprocessor]` to the registered index inputs.
+    /// Carry the installed `[workspace.preprocessor]` and include paths to the
+    /// registered index inputs.
     fn sync_index_preprocessor(&mut self) {
         let config = self.db.config().clone();
-        config
-            .index
-            .set_preprocessor(&mut self.db, &config.pipeline.preprocessor);
+        config.index.set_environment(&mut self.db, &config.pipeline);
     }
 
     /// Bump the schema revision, invalidating every buffer's diagnostics.

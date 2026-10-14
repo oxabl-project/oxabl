@@ -11,10 +11,10 @@
 //!
 //! # Why the builder takes its inputs rather than fetching them
 //!
-//! This crate depends on neither the preprocessor nor the analysis crate, and its
-//! own declare pass performs no include expansion and runs against an empty
-//! schema. So it cannot reach an expansion's include set or a loaded schema on its
-//! own — and it must not learn how to, because that dependency direction is what
+//! This crate does not depend on the analysis crate, expands a file only to read
+//! a referenced file's declarations, and runs its declare pass against an empty
+//! schema. So it cannot reach the analysed file's include set or a loaded schema
+//! on its own — and it must not learn how to, because that dependency direction is what
 //! keeps the reverse query out of salsa's way. Everything the builder needs
 //! arrives in [`EdgeInputs`]. `oxabl_pipeline` is the first layer where all of it
 //! exists at once, which is why the whole-workspace driver lives there.

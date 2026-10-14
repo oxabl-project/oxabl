@@ -465,9 +465,9 @@ pub mod style {
 /// re-export would be invisible to the browser client.
 pub mod pipeline {
     pub use oxabl_pipeline::{
-        ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, LintPipeline,
-        LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID, SharedProducers,
-        definitions_in, position, resolve_from_config,
+        ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, IncludeContext,
+        LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID,
+        SharedProducers, definitions_in, position, resolve_from_config,
     };
 }
 

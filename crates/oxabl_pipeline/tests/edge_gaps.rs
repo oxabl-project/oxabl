@@ -313,6 +313,86 @@ fn an_unparsable_class_target_is_an_edge_to_the_located_file() {
 }
 
 #[test]
+fn a_class_built_from_includes_is_an_edge_and_leaves_no_row() {
+    // The two shapes a class takes its declaration from includes in: a header
+    // named by an include's define with the body in another include, and a
+    // file that is nothing but a directive and an include of another class
+    // file.
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/orders/names.i"),
+        "&GLOBAL-DEFINE fullName orders.base\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/body.i"),
+        "METHOD PUBLIC INTEGER calc-total():\n  RETURN 0.\nEND METHOD.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/base.cls"),
+        "{orders/names.i}\nCLASS {&fullName}:\n{orders/body.i}\nEND CLASS.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/shared.cls"),
+        "&IF DEFINED(web) = 0 &THEN\nCLASS orders.shared:\n&ELSE\nCLASS orders.web:\n&ENDIF\n\
+         {orders/body.i}\nEND CLASS.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/web.cls"),
+        "&SCOPED-DEFINE web yes\n{orders/shared.cls}\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+
+    for parent in ["orders.base", "orders.web"] {
+        let edges = run
+            .with_file("/proj/orders/child.cls")
+            .edge_set(&format!(
+                "CLASS orders.child INHERITS {parent}:\n  METHOD PUBLIC VOID go():\n    \
+                 MESSAGE calc-total().\n  END METHOD.\nEND CLASS.\n"
+            ))
+            .expect("edge set");
+        assert_eq!(
+            edges.of_kind(EdgeKind::ClassReference).count(),
+            1,
+            "{parent}: got {:?}",
+            edges.edges()
+        );
+        assert!(
+            edges.unresolved().is_empty(),
+            "{parent}: got {:?}",
+            edges.unresolved()
+        );
+    }
+}
+
+#[test]
+fn a_recovered_parse_or_a_missing_nested_include_degrades_the_set() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/sub.p"), "MESSAGE 1.\n");
+    fs.insert(PathBuf::from("/proj/outer.i"), "{inner.i}\n");
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+
+    let broken = run
+        .with_file("/proj/broken.p")
+        .edge_set("DEFINE VARIABLE i AS INTEGER NO-UNDO.\ni = 1 +.\nRUN sub.p.\n")
+        .expect("edge set");
+    assert_eq!(
+        broken.completeness().reasons(),
+        [DegradedReason::ParseRecovered]
+    );
+
+    let nested = run
+        .with_file("/proj/nested.p")
+        .edge_set("{outer.i}\nRUN sub.p.\n")
+        .expect("edge set");
+    assert_eq!(
+        nested.completeness().reasons(),
+        [DegradedReason::UnresolvedInclude]
+    );
+}
+
+#[test]
 fn the_reverse_graph_reports_degraded_files_beside_unanalysed_ones() {
     let mut fs = InMemoryFileSystem::new();
     let clean = PathBuf::from("/proj/clean.p");
@@ -802,15 +882,23 @@ fn an_explicit_using_of_a_shipped_class_beside_a_wildcard_records_nothing() {
 
 /// The unresolved rows of a child of `pkg.Mid`, whose source is `mid`.
 /// `usings.i` imports `lib.*`, `usingx.i` imports `lib.Base`, and `lib.Base` and
-/// `lib.AppError` exist.
+/// `lib.AppError` exist. Both includes also include a file that does not exist,
+/// so the index cannot expand them and the imports stay unseen.
 fn rows_under_a_parent(mid: &str) -> Vec<(String, UnresolvedReason)> {
+    rows_under_a_parent_with(mid, "{site-usings.i}\n")
+}
+
+/// [`rows_under_a_parent`], with `tail` after the import in each include.
+fn rows_under_a_parent_with(mid: &str, tail: &str) -> Vec<(String, UnresolvedReason)> {
+    let usings = format!("USING lib.*.\n{tail}");
+    let usingx = format!("USING lib.Base.\n{tail}");
     let (_, rows) = class_rows(
         "Child.cls",
         "CLASS Child INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
         &[
             ("pkg/Mid.cls", mid),
-            ("usings.i", "USING lib.*.\n"),
-            ("usingx.i", "USING lib.Base.\n"),
+            ("usings.i", &usings),
+            ("usingx.i", &usingx),
             ("lib/Base.cls", "CLASS lib.Base:\nEND CLASS.\n"),
             ("lib/AppError.cls", "CLASS lib.AppError:\nEND CLASS.\n"),
         ],
@@ -840,6 +928,17 @@ fn a_using_of_class_or_interface_does_not_hide_a_later_include() {
                 .any(|row| row == &("base".to_string(), UnresolvedReason::Unknowable)),
             "head {head:?}: got {rows:?}"
         );
+    }
+}
+
+#[test]
+fn an_include_the_index_can_expand_answers_for_a_parents_header() {
+    for include in ["usings.i", "usingx.i"] {
+        let rows = rows_under_a_parent_with(
+            &format!("{{{include}}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n"),
+            "",
+        );
+        assert!(rows.is_empty(), "{include}: got {rows:?}");
     }
 }
 

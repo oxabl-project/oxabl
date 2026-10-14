@@ -970,8 +970,8 @@ impl<'c> Server<'c> {
     /// React to `workspace/didChangeWatchedFiles`: `.df` changes hot-reload the
     /// schema (R16); `oxabl.toml` changes re-resolve include paths + `[lint]`
     /// config (R17); `*.i` changes re-trigger the buffers that depend on them
-    /// (R17); a **root source file** change invalidates that one file's index
-    /// input (R10). Re-triggering bumps the buffer's salsa input so the coarse
+    /// (R17); a **root source file** or include change invalidates that one
+    /// file's index inputs (R10). Re-triggering bumps the buffer's salsa input so the coarse
     /// expansion memo recomputes and re-reads the changed file.
     fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
         let now = std::time::Instant::now();
@@ -1041,6 +1041,8 @@ impl<'c> Server<'c> {
             }
         }
 
+        // An include can also be what an indexed file's facts were read through.
+        changed_sources.extend(changed_includes);
         self.invalidate_indexed_sources(&changed_sources, now);
     }
 

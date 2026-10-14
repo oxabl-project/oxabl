@@ -79,8 +79,8 @@ pub use reverse::{
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{
     BranchKind, Completeness, ConditionalBranch, ConditionalInclude, DegradedReason,
-    DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget, SharedProducers, UnresolvedReference,
-    definitions_in,
+    DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget, IncludeContext, SharedProducers,
+    UnresolvedReference, definitions_in,
 };
 
 use oxabl_common::FileId;
