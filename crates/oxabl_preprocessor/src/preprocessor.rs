@@ -4132,6 +4132,18 @@ ELSE
     }
 
     #[test]
+    fn a_global_undefine_that_clears_a_global_behind_a_scoped_name_keeps_the_scoped_origin() {
+        let fs = make_fs(&[("/inc/d.i", "&GLOBAL-DEFINE x g\n&UNDEFINE x\n&UNDEFINE x\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE x s\n{d.i}\n&IF DEFINED(x) = 3 &THEN yes &ELSE no &ENDIF";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "\nyes ");
+        assert!(result.text_losses.is_empty(), "{:?}", result.text_losses);
+    }
+
+    #[test]
     fn no_args_still_works() {
         // Include with no args should work as before
         let fs = make_fs(&[("/inc/plain.i", "plain content")]);

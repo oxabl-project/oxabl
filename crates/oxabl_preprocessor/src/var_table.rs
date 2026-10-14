@@ -134,7 +134,7 @@ impl PreprocVarTable {
         let entry = match self.entry(key) {
             Some(e) if e.origin != Origin::Global => Entry {
                 value: Arc::clone(&e.value),
-                origin: Origin::Mixed,
+                origin: e.origin,
                 global: Some(value),
             },
             _ => Entry {
@@ -159,8 +159,8 @@ impl PreprocVarTable {
                 Some(e) if e.origin == Origin::Global => Some(Arc::clone(&e.value)),
                 _ => prev.and_then(|e| e.global.clone()),
             };
-            let origin = match prev.map(|e| e.origin) {
-                Some(prev) if prev != origin => Origin::Mixed,
+            let origin = match prev {
+                Some(e) if e.origin != Origin::Global && e.origin != origin => Origin::Mixed,
                 _ => origin,
             };
             let entry = Entry {
@@ -291,7 +291,13 @@ impl PreprocVarTable {
 
     /// How `name` was defined; `None` if it is not defined.
     pub(crate) fn origin(&self, name: &str) -> Option<Origin> {
-        with_folded(name, |key| self.entry(key).map(|e| e.origin))
+        with_folded(name, |key| {
+            self.entry(key).map(|e| match e.global {
+                // A global behind the shadowing name is a second origin.
+                Some(_) => Origin::Mixed,
+                None => e.origin,
+            })
+        })
     }
 
     /// Remove a preprocessor variable (from `&UNDEFINE`).
