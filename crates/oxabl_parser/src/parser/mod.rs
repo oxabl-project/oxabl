@@ -276,8 +276,20 @@ impl<'a> Parser<'a> {
     /// Prevents infinite loops when error recovery cannot make progress.
     const MAX_ERRORS: usize = 50;
 
+    /// Upper bound on the initial capacity of the top-level statement list.
+    const PRESIZED_STATEMENTS: usize = 64;
+
     pub fn parse_program(&mut self) -> Program {
-        let mut statements = Vec::new();
+        // Every top-level statement ends at a period, so the capped period
+        // count sizes the list without reallocating large statements as it
+        // grows. Nested statements make it an overestimate; the slack is
+        // released below.
+        let estimate = self.tokens[self.current..]
+            .iter()
+            .filter(|t| t.kind == Kind::Period)
+            .take(Self::PRESIZED_STATEMENTS)
+            .count();
+        let mut statements = Vec::with_capacity(estimate);
 
         while !self.at_end() {
             if self.errors.len() >= Self::MAX_ERRORS {
@@ -308,6 +320,7 @@ impl<'a> Parser<'a> {
         // parse_statement calls. This preserves the aggregate error-reporting
         // contract even though block bodies now recover instead of bubbling.
         debug_assert_stmt_sibling_order(&statements);
+        statements.shrink_to_fit();
         let comments = self.collect_comments();
         Program {
             statements,
