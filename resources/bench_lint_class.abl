@@ -1,0 +1,76 @@
+/* Benchmark fixture: lint - class with properties, methods, temp-table and queries */
+
+USING Progress.Lang.*.
+
+CLASS Acme.Orders.OrderService:
+    DEFINE PRIVATE TEMP-TABLE ttItem NO-UNDO
+        FIELD itemId AS INTEGER
+        FIELD descr  AS CHARACTER
+        FIELD qty    AS INTEGER
+        INDEX idxItem IS PRIMARY UNIQUE itemId.
+
+    DEFINE PRIVATE VARIABLE iCount  AS INTEGER NO-UNDO.
+    DEFINE PRIVATE VARIABLE lLoaded AS LOGICAL NO-UNDO.
+    DEFINE PRIVATE VARIABLE hQuery  AS HANDLE  NO-UNDO.
+
+    DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO
+        GET.
+        SET.
+
+    CONSTRUCTOR PUBLIC OrderService(INPUT ipcName AS CHARACTER):
+        THIS-OBJECT:Name = ipcName.
+        iCount = 0.
+    END CONSTRUCTOR.
+
+    DESTRUCTOR PUBLIC OrderService():
+        IF VALID-HANDLE(hQuery) THEN
+            DELETE OBJECT hQuery.
+    END DESTRUCTOR.
+
+    METHOD PUBLIC VOID AddItem(INPUT ipiId AS INTEGER, INPUT ipcDescr AS CHARACTER, INPUT ipiQty AS INTEGER):
+        CREATE ttItem.
+        ASSIGN
+            ttItem.itemId = ipiId
+            ttItem.descr  = ipcDescr
+            ttItem.qty    = ipiQty.
+        iCount = iCount + 1.
+    END METHOD.
+
+    METHOD PUBLIC INTEGER TotalQuantity():
+        DEFINE VARIABLE iSum AS INTEGER NO-UNDO.
+
+        FOR EACH ttItem NO-LOCK:
+            iSum = iSum + ttItem.qty.
+        END.
+        RETURN iSum.
+    END METHOD.
+
+    METHOD PUBLIC LOGICAL HasItem(INPUT ipiId AS INTEGER):
+        FIND FIRST ttItem NO-LOCK WHERE ttItem.itemId = ipiId NO-ERROR.
+        RETURN AVAILABLE ttItem.
+    END METHOD.
+
+    METHOD PUBLIC VOID Reload(INPUT ipcSource AS CHARACTER):
+        DEFINE VARIABLE cLine AS CHARACTER NO-UNDO.
+        DEFINE VARIABLE i     AS INTEGER   NO-UNDO.
+
+        EMPTY TEMP-TABLE ttItem.
+        DO i = 1 TO NUM-ENTRIES(ipcSource, "~n"):
+            cLine = ENTRY(i, ipcSource, "~n").
+            IF cLine = "" THEN NEXT.
+            THIS-OBJECT:AddItem(i, cLine, 1).
+        END.
+        lLoaded = TRUE.
+    END METHOD.
+
+    METHOD PUBLIC VOID Run(INPUT ipcProgram AS CHARACTER):
+        RUN VALUE(ipcProgram).
+    END METHOD.
+
+    METHOD PUBLIC VOID Open():
+        CREATE QUERY hQuery.
+        hQuery:SET-BUFFERS(BUFFER ttItem:HANDLE).
+        hQuery:QUERY-PREPARE("FOR EACH ttItem").
+        hQuery:QUERY-OPEN().
+    END METHOD.
+END CLASS.

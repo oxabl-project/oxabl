@@ -1,0 +1,118 @@
+/* Benchmark fixture: lint - procedural file with temp-tables, FOR EACH, handles and shared state */
+
+DEFINE INPUT PARAMETER ipcMode AS CHARACTER NO-UNDO.
+DEFINE OUTPUT PARAMETER opiCount AS INTEGER NO-UNDO.
+
+DEFINE TEMP-TABLE ttOrder NO-UNDO
+    FIELD orderNum AS INTEGER
+    FIELD custName AS CHARACTER
+    FIELD amount   AS DECIMAL
+    FIELD shipped  AS LOGICAL
+    INDEX idxOrder IS PRIMARY UNIQUE orderNum.
+
+DEFINE TEMP-TABLE ttLine NO-UNDO
+    FIELD orderNum AS INTEGER
+    FIELD lineNum  AS INTEGER
+    FIELD qty      AS INTEGER
+    FIELD price    AS DECIMAL
+    INDEX idxLine IS PRIMARY orderNum lineNum.
+
+DEFINE VARIABLE iTotal   AS INTEGER   NO-UNDO.
+DEFINE VARIABLE dSum     AS DECIMAL   NO-UNDO.
+DEFINE VARIABLE cMessage AS CHARACTER NO-UNDO.
+DEFINE VARIABLE lUnused  AS LOGICAL   NO-UNDO.
+DEFINE VARIABLE hBuffer  AS HANDLE    NO-UNDO.
+DEFINE NEW SHARED VARIABLE gcContext AS CHARACTER NO-UNDO.
+
+FUNCTION lineValue RETURNS DECIMAL (INPUT ipiQty AS INTEGER, INPUT ipdPrice AS DECIMAL):
+    RETURN ipiQty * ipdPrice.
+END FUNCTION.
+
+PROCEDURE loadOrders:
+    DEFINE INPUT PARAMETER ipiMax AS INTEGER NO-UNDO.
+    DEFINE VARIABLE i AS INTEGER NO-UNDO.
+
+    DO i = 1 TO ipiMax:
+        CREATE ttOrder.
+        ASSIGN
+            ttOrder.orderNum = i
+            ttOrder.custName = "Customer " + STRING(i)
+            ttOrder.amount   = i * 10.5
+            ttOrder.shipped  = (i MODULO 2 = 0).
+        CREATE ttLine.
+        ASSIGN
+            ttLine.orderNum = i
+            ttLine.lineNum  = 1
+            ttLine.qty      = i
+            ttLine.price    = 2.5.
+    END.
+END PROCEDURE.
+
+PROCEDURE sumOrders:
+    DEFINE OUTPUT PARAMETER opdTotal AS DECIMAL NO-UNDO.
+    DEFINE VARIABLE iSeen AS INTEGER NO-UNDO.
+
+    FOR EACH ttOrder NO-LOCK WHERE ttOrder.shipped = NO BY ttOrder.orderNum:
+        FOR EACH ttLine NO-LOCK WHERE ttLine.orderNum = ttOrder.orderNum:
+            opdTotal = opdTotal + lineValue(ttLine.qty, ttLine.price).
+            iSeen = iSeen + 1.
+        END.
+    END.
+    IF iSeen = 0 THEN DO:
+        DEFINE VARIABLE cNote AS CHARACTER NO-UNDO.
+        cNote = "no orders".
+    END.
+    MESSAGE cNote VIEW-AS ALERT-BOX.
+END PROCEDURE.
+
+PROCEDURE markShipped:
+    DEFINE INPUT PARAMETER ipiOrder AS INTEGER NO-UNDO.
+
+    FIND FIRST ttOrder EXCLUSIVE-LOCK WHERE ttOrder.orderNum = ipiOrder NO-ERROR.
+    IF AVAILABLE ttOrder THEN
+        ttOrder.shipped = YES.
+    ELSE
+        RETURN ERROR "order not found".
+END PROCEDURE.
+
+PROCEDURE buildBuffer:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+
+    CREATE BUFFER hBuffer FOR TABLE "ttOrder".
+    CREATE QUERY hQuery.
+    hQuery:SET-BUFFERS(hBuffer).
+    hQuery:QUERY-PREPARE("FOR EACH ttOrder").
+    hQuery:QUERY-OPEN().
+    hQuery:GET-FIRST().
+    DO WHILE NOT hQuery:QUERY-OFF-END:
+        iTotal = iTotal + 1.
+        hQuery:GET-NEXT().
+    END.
+    hQuery:QUERY-CLOSE().
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+
+PROCEDURE dispatch:
+    DEFINE INPUT PARAMETER ipcProgram AS CHARACTER NO-UNDO.
+
+    RUN VALUE(ipcProgram) (INPUT ipcMode).
+    gcContext = ipcProgram.
+END PROCEDURE.
+
+RUN loadOrders (INPUT 20).
+RUN sumOrders (OUTPUT dSum).
+RUN markShipped (INPUT 1).
+RUN buildBuffer.
+RUN dispatch (INPUT "other.p").
+
+DO TRANSACTION:
+    FOR EACH ttOrder EXCLUSIVE-LOCK:
+        IF ttOrder.amount > 100 THEN
+            ttOrder.shipped = YES.
+        iTotal = iTotal + 1.
+    END.
+END.
+
+cMessage = SUBSTITUTE("&1 orders, total &2", iTotal, dSum).
+opiCount = iTotal.
+MESSAGE cMessage.
