@@ -11735,3 +11735,16 @@ fn no_undo_after_view_as_is_recorded() {
         StatementKind::VariableDeclaration { no_undo: false, .. }
     ));
 }
+
+#[test]
+fn dynamic_new_is_a_function_call_over_the_class_and_arguments() {
+    let stmts = parse_program_stmts("h = DYNAMIC-NEW cls (1, x).");
+    let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+        panic!("expected assignment, got {:?}", stmts[0].kind);
+    };
+    let ExpressionKind::FunctionCall { name, arguments } = &value.kind else {
+        panic!("expected a call, got {:?}", value.kind);
+    };
+    assert_eq!(name.name, "DYNAMIC-NEW");
+    assert!(!arguments.is_empty());
+}
