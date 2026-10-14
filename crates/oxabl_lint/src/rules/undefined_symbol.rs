@@ -28,7 +28,7 @@ use oxabl_ast::{
     SubscribeTarget,
 };
 use oxabl_common::{Diagnostic, FileSpan};
-use oxabl_semantic::{AnalysisContext, Resolution, Semantic, UnresolvedReason};
+use oxabl_semantic::{AnalysisContext, Resolution, Semantic, UnresolvedReason, sequence_operand};
 
 use super::LINT0001;
 
@@ -383,6 +383,10 @@ impl Visitor<'_> {
             }
             ExpressionKind::FunctionCall { name, arguments } => {
                 self.check(expr.id.to_owned_id(), &name.name, name.span);
+                // A sequence name is not a symbol; an unknown one is LINT0003's.
+                if sequence_operand(name, arguments).is_some_and(|op| op.is_static) {
+                    return;
+                }
                 for a in arguments {
                     self.walk_expression(a);
                 }

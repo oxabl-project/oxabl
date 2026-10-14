@@ -15,10 +15,14 @@
 //! `External` / `AbsentFromWorkspace` / `PresentButUnusable` / `Unknowable` resolutions) stay
 //! silent by design — the match above is positive on the two reported
 //! reasons, so a new reason is skip-listed without an edit here.
+//!
+//! The operand of `NEXT-VALUE` / `CURRENT-VALUE` (and the dynamic forms with a
+//! string literal) resolves against the schema's sequences the same way: a name
+//! the loaded schema does not declare is reported as an unknown sequence.
 
 use oxabl_ast::{Expression, ExpressionKind, Statement, StatementKind, StreamOperation};
 use oxabl_common::{Diagnostic, FileSpan};
-use oxabl_semantic::{AnalysisContext, Resolution, Semantic, UnresolvedReason};
+use oxabl_semantic::{AnalysisContext, Resolution, Semantic, UnresolvedReason, sequence_operand};
 
 use super::LINT0003;
 
@@ -290,7 +294,28 @@ impl Visitor<'_> {
                 self.walk_expression(t);
                 self.walk_expression(f);
             }
-            ExpressionKind::FunctionCall { arguments, .. } => {
+            ExpressionKind::FunctionCall { name, arguments } => {
+                if let Some(op) = sequence_operand(name, arguments)
+                    && matches!(
+                        self.sem.references.get(op.expr.id),
+                        Some(Resolution::Unresolved {
+                            reason: UnresolvedReason::NotInScope,
+                            ..
+                        })
+                    )
+                {
+                    self.diags.push(Diagnostic::error(
+                        LINT0003,
+                        format!("unknown sequence `{}`", op.name),
+                        FileSpan {
+                            file: self.ctx.file_id,
+                            span: op.span,
+                        },
+                    ));
+                }
+                if sequence_operand(name, arguments).is_some_and(|op| op.is_static) {
+                    return;
+                }
                 for a in arguments {
                     self.walk_expression(a);
                 }

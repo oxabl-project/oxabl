@@ -1287,6 +1287,9 @@ struct ResolveWalker<'a> {
     /// Dedup cache for synthesized default-buffer symbols: one symbol per
     /// schema table referenced by bare name.
     synth_buffers: FxHashMap<TableId, SymbolId>,
+    /// Dedup cache for synthesized sequence symbols.
+    /// Boxed and lazy: most files never reference a sequence.
+    synth_sequences: Option<Box<FxHashMap<OxablAtom, SymbolId>>>,
     /// The class whose body the walk is currently inside, if any. An inherited
     /// member is only reachable from within its subclass, so this is the gate on
     /// consulting [`CrossFileState::inherited`] at all.
@@ -1546,6 +1549,7 @@ impl<'a> ResolveWalker<'a> {
             track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
+            synth_sequences: None,
             current_class: None,
             // Deliberately not created here, not even when an index *is*
             // attached: the first cross-file write creates it, so the cost is
@@ -3074,8 +3078,16 @@ impl<'a> ResolveWalker<'a> {
                     &[NamespaceId::Functions, NamespaceId::Procedures],
                     AccessMode::Read,
                 );
-                for a in arguments {
-                    self.walk_expression(a, scope, AccessMode::Read);
+                let sequence = crate::sequence_operand(name, arguments);
+                if let Some(op) = &sequence {
+                    self.resolve_sequence_operand(op);
+                }
+                // The arguments of `NEXT-VALUE` / `CURRENT-VALUE` are a sequence
+                // name and a logical database name, neither a symbol.
+                if !sequence.is_some_and(|op| op.is_static) {
+                    for a in arguments {
+                        self.walk_expression(a, scope, AccessMode::Read);
+                    }
                 }
                 if self.ctx.index_loaded
                     && let Some(operand) = type_operand(name, arguments)
@@ -4541,6 +4553,43 @@ impl<'a> ResolveWalker<'a> {
                 reason: UnresolvedReason::NoSchema,
             },
         }
+    }
+
+    /// Resolve a sequence operand against the loaded schema's sequences.
+    ///
+    /// Without a schema nothing is known about sequences, so the answer is
+    /// `NoSchema` rather than a claim that the name is undefined.
+    fn resolve_sequence_operand(&mut self, op: &crate::SequenceOperand) {
+        let atom = fold_atom(op.name);
+        let resolution = if !self.ctx.schema_loaded {
+            Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::NoSchema,
+            }
+        } else if self.ctx.schema.get_sequence(&atom).is_some() {
+            let cache = self.synth_sequences.get_or_insert_with(Default::default);
+            let sym = match cache.get(&atom) {
+                Some(&sym) => sym,
+                None => {
+                    let sym = self.symbols.insert(Symbol::synthesized(
+                        atom.clone(),
+                        NamespaceId::Values,
+                        SymbolKind::Sequence,
+                        VirtualSpan::new(op.span.start, op.span.end),
+                    ));
+                    cache.insert(atom, sym);
+                    sym
+                }
+            };
+            self.bump_count(sym, AccessMode::Read);
+            Resolution::Resolved(sym)
+        } else {
+            Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::NotInScope,
+            }
+        };
+        self.references.insert(op.expr.id, resolution);
     }
 
     /// Return the synthesized `Field` symbol for `(tid, field_atom)`,
