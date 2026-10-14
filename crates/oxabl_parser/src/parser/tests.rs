@@ -12382,3 +12382,21 @@ fn new_as_the_last_token_does_not_panic() {
         let _ = Parser::new(&tokenize(source), source).parse_program();
     }
 }
+
+#[test]
+fn a_do_block_accepts_transaction_after_its_on_phrases() {
+    for colon in [":", "\n  :"] {
+        let source = format!(
+            "PROCEDURE p:\n  DO ON ERROR UNDO main, LEAVE main ON STOP UNDO main, LEAVE main TRANSACTION{colon}\n    MESSAGE \"x\".\n  END.\nEND PROCEDURE.\nMESSAGE \"after\"."
+        );
+        let stmts = assert_parses_clean(&source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        let StatementKind::Procedure { body, .. } = &stmts[0].kind else {
+            panic!("expected a procedure, got {:?}", stmts[0].kind);
+        };
+        let StatementKind::Do { transaction, .. } = &body[0].kind else {
+            panic!("expected DO, got {:?}", body[0].kind);
+        };
+        assert!(*transaction, "{source}");
+    }
+}

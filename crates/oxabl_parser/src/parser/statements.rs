@@ -2387,7 +2387,7 @@ impl Parser<'_> {
         let mut while_condition = None;
 
         // Optional TRANSACTION keyword: DO TRANSACTION:
-        let transaction = if self.check(Kind::Transaction) {
+        let mut transaction = if self.check(Kind::Transaction) {
             self.advance();
             true
         } else {
@@ -2512,7 +2512,14 @@ impl Parser<'_> {
             }
         }
 
-        let on_actions = self.parse_block_on_phrases();
+        let mut on_actions = self.parse_block_on_phrases();
+
+        // TRANSACTION may follow the ON phrases: DO ON ERROR UNDO, LEAVE TRANSACTION:
+        if self.check(Kind::Transaction) {
+            self.advance();
+            transaction = true;
+            on_actions.extend(self.parse_block_on_phrases());
+        }
 
         // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
         // The WITH clause can contain many frame options; consume everything until the
