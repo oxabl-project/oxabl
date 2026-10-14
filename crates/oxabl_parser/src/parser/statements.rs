@@ -4627,8 +4627,8 @@ impl Parser<'_> {
             };
             tok.start == before
         };
-        // Leading `./` and `../` components.
-        while self.check(Kind::Period)
+        // Leading `./`, `../` and `./../` components.
+        while matches!(self.peek().kind, Kind::Period | Kind::Slash)
             && matches!(self.peek_at(1).kind, Kind::Period | Kind::Slash)
             && touches(self, 1)
         {

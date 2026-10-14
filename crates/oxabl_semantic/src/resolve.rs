@@ -173,6 +173,17 @@ fn has_run_extension(raw: &str) -> bool {
         .is_some_and(|last| last.contains('.'))
 }
 
+/// Whether a `RUN` target climbs out of its own directory with a leading `..`.
+/// It is relative to a directory the workspace search paths do not cover, so a
+/// miss proves nothing.
+fn climbs_out(raw: &str) -> bool {
+    let mut rest = raw;
+    while let Some(tail) = rest.strip_prefix("./").or_else(|| rest.strip_prefix(".\\")) {
+        rest = tail;
+    }
+    rest.starts_with("../") || rest.starts_with("..\\")
+}
+
 /// A `RUN` target that is a single name: no extension and no path separator.
 fn is_bare_run_name(raw: &str) -> bool {
     !raw.contains(['/', '\\']) && !has_run_extension(raw)
@@ -1787,13 +1798,14 @@ impl<'a> ResolveWalker<'a> {
     /// registration nor persistent handles, so a miss here is inconclusive rather
     /// than a fact about the workspace, and the honest answer is
     /// [`UnresolvedReason::External`]. `RUN post-order.p` names a file and is
-    /// judged normally.
+    /// judged normally. A target that starts with `..` is relative to a directory
+    /// the search paths do not cover, so it is inconclusive too.
     ///
     /// Measured, not guessed: without it the great majority of a real codebase's
     /// new findings were extension-less internal calls, every one of them correct
     /// ABL.
     fn run_miss_reason(&self, raw: &str, name: &OxablAtom) -> UnresolvedReason {
-        if !has_run_extension(raw) {
+        if !has_run_extension(raw) || climbs_out(raw) {
             return UnresolvedReason::External;
         }
         self.absent_reason(name)
