@@ -4,7 +4,8 @@ use std::sync::Arc;
 use oxabl_common::FileSet;
 
 use crate::config::WorkspaceConfig;
-use crate::discovery::{is_root_file, walk_directory};
+use crate::config::normalize_root_extensions;
+use crate::discovery::{is_root_file_in, walk_directory_in};
 use crate::file_system::{FileSystem, InMemoryFileSystem, RealFileSystem};
 
 /// Top-level handle combining configuration, file identity, and file I/O.
@@ -31,7 +32,8 @@ impl Workspace {
     ///
     /// Reads `oxabl.toml` from `root`, then walks all declared source
     /// directories under the shared root policy ([`is_root_file`]: `.p`, `.w`,
-    /// `.cls`, `.v`, case-insensitive, `.i` excluded), assigning each discovered
+    /// `.cls`, `.v` unless `[workspace.sources].root_extensions` says otherwise,
+    /// case-insensitive, `.i` excluded), assigning each discovered
     /// file a [`FileId`](oxabl_common::FileId).
     ///
     /// [`is_root_file`]: crate::is_root_file
@@ -58,8 +60,9 @@ impl Workspace {
     /// produces.
     pub fn in_memory(config: WorkspaceConfig, mem_fs: InMemoryFileSystem) -> Self {
         let mut file_set = FileSet::new();
+        let roots = normalize_root_extensions(&config.workspace.sources.root_extensions);
         for path in mem_fs.paths() {
-            if is_root_file(path) {
+            if is_root_file_in(path, &roots.extensions) {
                 file_set.insert(path.to_path_buf());
             }
         }
@@ -86,6 +89,7 @@ impl Workspace {
 /// policy, not the top-level signature.
 fn discover_files(root: &Path, config: &WorkspaceConfig) -> FileSet {
     let mut file_set = FileSet::new();
+    let roots = normalize_root_extensions(&config.workspace.sources.root_extensions);
 
     for dir in &config.workspace.sources.directories {
         let abs_dir = if dir.is_absolute() {
@@ -101,7 +105,7 @@ fn discover_files(root: &Path, config: &WorkspaceConfig) -> FileSet {
             continue;
         }
 
-        for path in walk_directory(&abs_dir) {
+        for path in walk_directory_in(&abs_dir, &roots.extensions) {
             file_set.insert(path);
         }
     }

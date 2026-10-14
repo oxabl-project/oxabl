@@ -40,8 +40,9 @@ use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, default_run_extensions,
-    find_workspace_root, normalize_run_extensions,
+    LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, default_root_extensions,
+    default_run_extensions, find_workspace_root, normalize_root_extensions,
+    normalize_run_extensions,
 };
 
 /// A non-fatal problem hit while resolving configuration.
@@ -85,6 +86,11 @@ pub enum ConfigWarning {
     /// warning a bare `RUN` name would simply stop linking.
     RunExtension(String),
 
+    /// A `[workspace.sources].root_extensions` entry that cannot name a root
+    /// (empty, holding a path separator, or `i`: an include fragment is never a
+    /// root). The entry is dropped.
+    RootExtension(String),
+
     /// A `[workspace.lint]` entry that cannot take effect: a rule or group name
     /// the rule registry does not know, a toggle of the always-on `default`
     /// group, or an override pattern that is not a valid glob. The entry is
@@ -101,6 +107,10 @@ impl std::fmt::Display for ConfigWarning {
             ConfigWarning::RunExtension(entry) => write!(
                 f,
                 "run_extensions: ignoring `{entry}`, which cannot be a file extension"
+            ),
+            ConfigWarning::RootExtension(entry) => write!(
+                f,
+                "root_extensions: ignoring `{entry}`, which cannot be a root file extension"
             ),
             ConfigWarning::Lint(msg) => write!(f, "lint: {msg}"),
         }
@@ -176,6 +186,9 @@ pub struct PipelineConfig {
     /// Resolve classes and `RUN` targets ignoring case when the exact spellings
     /// miss (`[workspace.sources].case_insensitive_lookup`). Default `false`.
     pub case_insensitive_lookup: bool,
+    /// Extensions that make a file in a walked directory an ABL root, without the
+    /// dot (`[workspace.sources].root_extensions`). Default `p`, `w`, `cls`, `v`.
+    pub root_extensions: Vec<String>,
 }
 
 impl Default for PipelineConfig {
@@ -199,6 +212,7 @@ impl Default for PipelineConfig {
             preprocessor: PreprocessorConfig::default(),
             run_extensions: default_run_extensions(),
             case_insensitive_lookup: false,
+            root_extensions: default_root_extensions(),
         }
     }
 }
@@ -364,6 +378,14 @@ fn derive(
             .map(ConfigWarning::RunExtension),
     );
     let run_extensions = run_extensions.extensions;
+    let root_extensions = normalize_root_extensions(&config.workspace.sources.root_extensions);
+    warnings.extend(
+        root_extensions
+            .rejected
+            .into_iter()
+            .map(ConfigWarning::RootExtension),
+    );
+    let root_extensions = root_extensions.extensions;
 
     let schema_path = match schema_loading {
         SchemaLoading::Load => overrides.schema_path.as_ref(),
@@ -380,6 +402,7 @@ fn derive(
                     preprocessor,
                     run_extensions,
                     case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
+                    root_extensions,
                 },
                 warnings,
             );
@@ -433,6 +456,7 @@ fn derive(
             preprocessor,
             run_extensions,
             case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
+            root_extensions,
         },
         warnings,
     )
@@ -1276,6 +1300,24 @@ mod tests {
         assert_eq!(config.include_paths, vec![root.join("inc")]);
         assert_eq!(rule_severity(&config, "LINT0001"), None);
         assert_eq!(config.style.indent_size, 7);
+    }
+
+    #[test]
+    fn root_extensions_are_normalized_and_a_bad_entry_warns() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("oxabl.toml"),
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\nroot_extensions = [\".p\", \"i\", \"pp\"]\n",
+        )
+        .unwrap();
+        let (config, warnings) = PipelineConfig::resolve(tmp.path(), &ConfigOverrides::default());
+        assert_eq!(config.root_extensions, ["p", "pp"]);
+        assert_eq!(warnings, [ConfigWarning::RootExtension("i".to_string())]);
+        assert_eq!(
+            PipelineConfig::default().root_extensions,
+            ["p", "w", "cls", "v"]
+        );
     }
 
     #[test]

@@ -410,6 +410,26 @@ pub struct SourcesConfig {
     /// distinct matches still leave the name unresolved.
     #[serde(default)]
     pub case_insensitive_lookup: bool,
+    /// Extensions that make a file an ABL *root* when a directory is walked,
+    /// written without the dot and matched case-insensitively. Default
+    /// `["p", "w", "cls", "v"]`.
+    ///
+    /// Use it for shop conventions such as `.pp` or `.cgi`. It decides which files
+    /// `oxabl check` and the other directory walks pick up; a file named on the
+    /// command line is always accepted. A leading dot is ignored. An entry that is
+    /// empty, holds a path separator, or is `i` is dropped with a warning: an
+    /// include fragment is never a root. The list replaces the default, so keep
+    /// the defaults you still need.
+    #[serde(default = "default_root_extensions")]
+    pub root_extensions: Vec<String>,
+}
+
+/// The extensions that make a walked file an ABL root.
+pub fn default_root_extensions() -> Vec<String> {
+    crate::ROOT_EXTENSIONS
+        .iter()
+        .map(|ext| (*ext).to_string())
+        .collect()
 }
 
 /// The extensions an extensionless `RUN` target is tried with.
@@ -457,6 +477,31 @@ pub fn normalize_run_extensions(entries: &[String]) -> RunExtensions {
     }
 }
 
+/// Normalize a `root_extensions` list: each entry through
+/// [`normalize_run_extension`], repeats (ignoring case) dropped, and `i` rejected
+/// because an include fragment is never a root.
+pub fn normalize_root_extensions(entries: &[String]) -> RunExtensions {
+    let mut extensions: Vec<String> = Vec::new();
+    let mut rejected = Vec::new();
+    for entry in entries {
+        match normalize_run_extension(entry) {
+            Some(extension) if !extension.eq_ignore_ascii_case("i") => {
+                if !extensions
+                    .iter()
+                    .any(|seen| seen.eq_ignore_ascii_case(extension))
+                {
+                    extensions.push(extension.to_string());
+                }
+            }
+            _ => rejected.push(entry.clone()),
+        }
+    }
+    RunExtensions {
+        extensions,
+        rejected,
+    }
+}
+
 impl Default for SourcesConfig {
     fn default() -> Self {
         SourcesConfig {
@@ -464,6 +509,7 @@ impl Default for SourcesConfig {
             include_paths: Vec::new(),
             run_extensions: default_run_extensions(),
             case_insensitive_lookup: false,
+            root_extensions: default_root_extensions(),
         }
     }
 }
@@ -853,5 +899,30 @@ name = "bad"
 "#;
         let err = WorkspaceConfig::from_toml(toml).unwrap_err();
         assert!(err.contains("failed to parse oxabl.toml"));
+    }
+
+    #[test]
+    fn root_extensions_default_and_override() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert_eq!(
+            config.workspace.sources.root_extensions,
+            ["p", "w", "cls", "v"]
+        );
+
+        let toml =
+            "[workspace]\nname = \"p\"\n[workspace.sources]\nroot_extensions = [\"p\", \".pp\"]\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert_eq!(config.workspace.sources.root_extensions, ["p", ".pp"]);
+    }
+
+    #[test]
+    fn root_extensions_are_normalized_and_include_is_rejected() {
+        let list: Vec<String> = [".pp", "PP", "i", ".I", "", "a/b"]
+            .iter()
+            .map(|e| e.to_string())
+            .collect();
+        let normalized = normalize_root_extensions(&list);
+        assert_eq!(normalized.extensions, ["pp"]);
+        assert_eq!(normalized.rejected, ["i", ".I", "", "a/b"]);
     }
 }

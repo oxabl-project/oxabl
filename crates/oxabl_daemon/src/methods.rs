@@ -47,7 +47,7 @@ use oxabl_daemon_protocol::{
 };
 use oxabl_pipeline::{EdgeKind, Expansion, LintPipeline, LintResult, ReverseGraph};
 use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
-use oxabl_workspace::{FileSystem, RealFileSystem, discover_path};
+use oxabl_workspace::{FileSystem, RealFileSystem, discover_path_in};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
 use crate::session::{
@@ -780,10 +780,10 @@ fn build_workspace(
     progress: &WorkspaceProgress,
 ) -> Result<WorkspaceSnapshot, MethodError> {
     let started = Instant::now();
-    let files = discover_path(root).map_err(MethodError::internal)?;
-    progress.set_total(files.len());
     let (config, _warnings) =
         oxabl_pipeline::PipelineConfig::resolve(root, &oxabl_pipeline::ConfigOverrides::default());
+    let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
+    progress.set_total(files.len());
     let fs = OverlayFileSystem { overlay };
     let pipeline = LintPipeline::new(&config, &fs).with_known_files(&files);
     let mut symbols = file_symbols(&files);
@@ -1049,7 +1049,8 @@ fn added_since_pass(workspace: &WorkspaceSnapshot) -> AddedFiles {
     let counted = match walk.last_ran {
         Some(last) if last.elapsed() < ADDED_FILE_WALK_INTERVAL => walk.last_count,
         _ => {
-            let Ok(files) = discover_path(&workspace.root) else {
+            let Ok(files) = discover_path_in(&workspace.root, &workspace.config.root_extensions)
+            else {
                 // Left un-timestamped on purpose, so the next poll retries rather
                 // than reusing an answer this one never got.
                 return AddedFiles::Uncountable;

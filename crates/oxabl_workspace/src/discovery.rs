@@ -65,12 +65,19 @@ pub fn is_include_fragment(path: &Path) -> bool {
 ///
 /// A path with no extension, or a non-UTF-8 extension, is not a root.
 pub fn is_root_file(path: &Path) -> bool {
+    is_root_file_in(path, ROOT_EXTENSIONS)
+}
+
+/// [`is_root_file`] under a configured extension set
+/// (`[workspace.sources].root_extensions`, as normalized by
+/// [`normalize_root_extensions`](crate::normalize_root_extensions)).
+pub fn is_root_file_in<E: AsRef<str>>(path: &Path, extensions: &[E]) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| {
-            ROOT_EXTENSIONS
+            extensions
                 .iter()
-                .any(|known| known.eq_ignore_ascii_case(ext))
+                .any(|known| known.as_ref().eq_ignore_ascii_case(ext))
         })
 }
 
@@ -127,6 +134,11 @@ pub fn walk_directory(dir: &Path) -> Vec<PathBuf> {
     walk_matching(dir, is_root_file)
 }
 
+/// [`walk_directory`] under a configured root-extension set.
+pub fn walk_directory_in<E: AsRef<str>>(dir: &Path, extensions: &[E]) -> Vec<PathBuf> {
+    walk_matching(dir, |path| is_root_file_in(path, extensions))
+}
+
 /// Recursively collect the include fragments (`.i`) under `dir`, sorted and
 /// deduplicated, by the same walk as [`walk_directory`].
 ///
@@ -137,7 +149,7 @@ pub fn walk_include_fragments(dir: &Path) -> Vec<PathBuf> {
     walk_matching(dir, is_include_fragment)
 }
 
-fn walk_matching(dir: &Path, wanted: fn(&Path) -> bool) -> Vec<PathBuf> {
+fn walk_matching(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .follow_links(true)
         .into_iter()
@@ -174,6 +186,15 @@ fn walk_matching(dir: &Path, wanted: fn(&Path) -> bool) -> Vec<PathBuf> {
 /// real directory and it held no ABL roots" — callers report those differently
 /// (a typo'd path versus an empty source tree).
 pub fn discover_path(path: &Path) -> Result<Vec<PathBuf>, String> {
+    discover_path_in(path, ROOT_EXTENSIONS)
+}
+
+/// [`discover_path`] with a directory walked under a configured root-extension
+/// set instead of [`ROOT_EXTENSIONS`].
+pub fn discover_path_in<E: AsRef<str>>(
+    path: &Path,
+    extensions: &[E],
+) -> Result<Vec<PathBuf>, String> {
     if !path.exists() {
         return Err(format!("Path does not exist: {}", path.display()));
     }
@@ -189,7 +210,7 @@ pub fn discover_path(path: &Path) -> Result<Vec<PathBuf>, String> {
         ));
     }
 
-    Ok(walk_directory(path))
+    Ok(walk_directory_in(path, extensions))
 }
 
 #[cfg(test)]
@@ -477,5 +498,23 @@ mod tests {
         let found = discover_path(tmp.path()).unwrap();
         assert_eq!(found, walk_directory(tmp.path()));
         assert!(!found.is_empty());
+    }
+
+    #[test]
+    fn configured_root_extensions_replace_the_default_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a.p", "b.pp", "c.CGI", "d.cls"] {
+            std::fs::write(tmp.path().join(name), "").unwrap();
+        }
+        let found = walk_directory_in(tmp.path(), &["pp", "cgi"]);
+        assert_eq!(file_names(&found), vec!["b.pp", "c.CGI"]);
+        assert_eq!(
+            file_names(&walk_directory(tmp.path())),
+            vec!["a.p", "d.cls"]
+        );
+        assert_eq!(
+            discover_path_in(tmp.path(), &["pp"]).unwrap(),
+            vec![tmp.path().join("b.pp")]
+        );
     }
 }

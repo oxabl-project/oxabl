@@ -1049,3 +1049,29 @@ fn an_overflowing_integer_literal_leaves_stdout_parseable_as_json() {
     assert_eq!(parse_errors.len(), 1, "{}", run.stdout);
     assert_eq!(parse_errors[0]["start"]["line"], 3);
 }
+
+#[test]
+fn configured_root_extensions_decide_which_files_a_directory_walk_checks() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("shop.pp"), UNUSED);
+    write(&tmp.path().join("plain.p"), CLEAN);
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"shop\"\n",
+    );
+
+    let default = check(["--no-format", tmp.path().to_str().unwrap()]);
+    assert_eq!(default.code, Some(0), "{}", default.stderr);
+
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"shop\"\n[workspace.sources]\nroot_extensions = [\"p\", \"pp\"]\n",
+    );
+    let configured = check(["--no-format", tmp.path().to_str().unwrap()]);
+    assert_eq!(configured.code, Some(1), "{}", configured.stderr);
+    assert!(
+        configured.stdout.contains("shop.pp"),
+        "{}",
+        configured.stdout
+    );
+}

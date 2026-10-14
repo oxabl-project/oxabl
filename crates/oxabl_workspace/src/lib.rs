@@ -6,12 +6,13 @@ mod workspace;
 
 pub use config::{
     LintConfig, LintOverride, LintRuleSettings, LintSeverity, PreprocessorConfig,
-    RejectedLintPattern, RunExtensions, WorkspaceConfig, default_run_extensions,
-    normalize_run_extension, normalize_run_extensions,
+    RejectedLintPattern, RunExtensions, WorkspaceConfig, default_root_extensions,
+    default_run_extensions, normalize_root_extensions, normalize_run_extension,
+    normalize_run_extensions,
 };
 pub use discovery::{
-    ROOT_EXTENSIONS, discover_path, is_include_fragment, is_root_file, walk_directory,
-    walk_include_fragments,
+    ROOT_EXTENSIONS, discover_path, discover_path_in, is_include_fragment, is_root_file,
+    is_root_file_in, walk_directory, walk_directory_in, walk_include_fragments,
 };
 pub use file_system::{FileSystem, InMemoryFileSystem, RealFileSystem};
 pub use include_paths::find_workspace_root;
