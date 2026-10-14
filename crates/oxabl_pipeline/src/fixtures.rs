@@ -2683,6 +2683,33 @@ pub const FIXTURES: &[ParityFixture] = &[
         target: "orders.calc-base",
         withheld: "orders.calc-base",
     },
+    // The type argument of a generic class. The generic class itself is shipped
+    // and gives no row.
+    class_site_row! {
+        name: "class_site_generic_argument_type",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE INPUT PARAMETER p-list AS Progress.Collections.List<orders.calc-base> NO-UNDO.\n\
+                 MESSAGE VALID-OBJECT(p-list).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    class_site_row! {
+        name: "class_site_generic_argument_new",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "DEFINE VARIABLE v-obj AS Progress.Lang.Object NO-UNDO.\n\
+                 v-obj = NEW Progress.Collections.List<orders.calc-base>().\n\
+                 MESSAGE VALID-OBJECT(v-obj).\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
     // A property's declared type.
     class_site_row! {
         name: "class_site_property_type",
