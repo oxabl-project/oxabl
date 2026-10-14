@@ -649,6 +649,12 @@ impl Parser<'_> {
             return self.parse_put_statement();
         }
 
+        // SEEK INPUT|OUTPUT|stream TO expr|END. — stream positioning, skip to statement end.
+        if self.check(Kind::Seek) {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+
         // FORM ... — legacy UI form definition, skip to statement end.
         // Uses skip_to_statement_end() to skip over .field-access in form items.
         if self.check(Kind::Form) {

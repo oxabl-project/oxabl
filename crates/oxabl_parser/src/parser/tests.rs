@@ -12639,3 +12639,15 @@ fn put_with_a_non_identifier_stream_name_still_parses() {
     let tail = stmt.skipped_tail.as_ref().expect("names kept as a tail");
     assert!(tail.names.iter().any(|n| n.name == "apage"));
 }
+
+#[test]
+fn seek_statement_parses_with_end_operand() {
+    let source = "SEEK OUTPUT TO END.\nSEEK STREAM s TO 0.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 2);
+    assert!(matches!(
+        program.statements[0].kind,
+        StatementKind::Skipped { .. }
+    ));
+}

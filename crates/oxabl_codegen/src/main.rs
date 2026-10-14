@@ -977,6 +977,7 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
         ("substitute", "subst"),
         ("truncate", "trunc"),
         ("widget-handle", "widget-h"),
+        ("userid", "user"),
     ];
     for &(full, abbrev) in UNRESERVED_FUNCTION_ABBREVS {
         if !builtin_upper.contains(full.to_uppercase().as_str()) {

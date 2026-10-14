@@ -102,3 +102,15 @@ fn upper_and_lower_are_built_in() {
         "DEFINE VARIABLE s AS CHARACTER NO-UNDO.\ns = \"a\".\nMESSAGE UPPER(s) LOWER(s).\n",
     );
 }
+
+#[test]
+fn user_is_the_userid_abbreviation() {
+    assert_silent("DEFINE VARIABLE u AS CHARACTER NO-UNDO.\nu = USER(\"db\").\nMESSAGE u.\n");
+}
+
+#[test]
+fn seek_statement_does_not_derail_the_following_put() {
+    assert_silent(
+        "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\nv = \"x\".\nOUTPUT TO VALUE(\"f\") APPEND.\nSEEK OUTPUT TO END.\nPUT UNFORMATTED (v + \"n\").\n",
+    );
+}
