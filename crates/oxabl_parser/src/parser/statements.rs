@@ -1284,25 +1284,29 @@ impl Parser<'_> {
             TypeSource::Explicit(self.parse_data_type()?)
         };
 
-        let mut declarations = Vec::new();
-        loop {
-            declarations.push(self.parse_var_declarator(&type_source)?);
-            if !self.check(Kind::Comma) {
-                break;
-            }
+        // A single name, the common case, needs no list and no type clone.
+        let first = self.parse_var_declarator()?;
+        if !self.check(Kind::Comma) {
+            let stmt = self.var_declaration(first, type_source);
+            self.expect_period("Expected '.' to end statement")?;
+            return Ok(stmt);
+        }
+
+        let mut declarations = vec![self.var_declaration(first, type_source.clone())];
+        while self.check(Kind::Comma) {
             self.advance(); // consume ,
+            let next = self.parse_var_declarator()?;
+            declarations.push(self.var_declaration(next, type_source.clone()));
         }
 
         self.expect_period("Expected '.' to end statement")?;
 
-        if declarations.len() == 1 {
-            return Ok(declarations.remove(0));
-        }
         Ok(self.stmt(StatementKind::VariableDeclarationList(declarations)))
     }
 
-    /// Parse one `name [= value]` of a VAR statement.
-    fn parse_var_declarator(&mut self, type_source: &TypeSource) -> ParseResult<Statement> {
+    /// Parse one `name [= value]` of a VAR statement. Returns the name, the
+    /// initial value and the declarator's span.
+    fn parse_var_declarator(&mut self) -> ParseResult<(Identifier, Option<Expression>, Span)> {
         if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected variable name".to_string(),
@@ -1325,9 +1329,22 @@ impl Parser<'_> {
             None
         };
 
+        let span = Span {
+            start: name_token.start as u32,
+            end: self.prev_end(),
+        };
+        Ok((name, initial_value, span))
+    }
+
+    /// The `VariableDeclaration` of one VAR declarator.
+    fn var_declaration(
+        &mut self,
+        (name, initial_value, span): (Identifier, Option<Expression>, Span),
+        type_source: TypeSource,
+    ) -> Statement {
         let mut stmt = self.stmt(StatementKind::VariableDeclaration {
             name,
-            type_source: type_source.clone(),
+            type_source,
             initial_value,
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
@@ -1336,11 +1353,8 @@ impl Parser<'_> {
             is_shared: false,
             is_new_global_shared: false,
         });
-        stmt.span = Span {
-            start: name_token.start as u32,
-            end: self.prev_end(),
-        };
-        Ok(stmt)
+        stmt.span = span;
+        stmt
     }
 
     fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
