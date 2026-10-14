@@ -1188,9 +1188,15 @@ impl Parser<'_> {
                 return self.parse_function_call(name);
             }
             let mut arguments = Vec::new();
-            // Parse the first operand (aggregate-type word OR qualified field reference).
-            // Use parse_postfix so that table.field forms are consumed whole.
+            // Form 1 aggregate-type word (TOTAL, COUNT, ...): a lone word followed by BY or
+            // by the field. It is a phrase keyword, not an expression, so it is consumed
+            // without becoming an argument.
             if Self::can_be_identifier(self.peek().kind)
+                && (self.peek_at(1).kind == Kind::By
+                    || Self::can_be_identifier(self.peek_at(1).kind))
+            {
+                self.advance();
+            } else if Self::can_be_identifier(self.peek().kind)
                 && let Ok(first_expr) = self.parse_postfix()
             {
                 arguments.push(first_expr);
