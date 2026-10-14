@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.3.2...oxabl_daemon-v0.4.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **daemon:** oxabl_daemon::db::IndexedFile no longer has a preprocessor field; IndexedFile::new takes three arguments. The value lives on the new IndexEnvironment input.
+* **index:** oxabl_index::index_file takes a third argument, &PreprocessorConfig.
+* **workspace:** PipelineConfig gains the public run_extensions field.
+
+### Features
+
+* **index:** record unlinked RUN targets and the files behind unusable answers ([432a323](https://github.com/oxabl-project/oxabl/commit/432a3236ad2bc10887ff945c0b5d00ac26e3b8df)), closes [#212](https://github.com/oxabl-project/oxabl/issues/212) [#215](https://github.com/oxabl-project/oxabl/issues/215)
+* **workspace:** configure the extension order for an extensionless RUN ([77c1e5f](https://github.com/oxabl-project/oxabl/commit/77c1e5fdf2dfee4b9264122c8f838310a2af0bc1))
+
+
+### Bug Fixes
+
+* **daemon:** expand a buffer under its own file name ([671a9a0](https://github.com/oxabl-project/oxabl/commit/671a9a0f16a323f8d3c452f4cc751955d2d75b5a))
+* **daemon:** read the preprocessor environment from one shared input ([8572ac9](https://github.com/oxabl-project/oxabl/commit/8572ac9a5630ea4697b61b03e26be013a0052894))
+* **index:** apply the configured predefined names to a file's own directives ([c925a40](https://github.com/oxabl-project/oxabl/commit/c925a40fb7ce99b4b309dd31ac69e13568704c0b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 1.1.4 to 2.0.0
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_index bumped from 1.0.3 to 2.0.0
+    * oxabl_pipeline bumped from 1.2.1 to 2.0.0
+    * oxabl_semantic bumped from 1.1.1 to 2.0.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.3.0 to 0.3.1
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_pipeline bumped from 1.2.1 to 2.0.0
+
 ## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.3.1...oxabl_daemon-v0.3.2) (2026-10-07)
 
 

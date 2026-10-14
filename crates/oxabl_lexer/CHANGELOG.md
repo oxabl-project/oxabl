@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v1.0.1...oxabl_lexer-v1.0.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **parser:** model DYNAMIC-NEW as a function call ([26b77f2](https://github.com/oxabl-project/oxabl/commit/26b77f25d442080c8c74246215526b72b487ce39))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+
 ## [1.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v1.0.0...oxabl_lexer-v1.0.1) (2026-08-12)
 
 

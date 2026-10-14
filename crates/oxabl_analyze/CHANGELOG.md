@@ -1,5 +1,51 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v1.1.4...oxabl_analyze-v2.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** oxabl_index::DegradedReason, oxabl_index::Completeness and oxabl_preprocessor::TextLossKind are #[non_exhaustive]; an exhaustive match on any of them outside its crate no longer compiles.
+* **index:** oxabl_index::EdgeInputs has a new field include_origins, and oxabl_analyze::ExpandedFile::unresolved_includes and unreadable_includes now also hold references reached only through the root's own {&var} substitutions, with the substitution as their site.
+* **preprocessor:** PreprocessedFile gains text_losses, UnresolvedInclude gains unterminated, and ExpandedFile gains text_losses.
+* **preprocessor:** PipelineConfig gains the public preprocessor field.
+* **index:** DependencyEdge, UnresolvedReference and EdgeInputs gain an include_site field; the analyze envelope's dependency rows gain include_site (dependencies section version 4).
+* **preprocessor:** CollectedDiagnostics gains the public parse_recovered field.
+
+### Features
+
+* **cli:** check context-free strict rules in the include files of a walked tree ([7b931f0](https://github.com/oxabl-project/oxabl/commit/7b931f0770f0149ff22c6f0c35658085682797c5))
+* **index:** give every dependency edge an include-site origin ([89c08ac](https://github.com/oxabl-project/oxabl/commit/89c08ac453605a2d085d8dd3873675c90a8386a9)), closes [#208](https://github.com/oxabl-project/oxabl/issues/208)
+* **index:** mark the degradation and text-loss enums non-exhaustive ([6999df2](https://github.com/oxabl-project/oxabl/commit/6999df2dc5410ed79b6d92da6240c0d07e08f449))
+* **preprocessor:** answer the AVM's predefined names ([d996c49](https://github.com/oxabl-project/oxabl/commit/d996c49d821b7e086a4e0dfb691962e3f4c6bd8f)), closes [#216](https://github.com/oxabl-project/oxabl/issues/216)
+* **preprocessor:** keep unreadable and nested unresolved includes as data ([b56cf8b](https://github.com/oxabl-project/oxabl/commit/b56cf8bb426ff6c6eb1fb983bdc0c8d6a0006085))
+* **preprocessor:** record lost text, rescan define values and match braces by quote ([57c7152](https://github.com/oxabl-project/oxabl/commit/57c71523e62e3d89fb796d18f61d6c196d8de3f8))
+
+
+### Bug Fixes
+
+* **index:** treat an include named through the root's own define as a direct include ([52f7734](https://github.com/oxabl-project/oxabl/commit/52f7734b971871884d32e2410e34ed9efa38c176))
+* **preprocessor:** evaluate the functions an &IF names, or say it guessed ([026e29e](https://github.com/oxabl-project/oxabl/commit/026e29e4fc9fff19a17ace4b872f2210d15129da))
+* **preprocessor:** expand include references with whitespace inside the braces ([82f05de](https://github.com/oxabl-project/oxabl/commit/82f05dee1506581e02016358d2a747b7a6563f90)), closes [#209](https://github.com/oxabl-project/oxabl/issues/209)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_lexer bumped from 1.0.1 to 1.0.2
+    * oxabl_lint bumped from 1.1.1 to 2.0.0
+    * oxabl_parser bumped from 1.0.4 to 2.0.0
+    * oxabl_preprocessor bumped from 0.5.2 to 0.6.0
+    * oxabl_schema bumped from 0.3.0 to 0.3.1
+    * oxabl_semantic bumped from 1.1.1 to 2.0.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+  * dev-dependencies
+    * oxabl_index bumped from 1.0.3 to 2.0.0
+    * oxabl_schema bumped from 0.3.0 to 0.3.1
+
 ## [1.1.4](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v1.1.3...oxabl_analyze-v1.1.4) (2026-10-07)
 
 

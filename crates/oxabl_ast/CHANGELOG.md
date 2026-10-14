@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v1.0.0...oxabl_ast-v2.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** DataType has a new variant, Generic, and ExpressionKind::New has a new field, type_arguments. Code that matches DataType exhaustively, or builds or matches New without `..`, must handle them.
+* **parser:** StatementKind::Function has a new field, prototype_parameters. Code that builds the variant or matches it without `..` must name it.
+* **parser:** oxabl_ast::CreateTargetKind has a new Call variant.
+* **parser:** `StatementKind` gains an `Annotation` variant, so exhaustive matches over it need a new arm.
+
+### Features
+
+* **parser:** keep the parameters of a function prototype ([038c3ff](https://github.com/oxabl-project/oxabl/commit/038c3ff21b19654b47dcb17f5e153d3a42a58e80))
+* **parser:** keep the type arguments of a generic class name ([6f5e3cb](https://github.com/oxabl-project/oxabl/commit/6f5e3cb11f3e20f4fa2c89e191c6e18c247b4ab9))
+* **parser:** parse ABL annotations as a statement ([0de3bb6](https://github.com/oxabl-project/oxabl/commit/0de3bb6408e74e1bdbc729288713880d2d23bc90))
+
+
+### Bug Fixes
+
+* **parser:** model CREATE CALL as a handle create ([60ad8b4](https://github.com/oxabl-project/oxabl/commit/60ad8b4e97aa0805afb87f21ce393763a3edf410))
+
 ## [1.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v0.5.0...oxabl_ast-v1.0.0) (2026-08-04)
 
 
