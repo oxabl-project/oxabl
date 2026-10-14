@@ -189,6 +189,10 @@ pub struct Parser<'a> {
     /// `COMPILE` do — so anchoring on the statement start is what lets one
     /// uniform "drop index 0" rule strip the dispatch keyword in both shapes.
     stmt_start_token: usize,
+    /// Byte ranges of the short names imported by non-wildcard `USING`
+    /// statements seen so far. A word token spelled like one of these is a class
+    /// name in a type position even when it is also a keyword (`Method`).
+    imported_classes: Vec<(usize, usize)>,
 }
 
 impl<'a> Parser<'a> {
@@ -210,6 +214,7 @@ impl<'a> Parser<'a> {
             node_ids: NodeIdAllocator::new(),
             errors: Vec::new(),
             stmt_start_token: current,
+            imported_classes: Vec::new(),
         }
     }
 
@@ -1936,6 +1941,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether `token` is spelled like the short name of a `USING` import.
+    fn is_imported_class(&self, token: &Token) -> bool {
+        let text = &self.source[token.start..token.end];
+        self.imported_classes
+            .iter()
+            .any(|&(start, end)| self.source[start..end].eq_ignore_ascii_case(text))
+    }
+
     /// The type of a class name, generic when it carries type arguments.
     fn class_data_type(class: String, arguments: TypeArguments) -> DataType {
         if arguments.0.is_empty() {
@@ -1997,6 +2010,12 @@ impl<'a> Parser<'a> {
                     .get(self.current + 1)
                     .is_some_and(|t| t.kind == Kind::Period) =>
             {
+                let class_name = self.parse_class_qualified_name()?;
+                let arguments = self.parse_generic_type_args();
+                return Ok(Self::class_data_type(class_name.name, arguments));
+            }
+            // A keyword-spelled short name imported by `USING` (e.g. `Method`).
+            _ if Self::is_word_kind(token.kind) && self.is_imported_class(token) => {
                 let class_name = self.parse_class_qualified_name()?;
                 let arguments = self.parse_generic_type_args();
                 return Ok(Self::class_data_type(class_name.name, arguments));

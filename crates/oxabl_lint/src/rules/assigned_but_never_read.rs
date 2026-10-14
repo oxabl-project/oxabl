@@ -230,7 +230,9 @@ impl Visitor<'_> {
                     self.walk_block(o);
                 }
             }
-            StatementKind::Block(body) => self.walk_block(body),
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
+                self.walk_block(body)
+            }
             StatementKind::Label { body, .. } => self.walk_statement(body),
             StatementKind::PreprocIf(pif) => {
                 // Every branch is walked: a write in any of them is a real

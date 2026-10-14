@@ -127,7 +127,9 @@ impl<'a> Visitor<'a> {
                     self.walk_block(o);
                 }
             }
-            StatementKind::Block(body) => self.walk_block(body),
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
+                self.walk_block(body)
+            }
             StatementKind::Label { body, .. } => self.walk_statement(body),
             StatementKind::PreprocIf(pif) => {
                 self.walk_block(&pif.then_branch);

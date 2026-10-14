@@ -284,7 +284,8 @@ fn child_lists(s: &Statement) -> SmallVec<[&[Statement]; 2]> {
         | SK::ForEach { body, .. }
         | SK::Catch { body, .. }
         | SK::Finally { body }
-        | SK::Block(body) => out.push(body),
+        | SK::Block(body)
+        | SK::VariableDeclarationList(body) => out.push(body),
         SK::Label { body, .. } => out.push(std::slice::from_ref(&**body)),
         SK::If {
             then_branch,
@@ -1320,7 +1321,7 @@ impl<'a> Builder<'a> {
                 }
                 self.pending = out;
             }
-            SK::Block(list) => self.seq(list),
+            SK::Block(list) | SK::VariableDeclarationList(list) => self.seq(list),
             SK::Catch { .. } | SK::Finally { .. } => {
                 let n = self.place(NodeKind::Stmt, s, s.span);
                 self.set_opaque(n, OpaqueReason::StrayHandlerBlock);

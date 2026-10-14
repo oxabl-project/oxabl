@@ -657,7 +657,7 @@ impl<'a> Walker<'a> {
                 );
                 self.walk_block(body, bs);
             }
-            StatementKind::Block(body) => {
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
                 self.walk_block(body, scope);
             }
             StatementKind::If {
@@ -2307,7 +2307,7 @@ impl<'a> ResolveWalker<'a> {
                         self.collect_class_upgrades(body, fs, out);
                     }
                 }
-                StatementKind::Block(body) => {
+                StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
                     self.collect_class_upgrades(body, scope, out);
                 }
                 StatementKind::If {
@@ -2725,7 +2725,7 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_block(o, scope);
                 }
             }
-            StatementKind::Block(body) => {
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => {
                 self.walk_block(body, scope);
             }
             StatementKind::Label { body, .. } => {

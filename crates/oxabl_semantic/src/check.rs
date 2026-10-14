@@ -256,7 +256,7 @@ impl<'a> CheckWalker<'a> {
                     self.walk_block(o, scope);
                 }
             }
-            StatementKind::Block(body) => self.walk_block(body, scope),
+            StatementKind::Block(body) | StatementKind::VariableDeclarationList(body) => self.walk_block(body, scope),
             StatementKind::Label { body, .. } => self.walk_statement(body, scope),
 
             // ---- Trigger / preprocessor ----------------------------------

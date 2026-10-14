@@ -197,7 +197,7 @@ fn variant_name(kind: &SK) -> String {
 fn child_statements(kind: &SK) -> Vec<&[Statement]> {
     let mut out: Vec<&[Statement]> = Vec::new();
     match kind {
-        SK::Block(b) => out.push(b),
+        SK::Block(b) | SK::VariableDeclarationList(b) => out.push(b),
         SK::Do { body, .. } => out.push(body),
         SK::If {
             then_branch,

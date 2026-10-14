@@ -742,7 +742,11 @@ impl Parser<'_> {
         if self.check(Kind::Variable)
             && (Self::is_data_type_kind(self.peek_at(1).kind)
                 || self.check_at(1, Kind::Like)
-                || self.peek_at(1).kind == Kind::Identifier)
+                || self.peek_at(1).kind == Kind::Identifier
+                || (self.check_at(1, Kind::Class) && Self::is_word_kind(self.peek_at(2).kind))
+                || (Self::is_word_kind(self.peek_at(1).kind)
+                    && self.is_imported_class(self.peek_at(1))
+                    && Self::can_be_identifier(self.peek_at(2).kind)))
         {
             return self.parse_var_statement();
         }
@@ -1265,7 +1269,7 @@ impl Parser<'_> {
         }))
     }
 
-    /// Parse: VAR type name [= value].
+    /// Parse: VAR type name [= value] [, name [= value]]....
     fn parse_var_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume VAR
 
@@ -1280,14 +1284,29 @@ impl Parser<'_> {
             TypeSource::Explicit(self.parse_data_type()?)
         };
 
-        // Parse variable name
+        let mut declarations = Vec::new();
+        loop {
+            declarations.push(self.parse_var_declarator(&type_source)?);
+            if !self.check(Kind::Comma) {
+                break;
+            }
+            self.advance(); // consume ,
+        }
+
+        self.expect_period("Expected '.' to end statement")?;
+
+        if declarations.len() == 1 {
+            return Ok(declarations.remove(0));
+        }
+        Ok(self.stmt(StatementKind::VariableDeclarationList(declarations)))
+    }
+
+    /// Parse one `name [= value]` of a VAR statement.
+    fn parse_var_declarator(&mut self, type_source: &TypeSource) -> ParseResult<Statement> {
         if !Self::can_be_identifier(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected variable name".to_string(),
-                span: Span {
-                    start: self.peek().start as u32,
-                    end: self.peek().end as u32,
-                },
+                span: self.current_span(),
             });
         }
         let name_token = self.advance().clone();
@@ -1299,7 +1318,6 @@ impl Parser<'_> {
             name: self.source[name_token.start..name_token.end].to_string(),
         };
 
-        // Optional initial value
         let initial_value = if self.check(Kind::Equals) {
             self.advance();
             Some(self.parse_expression()?)
@@ -1307,11 +1325,9 @@ impl Parser<'_> {
             None
         };
 
-        self.expect_period("Expected '.' to end statement")?;
-
-        Ok(self.stmt(StatementKind::VariableDeclaration {
+        let mut stmt = self.stmt(StatementKind::VariableDeclaration {
             name,
-            type_source,
+            type_source: type_source.clone(),
             initial_value,
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
@@ -1319,7 +1335,12 @@ impl Parser<'_> {
             is_new_shared: false,
             is_shared: false,
             is_new_global_shared: false,
-        }))
+        });
+        stmt.span = Span {
+            start: name_token.start as u32,
+            end: self.prev_end(),
+        };
+        Ok(stmt)
     }
 
     fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
@@ -5411,6 +5432,7 @@ impl Parser<'_> {
         // Tracks the end of the name itself, so the recorded span stops before
         // any `FROM PROPATH` clause and the statement terminator.
         let mut name_end = first_token.end;
+        let mut short_start = first_token.start;
 
         // Consume .segment parts, including .* wildcard
         while self.check(Kind::Period) {
@@ -5436,6 +5458,7 @@ impl Parser<'_> {
                 type_name.push('.');
                 type_name.push_str(&self.source[seg.start..seg.end]);
                 name_end = seg.end;
+                short_start = seg.start;
             } else if next_kind == Kind::Star {
                 self.advance(); // consume .
                 let star = self.advance().clone(); // consume *
@@ -5470,6 +5493,10 @@ impl Parser<'_> {
         }
 
         self.expect_period("Expected '.' after USING statement")?;
+
+        if !type_name.ends_with('*') {
+            self.imported_classes.push((short_start, name_end));
+        }
 
         let id = self.node_id();
         Ok(self.stmt(StatementKind::Using {
