@@ -1315,7 +1315,7 @@ pub fn resolve_pass(
         ctx.schema.revision(),
         "resolve_pass must run against the same schema revision declare_pass saw"
     );
-    let mut walker = ResolveWalker::new(ctx, tree, symbols);
+    let mut walker = ResolveWalker::new(ctx, tree, symbols, program);
     // Only the block-var-used-outside analysis (LINT0005) reads per-reference
     // scope, and only for hoisted variables. Skip that work wholesale when the
     // declare pass hoisted none — the common case — in O(1).
@@ -1689,13 +1689,16 @@ impl<'a> ResolveWalker<'a> {
         ctx: &'a AnalysisContext<'a>,
         tree: &'a ScopeTree,
         symbols: &'a mut SymbolTable,
+        program: &[Statement],
     ) -> Self {
         ResolveWalker {
             ctx,
             tree,
             symbols,
-            references: NodeIndexVec::new(),
-            types: NodeIndexVec::new(),
+            // Sized once: check_pass types nearly every expression, and a
+            // table grown as higher ids appear reallocates on the way.
+            references: NodeIndexVec::for_program(program),
+            types: NodeIndexVec::for_program(program),
             diagnostics: Vec::new(),
             counts: FxHashMap::default(),
             block_var_outside: FxHashMap::default(),
