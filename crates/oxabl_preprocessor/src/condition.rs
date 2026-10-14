@@ -49,9 +49,11 @@ pub struct Evaluation {
 ///   `NUM-ENTRIES`, `LOOKUP`, `ABSOLUTE`, `MAXIMUM`, `MINIMUM`
 /// - `DBTYPE`, `CONNECTED` and `LDBNAME` of a logical database name, from the
 ///   databases the environment lists: `DBTYPE` is `PROGRESS` unless the
-///   environment says otherwise, and `?` for an unlisted name. They are a [`Gap`]
-///   while no list is known, and for a sequence number, which depends on the
-///   order of connection.
+///   environment says otherwise. `DICTDB` is the first database listed. A name
+///   that a stated list does not hold is `?`; a name that a list inferred from
+///   the schema file names does not hold is a [`Gap`], as that list may miss the
+///   logical name. They are a [`Gap`] too while no list is known, and for a
+///   sequence number, which depends on the order of connection.
 ///
 /// Comparisons are case-insensitive (ABL semantics). Two strings compare as text
 /// and two numbers as numbers; a string against a number, or either against a
@@ -796,12 +798,18 @@ impl<'a> CondParser<'a> {
     /// from the databases the environment lists.
     fn database_call(&mut self, name: &str, args: &[CondValue]) -> CondValue {
         let config = self.env.config;
-        let Some(databases) = config.databases.as_deref() else {
-            self.gap(format!(
-                "the function {name}, with no connected databases known \
-                 (list them under `databases` in [workspace.preprocessor] or configure [workspace.schema])"
-            ));
-            return CondValue::Unknown;
+        // A stated list is all that is connected; one inferred from the schema
+        // file names is not, as a file name is not always the logical name.
+        let (databases, stated) = match (&config.databases, &config.inferred_databases) {
+            (Some(stated), _) => (stated.as_slice(), true),
+            (None, Some(inferred)) => (inferred.as_slice(), false),
+            (None, None) => {
+                self.gap(format!(
+                    "the function {name}, with no connected databases known \
+                     (list them under `databases` in [workspace.preprocessor] or configure [workspace.schema])"
+                ));
+                return CondValue::Unknown;
+            }
         };
         let wanted = match args {
             [CondValue::Str(wanted)] => wanted,
@@ -818,7 +826,23 @@ impl<'a> CondParser<'a> {
                 return CondValue::Unknown;
             }
         };
-        let connected = databases.iter().find(|d| d.eq_ignore_ascii_case(wanted));
+        // `DICTDB` is the alias of the first database, unless one is named so.
+        let connected = databases
+            .iter()
+            .find(|d| d.eq_ignore_ascii_case(wanted))
+            .or_else(|| {
+                wanted
+                    .eq_ignore_ascii_case("DICTDB")
+                    .then(|| databases.first())
+                    .flatten()
+            });
+        if connected.is_none() && !stated {
+            self.gap(format!(
+                "the function {name} of '{wanted}', which is not a schema file name \
+                 (list the connected databases under `databases` in [workspace.preprocessor])"
+            ));
+            return CondValue::Unknown;
+        }
         match (name, connected) {
             ("CONNECTED", connected) => CondValue::Bool(connected.is_some()),
             (_, None) => CondValue::Null,
@@ -1851,6 +1875,103 @@ mod tests {
         assert!(!e.value && e.gaps.is_empty());
         let e = eval_databases(r#"DBTYPE("ledger_db") NE ?"#, Some(&[]));
         assert!(!e.value && e.gaps.is_empty());
+    }
+
+    /// A condition over `inferred` database names, as the schema file names give
+    /// them, with `stated` as the list the config states, if any.
+    fn eval_inferred(condition: &str, inferred: &[&str], stated: Option<&[&str]>) -> Evaluation {
+        let owned = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        let config = PreprocessorConfig {
+            databases: stated.map(owned),
+            inferred_databases: Some(owned(inferred)),
+            ..PreprocessorConfig::default()
+        };
+        let vars = PreprocVarTable::new();
+        super::evaluate(
+            condition,
+            &Environment {
+                vars: &vars,
+                config: &config,
+            },
+        )
+    }
+
+    #[test]
+    fn dictdb_is_the_first_listed_database() {
+        let listed = Some(&["ledger_db", "Stock"][..]);
+        let exact = |condition: &str| {
+            let e = eval_databases(condition, listed);
+            assert!(e.gaps.is_empty(), "{condition}: {:?}", e.gaps);
+            e.value
+        };
+        assert!(exact(r#"CONNECTED("DICTDB")"#));
+        assert!(exact(r#"CONNECTED("dictdb")"#));
+        assert!(exact(r#"DBTYPE("DICTDB") = "PROGRESS""#));
+        assert!(exact(r#"LDBNAME("DICTDB") = "ledger_db""#));
+        // The alias follows the first database, not the second.
+        let e = eval_databases(r#"DBTYPE("DICTDB") = "ORACLE""#, Some(&["Stock", "other"]));
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+        // With nothing connected the alias names nothing.
+        let e = eval_databases(r#"CONNECTED("DICTDB")"#, Some(&[]));
+        assert!(!e.value && e.gaps.is_empty());
+        let e = eval_databases(r#"DBTYPE("DICTDB") = ?"#, Some(&[]));
+        assert!(e.value && e.gaps.is_empty());
+        // A database that is named DICTDB is found before the alias is.
+        let e = eval_databases(r#"LDBNAME("DICTDB") = "DICTDB""#, Some(&["a", "DICTDB"]));
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+    }
+
+    #[test]
+    fn an_unlisted_name_in_an_inferred_list_is_a_gap_not_the_unknown_value() {
+        for condition in [
+            r#"DBTYPE("ledger") NE ?"#,
+            r#"DBTYPE("ledger") = ?"#,
+            r#"CONNECTED("ledger")"#,
+            r#"NOT CONNECTED("ledger")"#,
+            r#"LDBNAME("ledger") = ?"#,
+        ] {
+            let e = eval_inferred(condition, &["ledger_v12"], None);
+            assert_eq!(e.gaps.len(), 1, "{condition}: {:?}", e.gaps);
+            let Gap::Unmodelled(what) = &e.gaps[0] else {
+                panic!("{:?}", e.gaps)
+            };
+            assert!(what.contains("'ledger'"), "{what}");
+            assert!(what.contains("`databases`"), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_listed_name_in_an_inferred_list_is_answered() {
+        let exact = |condition: &str| {
+            let e = eval_inferred(condition, &["ledger_v12", "Stock"], None);
+            assert!(e.gaps.is_empty(), "{condition}: {:?}", e.gaps);
+            e.value
+        };
+        assert!(exact(r#"DBTYPE("LEDGER_V12") = "PROGRESS""#));
+        assert!(exact(r#"CONNECTED("stock")"#));
+        assert!(exact(r#"LDBNAME("stock") = "Stock""#));
+        assert!(exact(r#"CONNECTED("DICTDB")"#));
+        assert!(exact(r#"LDBNAME("DICTDB") = "ledger_v12""#));
+    }
+
+    #[test]
+    fn dictdb_in_an_inferred_list_is_a_gap_when_nothing_is_listed() {
+        let e = eval_inferred(r#"CONNECTED("DICTDB")"#, &[], None);
+        assert_eq!(e.gaps.len(), 1, "{:?}", e.gaps);
+    }
+
+    #[test]
+    fn a_stated_list_is_closed_whatever_the_inferred_one_holds() {
+        let e = eval_inferred(
+            r#"DBTYPE("ledger_v12") NE ?"#,
+            &["ledger_v12"],
+            Some(&["main"]),
+        );
+        assert!(!e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+        let e = eval_inferred(r#"CONNECTED("main")"#, &["ledger_v12"], Some(&["main"]));
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+        let e = eval_inferred(r#"CONNECTED("ledger_v12")"#, &["ledger_v12"], Some(&[]));
+        assert!(!e.value && e.gaps.is_empty(), "{:?}", e.gaps);
     }
 
     #[test]
