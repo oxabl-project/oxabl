@@ -76,7 +76,19 @@ pub struct CollectedDiagnostic {
 }
 
 /// The complete, root-resolved diagnostic set for a file.
+///
+/// Other crates cannot build it with a struct expression; use
+/// [`CollectedDiagnostics::new`].
+///
+/// ```compile_fail,E0639
+/// let _ = oxabl_analyze::CollectedDiagnostics {
+///     diagnostics: Vec::new(),
+///     parse_recovered: false,
+///     include_findings: Vec::new(),
+/// };
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CollectedDiagnostics {
     pub diagnostics: Vec<CollectedDiagnostic>,
     /// Whether the parser recovered from at least one error, wherever in the
@@ -95,7 +107,17 @@ pub struct CollectedDiagnostics {
 }
 
 /// A finding whose anchor is in an include file, with where it would show.
+///
+/// ```compile_fail,E0639
+/// fn build(
+///     diagnostic: oxabl_common::Diagnostic,
+///     span: oxabl_ast::Span,
+/// ) -> oxabl_analyze::IncludeFinding {
+///     oxabl_analyze::IncludeFinding { diagnostic, path: Default::default(), span }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct IncludeFinding {
     /// The finding at the root's `{...}` site that brought the include in.
     /// Labels that are not in the root are dropped.
@@ -107,6 +129,16 @@ pub struct IncludeFinding {
 }
 
 impl CollectedDiagnostics {
+    /// A set of `diagnostics` from a run that recovered from no parse error and
+    /// has no include findings.
+    pub const fn new(diagnostics: Vec<CollectedDiagnostic>) -> Self {
+        Self {
+            diagnostics,
+            parse_recovered: false,
+            include_findings: Vec::new(),
+        }
+    }
+
     /// Every diagnostic (all stages), in pipeline order.
     pub fn all(&self) -> impl Iterator<Item = &CollectedDiagnostic> {
         self.diagnostics.iter()
