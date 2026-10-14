@@ -46,6 +46,11 @@
 //! | CL005 | [`shared_state`]            | `strict.calls`        | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
 //! | TX006 | [`missing_no_undo`]         | `strict.transactions` | variable, parameter, temp-table or property without `NO-UNDO` |
 //!
+//! A finding that sits in an include file is dropped when the includer is
+//! linted. A context-free rule reports it once, in the include file itself,
+//! when a client lints that file as a root (`oxabl check <dir>` does so for
+//! every `.i` file it walks; an editor does so for an open buffer).
+//!
 
 use oxabl_ast::Statement;
 use oxabl_common::Diagnostic;

@@ -109,6 +109,15 @@ Lint rules are in groups. The `LINT` rules are in the `default` group, which is 
 
 These four rules are context-free: each finding depends only on the text of its own file.
 
+**Include files.** A strict rule reports code from an include in the include file, once, and never in the program that includes it. `oxabl check <dir>` therefore also checks the `.i` files of the tree, but only for context-free rules, and only where the configuration enables one for that file. Other findings of a fragment (parse errors, undefined names, unused variables) stay hidden, because a fragment often does not parse or resolve alone. A baseline keys such a finding by the include's path. Limits:
+
+- `oxabl check <file>` checks that one file. It does not check the includes of a program. Name the `.i` file to check it.
+- `check` does not find an include outside the directory that it walks, or an include with an extension other than `.i`.
+- In the editor, an open `.i` file shows its context-free findings.
+- The text summary and `--json` count these files apart from the roots (`include_files_checked`).
+
+See `docs/design/strict-analysis-open-questions.md` for the reasons and for the plan for rules that depend on the includer.
+
 Configure lint in `[workspace.lint]` in `oxabl.toml`:
 
 ```toml

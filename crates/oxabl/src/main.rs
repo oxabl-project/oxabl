@@ -15,7 +15,7 @@ use oxabl_pipeline::{
 };
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{RealFileSystem, discover_path};
+use oxabl_workspace::{RealFileSystem, discover_path, walk_include_fragments};
 use serde::Serialize;
 
 #[derive(ClapParser)]
@@ -758,6 +758,11 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 struct CheckJsonReport {
     version: u32,
     files_checked: usize,
+    /// Include files (`.i`) of a walked directory that were checked for
+    /// context-free rules, and are not in `files_checked`. Omitted when none
+    /// was, so ordinary walks keep their JSON.
+    #[serde(skip_serializing_if = "is_zero")]
+    include_files_checked: usize,
     /// Whether lint findings are reported (`false` under `--no-lint`), so an
     /// empty `diagnostics` cannot be misread as "clean". The pipeline itself runs
     /// either way — parse and semantic diagnostics are never suppressed (A1).
@@ -1056,23 +1061,15 @@ fn run_check(
             } else {
                 reported
             };
-            let reported = match baseline.as_mut() {
-                Some(run) => run.filter(indexed_path, &source, reported),
-                None => reported,
-            };
-            if !reported.diagnostics.is_empty() {
-                if !json_output {
-                    let resolver =
-                        SourceResolver::new(ROOT_FILE_ID, display.clone(), source.as_str());
-                    let rendered: Vec<Diagnostic> =
-                        reported.all().map(|c| c.diagnostic.clone()).collect();
-                    print!("{}", render_diagnostics(&rendered, &resolver));
-                }
-                let map = SourceMap::new(&source);
-                for collected in reported.all() {
-                    diagnostics.push(check_json_diagnostic(&display, &map, collected));
-                }
-            }
+            report_findings(
+                &display,
+                indexed_path,
+                &source,
+                reported,
+                baseline.as_mut(),
+                json_output,
+                &mut diagnostics,
+            );
 
             // The unjudged-symbol note is a statement about the *count-gated lint
             // rules'* coverage, so it has nothing to qualify when those findings
@@ -1114,6 +1111,52 @@ fn run_check(
         }
     }
 
+    // Include files in a walked directory: only the context-free rules report
+    // there, once, in the file itself. A root's own run drops findings that come
+    // from an include, so nothing is reported twice. Nothing else about an
+    // include is checked: it often does not parse or resolve without its includer.
+    let mut include_files_checked = 0usize;
+    if !no_lint && path.is_dir() {
+        for file in walk_include_fragments(path) {
+            let indexed_path = std::path::absolute(&file).unwrap_or_else(|_| file.clone());
+            let handle = lint.with_file(&indexed_path);
+            if !handle.context_free_rules_enabled() {
+                continue;
+            }
+            let display = file.display().to_string();
+            let source = match std::fs::read_to_string(&file) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: cannot read {display}: {e}");
+                    failures.push(CheckJsonFailure {
+                        path: display,
+                        reason: format!("cannot read: {e}"),
+                    });
+                    continue;
+                }
+            };
+            let result = handle.run_context_free(&source);
+            if let Some(panic) = result.failure() {
+                eprintln!("error: analysis failed on {display}: {panic}");
+                failures.push(CheckJsonFailure {
+                    path: display,
+                    reason: panic.to_string(),
+                });
+                continue;
+            }
+            include_files_checked += 1;
+            report_findings(
+                &display,
+                &indexed_path,
+                &source,
+                result.into_diagnostics(),
+                baseline.as_mut(),
+                json_output,
+                &mut diagnostics,
+            );
+        }
+    }
+
     let baseline = match baseline.map(|run| run.finish(!no_lint)) {
         None => None,
         Some(Ok(report)) => {
@@ -1137,6 +1180,7 @@ fn run_check(
             // 3: a diagnostic row carries its `help` line when it has one.
             version: 3,
             files_checked: files.len(),
+            include_files_checked,
             lint_enabled: !no_lint,
             diagnostics,
             format_enabled: !no_format,
@@ -1190,6 +1234,11 @@ fn run_check(
     // beside the document would make stdout unparseable.
     if diagnostics.is_empty() && drifted.is_empty() && failures.is_empty() {
         let plural = if files.len() == 1 { "file" } else { "files" };
+        let includes = match include_files_checked {
+            0 => String::new(),
+            1 => " and 1 include file".to_string(),
+            n => format!(" and {n} include files"),
+        };
         let lint_channel = if no_lint {
             "lint suppressed"
         } else {
@@ -1201,7 +1250,7 @@ fn run_check(
             "no drift"
         };
         println!(
-            "checked {} {plural}: {lint_channel}, {format_channel}",
+            "checked {} {plural}{includes}: {lint_channel}, {format_channel}",
             files.len()
         );
     }
@@ -1256,6 +1305,39 @@ fn check_exit_code(findings: usize, drifted: usize, failures: usize) -> ExitCode
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Apply the baseline to one file's findings, then print them (text mode) and
+/// add them to the report rows.
+fn report_findings(
+    display: &str,
+    indexed_path: &Path,
+    source: &str,
+    reported: CollectedDiagnostics,
+    baseline: Option<&mut baseline::Run>,
+    json_output: bool,
+    rows: &mut Vec<CheckJsonDiagnostic>,
+) {
+    let reported = match baseline {
+        Some(run) => run.filter(indexed_path, source, reported),
+        None => reported,
+    };
+    if reported.diagnostics.is_empty() {
+        return;
+    }
+    if !json_output {
+        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), source);
+        let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
+        print!("{}", render_diagnostics(&rendered, &resolver));
+    }
+    let map = SourceMap::new(source);
+    for collected in reported.all() {
+        rows.push(check_json_diagnostic(display, &map, collected));
     }
 }
 
