@@ -756,3 +756,93 @@ fn a_set_without_conditional_includes_compares_equal_to_the_default() {
         DependencyEdges::default()
     );
 }
+
+/// The schema-table edges of `source`, analysed against the `Customer` schema.
+fn table_edges(source: &str) -> Vec<String> {
+    let schema = customer_schema();
+    let semantic = analyse(source, &schema, &NullIndex);
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+    targets(EdgeKind::SchemaTable, &edges)
+}
+
+#[test]
+fn a_table_named_only_as_a_record_is_an_edge() {
+    for source in [
+        "FIND FIRST Customer NO-LOCK.",
+        "FIND LAST Customer.",
+        "FIND NEXT Customer.",
+        "FIND PREV Customer.",
+        "FIND CURRENT Customer.",
+        "FIND Customer 1.",
+        "FIND sports.Customer 1.",
+        "FIND FIRST Customer USE-INDEX k NO-LOCK NO-ERROR.",
+        "FIND FIRST ttOrder OF Customer.",
+        "CREATE Customer.",
+        "DELETE Customer.",
+        "RELEASE Customer.",
+        "VALIDATE Customer.",
+        "BUFFER-COPY Customer TO Customer.",
+        "BUFFER-COMPARE Customer TO Customer.",
+        "DEFINE QUERY q FOR Customer.",
+        "OPEN QUERY q FOR EACH Customer.",
+        "OPEN QUERY q PRESELECT EACH Customer.",
+        "FOR EACH ttOrder OF Customer: END.",
+        "FOR EACH ttOrder NO-LOCK, EACH Customer NO-LOCK: END.",
+        "FOR EACH ttOrder, FIRST Customer WHERE Customer.CustNum = 1: END.",
+        "DO FOR Customer: END.",
+        "REPEAT PRESELECT EACH Customer: END.",
+        "MESSAGE CAN-FIND(ttOrder OF Customer).",
+        "DEFINE TEMP-TABLE tt NO-UNDO LIKE Customer.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD x LIKE Customer.Name.",
+        "DEFINE WORK-TABLE wt LIKE Customer.",
+        "DEFINE VARIABLE v LIKE Customer.Name NO-UNDO.",
+        "DEFINE VARIABLE v LIKE sports.Customer.Name NO-UNDO.",
+        "DEFINE INPUT PARAMETER p LIKE Customer.Name NO-UNDO.",
+        "FUNCTION f RETURNS LOGICAL (BUFFER fb FOR Customer): RETURN TRUE. END FUNCTION.",
+        "FUNCTION f RETURNS LOGICAL (BUFFER fb FOR Customer) FORWARD.",
+        "FUNCTION f RETURNS LOGICAL (INPUT p LIKE Customer.Name) FORWARD.",
+        "UPDATE Customer.",
+        "SET Customer.",
+        "PROMPT-FOR Customer.",
+        "INSERT Customer.",
+        "IMPORT Customer.",
+        "EXPORT Customer.",
+        "ENABLE Customer WITH FRAME f.",
+        "PUT Customer.Name.",
+        "DISABLE TRIGGERS FOR LOAD OF Customer.",
+        "ON WRITE OF Customer DO: END.",
+        "ON ASSIGN OF Customer.Name DO: END.",
+        "TRIGGER PROCEDURE FOR WRITE OF Customer.",
+        "TRIGGER PROCEDURE FOR ASSIGN OF Customer.Name.",
+        "DEFINE FRAME f Customer.Name.",
+        "DEFINE QUERY q FOR Customer. DEFINE BROWSE br QUERY q DISPLAY Customer.Name WITH 5 DOWN.",
+        "DEFINE DATA-SOURCE ds FOR Customer.",
+    ] {
+        assert_eq!(table_edges(source), ["customer"], "{source}");
+    }
+}
+
+#[test]
+fn a_local_name_or_a_bare_field_names_no_table() {
+    for source in [
+        "DEFINE TEMP-TABLE Customer NO-UNDO FIELD x AS INTEGER. FIND FIRST Customer.",
+        "DEFINE VARIABLE Customer AS INTEGER NO-UNDO. UPDATE Customer.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER. DEFINE VARIABLE v LIKE tt.f NO-UNDO.",
+        "DEFINE VARIABLE v LIKE Name NO-UNDO.",
+        "FIND FIRST ttOrder NO-LOCK.",
+        "DO TRANSACTION: END.",
+    ] {
+        assert!(table_edges(source).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn a_dynamic_buffer_field_named_like_a_table_is_no_edge() {
+    for source in [
+        "DEFINE VARIABLE h AS HANDLE NO-UNDO. PUT h::Customer.",
+        "DEFINE VARIABLE h AS HANDLE NO-UNDO. DEFINE TEMP-TABLE tt NO-UNDO FIELD x AS INTEGER. \
+         FOR EACH tt, EACH ttOrder WHERE ttOrder.x = h::Customer: END.",
+    ] {
+        assert!(table_edges(source).is_empty(), "{source}");
+    }
+}

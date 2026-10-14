@@ -515,12 +515,14 @@ impl<'a> LintPipeline<'a> {
     /// Tell the run's index which files this run already knows it will read.
     ///
     /// Only one cross-file question needs it: a `SHARED` name maps onto no path,
-    /// so `shared_producer` can answer only from files the run has already
-    /// indexed, and nothing pulls a producer in unless some file happens to `RUN`
-    /// it. A walk already enumerated every file it is about to read, so handing
-    /// that list over makes the producer link work on the command line without a
-    /// directory scan or a whole-workspace walk — the list is the walk's own, and
-    /// the index reads from it lazily, on the first `SHARED` lookup.
+    /// so `shared_producer` can answer only from these files and from the files
+    /// the analysed file's own lookups reached, in practice a program it `RUN`s.
+    /// Never from what the run reached for other files, so one file's edges do
+    /// not depend on which files the pipeline analysed before it. A walk already
+    /// enumerated every file it is about to read, so handing that list over makes
+    /// the producer link work on the command line without a directory scan or a
+    /// whole-workspace walk — the list is the walk's own, and the index reads
+    /// from it lazily, on the first `SHARED` lookup.
     ///
     /// A client with no such list (the language server, the browser) does not
     /// call this and behaves exactly as before. Apply it to the **run** handle,
@@ -697,8 +699,9 @@ impl<'a> LintPipeline<'a> {
     /// only when the run's index knows the files that can produce the name: seed
     /// it with [`with_known_files`](Self::with_known_files) or
     /// [`with_shared_producers`](Self::with_shared_producers). An unseeded index
-    /// answers from what the run has looked at so far, so that edge depends on
-    /// the order of the run.
+    /// answers only from the files this file's own lookups reached, such as a
+    /// program it `RUN`s. Either way the edge set does not depend on which files
+    /// the run analysed before.
     ///
     /// The whole-workspace reverse pass calls this per file. Guarded, unlike
     /// [`expand`](Self::expand) and [`collect`](Self::collect): one unparseable or

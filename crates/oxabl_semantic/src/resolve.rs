@@ -2502,8 +2502,11 @@ impl<'a> ResolveWalker<'a> {
                 initial_value,
                 ..
             } => {
-                if let TypeSource::Explicit(dt) = type_source {
-                    self.note_data_type(dt, scope, identifier_span(name));
+                match type_source {
+                    TypeSource::Explicit(dt) => {
+                        self.note_data_type(dt, scope, identifier_span(name))
+                    }
+                    TypeSource::Like { source } => self.note_like_source(source, scope, false),
                 }
                 if let Some(e) = initial_value {
                     self.walk_expression(e, scope, AccessMode::Read);
@@ -2521,13 +2524,25 @@ impl<'a> ResolveWalker<'a> {
                         type_source: TypeSource::Explicit(dt),
                         ..
                     } => self.note_data_type(dt, scope, identifier_span(name)),
+                    ParameterType::Variable {
+                        type_source: TypeSource::Like { source },
+                        ..
+                    } => self.note_like_source(source, scope, false),
                     _ => {}
                 }
             }
-            StatementKind::DefineTempTable { fields, .. } => {
+            StatementKind::DefineTempTable {
+                like_table, fields, ..
+            } => {
+                if let Some(table) = like_table {
+                    self.note_like_source(table, scope, true);
+                }
                 for f in fields {
-                    if let TypeSource::Explicit(dt) = &f.type_source {
-                        self.note_data_type(dt, scope, identifier_span(&f.name));
+                    match &f.type_source {
+                        TypeSource::Explicit(dt) => {
+                            self.note_data_type(dt, scope, identifier_span(&f.name))
+                        }
+                        TypeSource::Like { source } => self.note_like_source(source, scope, false),
                     }
                     if let Some(init) = &f.initial_value {
                         for e in init {
@@ -2541,9 +2556,20 @@ impl<'a> ResolveWalker<'a> {
                 self.credit_buffer_target(name, t, scope);
             }
             StatementKind::DefineDataset { .. } => {}
-            StatementKind::DefineDataSource { .. } => {}
+            StatementKind::DefineDataSource { source_buffers, .. } => {
+                for buffer in source_buffers {
+                    self.resolve_record_ident(
+                        &buffer.name,
+                        scope,
+                        &[NamespaceId::Buffers, NamespaceId::Tables],
+                        AccessMode::Read,
+                    );
+                }
+            }
             StatementKind::DefineStream { .. } => {}
-            StatementKind::DefineFrame { .. } => {}
+            StatementKind::DefineFrame { raw_span, .. } => {
+                self.note_unmodelled_text(*raw_span, scope);
+            }
             StatementKind::DefineEvent { parameters, .. } => {
                 if let Some(ev) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
                     self.walk_block(parameters, ev);
@@ -2589,17 +2615,23 @@ impl<'a> ResolveWalker<'a> {
                 // A prototype has no scope to bind them in, but the compiler
                 // resolves their types all the same.
                 for param in prototype_parameters {
-                    if let StatementKind::DefineParameter {
-                        param_type:
-                            ParameterType::Variable {
-                                name,
-                                type_source: TypeSource::Explicit(dt),
-                                ..
-                            },
-                        ..
-                    } = &param.kind
-                    {
-                        self.note_data_type(dt, scope, identifier_span(name));
+                    let StatementKind::DefineParameter { param_type, .. } = &param.kind else {
+                        continue;
+                    };
+                    match param_type {
+                        ParameterType::Variable {
+                            name,
+                            type_source: TypeSource::Explicit(dt),
+                            ..
+                        } => self.note_data_type(dt, scope, identifier_span(name)),
+                        ParameterType::Variable {
+                            type_source: TypeSource::Like { source },
+                            ..
+                        } => self.note_like_source(source, scope, false),
+                        ParameterType::Buffer { target, .. } => {
+                            self.note_like_source(target, scope, true)
+                        }
+                        ParameterType::Handle { .. } => {}
                     }
                 }
                 if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
@@ -2685,6 +2717,7 @@ impl<'a> ResolveWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt.id, ScopeKind::Block)
                     .unwrap_or(scope);
+                self.note_block_records(stmt.span, bs);
                 if let Some(counter) = loop_var {
                     // The loop assigns the counter its initial value and
                     // reads/compares it each iteration — resolve it as a use
@@ -2723,6 +2756,7 @@ impl<'a> ResolveWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt.id, ScopeKind::Block)
                     .unwrap_or(scope);
+                self.note_block_records(stmt.span, bs);
                 if let Some(e) = while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
@@ -2751,7 +2785,7 @@ impl<'a> ResolveWalker<'a> {
                     AccessMode::Read,
                 );
                 if let Some(of) = of_relation {
-                    self.resolve_statement_ident(
+                    self.resolve_record_ident(
                         of,
                         bs,
                         &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -2764,6 +2798,15 @@ impl<'a> ResolveWalker<'a> {
                 for e in on_actions {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
+                // The joined records after the first are not in the AST.
+                let first_end = [Some(buffer.span), of_relation.as_ref().map(|of| of.span)]
+                    .into_iter()
+                    .flatten()
+                    .map(|span| span.end)
+                    .chain(where_clause.as_ref().map(|w| w.span.end))
+                    .max()
+                    .unwrap_or(stmt.span.start);
+                self.note_unmodelled_text(after(stmt.span, first_end), bs);
                 self.walk_block(body, bs);
             }
             StatementKind::Find {
@@ -2772,7 +2815,7 @@ impl<'a> ResolveWalker<'a> {
                 where_clause,
                 ..
             } => {
-                self.resolve_statement_ident(
+                self.resolve_record_ident(
                     buffer,
                     scope,
                     &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -2784,6 +2827,19 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(w) = where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
+                // The `OF` table, between the record and its key or `WHERE`, is
+                // not in the AST.
+                let end = key_value
+                    .as_ref()
+                    .or(where_clause.as_ref())
+                    .map_or(stmt.span.end, |e| e.span.start);
+                self.note_unmodelled_text(
+                    Span {
+                        start: buffer.span.end,
+                        end,
+                    },
+                    scope,
+                );
             }
             StatementKind::If {
                 condition,
@@ -2821,23 +2877,30 @@ impl<'a> ResolveWalker<'a> {
 
             // ---- Trigger / preprocessor ---------------------------------
             StatementKind::On { kind } => match kind {
-                OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action {
-                    OnAction::Block(body) => {
-                        let ts = self
-                            .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
-                            .unwrap_or(scope);
-                        self.walk_statement(body, ts);
+                OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => {
+                    if let OnKind::DbEvent { target, .. } = kind {
+                        self.note_trigger_table(target, scope);
                     }
-                    OnAction::PersistentRun { arguments, .. } => {
-                        for arg in arguments {
-                            self.walk_expression(arg, scope, AccessMode::Read);
+                    match action {
+                        OnAction::Block(body) => {
+                            let ts = self
+                                .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
+                                .unwrap_or(scope);
+                            self.walk_statement(body, ts);
                         }
+                        OnAction::PersistentRun { arguments, .. } => {
+                            for arg in arguments {
+                                self.walk_expression(arg, scope, AccessMode::Read);
+                            }
+                        }
+                        OnAction::Revert => {}
                     }
-                    OnAction::Revert => {}
-                },
+                }
                 OnKind::KeyRemap { .. } => {}
             },
-            StatementKind::TriggerProcedure { .. } => {}
+            StatementKind::TriggerProcedure { target, .. } => {
+                self.note_trigger_table(target, scope)
+            }
             StatementKind::PreprocIf(pif) => {
                 self.walk_expression(&pif.condition, scope, AccessMode::Read);
                 self.walk_block(&pif.then_branch, scope);
@@ -2995,7 +3058,7 @@ impl<'a> ResolveWalker<'a> {
             StatementKind::Delete { buffer, .. }
             | StatementKind::Release { buffer, .. }
             | StatementKind::Validate { buffer, .. } => {
-                self.resolve_statement_ident(
+                self.resolve_record_ident(
                     buffer,
                     scope,
                     &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -3008,13 +3071,8 @@ impl<'a> ResolveWalker<'a> {
                 assignments,
                 ..
             } => {
-                self.resolve_statement_ident(
-                    source,
-                    scope,
-                    &[NamespaceId::Buffers],
-                    AccessMode::Read,
-                );
-                self.resolve_statement_ident(
+                self.resolve_record_ident(source, scope, &[NamespaceId::Buffers], AccessMode::Read);
+                self.resolve_record_ident(
                     target,
                     scope,
                     &[NamespaceId::Buffers],
@@ -3031,18 +3089,8 @@ impl<'a> ResolveWalker<'a> {
                 result_var,
                 ..
             } => {
-                self.resolve_statement_ident(
-                    source,
-                    scope,
-                    &[NamespaceId::Buffers],
-                    AccessMode::Read,
-                );
-                self.resolve_statement_ident(
-                    target,
-                    scope,
-                    &[NamespaceId::Buffers],
-                    AccessMode::Read,
-                );
+                self.resolve_record_ident(source, scope, &[NamespaceId::Buffers], AccessMode::Read);
+                self.resolve_record_ident(target, scope, &[NamespaceId::Buffers], AccessMode::Read);
                 if let Some(rv) = result_var {
                     self.resolve_statement_ident(
                         rv,
@@ -3054,7 +3102,7 @@ impl<'a> ResolveWalker<'a> {
             }
             StatementKind::Create { target, .. } => match target {
                 CreateTarget::Name(n) => {
-                    self.resolve_statement_ident(
+                    self.resolve_record_ident(
                         n,
                         scope,
                         &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -3166,6 +3214,7 @@ impl<'a> ResolveWalker<'a> {
                 if *may_reference_tables {
                     self.credit_unmodelled_table_names(names, scope);
                 }
+                self.note_unmodelled_schema_tables(names, scope);
                 self.note_unmodelled_class_runs(stmt.span, scope);
             }
         }
@@ -3393,6 +3442,16 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(w) = where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
+                let end = where_clause
+                    .as_ref()
+                    .map_or(expr.span.end, |w| w.span.start);
+                self.note_unmodelled_text(
+                    Span {
+                        start: buffer.span.end,
+                        end,
+                    },
+                    scope,
+                );
             }
 
             ExpressionKind::IncludeReference { .. }
@@ -4475,11 +4534,157 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         namespaces: &[NamespaceId],
         mode: AccessMode,
+    ) -> Option<SymbolId> {
+        let sym = self.lookup_statement_ident(id, scope, namespaces)?;
+        self.bump_count(sym, mode);
+        if self.track_block_vars {
+            self.note_block_var_use(sym, scope, mode);
+        }
+        Some(sym)
+    }
+
+    /// Resolve a name the statement uses as a record: `FIND`, `CREATE`,
+    /// `DELETE`, `BUFFER-COPY` and the other forms that name a buffer and
+    /// nothing else.
+    ///
+    /// A local buffer or temp-table wins. Otherwise a schema table binds its
+    /// default buffer, as the same name does in an expression, so the file
+    /// depends on the table even when it never names one of its fields.
+    fn resolve_record_ident(
+        &mut self,
+        id: &Identifier,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+        mode: AccessMode,
     ) {
-        if let Some(sym) = self.lookup_statement_ident(id, scope, namespaces) {
+        if self
+            .resolve_statement_ident(id, scope, namespaces, mode)
+            .is_none()
+            && let Some(sym) = self.schema_default_buffer(id)
+        {
             self.bump_count(sym, mode);
-            if self.track_block_vars {
-                self.note_block_var_use(sym, scope, mode);
+        }
+    }
+
+    /// The synthesized default buffer of the schema table `id` names, or `None`
+    /// when no schema is loaded or it names no table.
+    ///
+    /// The caller has already found no local buffer or table of that name.
+    fn schema_default_buffer(&mut self, id: &Identifier) -> Option<SymbolId> {
+        if !self.ctx.schema_loaded {
+            return None;
+        }
+        let schema = self.ctx.schema;
+        let (tid, atom) = [Some(id.name.as_str()), strip_db_qualifier(&id.name)]
+            .into_iter()
+            .flatten()
+            .map(fold_atom)
+            .find_map(|atom| Some((schema.table_id(&atom)?, atom)))?;
+        Some(self.synth_table_buffer_symbol(tid, &atom, id))
+    }
+
+    /// Note the table a declaration copies with `LIKE`: the table of
+    /// `LIKE table.field` or `LIKE db.table.field`, or the table itself when
+    /// `whole_table` (`DEFINE TEMP-TABLE tt LIKE table`).
+    ///
+    /// No read is credited: the declaration takes the table's shape and does
+    /// not touch a record. A bare `LIKE field` names no table, and a qualifier
+    /// that is a local buffer or temp-table is that symbol's own dependency.
+    fn note_like_source(&mut self, source: &Identifier, scope: ScopeId, whole_table: bool) {
+        let table = if whole_table {
+            source.clone()
+        } else {
+            let Some((qualifier, _field)) = source.name.rsplit_once('.') else {
+                return;
+            };
+            Identifier {
+                span: Span {
+                    start: source.span.start,
+                    end: source.span.start + qualifier.len() as u32,
+                },
+                name: qualifier.to_string(),
+            }
+        };
+        if self
+            .lookup_statement_ident(&table, scope, &[NamespaceId::Buffers, NamespaceId::Tables])
+            .is_none()
+        {
+            self.schema_default_buffer(&table);
+        }
+    }
+
+    /// Note the table a database trigger names: `ON WRITE OF table`, or the
+    /// table of `ON ASSIGN OF table.field`.
+    fn note_trigger_table(&mut self, target: &Identifier, scope: ScopeId) {
+        let namespaces = [NamespaceId::Buffers, NamespaceId::Tables];
+        if self
+            .lookup_statement_ident(target, scope, &namespaces)
+            .is_some()
+            || self.schema_default_buffer(target).is_some()
+        {
+            return;
+        }
+        self.note_like_source(target, scope, false);
+    }
+
+    /// [`Self::note_unmodelled_schema_tables`] over the names in source text
+    /// the parser passed over. See [`unmodelled_names`].
+    fn note_unmodelled_text(&mut self, span: Span, scope: ScopeId) {
+        if !self.ctx.schema_loaded {
+            return;
+        }
+        let names = unmodelled_names(self.ctx.source, span);
+        self.note_unmodelled_schema_tables(&names, scope);
+    }
+
+    /// The records of `DO FOR`, `DO PRESELECT`, `REPEAT FOR` and
+    /// `REPEAT PRESELECT`, which are not in the AST. Only a block whose
+    /// keyword is followed by `FOR` or `PRESELECT` is lexed past that token.
+    fn note_block_records(&mut self, span: Span, scope: ScopeId) {
+        use oxabl_lexer::Kind;
+        if !self.ctx.schema_loaded {
+            return;
+        }
+        let Some(text) = self.ctx.source.get(span.start as usize..span.end as usize) else {
+            return;
+        };
+        let mut tokens = oxabl_lexer::Lexer::new(text).peekable();
+        tokens.next(); // DO or REPEAT
+        tokens.next_if(|t| t.kind == Kind::Transaction);
+        if tokens
+            .next_if(|t| matches!(t.kind, Kind::KwFor | Kind::Preselect))
+            .is_none()
+        {
+            return;
+        }
+        let names = header_names(tokens, text, span.start);
+        self.note_unmodelled_schema_tables(&names, scope);
+    }
+
+    /// Bind every harvested name of an unmodelled statement that is a schema
+    /// table and nothing local to its default buffer.
+    ///
+    /// The harvest keeps the qualifier of `table.field`, so this sees both a
+    /// record (`UPDATE customer`) and a field (`PUT customer.name`). No read
+    /// is credited: the statement is not modelled, so neither is its access.
+    fn note_unmodelled_schema_tables(&mut self, names: &[Identifier], scope: ScopeId) {
+        if !self.ctx.schema_loaded {
+            return;
+        }
+        for id in names {
+            let local = self
+                .lookup_statement_ident(
+                    id,
+                    scope,
+                    &[
+                        NamespaceId::Values,
+                        NamespaceId::Buffers,
+                        NamespaceId::Tables,
+                    ],
+                )
+                .is_some();
+            if !local {
+                self.schema_default_buffer(id);
             }
         }
     }
@@ -5466,6 +5671,67 @@ fn strip_db_qualifier(name: &str) -> Option<&str> {
         return None;
     }
     Some(table)
+}
+
+/// The plain identifiers in `span` of `source`, up to a `:` or `.` that opens
+/// a block or ends the statement, minus those right after a `.`, `:` or `::`,
+/// so `customer.name` gives `customer` and `hbuf::name` gives `hbuf`.
+///
+/// For text the parser passes over: a `DEFINE FRAME` body, and the record
+/// phrases of a `FOR EACH` join, a `FIND ... OF` or a `CAN-FIND ... OF` that
+/// the AST does not keep. Callers pass the narrowest span they can, since
+/// lexing here costs as much per token as the file's own lexing.
+fn unmodelled_names(source: &str, span: Span) -> Vec<Identifier> {
+    let Some(text) = source.get(span.start as usize..span.end as usize) else {
+        return Vec::new();
+    };
+    header_names(oxabl_lexer::Lexer::new(text).peekable(), text, span.start)
+}
+
+/// [`unmodelled_names`] over the rest of `tokens`, lexed from `text`, which
+/// starts at `base` in the buffer.
+fn header_names(
+    mut tokens: std::iter::Peekable<oxabl_lexer::Lexer<'_>>,
+    text: &str,
+    base: u32,
+) -> Vec<Identifier> {
+    use oxabl_lexer::Kind;
+    let mut names = Vec::new();
+    let mut previous: Option<(Kind, usize)> = None;
+    while let Some(token) = tokens.next() {
+        if token.kind == Kind::Eof {
+            break;
+        }
+        if matches!(token.kind, Kind::Colon | Kind::Period)
+            && !tokens
+                .peek()
+                .is_some_and(|next| next.start == token.end && next.kind != Kind::Eof)
+        {
+            break;
+        }
+        let after_qualifier = previous.is_some_and(|(kind, end)| {
+            end == token.start && matches!(kind, Kind::Colon | Kind::DoubleColon | Kind::Period)
+        });
+        if token.kind == Kind::Identifier && !after_qualifier {
+            names.push(Identifier {
+                span: Span {
+                    start: base + token.start as u32,
+                    end: base + token.end as u32,
+                },
+                name: text[token.start..token.end].to_string(),
+            });
+        }
+        previous = Some((token.kind, token.end));
+    }
+    names
+}
+
+/// The part of `span` from `start` on, or an empty span when `start` is past it.
+fn after(span: Span, start: u32) -> Span {
+    Span {
+        start: start.clamp(span.start, span.end),
+        end: span.end,
+    }
 }
 
 fn identifier_span(id: &Identifier) -> VirtualSpan {

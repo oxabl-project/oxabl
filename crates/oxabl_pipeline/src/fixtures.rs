@@ -4209,6 +4209,101 @@ pub const FIXTURES: &[ParityFixture] = &[
             }),
         ],
     },
+    // Statements that name a schema table only as a record, never through a
+    // field: each depends on its table as surely as a field access does. One
+    // table per form, so a form that loses its edge fails the row.
+    ParityFixture {
+        name: "edges_record_only_tables",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "FIND FIRST _File NO-LOCK.\n\
+                 FIND LAST _Field NO-LOCK NO-ERROR.\n\
+                 CREATE _User.\n\
+                 DELETE _Sequence.\n\
+                 RELEASE _Db.\n\
+                 VALIDATE _View.\n\
+                 DEFINE QUERY q-area FOR _Area.\n\
+                 OPEN QUERY q-area FOR EACH _AreaExtent NO-LOCK.\n\
+                 DEFINE TEMP-TABLE tt-index NO-UNDO LIKE _Index.\n\
+                 DEFINE VARIABLE v-seq LIKE _Codepage._Codepage-Name NO-UNDO.\n\
+                 FOR EACH _File-Trig NO-LOCK, EACH _Field-Trig NO-LOCK:\n\
+                 END.\n\
+                 DO FOR _Collation:\n\
+                 END.\n\
+                 FIND FIRST _Index-Field OF _StorageObject NO-LOCK NO-ERROR.\n\
+                 EXPORT _Word-rule.\n\
+                 MESSAGE v-seq.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_area",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_areaextent",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_codepage",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_collation",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_db",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_field",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_field-trig",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_file",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_file-trig",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_index",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_index-field",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_sequence",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_storageobject",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_user",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_view",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_word-rule",
+            }),
+        ],
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
