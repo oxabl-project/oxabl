@@ -151,7 +151,6 @@ impl<'fs> Preprocessor<'fs> {
             predefined: &predefined.config,
             file_names: FileNames::new(name),
             sequence: 0,
-            global_vars: PreprocVarTable::new(),
             dependencies: Vec::new(),
             unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
@@ -166,9 +165,6 @@ impl<'fs> Preprocessor<'fs> {
         };
 
         let tree = ctx.process_source(file, source, 0, &[]);
-
-        // Merge global vars into the final var table
-        ctx.vars.merge_globals(&ctx.global_vars);
 
         if ctx
             .diagnostics
@@ -243,8 +239,6 @@ struct ProcessContext<'a> {
     file_names: FileNames<'a>,
     /// The next value of `{&SEQUENCE}`, shared by the whole compilation unit.
     sequence: u32,
-    /// Variables set via `&GLOBAL-DEFINE` — propagated back to parent.
-    global_vars: PreprocVarTable,
     dependencies: Vec<FileId>,
     /// Include references that named no locatable file — the symbol loss
     /// PREPROC007 reports, kept as data so a dependency edge set can report the
@@ -401,7 +395,6 @@ impl ProcessContext<'_> {
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
                                     self.vars.define_global(&name, &expanded);
-                                    self.global_vars.define_global(&name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -417,7 +410,6 @@ impl ProcessContext<'_> {
                                 }
                                 if emitting {
                                     self.vars.undefine(name);
-                                    self.global_vars.undefine(name);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -851,7 +843,7 @@ impl ProcessContext<'_> {
         for gap in &evaluation.gaps {
             match gap {
                 Gap::UnsetProversion => self.report_unknown_predefined("PROVERSION", site),
-                Gap::Unmodelled(what) => unmodelled.push(what.as_str()),
+                Gap::Unmodelled(what) | Gap::Invalid(what) => unmodelled.push(what.as_str()),
             }
         }
         if !unmodelled.is_empty() {
@@ -1502,10 +1494,9 @@ impl ProcessContext<'_> {
         self.file_names.pop();
         self.site_stack.pop();
 
-        // Restore vars (named args don't leak to parent)
-        // But preserve any &GLOBAL-DEFINE changes
+        // Restore vars (named args don't leak to parent), but keep what the
+        // include defined or undefined with `&GLOBAL-DEFINE` and `&UNDEFINE`
         self.vars.end_scope(scope);
-        self.vars.merge_globals(&self.global_vars);
 
         self.include_stack.remove(&path);
 
@@ -1546,7 +1537,8 @@ enum DirectiveKind {
 /// Returns `(name, value, end_offset)`. The value runs to EOL (or EOF), or to
 /// a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` so inline forms like
 /// `&IF … &THEN &SCOPED-DEFINE x 1 &ENDIF` leave the closer for the scanner
-/// (#65 follow-up / ADM2).
+/// (the ADM2 shape). A block comment still open at EOL runs on to its close,
+/// so the value then holds the lines of the comment too.
 fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let rest = &source[start..];
 
@@ -1580,23 +1572,11 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let mut value = String::new();
     loop {
         let line_start = i;
-        // Physical end of line (newline / EOF)
-        let mut line_end = i;
-        while line_end < rest.len()
-            && rest.as_bytes()[line_end] != b'\n'
-            && rest.as_bytes()[line_end] != b'\r'
-        {
-            line_end += 1;
-        }
-
-        // Truncate at same-line &ELSE / &ELSEIF / &ENDIF when present.
-        let boundary_rel =
-            find_same_line_if_boundary(source, start + line_start).map(|b| b - start);
-        let hit_boundary = boundary_rel.is_some_and(|b| b >= line_start && b < line_end);
-        let content_end = match boundary_rel {
-            Some(b) if hit_boundary => b,
-            _ => line_end,
-        };
+        // End of the line (newline / EOF), or a same-line &ELSE / &ELSEIF /
+        // &ENDIF, past any comment that the line leaves open.
+        let (end, hit_boundary) = define_text_end(source, start + line_start);
+        let content_end = end - start;
+        let line_end = content_end;
 
         let line = &rest[line_start..content_end];
         let trimmed = line.trim_end();
@@ -1637,6 +1617,54 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let _ = value_start;
 
     (name, value, start + i)
+}
+
+/// Where the text of a define that continues at `from` ends: the end of its line
+/// or EOF, or a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` (then the flag is set, and
+/// the closer is not part of the text). A block comment that is open at the end
+/// of the line runs on, over lines, to its close (comments nest), and the text
+/// ends at the end of the line that holds the close.
+fn define_text_end(source: &str, from: usize) -> (usize, bool) {
+    let bytes = source.as_bytes();
+    let mut pos = from;
+    loop {
+        let boundary = find_same_line_if_boundary(source, pos);
+        let eol = bytes[pos..]
+            .iter()
+            .position(|b| matches!(b, b'\n' | b'\r'))
+            .map_or(bytes.len(), |n| pos + n);
+        let end = boundary.unwrap_or(eol);
+        let Some(open) = block_comment_start(&source[pos..end]) else {
+            return (end, boundary.is_some());
+        };
+        pos = skip_comment(bytes, pos + open);
+    }
+}
+
+/// The offset of the first block comment in `text`, if any. A `/*` inside a
+/// string literal or after a `//` starts none.
+fn block_comment_start(text: &str) -> Option<usize> {
+    if !text.contains("/*") {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'"' | b'\'') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    // `~` escapes the next character.
+                    i += if bytes[i] == b'~' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => return Some(i),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => return None,
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Remove the comments from a define value: `/* */` (which nests) and `//` (to
@@ -2789,6 +2817,19 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_condition_is_false_so_else_and_elseif_are_taken() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF 1 > ? &THEN\nthen\n&ELSE\nelse\n&ENDIF\n\
+                      &IF ? &THEN\nthen\n&ELSEIF TRUE &THEN\nelseif\n&ENDIF\n\
+                      &IF NOT (1 > ?) &THEN\nthen\n&ELSE\nnot-else\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "else\nelseif\nnot-else\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
     fn the_database_functions_read_the_listed_databases_or_report_a_guess() {
         let fs = make_fs(&[]);
         let source = "&IF DBTYPE(\"ledger\") NE ? &THEN\nconnected\n&ELSE\nabsent\n&ENDIF\n";
@@ -2846,6 +2887,43 @@ mod tests {
     }
 
     #[test]
+    fn a_guess_beside_an_operand_that_settles_the_condition_is_not_reported() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF (TRUE OR SEARCH(\"a\") = 1) OR SEARCH(\"b\") = 1 &THEN\nfirst\n&ENDIF\n\
+                      &IF SEARCH(\"a\") = 1 OR TRUE &THEN\nsecond\n&ENDIF\n\
+                      &IF SEARCH(\"a\") = 1 AND FALSE &THEN\nwrong\n&ELSE\nthird\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "first\nsecond\nthird\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.text_losses.is_empty());
+    }
+
+    #[test]
+    fn a_syntax_error_beside_an_operand_that_settles_the_condition_is_reported() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        for condition in ["TRUE OR 1 +", "TRUE OR \"5\" = 5"] {
+            let source = format!("&IF {condition} &THEN\nthen\n&ENDIF\n");
+            let result = pp.process(FileId::new(1), &source).unwrap();
+
+            assert_eq!(&*result.to_text(), "then\n", "{condition}");
+            assert_eq!(result.diagnostics.len(), 1, "{condition}");
+            assert_eq!(result.diagnostics[0].code.0, "PREPROC010", "{condition}");
+            assert_eq!(
+                result
+                    .text_losses
+                    .iter()
+                    .map(|l| l.kind)
+                    .collect::<Vec<_>>(),
+                [TextLossKind::UnmodelledCondition],
+                "{condition}"
+            );
+        }
+    }
+
+    #[test]
     fn defined_tells_global_argument_and_scoped_names_apart() {
         let fs = make_fs(&[(
             "/inc/d.i",
@@ -2896,6 +2974,93 @@ mod tests {
         assert_eq!(&*result.to_text(), "[1][][x  y]\n");
     }
 
+    /// Only the end of the file can leave a comment open in a define value.
+    #[test]
+    fn a_comment_that_never_closes_runs_to_the_end_of_the_value() {
+        assert_eq!(strip_comments("x /* never closed"), "x");
+        assert_eq!(strip_comments("x /* a /* b */ still open"), "x");
+    }
+
+    #[test]
+    fn a_comment_open_at_the_end_of_a_define_line_runs_to_its_close() {
+        let fs = make_fs(&[("/inc/old.i", "included\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&GLOBAL-DEFINE x 5 /* retired:\n{old.i}\n*/\nDISPLAY {&x}.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "DISPLAY 5.\n");
+        assert!(result.dependencies.is_empty());
+        assert!(result.unresolved_includes.is_empty());
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn a_define_ends_at_the_next_newline_after_its_comment_closes() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        // The comment nests, the rest of the line after the close is part of the
+        // value (less its `//` comment), and a CRLF file reads the same.
+        for newline in ["\n", "\r\n"] {
+            let source = format!(
+                "&SCOPED-DEFINE y 1 /* a /* b{n} */ still open{n}*/ tail // z{n}[{{&y}}]{n}",
+                n = newline
+            );
+            let result = pp.process(FileId::new(1), &source).unwrap();
+            assert_eq!(&*result.to_text(), format!("[1  tail]{newline}"));
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        }
+    }
+
+    #[test]
+    fn a_define_comment_open_to_the_end_of_the_file_swallows_the_rest() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "keep\n&SCOPED-DEFINE e 1 /* open\nrest\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "keep\n");
+        assert_eq!(result.vars.get("e").map(|v| &**v), Some("1"));
+    }
+
+    #[test]
+    fn an_inline_closer_after_a_define_comment_still_closes_the_conditional() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE &THEN &SCOPED-DEFINE z 1 /* open\nclose */ &ENDIF\n[{&z}]\n\
+                      &IF TRUE &THEN &SCOPED-DEFINE w 2 /* &ENDIF\n*/\n[{&w}]\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[1]\n[2]\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn a_comment_marker_in_a_string_or_after_a_line_comment_opens_nothing() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE s \"a /* b\"\n[{&s}]\n\
+                      &SCOPED-DEFINE t 1 // see /*\n[{&t}]\n\
+                      &SCOPED-DEFINE u 'x~' /* y' /* c */\n[{&u}]\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[\"a /* b\"]\n[1]\n['x~' /* y']\n");
+    }
+
+    #[test]
+    fn a_define_body_reads_the_lines_of_an_open_comment() {
+        let source = " x 5 /* c\n{old.i}\n*/ tail\nnext";
+        let (name, value, end) = parse_define_body(source, 0);
+        assert_eq!(name, "x");
+        assert_eq!(value, "5 /* c\n{old.i}\n*/ tail");
+        assert_eq!(&source[end..], "next");
+
+        let source = " x 5 /* closed */ ~\n6\nnext";
+        let (_, value, end) = parse_define_body(source, 0);
+        assert_eq!(strip_comments(&value), "5  6");
+        assert_eq!(&source[end..], "next");
+    }
+
     #[test]
     fn comment_markers_in_a_define_string_stay() {
         assert_eq!(
@@ -2905,7 +3070,6 @@ mod tests {
         assert_eq!(strip_comments(r#"'a//b' /* c */ 'd'"#), "'a//b'  'd'");
         assert_eq!(strip_comments(r#""a~"//b" // c"#), r#""a~"//b""#);
         assert_eq!(strip_comments("plain"), "plain");
-        assert_eq!(strip_comments("x /* never closed"), "x");
         assert_eq!(strip_comments("\"unclosed // c"), "\"unclosed // c");
     }
 
@@ -3839,6 +4003,87 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "VER=42");
+    }
+
+    /// An include that defines nothing cannot change what a name means.
+    #[test]
+    fn an_empty_include_leaves_a_scoped_name_over_a_global_one() {
+        let fs = make_fs(&[
+            ("/inc/empty.i", ""),
+            ("/inc/s.i", "from-scoped\n"),
+            ("/inc/gfile.i", "from-global\n"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let run = |between: &str| {
+            let source = format!(
+                "&GLOBAL-DEFINE inc gfile.i\n&SCOPED-DEFINE inc s.i\n{between}\
+                 [{{&inc}}]\n{{{{&inc}}}}&IF DEFINED(inc) = 3 &THEN\nscoped-defined\n&ENDIF\n"
+            );
+            Preprocessor::new(&fs, &include_paths)
+                .process(FileId::new(1), &source)
+                .unwrap()
+        };
+
+        let without = run("");
+        let with = run("{empty.i}");
+        assert_eq!(&*without.to_text(), "[s.i]\nfrom-scoped\n");
+        assert_eq!(&*with.to_text(), &*without.to_text());
+        // The name is a global and a scoped one, so DEFINED is a guess either way.
+        assert_eq!(with.diagnostics.len(), without.diagnostics.len());
+        assert_eq!(
+            with.text_losses.iter().map(|l| l.kind).collect::<Vec<_>>(),
+            without
+                .text_losses
+                .iter()
+                .map(|l| l.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_nested_include_leaves_an_argument_over_a_global_name() {
+        let fs = make_fs(&[("/inc/outer.i", "{empty.i}[{&a}]"), ("/inc/empty.i", "")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&GLOBAL-DEFINE a global\n{outer.i &a=argument}[{&a}]";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[argument][global]");
+    }
+
+    #[test]
+    fn a_global_from_a_nested_include_reaches_every_caller_that_does_not_shadow_it() {
+        let fs = make_fs(&[
+            ("/inc/outer.i", "{inner.i}[{&g}]"),
+            (
+                "/inc/inner.i",
+                "&GLOBAL-DEFINE g global\n&GLOBAL-DEFINE h global\n",
+            ),
+            ("/inc/shadow.i", "&SCOPED-DEFINE g scoped\n{inner.i}[{&g}]"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{outer.i}[{&g}][{&h}]\n{shadow.i}[{&g}]";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(
+            &*result.to_text(),
+            "[global][global][global]\n[scoped][global]"
+        );
+    }
+
+    #[test]
+    fn a_global_undefined_in_an_include_stays_undefined() {
+        let fs = make_fs(&[("/inc/undef.i", "&UNDEFINE g\n&UNDEFINE s\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&GLOBAL-DEFINE g 1\n&SCOPED-DEFINE s 1\n{undef.i}\
+                      &IF DEFINED(g) = 0 &THEN\ng-undefined\n&ENDIF\n\
+                      &IF DEFINED(s) = 3 &THEN\ns-kept\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "g-undefined\ns-kept\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 
     #[test]
