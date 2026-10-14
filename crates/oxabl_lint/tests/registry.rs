@@ -69,7 +69,7 @@ fn registry_with_strict_rule() -> Registry {
 }
 
 #[test]
-fn the_builtin_registry_enumerates_every_default_rule_with_metadata() {
+fn the_builtin_registry_enumerates_every_rule_with_metadata() {
     let registry = Registry::builtin();
     let rules: Vec<(&str, &str, &str, Severity)> = registry
         .rules()
@@ -78,43 +78,67 @@ fn the_builtin_registry_enumerates_every_default_rule_with_metadata() {
             (m.code, m.name, m.group, m.default_severity)
         })
         .collect();
+    let error = Severity::Error;
+    let warning = Severity::Warning;
     assert_eq!(
         rules,
         [
-            ("LINT0001", "undefined-symbol", "default", Severity::Error),
-            ("LINT0002", "unused-variable", "default", Severity::Warning),
-            (
-                "LINT0003",
-                "unknown-table-or-field",
-                "default",
-                Severity::Warning
-            ),
-            (
-                "LINT0004",
-                "type-mismatch-assignment",
-                "default",
-                Severity::Warning
-            ),
+            ("LINT0001", "undefined-symbol", "default", error),
+            ("LINT0002", "unused-variable", "default", warning),
+            ("LINT0003", "unknown-table-or-field", "default", warning),
+            ("LINT0004", "type-mismatch-assignment", "default", warning),
             (
                 "LINT0005",
                 "block-var-used-outside",
                 "default",
                 Severity::Info
             ),
-            (
-                "LINT0006",
-                "assigned-but-never-read",
-                "default",
-                Severity::Warning
-            ),
+            ("LINT0006", "assigned-but-never-read", "default", warning),
+            ("CL001", "run-value", "strict.calls", warning),
+            ("CL002", "dynamic-invoke", "strict.calls", warning),
+            ("CL005", "shared-state", "strict.calls", warning),
+            ("TX006", "missing-no-undo", "strict.transactions", warning),
         ]
     );
-    assert!(
-        registry
-            .rules()
-            .all(|r| r.meta().stability == Stability::Stable)
-    );
-    assert!(registry.rules().all(|r| !r.meta().description.is_empty()));
+    for rule in registry.rules() {
+        let m = rule.meta();
+        let strict = m.group.starts_with("strict.");
+        assert!(!m.description.is_empty(), "{}", m.code);
+        assert_eq!(m.context_free, strict, "{}", m.code);
+        let stability = if strict {
+            Stability::Preview
+        } else {
+            Stability::Stable
+        };
+        assert_eq!(m.stability, stability, "{}", m.code);
+    }
+}
+
+#[test]
+fn the_strict_rules_run_only_when_their_group_or_rule_is_enabled() {
+    let source = "DEFINE VARIABLE c AS CHARACTER NO-UNDO INITIAL \"x.p\".\n\
+                  RUN VALUE(c).\nDEFINE VARIABLE v AS INTEGER.\nMESSAGE v.\n";
+    let registry = Registry::builtin();
+    let strict = |map| -> Vec<&str> {
+        run(&registry, source, map)
+            .into_iter()
+            .map(|(c, _)| c)
+            .filter(|c| !c.starts_with("LINT"))
+            .collect()
+    };
+    assert!(strict(LintSeverityMap::new()).is_empty());
+
+    let mut calls = LintSeverityMap::new();
+    calls.base_mut().enable_group("strict.calls");
+    assert_eq!(strict(calls), ["CL001"]);
+
+    let mut all = LintSeverityMap::new();
+    all.base_mut().enable_group("strict");
+    assert_eq!(strict(all), ["CL001", "TX006"]);
+
+    let mut by_name = LintSeverityMap::new();
+    by_name.set("missing-no-undo", Some(Severity::Error));
+    assert_eq!(strict(by_name), ["TX006"]);
 }
 
 #[test]

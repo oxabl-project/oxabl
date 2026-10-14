@@ -9,8 +9,9 @@ use oxabl_common::{Diagnostic, LintRuleRef, LintSeverityMap, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
-    LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, assigned_but_never_read,
-    block_var_used_outside, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
+    CL001, CL002, CL005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, TX006,
+    assigned_but_never_read, block_var_used_outside, dynamic_invoke, missing_no_undo, run_value,
+    shared_state, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
     unused_variable,
 };
 
@@ -61,6 +62,10 @@ pub struct RuleMeta {
     /// Whether the rule needs the whole compilation unit, so it is skipped on
     /// an include fragment opened without its includer.
     pub requires_compilation_unit: bool,
+    /// Whether the rule's answer depends only on the tokens of the file a
+    /// finding sits in, not on the code around an include. A context-free
+    /// finding inside an include can be reported once, in the include.
+    pub context_free: bool,
 }
 
 impl RuleMeta {
@@ -80,6 +85,7 @@ impl RuleMeta {
             default_severity: Severity::Warning,
             stability: Stability::Stable,
             requires_compilation_unit: false,
+            context_free: false,
         }
     }
 
@@ -92,6 +98,12 @@ impl RuleMeta {
     /// Set the stability.
     pub const fn with_stability(mut self, stability: Stability) -> Self {
         self.stability = stability;
+        self
+    }
+
+    /// Mark the rule as context-free.
+    pub const fn context_free(mut self) -> Self {
+        self.context_free = true;
         self
     }
 
@@ -259,7 +271,58 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         .requiring_compilation_unit(),
         assigned_but_never_read::run,
     ),
+    strict_rule(
+        CL001,
+        run_value::NAME,
+        run_value::GROUP,
+        run_value::DESCRIPTION,
+        run_value::DEFAULT_SEVERITY,
+        run_value::run,
+    ),
+    strict_rule(
+        CL002,
+        dynamic_invoke::NAME,
+        dynamic_invoke::GROUP,
+        dynamic_invoke::DESCRIPTION,
+        dynamic_invoke::DEFAULT_SEVERITY,
+        dynamic_invoke::run,
+    ),
+    strict_rule(
+        CL005,
+        shared_state::NAME,
+        shared_state::GROUP,
+        shared_state::DESCRIPTION,
+        shared_state::DEFAULT_SEVERITY,
+        shared_state::run,
+    ),
+    strict_rule(
+        TX006,
+        missing_no_undo::NAME,
+        missing_no_undo::GROUP,
+        missing_no_undo::DESCRIPTION,
+        missing_no_undo::DEFAULT_SEVERITY,
+        missing_no_undo::run,
+    ),
 ];
+
+/// A syntactic strict rule: context-free, and in preview until its
+/// false-positive rate on a real corpus is measured.
+const fn strict_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    run: RuleFn,
+) -> FnRule {
+    FnRule::new(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free(),
+        run,
+    )
+}
 
 /// Why a rule or group could not be registered.
 #[derive(Debug, Clone, PartialEq, Eq)]
