@@ -3045,6 +3045,63 @@ mod tests {
     }
 
     #[test]
+    fn file_name_follows_the_include_being_expanded() {
+        let fs = make_fs(&[
+            ("/inc/outer.i", "[{&FILE-NAME}{in/deeper.i}{&FILE-NAME}]"),
+            ("/inc/in/deeper.i", "<{&FILE-NAME}>"),
+            ("/inc/b.i", "({&FILE-NAME})"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{outer.i}{b.i}{&FILE-NAME}";
+        let result = pp.process_named(FileId::new(1), "r.p", source).unwrap();
+        assert_eq!(&*result.to_text(), "[outer.i<in/deeper.i>outer.i](b.i)r.p");
+    }
+
+    #[test]
+    fn a_condition_mixes_defined_and_computed_names() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE x 1\n\n\
+                      &IF {&x} = 1 AND {&LINE-NUMBER} = 3 AND {&SEQUENCE} = 0 &THEN\n\
+                      yes\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "\nyes\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_condition_without_a_computed_name_is_not_rewritten() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let result = pp
+            .process(
+                FileId::new(1),
+                "&IF \"{&OPSYS}\" = \"UNIX\" &THEN\nunix\n&ENDIF\n",
+            )
+            .unwrap();
+        assert_eq!(&*result.to_text(), "unix\n");
+    }
+
+    #[test]
+    fn positional_references_in_a_condition_are_expanded_only_when_there_are_some() {
+        let args = vec!["file.i".to_string(), "7".to_string()];
+        assert!(matches!(
+            expand_positional_refs("{&x} = 1 and {y}", &args),
+            Cow::Borrowed(_)
+        ));
+        assert_eq!(expand_positional_refs("{1} = {2} {9}", &args), "7 =  ");
+        assert_eq!(expand_positional_refs("{&x} {1}", &args), "{&x} 7");
+    }
+
+    #[test]
+    fn a_value_keeps_its_text_when_it_holds_no_comment() {
+        assert_eq!(strip_comments_owned("a / b".to_string()), "a / b");
+        assert_eq!(strip_comments_owned("a /* c */ b".to_string()), "a  b");
+        assert_eq!(strip_comments_owned("a // c".to_string()), "a");
+    }
+
+    #[test]
     fn nested_include() {
         let fs = make_fs(&[
             ("/inc/outer.i", "OUTER-{inner.i}-END"),

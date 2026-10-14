@@ -1363,6 +1363,24 @@ mod tests {
     }
 
     #[test]
+    fn expand_refs_leaves_text_without_a_reference_alone() {
+        let vars = vars_with(&[("x", "hello")]);
+        assert!(matches!(
+            expand_refs("{x} = 1 {", &vars),
+            Cow::Borrowed("{x} = 1 {")
+        ));
+        assert_eq!(expand_refs("{&x", &vars), "{&x");
+    }
+
+    #[test]
+    fn find_var_ref_finds_the_first_reference() {
+        assert_eq!(find_var_ref("a {&b} {&c}"), Some(2));
+        assert_eq!(find_var_ref("{{&b}}"), Some(1));
+        assert_eq!(find_var_ref("{b} { &c} &{"), None);
+        assert_eq!(find_var_ref(""), None);
+    }
+
+    #[test]
     fn expand_refs_missing() {
         assert_eq!(expand_refs("{&missing}", &PreprocVarTable::new()), "");
     }
