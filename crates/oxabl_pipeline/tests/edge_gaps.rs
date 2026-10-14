@@ -381,6 +381,21 @@ fn an_unclosed_generic_bracket_degrades_the_set_but_keeps_later_edges() {
 }
 
 #[test]
+fn an_include_inside_a_define_comment_that_spans_lines_is_no_edge() {
+    let edges =
+        run_set("&GLOBAL-DEFINE x 5 /* retired:\n{procs.i}\n*/\nDISPLAY {&x}.\nRUN sub.p.\n");
+
+    assert_eq!(edges.of_kind(EdgeKind::DirectInclude).count(), 0);
+    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+    assert!(
+        edges.unresolved().is_empty(),
+        "got {:?}",
+        edges.unresolved()
+    );
+    assert_eq!(edges.completeness(), &Completeness::Complete);
+}
+
+#[test]
 fn a_run_through_a_handle_is_neither_an_edge_nor_a_row() {
     // `sub` is a real file beside the handle calls, so a lookup by name would
     // link it.

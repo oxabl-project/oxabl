@@ -1537,7 +1537,8 @@ enum DirectiveKind {
 /// Returns `(name, value, end_offset)`. The value runs to EOL (or EOF), or to
 /// a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` so inline forms like
 /// `&IF … &THEN &SCOPED-DEFINE x 1 &ENDIF` leave the closer for the scanner
-/// (#65 follow-up / ADM2).
+/// (the ADM2 shape). A block comment still open at EOL runs on to its close,
+/// so the value then holds the lines of the comment too.
 fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let rest = &source[start..];
 
@@ -1571,23 +1572,11 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let mut value = String::new();
     loop {
         let line_start = i;
-        // Physical end of line (newline / EOF)
-        let mut line_end = i;
-        while line_end < rest.len()
-            && rest.as_bytes()[line_end] != b'\n'
-            && rest.as_bytes()[line_end] != b'\r'
-        {
-            line_end += 1;
-        }
-
-        // Truncate at same-line &ELSE / &ELSEIF / &ENDIF when present.
-        let boundary_rel =
-            find_same_line_if_boundary(source, start + line_start).map(|b| b - start);
-        let hit_boundary = boundary_rel.is_some_and(|b| b >= line_start && b < line_end);
-        let content_end = match boundary_rel {
-            Some(b) if hit_boundary => b,
-            _ => line_end,
-        };
+        // End of the line (newline / EOF), or a same-line &ELSE / &ELSEIF /
+        // &ENDIF, past any comment that the line leaves open.
+        let (end, hit_boundary) = define_text_end(source, start + line_start);
+        let content_end = end - start;
+        let line_end = content_end;
 
         let line = &rest[line_start..content_end];
         let trimmed = line.trim_end();
@@ -1628,6 +1617,54 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
     let _ = value_start;
 
     (name, value, start + i)
+}
+
+/// Where the text of a define that continues at `from` ends: the end of its line
+/// or EOF, or a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` (then the flag is set, and
+/// the closer is not part of the text). A block comment that is open at the end
+/// of the line runs on, over lines, to its close (comments nest), and the text
+/// ends at the end of the line that holds the close.
+fn define_text_end(source: &str, from: usize) -> (usize, bool) {
+    let bytes = source.as_bytes();
+    let mut pos = from;
+    loop {
+        let boundary = find_same_line_if_boundary(source, pos);
+        let eol = bytes[pos..]
+            .iter()
+            .position(|b| matches!(b, b'\n' | b'\r'))
+            .map_or(bytes.len(), |n| pos + n);
+        let end = boundary.unwrap_or(eol);
+        let Some(open) = block_comment_start(&source[pos..end]) else {
+            return (end, boundary.is_some());
+        };
+        pos = skip_comment(bytes, pos + open);
+    }
+}
+
+/// The offset of the first block comment in `text`, if any. A `/*` inside a
+/// string literal or after a `//` starts none.
+fn block_comment_start(text: &str) -> Option<usize> {
+    if !text.contains("/*") {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'"' | b'\'') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    // `~` escapes the next character.
+                    i += if bytes[i] == b'~' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => return Some(i),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => return None,
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Remove the comments from a define value: `/* */` (which nests) and `//` (to
@@ -2900,6 +2937,93 @@ mod tests {
         assert_eq!(&*result.to_text(), "[1][][x  y]\n");
     }
 
+    /// Only the end of the file can leave a comment open in a define value.
+    #[test]
+    fn a_comment_that_never_closes_runs_to_the_end_of_the_value() {
+        assert_eq!(strip_comments("x /* never closed"), "x");
+        assert_eq!(strip_comments("x /* a /* b */ still open"), "x");
+    }
+
+    #[test]
+    fn a_comment_open_at_the_end_of_a_define_line_runs_to_its_close() {
+        let fs = make_fs(&[("/inc/old.i", "included\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&GLOBAL-DEFINE x 5 /* retired:\n{old.i}\n*/\nDISPLAY {&x}.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "DISPLAY 5.\n");
+        assert!(result.dependencies.is_empty());
+        assert!(result.unresolved_includes.is_empty());
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn a_define_ends_at_the_next_newline_after_its_comment_closes() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        // The comment nests, the rest of the line after the close is part of the
+        // value (less its `//` comment), and a CRLF file reads the same.
+        for newline in ["\n", "\r\n"] {
+            let source = format!(
+                "&SCOPED-DEFINE y 1 /* a /* b{n} */ still open{n}*/ tail // z{n}[{{&y}}]{n}",
+                n = newline
+            );
+            let result = pp.process(FileId::new(1), &source).unwrap();
+            assert_eq!(&*result.to_text(), format!("[1  tail]{newline}"));
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        }
+    }
+
+    #[test]
+    fn a_define_comment_open_to_the_end_of_the_file_swallows_the_rest() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "keep\n&SCOPED-DEFINE e 1 /* open\nrest\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "keep\n");
+        assert_eq!(result.vars.get("e").map(|v| &**v), Some("1"));
+    }
+
+    #[test]
+    fn an_inline_closer_after_a_define_comment_still_closes_the_conditional() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF TRUE &THEN &SCOPED-DEFINE z 1 /* open\nclose */ &ENDIF\n[{&z}]\n\
+                      &IF TRUE &THEN &SCOPED-DEFINE w 2 /* &ENDIF\n*/\n[{&w}]\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[1]\n[2]\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn a_comment_marker_in_a_string_or_after_a_line_comment_opens_nothing() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE s \"a /* b\"\n[{&s}]\n\
+                      &SCOPED-DEFINE t 1 // see /*\n[{&t}]\n\
+                      &SCOPED-DEFINE u 'x~' /* y' /* c */\n[{&u}]\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[\"a /* b\"]\n[1]\n['x~' /* y']\n");
+    }
+
+    #[test]
+    fn a_define_body_reads_the_lines_of_an_open_comment() {
+        let source = " x 5 /* c\n{old.i}\n*/ tail\nnext";
+        let (name, value, end) = parse_define_body(source, 0);
+        assert_eq!(name, "x");
+        assert_eq!(value, "5 /* c\n{old.i}\n*/ tail");
+        assert_eq!(&source[end..], "next");
+
+        let source = " x 5 /* closed */ ~\n6\nnext";
+        let (_, value, end) = parse_define_body(source, 0);
+        assert_eq!(strip_comments(&value), "5  6");
+        assert_eq!(&source[end..], "next");
+    }
+
     #[test]
     fn comment_markers_in_a_define_string_stay() {
         assert_eq!(
@@ -2909,7 +3033,6 @@ mod tests {
         assert_eq!(strip_comments(r#"'a//b' /* c */ 'd'"#), "'a//b'  'd'");
         assert_eq!(strip_comments(r#""a~"//b" // c"#), r#""a~"//b""#);
         assert_eq!(strip_comments("plain"), "plain");
-        assert_eq!(strip_comments("x /* never closed"), "x");
         assert_eq!(strip_comments("\"unclosed // c"), "\"unclosed // c");
     }
 
