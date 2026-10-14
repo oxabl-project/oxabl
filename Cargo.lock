@@ -1029,6 +1029,7 @@ name = "oxabl_common"
 version = "1.1.0"
 dependencies = [
  "codspeed-criterion-compat",
+ "glob",
  "oxabl_ast",
  "serde",
  "serde_json",
