@@ -276,7 +276,11 @@ fn check_warns_on_an_unknown_lint_name_and_keeps_the_rest_of_the_table() {
 
     let (exit, _stdout, stderr) = run(&[s("check"), s("--no-format"), file.as_os_str()]);
 
-    assert_eq!(exit, Some(0), "the switched-off finding stays off: {stderr}");
+    assert_eq!(
+        exit,
+        Some(0),
+        "the switched-off finding stays off: {stderr}"
+    );
     assert!(
         stderr.contains("warning: lint: unknown rule `future-rule`"),
         "{stderr}"
