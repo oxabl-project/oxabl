@@ -68,6 +68,8 @@ mod reverse;
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult};
+// Re-exported so a consumer of `LintResult::include_origin` can name its rows.
+pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{
     Position, ResolvedSpan, resolve_diagnostic, resolve_file_span, resolve_offset, resolve_offsets,
 };
