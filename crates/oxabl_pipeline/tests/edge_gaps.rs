@@ -648,3 +648,88 @@ fn completeness_and_degraded_reasons_are_non_exhaustive() {
     assert!(trusted(&Completeness::Complete));
     assert_eq!(tag(&DegradedReason::ParseRecovered), "parse");
 }
+
+/// The class edges and the unresolved rows of `/proj/<file>` over `siblings`, as
+/// `(kind, key)` pairs and `(name, reason)` pairs.
+fn class_rows(
+    file: &str,
+    source: &str,
+    siblings: &[(&str, &str)],
+) -> (Vec<String>, Vec<(String, UnresolvedReason)>) {
+    let mut fs = InMemoryFileSystem::new();
+    for (path, text) in siblings {
+        fs.insert(PathBuf::from(format!("/proj/{path}")), *text);
+    }
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let edges = run
+        .with_file(format!("/proj/{file}"))
+        .edge_set(source)
+        .expect("edge set");
+    let targets = edges
+        .of_kind(EdgeKind::ClassReference)
+        .map(|edge| edge.target.key().to_string())
+        .collect();
+    let rows = edges
+        .unresolved()
+        .iter()
+        .filter(|row| row.kind == EdgeKind::ClassReference)
+        .map(|row| (row.name.to_string(), row.reason))
+        .collect();
+    (targets, rows)
+}
+
+const GONE_ROW: (&str, UnresolvedReason) = ("lib.gone", UnresolvedReason::AbsentFromWorkspace);
+
+fn assert_gone_row(rows: &[(String, UnresolvedReason)]) {
+    assert!(
+        rows.iter()
+            .any(|(name, reason)| (name.as_str(), *reason) == GONE_ROW),
+        "got {rows:?}"
+    );
+}
+
+#[test]
+fn an_explicit_using_beside_a_shipped_wildcard_keeps_a_header_miss() {
+    let (_, rows) = class_rows(
+        "A.cls",
+        "USING Progress.Lang.*.\nUSING lib.Gone.\nCLASS A INHERITS Gone:\nEND CLASS.\n",
+        &[],
+    );
+    assert_gone_row(&rows);
+}
+
+#[test]
+fn an_explicit_using_beside_a_shipped_wildcard_keeps_a_type_site_miss() {
+    let (_, rows) = class_rows(
+        "p.p",
+        "USING Progress.Lang.*.\nUSING lib.Gone.\n\
+         DEFINE VARIABLE g AS Gone NO-UNDO.\ng = NEW Gone().\n",
+        &[],
+    );
+    assert_gone_row(&rows);
+}
+
+#[test]
+fn an_explicit_using_beside_a_shipped_wildcard_keeps_a_parents_header_miss() {
+    let (targets, rows) = class_rows(
+        "C.cls",
+        "CLASS C INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
+        &[(
+            "pkg/Mid.cls",
+            "USING OpenEdge.Core.*.\nUSING lib.Gone.\nCLASS pkg.Mid INHERITS Gone:\nEND CLASS.\n",
+        )],
+    );
+    assert_eq!(targets, ["pkg.mid"]);
+    assert_gone_row(&rows);
+}
+
+#[test]
+fn an_explicit_using_of_a_shipped_class_beside_a_wildcard_records_nothing() {
+    let (_, rows) = class_rows(
+        "A.cls",
+        "USING lib.*.\nUSING Progress.Lang.Object.\nCLASS A INHERITS Object:\nEND CLASS.\n",
+        &[],
+    );
+    assert!(rows.is_empty(), "got {rows:?}");
+}
