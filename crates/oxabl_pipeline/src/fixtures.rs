@@ -2659,6 +2659,30 @@ pub const FIXTURES: &[ParityFixture] = &[
         target: "orders.calc-base",
         withheld: "orders.calc-base",
     },
+    // The parameter type of a function prototype. A `FORWARD` is also covered by
+    // the definition that follows it; `IN SUPER` has none.
+    class_site_row! {
+        name: "class_site_prototype_param_forward",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "FUNCTION use-calc RETURNS LOGICAL (INPUT p-calc AS orders.calc-base) FORWARD.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
+    class_site_row! {
+        name: "class_site_prototype_param_in_super",
+        root_file: "report.p",
+        siblings: CALC_BASE_SIBLING,
+        resolutions: SILENT,
+        source: "FUNCTION use-calc RETURNS LOGICAL (INPUT p-calc AS orders.calc-base) IN SUPER.\n",
+        diagnostics: &[],
+        needs: &[],
+        target: "orders.calc-base",
+        withheld: "orders.calc-base",
+    },
     // A property's declared type.
     class_site_row! {
         name: "class_site_property_type",

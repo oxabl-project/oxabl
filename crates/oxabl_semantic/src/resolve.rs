@@ -2431,9 +2431,25 @@ impl<'a> ResolveWalker<'a> {
                 name,
                 return_type,
                 body,
-                ..
+                prototype_parameters,
             } => {
                 self.note_data_type(return_type, scope, identifier_span(name));
+                // A prototype has no scope to bind them in, but the compiler
+                // resolves their types all the same.
+                for param in prototype_parameters {
+                    if let StatementKind::DefineParameter {
+                        param_type:
+                            ParameterType::Variable {
+                                name,
+                                type_source: TypeSource::Explicit(dt),
+                                ..
+                            },
+                        ..
+                    } = &param.kind
+                    {
+                        self.note_data_type(dt, scope, identifier_span(name));
+                    }
+                }
                 if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
                     self.walk_block(body, fs);
                 }

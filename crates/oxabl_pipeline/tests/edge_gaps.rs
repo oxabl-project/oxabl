@@ -813,3 +813,23 @@ fn a_shipped_name_a_parent_wrote_in_full_stays_quiet_beside_an_unseen_import() {
         assert!(rows.is_empty(), "{head:?} INHERITS {parent}: got {rows:?}");
     }
 }
+
+#[test]
+fn a_function_prototypes_parameter_types_are_class_sites() {
+    for tail in ["FORWARD", "IN SUPER", "IN h"] {
+        let found = format!("FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Thing) {tail}.\n");
+        let (targets, rows) = class_rows(
+            "p.p",
+            &found,
+            &[("pkg/Thing.cls", "CLASS pkg.Thing:\nEND CLASS.\n")],
+        );
+        assert_eq!(targets, ["pkg.thing"], "{tail}: got {rows:?}");
+
+        let lost = format!("FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Gone) {tail}.\n");
+        let (_, rows) = class_rows("p.p", &lost, &[]);
+        assert!(
+            has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+            "{tail}: got {rows:?}"
+        );
+    }
+}
