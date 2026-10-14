@@ -1056,7 +1056,19 @@ impl ProcessContext<'_> {
             // We store it as a new source entry.
             let expanded_id = self.next_file_id();
             let val_len = val.len() as u32;
-            self.sources.push((expanded_id, val.clone()));
+            // A value holding `{file.i}` includes that file where it is
+            // referenced, as the AVM does. A name already being expanded is
+            // left as text, so a value that names itself ends.
+            let rescan = val_len > 0
+                && depth < MAX_INCLUDE_DEPTH
+                && holds_include_ref(&val)
+                && !self
+                    .expanding_vars
+                    .iter()
+                    .any(|open| open.eq_ignore_ascii_case(var_name));
+            // The rescan reads the value while `self.sources` owns it.
+            let rescan_text = rescan.then(|| Arc::clone(&val));
+            self.sources.push((expanded_id, val));
 
             if val_len > 0 {
                 let site = FileSpan {
@@ -1066,19 +1078,10 @@ impl ProcessContext<'_> {
                         end: ref_end as u32,
                     },
                 };
-                // A value holding `{file.i}` includes that file where it is
-                // referenced, as the AVM does. A name already being expanded is
-                // left as text, so a value that names itself ends.
-                let rescan = depth < MAX_INCLUDE_DEPTH
-                    && holds_include_ref(&val)
-                    && !self
-                        .expanding_vars
-                        .iter()
-                        .any(|open| open.eq_ignore_ascii_case(var_name));
-                let children = if rescan {
+                let children = if let Some(text) = rescan_text {
                     self.expanding_vars.push(var_name.to_string());
                     self.site_stack.push(site);
-                    let children = self.process_source(expanded_id, &val, depth + 1, &[]);
+                    let children = self.process_source(expanded_id, &text, depth + 1, &[]);
                     self.site_stack.pop();
                     self.expanding_vars.pop();
                     children
