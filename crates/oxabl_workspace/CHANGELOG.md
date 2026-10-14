@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v1.0.3...oxabl_workspace-v2.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **workspace:** PreprocessorConfig has two new public fields, databases and database_types, so a struct literal that names every field no longer compiles. Build it with `..PreprocessorConfig::default()`.
+* **workspace:** LintConfig is no longer Copy and its six fields are replaced by settings (enable, disable, rules) and overrides. set_by_name is replaced by set_rule. LintConfig::default() configures nothing; default severities come from the rule registry.
+* **workspace:** PipelineConfig gains the public run_extensions field.
+* **workspace:** WorkspaceSection gains the public preprocessor field.
+
+### Features
+
+* **cli:** check context-free strict rules in the include files of a walked tree ([7b931f0](https://github.com/oxabl-project/oxabl/commit/7b931f0770f0149ff22c6f0c35658085682797c5))
+* **workspace:** add the [workspace.preprocessor] table ([e6ec64c](https://github.com/oxabl-project/oxabl/commit/e6ec64ce71b20259773cd61f2224f70f6839d19f)), closes [#216](https://github.com/oxabl-project/oxabl/issues/216)
+* **workspace:** configure lint groups and per-directory overrides ([df7caab](https://github.com/oxabl-project/oxabl/commit/df7caab473d4d5749ff37282371f406c33f5ee9d))
+* **workspace:** configure the extension order for an extensionless RUN ([77c1e5f](https://github.com/oxabl-project/oxabl/commit/77c1e5fdf2dfee4b9264122c8f838310a2af0bc1))
+* **workspace:** list the connected databases in [workspace.preprocessor] ([5a6f721](https://github.com/oxabl-project/oxabl/commit/5a6f721de461f6bb48f811707f65a4dff3992ee8))
+
+
+### Bug Fixes
+
+* **index:** probe every spelling of a run extension and normalize hand-built lists ([94ec29a](https://github.com/oxabl-project/oxabl/commit/94ec29a841e850330176b05130b55b5e14c3d045))
+* **lint:** rank group toggles below rule settings and warn on an override with no files ([e31d5f8](https://github.com/oxabl-project/oxabl/commit/e31d5f8295aebeb94fbaff09a1106f185b38ed73))
+* **preprocessor:** close the last silent branch choices in &IF evaluation ([5d9fc53](https://github.com/oxabl-project/oxabl/commit/5d9fc53be1ad38b960e3dbf06a070a4843cc154e))
+* **preprocessor:** evaluate the functions an &IF names, or say it guessed ([026e29e](https://github.com/oxabl-project/oxabl/commit/026e29e4fc9fff19a17ace4b872f2210d15129da))
+* **preprocessor:** treat a database list inferred from schema files as partial ([c26de87](https://github.com/oxabl-project/oxabl/commit/c26de8751a8a8af649c800503e79f9c8e8eb7da1))
+* **preprocessor:** treat LDBNAME and DBTYPE of DICTDB as a gap under an inferred database list ([4f9e563](https://github.com/oxabl-project/oxabl/commit/4f9e5635008d93acbf1433aa68e6e906f3fbf05c))
+* **workspace:** validate run_extensions at config load ([df81dd9](https://github.com/oxabl-project/oxabl/commit/df81dd992aeb3a7bad07fadabdfb5ec46b5106e1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+
 ## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v1.0.2...oxabl_workspace-v1.0.3) (2026-09-21)
 
 

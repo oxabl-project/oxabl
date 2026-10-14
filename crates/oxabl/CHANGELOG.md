@@ -1,5 +1,61 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v1.1.4...oxabl-v2.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** oxabl_semantic::ClassDescriptor (re-exported by oxabl) has a new public field, imports, so struct literals need it. A new public type, ImportContext, is exported from both crates.
+* **preprocessor:** PipelineConfig gains the public preprocessor field.
+
+### Features
+
+* **cli:** add check --baseline and --update-baseline ([73f052a](https://github.com/oxabl-project/oxabl/commit/73f052a841c3a6548207dab4dcafbdcdb5d17a2e))
+* **cli:** check context-free strict rules in the include files of a walked tree ([7b931f0](https://github.com/oxabl-project/oxabl/commit/7b931f0770f0149ff22c6f0c35658085682797c5))
+* **lint:** register CL001, CL002, CL005 and TX006 in their strict groups ([714834e](https://github.com/oxabl-project/oxabl/commit/714834e13ebb313b70c94ca7dc1438215304e3c4))
+* **oxabl:** re-export the lint rule registry and lint config types ([4596422](https://github.com/oxabl-project/oxabl/commit/45964228e01e18c33747cf19f5438700c6263101))
+* **pipeline:** apply lint overrides per file and warn on unknown names ([e65a26e](https://github.com/oxabl-project/oxabl/commit/e65a26e0e9e68a64895dfe032639c77cbb40f281))
+* **preprocessor:** answer the AVM's predefined names ([d996c49](https://github.com/oxabl-project/oxabl/commit/d996c49d821b7e086a4e0dfb691962e3f4c6bd8f)), closes [#216](https://github.com/oxabl-project/oxabl/issues/216)
+
+
+### Bug Fixes
+
+* **cli:** check a directory that holds only include files ([2090fd4](https://github.com/oxabl-project/oxabl/commit/2090fd449f29617a866339da6b75eb8a97792039))
+* **cli:** key baseline paths through the file system ([8a67412](https://github.com/oxabl-project/oxabl/commit/8a67412855655128183d5194df2607ebcac6300f))
+* **cli:** make baseline keys survive keyword case and path spelling ([c7ce879](https://github.com/oxabl-project/oxabl/commit/c7ce879b8d27b6dff26a76d683ff2568a3469975))
+* **lint:** lower only the findings an includer can change ([4e29dbc](https://github.com/oxabl-project/oxabl/commit/4e29dbc0cf283ae44d61891eb1b44173b0ca53de))
+* **lint:** lower the confidence of includer-dependent fragment findings ([4fcec91](https://github.com/oxabl-project/oxabl/commit/4fcec91f4528a01993297ec2456a7555bd969046))
+* **preprocessor:** evaluate the functions an &IF names, or say it guessed ([026e29e](https://github.com/oxabl-project/oxabl/commit/026e29e4fc9fff19a17ace4b872f2210d15129da))
+* **preprocessor:** expand include references with whitespace inside the braces ([82f05de](https://github.com/oxabl-project/oxabl/commit/82f05dee1506581e02016358d2a747b7a6563f90)), closes [#209](https://github.com/oxabl-project/oxabl/issues/209)
+* **semantic:** read a parent's supertypes through the declaring file's imports ([fcfc554](https://github.com/oxabl-project/oxabl/commit/fcfc55497b368819c74d5d2d8454010f083d9892))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 1.0.4 to 2.0.0
+    * oxabl_lexer bumped from 1.0.1 to 1.0.2
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+    * oxabl_preprocessor bumped from 0.5.2 to 0.6.0
+    * oxabl_semantic bumped from 1.1.1 to 2.0.0
+    * oxabl_schema bumped from 0.3.0 to 0.3.1
+    * oxabl_analyze bumped from 1.1.4 to 2.0.0
+    * oxabl_pipeline bumped from 1.2.1 to 2.0.0
+    * oxabl_lint bumped from 1.1.1 to 2.0.0
+    * oxabl_lsp bumped from 1.0.3 to 2.0.0
+    * oxabl_daemon bumped from 0.3.2 to 0.4.0
+    * oxabl_formatter bumped from 1.0.2 to 1.0.3
+  * dev-dependencies
+    * oxabl_analyze bumped from 1.1.4 to 2.0.0
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_schema bumped from 0.3.0 to 0.3.1
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+    * oxabl_pipeline bumped from 1.2.1 to 2.0.0
+    * oxabl_flow bumped from 0.1.0 to 0.2.0
+
 ## [1.1.4](https://github.com/oxabl-project/oxabl/compare/oxabl-v1.1.3...oxabl-v1.1.4) (2026-10-07)
 
 

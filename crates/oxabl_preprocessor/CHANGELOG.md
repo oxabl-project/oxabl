@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.5.2...oxabl_preprocessor-v0.6.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** oxabl_index::DegradedReason, oxabl_index::Completeness and oxabl_preprocessor::TextLossKind are #[non_exhaustive]; an exhaustive match on any of them outside its crate no longer compiles.
+* **preprocessor:** PreprocessedFile gains text_losses, UnresolvedInclude gains unterminated, and ExpandedFile gains text_losses.
+* **preprocessor:** PipelineConfig gains the public preprocessor field.
+* **preprocessor:** CollectedDiagnostics gains the public parse_recovered field.
+
+### Features
+
+* **index:** mark the degradation and text-loss enums non-exhaustive ([6999df2](https://github.com/oxabl-project/oxabl/commit/6999df2dc5410ed79b6d92da6240c0d07e08f449))
+* **preprocessor:** answer the AVM's predefined names ([d996c49](https://github.com/oxabl-project/oxabl/commit/d996c49d821b7e086a4e0dfb691962e3f4c6bd8f)), closes [#216](https://github.com/oxabl-project/oxabl/issues/216)
+* **preprocessor:** keep unreadable and nested unresolved includes as data ([b56cf8b](https://github.com/oxabl-project/oxabl/commit/b56cf8bb426ff6c6eb1fb983bdc0c8d6a0006085))
+* **preprocessor:** record lost text, rescan define values and match braces by quote ([57c7152](https://github.com/oxabl-project/oxabl/commit/57c71523e62e3d89fb796d18f61d6c196d8de3f8))
+
+
+### Bug Fixes
+
+* **preprocessor:** apply only the globals an include defined or undefined ([aa38222](https://github.com/oxabl-project/oxabl/commit/aa3822225904c89edadfd798f7d10bb0f874ae0c))
+* **preprocessor:** close the last silent branch choices in &IF evaluation ([5d9fc53](https://github.com/oxabl-project/oxabl/commit/5d9fc53be1ad38b960e3dbf06a070a4843cc154e))
+* **preprocessor:** compare two strings as text and report a mixed comparison ([bf1d80e](https://github.com/oxabl-project/oxabl/commit/bf1d80e62fb5822138a16a4356207b1783192a2e))
+* **preprocessor:** drop the comments of a define value when it is defined ([83b5d54](https://github.com/oxabl-project/oxabl/commit/83b5d54159efa8972484231afd65102d7ce2a4d2))
+* **preprocessor:** evaluate DBTYPE, CONNECTED and LDBNAME from the listed databases ([223560c](https://github.com/oxabl-project/oxabl/commit/223560c095e31cf45d2a44db8012a74e9fda1dfa))
+* **preprocessor:** evaluate the functions an &IF names, or say it guessed ([026e29e](https://github.com/oxabl-project/oxabl/commit/026e29e4fc9fff19a17ace4b872f2210d15129da))
+* **preprocessor:** expand include references with whitespace inside the braces ([82f05de](https://github.com/oxabl-project/oxabl/commit/82f05dee1506581e02016358d2a747b7a6563f90)), closes [#209](https://github.com/oxabl-project/oxabl/issues/209)
+* **preprocessor:** hold a global behind a scoped define made after it ([44bd2b6](https://github.com/oxabl-project/oxabl/commit/44bd2b658994505da2ba09fda44f41c0f4fa6d18))
+* **preprocessor:** ignore the gaps of an operand a settled AND or OR never needed ([7cb4713](https://github.com/oxabl-project/oxabl/commit/7cb471302c15516e8ba061c5003dd7a0519a0f6a))
+* **preprocessor:** keep a global define behind a scoped name or include argument instead of over it ([ba409a6](https://github.com/oxabl-project/oxabl/commit/ba409a6e861ac84dbbc1feb53d93a3a10c7879a8))
+* **preprocessor:** model the unknown value of an &IF condition ([9637e30](https://github.com/oxabl-project/oxabl/commit/9637e30bbc2e35a17f677a192e06d546ffaf6054))
+* **preprocessor:** read a define comment that spans lines to its close ([fb52456](https://github.com/oxabl-project/oxabl/commit/fb52456764aae62ee347732efc588e04f1a71653))
+* **preprocessor:** restore a scoped origin when the global behind it is undefined ([8ff0593](https://github.com/oxabl-project/oxabl/commit/8ff059320c7c18533586fcee632528daa338c6a6))
+* **preprocessor:** restore the copy-everything behaviour of PreprocVarTable::merge_globals and deprecate it ([5a4be34](https://github.com/oxabl-project/oxabl/commit/5a4be344211e64367f94b57a1ad98e0db608fa44))
+* **preprocessor:** return the AVM's value of DEFINED for a global and a scoped define ([d36a14f](https://github.com/oxabl-project/oxabl/commit/d36a14ff8cc4c73f68e3f63b45084bc2cbe480ac))
+* **preprocessor:** settle an AND or OR chain by its result, not by operand order ([a8e20d0](https://github.com/oxabl-project/oxabl/commit/a8e20d0b66a94fade1c08c913d4727fff6093f34))
+* **preprocessor:** treat a database list inferred from schema files as partial ([c26de87](https://github.com/oxabl-project/oxabl/commit/c26de8751a8a8af649c800503e79f9c8e8eb7da1))
+* **preprocessor:** treat LDBNAME and DBTYPE of DICTDB as a gap under an inferred database list ([4f9e563](https://github.com/oxabl-project/oxabl/commit/4f9e5635008d93acbf1433aa68e6e906f3fbf05c))
+
+
+### Performance Improvements
+
+* **preprocessor:** evaluate a condition without copying its text or cloning its tokens ([9f62a34](https://github.com/oxabl-project/oxabl/commit/9f62a34781f8b1cc1263e86561d295ad72c14def))
+* **preprocessor:** find directive keywords without upper-casing the text ([2e0c989](https://github.com/oxabl-project/oxabl/commit/2e0c98994fb07cda6f2830e39800b9530a78c17d))
+* **preprocessor:** hand a substituted value to the source list without cloning it ([597e3f2](https://github.com/oxabl-project/oxabl/commit/597e3f2e9bde85d6fd4f4b99e648a4f79d0a6775))
+* **preprocessor:** keep whether the scan is emitting instead of recomputing it per byte ([f4684ce](https://github.com/oxabl-project/oxabl/commit/f4684ceb6b71d3ac17165257e8640d407d6aa927))
+* **preprocessor:** move a define's value instead of copying it, and scan for comments by byte ([a4e047b](https://github.com/oxabl-project/oxabl/commit/a4e047bba311a0594ce464a9e96a3d28b9156c62))
+* **preprocessor:** share the predefined names between runs ([1b4dd9b](https://github.com/oxabl-project/oxabl/commit/1b4dd9be5e59c3354e4318eac7da7f995a6c73dc))
+* **preprocessor:** undo an include's variable changes instead of cloning the table ([ba533e1](https://github.com/oxabl-project/oxabl/commit/ba533e117b09b8fd2610fe48957a013d3fa39516))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+
 ## [0.5.2](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.5.1...oxabl_preprocessor-v0.5.2) (2026-09-21)
 
 

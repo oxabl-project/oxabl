@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v1.0.3...oxabl_lsp-v2.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **preprocessor:** CollectedDiagnostics gains the public parse_recovered field.
+
+### Features
+
+* **preprocessor:** keep unreadable and nested unresolved includes as data ([b56cf8b](https://github.com/oxabl-project/oxabl/commit/b56cf8bb426ff6c6eb1fb983bdc0c8d6a0006085))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 1.1.4 to 2.0.0
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_daemon bumped from 0.3.2 to 0.4.0
+    * oxabl_pipeline bumped from 1.2.1 to 2.0.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+  * dev-dependencies
+    * oxabl_daemon bumped from 0.3.2 to 0.4.0
+    * oxabl_analyze bumped from 1.1.4 to 2.0.0
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+    * oxabl_schema bumped from 0.3.0 to 0.3.1
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+    * oxabl_pipeline bumped from 1.2.1 to 2.0.0
+
 ## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v1.0.2...oxabl_lsp-v1.0.3) (2026-10-07)
 
 

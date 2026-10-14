@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.1.0...oxabl_common-v1.2.0) (2026-10-14)
+
+
+### Features
+
+* **common:** resolve lint settings by rule name, group and file scope ([b004465](https://github.com/oxabl-project/oxabl/commit/b004465cad6d0fd26b112b3bc29d4b7467066615))
+
+
+### Bug Fixes
+
+* **lint:** rank group toggles below rule settings and warn on an override with no files ([e31d5f8](https://github.com/oxabl-project/oxabl/commit/e31d5f8295aebeb94fbaff09a1106f185b38ed73))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+
 ## [1.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.0.0...oxabl_common-v1.1.0) (2026-08-12)
 
 

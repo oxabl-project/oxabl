@@ -1,5 +1,60 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v1.1.1...oxabl_lint-v2.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** DataType has a new variant, Generic, and ExpressionKind::New has a new field, type_arguments. Code that matches DataType exhaustively, or builds or matches New without `..`, must handle them.
+* **parser:** StatementKind::Function has a new field, prototype_parameters. Code that builds the variant or matches it without `..` must name it.
+* **lint:** a diagnostic is now reported at its rule's default severity when nothing configures the rule. With an empty LintSeverityMap, unknown-table-or-field and type-mismatch-assignment now report as warnings, as [workspace.lint] already documented.
+* **parser:** `StatementKind` gains an `Annotation` variant, so exhaustive matches over it need a new arm.
+* **semantic:** oxabl_semantic::ClassDescriptor (re-exported by oxabl) has a new public field, imports, so struct literals need it. A new public type, ImportContext, is exported from both crates.
+
+### Features
+
+* **cli:** check context-free strict rules in the include files of a walked tree ([7b931f0](https://github.com/oxabl-project/oxabl/commit/7b931f0770f0149ff22c6f0c35658085682797c5))
+* **lint:** add a public rule registry with rule groups ([352f942](https://github.com/oxabl-project/oxabl/commit/352f942df9a5db018e04f3a158a95c6c1fc6f99b))
+* **lint:** add the syntactic strict rules CL001, CL002, CL005 and TX006 ([1467921](https://github.com/oxabl-project/oxabl/commit/1467921f019e6e4dd5fef38ca163d662aaaeb6b2))
+* **lint:** register CL001, CL002, CL005 and TX006 in their strict groups ([714834e](https://github.com/oxabl-project/oxabl/commit/714834e13ebb313b70c94ca7dc1438215304e3c4))
+* **parser:** keep the parameters of a function prototype ([038c3ff](https://github.com/oxabl-project/oxabl/commit/038c3ff21b19654b47dcb17f5e153d3a42a58e80))
+* **parser:** keep the type arguments of a generic class name ([6f5e3cb](https://github.com/oxabl-project/oxabl/commit/6f5e3cb11f3e20f4fa2c89e191c6e18c247b4ab9))
+* **parser:** parse ABL annotations as a statement ([0de3bb6](https://github.com/oxabl-project/oxabl/commit/0de3bb6408e74e1bdbc729288713880d2d23bc90))
+
+
+### Bug Fixes
+
+* **lint:** ask for NO-UNDO on both sides of a shared definition ([9281841](https://github.com/oxabl-project/oxabl/commit/9281841487ca3f0edb0f67b81c1dc345a6f70228))
+* **lint:** lower only the findings an includer can change ([4e29dbc](https://github.com/oxabl-project/oxabl/commit/4e29dbc0cf283ae44d61891eb1b44173b0ca53de))
+* **lint:** lower the confidence of includer-dependent fragment findings ([4fcec91](https://github.com/oxabl-project/oxabl/commit/4fcec91f4528a01993297ec2456a7555bd969046))
+* **lint:** make block-var-used-outside path-aware ([4bc6785](https://github.com/oxabl-project/oxabl/commit/4bc67857b18afb558a3e19d5fe9b09c0f774076a)), closes [#124](https://github.com/oxabl-project/oxabl/issues/124) [#126](https://github.com/oxabl-project/oxabl/issues/126)
+* **lint:** read include fragments without comments, undefines and local defines ([aaf66ed](https://github.com/oxabl-project/oxabl/commit/aaf66ede95ce599dbdc4d66ca20abb3f57d6056a))
+* **lint:** reset block-var-used-outside at UNDO statements ([6ec7165](https://github.com/oxabl-project/oxabl/commit/6ec7165d81ce073bc6b340bc0f578b3c2e174fad))
+* **semantic:** read a parent's supertypes through the declaring file's imports ([fcfc554](https://github.com/oxabl-project/oxabl/commit/fcfc55497b368819c74d5d2d8454010f083d9892))
+
+
+### Performance Improvements
+
+* **lint:** add a benchmark for block-hoisted variables ([d9ff7b6](https://github.com/oxabl-project/oxabl/commit/d9ff7b696d785cc94b5411033d2b440b7012196d))
+* **lint:** build one unit and solve once per block for LINT0005 ([4d61b17](https://github.com/oxabl-project/oxabl/commit/4d61b17c80287480aea40a417bc7e4bd93c60c84))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_flow bumped from 0.1.0 to 0.2.0
+    * oxabl_lexer bumped from 1.0.1 to 1.0.2
+    * oxabl_semantic bumped from 1.1.1 to 2.0.0
+  * dev-dependencies
+    * oxabl_index bumped from 1.0.3 to 2.0.0
+    * oxabl_schema bumped from 0.3.0 to 0.3.1
+    * oxabl_parser bumped from 1.0.4 to 2.0.0
+    * oxabl_preprocessor bumped from 0.5.2 to 0.6.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+
 ## [1.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v1.1.0...oxabl_lint-v1.1.1) (2026-10-07)
 
 

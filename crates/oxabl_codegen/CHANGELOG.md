@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.5.0...oxabl_codegen-v0.5.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **parser:** model DYNAMIC-NEW as a function call ([26b77f2](https://github.com/oxabl-project/oxabl/commit/26b77f25d442080c8c74246215526b72b487ce39))
+
 ## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.4.0...oxabl_codegen-v0.5.0) (2026-08-04)
 
 

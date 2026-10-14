@@ -1,5 +1,45 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v1.0.4...oxabl_parser-v2.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** DataType has a new variant, Generic, and ExpressionKind::New has a new field, type_arguments. Code that matches DataType exhaustively, or builds or matches New without `..`, must handle them.
+* **parser:** StatementKind::Function has a new field, prototype_parameters. Code that builds the variant or matches it without `..` must name it.
+* **parser:** oxabl_ast::CreateTargetKind has a new Call variant.
+* **parser:** `StatementKind` gains an `Annotation` variant, so exhaustive matches over it need a new arm.
+
+### Features
+
+* **parser:** keep the parameters of a function prototype ([038c3ff](https://github.com/oxabl-project/oxabl/commit/038c3ff21b19654b47dcb17f5e153d3a42a58e80))
+* **parser:** keep the type arguments of a generic class name ([6f5e3cb](https://github.com/oxabl-project/oxabl/commit/6f5e3cb11f3e20f4fa2c89e191c6e18c247b4ab9))
+* **parser:** parse ABL annotations as a statement ([0de3bb6](https://github.com/oxabl-project/oxabl/commit/0de3bb6408e74e1bdbc729288713880d2d23bc90))
+
+
+### Bug Fixes
+
+* **parser:** accept DEFINE WORK-TABLE ([05f8df1](https://github.com/oxabl-project/oxabl/commit/05f8df1751b015538ecfbb907bb3020a3d7fd1a2))
+* **parser:** end a skipped statement at a period followed by whitespace ([bf6b5ff](https://github.com/oxabl-project/oxabl/commit/bf6b5ff445ef260e30e4ee59b63935feb6908534))
+* **parser:** keep NO-UNDO written after VIEW-AS or SIZE ([2591b7c](https://github.com/oxabl-project/oxabl/commit/2591b7ce0aacff2ce733cd3f40c7761e9686a419))
+* **parser:** keep the expressions that carry class and program edges ([cf051a0](https://github.com/oxabl-project/oxabl/commit/cf051a05a9fbc4dd8aa380cefd9691f56ac5ac09))
+* **parser:** model CREATE CALL as a handle create ([60ad8b4](https://github.com/oxabl-project/oxabl/commit/60ad8b4e97aa0805afb87f21ce393763a3edf410))
+* **parser:** model DYNAMIC-NEW as a function call ([26b77f2](https://github.com/oxabl-project/oxabl/commit/26b77f25d442080c8c74246215526b72b487ce39))
+* **parser:** parse UNDO, RETURN NO-APPLY ([5e03314](https://github.com/oxabl-project/oxabl/commit/5e033140b2d22fc496eee5dc4fd04e6396e137d3))
+* **parser:** stop an unclosed generic bracket at the statement end ([0b2d4c0](https://github.com/oxabl-project/oxabl/commit/0b2d4c05e1817bf04b68ddd776c1baf0d474bbb6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 1.0.0 to 2.0.0
+    * oxabl_common bumped from 1.1.0 to 1.2.0
+    * oxabl_lexer bumped from 1.0.1 to 1.0.2
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.5.2 to 0.6.0
+    * oxabl_workspace bumped from 1.0.3 to 2.0.0
+
 ## [1.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v1.0.3...oxabl_parser-v1.0.4) (2026-10-07)
 
 
