@@ -15,7 +15,8 @@ mod tests;
 use oxabl_ast::{
     AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, GenericClass,
     HandleParamKind, HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection,
-    ParameterType, Span, Statement, StatementKind, TypeArgument, TypeArguments, TypeSource,
+    ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument, TypeArguments,
+    TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 
@@ -756,6 +757,42 @@ impl<'a> Parser<'a> {
             names,
             may_reference_tables: true,
         })
+    }
+
+    /// Harvest the identifiers of a tail a skip helper discarded on a statement
+    /// that stays modelled, for [`Statement::skipped_tail`].
+    ///
+    /// Same lexical filter as [`skipped_stmt`](Self::skipped_stmt), but over the
+    /// range the helper returned rather than from the statement's first token:
+    /// the tail starts after tokens the caller already modelled, so none of its
+    /// tokens is a dispatch keyword to drop. `None` when the filter keeps
+    /// nothing, which is the common case, so the node stays allocation-free.
+    #[inline(never)]
+    pub(crate) fn skipped_tail(&self, (lo, hi): (usize, usize)) -> Option<Box<SkippedTail>> {
+        // `harvest_skipped_names` drops the token at its `lo`; a tail is always
+        // preceded by at least the statement's own first token, so `lo - 1` is
+        // in range.
+        let names = self.harvest_skipped_names(lo.saturating_sub(1), hi);
+        (!names.is_empty()).then(|| Box::new(SkippedTail { names }))
+    }
+
+    /// [`skip_to_statement_end`](Self::skip_to_statement_end), harvesting the
+    /// skipped tokens for [`Statement::skipped_tail`].
+    pub(crate) fn skip_tail_to_statement_end(&mut self) -> Option<Box<SkippedTail>> {
+        let range = self.skip_to_statement_end();
+        self.skipped_tail(range)
+    }
+
+    /// [`stmt`](Self::stmt) carrying the tail [`skipped_tail`](Self::skipped_tail)
+    /// harvested.
+    pub(crate) fn stmt_with_tail(
+        &mut self,
+        kind: StatementKind,
+        tail: Option<Box<SkippedTail>>,
+    ) -> Statement {
+        let mut stmt = self.stmt(kind);
+        stmt.skipped_tail = tail;
+        stmt
     }
 
     /// Filter the tokens in `[lo, hi)` down to the names worth offering the

@@ -12535,3 +12535,50 @@ fn a_statement_keyword_with_a_space_before_the_paren_keeps_its_statement_reading
         );
     }
 }
+
+fn tail_names(stmt: &Statement) -> Vec<&str> {
+    stmt.skipped_tail
+        .as_ref()
+        .map(|t| t.names.iter().map(|n| n.name.as_str()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_skipped_tail_keeps_the_names_it_passed_over() {
+    let stmts = assert_parses_clean("DISPLAY a WITH FRAME f TITLE \"x\" + v-title + tbl.fld.");
+    assert!(matches!(stmts[0].kind, StatementKind::Display { .. }));
+    // `fld` is byte-adjacent to a `.`, so only the qualifier survives.
+    let names = tail_names(&stmts[0]);
+    assert!(
+        names.contains(&"v-title") && names.contains(&"tbl"),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"fld"), "{names:?}");
+}
+
+#[test]
+fn a_statement_with_no_skipped_identifiers_carries_no_tail() {
+    let stmts = assert_parses_clean("DISPLAY a.\nDEFINE STREAM s.\n");
+    assert!(stmts.iter().all(|s| s.skipped_tail.is_none()));
+}
+
+#[test]
+fn a_skipped_tail_does_not_include_modelled_tokens() {
+    let stmts = assert_parses_clean("RUN p.p (INPUT a) NO-ERROR v-extra ).");
+    assert!(matches!(stmts[0].kind, StatementKind::Run { .. }));
+    assert_eq!(tail_names(&stmts[0]), ["v-extra"]);
+}
+
+#[test]
+fn a_function_forward_declaration_in_super_keeps_its_tail() {
+    let stmts = assert_parses_clean("FUNCTION f RETURNS INTEGER (INPUT a AS INTEGER) IN h-super.");
+    assert!(matches!(stmts[0].kind, StatementKind::Function { .. }));
+    assert_eq!(tail_names(&stmts[0]), ["h-super"]);
+}
+
+#[test]
+fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
+    let stmts = assert_parses_clean("ASSIGN a = 1 v-target.");
+    assert!(matches!(stmts[0].kind, StatementKind::Assign { .. }));
+    assert_eq!(tail_names(&stmts[0]), ["v-target"]);
+}

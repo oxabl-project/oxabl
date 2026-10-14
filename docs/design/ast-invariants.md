@@ -274,6 +274,21 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
   operands earn a head-parse, path-shaped ones earn an empty name list.
 
+**`Statement::skipped_tail` — a modelled statement discarded a trailing range.**
+`DISPLAY … WITH FRAME f TITLE x`, `RETURN ERROR expr`, the `VIEW-AS` tail of a `DEFINE
+VARIABLE`, `RUN` trailing content, `ASSIGN FRAME f`, `FUNCTION … IN super`, `DEFINE
+STREAM`/`DEFINE FRAME` options and the stream-I/O option tails keep their real
+`StatementKind`. The identifiers of the range they skipped ride on the wrapper, not the
+kind.
+
+- **Invariant:** the field is `None` unless the lexical filter kept at least one name, and
+  it never changes which `StatementKind` a form produces.
+- **Invariant:** the names get the same treatment as a `Skipped` node's — a silent,
+  non-counting lookup that can only mark a symbol as unjudgeable. They never produce a
+  `references` entry, so they cannot reach LINT0001 or LINT0003, and they are not offered to
+  the table namespaces.
+- The field is excluded from `PartialEq`, like `id` and `span`.
+
 ## 9. Property body distinguishes absence from emptiness
 
 `Statement::Property` represents the three GET/SET accessor shapes with
