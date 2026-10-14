@@ -1,7 +1,7 @@
-//! Rule registry.
+//! The built-in rules.
 //!
-//! Each rule lives in its own file with inline tests. The top-level
-//! [`crate::lint_file`] dispatcher composes them.
+//! Each rule lives in its own file with inline tests. [`crate::Registry`]
+//! registers and runs them.
 
 pub mod assigned_but_never_read;
 pub mod block_var_used_outside;
