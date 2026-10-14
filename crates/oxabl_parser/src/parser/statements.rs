@@ -2377,19 +2377,17 @@ impl Parser<'_> {
         let mut by = None;
         let mut while_condition = None;
 
-        // Optional TRANSACTION keyword: DO TRANSACTION:
-        let transaction = if self.check(Kind::Transaction) {
-            self.advance();
-            true
-        } else {
-            false
-        };
-
-        // DO FOR table: — buffer lock scope; consume FOR and table name
-        if self.check(Kind::KwFor) {
-            self.advance(); // consume FOR
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance(); // consume table name
+        // `DO [FOR b1, b2] [TRANSACTION]`, in either order: strongly scoped
+        // buffers and the TRANSACTION keyword.
+        let mut transaction = false;
+        loop {
+            if self.check(Kind::Transaction) {
+                self.advance();
+                transaction = true;
+            } else if self.check(Kind::KwFor) {
+                self.skip_strong_scope_buffers();
+            } else {
+                break;
             }
         }
 
@@ -2503,7 +2501,13 @@ impl Parser<'_> {
             }
         }
 
-        let on_actions = self.parse_block_on_phrases();
+        let mut on_actions = self.parse_block_on_phrases();
+        // TRANSACTION may also follow the ON phrases.
+        if self.check(Kind::Transaction) {
+            self.advance();
+            transaction = true;
+            on_actions.extend(self.parse_block_on_phrases());
+        }
 
         // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
         // The WITH clause can contain many frame options; consume everything until the
@@ -2639,6 +2643,17 @@ impl Parser<'_> {
     fn parse_repeat_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume REPEAT
 
+        // `REPEAT FOR b1, b2 [TRANSACTION]`: strongly scoped buffers.
+        loop {
+            if self.check(Kind::KwFor) {
+                self.skip_strong_scope_buffers();
+            } else if self.check(Kind::Transaction) && self.check_at(1, Kind::KwFor) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
         // Optional block label before the colon (LABEL: REPEAT)
         // Already handled at statement dispatch level; nothing extra needed here.
 
@@ -2689,11 +2704,13 @@ impl Parser<'_> {
             None
         };
 
-        let on_actions = self.parse_block_on_phrases();
+        let mut on_actions = self.parse_block_on_phrases();
 
-        // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:)
+        // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:), which the ON
+        // phrases may also follow.
         if self.check(Kind::Transaction) {
             self.advance();
+            on_actions.extend(self.parse_block_on_phrases());
         }
 
         // Optional PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]
@@ -2817,7 +2834,10 @@ impl Parser<'_> {
             match self.peek().kind {
                 Kind::Leave | Kind::Retry | Kind::Next => {
                     self.advance();
-                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
+                    if Self::can_be_identifier(self.peek().kind)
+                        && !self.check(Kind::Colon)
+                        && !self.check(Kind::Transaction)
+                    {
                         self.advance();
                     }
                 }
@@ -7179,6 +7199,28 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(AnnotationAttribute { name, value })
+    }
+
+    /// Skip `FOR b1 [, b2]...` of a `DO FOR` / `REPEAT FOR` header. A name may
+    /// be qualified by its database (`sports.customer`).
+    fn skip_strong_scope_buffers(&mut self) {
+        self.advance(); // consume FOR
+        while Self::can_be_identifier(self.peek().kind) {
+            let mut end = self.advance().end;
+            while self.check(Kind::Period)
+                && self.tokens[self.current].start == end
+                && self.peek_at(1).start == self.tokens[self.current].end
+                && Self::can_be_identifier(self.peek_at(1).kind)
+            {
+                self.advance();
+                end = self.advance().end;
+            }
+            if self.check(Kind::Comma) && Self::can_be_identifier(self.peek_at(1).kind) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
     }
 
     /// Parse a dotted name like `table.field` for ASSIGN OF targets.
