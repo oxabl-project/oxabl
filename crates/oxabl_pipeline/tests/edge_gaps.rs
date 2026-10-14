@@ -734,20 +734,30 @@ fn an_explicit_using_of_a_shipped_class_beside_a_wildcard_records_nothing() {
     assert!(rows.is_empty(), "got {rows:?}");
 }
 
-/// The unresolved rows of a child of `pkg.Mid`, whose header comes after `head`
-/// and an include that may import `lib.*`. `lib.Base` exists.
-fn rows_under_a_parent_with_include_after(head: &str) -> Vec<(String, UnresolvedReason)> {
-    let mid = format!("{head}{{usings.i}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n");
+/// The unresolved rows of a child of `pkg.Mid`, whose source is `mid`.
+/// `usings.i` imports `lib.*`, `usingx.i` imports `lib.Base`, and `lib.Base` and
+/// `lib.AppError` exist.
+fn rows_under_a_parent(mid: &str) -> Vec<(String, UnresolvedReason)> {
     let (_, rows) = class_rows(
         "Child.cls",
         "CLASS Child INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
         &[
-            ("pkg/Mid.cls", &mid),
+            ("pkg/Mid.cls", mid),
             ("usings.i", "USING lib.*.\n"),
+            ("usingx.i", "USING lib.Base.\n"),
             ("lib/Base.cls", "CLASS lib.Base:\nEND CLASS.\n"),
+            ("lib/AppError.cls", "CLASS lib.AppError:\nEND CLASS.\n"),
         ],
     );
     rows
+}
+
+/// [`rows_under_a_parent`] for a parent whose header comes after `head` and an
+/// include.
+fn rows_under_a_parent_with_include_after(head: &str) -> Vec<(String, UnresolvedReason)> {
+    rows_under_a_parent(&format!(
+        "{head}{{usings.i}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n"
+    ))
 }
 
 #[test]
@@ -764,5 +774,42 @@ fn a_using_of_class_or_interface_does_not_hide_a_later_include() {
                 .any(|row| row == &("base".to_string(), UnresolvedReason::Unknowable)),
             "head {head:?}: got {rows:?}"
         );
+    }
+}
+
+fn has_row(rows: &[(String, UnresolvedReason)], name: &str, reason: UnresolvedReason) -> bool {
+    rows.iter().any(|(n, r)| (n.as_str(), *r) == (name, reason))
+}
+
+#[test]
+fn a_shipped_import_beside_an_unseen_one_does_not_answer_for_a_parents_header() {
+    let missed: Vec<_> = [
+        ("", "usings.i", "Base", "base"),
+        ("USING Progress.Lang.*.\n", "usings.i", "Base", "base"),
+        ("USING Progress.Lang.*.\n", "usingx.i", "Base", "base"),
+        ("USING OpenEdge.Core.*.\n", "usingx.i", "Base", "base"),
+        ("", "usings.i", "AppError", "apperror"),
+    ]
+    .into_iter()
+    .filter(|(head, include, parent, row)| {
+        let rows = rows_under_a_parent(&format!(
+            "{head}{{{include}}}\nCLASS pkg.Mid INHERITS {parent}:\nEND CLASS.\n"
+        ));
+        !has_row(&rows, row, UnresolvedReason::Unknowable)
+    })
+    .collect();
+    assert!(missed.is_empty(), "no Unknowable row for {missed:?}");
+}
+
+#[test]
+fn a_shipped_name_a_parent_wrote_in_full_stays_quiet_beside_an_unseen_import() {
+    for (head, parent) in [
+        ("", "Progress.Lang.AppError"),
+        ("USING Progress.Lang.AppError.\n", "AppError"),
+    ] {
+        let rows = rows_under_a_parent(&format!(
+            "{head}{{usings.i}}\nCLASS pkg.Mid INHERITS {parent}:\nEND CLASS.\n"
+        ));
+        assert!(rows.is_empty(), "{head:?} INHERITS {parent}: got {rows:?}");
     }
 }

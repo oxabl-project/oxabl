@@ -5288,6 +5288,11 @@ fn names_shipped_class(imports: &ImportContext, raw: &str) -> bool {
     if explicit.peek().is_some() {
         return explicit.any(|qualified| is_system_namespace(&fold_atom(qualified)));
     }
+    // A wildcard or the implicit import only presumes the name: an import the
+    // index never read may be an explicit one that outranks both.
+    if imports.has_unseen_imports() {
+        return false;
+    }
     (!raw.contains('.')
         && imports
             .prefixes()
