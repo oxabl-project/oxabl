@@ -188,9 +188,12 @@ pub struct PreprocessorConfig {
     ///
     /// When the key is absent, the `[workspace.schema]` files name the databases:
     /// the file name without `.df` is the logical name, so `schema/ledger.df`
-    /// connects `ledger`. A file name can differ from the logical name, so this
-    /// list is not complete: a name that is not in it raises `PREPROC010` instead
-    /// of deciding that the database is absent. Set the key when a logical name
+    /// connects `ledger`. A file name can differ from the logical name, and the
+    /// files are in the order of `[workspace.schema]`, not of connection. So this
+    /// list is not complete and not ordered: a name that is not in it raises
+    /// `PREPROC010` instead of deciding that the database is absent, and so do
+    /// `LDBNAME("DICTDB")` and `DBTYPE("DICTDB")`. `CONNECTED("DICTDB")` is true
+    /// when the list is not empty. Set the key when a logical name
     /// differs from its file name. While neither a list nor a schema is given, an
     /// `&IF` that calls one of these functions raises `PREPROC010` instead of
     /// deciding on a guess.
