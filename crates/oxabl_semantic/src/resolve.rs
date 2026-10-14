@@ -3226,19 +3226,26 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(op) = &sequence {
                     self.resolve_sequence_operand(op);
                 }
+                // A user function never takes a type operand, so the built-in
+                // reading applies only when the callee did not resolve here.
+                let type_name =
+                    if matches!(self.references.get(expr.id), Some(Resolution::Resolved(_))) {
+                        None
+                    } else {
+                        type_operand(name, arguments)
+                            .and_then(|operand| Some((operand.id, dotted_name(operand)?)))
+                    };
                 // The arguments of `NEXT-VALUE` / `CURRENT-VALUE` are a sequence
                 // name and a logical database name, neither a symbol.
                 if !sequence.is_some_and(|op| op.is_static) {
                     for a in arguments {
-                        self.walk_expression(a, scope, AccessMode::Read);
+                        match &type_name {
+                            Some((id, raw)) if *id == a.id => {
+                                self.resolve_type_operand(a, raw, scope);
+                            }
+                            _ => self.walk_expression(a, scope, AccessMode::Read),
+                        }
                     }
-                }
-                if self.ctx.index_loaded
-                    && let Some(operand) = type_operand(name, arguments)
-                    && let Some(raw) = dotted_name(operand)
-                {
-                    let span = VirtualSpan::new(operand.span.start, operand.span.end);
-                    self.note_class_name(&raw, scope, span);
                 }
             }
             ExpressionKind::MethodCall {
@@ -4360,6 +4367,39 @@ impl<'a> ResolveWalker<'a> {
                 },
             );
         }
+    }
+
+    /// Resolve the type-name operand `raw` of a `CAST`, `TYPE-OF` or
+    /// `GET-CLASS` call in the `Types` namespace, the way a `NEW` operand is, and
+    /// record the answer on the operand's node.
+    fn resolve_type_operand(&mut self, operand: &Expression, raw: &str, scope: ScopeId) {
+        let span = VirtualSpan::new(operand.span.start, operand.span.end);
+        let lookup = self.resolve_type_name(raw, scope, span);
+        self.note_class_site(raw, lookup, span);
+        let atom = fold_atom(raw);
+        let resolution = match lookup {
+            TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => {
+                self.bump_count(sym, AccessMode::Read);
+                Resolution::Resolved(sym)
+            }
+            TypeLookup::NotFound => Resolution::Unresolved {
+                reason: self.absent_type_reason(raw, &atom),
+                name: atom,
+            },
+            TypeLookup::Unusable => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::PresentButUnusable,
+            },
+            TypeLookup::Unknowable => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::Unknowable,
+            },
+            TypeLookup::External | TypeLookup::NotLooked => Resolution::Unresolved {
+                name: atom,
+                reason: UnresolvedReason::External,
+            },
+        };
+        self.references.insert(operand.id, resolution);
     }
 
     /// Resolve an `Identifier` in a **statement** position (buffer name in
