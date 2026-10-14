@@ -1021,3 +1021,31 @@ fn the_same_walk_with_no_search_path_keeps_todays_answer_and_json_shape() {
         run.stdout
     );
 }
+
+/// An integer literal past `i64` used to make the lexer print to stdout ahead of
+/// the JSON document, corrupting machine-readable output.
+#[test]
+fn an_overflowing_integer_literal_leaves_stdout_parseable_as_json() {
+    let (_tmp, file) = project(
+        "big.p",
+        "DEFINE VARIABLE d AS DECIMAL NO-UNDO.\nd = 99999999999999999999.\nd = 1234567890123456789012345678901234567890.\nMESSAGE d.\n",
+    );
+
+    let run = check([
+        Path::new("--json").as_os_str(),
+        Path::new("--no-format").as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    let v = run.json();
+    // Within decimal range the literal is a decimal, not a parse error. Past it
+    // the parser reports the one token it cannot represent.
+    let parse_errors: Vec<_> = v["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "PARSE001")
+        .collect();
+    assert_eq!(parse_errors.len(), 1, "{}", run.stdout);
+    assert_eq!(parse_errors[0]["start"]["line"], 3);
+}

@@ -412,21 +412,21 @@ impl<'a> Lexer<'a> {
                             kind = Kind::BigIntLiteral;
                             value = TokenValue::BigInt(if neg { -big_int } else { big_int });
                         }
-                        Err(e) => {
-                            println!("Error parsing integer: {:?}", e);
+                        // Past i64 an ABL integer literal is a decimal. Beyond
+                        // the decimal range the token keeps no value, and the
+                        // parser reports it.
+                        Err(_) => {
+                            kind = Kind::DecimalLiteral;
+                            if let Ok(decimal) = digits.parse::<Decimal>() {
+                                value = TokenValue::Decimal(if neg { -decimal } else { decimal });
+                            }
                         }
                     },
                 }
             }
             Kind::BigIntLiteral => {
-                let parsed_big_int = self.source[start..end].parse();
-                match parsed_big_int {
-                    Ok(big_int) => {
-                        value = TokenValue::BigInt(big_int);
-                    }
-                    Err(e) => {
-                        println!("Error parsing big integer: {:?}", e);
-                    }
+                if let Ok(big_int) = self.source[start..end].parse() {
+                    value = TokenValue::BigInt(big_int);
                 }
             }
             Kind::DecimalLiteral => {
@@ -437,13 +437,8 @@ impl<'a> Lexer<'a> {
                 } else {
                     (text, false)
                 };
-                match digits.parse::<Decimal>() {
-                    Ok(decimal) => {
-                        value = TokenValue::Decimal(if neg { -decimal } else { decimal });
-                    }
-                    Err(e) => {
-                        println!("Error parsing decimal: {:?}", e);
-                    }
+                if let Ok(decimal) = digits.parse::<Decimal>() {
+                    value = TokenValue::Decimal(if neg { -decimal } else { decimal });
                 }
             }
             Kind::StringLiteral => {
@@ -1815,6 +1810,29 @@ end."#;
             TokenValue::BigInt(3000000000),
             source,
         );
+    }
+
+    #[test]
+    fn integer_past_i64_is_a_decimal() {
+        let source = "99999999999999999999";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens.len(), 2);
+        assert_token(
+            &tokens[0],
+            Kind::DecimalLiteral,
+            0,
+            20,
+            TokenValue::Decimal("99999999999999999999".parse().unwrap()),
+            source,
+        );
+    }
+
+    #[test]
+    fn integer_past_the_decimal_range_keeps_no_value() {
+        let source = "1234567890123456789012345678901234567890";
+        let tokens = collect_tokens(source);
+        assert_eq!(tokens[0].kind, Kind::DecimalLiteral);
+        assert_eq!(tokens[0].value, TokenValue::None);
     }
 
     #[test]
