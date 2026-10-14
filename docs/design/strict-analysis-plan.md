@@ -225,6 +225,9 @@ Rules for contributors (human or agent):
 
 ## Open questions
 
-- Which statements can ABL annotations legally precede?
+- Which statements can ABL annotations legally precede? Answered in
+  [`strict-analysis-open-questions.md`](strict-analysis-open-questions.md); needs a check against
+  a licensed install.
 - Does oxabl's PROPATH and include resolution exactly match the AVM's?
 - Should diagnostics inside include files be reported in the include, at each use site, or both?
+  A recommendation is in [`strict-analysis-open-questions.md`](strict-analysis-open-questions.md).
