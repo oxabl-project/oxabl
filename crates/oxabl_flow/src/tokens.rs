@@ -84,6 +84,35 @@ impl<'s> Toks<'s> {
         self.is_label(i).then(|| self.text(i).to_string())
     }
 
+    /// Whether token `i` starts where token `i - 1` ends.
+    fn adjacent(&self, i: usize) -> bool {
+        i > 0
+            && matches!(
+                (self.toks.get(i - 1), self.toks.get(i)),
+                (Some(a), Some(b)) if a.end == b.start
+            )
+    }
+
+    /// A buffer or table name at `i`, joining a `db.table` written as
+    /// adjacent tokens.
+    fn name(&self, i: usize) -> Option<String> {
+        if !self.is_label(i) {
+            return None;
+        }
+        let mut name = self.text(i).to_string();
+        let mut j = i + 1;
+        while self.kind(j) == Some(Kind::Period)
+            && self.adjacent(j)
+            && self.adjacent(j + 1)
+            && self.is_label(j + 1)
+        {
+            name.push('.');
+            name.push_str(self.text(j + 1));
+            j += 2;
+        }
+        Some(name)
+    }
+
     /// Parse `UNDO [label] [, action]` starting at the `UNDO` token. Returns
     /// the undo label, the action if one was written, and the next index.
     fn undo_clause(&self, at: usize) -> (Option<String>, Option<Action>, usize) {
@@ -146,6 +175,8 @@ pub(crate) struct Header {
     pub has_while: bool,
     pub has_to: bool,
     pub for_qualifier: Option<ForQualifier>,
+    /// `FOR` record-phrase buffers, or `DO FOR`/`REPEAT FOR` buffers.
+    pub buffers: Vec<String>,
     pub phrases: SmallVec<[(Condition, Handling); 2]>,
 }
 
@@ -153,7 +184,8 @@ pub(crate) struct Header {
 pub(crate) fn read_header(src: &str, span: Span) -> Header {
     let t = Toks::new(src, span, usize::MAX);
     let mut h = Header::default();
-    if t.kind(0) == Some(Kind::KwFor) {
+    let for_block = t.kind(0) == Some(Kind::KwFor);
+    if for_block {
         h.for_qualifier = Some(match t.kind(1) {
             Some(Kind::Each) => ForQualifier::Each,
             Some(Kind::First) => ForQualifier::First,
@@ -162,6 +194,12 @@ pub(crate) fn read_header(src: &str, span: Span) -> Header {
             Some(Kind::Prev) => ForQualifier::Prev,
             _ => ForQualifier::Unqualified,
         });
+        let at = if h.for_qualifier == Some(ForQualifier::Unqualified) {
+            1
+        } else {
+            2
+        };
+        h.buffers.extend(t.name(at));
     }
     let mut depth = 0u32;
     let mut i = 1;
@@ -171,6 +209,33 @@ pub(crate) fn read_header(src: &str, span: Span) -> Header {
             Kind::LeftParen | Kind::LeftBracket => depth += 1,
             Kind::RightParen | Kind::RightBracket => depth = depth.saturating_sub(1),
             _ if depth > 0 => {}
+            // A joined record phrase: `, EACH order OF customer`.
+            Kind::Comma
+                if for_block
+                    && matches!(
+                        t.kind(i + 1),
+                        Some(Kind::Each | Kind::First | Kind::Last | Kind::Next | Kind::Prev)
+                    ) =>
+            {
+                h.buffers.extend(t.name(i + 2));
+            }
+            // `DO FOR b1, b2` / `REPEAT FOR b1`: strongly scoped buffers.
+            Kind::KwFor if !for_block => {
+                let mut j = i + 1;
+                while let Some(name) = t.name(j) {
+                    h.buffers.push(name);
+                    j += 1;
+                    while matches!(t.kind(j), Some(Kind::Period)) && t.adjacent(j) {
+                        j += 2;
+                    }
+                    if t.kind(j) != Some(Kind::Comma) {
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
             Kind::On => {
                 if let Some((condition, handling, next)) = on_phrase(&t, i) {
                     h.phrases.push((condition, handling));
@@ -429,6 +494,15 @@ mod tests {
         assert!(header("REPEAT i = 1 TO 3:").has_to);
         assert!(header("REPEAT WHILE x:").has_while);
         assert!(header("DO STOP-AFTER 5:").stop_after);
+        assert_eq!(
+            header("FOR EACH c NO-LOCK, EACH o OF c, FIRST sports.item:").buffers,
+            ["c", "o", "sports.item"]
+        );
+        assert_eq!(
+            header("DO FOR customer, sports.order TRANSACTION:").buffers,
+            ["customer", "sports.order"]
+        );
+        assert!(header("DO TRANSACTION:").buffers.is_empty());
         // Nothing in parentheses or after WITH is a phrase.
         let h = header("DO WHILE f(\"ON ERROR\") WITH FRAME f:");
         assert!(h.phrases.is_empty());

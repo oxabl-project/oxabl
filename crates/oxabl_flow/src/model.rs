@@ -273,6 +273,10 @@ pub struct Block {
     pub transaction: bool,
     /// `STOP-AFTER` is on the header.
     pub stop_after: bool,
+    /// For a `FOR` block, the buffers of its record phrases (scoped to the
+    /// block unless used outside it); for `DO FOR` / `REPEAT FOR`, the buffers
+    /// strongly scoped to the block. As written.
+    pub buffers: Vec<String>,
     /// The block (or a block nested in it) has an input-blocking statement
     /// (`UPDATE`, `SET`, `PROMPT-FOR`, `INSERT`, `WAIT-FOR`, `READKEY`,
     /// `CHOOSE`, `MESSAGE ... UPDATE`), so `RETRY` is not converted. These

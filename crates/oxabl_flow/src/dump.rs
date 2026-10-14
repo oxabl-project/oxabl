@@ -58,6 +58,9 @@ fn unit(out: &mut String, cfg: &Cfg, source: &str, lines: &LineIndex) {
                 let _ = write!(out, " {name}");
             }
         }
+        if !b.buffers.is_empty() {
+            let _ = write!(out, " buffers={}", b.buffers.join(","));
+        }
         if let Some(t) = &b.catch_type {
             let _ = write!(out, " type={t}");
         }
