@@ -2970,6 +2970,19 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
             }
+            StatementKind::Put { stream_name, items } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
             StatementKind::Message { items, set_targets } => {
                 for e in items {
                     self.walk_expression(e, scope, AccessMode::Read);

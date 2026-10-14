@@ -209,6 +209,18 @@ pub enum StatementKind {
         set_targets: Vec<Identifier>,
     },
 
+    /// PUT statement — writes values to a stream.
+    ///
+    /// Only the head is modelled: the stream and the leading value expressions.
+    /// Option clauses (`AT`, `TO`, `FORMAT`, ...) and anything after them stay
+    /// in [`Statement::skipped_tail`].
+    Put {
+        /// Optional named stream (`PUT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Value expressions written, in source order.
+        items: Vec<Expression>,
+    },
+
     /// DEFINE TEMP-TABLE statement.
     ///
     /// ```abl

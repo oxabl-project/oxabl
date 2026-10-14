@@ -184,7 +184,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_opt(v, item.when_condition.as_ref());
             }
         }
-        StatementKind::Message { items, .. } => {
+        StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
             for e in items {
                 walk_expression(v, e);
             }

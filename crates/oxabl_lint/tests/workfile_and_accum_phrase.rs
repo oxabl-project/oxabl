@@ -60,3 +60,14 @@ fn accum_aggregate_by_phrase_is_not_an_identifier() {
          END.\n",
     );
 }
+
+#[test]
+fn put_reads_and_undefined_names() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE STREAM s.\nv = 1.\nPUT STREAM s UNFORMATTED v SKIP.\n";
+    assert_silent(src);
+    let diags = lint("PUT UNFORMATTED nope SKIP.\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}

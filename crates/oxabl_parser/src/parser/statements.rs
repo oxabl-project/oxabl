@@ -644,10 +644,9 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
-        // PUT [STREAM s] UNFORMATTED expr. — stream output statement, skip to statement end.
+        // PUT [STREAM s] [UNFORMATTED] expr ... — head-parsed; options stay a skipped tail.
         if self.check(Kind::Put) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_put_statement();
         }
 
         // FORM ... — legacy UI form definition, skip to statement end.
@@ -694,16 +693,22 @@ impl Parser<'_> {
         // CLEAR / HIDE — skip to end.
         // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
         // like 'order.company' in WHERE clauses are not mistaken for statement terminators.
-        if self.check(Kind::Pause)
-            || self.check(Kind::Bell)
-            || self.check(Kind::Import)
+        // The OS-* file statements and BELL have path or literal operands, not symbols.
+        if self.check(Kind::Bell)
             || self.check(Kind::OsDelete)
-            || self.check(Kind::OsDir)
             || self.check(Kind::OsCreateDir)
             || self.check(Kind::OsCommand)
             || self.check(Kind::OsCopy)
             || self.check(Kind::OsRename)
             || self.check(Kind::OsAppend)
+        {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt_value_operands(hi));
+        }
+
+        if self.check(Kind::Pause)
+            || self.check(Kind::Import)
+            || self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
             || self.check(Kind::Enable)
@@ -3943,6 +3948,86 @@ impl Parser<'_> {
     }
 
     // Parse DISPLAY statement
+    /// `PUT [STREAM s | STREAM-HANDLE h] [UNFORMATTED] item ...`. Items are parsed
+    /// until the first token that is not a value; the rest becomes the skipped tail.
+    fn parse_put_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume PUT
+
+        // A stream name that is not an identifier (e.g. `2dstream`) leaves the
+        // whole statement to the skipped tail.
+        let stream_mark = self.current;
+        let stream_name = if self.check(Kind::Stream) {
+            self.advance();
+            match self.parse_identifier() {
+                Ok(name) => Some(name),
+                Err(_) => {
+                    self.current = stream_mark;
+                    let tail = self.skip_tail_to_statement_end();
+                    return Ok(self.stmt_with_tail(
+                        StatementKind::Put {
+                            stream_name: None,
+                            items: Vec::new(),
+                        },
+                        tail,
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        if self.check(Kind::Unformatted) {
+            self.advance();
+        }
+
+        let mut items = Vec::new();
+        while !self.check(Kind::Period) && !self.at_end() {
+            if self.check(Kind::Skip) || self.check(Kind::Space) {
+                self.advance();
+                if self.check(Kind::LeftParen) {
+                    let mark = self.current;
+                    match self.parse_expression() {
+                        Ok(e) => items.push(e),
+                        Err(_) => {
+                            self.current = mark;
+                            break;
+                        }
+                    }
+                } else if self.check(Kind::IntegerLiteral) {
+                    self.advance();
+                }
+                continue;
+            }
+            let starts_value = !matches!(
+                self.peek().kind,
+                Kind::At
+                    | Kind::To
+                    | Kind::Format
+                    | Kind::Form
+                    | Kind::Control
+                    | Kind::Null
+                    | Kind::Screen
+                    | Kind::Cursor
+                    | Kind::Stream
+                    | Kind::StreamHandle
+                    | Kind::Unformatted
+            );
+            if !starts_value {
+                break;
+            }
+            let mark = self.current;
+            match self.parse_expression() {
+                Ok(e) if self.current > mark => items.push(e),
+                _ => {
+                    self.current = mark;
+                    break;
+                }
+            }
+        }
+
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Put { stream_name, items }, tail))
+    }
+
     fn parse_display_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DISPLAY
 

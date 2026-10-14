@@ -326,7 +326,7 @@ impl<'a> CheckWalker<'a> {
                     }
                 }
             }
-            StatementKind::Message { items, .. } => {
+            StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
                 for e in items {
                     self.check_expression(e, scope);
                 }
