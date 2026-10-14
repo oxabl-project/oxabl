@@ -690,6 +690,7 @@ mod tests {
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
+            is_prototype: false,
         });
         let diags = analyze_and_lint(vec![var_decl("outer", DataType::Integer), proc]);
         assert!(diags.is_empty());

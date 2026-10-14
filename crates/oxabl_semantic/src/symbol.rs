@@ -158,6 +158,10 @@ bitflags! {
         /// the head-parsing issue (#136); the flag retires when only `FORM`,
         /// embedded SQL, `EDITING:` bodies and option tails still reach it.
         const TOUCHED_BY_UNMODELLED_STATEMENT = 1 << 21;
+        /// The variable a `CATCH` header names. ABL requires the name even when
+        /// the handler only cares about the error's type, so never reading it
+        /// is not a defect.
+        const CATCH_VARIABLE = 1 << 22;
     }
 }
 

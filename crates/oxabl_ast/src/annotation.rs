@@ -124,6 +124,7 @@ mod tests {
         Statement::new(StatementKind::Procedure {
             name: ident(name),
             body: Vec::new(),
+            is_prototype: false,
         })
     }
 

@@ -132,6 +132,9 @@ pub enum StatementKind {
     Procedure {
         name: Identifier,
         body: Vec<Statement>, // parameters are parsed as DEFINE PARAMTER statements
+        /// An `EXTERNAL` or `IN ...` declaration: a signature with no ABL body,
+        /// so its parameters are never referenced by name.
+        is_prototype: bool,
     },
 
     /// Define input/output params

@@ -71,6 +71,10 @@ pub fn is_skipped(sid: SymbolId, sym: &Symbol, tree: &ScopeTree, symbols: &Symbo
     {
         return true;
     }
+    // The name `CATCH` requires is not a stray declaration.
+    if sym.flags.contains(SymbolFlags::CATCH_VARIABLE) {
+        return true;
+    }
     // Parameters of an INTERFACE method or an ABSTRACT method never
     // execute a body; their read-count is meaningless.
     if sym.kind == SymbolKind::Parameter && in_skipped_method(sym.declared_in, tree, symbols) {
@@ -99,7 +103,8 @@ pub fn is_table_like_param(sym: &Symbol) -> bool {
 }
 
 /// Whether the `Parameter` declared in `scope` lives inside a method scope
-/// whose declaring method is ABSTRACT, or inside an INTERFACE body.
+/// whose declaring method is ABSTRACT, inside an INTERFACE body, or inside an
+/// `EXTERNAL` / `IN` procedure prototype.
 fn in_skipped_method(scope: ScopeId, tree: &ScopeTree, symbols: &SymbolTable) -> bool {
     let mut cur = Some(scope);
     while let Some(id) = cur {
@@ -118,6 +123,15 @@ fn in_skipped_method(scope: ScopeId, tree: &ScopeTree, symbols: &SymbolTable) ->
             {
                 return true;
             }
+        }
+        if s.kind == ScopeKind::Procedure
+            && symbols.iter().any(|(_, sym)| {
+                sym.kind == SymbolKind::Procedure
+                    && sym.declaration == s.owner_node
+                    && sym.flags.contains(SymbolFlags::PROTOTYPE)
+            })
+        {
+            return true;
         }
         cur = s.parent;
     }

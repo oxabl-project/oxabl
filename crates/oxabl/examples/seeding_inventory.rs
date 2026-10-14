@@ -207,7 +207,7 @@ fn walk_routines(
             SK::Interface { name, body, .. } => {
                 walk_routines(body, Some(&name.name), true, ctx, out);
             }
-            SK::Procedure { name, body } => {
+            SK::Procedure { name, body, .. } => {
                 out.push(build_routine(
                     ctx,
                     "Procedure",
