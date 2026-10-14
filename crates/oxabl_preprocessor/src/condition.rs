@@ -18,9 +18,13 @@ pub struct Environment<'a> {
 pub enum Gap {
     /// `PROVERSION` was read and the environment gives no version.
     UnsetProversion,
-    /// A function, name, operator or shape the evaluator does not model. Holds
-    /// the text to show.
+    /// A function, name, operator or shape the evaluator does not model, so the
+    /// value of that part is a guess. Holds the text to show.
     Unmodelled(String),
+    /// A syntax error, or a comparison of values of different types. The AVM
+    /// rejects such a condition, whatever else is in it, so no operand settles it
+    /// and it is never dropped like a guess. Holds the text to show.
+    Invalid(String),
 }
 
 /// The outcome of one condition: the branch taken and every gap behind it.
@@ -39,7 +43,7 @@ pub struct Evaluation {
 /// - `=` `<>` `<` `>` `<=` `>=` (and `EQ` `NE` `LT` `GT` `LE` `GE`), `BEGINS`, `MATCHES`
 /// - `?`, the unknown value: equal only to itself, unknown in every other
 ///   comparison. `NOT`, `AND` and `OR` are three-valued, and an unknown result
-///   selects no branch
+///   is false, so the `&ELSE` or `&ELSEIF` branch is taken
 /// - `NOT`, `AND`, `OR`, parentheses
 /// - `+` `-` `*` `MODULO` on integers, `+` on strings
 /// - `DEFINED(name)` (0 undefined, 1 `&GLOBAL-DEFINE`, 2 include argument,
@@ -49,9 +53,13 @@ pub struct Evaluation {
 ///   `NUM-ENTRIES`, `LOOKUP`, `ABSOLUTE`, `MAXIMUM`, `MINIMUM`
 /// - `DBTYPE`, `CONNECTED` and `LDBNAME` of a logical database name, from the
 ///   databases the environment lists: `DBTYPE` is `PROGRESS` unless the
-///   environment says otherwise, and `?` for an unlisted name. They are a [`Gap`]
-///   while no list is known, and for a sequence number, which depends on the
-///   order of connection.
+///   environment says otherwise. `DICTDB` is the first database listed in a
+///   stated list; for an inferred one only `CONNECTED("DICTDB")` is known, as its
+///   order is not that of connection. A name
+///   that a stated list does not hold is `?`; a name that a list inferred from
+///   the schema file names does not hold is a [`Gap`], as that list may miss the
+///   logical name. They are a [`Gap`] too while no list is known, and for a
+///   sequence number, which depends on the order of connection.
 ///
 /// Comparisons are case-insensitive (ABL semantics). Two strings compare as text
 /// and two numbers as numbers; a string against a number, or either against a
@@ -61,6 +69,12 @@ pub struct Evaluation {
 /// caller must treat it as a guess. That covers every other function (`SEARCH`
 /// asks whether a file exists, which no evaluator here can know), every bare
 /// name, `/`, arithmetic on decimals, and any token left over once the expression ends.
+///
+/// `AND` and `OR` are read as a whole. When an operand gives the value that
+/// settles the chain (false for `AND`, true for `OR`) without a guess, the guesses
+/// in the other operands, before it or after it, cannot change the result and
+/// raise no gap. A syntax error or a mixed-type comparison is [`Gap::Invalid`]
+/// and always stays.
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
@@ -73,7 +87,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     };
     let value = parser.parse_or();
     if parser.pos < tokens.len() {
-        parser.gap(format!("unexpected {}", describe(&tokens[parser.pos])));
+        parser.invalid(format!("unexpected {}", describe(&tokens[parser.pos])));
     }
     let value = parser.truth(&value);
     Evaluation {
@@ -504,7 +518,8 @@ struct CondParser<'a> {
     pos: usize,
     env: &'a Environment<'a>,
     gaps: Vec<Gap>,
-    /// How many times a guess was made, counting repeats that `gaps` folds.
+    /// How many times a guess was made, counting repeats that `gaps` folds. A
+    /// [`Gap::Invalid`] is no guess and is not counted.
     guesses: usize,
 }
 
@@ -526,8 +541,14 @@ impl<'a> CondParser<'a> {
         self.record(Gap::Unmodelled(what));
     }
 
+    fn invalid(&mut self, what: String) {
+        self.record(Gap::Invalid(what));
+    }
+
     fn record(&mut self, gap: Gap) {
-        self.guesses += 1;
+        if !matches!(gap, Gap::Invalid(_)) {
+            self.guesses += 1;
+        }
         if !self.gaps.contains(&gap) {
             self.gaps.push(gap);
         }
@@ -553,7 +574,7 @@ impl<'a> CondParser<'a> {
         }
     }
 
-    /// The branch a value selects: an unknown one selects none.
+    /// The branch a value selects: an unknown one is false.
     fn truth(&mut self, v: &CondValue) -> bool {
         self.tri(v).unwrap_or(false)
     }
@@ -569,27 +590,24 @@ impl<'a> CondParser<'a> {
 
     /// `operand (op operand)*` for `AND` or `OR`, read left to right.
     ///
-    /// Once an operand has settled the result without a guess (`true` for `OR`,
-    /// `false` for `AND`), the operands after it cannot change the result, so
-    /// the gaps they would record are dropped.
+    /// When an operand gives the value that settles the chain without a guess
+    /// (`true` for `OR`, `false` for `AND`), the result is that value whatever the
+    /// other operands are, so the guesses they made, before or after it, are
+    /// dropped. A [`Gap::Invalid`] is kept.
     fn parse_chain(&mut self, operand: fn(&mut Self) -> CondValue, op: CondToken) -> CondValue {
         let settling = op == CondToken::Or;
-        let guesses = self.guesses;
+        let (gaps_before, guesses_before) = (self.gaps.len(), self.guesses);
         let first = operand(self);
         if self.peek() != Some(&op) {
             return first;
         }
         let mut result = self.tri(&first);
-        let mut settled = result == Some(settling) && self.guesses == guesses;
+        let mut settled = result == Some(settling) && self.guesses == guesses_before;
         while self.eat(&op) {
-            let (gaps, guesses) = (self.gaps.len(), self.guesses);
+            let guesses = self.guesses;
             let rhs = operand(self);
             let rhs = self.tri(&rhs);
-            if settled {
-                self.gaps.truncate(gaps);
-            } else {
-                settled = rhs == Some(settling) && self.guesses == guesses;
-            }
+            settled |= rhs == Some(settling) && self.guesses == guesses;
             // Three-valued: an operand of the settling value decides the result,
             // otherwise an unknown operand leaves it unknown.
             result = match (result, rhs) {
@@ -597,6 +615,15 @@ impl<'a> CondParser<'a> {
                 (Some(_), Some(_)) => Some(!settling),
                 _ => None,
             };
+        }
+        if settled {
+            let mut index = 0;
+            self.gaps.retain(|gap| {
+                index += 1;
+                index <= gaps_before || matches!(gap, Gap::Invalid(_))
+            });
+            // What is left of the guesses is what came before the chain.
+            self.guesses = guesses_before;
         }
         logical(result)
     }
@@ -686,7 +713,7 @@ impl<'a> CondParser<'a> {
 
     fn parse_primary(&mut self) -> CondValue {
         let Some(token) = self.tokens.get(self.pos) else {
-            self.gap("an expression that ends early".into());
+            self.invalid("an expression that ends early".into());
             return CondValue::Unknown;
         };
         self.pos += 1;
@@ -700,13 +727,13 @@ impl<'a> CondParser<'a> {
                 Some(Origin::Mixed) => CondValue::Positive,
             },
             CondToken::BareDefined => {
-                self.gap("DEFINED without a name in parentheses".into());
+                self.invalid("DEFINED without a name in parentheses".into());
                 CondValue::Unknown
             }
             CondToken::LParen => {
                 let result = self.parse_or();
                 if !self.eat(&CondToken::RParen) {
-                    self.gap("a missing ')'".into());
+                    self.invalid("a missing ')'".into());
                 }
                 result
             }
@@ -735,7 +762,7 @@ impl<'a> CondParser<'a> {
             },
             CondToken::Ident(name) => self.parse_name(name),
             other => {
-                self.gap(format!("unexpected {}", describe(other)));
+                self.invalid(format!("unexpected {}", describe(other)));
                 CondValue::Unknown
             }
         }
@@ -772,7 +799,7 @@ impl<'a> CondParser<'a> {
                     continue;
                 }
                 if !self.eat(&CondToken::RParen) {
-                    self.gap("a missing ')'".into());
+                    self.invalid("a missing ')'".into());
                 }
                 break;
             }
@@ -796,12 +823,18 @@ impl<'a> CondParser<'a> {
     /// from the databases the environment lists.
     fn database_call(&mut self, name: &str, args: &[CondValue]) -> CondValue {
         let config = self.env.config;
-        let Some(databases) = config.databases.as_deref() else {
-            self.gap(format!(
-                "the function {name}, with no connected databases known \
-                 (list them under `databases` in [workspace.preprocessor] or configure [workspace.schema])"
-            ));
-            return CondValue::Unknown;
+        // A stated list is all that is connected; one inferred from the schema
+        // file names is not, as a file name is not always the logical name.
+        let (databases, stated) = match (&config.databases, &config.inferred_databases) {
+            (Some(stated), _) => (stated.as_slice(), true),
+            (None, Some(inferred)) => (inferred.as_slice(), false),
+            (None, None) => {
+                self.gap(format!(
+                    "the function {name}, with no connected databases known \
+                     (list them under `databases` in [workspace.preprocessor] or configure [workspace.schema])"
+                ));
+                return CondValue::Unknown;
+            }
         };
         let wanted = match args {
             [CondValue::Str(wanted)] => wanted,
@@ -818,7 +851,29 @@ impl<'a> CondParser<'a> {
                 return CondValue::Unknown;
             }
         };
-        let connected = databases.iter().find(|d| d.eq_ignore_ascii_case(wanted));
+        // `DICTDB` is the alias of the first database, unless one is named so.
+        let named = databases.iter().find(|d| d.eq_ignore_ascii_case(wanted));
+        let alias = named.is_none() && wanted.eq_ignore_ascii_case("DICTDB");
+        // An inferred list is in the order of the schema files, not of connection,
+        // so only the fact that some database is connected is known of the alias.
+        if alias && !stated {
+            if name == "CONNECTED" && !databases.is_empty() {
+                return CondValue::Bool(true);
+            }
+            self.gap(format!(
+                "the function {name} of 'DICTDB', which is the first connected database \
+                 (list the connected databases under `databases` in [workspace.preprocessor])"
+            ));
+            return CondValue::Unknown;
+        }
+        let connected = named.or_else(|| alias.then(|| databases.first()).flatten());
+        if connected.is_none() && !stated {
+            self.gap(format!(
+                "the function {name} of '{wanted}', which is not a schema file name \
+                 (list the connected databases under `databases` in [workspace.preprocessor])"
+            ));
+            return CondValue::Unknown;
+        }
         match (name, connected) {
             ("CONNECTED", connected) => CondValue::Bool(connected.is_some()),
             (_, None) => CondValue::Null,
@@ -872,7 +927,7 @@ impl<'a> CondParser<'a> {
         Some(match (type_of(lhs), type_of(rhs)) {
             // The AVM rejects it. The branch is a guess, read the loose way.
             (Some(a), Some(b)) if a != b => {
-                self.gap(format!(
+                self.invalid(format!(
                     "a comparison of {} with {}",
                     a.describe(),
                     b.describe()
@@ -1707,12 +1762,144 @@ mod tests {
             r#""yes-ish" OR SEARCH("a") = 1"#,
             r#"SEARCH("a") = 1 OR SEARCH("b") = 1"#,
             r#"TRUE AND (FALSE OR SEARCH("a") = 1)"#,
+            r#"? OR SEARCH("a") = 1"#,
         ] {
             assert!(!gaps(condition).is_empty(), "{condition}");
         }
-        // A gap before the settling operand stays; one after it does not.
-        let e = eval(r#"SEARCH("a") = 1 OR TRUE OR KEYWORD("b") = "x""#);
-        assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
+    }
+
+    /// The gap of a call to a function the evaluator does not model.
+    fn unmodelled_function(name: &str) -> Gap {
+        Gap::Unmodelled(format!("the function {name}"))
+    }
+
+    /// The result is the settling value whatever an operand guesses, so a guess
+    /// raises nothing wherever it stands in the chain.
+    #[test]
+    fn a_guess_beside_an_operand_that_settles_the_result_raises_no_gap() {
+        let decided = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(
+                (e.value, e.gaps.as_slice()),
+                (value, &[][..]),
+                "{condition}"
+            );
+        };
+        decided(r#"SEARCH("a") = 1 OR TRUE"#, true);
+        decided(r#"SEARCH("a") = 1 AND FALSE"#, false);
+        decided(r#"SEARCH("a") = 1 OR TRUE OR KEYWORD("b") = "x""#, true);
+        decided(r#"SEARCH("a") = 1 OR SEARCH("b") = 1 OR TRUE"#, true);
+        decided(
+            r#"SEARCH("a") = 1 AND TRUE AND FALSE AND SEARCH("b") = 1"#,
+            false,
+        );
+        decided(r#"SEARCH("a") = 1 AND SEARCH("b") = 1 OR TRUE"#, true);
+        decided(
+            r#"SEARCH("a") = 1 OR SEARCH("b") = 1 AND FALSE OR TRUE"#,
+            true,
+        );
+        decided(r#"NOT (SEARCH("a") = 1 AND FALSE)"#, true);
+        decided(
+            r#"SEARCH("a") = 1 OR TRUE AND SEARCH("b") = 1 OR TRUE"#,
+            true,
+        );
+    }
+
+    #[test]
+    fn a_settled_chain_inside_another_settles_the_outer_one_too() {
+        let decided = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(
+                (e.value, e.gaps.as_slice()),
+                (value, &[][..]),
+                "{condition}"
+            );
+        };
+        decided(r#"(TRUE OR SEARCH("a") = 1) OR SEARCH("b") = 1"#, true);
+        decided(r#"SEARCH("b") = 1 OR (TRUE OR SEARCH("a") = 1)"#, true);
+        decided(
+            r#"((TRUE OR SEARCH("a") = 1) OR SEARCH("b") = 1) OR SEARCH("c") = 1"#,
+            true,
+        );
+        decided(r#"(FALSE AND SEARCH("a") = 1) AND SEARCH("b") = 1"#, false);
+        decided(
+            r#"(SEARCH("a") = 1 OR TRUE) AND (SEARCH("b") = 1 OR TRUE)"#,
+            true,
+        );
+        decided(r#"(SEARCH("a") = 1 AND FALSE) OR TRUE"#, true);
+        decided(
+            r#"NOT (TRUE OR SEARCH("a") = 1) OR (TRUE OR SEARCH("b") = 1)"#,
+            true,
+        );
+        decided(r#"DBTYPE("x") = "y" OR (TRUE OR SEARCH("a") = 1)"#, true);
+    }
+
+    #[test]
+    fn a_chain_that_settles_cannot_hide_the_guess_of_one_that_does_not() {
+        let search = || unmodelled_function("SEARCH");
+        let keyword = || unmodelled_function("KEYWORD");
+        // The inner chain settles for itself, but not for the chain around it.
+        let e = eval(r#"(SEARCH("a") = 1 AND FALSE) OR KEYWORD("b") = "x""#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [keyword()]);
+
+        let e = eval(r#"SEARCH("a") = 1 OR (FALSE AND KEYWORD("b") = "x")"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+
+        let e = eval(r#"SEARCH("a") = 1 AND (TRUE OR KEYWORD("b") = "x")"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+
+        let e = eval(r#"SEARCH("a") = 1 AND (FALSE OR KEYWORD("b") = "x" OR TRUE)"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+
+        // An inner chain keeps a guess that the operand before it already made.
+        let e = eval(r#"SEARCH("a") = 1 AND (FALSE OR SEARCH("b") = 1 OR TRUE)"#);
+        assert!(!e.value);
+        assert_eq!(e.gaps, [search()]);
+    }
+
+    #[test]
+    fn an_operand_that_is_true_only_by_a_guess_settles_nothing() {
+        let string_as_logical = Gap::Unmodelled("a string used as a logical".into());
+        for condition in [
+            r#""yes-ish" OR SEARCH("a") = 1"#,
+            r#"SEARCH("a") = 1 OR "yes-ish""#,
+        ] {
+            let e = eval(condition);
+            assert!(e.gaps.contains(&string_as_logical), "{condition}");
+            assert!(
+                e.gaps.contains(&unmodelled_function("SEARCH")),
+                "{condition}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_syntax_error_or_a_mixed_comparison_is_never_dropped() {
+        let invalid = |condition: &str, value: bool| {
+            let e = eval(condition);
+            assert_eq!(e.value, value, "{condition}");
+            assert!(
+                !e.gaps.is_empty() && e.gaps.iter().all(|g| matches!(g, Gap::Invalid(_))),
+                "{condition}: {:?}",
+                e.gaps
+            );
+        };
+        invalid("TRUE OR 1 +", true);
+        invalid(r#"TRUE OR "5" = 5"#, true);
+        invalid(r#""5" = 5 OR TRUE"#, true);
+        invalid("FALSE AND (1 = 1", false);
+        invalid("TRUE OR 1 = 1 2", true);
+        invalid("TRUE OR DEFINED = 1", true);
+        invalid("TRUE OR", true);
+        // Beside a guess, only the guess goes.
+        invalid(r#"TRUE OR SEARCH("a") = 1 OR "5" = 5"#, true);
+        invalid(r#"(TRUE OR "5" = 5) OR SEARCH("a") = 1"#, true);
+        invalid(r#"SEARCH("a") = 1 OR TRUE OR 1 +"#, true);
+        invalid(r#"FALSE AND SEARCH("a") = 1 AND "5" = 5"#, false);
     }
 
     #[test]
@@ -1733,7 +1920,7 @@ mod tests {
 
     #[test]
     fn an_unmodelled_call_swallows_its_arguments() {
-        let e = eval(r#"SEARCH("a,b.i") = ? OR TRUE"#);
+        let e = eval(r#"NOT (SEARCH("a,b.i") = ?)"#);
         assert!(e.value);
         assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
     }
@@ -1771,7 +1958,7 @@ mod tests {
 
     #[test]
     fn the_unknown_value_is_a_third_truth_value() {
-        // An unknown comparison stays unknown through NOT, so no branch is taken.
+        // An unknown comparison stays unknown through NOT, so the condition is false.
         assert!(!exact("NOT (1 < ?)"));
         assert!(!exact("NOT ?"));
         assert!(!exact("?"));
@@ -1851,6 +2038,118 @@ mod tests {
         assert!(!e.value && e.gaps.is_empty());
         let e = eval_databases(r#"DBTYPE("ledger_db") NE ?"#, Some(&[]));
         assert!(!e.value && e.gaps.is_empty());
+    }
+
+    /// A condition over `inferred` database names, as the schema file names give
+    /// them, with `stated` as the list the config states, if any.
+    fn eval_inferred(condition: &str, inferred: &[&str], stated: Option<&[&str]>) -> Evaluation {
+        let owned = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        let config = PreprocessorConfig {
+            databases: stated.map(owned),
+            inferred_databases: Some(owned(inferred)),
+            ..PreprocessorConfig::default()
+        };
+        let vars = PreprocVarTable::new();
+        super::evaluate(
+            condition,
+            &Environment {
+                vars: &vars,
+                config: &config,
+            },
+        )
+    }
+
+    #[test]
+    fn dictdb_is_the_first_listed_database() {
+        let listed = Some(&["ledger_db", "Stock"][..]);
+        let exact = |condition: &str| {
+            let e = eval_databases(condition, listed);
+            assert!(e.gaps.is_empty(), "{condition}: {:?}", e.gaps);
+            e.value
+        };
+        assert!(exact(r#"CONNECTED("DICTDB")"#));
+        assert!(exact(r#"CONNECTED("dictdb")"#));
+        assert!(exact(r#"DBTYPE("DICTDB") = "PROGRESS""#));
+        assert!(exact(r#"LDBNAME("DICTDB") = "ledger_db""#));
+        // The alias follows the first database, not the second.
+        let e = eval_databases(r#"DBTYPE("DICTDB") = "ORACLE""#, Some(&["Stock", "other"]));
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+        // With nothing connected the alias names nothing.
+        let e = eval_databases(r#"CONNECTED("DICTDB")"#, Some(&[]));
+        assert!(!e.value && e.gaps.is_empty());
+        let e = eval_databases(r#"DBTYPE("DICTDB") = ?"#, Some(&[]));
+        assert!(e.value && e.gaps.is_empty());
+        // A database that is named DICTDB is found before the alias is.
+        let e = eval_databases(r#"LDBNAME("DICTDB") = "DICTDB""#, Some(&["a", "DICTDB"]));
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+    }
+
+    #[test]
+    fn an_unlisted_name_in_an_inferred_list_is_a_gap_not_the_unknown_value() {
+        for condition in [
+            r#"DBTYPE("ledger") NE ?"#,
+            r#"DBTYPE("ledger") = ?"#,
+            r#"CONNECTED("ledger")"#,
+            r#"NOT CONNECTED("ledger")"#,
+            r#"LDBNAME("ledger") = ?"#,
+        ] {
+            let e = eval_inferred(condition, &["ledger_v12"], None);
+            assert_eq!(e.gaps.len(), 1, "{condition}: {:?}", e.gaps);
+            let Gap::Unmodelled(what) = &e.gaps[0] else {
+                panic!("{:?}", e.gaps)
+            };
+            assert!(what.contains("'ledger'"), "{what}");
+            assert!(what.contains("`databases`"), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_listed_name_in_an_inferred_list_is_answered() {
+        let exact = |condition: &str| {
+            let e = eval_inferred(condition, &["ledger_v12", "Stock"], None);
+            assert!(e.gaps.is_empty(), "{condition}: {:?}", e.gaps);
+            e.value
+        };
+        assert!(exact(r#"DBTYPE("LEDGER_V12") = "PROGRESS""#));
+        assert!(exact(r#"CONNECTED("stock")"#));
+        assert!(exact(r#"LDBNAME("stock") = "Stock""#));
+        assert!(exact(r#"CONNECTED("DICTDB")"#));
+        assert!(!exact(r#"NOT CONNECTED("DICTDB")"#));
+    }
+
+    #[test]
+    fn ldbname_and_dbtype_of_dictdb_in_an_inferred_list_are_a_gap() {
+        for condition in [
+            r#"LDBNAME("DICTDB") = "ledger_v12""#,
+            r#"DBTYPE("dictdb") = "PROGRESS""#,
+            r#"DBTYPE("DICTDB") NE ?"#,
+        ] {
+            let e = eval_inferred(condition, &["ledger_v12", "Stock"], None);
+            assert_eq!(e.gaps.len(), 1, "{condition}: {:?}", e.gaps);
+        }
+        // A database that is named DICTDB is still found by its name.
+        let e = eval_inferred(r#"LDBNAME("DICTDB") = "DICTDB""#, &["a", "DICTDB"], None);
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+    }
+
+    #[test]
+    fn dictdb_in_an_inferred_list_is_a_gap_when_nothing_is_listed() {
+        let e = eval_inferred(r#"CONNECTED("DICTDB")"#, &[], None);
+        assert_eq!(e.gaps.len(), 1, "{:?}", e.gaps);
+    }
+
+    #[test]
+    fn a_stated_list_is_closed_whatever_the_inferred_one_holds() {
+        let e = eval_inferred(
+            r#"DBTYPE("ledger_v12") NE ?"#,
+            &["ledger_v12"],
+            Some(&["main"]),
+        );
+        assert!(!e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+        let e = eval_inferred(r#"CONNECTED("main")"#, &["ledger_v12"], Some(&["main"]));
+        assert!(e.value && e.gaps.is_empty(), "{:?}", e.gaps);
+        let e = eval_inferred(r#"CONNECTED("ledger_v12")"#, &["ledger_v12"], Some(&[]));
+        assert!(!e.value && e.gaps.is_empty(), "{:?}", e.gaps);
     }
 
     #[test]

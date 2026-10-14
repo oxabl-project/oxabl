@@ -407,9 +407,10 @@ fn derive(
         (Schema::empty(), false)
     } else {
         // The databases the schema describes are the ones connected, unless the
-        // config says which are.
+        // config says which are. A file name is only a guess at the logical name,
+        // so this list stays apart from the one the config states.
         if preprocessor.databases.is_none() {
-            preprocessor.databases = Some(logical_database_names(&files));
+            preprocessor.inferred_databases = Some(logical_database_names(&files));
         }
         let (schema, diags) = SchemaLoader::load_files(&files, &RealFileSystem);
         warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
@@ -900,7 +901,7 @@ mod tests {
         assert!(!config.schema_loaded, "no schema path supplied");
     }
 
-    fn databases_of(table: &str, overrides: &ConfigOverrides) -> Option<Vec<String>> {
+    fn preprocessor_of(table: &str, overrides: &ConfigOverrides) -> PreprocessorConfig {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         fs::create_dir_all(root.join("schema")).unwrap();
@@ -914,20 +915,19 @@ mod tests {
             &format!("[workspace]\nname = \"p\"\n{table}"),
         );
         let (config, _) = PipelineConfig::resolve(&root.join("main.p"), overrides);
-        config.preprocessor.databases
+        config.preprocessor
     }
 
     const SCHEMA_FILES: &str = "[workspace.schema]\nfiles = [\"schema/ledger.df\", \"schema/Stock.DF\", \"schema/STOCK.df\"]\n";
 
     /// The schema files are the databases the code compiles against, so each
-    /// one's name is a connected logical database, once however it is cased.
+    /// one's name is a connected logical database, once however it is cased. The
+    /// names stay apart from the stated list, as a file name is only a guess.
     #[test]
     fn databases_default_to_the_names_of_the_schema_files() {
-        let names = |dbs: Option<Vec<String>>| dbs.unwrap();
-        assert_eq!(
-            names(databases_of(SCHEMA_FILES, &ConfigOverrides::default())),
-            ["ledger", "Stock"]
-        );
+        let pp = preprocessor_of(SCHEMA_FILES, &ConfigOverrides::default());
+        assert_eq!(pp.inferred_databases.unwrap(), ["ledger", "Stock"]);
+        assert_eq!(pp.databases, None);
     }
 
     #[test]
@@ -945,33 +945,35 @@ mod tests {
             ..Default::default()
         };
         let (config, _) = PipelineConfig::resolve(&root.join("main.p"), &overrides);
-        assert_eq!(config.preprocessor.databases.unwrap(), ["ledger", "stock"]);
+        assert_eq!(
+            config.preprocessor.inferred_databases.unwrap(),
+            ["ledger", "stock"]
+        );
 
         let overrides = ConfigOverrides {
             schema_path: Some(root.join("schema/stock.df")),
             ..Default::default()
         };
         let (config, _) = PipelineConfig::resolve(&root.join("main.p"), &overrides);
-        assert_eq!(config.preprocessor.databases.unwrap(), ["stock"]);
+        assert_eq!(config.preprocessor.inferred_databases.unwrap(), ["stock"]);
     }
 
     #[test]
     fn a_configured_database_list_replaces_the_schema_names() {
         let table = format!("{SCHEMA_FILES}[workspace.preprocessor]\ndatabases = [\"main\"]\n");
-        assert_eq!(
-            databases_of(&table, &ConfigOverrides::default()).unwrap(),
-            ["main"]
-        );
+        let pp = preprocessor_of(&table, &ConfigOverrides::default());
+        assert_eq!(pp.databases.unwrap(), ["main"]);
+        assert_eq!(pp.inferred_databases, None);
         let table = format!("{SCHEMA_FILES}[workspace.preprocessor]\ndatabases = []\n");
-        assert_eq!(
-            databases_of(&table, &ConfigOverrides::default()).unwrap(),
-            Vec::<String>::new()
-        );
+        let pp = preprocessor_of(&table, &ConfigOverrides::default());
+        assert_eq!(pp.databases.unwrap(), Vec::<String>::new());
+        assert_eq!(pp.inferred_databases, None);
     }
 
     #[test]
     fn no_schema_and_no_list_leave_the_databases_unknown() {
-        assert_eq!(databases_of("", &ConfigOverrides::default()), None);
+        let pp = preprocessor_of("", &ConfigOverrides::default());
+        assert_eq!((pp.databases, pp.inferred_databases), (None, None));
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -984,6 +986,7 @@ mod tests {
         let (config, _) =
             PipelineConfig::resolve_style_only(&root.join("main.p"), &ConfigOverrides::default());
         assert_eq!(config.preprocessor.databases, None);
+        assert_eq!(config.preprocessor.inferred_databases, None);
     }
 
     /// A `--schema` *directory* holding no `.df` file is a misconfiguration, not
