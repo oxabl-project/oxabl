@@ -50,8 +50,9 @@
 //! linted. A context-free rule reports it once, in the include file itself,
 //! when a client lints that file as a root (`oxabl check <dir>` does so for
 //! every `.i` file it walks; an editor does so for an open buffer). The fragment
-//! is expanded with no includer, so a finding on a statement with a `{...}`
-//! reference or an `&IF` is lower confidence: see [`fragment`].
+//! is expanded with no includer, so a finding on a statement that an includer
+//! can change (a `{...}` reference, an `&IF`) is lower confidence: see
+//! [`fragment`].
 //!
 
 use oxabl_ast::Statement;

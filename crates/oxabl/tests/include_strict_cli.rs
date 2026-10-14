@@ -336,3 +336,69 @@ fn a_directory_with_nothing_to_check_is_still_a_usage_error() {
     let (exit, _, stderr) = check(dir.path(), &["inc", "--no-lint"]);
     assert_eq!(exit, Some(2), "{stderr}");
 }
+
+#[test]
+fn the_includer_note_marks_only_what_an_includer_can_change() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), STRICT_ALL);
+    write(&dir.path().join("src/name.i"), "\"x\"");
+    write(&dir.path().join("src/dep.i"), "\"x\"{&suffix}");
+    write(
+        &dir.path().join("src/guard.i"),
+        "&IF DEFINED(guard-once) = 0 &THEN\n&GLOBAL-DEFINE guard-once 1\n\
+         RUN VALUE(c).\n&ENDIF\n",
+    );
+    write(
+        &dir.path().join("src/inc.i"),
+        "&SCOPED-DEFINE pfx {1}\n\
+         RUN VALUE(c + {name.i}).\n\
+         RUN VALUE(c + {dep.i}).\n\
+         DEFINE {1} SHARED VARIABLE s AS INTEGER.\n\
+         DEFINE {&mod} VARIABLE m AS INTEGER.\n\
+         DEFINE VARIABLE p AS INTEGER.\n",
+    );
+    let (_, stdout, stderr) = check(dir.path(), &["src", "--json"]);
+    let report = json(&stdout);
+    let rows = |file: &str| -> Vec<(u64, String, String)> {
+        report["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["path"].as_str().unwrap().ends_with(file))
+            .filter(|d| ["CL001", "TX006"].contains(&d["code"].as_str().unwrap()))
+            .map(|d| {
+                (
+                    d["start"]["line"].as_u64().unwrap(),
+                    d["code"].as_str().unwrap().to_string(),
+                    d["help"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    let note = |help: &str| help.contains("depends on the including file");
+    let inc = rows("inc.i");
+    assert_eq!(inc.len(), 5, "{inc:?}\n{stderr}");
+
+    // The include that cannot change expands the same everywhere.
+    assert_eq!((inc[0].0, note(&inc[0].2)), (2, false), "{inc:?}");
+    assert_eq!((inc[1].0, note(&inc[1].2)), (3, true), "{inc:?}");
+    // A literal SHARED keeps the producer and consumers help; a reference in
+    // the slot says that an includer may share it, and never the plain help.
+    assert_eq!(inc[2].0, 4);
+    assert!(inc[2].2.contains("producer") && note(&inc[2].2), "{inc:?}");
+    assert_eq!(inc[3].0, 5);
+    assert!(
+        inc[3]
+            .2
+            .contains("If an includer makes this definition `SHARED`")
+            && note(&inc[3].2),
+        "{inc:?}"
+    );
+    assert_eq!(inc[4].0, 6);
+    assert_eq!(inc[4].2, "Add `NO-UNDO` to the definition.");
+
+    // An include guard is not a dependence.
+    let guard = rows("guard.i");
+    assert_eq!(guard.len(), 1, "{guard:?}");
+    assert!(!note(&guard[0].2), "{guard:?}");
+}
