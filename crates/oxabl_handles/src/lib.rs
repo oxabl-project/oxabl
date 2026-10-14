@@ -10,8 +10,9 @@
 //!
 //! An [`Object`] is one create site:
 //!
-//! * a handle-based object or widget: `CREATE QUERY`, `BUFFER`, `TEMP-TABLE`,
-//!   `DATASET`, `DATA-SOURCE`, `CALL`, ... ([`ObjectKind`]);
+//! * a handle-based object, widget or COM object: `CREATE QUERY`, `BUFFER`,
+//!   `TEMP-TABLE`, `DATASET`, `DATA-SOURCE`, `CALL`, `X-DOCUMENT`, `BUTTON`,
+//!   `CREATE "Excel.Application"`, `CREATE VALUE(...)`, ... ([`ObjectKind`]);
 //! * a persistent procedure: `RUN p PERSISTENT SET h`. Without `SET` no handle
 //!   is kept, and the verdict is [`Verdict::Uncaptured`];
 //! * a MEMPTR: `SET-SIZE(m) = n`, where `n` is not the literal 0;
@@ -33,8 +34,9 @@
 //! A path ends when:
 //!
 //! * a [`Free`] runs on a holder: `DELETE OBJECT`, `DELETE PROCEDURE`,
-//!   `DELETE WIDGET`, `SET-SIZE(m) = 0`, or `DELETE WIDGET-POOL` of the pool the
-//!   object is in;
+//!   `DELETE WIDGET`, `RELEASE OBJECT`, `SET-SIZE(m) = 0`, `APPLY "CLOSE"` (a
+//!   persistent procedure deletes itself on CLOSE by convention), or
+//!   `DELETE WIDGET-POOL` of the pool the object is in;
 //! * the unit exits with the object live. If it escaped on that path, the
 //!   object [`Verdict::Escapes`]; if it sits in a widget pool this procedure
 //!   deletes, the pool frees it ([`Verdict::PoolFreed`]); otherwise it leaks
@@ -48,9 +50,9 @@
 //! An [`Escape`] is a statement that hands the object to an owner the unit
 //! cannot see ([`EscapeKind`]): an `OUTPUT` parameter, `RETURN h`, a class
 //! member, a variable of an enclosing unit, a shared variable, a field, an
-//! array element, another object's attribute, `ADD-SUPER-PROCEDURE`, a
-//! constructor argument, an `INPUT-OUTPUT` argument, a `PUBLISH` argument or
-//! a `SUBSCRIBE PROCEDURE`. An `INPUT` argument of `RUN`, a function or a
+//! array element, another object's attribute, a parent widget (`FRAME`,
+//! `PARENT`), `ADD-SUPER-PROCEDURE`, a constructor argument, an
+//! `INPUT-OUTPUT` argument, a `PUBLISH` argument or a `SUBSCRIBE PROCEDURE`. An `INPUT` argument of `RUN`, a function or a
 //! method is a use, not an escape: the callee borrows the handle.
 //!
 //! Each [`Leak`] has its path. A path is *normal* when it raises no condition
@@ -163,7 +165,7 @@ pub fn analyze_file_with(
     units.dedup();
     let units = units
         .into_iter()
-        .map(|u| analysis::analyze_unit(&builder.build(u), &index, source))
+        .map(|u| analysis::analyze_unit(&builder.build(u), &index))
         .filter(|u| !u.objects.is_empty() || !u.pools.is_empty())
         .collect();
     FileHandles { units }

@@ -1,0 +1,18 @@
+unit u0 main
+  persistent-procedure @5 freed holder=hProc
+    free delete-procedure @6
+  persistent-procedure @9 freed holder=hClosed
+    free apply-close @10
+  widget @12 freed holder=hWidget pool=unscoped
+    free delete-widget @13
+unit u1 procedure persistent-pool
+  pool @18 "long" persistent
+  query @19 escapes holder=hQuery pool="long" persistent
+    free delete-widget-pool @21
+    escape persistent-pool @19
+  query @20 freed holder=hKept pool="long" persistent
+    free delete-widget-pool @21
+unit u2 procedure never-deleted-pool
+  pool @26 "forever" persistent
+  query @27 leaks holder=hQuery pool="forever" persistent
+    leak exit-return @27 normal path 27

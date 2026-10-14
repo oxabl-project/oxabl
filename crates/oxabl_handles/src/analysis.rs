@@ -16,7 +16,7 @@ use oxabl_flow::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::events::{self, Effect, Place, PoolRef};
+use crate::events::{Effect, Place, PoolRef};
 use crate::index::{FileIndex, Name};
 use crate::model::*;
 
@@ -33,6 +33,7 @@ enum Into {
 #[derive(Debug, Clone)]
 enum Fx {
     Create {
+        obj: u32,
         into: Into,
     },
     Free {
@@ -72,8 +73,8 @@ struct Obj {
     nodes: SmallVec<[NodeIx; 1]>,
 }
 
-pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex, src: &str) -> UnitHandles {
-    let mut u = UnitWalk::new(cfg, index, src);
+pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex) -> UnitHandles {
+    let mut u = UnitWalk::new(cfg, index);
     let mut objects: Vec<Object> = (0..u.objs.len()).map(|o| u.object(o as u32)).collect();
     objects.sort_by_key(|o| o.create.span.start);
     UnitHandles {
@@ -103,7 +104,7 @@ struct UnitWalk<'c, 'i, 'a> {
 }
 
 impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
-    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>, src: &str) -> Self {
+    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>) -> Self {
         let unit_stmt = cfg.unit().stmt;
         let mut w = UnitWalk {
             cfg,
@@ -178,7 +179,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                                 w.objs.len() as u32 - 1
                             });
                             w.objs[obj as usize].nodes.push(n);
-                            out.push(Fx::Create { into: into_r });
+                            out.push(Fx::Create { obj, into: into_r });
                         }
                         Effect::Collected => {
                             let key = (stmt, ordinal);
@@ -198,18 +199,12 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                                 w.objs.len() as u32 - 1
                             });
                         }
-                        Effect::Free { var: v, .. } | Effect::DeleteNamed { var: v, .. }
-                            if walkers.contains(&Name(v)) =>
-                        {
+                        Effect::Free { var: v, .. } if walkers.contains(&Name(v)) => {
                             out.push(Fx::Sweep)
                         }
                         Effect::Free { var: v, kind } => out.push(Fx::Free {
                             var: var(v),
                             kind: *kind,
-                        }),
-                        Effect::DeleteNamed { var: v, span } => out.push(Fx::Free {
-                            var: var(v),
-                            kind: events::delete_kind(src, *span),
                         }),
                         Effect::Assign { to, from } => {
                             let to = match to {
@@ -537,9 +532,17 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
         }
         let root = st.flags & ROOT != 0;
         let (normal, raised) = if root {
-            (Ok(st), Err(None))
+            // The rest of the create statement runs on the new object.
+            let after = self.u.fx[n.index()]
+                .iter()
+                .position(|f| matches!(f, Fx::Create { obj, .. } if *obj == self.o))
+                .map_or(0, |p| p + 1);
+            (self.apply(i, n, st, false, after), Err(None))
         } else {
-            (self.apply(i, n, st, false), self.apply(i, n, st, true))
+            (
+                self.apply(i, n, st, false, 0),
+                self.apply(i, n, st, true, 0),
+            )
         };
         let succ: SmallVec<[(NodeIx, EdgeKind); 4]> =
             cfg.successors(n).map(|e| (e.to, e.kind)).collect();
@@ -585,9 +588,17 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             }
     }
 
-    /// Run node `n`'s effects on the object. `Err(None)` stops the path with
-    /// nothing to record; `Err(Some(end))` stops it with that end recorded.
-    fn apply(&mut self, i: u32, n: NodeIx, st: State, raised: bool) -> Result<State, Option<End>> {
+    /// Run node `n`'s effects from the `from`-th on the object. `Err(None)`
+    /// stops the path with nothing to record; `Err(Some(end))` stops it with
+    /// that end recorded.
+    fn apply(
+        &mut self,
+        i: u32,
+        n: NodeIx,
+        st: State,
+        raised: bool,
+        from: usize,
+    ) -> Result<State, Option<End>> {
         let u = self.u;
         if let Some(reason) = u.cfg.node(n).opaque {
             let reason = match reason {
@@ -612,7 +623,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                 Err(Some(End::Lost))
             }
         };
-        for fx in &u.fx[n.index()] {
+        for fx in &u.fx[n.index()][from..] {
             match fx {
                 Fx::Create { into, .. } if !raised => {
                     if let Into::Var(v) = into

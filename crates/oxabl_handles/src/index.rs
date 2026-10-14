@@ -333,7 +333,7 @@ impl<'a> FileIndex<'a> {
         }
         for e in effects {
             match e {
-                Effect::Free { var, .. } | Effect::DeleteNamed { var, .. } => {
+                Effect::Free { var, .. } => {
                     let units = self.frees.entry(Name(var)).or_default();
                     if !units.contains(&unit) {
                         units.push(unit);

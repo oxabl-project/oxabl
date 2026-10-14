@@ -69,12 +69,17 @@ impl ObjectKind {
     }
 
     /// Whether the object goes into a widget pool when it is created: every
-    /// handle-based object and widget. Not procedures, MEMPTRs, COM objects or
-    /// class instances.
+    /// handle-based object and widget. Not procedures, MEMPTRs, COM objects,
+    /// class instances, server and socket objects, or a `CREATE VALUE` whose
+    /// type is not known.
     pub fn uses_widget_pool(self) -> bool {
         !matches!(
             self,
             ObjectKind::Automation
+                | ObjectKind::Dynamic
+                | ObjectKind::Server
+                | ObjectKind::Socket
+                | ObjectKind::ServerSocket
                 | ObjectKind::PersistentProcedure
                 | ObjectKind::Memptr
                 | ObjectKind::ClassInstance
@@ -181,6 +186,9 @@ pub enum EscapeKind {
     /// Held at the end of the main block by a variable that another unit of
     /// the file frees.
     FreedByOtherUnit,
+    /// A widget put under a parent widget (`ASSIGN FRAME = f`, `h:PARENT =
+    /// w`): deleting the parent deletes it.
+    WidgetParent,
 }
 
 impl EscapeKind {
@@ -204,6 +212,7 @@ impl EscapeKind {
             EscapeKind::ForeignPool => "foreign-pool",
             EscapeKind::PersistentPool => "persistent-pool",
             EscapeKind::FreedByOtherUnit => "freed-by-other-unit",
+            EscapeKind::WidgetParent => "widget-parent",
         }
     }
 }

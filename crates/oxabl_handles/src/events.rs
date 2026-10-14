@@ -5,8 +5,8 @@
 //! [`Effect`]s, so supporting a new AST form is a change here.
 
 use oxabl_ast::{
-    CreateTarget, CreateTargetKind, Expression, ExpressionKind as EK, Identifier, Literal,
-    ParameterDirection, Span, Statement, StatementKind as SK,
+    CreateTarget, CreateTargetKind, DeleteObjectKind, Expression, ExpressionKind as EK, Identifier,
+    Literal, ParameterDirection, Span, Statement, StatementKind as SK,
 };
 use oxabl_lexer::{Kind, Lexer};
 use smallvec::SmallVec;
@@ -65,12 +65,6 @@ pub(crate) enum Effect<'a> {
     },
     /// A statement the parser skips, with the names it passed over.
     Skipped(&'a [Identifier]),
-    /// `DELETE [PROCEDURE | WIDGET] var` that parses as a record delete; the
-    /// kind is read from the statement's tokens when it matters.
-    DeleteNamed {
-        var: &'a str,
-        span: Span,
-    },
     /// `recv:ADD-BUFFER(var)` or `recv:ADD-BUFFER(var:DEFAULT-BUFFER-HANDLE)`:
     /// an escape when `recv` holds a dataset.
     Attach {
@@ -99,50 +93,103 @@ pub(crate) type Effects<'a> = SmallVec<[Effect<'a>; 2]>;
 pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
     let mut out = Effects::new();
     match &s.kind {
-        SK::Create { target, .. } => match target {
-            CreateTarget::Handle {
-                kind,
-                handle,
-                widget_pool,
-            } => {
-                let pool = match widget_pool {
-                    Some(p) => PoolRef::Named(pool_name(p, src)),
-                    None => PoolRef::Default,
-                };
-                out.push(Effect::Create {
-                    kind: object_kind(*kind),
-                    into: Some(place_of_name(&handle.name)),
-                    pool,
+        SK::Create {
+            target:
+                CreateTarget::Handle {
+                    kind,
+                    handle,
+                    widget_pool,
+                    class,
+                    assignments,
+                    for_table,
+                    ..
+                },
+            ..
+        } => {
+            for e in [class, for_table, widget_pool].into_iter().flatten() {
+                scan(e, src, &mut out);
+            }
+            for a in assignments {
+                scan(&a.value, src, &mut out);
+            }
+            let pool = match widget_pool {
+                Some(p) => PoolRef::Named(pool_name(p, src)),
+                None => PoolRef::Default,
+            };
+            out.push(Effect::Create {
+                kind: object_kind(*kind),
+                into: place_of(handle),
+                pool,
+            });
+            // `ASSIGN FRAME = f` or `PARENT = w`: the parent widget owns it.
+            if let Some(var) = var_of(handle)
+                && assignments
+                    .iter()
+                    .any(|a| is_parent_attribute(&a.attribute.name))
+            {
+                out.push(Effect::Escape {
+                    var,
+                    kind: EscapeKind::WidgetParent,
                 });
             }
-            // `CREATE WIDGET-POOL ["name"].` parses as a create of an empty
-            // name today.
-            CreateTarget::Name(id) if id.name.is_empty() => out.push(Effect::CreatePool {
-                name: first_string(src, s.span),
-                persistent: false,
-            }),
-            CreateTarget::Name(_) => {}
-        },
-        SK::DeleteObject { target, .. } => {
-            scan(target, src, &mut out);
+            // Any other attribute set to a handle stores it in the new widget.
+            for a in assignments {
+                if let Some(var) = var_of(&a.value)
+                    && !is_parent_attribute(&a.attribute.name)
+                {
+                    out.push(Effect::Assign {
+                        to: Place::Other(EscapeKind::Attribute),
+                        from: Some(var),
+                    });
+                }
+            }
+        }
+        SK::CreateWidgetPool {
+            name, persistent, ..
+        } => out.push(Effect::CreatePool {
+            name: name.as_ref().map(|n| pool_name(n, src)),
+            persistent: *persistent,
+        }),
+        SK::DeleteWidgetPool { name, .. } => out.push(Effect::DeletePool {
+            name: name.as_ref().map(|n| pool_name(n, src)),
+        }),
+        SK::DeleteObject {
+            kind,
+            target,
+            extra_targets,
+            ..
+        } => {
+            let kind = match kind {
+                DeleteObjectKind::Procedure => FreeKind::DeleteProcedure,
+                DeleteObjectKind::Widget => FreeKind::DeleteWidget,
+                _ => FreeKind::DeleteObject,
+            };
+            for t in std::iter::once(target).chain(extra_targets) {
+                scan(t, src, &mut out);
+                if let Some(var) = var_of(t) {
+                    out.push(Effect::Free { var, kind });
+                }
+            }
+        }
+        SK::ReleaseObject { target, .. } => {
             if let Some(var) = var_of(target) {
                 out.push(Effect::Free {
                     var,
-                    kind: FreeKind::DeleteObject,
+                    kind: FreeKind::ReleaseObject,
                 });
             }
         }
-        // `DELETE PROCEDURE h`, `DELETE WIDGET h` and `DELETE WIDGET-POOL`
-        // parse as a record delete today.
-        SK::Delete { buffer, .. } => {
-            if buffer.name.is_empty() {
-                out.push(Effect::DeletePool {
-                    name: first_string(src, s.span),
-                });
-            } else {
-                out.push(Effect::DeleteNamed {
-                    var: &buffer.name,
-                    span: s.span,
+        // By convention a persistent procedure deletes itself on CLOSE.
+        SK::Apply {
+            event,
+            target: Some(target),
+        } => {
+            if let (EK::Literal(Literal::String(e)), Some(var)) = (&event.kind, var_of(target))
+                && e.value.eq_ignore_ascii_case("CLOSE")
+            {
+                out.push(Effect::Free {
+                    var,
+                    kind: FreeKind::ApplyClose,
                 });
             }
         }
@@ -297,6 +344,18 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
         return;
     }
     scan(value, src, out);
+    if let EK::MemberAccess { object, member } = &target.kind
+        && is_parent_attribute(&member.name)
+    {
+        // The value is the parent, which keeps its own owner.
+        if let Some(var) = var_of(object) {
+            out.push(Effect::Escape {
+                var,
+                kind: EscapeKind::WidgetParent,
+            });
+        }
+        return;
+    }
     if let (Some(var), EK::MemberAccess { member, .. }) = (var_of(target), &value.kind)
         && [
             "FIRST-PROCEDURE",
@@ -501,7 +560,25 @@ fn object_kind(k: CreateTargetKind) -> ObjectKind {
         CreateTargetKind::Query => ObjectKind::Query,
         CreateTargetKind::Widget => ObjectKind::Widget,
         CreateTargetKind::Call => ObjectKind::Call,
+        CreateTargetKind::XDocument => ObjectKind::XDocument,
+        CreateTargetKind::XNodeRef => ObjectKind::XNodeRef,
+        CreateTargetKind::SaxReader => ObjectKind::SaxReader,
+        CreateTargetKind::SaxWriter => ObjectKind::SaxWriter,
+        CreateTargetKind::SaxAttributes => ObjectKind::SaxAttributes,
+        CreateTargetKind::Socket => ObjectKind::Socket,
+        CreateTargetKind::ServerSocket => ObjectKind::ServerSocket,
+        CreateTargetKind::Server => ObjectKind::Server,
+        CreateTargetKind::SoapHeader => ObjectKind::SoapHeader,
+        CreateTargetKind::SoapHeaderEntryRef => ObjectKind::SoapHeaderEntryRef,
+        CreateTargetKind::ClientPrincipal => ObjectKind::ClientPrincipal,
+        CreateTargetKind::Automation => ObjectKind::Automation,
+        _ => ObjectKind::Dynamic,
     }
+}
+
+/// `FRAME` or `PARENT`: setting it puts a widget under a parent that owns it.
+fn is_parent_attribute(name: &str) -> bool {
+    name.eq_ignore_ascii_case("FRAME") || name.eq_ignore_ascii_case("PARENT")
 }
 
 fn pool_name(e: &Expression, src: &str) -> String {
@@ -544,25 +621,4 @@ fn tokens(src: &str, span: Span) -> impl Iterator<Item = Kind> + '_ {
         .map(|t| t.kind)
         .filter(|k| !matches!(k, Kind::Comment))
         .take_while(|k| *k != Kind::Eof)
-}
-
-/// The kind of free a `DELETE` that parses as a record delete is.
-pub(crate) fn delete_kind(src: &str, span: Span) -> FreeKind {
-    match tokens(src, span).nth(1) {
-        Some(Kind::Procedure) => FreeKind::DeleteProcedure,
-        _ => FreeKind::DeleteWidget,
-    }
-}
-
-/// The value of the first string literal in a statement, lowercased.
-fn first_string(src: &str, span: Span) -> Option<String> {
-    let text = slice(src, span);
-    Lexer::new(text)
-        .take_while(|t| t.kind != Kind::Eof)
-        .find(|t| t.kind == Kind::StringLiteral)
-        .and_then(|t| text.get(t.start..t.end))
-        .map(|s| {
-            s.trim_matches(|c| c == '"' || c == '\'')
-                .to_ascii_lowercase()
-        })
 }
