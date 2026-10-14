@@ -85,6 +85,7 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
 fn canonical_data_type(ty: &DataType) -> String {
     match ty {
         DataType::Class(name) => format!("class:{}", name.to_ascii_lowercase()),
+        DataType::Generic(generic) => format!("class:{}", generic.class.to_ascii_lowercase()),
         DataType::PreprocIf(branches) => {
             let mut parts = vec![canonical_data_type(&branches.then_branch)];
             parts.extend(
@@ -2137,51 +2138,34 @@ impl<'a> ResolveWalker<'a> {
         out: &mut Vec<ClassTypedDecl>,
     ) {
         for stmt in stmts {
-            match &stmt.kind {
+            let upgrade = match &stmt.kind {
                 StatementKind::VariableDeclaration {
                     name,
-                    type_source: TypeSource::Explicit(DataType::Class(class_name)),
+                    type_source: TypeSource::Explicit(data_type),
                     ..
-                } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
-                        out.push(up);
-                    }
                 }
-                StatementKind::DefineParameter {
+                | StatementKind::DefineParameter {
                     param_type:
                         ParameterType::Variable {
                             name,
-                            type_source: TypeSource::Explicit(DataType::Class(class_name)),
+                            type_source: TypeSource::Explicit(data_type),
                             ..
                         },
                     ..
-                } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
-                        out.push(up);
-                    }
                 }
-                StatementKind::Property {
-                    name,
-                    data_type: DataType::Class(class_name),
-                    ..
-                } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
-                        out.push(up);
-                    }
-                }
+                | StatementKind::Property {
+                    name, data_type, ..
+                } => data_type
+                    .class_name()
+                    .and_then(|class_name| self.class_upgrade(class_name, scope, name)),
                 StatementKind::Function {
-                    name,
-                    return_type: DataType::Class(class_name),
-                    ..
-                } => {
-                    if let Some(up) =
-                        self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
-                    {
-                        out.push(up);
-                    }
-                }
-                _ => {}
-            }
+                    name, return_type, ..
+                } => return_type.class_name().and_then(|class_name| {
+                    self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
+                }),
+                _ => None,
+            };
+            out.extend(upgrade);
             // Recurse into body-bearing scopes so nested declarations also
             // get upgraded. The correct scope for body resolution is the
             // child scope declare created.
@@ -3134,6 +3118,7 @@ impl<'a> ResolveWalker<'a> {
             ExpressionKind::New {
                 class_name,
                 arguments,
+                ..
             } => {
                 let atom = fold_atom(class_name);
                 let span = VirtualSpan::new(expr.span.start, expr.span.end);
@@ -7394,6 +7379,7 @@ mod tests {
     #[test]
     fn resolve_new_class_local_resolves_to_type() {
         let new_expr = expr_n(ExpressionKind::New {
+            type_arguments: None,
             class_name: "Foo".into(),
             arguments: vec![],
         });
@@ -7419,6 +7405,7 @@ mod tests {
     #[test]
     fn resolve_new_class_unknown_is_external() {
         let new_expr = expr_n(ExpressionKind::New {
+            type_arguments: None,
             class_name: "Nope".into(),
             arguments: vec![],
         });

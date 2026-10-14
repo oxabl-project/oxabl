@@ -1263,6 +1263,7 @@ mod tests {
     #[test]
     fn check_new_class_type_is_class_symbol() {
         let new_e = expr_n(ExpressionKind::New {
+            type_arguments: None,
             class_name: "Foo".into(),
             arguments: vec![],
         });

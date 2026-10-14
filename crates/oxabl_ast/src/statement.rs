@@ -771,6 +771,35 @@ pub enum AccessModifier {
     PackagePrivate,
 }
 
+/// A class name between the angle brackets of a generic type: `pkg.Thing` in
+/// `List<pkg.Thing>`.
+///
+/// Only class-shaped arguments are kept. A built-in type such as `INT64` names
+/// no class and is dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeArgument {
+    /// The class name as written, possibly dotted.
+    pub name: Identifier,
+    /// The arguments of this argument: `List<Thing>` in `Map<Key, List<Thing>>`.
+    pub arguments: TypeArguments,
+}
+
+/// The class names between the angle brackets of a generic type.
+///
+/// A newtype so that a node can hold it behind an `Option<Box<_>>` and cost
+/// one word when it has none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TypeArguments(pub Vec<TypeArgument>);
+
+/// A class name with the type arguments written after it. Boxed in
+/// [`DataType::Generic`] so a generic type costs the common type no space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericClass {
+    /// The class name without its type arguments.
+    pub class: String,
+    pub arguments: TypeArguments,
+}
+
 /// ABL data types for variable declarations
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataType {
@@ -793,9 +822,23 @@ pub enum DataType {
     Com,
     /// Class type with fully qualified name
     Class(String),
+    /// Generic class type, `List<pkg.Thing>`. A class written with no type
+    /// arguments is a [`DataType::Class`].
+    Generic(Box<GenericClass>),
     /// Conditional data type: &IF DEFINED(x) &THEN INTEGER &ELSE CHARACTER &ENDIF
     /// The else_branch is semantically required (parser enforces this).
     PreprocIf(Box<PreprocIf<DataType>>),
+}
+
+impl DataType {
+    /// The class name of a class type, with any type arguments left off.
+    pub fn class_name(&self) -> Option<&str> {
+        match self {
+            DataType::Class(name) => Some(name),
+            DataType::Generic(generic) => Some(&generic.class),
+            _ => None,
+        }
+    }
 }
 
 /// ABL Record Lock Types
