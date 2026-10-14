@@ -1218,6 +1218,9 @@ fn surface_baseline(report: &baseline::Report) {
             "baseline: updated {} ({} added, {stale} removed)",
             report.path, report.new
         );
+        if report.outside_root > 0 {
+            eprintln!("{}", outside_root_note(report));
+        }
         return;
     }
     let stale_note = match report.stale {
@@ -1229,6 +1232,17 @@ fn surface_baseline(report: &baseline::Report) {
         "baseline: {} new, {} baselined, {stale_note}",
         report.new, report.baselined
     );
+    if report.outside_root > 0 {
+        eprintln!("{}", outside_root_note(report));
+    }
+}
+
+/// The note for findings in files outside the baseline root.
+fn outside_root_note(report: &baseline::Report) -> String {
+    format!(
+        "baseline: {} finding(s) in files outside the baseline root were reported, not recorded",
+        report.outside_root
+    )
 }
 
 /// `check`'s exit code (R15): `1` when either channel produced something or a

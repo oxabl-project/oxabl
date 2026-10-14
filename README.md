@@ -143,7 +143,9 @@ oxabl check src --baseline oxabl-baseline.json --update-baseline   # record the 
 oxabl check src --baseline oxabl-baseline.json                     # fail only on new findings
 ```
 
-- A finding matches an entry by rule code, workspace-relative path, a hash of the flagged line and span (whitespace collapsed), and an occurrence number for identical findings. The file has no line numbers, so edits that move a finding to a different line do not change the match.
+- A finding matches an entry by rule code, workspace-relative path, a hash of the flagged line and span, and an occurrence number for identical findings. Whitespace runs are collapsed and letters are folded to lower case before hashing, so a change of keyword case does not change the match. The file has no line numbers, so edits that move a finding to a different line do not change the match.
+- Paths are made relative to the workspace root (the directory with `oxabl.toml`, else the directory with the baseline file) after `.` and `..` are resolved, so `src/sub/../a.p` and `src/a.p` are one file. On Windows the root is matched without regard to case. A finding in a file outside the root is reported but never recorded; `check` says how many.
+- Identical findings in one file (same rule, same text) are told apart by their order only. If you add a third identical line above two baselined ones, the count of new findings is right, but the finding that `check` shows as new is the last copy, not the line that you added.
 - `check` writes the counts to stderr: `new`, `baselined`, and `stale` (fixed findings that are still in the file). With `--json`, the report has a `baseline` key with the same counts, and `diagnostics` holds only new findings.
 - `--update-baseline` adds the new findings and removes the stale entries. It keeps the entries of files that the run did not check. It cannot be used with `--no-lint`.
 - Exit codes do not change: `1` for a new finding, format drift or a failed file, `2` for a missing or malformed baseline. Stale entries do not fail the run.
@@ -151,14 +153,14 @@ oxabl check src --baseline oxabl-baseline.json                     # fail only o
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "entries": [
     { "path": "src/orders.p", "code": "LINT0002", "hash": "5f0c3a5e9d2b7c11", "occurrence": 0, "message": "..." }
   ]
 }
 ```
 
-The `message` field is only for the reader; matching does not use it.
+The `message` field is only for the reader; matching does not use it. A version 1 file (which hashed the text with its case kept) is refused with an error: delete it and record the baseline again with `--update-baseline`.
 
 ### WebAssembly browser package
 
