@@ -4743,40 +4743,34 @@ impl Parser<'_> {
     ///     body
     /// END CLASS.
     /// ```
+    fn parse_class_modifiers(&mut self, is_abstract: &mut bool, is_final: &mut bool) {
+        loop {
+            if self.check(Kind::Abstract) {
+                self.advance();
+                *is_abstract = true;
+            } else if self.check(Kind::Final) {
+                self.advance();
+                *is_final = true;
+            } else {
+                break;
+            }
+        }
+    }
+
     fn parse_class(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CLASS
 
         // Parse optional ABSTRACT/FINAL flags (before name, in any order)
         let mut is_abstract = false;
         let mut is_final = false;
-        loop {
-            if self.check(Kind::Abstract) {
-                self.advance();
-                is_abstract = true;
-            } else if self.check(Kind::Final) {
-                self.advance();
-                is_final = true;
-            } else {
-                break;
-            }
-        }
+        self.parse_class_modifiers(&mut is_abstract, &mut is_final);
 
         // Parse class name (dotted). Use parse_class_qualified_name() so that reserved
         // keywords used as namespace prefixes (e.g. `do.wsdo800obj`) are accepted.
         let name = self.parse_class_qualified_name()?;
 
         // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
-        loop {
-            if self.check(Kind::Abstract) {
-                self.advance();
-                is_abstract = true;
-            } else if self.check(Kind::Final) {
-                self.advance();
-                is_final = true;
-            } else {
-                break;
-            }
-        }
+        self.parse_class_modifiers(&mut is_abstract, &mut is_final);
 
         // Parse optional INHERITS
         let inherits = if self.check(Kind::Inherits) {
@@ -4797,12 +4791,17 @@ impl Parser<'_> {
             }
         }
 
-        // Skip optional USE-WIDGET-POOL clause (AppBuilder / legacy ABL)
-        if self.check(Kind::Identifier) {
-            let tok = self.peek().clone();
-            let text = &self.source[tok.start..tok.end];
-            if text.eq_ignore_ascii_case("use-widget-pool") {
+        // Skip trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
+        loop {
+            if self.check(Kind::Serializable) {
                 self.advance();
+            } else if self.check(Kind::Identifier)
+                && self.source[self.peek().start..self.peek().end]
+                    .eq_ignore_ascii_case("use-widget-pool")
+            {
+                self.advance();
+            } else {
+                break;
             }
         }
 
