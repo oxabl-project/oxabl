@@ -185,3 +185,42 @@ DEFINE WORK-TABLE wt FIELD a AS INTEGER.
 ";
     assert!(check(run, src).is_empty());
 }
+
+const PLAIN_HELP: &str = "Add `NO-UNDO` to the definition.";
+const SHARED_HELP: &str = "Add `NO-UNDO` to the `NEW SHARED` producer and to every `SHARED` consumer; \
+                           changing one side alone makes the definitions disagree.";
+
+// The AVM is assumed to require a producer and its consumers to agree on
+// `NO-UNDO`, so the help for a shared definition names both sides.
+#[test]
+fn a_shared_definition_asks_for_the_producer_and_every_consumer() {
+    let src = "\
+DEFINE NEW SHARED VARIABLE a AS INTEGER.
+DEFINE SHARED VARIABLE b AS INTEGER.
+DEFINE NEW GLOBAL SHARED VARIABLE c AS INTEGER.
+DEFINE NEW SHARED TEMP-TABLE ttA FIELD x AS INTEGER.
+DEFINE SHARED TEMP-TABLE ttB FIELD x AS INTEGER.
+DEFINE NEW GLOBAL SHARED TEMP-TABLE ttC FIELD x AS INTEGER.
+DEFINE VARIABLE plain AS INTEGER.
+DEFINE TEMP-TABLE ttPlain FIELD x AS INTEGER.
+";
+    let diags = check(run, src);
+    let helps: Vec<_> = diags.iter().map(|d| d.help.as_deref().unwrap()).collect();
+    assert_eq!(
+        flagged(src, &diags),
+        ["a", "b", "c", "ttA", "ttB", "ttC", "plain", "ttPlain"]
+    );
+    assert_eq!(
+        helps,
+        [
+            SHARED_HELP,
+            SHARED_HELP,
+            SHARED_HELP,
+            SHARED_HELP,
+            SHARED_HELP,
+            SHARED_HELP,
+            PLAIN_HELP,
+            PLAIN_HELP,
+        ]
+    );
+}
