@@ -1372,19 +1372,20 @@ pub const FIXTURES: &[ParityFixture] = &[
         needs: &[],
         edges: &[],
     },
-    // Defined inside the DO block, assigned only there, read outside it.
+    // Defined inside a conditional DO block, assigned only there, read outside
+    // it: the read sees the default value whenever the block was skipped.
     ParityFixture {
         name: "block_var_used_outside",
         root_file: "main.p",
         siblings: &[],
         resolutions: &[],
-        source: "DO:\n    DEFINE VARIABLE tally AS INTEGER NO-UNDO.\n    tally = 1.\nEND.\nMESSAGE tally.\n",
+        source: "DEFINE VARIABLE ok AS LOGICAL NO-UNDO.\nIF ok THEN DO:\n    DEFINE VARIABLE tally AS INTEGER NO-UNDO.\n    tally = 1.\nEND.\nMESSAGE tally.\n",
         diagnostics: &[ExpectedDiagnostic {
             code: "LINT0005",
             severity: Severity::Info,
             source: DiagnosticSource::Lint,
-            start: 24,
-            end: 29,
+            start: 74,
+            end: 79,
         }],
         format: ExpectedFormat::Unchanged,
         needs: &[],

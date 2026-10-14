@@ -253,6 +253,8 @@ COPY-LOB FROM v-src TO v-dst.
 /// `ENABLE` / `UPDATE` / `DISPLAY` lists plus an `EDITING:` block, naming most
 /// of the file's variables. Three genuine defects are seeded on variables that
 /// appear in *no* unmodelled statement, and all three must still be reported.
+/// The block-only variable's block is conditional, so the read after it can
+/// really see the default value.
 ///
 /// This is what turns "over-crediting is the safe direction" from an assertion
 /// into something the suite checks. If a future change to the harvest filter
@@ -267,7 +269,7 @@ DEFINE VARIABLE v-shown AS INTEGER NO-UNDO.
 
 v-dead-store = 17.
 
-DO:
+IF v-shown > 0 THEN DO:
   DEFINE VARIABLE v-block-only AS INTEGER NO-UNDO.
   v-block-only = 3.
 END.
