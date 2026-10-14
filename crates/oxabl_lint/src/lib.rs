@@ -32,9 +32,10 @@
 //! `[workspace.lint]` in `oxabl.toml` configures globally and per directory.
 //! The per-rule function signatures do not change.
 //!
-//! The syntactic strict rules are standalone functions with the same
-//! signature. They are not registered in [`Registry::builtin`] yet, so
-//! [`lint_file`] does not run them; each module carries its rule's
+//! The syntactic strict rules below are registered in [`Registry::builtin`]
+//! in their opt-in groups, so [`lint_file`] runs them only where the
+//! configuration enables the group or the rule. They are in preview and
+//! context-free ([`RuleMeta::context_free`]); each module carries its rule's
 //! documentation and its metadata constants (`NAME`, `GROUP`,
 //! `DEFAULT_SEVERITY`, `DESCRIPTION`):
 //!

@@ -98,7 +98,16 @@ Current Work: continued dogfood-driven trust-hardening, and typing `:`-qualified
 
 ### Lint configuration
 
-Lint rules are in groups. The `LINT` rules are in the `default` group, which is always on. The `strict.transactions`, `strict.locks`, `strict.access`, `strict.handles`, `strict.nulls` and `strict.calls` groups are off until you enable them. Their rules have codes such as `TX006` and `CL001` (see `docs/design/strict-analysis-plan.md`).
+Lint rules are in groups. The `LINT` rules are in the `default` group, which is always on. The `strict.transactions`, `strict.locks`, `strict.access`, `strict.handles`, `strict.nulls` and `strict.calls` groups are off until you enable them. The plan for all strict rules is in `docs/design/strict-analysis-plan.md`. These strict rules are available now. They are in preview and report at `warn`:
+
+| Code | Name | Group | Reports |
+|---|---|---|---|
+| CL001 | `run-value` | `strict.calls` | `RUN VALUE(...)` with a computed target |
+| CL002 | `dynamic-invoke` | `strict.calls` | `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `DYNAMIC-PROPERTY`, `CREATE CALL` |
+| CL005 | `shared-state` | `strict.calls` | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
+| TX006 | `missing-no-undo` | `strict.transactions` | a variable, parameter, temp-table or property without `NO-UNDO` |
+
+These four rules are context-free: each finding depends only on the text of its own file.
 
 Configure lint in `[workspace.lint]` in `oxabl.toml`:
 

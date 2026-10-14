@@ -184,3 +184,77 @@ fn format_drift_still_fails_a_baselined_run() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
 }
+
+/// A `RUN VALUE` with no other finding: the variable is read by the `RUN`.
+const DYNAMIC_RUN: &str =
+    "DEFINE VARIABLE c AS CHARACTER NO-UNDO INITIAL \"x.p\".\nRUN VALUE(c).\n";
+
+/// A workspace that turns on `strict.calls` only under `strict/`.
+fn strict_workspace() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n\
+         [[workspace.lint.overrides]]\nfiles = [\"strict\"]\nenable = [\"strict.calls\"]\n",
+    );
+    write(&dir.path().join("strict/a.p"), DYNAMIC_RUN);
+    write(&dir.path().join("legacy/a.p"), DYNAMIC_RUN);
+    dir
+}
+
+/// `(path, code)` of every finding in a `--json` report.
+fn findings(stdout: &str) -> Vec<(String, String)> {
+    json(stdout)["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            let path = d["path"].as_str().unwrap().replace('\\', "/");
+            (path, d["code"].as_str().unwrap().to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn a_strict_group_enabled_under_one_directory_fires_only_there() {
+    let dir = strict_workspace();
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert!(!stderr.contains("warning: lint"), "known names: {stderr}");
+    let found = findings(&stdout);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].0.ends_with("strict/a.p"), "{found:?}");
+    assert_eq!(found[0].1, "CL001");
+}
+
+#[test]
+fn a_strict_finding_round_trips_through_a_baseline() {
+    let dir = strict_workspace();
+    let root = dir.path();
+    let (exit, _, stderr) = check(root, &[".", "--baseline", "b.json", "--update-baseline"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    let doc = json(&fs::read_to_string(root.join("b.json")).unwrap());
+    let entries = doc["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["code"], "CL001");
+    assert_eq!(entries[0]["path"], "strict/a.p");
+
+    // Move the call down and add a second, different one.
+    write(
+        &root.join("strict/a.p"),
+        "/* moved */\n\nDEFINE VARIABLE c AS CHARACTER NO-UNDO INITIAL \"x.p\".\n\
+         DEFINE VARIABLE d AS CHARACTER NO-UNDO INITIAL \"y.p\".\n\nRUN VALUE(c).\nRUN VALUE(d).\n",
+    );
+    let (exit, stdout, stderr) = check(root, &[".", "--baseline", "b.json", "--json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    let report = json(&stdout);
+    assert_eq!(report["baseline"]["new"], 1, "{report}");
+    assert_eq!(report["baseline"]["baselined"], 1);
+    assert_eq!(report["baseline"]["stale"], 0);
+    let message = report["diagnostics"][0]["message"].as_str().unwrap();
+    assert_eq!(report["diagnostics"][0]["code"], "CL001");
+    assert!(
+        report["diagnostics"][0]["start"]["line"] == 7,
+        "the new call on line 7 is the one reported: {message}"
+    );
+}

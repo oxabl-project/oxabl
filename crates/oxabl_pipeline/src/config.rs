@@ -572,6 +572,8 @@ mod tests {
         let warnings = lint_warnings(
             "[workspace.lint]\nenable = [\"strict\", \"strict.calls\"]\n\
              LINT0002 = \"off\"\nUnused-Variable = \"info\"\n\
+             CL001 = \"error\"\nrun-value = \"error\"\ndynamic-invoke = \"off\"\n\
+             cl005 = \"warn\"\nmissing-no-undo = \"info\"\nTX006 = \"hint\"\n\
              [[workspace.lint.overrides]]\nfiles = [\"legacy\"]\ndisable = [\"strict.nulls\"]\n",
         );
         assert!(warnings.is_empty(), "{warnings:?}");
