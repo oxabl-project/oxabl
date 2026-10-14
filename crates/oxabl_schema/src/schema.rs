@@ -210,6 +210,21 @@ pub struct Table {
     pub source: FileSpan,
 }
 
+/// A database sequence declared by `ADD SEQUENCE`.
+///
+/// A bound the `.df` writes as `?` (no limit) is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sequence {
+    pub name: OxablAtom,
+    pub display_name: String,
+    pub initial: Option<i64>,
+    pub increment: Option<i64>,
+    pub min_val: Option<i64>,
+    pub max_val: Option<i64>,
+    pub cycle_on_limit: bool,
+    pub source: FileSpan,
+}
+
 /// Outcome of resolving a (possibly abbreviated) field reference against a
 /// table. ABL lets a field name be written as an unambiguous leading
 /// substring (e.g. `cust-num` for `customer-number`), so a reference either
@@ -276,7 +291,7 @@ impl Table {
 
 /// In-memory schema populated from one or more `.df` files.
 ///
-/// Tables are keyed case-insensitively via `OxablAtom`. `TableId` values are
+/// Tables and sequences are keyed case-insensitively via `OxablAtom`. `TableId` values are
 /// dense and stable within a single `Schema`; cross-schema use requires a
 /// matching `SchemaRevision`.
 #[derive(Debug, Clone)]
@@ -284,6 +299,8 @@ pub struct Schema {
     revision: SchemaRevision,
     tables: FxHashMap<OxablAtom, TableId>,
     arena: Vec<Table>,
+    sequences: Vec<Sequence>,
+    sequence_index: FxHashMap<OxablAtom, usize>,
     /// Whether lookups fall through to the built-in OpenEdge metaschema.
     /// Off by default, and turned on by the loader only once a `.df` has
     /// actually contributed tables — see [`Schema::enable_metaschema`].
@@ -299,6 +316,8 @@ impl Schema {
             revision: SchemaRevision::new(0),
             tables: FxHashMap::default(),
             arena: Vec::new(),
+            sequences: Vec::new(),
+            sequence_index: FxHashMap::default(),
             metaschema: false,
         }
     }
@@ -333,12 +352,34 @@ impl Schema {
         self.revision
     }
 
+    /// Whether the schema holds no tables and no sequences. A `.df` that only
+    /// declares sequences still counts as a configured schema.
     pub fn is_empty(&self) -> bool {
-        self.arena.is_empty()
+        self.arena.is_empty() && self.sequences.is_empty()
     }
 
+    /// Number of tables. Sequences are counted by
+    /// [`sequence_count`](Self::sequence_count).
     pub fn len(&self) -> usize {
         self.arena.len()
+    }
+
+    pub fn sequence_count(&self) -> usize {
+        self.sequences.len()
+    }
+
+    /// Case-insensitive sequence lookup by folded atom.
+    pub fn get_sequence(&self, name: &OxablAtom) -> Option<&Sequence> {
+        self.sequence_index.get(name).map(|&i| &self.sequences[i])
+    }
+
+    /// `&str` convenience for [`get_sequence`](Self::get_sequence).
+    pub fn sequence(&self, name: &str) -> Option<&Sequence> {
+        self.get_sequence(&fold_atom(name))
+    }
+
+    pub fn sequences(&self) -> impl Iterator<Item = &Sequence> {
+        self.sequences.iter()
     }
 
     /// Case-insensitive lookup by folded atom. Falls through to the built-in
@@ -408,6 +449,20 @@ impl Schema {
         self.tables.insert(table.name.clone(), id);
         self.arena.push(table);
         id
+    }
+
+    /// Add `sequence`, replacing an earlier one of the same name. Returns the
+    /// replaced sequence's source span, if any.
+    pub(crate) fn insert_sequence(&mut self, sequence: Sequence) -> Option<FileSpan> {
+        if let Some(&i) = self.sequence_index.get(&sequence.name) {
+            let previous = self.sequences[i].source;
+            self.sequences[i] = sequence;
+            return Some(previous);
+        }
+        self.sequence_index
+            .insert(sequence.name.clone(), self.sequences.len());
+        self.sequences.push(sequence);
+        None
     }
 
     pub(crate) fn replace_table(&mut self, id: TableId, table: Table) {

@@ -25,6 +25,7 @@ mod namespace;
 mod operators;
 mod resolve;
 mod scope;
+mod sequence;
 mod symbol;
 mod types;
 
@@ -44,6 +45,7 @@ pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
 pub use resolve::{Resolution, UnresolvedReason, declare_pass, resolve_pass};
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
+pub use sequence::{SequenceOperand, sequence_operand};
 pub use symbol::{
     ClassLookup, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
     UnlinkedRun,

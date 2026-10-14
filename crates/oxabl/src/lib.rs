@@ -381,7 +381,7 @@ pub mod preprocessor {
 pub mod schema {
     pub use oxabl_schema::{
         Field, FieldResolution, Index, IndexField, ParseOutcome, Schema, SchemaLoader,
-        SchemaRevision, SchemaType, Table, TableId, fold_atom, parse_df,
+        SchemaRevision, SchemaType, Sequence, Table, TableId, fold_atom, parse_df,
     };
 }
 
@@ -392,8 +392,9 @@ pub mod semantic {
         AnalysisContext, BindingMap, ClassDescriptor, ClassKind, ImportContext, IndexAnswer,
         IndexName, IndexRevision, IndexedFileId, MemberDescriptor, MemberType, NamespaceId,
         NullIndex, PortableType, PrimitiveTy, Resolution, ResolvedType, Scope, ScopeId, ScopeKind,
-        ScopeTree, Semantic, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
-        UnresolvedReason, WorkspaceIndex, analyze_file, check_pass, declare_pass, resolve_pass,
+        ScopeTree, Semantic, SequenceOperand, Symbol, SymbolFlags, SymbolId, SymbolKind,
+        SymbolTable, UnresolvedReason, WorkspaceIndex, analyze_file, check_pass, declare_pass,
+        resolve_pass, sequence_operand,
     };
 }
 

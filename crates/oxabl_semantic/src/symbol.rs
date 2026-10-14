@@ -61,6 +61,9 @@ pub enum SymbolKind {
     /// dump output, but with no declared type.
     Dataset,
     DataSource,
+    /// A database sequence from the loaded schema, synthesized on first
+    /// reference like a schema field.
+    Sequence,
 }
 
 bitflags! {

@@ -17,7 +17,7 @@ use oxabl_common::{Diagnostic, FileId, FileSpan};
 
 use crate::atom::fold_atom;
 use crate::diagnostics::SCHEMA0001;
-use crate::schema::{Field, Index, IndexField, SchemaType, Table};
+use crate::schema::{Field, Index, IndexField, SchemaType, Sequence, Table};
 
 /// Parse the contents of a single `.df` file into table/field/index
 /// records, ready to be merged into a [`crate::Schema`] by the loader.
@@ -48,6 +48,7 @@ pub struct ParseOutcome {
     /// atom.
     pub fields: Vec<PendingField>,
     pub indexes: Vec<PendingIndex>,
+    pub sequences: Vec<Sequence>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -387,8 +388,12 @@ impl<'a> Parser<'a> {
                 self.idx += 1;
                 self.parse_add_index(unique);
             }
+            "SEQUENCE" => {
+                self.idx += 1;
+                self.parse_add_sequence();
+            }
             _ => {
-                // ADD SEQUENCE / DATABASE / CONSTRAINT / anything else:
+                // ADD DATABASE / CONSTRAINT / anything else:
                 // silently skip to the next directive.
                 self.skip_to_next_directive();
             }
@@ -476,6 +481,61 @@ impl<'a> Parser<'a> {
                 _ => self.skip_unknown_attr(),
             }
         }
+    }
+
+    fn parse_add_sequence(&mut self) {
+        let Some((display_name, source)) = self.expect_quoted() else {
+            self.skip_to_next_directive();
+            return;
+        };
+        let mut seq = Sequence {
+            name: fold_atom(&display_name),
+            display_name,
+            initial: None,
+            increment: None,
+            min_val: None,
+            max_val: None,
+            cycle_on_limit: false,
+            source,
+        };
+        loop {
+            if self.is_at_next_directive() {
+                break;
+            }
+            let Some(attr) = self.peek_word_upper() else {
+                self.idx += 1;
+                continue;
+            };
+            match attr.as_str() {
+                "INITIAL" => {
+                    self.idx += 1;
+                    seq.initial = self.expect_i64();
+                }
+                "INCREMENT" => {
+                    self.idx += 1;
+                    seq.increment = self.expect_i64();
+                }
+                "MIN-VAL" => {
+                    self.idx += 1;
+                    seq.min_val = self.expect_i64();
+                }
+                "MAX-VAL" => {
+                    self.idx += 1;
+                    seq.max_val = self.expect_i64();
+                }
+                "CYCLE-ON-LIMIT" => {
+                    self.idx += 1;
+                    if self.peek_kind() == Some(TokKind::Word) && !self.tokens[self.idx].line_start
+                    {
+                        seq.cycle_on_limit =
+                            matches!(self.peek_word_upper().as_deref(), Some("YES"));
+                        self.idx += 1;
+                    }
+                }
+                _ => self.skip_unknown_attr(),
+            }
+        }
+        self.outcome.sequences.push(seq);
     }
 
     fn parse_add_field(&mut self) {
@@ -874,6 +934,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A signed integer, or `?` (no value). Anything else is left unconsumed.
+    fn expect_i64(&mut self) -> Option<i64> {
+        let t = self.tokens.get(self.idx)?;
+        if t.kind != TokKind::Word {
+            return None;
+        }
+        let text = self.word_text(t);
+        if text == "?" {
+            self.idx += 1;
+            return None;
+        }
+        let parsed = text.parse::<i64>().ok()?;
+        self.idx += 1;
+        Some(parsed)
+    }
+
     fn skip_to_next_directive(&mut self) {
         while self.idx < self.tokens.len() && !self.is_at_next_directive() {
             self.idx += 1;
@@ -1132,18 +1208,47 @@ ADD INDEX "composite" ON "Order"
     }
 
     #[test]
-    fn skips_add_sequence() {
+    fn parses_add_sequence() {
         let out = parse(
             r#"
 ADD SEQUENCE "NextNum"
   INITIAL 1000
-  INCREMENT 1
+  INCREMENT -2
+  CYCLE-ON-LIMIT yes
+  MIN-VAL 5
+  MAX-VAL ?
 
 ADD TABLE "Customer"
 "#,
         );
         assert_eq!(out.tables.len(), 1);
         assert!(out.diagnostics.is_empty());
+        assert_eq!(out.sequences.len(), 1);
+        let s = &out.sequences[0];
+        assert_eq!(s.display_name, "NextNum");
+        assert_eq!(s.name, fold_atom("nextnum"));
+        assert_eq!(s.initial, Some(1000));
+        assert_eq!(s.increment, Some(-2));
+        assert_eq!(s.min_val, Some(5));
+        assert_eq!(s.max_val, None);
+        assert!(s.cycle_on_limit);
+    }
+
+    #[test]
+    fn add_sequence_with_no_attributes_and_unknown_attribute() {
+        let out = parse(
+            r#"
+ADD SEQUENCE "Bare"
+
+ADD SEQUENCE "Odd"
+  FUTURE-ATTR "x"
+  CYCLE-ON-LIMIT no
+"#,
+        );
+        assert!(out.diagnostics.is_empty());
+        assert_eq!(out.sequences.len(), 2);
+        assert_eq!(out.sequences[0].initial, None);
+        assert!(!out.sequences[1].cycle_on_limit);
     }
 
     #[test]

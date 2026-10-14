@@ -8,7 +8,7 @@
 //! |----------|----------------------------|----------|--------------------------------------------------------|
 //! | LINT0001 | `undefined-symbol`         | Error    | [`Resolution::Unresolved { reason: NotInScope }`]      |
 //! | LINT0002 | `unused-variable`          | Warning  | Variables / Parameters never referenced at all          |
-//! | LINT0003 | `unknown-table-or-field`   | Warning  | Field references under `schema_loaded == true`         |
+//! | LINT0003 | `unknown-table-or-field`   | Warning  | Field / sequence references under `schema_loaded`      |
 //! | LINT0004 | `type-mismatch-assignment` | Warning  | Assignment type mismatches / narrowing conversions     |
 //! | LINT0005 | `block-var-used-outside`   | Info     | Block-defined variable read outside its block, unset   |
 //! | LINT0006 | `assigned-but-never-read`  | Warning  | Dead store: written, never read; at the write site      |
