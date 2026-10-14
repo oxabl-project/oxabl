@@ -110,6 +110,48 @@ impl Parser<'_> {
         Ok(stmt)
     }
 
+    /// Whether the statement at the cursor is `word(...)` with the paren directly
+    /// against a keyword, ending the statement, where the file declares a method
+    /// named `word`. The parser has no scope information, so the declaration
+    /// check is the narrowest signal that the word is a method and not the
+    /// statement.
+    fn is_receiverless_method_call(&mut self) -> bool {
+        let tok = self.peek();
+        let (kind, end) = (tok.kind, tok.end);
+        if kind == Kind::Identifier || !self.check_at(1, Kind::LeftParen) {
+            return false;
+        }
+        if self.peek_at(1).start != end
+            || !Self::can_be_identifier(kind)
+            || !self.declares_method_named(kind)
+        {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut i = self.current + 1;
+        while let Some(t) = self.tokens.get(i) {
+            match t.kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Kind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        let after = self.tokens.get(i + 1).map(|t| t.kind);
+        let next = if after == Some(Kind::NoError) {
+            self.tokens.get(i + 2).map(|t| t.kind)
+        } else {
+            after
+        };
+        next == Some(Kind::Period)
+    }
+
     fn parse_statement_inner(&mut self) -> ParseResult<Statement> {
         // Skip empty statements
         if self.check(Kind::Period) {
@@ -120,6 +162,12 @@ impl Parser<'_> {
         // `@` opens an annotation; the field-format `@` only occurs mid-statement.
         if self.check(Kind::At) {
             return self.parse_annotation();
+        }
+
+        // A statement keyword directly followed by `(` is a call to a method of that
+        // name when the file declares one.
+        if self.is_receiverless_method_call() {
+            return self.parse_expression_statement();
         }
 
         // CATCH / FINALLY blocks — must be checked before the block-label heuristic because
@@ -767,6 +815,11 @@ impl Parser<'_> {
             return self.parse_include_arg_reference_statement();
         }
 
+        self.parse_expression_statement()
+    }
+
+    /// An assignment, or an expression evaluated for its effect (a call).
+    fn parse_expression_statement(&mut self) -> ParseResult<Statement> {
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
 
