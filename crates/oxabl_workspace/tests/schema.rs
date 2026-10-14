@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use oxabl_workspace::{LintConfig, WorkspaceConfig};
+use oxabl_workspace::WorkspaceConfig;
 
 fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
     value
@@ -15,58 +15,58 @@ fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
         .collect()
 }
 
+fn workspace_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(WorkspaceConfig)).unwrap()
+}
+
 #[test]
-fn lint_schema_has_all_rules_with_severity_enum() {
-    let schema = serde_json::to_value(schemars::schema_for!(LintConfig)).unwrap();
+fn lint_schema_declares_groups_and_overrides() {
+    let schema = workspace_schema();
+    let lint = &schema["definitions"]["LintConfig"];
+    assert_eq!(
+        object_keys(&lint["properties"]),
+        ["disable", "enable", "overrides"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+    let entry = &schema["definitions"]["LintOverride"];
+    assert_eq!(
+        object_keys(&entry["properties"]),
+        ["disable", "enable", "files"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+}
 
-    let props = object_keys(&schema["properties"]);
-    let expected: BTreeSet<String> = [
-        "undefined-symbol",
-        "unused-variable",
-        "unknown-table-or-field",
-        "type-mismatch-assignment",
-        "block-var-used-outside",
-        "assigned-but-never-read",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect();
-    assert_eq!(props, expected, "lint schema must expose every kebab key");
-
+#[test]
+fn every_other_lint_key_is_a_rule_holding_a_severity() {
+    let schema = workspace_schema();
+    for name in ["LintConfig", "LintOverride"] {
+        assert_eq!(
+            schema["definitions"][name]["additionalProperties"]["$ref"],
+            "#/definitions/LintSeverity",
+            "{name}"
+        );
+    }
     let severities: Vec<&str> = schema["definitions"]["LintSeverity"]["enum"]
         .as_array()
         .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(severities, ["off", "hint", "info", "warn", "error"]);
-}
-
-#[test]
-fn lint_schema_denies_unknown_fields() {
-    let schema = serde_json::to_value(schemars::schema_for!(LintConfig)).unwrap();
     assert_eq!(
-        schema["additionalProperties"],
-        serde_json::Value::Bool(false),
-        "LintConfig schema must set additionalProperties: false"
+        severities,
+        ["off", "hint", "info", "warn", "warning", "error"]
     );
-}
-
-#[test]
-fn lint_schema_covers_every_serialized_field() {
-    // D1 auto-coverage guard for the lint surface (mirrors the style test):
-    // schema properties must equal the struct's serialized field set.
-    let schema = serde_json::to_value(schemars::schema_for!(LintConfig)).unwrap();
-    let schema_props = object_keys(&schema["properties"]);
-    let serde_fields = object_keys(&serde_json::to_value(LintConfig::default()).unwrap());
-    assert_eq!(schema_props, serde_fields);
 }
 
 #[test]
 fn workspace_schema_embeds_lint_and_style_definitions() {
     // The extension consumes the WorkspaceConfig schema; confirm the whole graph
     // (lint + style) is reachable from the top-level document.
-    let schema = serde_json::to_value(schemars::schema_for!(WorkspaceConfig)).unwrap();
+    let schema = workspace_schema();
     let defs = &schema["definitions"];
     assert!(defs.get("LintConfig").is_some(), "must embed LintConfig");
     assert!(defs.get("StyleGuide").is_some(), "must embed StyleGuide");

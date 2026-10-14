@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use oxabl_common::{LintSeverityMap, Severity};
+use oxabl_common::{LintLayer, LintSeverityMap, Severity};
 use oxabl_style::StyleGuide;
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject};
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration deserialized from `oxabl.toml`.
@@ -25,8 +28,10 @@ pub struct WorkspaceSection {
     #[serde(default)]
     pub schema: SchemaConfig,
 
-    /// Per-rule lint severity surface (`[workspace.lint]`).
+    /// Lint rule groups, severities and per-directory overrides
+    /// (`[workspace.lint]`).
     #[serde(default)]
+    #[schemars(schema_with = "lint_config_schema")]
     pub lint: LintConfig,
 
     /// Formatter style rules (`[workspace.style]`).
@@ -47,14 +52,16 @@ pub struct WorkspaceSection {
 
 /// A user-facing severity level for a lint rule (`[workspace.lint]`).
 ///
-/// Five levels: `off` disables the rule; the other four map 1:1 to
-/// [`oxabl_common::Severity`] and hence to LSP `DiagnosticSeverity`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+/// `off` disables the rule; the other levels map 1:1 to
+/// [`oxabl_common::Severity`] and hence to LSP `DiagnosticSeverity`. `warning`
+/// is accepted as another spelling of `warn`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LintSeverity {
     Off,
     Hint,
     Info,
+    #[serde(alias = "warning")]
     Warn,
     Error,
 }
@@ -73,65 +80,183 @@ impl LintSeverity {
     }
 }
 
-/// The `[workspace.lint]` table: one severity per v1 lint rule (kebab keys).
-///
-/// Mirrors [`oxabl_style::StyleGuide`]'s serde idiom — container-level
-/// `#[serde(default)]` so partial tables fall back per-field, plus
-/// `deny_unknown_fields` so a misspelled rule name is a hard error rather than
-/// silently ignored. The safe default (no table) is all-on with
-/// `undefined-symbol = error`, `block-var-used-outside = info`, and the rest
-/// `warn` (R15).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
-pub struct LintConfig {
-    pub undefined_symbol: LintSeverity,
-    pub unused_variable: LintSeverity,
-    pub unknown_table_or_field: LintSeverity,
-    pub type_mismatch_assignment: LintSeverity,
-    pub block_var_used_outside: LintSeverity,
-    pub assigned_but_never_read: LintSeverity,
+impl JsonSchema for LintSeverity {
+    fn schema_name() -> String {
+        "LintSeverity".to_string()
+    }
+
+    // Hand-written so the `warning` alias is offered too; the derive lists
+    // variant names only.
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        SchemaObject {
+            metadata: Some(Box::new(Metadata {
+                description: Some("Severity of a lint rule; `off` disables it.".to_string()),
+                ..Default::default()
+            })),
+            instance_type: Some(InstanceType::String.into()),
+            enum_values: Some(
+                ["off", "hint", "info", "warn", "warning", "error"]
+                    .into_iter()
+                    .map(|v| serde_json::Value::String(v.to_string()))
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+        .into()
+    }
 }
 
-impl Default for LintConfig {
-    fn default() -> Self {
-        LintConfig {
-            undefined_symbol: LintSeverity::Error,
-            unused_variable: LintSeverity::Warn,
-            unknown_table_or_field: LintSeverity::Warn,
-            type_mismatch_assignment: LintSeverity::Warn,
-            block_var_used_outside: LintSeverity::Info,
-            assigned_but_never_read: LintSeverity::Warn,
+/// The `[workspace.lint]` schema, with every key not otherwise declared typed
+/// as a [`LintSeverity`].
+///
+/// The rule keys are a flattened map, and schemars 0.8 drops a flattened map's
+/// `additionalProperties` when it merges it into the parent, so it is put back
+/// on the two generated definitions here.
+fn lint_config_schema(generator: &mut SchemaGenerator) -> Schema {
+    let schema = generator.subschema_for::<LintConfig>();
+    let severity = generator.subschema_for::<LintSeverity>();
+    for name in ["LintConfig", "LintOverride"] {
+        if let Some(Schema::Object(definition)) = generator.definitions_mut().get_mut(name) {
+            definition.object().additional_properties = Some(Box::new(severity.clone()));
         }
     }
+    schema
+}
+
+/// Rule and group settings shared by `[workspace.lint]` and each of its
+/// `[[workspace.lint.overrides]]` entries.
+///
+/// Every key other than `enable`, `disable` (and `files` / `overrides`) names a
+/// rule, by code (`LINT0002`, `CL001`) or kebab name (`unused-variable`),
+/// case-insensitively. Names the rule registry does not know are reported as
+/// config warnings by the pipeline, not rejected here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct LintRuleSettings {
+    /// Rule groups to turn on, for example `["strict.calls"]`. A dotted prefix
+    /// selects every group under it: `"strict"` turns on every `strict.*` group.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub enable: Vec<String>,
+
+    /// Rule groups to turn off. Applied after `enable` in the same table.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disable: Vec<String>,
+
+    /// Per-rule severity, keyed by code or kebab name. A severity turns the rule
+    /// on even when its group is off; `off` turns it off.
+    #[serde(flatten)]
+    pub rules: BTreeMap<String, LintSeverity>,
+}
+
+impl LintRuleSettings {
+    fn to_layer(&self) -> LintLayer {
+        let mut layer = LintLayer::new();
+        for group in &self.enable {
+            layer.enable_group(group);
+        }
+        for group in &self.disable {
+            layer.disable_group(group);
+        }
+        for (rule, severity) in &self.rules {
+            layer.set_rule(rule, severity.to_severity());
+        }
+        layer
+    }
+}
+
+/// One `[[workspace.lint.overrides]]` entry: settings for the files that match
+/// `files`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct LintOverride {
+    /// Glob patterns relative to the directory holding `oxabl.toml`, written
+    /// with `/` and matched case-insensitively. `*` stays inside one directory,
+    /// `**` crosses directories, and a pattern that matches a directory selects
+    /// every file under it.
+    pub files: Vec<String>,
+
+    /// The settings for matching files.
+    #[serde(flatten)]
+    pub settings: LintRuleSettings,
+}
+
+/// The `[workspace.lint]` table: which rule groups run, per-rule severities,
+/// and per-directory overrides.
+///
+/// Precedence, lowest first: each rule's default, then this table, then every
+/// override whose `files` match, in file order — a later override wins over an
+/// earlier one, so list broad patterns before narrow ones. Within one table a
+/// rule's own setting beats a group toggle, and `disable` beats `enable`. A
+/// group toggle turns rules on or off but keeps the severity an earlier table
+/// chose.
+///
+/// The `default` group (the `LINT` rules) is always on: it cannot be toggled as
+/// a group, but each of its rules can be set to `off`. The `strict.*` groups
+/// are off until enabled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct LintConfig {
+    /// Global settings.
+    #[serde(flatten)]
+    pub settings: LintRuleSettings,
+
+    /// Per-directory or per-file settings, applied in order after the global
+    /// ones.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<LintOverride>,
+}
+
+/// A `files` pattern in `[[workspace.lint.overrides]]` that is not a valid glob.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedLintPattern {
+    /// The pattern as written.
+    pub pattern: String,
+    /// Why it was rejected.
+    pub reason: String,
 }
 
 impl LintConfig {
-    /// Lower to the pipeline's [`LintSeverityMap`] (code → optional severity),
-    /// the leaf application form consumed by `oxabl_lint::lint_file` (KTD6).
-    pub fn to_severity_map(&self) -> LintSeverityMap {
+    /// Lower to the pipeline's [`LintSeverityMap`] with override patterns
+    /// anchored at `root`, the directory holding `oxabl.toml`. Invalid patterns
+    /// are dropped and returned.
+    pub fn to_severity_map_at(&self, root: &Path) -> (LintSeverityMap, Vec<RejectedLintPattern>) {
         let mut map = LintSeverityMap::new();
-        map.set("LINT0001", self.undefined_symbol.to_severity());
-        map.set("LINT0002", self.unused_variable.to_severity());
-        map.set("LINT0003", self.unknown_table_or_field.to_severity());
-        map.set("LINT0004", self.type_mismatch_assignment.to_severity());
-        map.set("LINT0005", self.block_var_used_outside.to_severity());
-        map.set("LINT0006", self.assigned_but_never_read.to_severity());
-        map
+        *map.base_mut() = self.settings.to_layer();
+        let mut rejected = Vec::new();
+        for entry in &self.overrides {
+            rejected.extend(
+                map.add_scope(root, &entry.files, entry.settings.to_layer())
+                    .into_iter()
+                    .map(|(pattern, reason)| RejectedLintPattern { pattern, reason }),
+            );
+        }
+        (map, rejected)
     }
 
-    /// Override one rule by its kebab name (used to apply CLI overrides on top
-    /// of the resolved table). Returns `false` for an unknown rule name.
-    pub fn set_by_name(&mut self, rule: &str, severity: LintSeverity) -> bool {
-        match rule {
-            "undefined-symbol" => self.undefined_symbol = severity,
-            "unused-variable" => self.unused_variable = severity,
-            "unknown-table-or-field" => self.unknown_table_or_field = severity,
-            "type-mismatch-assignment" => self.type_mismatch_assignment = severity,
-            "block-var-used-outside" => self.block_var_used_outside = severity,
-            "assigned-but-never-read" => self.assigned_but_never_read = severity,
-            _ => return false,
-        }
-        true
+    /// [`to_severity_map_at`](Self::to_severity_map_at) with no root: override
+    /// patterns match the path exactly as a caller passes it.
+    pub fn to_severity_map(&self) -> LintSeverityMap {
+        self.to_severity_map_at(Path::new("")).0
+    }
+
+    /// Set one rule by code or kebab name in the global settings.
+    pub fn set_rule(&mut self, rule: &str, severity: LintSeverity) {
+        self.settings.rules.insert(rule.to_string(), severity);
+    }
+
+    /// Every rule selector written anywhere in the table, in file order.
+    pub fn rule_selectors(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(&self.settings)
+            .chain(self.overrides.iter().map(|o| &o.settings))
+            .flat_map(|s| s.rules.keys().map(String::as_str))
+    }
+
+    /// Every group selector written anywhere in the table (`enable` and
+    /// `disable`), in file order.
+    pub fn group_selectors(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(&self.settings)
+            .chain(self.overrides.iter().map(|o| &o.settings))
+            .flat_map(|s| s.enable.iter().chain(&s.disable).map(String::as_str))
     }
 }
 
@@ -320,6 +445,7 @@ impl WorkspaceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxabl_common::LintRuleRef;
 
     #[test]
     fn parse_minimal_config() {
@@ -420,6 +546,145 @@ proversion = "12.8"
         let normalized = normalize_run_extensions(&entries(&["", ".", "a/b", "a\\b", "p"]));
         assert_eq!(normalized.extensions, ["p"]);
         assert_eq!(normalized.rejected, ["", ".", "a/b", "a\\b"]);
+    }
+
+    fn lint_of(toml: &str) -> LintConfig {
+        WorkspaceConfig::from_toml(&format!("[workspace]\nname = \"p\"\n{toml}"))
+            .unwrap()
+            .workspace
+            .lint
+    }
+
+    fn rule<'a>(code: &'a str, name: &'a str, group: Option<&'a str>) -> LintRuleRef<'a> {
+        LintRuleRef {
+            code,
+            name,
+            group,
+            enabled_by_default: group.is_none(),
+            default_severity: Severity::Warning,
+        }
+    }
+
+    #[test]
+    fn lint_table_defaults_to_nothing_configured() {
+        let lint = lint_of("");
+        assert_eq!(lint, LintConfig::default());
+        assert!(lint.to_severity_map().is_empty());
+    }
+
+    #[test]
+    fn lint_table_keeps_the_original_kebab_keys() {
+        let lint = lint_of(
+            "[workspace.lint]\nundefined-symbol = \"warn\"\nunused-variable = \"off\"\n\
+             block-var-used-outside = \"warning\"\n",
+        );
+        let map = lint.to_severity_map();
+        assert_eq!(map.get("undefined-symbol"), Some(Some(Severity::Warning)));
+        assert_eq!(map.get("unused-variable"), Some(None));
+        assert_eq!(
+            map.get("block-var-used-outside"),
+            Some(Some(Severity::Warning)),
+            "`warning` spells `warn`"
+        );
+        assert_eq!(
+            map.severity_for(&rule("LINT0002", "unused-variable", None)),
+            None
+        );
+    }
+
+    #[test]
+    fn lint_table_takes_codes_and_group_lists() {
+        let lint = lint_of(
+            "[workspace.lint]\nenable = [\"strict.calls\"]\ndisable = [\"strict.nulls\"]\n\
+             CL005 = \"error\"\n",
+        );
+        assert_eq!(lint.settings.enable, ["strict.calls"]);
+        assert_eq!(lint.settings.disable, ["strict.nulls"]);
+        let map = lint.to_severity_map();
+        assert_eq!(
+            map.severity_for(&rule("CL001", "run-value", Some("strict.calls"))),
+            Some(Severity::Warning)
+        );
+        assert_eq!(
+            map.severity_for(&rule("CL005", "shared-state", Some("strict.other"))),
+            Some(Severity::Error)
+        );
+        assert_eq!(
+            map.severity_for(&rule("NL001", "x", Some("strict.nulls"))),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unknown_rule_name_parses_and_is_left_to_the_pipeline_to_report() {
+        let lint = lint_of("[workspace.lint]\nfuture-rule = \"off\"\n");
+        assert_eq!(lint.rule_selectors().collect::<Vec<_>>(), ["future-rule"]);
+    }
+
+    #[test]
+    fn a_rule_key_must_hold_a_severity() {
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint]\nunused-variable = \"loud\"\n";
+        assert!(WorkspaceConfig::from_toml(toml).is_err());
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint]\nenable = \"strict\"\n";
+        assert!(
+            WorkspaceConfig::from_toml(toml).is_err(),
+            "enable is a list"
+        );
+    }
+
+    #[test]
+    fn lint_overrides_apply_per_directory_in_file_order() {
+        let lint = lint_of(
+            r#"
+[workspace.lint]
+enable = ["strict"]
+unused-variable = "info"
+
+[[workspace.lint.overrides]]
+files = ["legacy/**", "old.p"]
+disable = ["strict"]
+LINT0002 = "off"
+
+[[workspace.lint.overrides]]
+files = ["legacy/kept"]
+enable = ["strict.calls"]
+"#,
+        );
+        assert_eq!(lint.overrides.len(), 2);
+        assert_eq!(lint.overrides[0].files, ["legacy/**", "old.p"]);
+        assert_eq!(
+            lint.group_selectors().collect::<Vec<_>>(),
+            ["strict", "strict", "strict.calls"]
+        );
+
+        let (map, rejected) = lint.to_severity_map_at(Path::new("/ws"));
+        assert!(rejected.is_empty());
+        let unused = rule("LINT0002", "unused-variable", None);
+        let calls = rule("CL001", "run-value", Some("strict.calls"));
+
+        let src = map.for_path(Path::new("/ws/src/a.p"));
+        assert_eq!(src.severity_for(&unused), Some(Severity::Info));
+        assert_eq!(src.severity_for(&calls), Some(Severity::Warning));
+
+        for file in ["/ws/legacy/a.p", "/ws/old.p"] {
+            let legacy = map.for_path(Path::new(file));
+            assert_eq!(legacy.severity_for(&unused), None, "{file}");
+            assert_eq!(legacy.severity_for(&calls), None, "{file}");
+        }
+
+        let kept = map.for_path(Path::new("/ws/legacy/kept/a.p"));
+        assert_eq!(kept.severity_for(&calls), Some(Severity::Warning));
+        assert_eq!(kept.severity_for(&unused), None);
+    }
+
+    #[test]
+    fn an_invalid_override_pattern_is_returned() {
+        let lint = lint_of(
+            "[[workspace.lint.overrides]]\nfiles = [\"a/[\", \"b/**\"]\nLINT0002 = \"off\"\n",
+        );
+        let (_, rejected) = lint.to_severity_map_at(Path::new("/ws"));
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].pattern, "a/[");
     }
 
     #[test]

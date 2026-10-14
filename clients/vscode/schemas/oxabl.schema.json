@@ -63,67 +63,74 @@
       "type": "string"
     },
     "LintConfig": {
-      "additionalProperties": false,
-      "description": "The `[workspace.lint]` table: one severity per v1 lint rule (kebab keys).\n\nMirrors [`oxabl_style::StyleGuide`]'s serde idiom — container-level `#[serde(default)]` so partial tables fall back per-field, plus `deny_unknown_fields` so a misspelled rule name is a hard error rather than silently ignored. The safe default (no table) is all-on with `undefined-symbol = error`, `block-var-used-outside = info`, and the rest `warn` (R15).",
+      "additionalProperties": {
+        "$ref": "#/definitions/LintSeverity"
+      },
+      "description": "The `[workspace.lint]` table: which rule groups run, per-rule severities, and per-directory overrides.\n\nPrecedence, lowest first: each rule's default, then this table, then every override whose `files` match, in file order — a later override wins over an earlier one, so list broad patterns before narrow ones. Within one table a rule's own setting beats a group toggle, and `disable` beats `enable`. A group toggle turns rules on or off but keeps the severity an earlier table chose.\n\nThe `default` group (the `LINT` rules) is always on: it cannot be toggled as a group, but each of its rules can be set to `off`. The `strict.*` groups are off until enabled.",
       "properties": {
-        "assigned-but-never-read": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/LintSeverity"
-            }
-          ],
-          "default": "warn"
+        "disable": {
+          "description": "Rule groups to turn off. Applied after `enable` in the same table.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
-        "block-var-used-outside": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/LintSeverity"
-            }
-          ],
-          "default": "info"
+        "enable": {
+          "description": "Rule groups to turn on, for example `[\"strict.calls\"]`. A dotted prefix selects every group under it: `\"strict\"` turns on every `strict.*` group.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
-        "type-mismatch-assignment": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/LintSeverity"
-            }
-          ],
-          "default": "warn"
+        "overrides": {
+          "description": "Per-directory or per-file settings, applied in order after the global ones.",
+          "items": {
+            "$ref": "#/definitions/LintOverride"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "LintOverride": {
+      "additionalProperties": {
+        "$ref": "#/definitions/LintSeverity"
+      },
+      "description": "One `[[workspace.lint.overrides]]` entry: settings for the files that match `files`.",
+      "properties": {
+        "disable": {
+          "description": "Rule groups to turn off. Applied after `enable` in the same table.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
-        "undefined-symbol": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/LintSeverity"
-            }
-          ],
-          "default": "error"
+        "enable": {
+          "description": "Rule groups to turn on, for example `[\"strict.calls\"]`. A dotted prefix selects every group under it: `\"strict\"` turns on every `strict.*` group.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
-        "unknown-table-or-field": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/LintSeverity"
-            }
-          ],
-          "default": "warn"
-        },
-        "unused-variable": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/LintSeverity"
-            }
-          ],
-          "default": "warn"
+        "files": {
+          "default": [],
+          "description": "Glob patterns relative to the directory holding `oxabl.toml`, written with `/` and matched case-insensitively. `*` stays inside one directory, `**` crosses directories, and a pattern that matches a directory selects every file under it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
     },
     "LintSeverity": {
-      "description": "A user-facing severity level for a lint rule (`[workspace.lint]`).\n\nFive levels: `off` disables the rule; the other four map 1:1 to [`oxabl_common::Severity`] and hence to LSP `DiagnosticSeverity`.",
+      "description": "Severity of a lint rule; `off` disables it.",
       "enum": [
         "off",
         "hint",
         "info",
         "warn",
+        "warning",
         "error"
       ],
       "type": "string"
@@ -233,7 +240,7 @@
             "p",
             "w"
           ],
-          "description": "Extensions tried, in order, for a `RUN` target written without one (`RUN post-order`), written without the dot. Default `[\"p\", \"w\"]`.\n\nA leading dot is ignored, and an entry that is empty or holds a path separator is dropped with a warning. Each extension is tried as written and then in lower case.\n\nThe first extension that finds a file wins. A list that omits an extension never links a bare name to such a file; an empty list links no bare name at all.",
+          "description": "Extensions tried, in order, for a `RUN` target written without one (`RUN post-order`), written without the dot. Default `[\"p\", \"w\"]`.\n\nA leading dot is ignored, and an entry that is empty or holds a path separator is dropped with a warning. Each extension is tried as written and then in lower case, against the name as written and then folded.\n\nThe first extension that finds a file wins. A list that omits an extension never links a bare name to such a file; an empty list links no bare name at all.",
           "items": {
             "type": "string"
           },
@@ -579,15 +586,8 @@
               "$ref": "#/definitions/LintConfig"
             }
           ],
-          "default": {
-            "assigned-but-never-read": "warn",
-            "block-var-used-outside": "info",
-            "type-mismatch-assignment": "warn",
-            "undefined-symbol": "error",
-            "unknown-table-or-field": "warn",
-            "unused-variable": "warn"
-          },
-          "description": "Per-rule lint severity surface (`[workspace.lint]`)."
+          "default": {},
+          "description": "Lint rule groups, severities and per-directory overrides (`[workspace.lint]`)."
         },
         "name": {
           "description": "Human-readable project name.",
