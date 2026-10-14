@@ -648,3 +648,121 @@ fn completeness_and_degraded_reasons_are_non_exhaustive() {
     assert!(trusted(&Completeness::Complete));
     assert_eq!(tag(&DegradedReason::ParseRecovered), "parse");
 }
+
+/// The class edges and the unresolved rows of `/proj/<file>` over `siblings`, as
+/// `(kind, key)` pairs and `(name, reason)` pairs.
+fn class_rows(
+    file: &str,
+    source: &str,
+    siblings: &[(&str, &str)],
+) -> (Vec<String>, Vec<(String, UnresolvedReason)>) {
+    let mut fs = InMemoryFileSystem::new();
+    for (path, text) in siblings {
+        fs.insert(PathBuf::from(format!("/proj/{path}")), *text);
+    }
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let edges = run
+        .with_file(format!("/proj/{file}"))
+        .edge_set(source)
+        .expect("edge set");
+    let targets = edges
+        .of_kind(EdgeKind::ClassReference)
+        .map(|edge| edge.target.key().to_string())
+        .collect();
+    let rows = edges
+        .unresolved()
+        .iter()
+        .filter(|row| row.kind == EdgeKind::ClassReference)
+        .map(|row| (row.name.to_string(), row.reason))
+        .collect();
+    (targets, rows)
+}
+
+const GONE_ROW: (&str, UnresolvedReason) = ("lib.gone", UnresolvedReason::AbsentFromWorkspace);
+
+fn assert_gone_row(rows: &[(String, UnresolvedReason)]) {
+    assert!(
+        rows.iter()
+            .any(|(name, reason)| (name.as_str(), *reason) == GONE_ROW),
+        "got {rows:?}"
+    );
+}
+
+#[test]
+fn an_explicit_using_beside_a_shipped_wildcard_keeps_a_header_miss() {
+    let (_, rows) = class_rows(
+        "A.cls",
+        "USING Progress.Lang.*.\nUSING lib.Gone.\nCLASS A INHERITS Gone:\nEND CLASS.\n",
+        &[],
+    );
+    assert_gone_row(&rows);
+}
+
+#[test]
+fn an_explicit_using_beside_a_shipped_wildcard_keeps_a_type_site_miss() {
+    let (_, rows) = class_rows(
+        "p.p",
+        "USING Progress.Lang.*.\nUSING lib.Gone.\n\
+         DEFINE VARIABLE g AS Gone NO-UNDO.\ng = NEW Gone().\n",
+        &[],
+    );
+    assert_gone_row(&rows);
+}
+
+#[test]
+fn an_explicit_using_beside_a_shipped_wildcard_keeps_a_parents_header_miss() {
+    let (targets, rows) = class_rows(
+        "C.cls",
+        "CLASS C INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
+        &[(
+            "pkg/Mid.cls",
+            "USING OpenEdge.Core.*.\nUSING lib.Gone.\nCLASS pkg.Mid INHERITS Gone:\nEND CLASS.\n",
+        )],
+    );
+    assert_eq!(targets, ["pkg.mid"]);
+    assert_gone_row(&rows);
+}
+
+#[test]
+fn an_explicit_using_of_a_shipped_class_beside_a_wildcard_records_nothing() {
+    let (_, rows) = class_rows(
+        "A.cls",
+        "USING lib.*.\nUSING Progress.Lang.Object.\nCLASS A INHERITS Object:\nEND CLASS.\n",
+        &[],
+    );
+    assert!(rows.is_empty(), "got {rows:?}");
+}
+
+/// The unresolved rows of a child of `pkg.Mid`, whose header comes after `head`
+/// and an include that may import `lib.*`. `lib.Base` exists.
+fn rows_under_a_parent_with_include_after(head: &str) -> Vec<(String, UnresolvedReason)> {
+    let mid = format!("{head}{{usings.i}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n");
+    let (_, rows) = class_rows(
+        "Child.cls",
+        "CLASS Child INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
+        &[
+            ("pkg/Mid.cls", &mid),
+            ("usings.i", "USING lib.*.\n"),
+            ("lib/Base.cls", "CLASS lib.Base:\nEND CLASS.\n"),
+        ],
+    );
+    rows
+}
+
+#[test]
+fn a_using_of_class_or_interface_does_not_hide_a_later_include() {
+    for head in [
+        "",
+        "USING Progress.Lang.Object.\n",
+        "USING Progress.Lang.Class.\n",
+        "USING Progress.Reflect.Interface.\n",
+    ] {
+        let rows = rows_under_a_parent_with_include_after(head);
+        assert!(
+            rows.iter()
+                .any(|row| row == &("base".to_string(), UnresolvedReason::Unknowable)),
+            "head {head:?}: got {rows:?}"
+        );
+    }
+}

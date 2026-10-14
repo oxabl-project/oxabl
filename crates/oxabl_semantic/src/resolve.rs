@@ -5280,14 +5280,18 @@ fn is_system_namespace(name: &OxablAtom) -> bool {
 /// name `raw` lives in a namespace the AVM ships. See
 /// [`ResolveWalker::tried_a_shipped_namespace`].
 fn names_shipped_class(imports: &ImportContext, raw: &str) -> bool {
-    is_system_namespace(&fold_atom(raw))
-        || imports
-            .explicit_all(raw)
-            .any(|qualified| is_system_namespace(&fold_atom(qualified)))
-        || (!raw.contains('.')
-            && imports
-                .prefixes()
-                .any(|prefix| is_system_namespace(&fold_atom(prefix))))
+    if is_system_namespace(&fold_atom(raw)) {
+        return true;
+    }
+    // An explicit import is the name's meaning; no wildcard is consulted past it.
+    let mut explicit = imports.explicit_all(raw).peekable();
+    if explicit.peek().is_some() {
+        return explicit.any(|qualified| is_system_namespace(&fold_atom(qualified)));
+    }
+    (!raw.contains('.')
+        && imports
+            .prefixes()
+            .any(|prefix| is_system_namespace(&fold_atom(prefix))))
         || imports.implicit_lang_class(raw).is_some()
 }
 
