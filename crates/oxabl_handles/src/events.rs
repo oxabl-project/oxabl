@@ -5,8 +5,8 @@
 //! [`Effect`]s, so supporting a new AST form is a change here.
 
 use oxabl_ast::{
-    CreateTarget, CreateTargetKind, Expression, ExpressionKind as EK, Literal, ParameterDirection,
-    Span, Statement, StatementKind as SK,
+    CreateTarget, CreateTargetKind, Expression, ExpressionKind as EK, Identifier, Literal,
+    ParameterDirection, Span, Statement, StatementKind as SK,
 };
 use oxabl_lexer::{Kind, Lexer};
 use smallvec::SmallVec;
@@ -62,6 +62,14 @@ pub(crate) enum Effect<'a> {
     Opaque {
         var: &'a str,
         reason: OpaqueReason,
+    },
+    /// A statement the parser skips, with the names it passed over.
+    Skipped(&'a [Identifier]),
+    /// `DELETE [PROCEDURE | WIDGET] var` that parses as a record delete; the
+    /// kind is read from the statement's tokens when it matters.
+    DeleteNamed {
+        var: &'a str,
+        span: Span,
     },
     /// `recv:ADD-BUFFER(var)` or `recv:ADD-BUFFER(var:DEFAULT-BUFFER-HANDLE)`:
     /// an escape when `recv` holds a dataset.
@@ -132,13 +140,9 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                     name: first_string(src, s.span),
                 });
             } else {
-                let kind = match second_token(src, s.span) {
-                    Some(Kind::Procedure) => FreeKind::DeleteProcedure,
-                    _ => FreeKind::DeleteWidget,
-                };
-                out.push(Effect::Free {
+                out.push(Effect::DeleteNamed {
                     var: &buffer.name,
-                    kind,
+                    span: s.span,
                 });
             }
         }
@@ -241,14 +245,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 });
             }
         }
-        SK::Skipped { names, .. } => {
-            for n in names {
-                out.push(Effect::Opaque {
-                    var: &n.name,
-                    reason: OpaqueReason::SkippedStatement,
-                });
-            }
-        }
+        SK::Skipped { names, .. } if !names.is_empty() => out.push(Effect::Skipped(names)),
         _ => {}
     }
     out
@@ -549,8 +546,12 @@ fn tokens(src: &str, span: Span) -> impl Iterator<Item = Kind> + '_ {
         .take_while(|k| *k != Kind::Eof)
 }
 
-fn second_token(src: &str, span: Span) -> Option<Kind> {
-    tokens(src, span).nth(1)
+/// The kind of free a `DELETE` that parses as a record delete is.
+pub(crate) fn delete_kind(src: &str, span: Span) -> FreeKind {
+    match tokens(src, span).nth(1) {
+        Some(Kind::Procedure) => FreeKind::DeleteProcedure,
+        _ => FreeKind::DeleteWidget,
+    }
 }
 
 /// The value of the first string literal in a statement, lowercased.

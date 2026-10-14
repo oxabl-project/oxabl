@@ -1,6 +1,9 @@
 //! One walk over a file's statements: the effects of every statement, the
 //! variables each unit defines, and the file-wide facts the units share
-//! (which units free a name, which widget pools the file creates).
+//! (which units free a name, which widget pools the file creates). The
+//! per-statement facts are kept only for units that create something.
+
+use std::hash::{Hash, Hasher};
 
 use oxabl_ast::{
     NodeId, OnAction, OnKind, ParameterDirection, ParameterType, Statement, StatementKind as SK,
@@ -24,20 +27,60 @@ enum VarClass {
     Member,
 }
 
+/// A name compared without ASCII case, as ABL compares names.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Name<'a>(pub(crate) &'a str);
+
+impl PartialEq for Name<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(other.0)
+    }
+}
+
+impl Eq for Name<'_> {}
+
+impl Hash for Name<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for b in self.0.bytes() {
+            state.write_u8(b.to_ascii_lowercase());
+        }
+    }
+}
+
 #[derive(Default)]
-struct Scope {
+struct Scope<'a> {
     parent: Option<NodeId>,
-    defs: FxHashMap<String, VarClass>,
+    defs: FxHashMap<Name<'a>, VarClass>,
+}
+
+/// What the analysis reads about one statement of a unit that creates
+/// something.
+pub(crate) struct StmtFacts<'a> {
+    pub(crate) effects: Effects<'a>,
+    /// The statement cannot raise, though the CFG gives it a raise edge.
+    pub(crate) safe: bool,
+    /// The variable an `IF` tests for an invalid handle, and the value of the
+    /// condition when it is invalid.
+    pub(crate) guard: Option<(&'a str, bool)>,
+}
+
+/// The facts of the unit being walked.
+#[derive(Default)]
+struct UnitFacts<'a> {
+    stmts: Vec<(NodeId, StmtFacts<'a>)>,
+    creates: bool,
 }
 
 pub(crate) struct FileIndex<'a> {
-    effects: FxHashMap<NodeId, Effects<'a>>,
-    stmts: FxHashMap<NodeId, &'a Statement>,
-    scopes: FxHashMap<NodeId, Scope>,
+    /// The statement facts of each unit that creates something, by the
+    /// unit's defining statement.
+    units: FxHashMap<NodeId, FxHashMap<NodeId, StmtFacts<'a>>>,
+    cur: UnitFacts<'a>,
+    scopes: FxHashMap<NodeId, Scope<'a>>,
     /// Statements that create a tracked object, in source order.
     pub(crate) creating: Vec<NodeId>,
-    /// Lowercased variable name to the units that free it.
-    frees: FxHashMap<String, SmallVec<[NodeId; 2]>>,
+    /// Variable name to the units that free it.
+    frees: FxHashMap<Name<'a>, SmallVec<[NodeId; 2]>>,
     /// The main block creates an unnamed widget pool.
     pub(crate) main_pool: bool,
     /// Named pools the file creates, lowercased, with `PERSISTENT`.
@@ -49,8 +92,8 @@ pub(crate) struct FileIndex<'a> {
 impl<'a> FileIndex<'a> {
     pub(crate) fn build(program: &'a [Statement], src: &str) -> Self {
         let mut ix = FileIndex {
-            effects: FxHashMap::default(),
-            stmts: FxHashMap::default(),
+            units: FxHashMap::default(),
+            cur: UnitFacts::default(),
             scopes: FxHashMap::default(),
             creating: Vec::new(),
             frees: FxHashMap::default(),
@@ -60,21 +103,24 @@ impl<'a> FileIndex<'a> {
         };
         ix.scopes.insert(NodeId::PROGRAM, Scope::default());
         ix.walk(program, NodeId::PROGRAM, false, src);
+        let main = std::mem::take(&mut ix.cur);
+        if main.creates {
+            ix.units
+                .insert(NodeId::PROGRAM, main.stmts.into_iter().collect());
+        }
         ix
     }
 
-    pub(crate) fn effects(&self, stmt: NodeId) -> &[Effect<'a>] {
-        self.effects.get(&stmt).map_or(&[], |e| e.as_slice())
-    }
-
-    pub(crate) fn stmt(&self, stmt: NodeId) -> Option<&'a Statement> {
-        self.stmts.get(&stmt).copied()
+    /// The facts of the statements of a unit that creates something, by
+    /// statement.
+    pub(crate) fn unit_facts(&self, unit: NodeId) -> Option<&FxHashMap<NodeId, StmtFacts<'a>>> {
+        self.units.get(&unit)
     }
 
     /// How `name` resolves from the unit defined by `unit`: `None` for a
     /// variable the unit owns, else the escape that storing a handle in it is.
     pub(crate) fn escape_of(&self, unit: NodeId, name: &str) -> Option<EscapeKind> {
-        let key = name.to_ascii_lowercase();
+        let key = Name(name);
         let mut cur = Some(unit);
         let mut own = true;
         while let Some(u) = cur {
@@ -102,20 +148,28 @@ impl<'a> FileIndex<'a> {
     /// Whether a unit other than `unit` frees a variable called `name`.
     pub(crate) fn freed_elsewhere(&self, unit: NodeId, name: &str) -> bool {
         self.frees
-            .get(&name.to_ascii_lowercase())
+            .get(&Name(name))
             .is_some_and(|units| units.iter().any(|&u| u != unit))
     }
 
-    fn define(&mut self, unit: NodeId, name: &str, class: VarClass) {
+    fn define(&mut self, unit: NodeId, name: &'a str, class: VarClass) {
         self.scopes
             .entry(unit)
             .or_default()
             .defs
-            .insert(name.to_ascii_lowercase(), class);
+            .insert(Name(name), class);
     }
 
-    fn open(&mut self, unit: NodeId, parent: NodeId) {
+    /// Walk the statements of the unit `unit` defines, nested in `parent`.
+    fn unit(&mut self, unit: NodeId, parent: NodeId, walk: impl FnOnce(&mut Self)) {
         self.scopes.entry(unit).or_default().parent = Some(parent);
+        let outer = std::mem::take(&mut self.cur);
+        walk(self);
+        let own = std::mem::replace(&mut self.cur, outer);
+        if own.creates {
+            // Property accessors share their property's statement.
+            self.units.entry(unit).or_default().extend(own.stmts);
+        }
     }
 
     fn walk(&mut self, stmts: &'a [Statement], unit: NodeId, member: bool, src: &str) {
@@ -125,11 +179,24 @@ impl<'a> FileIndex<'a> {
     }
 
     fn visit(&mut self, s: &'a Statement, unit: NodeId, member: bool, src: &str) {
-        self.stmts.insert(s.id, s);
         let effects = events::effects(s, src);
         if !effects.is_empty() {
             self.note(s.id, unit, &effects);
-            self.effects.insert(s.id, effects);
+        }
+        let safe = events::cannot_raise(s);
+        let guard = match &s.kind {
+            SK::If { condition, .. } => events::invalid_test(condition),
+            _ => None,
+        };
+        if !effects.is_empty() || safe || guard.is_some() {
+            self.cur.stmts.push((
+                s.id,
+                StmtFacts {
+                    effects,
+                    safe,
+                    guard,
+                },
+            ));
         }
         match &s.kind {
             SK::VariableDeclaration {
@@ -167,17 +234,17 @@ impl<'a> FileIndex<'a> {
                 self.define(unit, &name.name, class);
             }
             SK::Procedure { body, .. } | SK::Destructor { body } => {
-                self.open(s.id, unit);
-                self.walk(body, s.id, false, src);
+                self.unit(s.id, unit, |ix| ix.walk(body, s.id, false, src));
             }
             SK::Function {
                 body,
                 prototype_parameters,
                 ..
             } => {
-                self.open(s.id, unit);
-                self.walk(prototype_parameters, s.id, false, src);
-                self.walk(body, s.id, false, src);
+                self.unit(s.id, unit, |ix| {
+                    ix.walk(prototype_parameters, s.id, false, src);
+                    ix.walk(body, s.id, false, src);
+                });
             }
             SK::Method {
                 parameters, body, ..
@@ -185,9 +252,10 @@ impl<'a> FileIndex<'a> {
             | SK::Constructor {
                 parameters, body, ..
             } => {
-                self.open(s.id, unit);
-                self.walk(parameters, s.id, false, src);
-                self.walk(body, s.id, false, src);
+                self.unit(s.id, unit, |ix| {
+                    ix.walk(parameters, s.id, false, src);
+                    ix.walk(body, s.id, false, src);
+                });
             }
             SK::Property {
                 name,
@@ -199,24 +267,21 @@ impl<'a> FileIndex<'a> {
                 if member {
                     self.define(unit, &name.name, VarClass::Member);
                 }
-                self.open(s.id, unit);
-                self.walk(set_parameters, s.id, false, src);
-                for body in [get_body, set_body].into_iter().flatten() {
-                    self.walk(body, s.id, false, src);
-                }
+                self.unit(s.id, unit, |ix| {
+                    ix.walk(set_parameters, s.id, false, src);
+                    for body in [get_body, set_body].into_iter().flatten() {
+                        ix.walk(body, s.id, false, src);
+                    }
+                });
             }
             SK::Class { body, .. } => self.walk(body, unit, true, src),
             SK::Interface { .. } => {}
             SK::On { kind } => {
                 if let Some(action) = trigger_block(kind) {
-                    self.open(s.id, unit);
-                    match &action.kind {
-                        SK::Do { body, .. } => {
-                            self.stmts.insert(action.id, action);
-                            self.walk(body, s.id, false, src);
-                        }
-                        _ => self.visit(action, s.id, false, src),
-                    }
+                    self.unit(s.id, unit, |ix| match &action.kind {
+                        SK::Do { body, .. } => ix.walk(body, s.id, false, src),
+                        _ => ix.visit(action, s.id, false, src),
+                    });
                 }
             }
             SK::Do { body, .. }
@@ -264,11 +329,12 @@ impl<'a> FileIndex<'a> {
     fn note(&mut self, stmt: NodeId, unit: NodeId, effects: &Effects<'a>) {
         if events::creates(effects) {
             self.creating.push(stmt);
+            self.cur.creates = true;
         }
         for e in effects {
             match e {
-                Effect::Free { var, .. } => {
-                    let units = self.frees.entry(var.to_ascii_lowercase()).or_default();
+                Effect::Free { var, .. } | Effect::DeleteNamed { var, .. } => {
+                    let units = self.frees.entry(Name(var)).or_default();
                     if !units.contains(&unit) {
                         units.push(unit);
                     }

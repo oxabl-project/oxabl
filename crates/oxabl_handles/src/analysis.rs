@@ -9,15 +9,15 @@
 
 use std::collections::VecDeque;
 
-use oxabl_ast::{NodeId, StatementKind as SK};
+use oxabl_ast::{Identifier, NodeId};
 use oxabl_flow::{
     BlockKind, Cfg, EdgeKind, ExitKind, NodeIx, NodeKind, OpaqueReason as FlowOpaque,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::events::{self, Effect, Place, PoolRef};
-use crate::index::FileIndex;
+use crate::index::{FileIndex, Name};
 use crate::model::*;
 
 /// More walk states than this for one object marks it opaque.
@@ -72,8 +72,8 @@ struct Obj {
     nodes: SmallVec<[NodeIx; 1]>,
 }
 
-pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex) -> UnitHandles {
-    let mut u = UnitWalk::new(cfg, index);
+pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex, src: &str) -> UnitHandles {
+    let mut u = UnitWalk::new(cfg, index, src);
     let mut objects: Vec<Object> = (0..u.objs.len()).map(|o| u.object(o as u32)).collect();
     objects.sort_by_key(|o| o.create.span.start);
     UnitHandles {
@@ -103,7 +103,7 @@ struct UnitWalk<'c, 'i, 'a> {
 }
 
 impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
-    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>) -> Self {
+    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>, src: &str) -> Self {
         let unit_stmt = cfg.unit().stmt;
         let mut w = UnitWalk {
             cfg,
@@ -118,36 +118,39 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
             unnamed_pool_nodes: Vec::new(),
             dominators: None,
         };
-        let mut var_ix: FxHashMap<String, u32> = FxHashMap::default();
-        let mut obj_ix: FxHashMap<(NodeId, u32), u32> = FxHashMap::default();
-        let mut pool_seen: FxHashMap<NodeId, ()> = FxHashMap::default();
+        let empty = FxHashMap::default();
+        let facts = index.unit_facts(unit_stmt).unwrap_or(&empty);
         // Variables this unit creates a dataset into, and variables that walk
         // a procedure list.
-        let mut datasets: Vec<String> = Vec::new();
-        let mut walkers: Vec<String> = Vec::new();
-        for (_, node) in cfg.nodes() {
-            if let (NodeKind::Stmt, Some(stmt)) = (node.kind, node.stmt) {
-                for e in index.effects(stmt) {
-                    if let Effect::Create {
-                        kind: ObjectKind::Dataset,
-                        into: Some(Place::Var(v)),
-                        ..
-                    } = e
-                    {
-                        datasets.push(v.to_ascii_lowercase());
-                    }
-                    if let Effect::ProcedureWalk { var } = e {
-                        walkers.push(var.to_ascii_lowercase());
-                    }
+        let mut datasets: FxHashSet<Name> = FxHashSet::default();
+        let mut walkers: FxHashSet<Name> = FxHashSet::default();
+        for e in facts.values().flat_map(|f| &f.effects) {
+            match e {
+                Effect::Create {
+                    kind: ObjectKind::Dataset,
+                    into: Some(Place::Var(v)),
+                    ..
+                } => {
+                    datasets.insert(Name(v));
                 }
+                Effect::ProcedureWalk { var } => {
+                    walkers.insert(Name(var));
+                }
+                _ => {}
             }
         }
+        let mut var_ix: FxHashMap<Name, u32> = FxHashMap::default();
+        let mut obj_ix: FxHashMap<(NodeId, u32), u32> = FxHashMap::default();
+        let mut pool_seen: FxHashMap<NodeId, ()> = FxHashMap::default();
+        let mut skipped: Vec<(NodeIx, &'a [Identifier])> = Vec::new();
         for (n, node) in cfg.nodes() {
             let mut out: SmallVec<[Fx; 2]> = SmallVec::new();
-            if let (NodeKind::Stmt, Some(stmt)) = (node.kind, node.stmt) {
+            if let (NodeKind::Stmt, Some(stmt)) = (node.kind, node.stmt)
+                && let Some(f) = facts.get(&stmt)
+            {
                 let mut ordinal = 0u32;
-                for e in index.effects(stmt) {
-                    let mut var = |name: &str| w.var(&mut var_ix, name);
+                for e in &f.effects {
+                    let mut var = |name: &'a str| w.var(&mut var_ix, name);
                     match e {
                         Effect::Create { kind, into, pool } => {
                             let into_r = match into {
@@ -195,8 +198,8 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                                 w.objs.len() as u32 - 1
                             });
                         }
-                        Effect::Free { var: v, .. }
-                            if walkers.contains(&v.to_ascii_lowercase()) =>
+                        Effect::Free { var: v, .. } | Effect::DeleteNamed { var: v, .. }
+                            if walkers.contains(&Name(v)) =>
                         {
                             out.push(Fx::Sweep)
                         }
@@ -204,7 +207,10 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                             var: var(v),
                             kind: *kind,
                         }),
-                        Effect::ProcedureWalk { .. } => {}
+                        Effect::DeleteNamed { var: v, span } => out.push(Fx::Free {
+                            var: var(v),
+                            kind: events::delete_kind(src, *span),
+                        }),
                         Effect::Assign { to, from } => {
                             let to = match to {
                                 Place::Var(v) => Into::Var(var(v)),
@@ -223,6 +229,16 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                             var: var(v),
                             reason: *reason,
                         }),
+                        Effect::Skipped(names) => skipped.push((n, names)),
+                        Effect::Attach { recv, var: v } => {
+                            if datasets.contains(&Name(recv)) {
+                                out.push(Fx::Escape {
+                                    var: var(v),
+                                    kind: EscapeKind::DatasetMember,
+                                });
+                            }
+                        }
+                        Effect::ProcedureWalk { .. } => {}
                         Effect::CreatePool { name, persistent } => {
                             if name.is_none() {
                                 w.unnamed_pool_nodes.push(n);
@@ -241,33 +257,32 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                         Effect::DeletePool { name } => {
                             out.push(Fx::DeletePool { name: name.clone() })
                         }
-                        Effect::Attach { recv, var: v } => {
-                            if datasets.contains(&recv.to_ascii_lowercase()) {
-                                out.push(Fx::Escape {
-                                    var: var(v),
-                                    kind: EscapeKind::DatasetMember,
-                                });
-                            }
-                        }
                     }
                 }
-                if let Some(s) = index.stmt(stmt) {
-                    w.safe[n.index()] = events::cannot_raise(s);
-                }
-                if let Some(s) = index.stmt(stmt)
-                    && let SK::If { condition, .. } = &s.kind
-                    && let Some((v, when)) = events::invalid_test(condition)
-                {
+                w.safe[n.index()] = f.safe;
+                if let Some((v, when)) = f.guard {
                     w.guards[n.index()] = Some((w.var(&mut var_ix, v), when));
                 }
             }
             w.fx.push(out);
         }
+        // A skipped statement matters only where it names a variable that may
+        // hold an object.
+        for (n, names) in skipped {
+            for name in names {
+                if let Some(&v) = var_ix.get(&Name(&name.name)) {
+                    w.fx[n.index()].push(Fx::Opaque {
+                        var: v,
+                        reason: OpaqueReason::SkippedStatement,
+                    });
+                }
+            }
+        }
         w
     }
 
-    fn var(&mut self, ix: &mut FxHashMap<String, u32>, name: &str) -> u32 {
-        let key = name.to_ascii_lowercase();
+    fn var(&mut self, ix: &mut FxHashMap<Name<'a>, u32>, name: &'a str) -> u32 {
+        let key = Name(name);
         if let Some(&i) = ix.get(&key) {
             return i;
         }
@@ -390,10 +405,10 @@ struct Walker<'w, 'c, 'i, 'a> {
     escaped: bool,
     pool_freed: bool,
     freed: bool,
-}
-
-fn bit(v: u32) -> u64 {
-    if v < 64 { 1u64 << v } else { 0 }
+    /// The bit of each unit variable in a walk state's holder set, assigned
+    /// when the variable first holds the object; `u8::MAX` for none.
+    local: Vec<u8>,
+    next_bit: u8,
 }
 
 fn is_abnormal(kind: EdgeKind) -> bool {
@@ -417,13 +432,51 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             escaped: false,
             pool_freed: false,
             freed: false,
+            local: vec![u8::MAX; u.vars.len()],
+            next_bit: 0,
+        }
+    }
+
+    /// The holder bit of `v`, or 0 when `v` never held the object.
+    fn bit(&self, v: u32) -> u64 {
+        match self.local[v as usize] {
+            u8::MAX => 0,
+            b => 1 << b,
+        }
+    }
+
+    /// The holder bit of `v`, assigned if needed; 0 past 64 holders.
+    fn hold(&mut self, v: u32) -> u64 {
+        if self.local[v as usize] == u8::MAX {
+            if self.next_bit == 64 {
+                self.too_complex();
+                return 0;
+            }
+            self.local[v as usize] = self.next_bit;
+            self.next_bit += 1;
+        }
+        self.bit(v)
+    }
+
+    fn too_complex(&mut self) {
+        if !self
+            .out
+            .opaque
+            .iter()
+            .any(|o| o.reason == OpaqueReason::TooComplex)
+        {
+            let site = self.out.create;
+            self.out.opaque.push(Opaque {
+                reason: OpaqueReason::TooComplex,
+                site,
+            });
         }
     }
 
     fn run(mut self) -> Object {
         let u = self.u;
         let obj = &u.objs[self.o as usize];
-        let (holders, mut flags) = match obj.into {
+        let (holders, flags) = match obj.into {
             Into::Var(v) => {
                 let var = &u.vars[v as usize];
                 let mut flags = ROOT;
@@ -433,7 +486,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                         self.escape(kind, c, var.freed_elsewhere);
                     }
                 }
-                (bit(v), flags)
+                (self.hold(v), flags)
             }
             Into::Other(kind) => {
                 for &c in &obj.nodes {
@@ -444,10 +497,6 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             }
             Into::Nothing => unreachable!("uncaptured objects are not walked"),
         };
-        if holders == 0 {
-            // More variables than a walk state holds: nothing to follow.
-            flags |= ESCAPED;
-        }
         for &c in &obj.nodes {
             self.push(
                 State {
@@ -460,11 +509,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
         }
         while let Some(i) = self.queue.pop_front() {
             if self.states.len() > STATE_LIMIT {
-                let site = self.out.create;
-                self.out.opaque.push(Opaque {
-                    reason: OpaqueReason::TooComplex,
-                    site,
-                });
+                self.too_complex();
                 break;
             }
             self.expand(i);
@@ -532,7 +577,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
         let Some((v, when)) = self.u.guards[n.index()] else {
             return false;
         };
-        holders & bit(v) != 0
+        holders & self.bit(v) != 0
             && match kind {
                 EdgeKind::True => when,
                 EdgeKind::False => !when,
@@ -571,21 +616,21 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             match fx {
                 Fx::Create { into, .. } if !raised => {
                     if let Into::Var(v) = into
-                        && h & bit(*v) != 0
+                        && h & self.bit(*v) != 0
                     {
                         if self.u.objs[self.o as usize].kind == ObjectKind::Memptr {
                             // SET-SIZE on an allocated MEMPTR fails rather than
                             // dropping the memory.
                             continue;
                         }
-                        h &= !bit(*v);
+                        h &= !self.bit(*v);
                         if h == 0 {
                             return lose(self, esc);
                         }
                     }
                 }
                 Fx::Free { var, kind } => {
-                    if h & bit(*var) != 0 {
+                    if h & self.bit(*var) != 0 {
                         self.free(*kind, n);
                         self.end(i, st, n, End::Freed);
                         return Err(Some(End::Freed));
@@ -605,18 +650,18 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                     }
                 }
                 Fx::Assign { to, from } if !raised => {
-                    let copy = from.is_some_and(|f| h & bit(f) != 0);
+                    let copy = from.is_some_and(|f| h & self.bit(f) != 0);
                     match *to {
                         Into::Var(w) => {
                             if copy {
-                                h |= bit(w);
+                                h |= self.hold(w);
                                 let var = &u.vars[w as usize];
                                 if let Some(kind) = var.escape {
                                     esc = true;
                                     self.escape(kind, n, var.freed_elsewhere);
                                 }
-                            } else if h & bit(w) != 0 {
-                                h &= !bit(w);
+                            } else if h & self.bit(w) != 0 {
+                                h &= !self.bit(w);
                                 if h == 0 {
                                     return lose(self, esc);
                                 }
@@ -631,7 +676,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                         Into::Nothing => {}
                     }
                 }
-                Fx::Escape { var, kind } if !raised && h & bit(*var) != 0 => {
+                Fx::Escape { var, kind } if !raised && h & self.bit(*var) != 0 => {
                     esc = true;
                     let freed = u.vars[*var as usize].freed_elsewhere;
                     self.escape(*kind, n, freed && *kind != EscapeKind::Return);
@@ -639,7 +684,7 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                 Fx::Sweep if u.objs[self.o as usize].kind == ObjectKind::PersistentProcedure => {
                     self.opaque(OpaqueReason::ProcedureSweep, n);
                 }
-                Fx::Opaque { var, reason } if h & bit(*var) != 0 => {
+                Fx::Opaque { var, reason } if h & self.bit(*var) != 0 => {
                     self.opaque(*reason, n);
                 }
                 _ => {}
@@ -676,8 +721,8 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             // A main-block variable another unit frees: the internal procedure
             // or trigger that frees it owns the object.
             _ if u.unit_stmt == NodeId::PROGRAM
-                && (0..u.vars.len().min(64))
-                    .any(|v| st.holders & (1 << v) != 0 && u.vars[v].freed_elsewhere) =>
+                && (0..u.vars.len())
+                    .any(|v| st.holders & self.bit(v as u32) != 0 && u.vars[v].freed_elsewhere) =>
             {
                 Some(EscapeKind::FreedByOtherUnit)
             }

@@ -163,7 +163,7 @@ pub fn analyze_file_with(
     units.dedup();
     let units = units
         .into_iter()
-        .map(|u| analysis::analyze_unit(&builder.build(u), &index))
+        .map(|u| analysis::analyze_unit(&builder.build(u), &index, source))
         .filter(|u| !u.objects.is_empty() || !u.pools.is_empty())
         .collect();
     FileHandles { units }

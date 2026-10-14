@@ -10,7 +10,8 @@ This note answers two of the three open questions in
 [`strict-analysis-plan.md`](strict-analysis-plan.md): where annotations may appear, and where
 diagnostics inside include files are reported. The third (PROPATH and include resolution parity
 with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
-lists the block semantics that the flow graph (`oxabl_flow`) models without a reference.
+lists the block semantics that the flow graph (`oxabl_flow`) models without a reference, and
+section 6 the handle semantics that `oxabl_handles` relies on.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -378,3 +379,54 @@ draft, and its row says what it was.
 
 **Still to verify against a licensed install:** F5, F7 (when it settles, keep one successor) and F8 for STOP and QUIT first, because
 the readings differ in graph shape. Then F10 (destructor and trigger blocks) and F13.
+
+## 6. Handle lifetimes: the semantics `oxabl_handles` relies on
+
+`oxabl_handles` follows each dynamic object from its create over every path of its unit's flow
+graph and gives it a verdict: freed, pool-freed, escapes, leaks or unknown. The rules below are
+readings, marked as in section 5. Each has a fixture in `crates/oxabl_handles/tests/fixtures/`
+(re-bless with `OXABL_BLESS=1 cargo test -p oxabl_handles --test snapshots`), and the rule
+queries are pinned by `crates/oxabl_handles/tests/rules.rs`.
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| H1 | Class instances (`NEW`, `DYNAMIC-NEW`) are reference-counted and freed by the AVM: verdict "collected", not followed. Cycles between objects leak, and are out of scope (the plan defers them). | Recalled, high. | `create_kinds.p` |
+| H2 | Handle-based objects (`CREATE QUERY`, `BUFFER`, `TEMP-TABLE`, `DATASET`, `DATA-SOURCE`, `CALL`, X-, SAX-, SOAP-, socket and server objects, `CLIENT-PRINCIPAL`), widgets, COM objects, persistent procedures and MEMPTRs are not collected. They live until deleted, until their widget pool is deleted, or until the session ends. | Recalled, high. | `create_kinds.p` |
+| H3 | Frees: `DELETE OBJECT`, `DELETE PROCEDURE`, `DELETE WIDGET`, `RELEASE OBJECT` (COM) and `SET-SIZE(m) = 0`. A delete that raises (an invalid handle) is still a free on its error edge. | Recalled, high. | `create_kinds.p`, `persistent.p`, `memptr.p` |
+| H4 | `APPLY "CLOSE" TO hProc` frees the procedure. This is a convention, not a language rule: the procedure's `CLOSE` trigger usually runs `DELETE PROCEDURE THIS-PROCEDURE`. `RUN destroy IN h` (or `destroyObject`) follows the same kind of convention but shows nothing in the caller, so it makes the object unknown, not freed. | Proposed, medium. | `persistent.p` |
+| H5 | A live object's handle is valid. So the branch of `IF VALID-HANDLE(h)` (also `NOT`, `h <> ?`, `h = ?`) where `h` is invalid cannot happen while `h` holds a live object, and `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` frees on every path. `VALID-OBJECT` is not a guard for a handle. | Recalled, high. | `guards.p` |
+| H6 | An object created without `IN WIDGET-POOL` goes into the most recent unnamed pool, else the session pool. An unnamed pool is deleted when the procedure or trigger that created it ends; one created in the main block of a persistent procedure lives until that procedure is deleted. Model: a `CREATE WIDGET-POOL.` that dominates the create in the same unit is the unit's pool; one in the main block also covers the file's other units (the file pool). The caller's pool is not knowable: "unscoped" (HD005). | Recalled, medium. | `pools.p`, `unscoped.p` |
+| H7 | A named pool is session-wide by name. `DELETE WIDGET-POOL name` deletes it, and so does the end of the procedure that created it, unless it is `PERSISTENT`. A pool name no statement of the file creates belongs to someone else: the object escapes to it. | Recalled, medium. | `pools.p` |
+| H8 | Widget pools hold handle-based objects and widgets, not persistent procedures, MEMPTRs, COM objects or class instances. | Recalled. Medium; low for the server, socket, X- and SAX- objects. | `pools.p` |
+| H9 | An object left in a pool this procedure deletes is freed with it, so it is not an HD001 leak, also when a loop overwrites its handle. It can still grow memory until the procedure ends. | Proposed. | `pools.p` |
+| H10 | A statement that raises does not complete: a `CREATE` that raises makes nothing, and an assignment that raises stores nothing. The assignment of a plain variable or literal to a plain variable, and `RETURN` of one, cannot raise, although the flow graph gives every assignment a raise edge. | Proposed, high. | `alias.p`, `escapes.p` |
+| H11 | Overwriting the last variable that holds a live object (a new create into it, `h = ?`, an `OUTPUT` argument) loses the object there. An `OUTPUT` parameter starts at its initial value in the callee, so the old value is not seen. A create in a loop whose object is still live on the next iteration is lost at that create. | Recalled for `OUTPUT`, high. Proposed for the rest. | `loops_overwrite.p`, `alias.p` |
+| H12 | `SET-SIZE` on a MEMPTR that already has a size raises an error and frees nothing, so it does not lose the old allocation. Assigning a MEMPTR copies the pointer, not the memory, so both variables name one allocation. | Recalled, medium. | `memptr.p` |
+| H13 | `RUN p PERSISTENT` without `SET` keeps no handle in this file (a singleton or a self-managing super procedure): verdict "uncaptured", for HD003 to treat on its own. | Proposed. | `persistent.p` |
+| H14 | An `INPUT` argument of `RUN`, a function or a method is borrowed, not handed on. An `INPUT-OUTPUT` argument escapes. Passing to a constructor (`NEW C(h)`), `ADD-SUPER-PROCEDURE`, `PUBLISH` and `SUBSCRIBE PROCEDURE` escapes. A query's `ADD-BUFFER`/`SET-BUFFERS` is a use; a query does not own its buffers. | Proposed, medium. Recalled for queries, high. | `escapes.p`, `dataset_member.p` |
+| H15 | `hDs:ADD-BUFFER(h)` or `hDs:ADD-BUFFER(h:DEFAULT-BUFFER-HANDLE)`, where this unit creates a dataset into `hDs`, makes the dataset the owner. Whether deleting a dynamic dataset deletes the temp-tables of the buffers added to it is not confirmed. | Proposed, low. | `dataset_member.p` |
+| H16 | Storing the handle where it outlives the unit escapes it: an `OUTPUT` parameter, `RETURN`, a class member, a variable of an enclosing unit, a shared variable, a field, an array element or `EXTENT` variable, another object's attribute. The escape records whether another unit of the file frees that name; a class-level check reads it (a member no unit frees is a leak of the class). | Proposed. | `escapes.p`, `class.cls` |
+| H17 | A main-block variable that another unit of the file frees by name (a cleanup procedure, a trigger) owns the object at the main block's end: escape. | Proposed. | `other_unit.p` |
+| H18 | A `DELETE PROCEDURE` of a handle that walks a procedure list (`FIRST-PROCEDURE`, `NEXT-SIBLING`, ...) may delete any persistent procedure: unknown, not freed. | Proposed. | `sweep.p` |
+| H19 | A statement the parser skips that names a holder, a dynamic call with a holder as argument (`RUN VALUE`, `DYNAMIC-FUNCTION` except its `IN` handle, `DYNAMIC-INVOKE`), an unexpanded include or a statement left by parse recovery, while the object lives, makes a would-be leak unknown. | Proposed. | `opaque.p` |
+
+Not modelled, known gaps:
+
+- `CREATE ... NO-ERROR` that fails makes no object, and the usual `IF ERROR-STATUS:ERROR THEN
+  RETURN.` after it is then a leak path that cannot happen.
+- `UNDO` restores a variable without `NO-UNDO`, a handle variable included. Objects are not undone,
+  and the model does not restore variables either.
+- `COPY-LOB ... TO m` and other statements that allocate a MEMPTR; only `SET-SIZE` is.
+- The `USE-WIDGET-POOL` option of a class, `CREATE-LIKE` on a dataset, and the widget-pool option
+  of a widget's `ASSIGN` phrase.
+- A caller's widget pool, and an object freed by a procedure this file runs (no call graph yet).
+- More than 64 variables of one unit that hold the same object on one path.
+
+**Corpus check (verified, proportions only).** Over two large real corpora, of 20 sampled objects
+that leak on a normal path, 18 looked real on reading the code (never deleted, or skipped by an
+early `RETURN` or a conditional cleanup). One was a procedure-list sweep (now H18) and one a
+`VALID-OBJECT` test on a handle. Includes multiply the raw counts: one leak in a widely included
+file is counted once per includer, so the corpus runner also counts distinct sites.
+
+**Still to verify against a licensed install:** H6 and H7 (pool scope, and the persistent
+procedure case), H8 for the less common object kinds, H12, and H15.
