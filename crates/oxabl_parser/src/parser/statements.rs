@@ -285,6 +285,11 @@ impl Parser<'_> {
                 self.advance();
                 if self.check(Kind::KwReturn) {
                     self.advance();
+                    // UNDO, RETURN NO-APPLY. has no value; the flow builder reads it
+                    // from the tokens.
+                    if self.check(Kind::NoApply) {
+                        self.advance();
+                    }
                     // RETURN may have a value expression (e.g. UNDO, RETURN false.)
                     let is_error = self.eat_error_modifier();
                     kind = match (is_error, self.parse_optional_value()) {
