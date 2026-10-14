@@ -4075,9 +4075,16 @@ impl<'a> ResolveWalker<'a> {
                     self.try_dotted_receiver_type(expr, scope);
                 }
             }
-            ExpressionKind::MemberAccess { object, .. }
-            | ExpressionKind::MethodCall { object, .. } => {
+            ExpressionKind::MemberAccess { object, .. } => {
                 self.walk_receiver(object, scope);
+            }
+            ExpressionKind::MethodCall {
+                object, arguments, ..
+            } => {
+                self.walk_receiver(object, scope);
+                for a in arguments {
+                    self.walk_expression(a, scope, AccessMode::Read);
+                }
             }
             ExpressionKind::ArrayAccess { array, index } => {
                 self.walk_receiver_link(array, scope, false);
