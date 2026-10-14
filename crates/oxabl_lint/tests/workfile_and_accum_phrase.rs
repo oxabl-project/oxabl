@@ -71,3 +71,34 @@ fn put_reads_and_undefined_names() {
         "{diags:#?}"
     );
 }
+
+#[test]
+fn stream_operand_functions_take_a_stream() {
+    assert_silent(
+        "DEFINE STREAM s.\nDEFINE VARIABLE n AS INTEGER NO-UNDO.\n\
+         n = PAGE-NUMBER(s) + LINE-COUNTER(s) + PAGE-SIZE(s) + SEEK(s).\nMESSAGE n.\n",
+    );
+    // A stream declared out of sight is left unjudged.
+    assert_silent("DEFINE VARIABLE n AS INTEGER NO-UNDO.\nn = PAGE-NUMBER(unseen).\nMESSAGE n.\n");
+}
+
+#[test]
+fn a_variable_before_a_parenthesised_item_is_not_a_call() {
+    assert_silent(
+        "DEFINE VARIABLE x AS INTEGER NO-UNDO.\nDEFINE VARIABLE d AS CHARACTER NO-UNDO.\n\
+         x = 1.\nd = \",\".\n\
+         PUT UNFORMATTED x (x + 1) d SKIP.\nMESSAGE x (x + 1) d.\nDISPLAY x (x + 1) d.\n",
+    );
+    let diags = lint("MESSAGE nope (1).\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}
+
+#[test]
+fn upper_and_lower_are_built_in() {
+    assert_silent(
+        "DEFINE VARIABLE s AS CHARACTER NO-UNDO.\ns = \"a\".\nMESSAGE UPPER(s) LOWER(s).\n",
+    );
+}

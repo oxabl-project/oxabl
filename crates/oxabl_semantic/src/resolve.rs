@@ -33,6 +33,7 @@ use oxabl_ast::{
     TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
+use oxabl_lexer::is_builtin_function;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -3285,13 +3286,49 @@ impl<'a> ResolveWalker<'a> {
                 // Functions and Procedures share a call surface in expression
                 // position (internal procedure calls surface as function
                 // calls syntactically).
-                self.resolve_expr_ident(
-                    name,
-                    expr.id,
-                    scope,
-                    &[NamespaceId::Functions, NamespaceId::Procedures],
-                    AccessMode::Read,
-                );
+                //
+                // In an item list (`PUT x (y)`, `MESSAGE x (y)`) a variable
+                // followed by a parenthesised expression parses as a call. When
+                // the name is no function but a value in scope, it is that value
+                // and the parenthesised expression is the next item.
+                let namespaces: &[NamespaceId] = if !is_builtin_function(&name.name)
+                    && self
+                        .lookup_statement_ident(
+                            name,
+                            scope,
+                            &[NamespaceId::Functions, NamespaceId::Procedures],
+                        )
+                        .is_none()
+                    && self
+                        .lookup_statement_ident(name, scope, &[NamespaceId::Values])
+                        .is_some()
+                {
+                    &[NamespaceId::Values]
+                } else {
+                    &[NamespaceId::Functions, NamespaceId::Procedures]
+                };
+                self.resolve_expr_ident(name, expr.id, scope, namespaces, AccessMode::Read);
+                // The operand of `PAGE-NUMBER(s)` and its siblings is a stream
+                // name, not a value. It resolves in the stream namespace, and an
+                // unknown stream (declared in an unseen include) stays unjudged.
+                if is_stream_operand_function(&name.name)
+                    && let [arg] = arguments.as_slice()
+                    && let ExpressionKind::Identifier(stream) = &arg.kind
+                {
+                    if self
+                        .lookup_statement_ident(stream, scope, &[NamespaceId::Streams])
+                        .is_some()
+                    {
+                        self.resolve_expr_ident(
+                            stream,
+                            arg.id,
+                            scope,
+                            &[NamespaceId::Streams],
+                            AccessMode::Read,
+                        );
+                    }
+                    return;
+                }
                 let sequence = crate::sequence_operand(name, arguments);
                 if let Some(op) = &sequence {
                     self.resolve_sequence_operand(op);
@@ -5989,6 +6026,13 @@ fn names_after_widget_keywords(source: &str) -> FxHashSet<OxablAtom> {
 /// The argument of a `CAST`, `TYPE-OF` or `GET-CLASS` call that names a type.
 /// The parser models all three as ordinary calls, so the operand arrives as a
 /// value expression.
+/// Built-ins whose single operand names a stream.
+fn is_stream_operand_function(name: &str) -> bool {
+    ["page-number", "line-counter", "page-size", "seek"]
+        .iter()
+        .any(|f| name.eq_ignore_ascii_case(f))
+}
+
 fn type_operand<'e>(name: &Identifier, arguments: &'e [Expression]) -> Option<&'e Expression> {
     let callee = name.name.as_str();
     if callee.eq_ignore_ascii_case("cast") || callee.eq_ignore_ascii_case("type-of") {
