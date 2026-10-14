@@ -1,0 +1,19 @@
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+REPEAT:
+    UPDATE i.
+    IF i = 0 THEN UNDO, RETRY.
+    IF i = 1 THEN UNDO, LEAVE.
+    IF i = 2 THEN UNDO.
+END.
+FOR EACH Customer NO-LOCK:
+    IF i = 3 THEN UNDO, NEXT.
+END.
+IF i = 4 THEN QUIT.
+FIND FIRST Customer NO-LOCK NO-ERROR.
+RUN other.p NO-ERROR.
+ASSIGN i = 5 NO-ERROR.
+PUT UNFORMATTED "x" SKIP.
+OPEN QUERY q FOR EACH Customer NO-LOCK.
+{missing.i}
+@Strict.Owns.
+RUN other.p.

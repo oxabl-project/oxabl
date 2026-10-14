@@ -1,0 +1,19 @@
+DEFINE VARIABLE x AS INTEGER NO-UNDO.
+IF x > 1 THEN
+    x = 2.
+ELSE DO:
+    x = 3.
+END.
+IF x = 0 THEN x = 1.
+CASE x:
+    WHEN 1 THEN x = 10.
+    WHEN 2 OR WHEN 3 THEN DO:
+        x = 20.
+    END.
+    OTHERWISE x = 0.
+END CASE.
+CASE x:
+    WHEN 1 THEN RETURN.
+END CASE.
+RETURN.
+x = 99.

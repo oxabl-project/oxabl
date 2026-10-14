@@ -969,6 +969,7 @@ dependencies = [
  "oxabl_common",
  "oxabl_daemon",
  "oxabl_daemon_protocol",
+ "oxabl_flow",
  "oxabl_formatter",
  "oxabl_lexer",
  "oxabl_lint",
@@ -1066,6 +1067,17 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "oxabl_flow"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]
