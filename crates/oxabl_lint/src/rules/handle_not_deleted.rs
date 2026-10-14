@@ -59,10 +59,12 @@
 //! - an object whose lifetime the analysis cannot see to the end: a statement
 //!   the parser skips that names the handle, a dynamic call that receives it, a
 //!   call the file does not define (`RUN other.p (INPUT h)`, `RUN p IN hLib
-//!   (h)`, a function or method of another file) that receives it, a delete of
-//!   something that is not the handle itself, or an include that was not
-//!   expanded. An `INPUT` handle passed to a procedure or function of the file
-//!   that deletes its parameter counts as a delete.
+//!   (h)`, a prototype such as `PROCEDURE p IN SUPER`, a method of an object of
+//!   another class) that receives it, a delete of something that is not the
+//!   handle itself, or an include that was not expanded. An `INPUT` handle
+//!   passed to a procedure, function or method of the file that deletes its
+//!   parameter counts as a delete; one that stores, returns or hands on its
+//!   parameter is an owner outside the procedure.
 //!
 //! `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` counts as a delete on every
 //! path: a live object has a valid handle.

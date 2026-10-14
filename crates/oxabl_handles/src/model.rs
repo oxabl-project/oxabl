@@ -196,6 +196,10 @@ pub enum EscapeKind {
     /// Passed `INPUT` to a procedure, function or method of this file that
     /// frees its parameter.
     FreedByCallee,
+    /// Passed `INPUT` to a procedure, function or method of this file that
+    /// keeps its parameter: stores it where it outlives the call, returns it,
+    /// or hands it on in one of the other ways listed here.
+    KeptByCallee,
 }
 
 impl EscapeKind {
@@ -222,6 +226,7 @@ impl EscapeKind {
             EscapeKind::WidgetParent => "widget-parent",
             EscapeKind::DerivedHandle => "derived-handle",
             EscapeKind::FreedByCallee => "freed-by-callee",
+            EscapeKind::KeptByCallee => "kept-by-callee",
         }
     }
 }

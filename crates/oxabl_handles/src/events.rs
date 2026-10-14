@@ -121,10 +121,26 @@ pub(crate) enum Callee<'a> {
     /// `RUN name` or `RUN name IN THIS-PROCEDURE`.
     Procedure(&'a str),
     Function(&'a str),
-    /// `obj:Method(...)`: the last link of the chain.
-    Method(&'a str),
+    /// `obj:Method(...)`: the last link of the chain, and what it is called on.
+    Method {
+        name: &'a str,
+        recv: Receiver<'a>,
+    },
     /// `RUN name IN h`, or a call the file cannot resolve by name.
     External,
+}
+
+/// What a method is called on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Receiver<'a> {
+    /// A plain name: a variable, a static object or a system handle.
+    Name(&'a str),
+    /// An attribute or method chain from this name: `h:A:M(...)`.
+    Chain(&'a str),
+    /// A chain whose last link is a handle attribute: `BUFFER b:HANDLE`.
+    Handle,
+    /// Any other expression: `CAST(...)`, a class name, ...
+    Other,
 }
 
 pub(crate) type Effects<'a> = SmallVec<[Effect<'a>; 2]>;
@@ -351,8 +367,9 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
 }
 
 /// Whether a statement the CFG says may raise cannot: an assignment of a
-/// plain variable or literal to a plain variable, `RETURN` of one, or a test
-/// (`IF`, `CASE`, `DO WHILE`, `REPEAT WHILE`) of variables and literals only.
+/// plain variable or literal to a plain variable, `RETURN` of one, a test
+/// (`IF`, `CASE`, `DO WHILE`, `REPEAT WHILE`) of variables and literals only,
+/// or a `DO i = a TO b [BY c]` header whose bounds are variables or literals.
 pub(crate) fn cannot_raise(s: &Statement) -> bool {
     let simple = |e: &Expression| identity_of(e).is_some() || matches!(e.kind, EK::Literal(_));
     match &s.kind {
@@ -374,6 +391,19 @@ pub(crate) fn cannot_raise(s: &Statement) -> bool {
             while_condition: Some(c),
             ..
         } => plain_condition(c),
+        SK::Do {
+            loop_var: Some(_),
+            from: Some(from),
+            to: Some(to),
+            by,
+            while_condition,
+            ..
+        } => {
+            simple(from)
+                && simple(to)
+                && by.as_ref().is_none_or(simple)
+                && while_condition.as_ref().is_none_or(plain_condition)
+        }
         SK::Assignment { target, value } => var_of(target).is_some() && simple(value),
         SK::Assign { assignments } => assignments
             .iter()
@@ -599,7 +629,11 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
                     }
                 }
             } else {
-                pass_args(arguments, Callee::Method(&method.name), out);
+                let callee = Callee::Method {
+                    name: &method.name,
+                    recv: receiver(object),
+                };
+                pass_args(arguments, callee, out);
             }
         }
         EK::New { arguments, .. } => {
@@ -662,8 +696,14 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
 
 /// What a call by this name runs; `None` for a built-in function.
 fn function_callee(name: &str) -> Option<Callee<'_>> {
-    if let Some((_, last)) = name.rsplit_once(':') {
-        Some(Callee::Method(last))
+    if let Some((head, last)) = name.rsplit_once(':') {
+        let recv = match split_chain(head) {
+            Some((_, last)) if is_handle_attribute(last) => Receiver::Handle,
+            Some((root, _)) => Receiver::Chain(root),
+            None if !head.is_empty() && !head.contains('.') => Receiver::Name(head),
+            None => Receiver::Other,
+        };
+        Some(Callee::Method { name: last, recv })
     } else if name.contains('.') {
         Some(Callee::External)
     } else if is_builtin_function(name) {
@@ -671,6 +711,76 @@ fn function_callee(name: &str) -> Option<Callee<'_>> {
     } else {
         Some(Callee::Function(name))
     }
+}
+
+/// What the object of a method call is.
+fn receiver(object: &Expression) -> Receiver<'_> {
+    if let Some(name) = var_of(object) {
+        return Receiver::Name(name);
+    }
+    let last = match &object.kind {
+        EK::Identifier(id) => split_chain(&id.name).map(|(_, last)| last),
+        EK::MemberAccess { member, .. } => Some(member.name.as_str()),
+        _ => None,
+    };
+    if last.is_some_and(is_handle_attribute) {
+        return Receiver::Handle;
+    }
+    chain_start(object).map_or(Receiver::Other, Receiver::Chain)
+}
+
+/// `HANDLE`, `DEFAULT-BUFFER-HANDLE`, `TABLE-HANDLE`, ...: the value is a
+/// handle.
+fn is_handle_attribute(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() >= 6 && b[b.len() - 6..].eq_ignore_ascii_case(b"HANDLE")
+}
+
+/// A system handle other than `THIS-OBJECT` and `SUPER`, whose methods are
+/// built in.
+pub(crate) fn is_system_handle(name: &str) -> bool {
+    let mut buf = [0u8; 24];
+    let Some(folded) = buf.get_mut(..name.len()) else {
+        return false;
+    };
+    folded.copy_from_slice(name.as_bytes());
+    folded.make_ascii_lowercase();
+    matches!(
+        &*folded,
+        b"self"
+            | b"session"
+            | b"error-status"
+            | b"error-stat"
+            | b"error-statu"
+            | b"this-procedure"
+            | b"source-procedure"
+            | b"target-procedure"
+            | b"current-window"
+            | b"active-window"
+            | b"default-window"
+            | b"active-form"
+            | b"focus"
+            | b"clipboard"
+            | b"file-info"
+            | b"file-information"
+            | b"last-event"
+            | b"log-manager"
+            | b"dslog-manager"
+            | b"web-context"
+            | b"com-self"
+            | b"debugger"
+            | b"profiler"
+            | b"compiler"
+            | b"codebase-locator"
+            | b"color-table"
+            | b"font-table"
+            | b"rcode-info"
+            | b"rcode-information"
+            | b"audit-control"
+            | b"audit-policy"
+            | b"security-policy"
+            | b"codepage-table"
+    )
 }
 
 fn is_builtin_function(name: &str) -> bool {
@@ -1080,18 +1190,24 @@ pub(crate) fn calls_something(src: &str, span: Span) -> bool {
     let text = slice(src, span);
     let mut prev: Option<(Kind, bool)> = None;
     let (mut lead, mut second_is_name) = (Kind::Eof, false);
+    // A `:` is a member access unless it ends the text, where it opens a block.
+    let mut colon = false;
     for (n, t) in Lexer::new(text)
         .filter(|t| !matches!(t.kind, Kind::Comment))
         .take_while(|t| t.kind != Kind::Eof)
         .enumerate()
     {
+        if colon {
+            return true;
+        }
         let word = &text[t.start..t.end];
         match n {
             0 => lead = t.kind,
             1 => second_is_name = t.kind == Kind::Identifier,
             _ => {}
         }
-        if t.kind == Kind::Colon || (t.kind == Kind::Identifier && word.contains(':')) {
+        colon = t.kind == Kind::Colon;
+        if t.kind == Kind::Identifier && word.contains(':') {
             return true;
         }
         if t.kind == Kind::LeftParen

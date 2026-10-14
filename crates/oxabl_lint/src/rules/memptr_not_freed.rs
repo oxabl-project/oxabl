@@ -45,7 +45,7 @@
 //!
 //! Assigning a MEMPTR copies the pointer, not the memory, so a free through
 //! either variable counts. `SET-SIZE` allocates, and so does `COPY-LOB ... TO m`
-//! when `m` is declared `AS MEMPTR` in the file and no earlier `SET-SIZE` or
+//! when the `m` it names is declared `AS MEMPTR` and no earlier `SET-SIZE` or
 //! `COPY-LOB` of `m` always runs first. Other statements that fill a MEMPTR are
 //! not tracked.
 //!

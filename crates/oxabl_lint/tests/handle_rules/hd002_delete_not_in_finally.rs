@@ -186,3 +186,46 @@ END PROCEDURE.
 ";
     assert!(check(run, src).is_empty());
 }
+
+#[test]
+fn names_the_statement_that_raises_not_the_loop_header() {
+    let src = "\
+PROCEDURE p:
+    DEFINE INPUT PARAMETER cFile AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE m AS MEMPTR NO-UNDO.
+    DEFINE VARIABLE i AS INTEGER NO-UNDO.
+    DO i = 1 TO 3:
+        COPY-LOB FROM FILE cFile TO m.
+    END.
+    SET-SIZE(m) = 0.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [8]);
+    let message = &diags[0].message;
+    assert!(
+        message.contains("COPY-LOB FROM FILE cFile TO m"),
+        "{message}"
+    );
+    assert!(!message.contains("DO i"), "{message}");
+}
+
+#[test]
+fn a_block_header_colon_is_not_a_call() {
+    let src = "\
+PROCEDURE p:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    DEFINE VARIABLE i AS INTEGER NO-UNDO.
+    DEFINE VARIABLE n AS INTEGER NO-UNDO.
+    CREATE QUERY hQuery.
+    DO i = 1 TO n + 1:
+        hQuery:QUERY-OPEN().
+    END.
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [9]);
+    let message = &diags[0].message;
+    assert!(message.contains("hQuery:QUERY-OPEN()"), "{message}");
+}
