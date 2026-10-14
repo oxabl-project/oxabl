@@ -36,8 +36,9 @@ pub struct Evaluation {
 /// - `=` `<>` `<` `>` `<=` `>=` (and `EQ` `NE` `LT` `GT` `LE` `GE`), `BEGINS`, `MATCHES`
 /// - `NOT`, `AND`, `OR`, parentheses
 /// - `+` `-` `*` `MODULO` on integers, `+` on strings
-/// - `DEFINED(name)`, `OPSYS`, `PROVERSION`, `LOGICAL`, `INTEGER`, `DECIMAL`
-///   (integral values only), `STRING`, `SUBSTRING`, `LENGTH`, `TRIM`,
+/// - `DEFINED(name)` (0 undefined, 1 `&GLOBAL-DEFINE`, 2 include argument,
+///   3 `&SCOPED-DEFINE`), `OPSYS`, `PROVERSION`, `LOGICAL`, `INTEGER`,
+///   `DECIMAL` (integral values only), `STRING`, `SUBSTRING`, `LENGTH`, `TRIM`,
 ///   `LEFT-TRIM`, `RIGHT-TRIM`, `LC`, `INDEX`, `R-INDEX`, `ENTRY`,
 ///   `NUM-ENTRIES`, `LOOKUP`, `ABSOLUTE`, `MAXIMUM`, `MINIMUM`
 ///
@@ -436,8 +437,8 @@ enum CondValue {
     Bool(bool),
     Str(String),
     Num(i64),
-    /// A number known only to be above zero: `DEFINED` of a name that is both an
-    /// include argument and a define.
+    /// A number known only to be above zero: `DEFINED` of a name that is more
+    /// than one of a global, a scoped define and an include argument.
     Positive,
     /// The value of a part that was not modelled; a gap is already recorded for it.
     Unknown,
@@ -620,10 +621,11 @@ impl<'a> CondParser<'a> {
         match token {
             CondToken::Defined(name) => match self.env.vars.origin(&name) {
                 None => CondValue::Num(0),
-                Some(Origin::Define) => CondValue::Num(1),
+                Some(Origin::Global) => CondValue::Num(1),
                 Some(Origin::Argument) => CondValue::Num(2),
-                // The exact answer for a name that is both is not known.
-                Some(Origin::Both) => CondValue::Positive,
+                Some(Origin::Scoped) => CondValue::Num(3),
+                // The exact answer for a name that is several is not known.
+                Some(Origin::Mixed) => CondValue::Positive,
             },
             CondToken::BareDefined => {
                 self.gap("DEFINED without a name in parentheses".into());
@@ -726,7 +728,7 @@ impl<'a> CondParser<'a> {
             }
             // Only a comparison with zero does not need the number itself.
             let (Some(0), true) = (as_number(other), !matches!(other, CondValue::Positive)) else {
-                self.gap("DEFINED of a name that is an include argument and a define".into());
+                self.gap("DEFINED of a name that is defined in more than one way".into());
                 return false;
             };
             let op = match (op, flipped) {
@@ -1290,13 +1292,18 @@ mod tests {
     #[test]
     fn defined_tells_a_define_from_an_include_argument() {
         let mut vars = PreprocVarTable::new();
-        vars.define("d", "x");
+        vars.define("s", "x");
+        vars.define_global("g", "x");
         vars.define_argument("a", "x");
-        assert!(evaluate_exact("DEFINED(d) = 1", &vars));
+        assert!(evaluate_exact("DEFINED(g) = 1", &vars));
         assert!(evaluate_exact("DEFINED(a) = 2", &vars));
+        assert!(evaluate_exact("DEFINED(s) = 3", &vars));
+        assert!(!evaluate_exact("DEFINED(s) = 1", &vars));
+        assert!(!evaluate_exact("DEFINED(g) = 3", &vars));
+        assert!(evaluate_exact("DEFINED(s) >= 2 AND DEFINED(g) < 2", &vars));
         assert!(evaluate_exact("DEFINED(a) <> 1 AND DEFINED(a) > 0", &vars));
         assert!(evaluate_exact("DEFINED(nothing) = 0", &vars));
-        // Both at once: only "above zero" is certain.
+        // More than one at once: only "above zero" is certain.
         vars.define("a", "y");
         assert!(evaluate_exact("DEFINED(a) > 0 AND DEFINED(a) <> 0", &vars));
         assert!(evaluate_exact("0 < DEFINED(a)", &vars));

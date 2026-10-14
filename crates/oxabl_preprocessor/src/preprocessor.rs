@@ -59,15 +59,15 @@ impl ComputedName {
 
 /// Define the predefined names that [`PreprocessorConfig`] answers.
 fn define_configured_names(vars: &mut PreprocVarTable, config: &PreprocessorConfig) {
-    vars.define("OPSYS", &config.opsys);
-    vars.define("WINDOW-SYSTEM", &config.window_system);
-    vars.define("BATCH-MODE", if config.batch_mode { "yes" } else { "no" });
-    vars.define(
+    vars.define_global("OPSYS", &config.opsys);
+    vars.define_global("WINDOW-SYSTEM", &config.window_system);
+    vars.define_global("BATCH-MODE", if config.batch_mode { "yes" } else { "no" });
+    vars.define_global(
         "PROCESS-ARCHITECTURE",
         &config.process_architecture.to_string(),
     );
     if let Some(version) = &config.proversion {
-        vars.define("PROVERSION", version);
+        vars.define_global("PROVERSION", version);
     }
 }
 
@@ -350,8 +350,8 @@ impl<'fs> ProcessContext<'fs> {
                                     let expanded = self
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
-                                    self.vars.define(name, &expanded);
-                                    self.global_vars.define(name, &expanded);
+                                    self.vars.define_global(name, &expanded);
+                                    self.global_vars.define_global(name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -2616,17 +2616,27 @@ mod tests {
     }
 
     #[test]
-    fn defined_tells_an_include_argument_from_a_define() {
+    fn defined_tells_global_argument_and_scoped_names_apart() {
         let fs = make_fs(&[(
             "/inc/d.i",
-            "&IF DEFINED(arg) = 2 &THEN\nargument\n&ENDIF\n&IF DEFINED(def) = 1 &THEN\ndefine\n&ENDIF\n",
+            "&IF DEFINED(arg) = 2 &THEN\nargument\n&ENDIF\n\
+             &IF DEFINED(scoped) = 3 &THEN\nscoped\n&ENDIF\n\
+             &IF DEFINED(scoped) = 1 &THEN\nwrong-scoped\n&ENDIF\n\
+             &IF DEFINED(glob) = 1 &THEN\nglobal\n&ENDIF\n\
+             &IF DEFINED(glob) = 3 &THEN\nwrong-global\n&ENDIF\n\
+             &GLOBAL-DEFINE fromi yes\n",
         )]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
-        let source = "&SCOPED-DEFINE def yes\n{d.i &arg=1}";
+        let source = "&SCOPED-DEFINE scoped yes\n&GLOBAL-DEFINE glob yes\n{d.i &arg=1}\
+                      &IF DEFINED(fromi) = 1 &THEN\nfrom-include\n&ENDIF\n\
+                      &IF DEFINED(nothing) = 0 &THEN\nnothing\n&ENDIF\n";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "argument\ndefine\n");
+        assert_eq!(
+            &*result.to_text(),
+            "argument\nscoped\nglobal\nfrom-include\nnothing\n"
+        );
         assert!(result.diagnostics.is_empty());
     }
 
