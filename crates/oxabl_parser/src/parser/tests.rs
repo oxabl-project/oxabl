@@ -12382,3 +12382,156 @@ fn new_as_the_last_token_does_not_panic() {
         let _ = Parser::new(&tokenize(source), source).parse_program();
     }
 }
+
+#[test]
+fn a_do_block_accepts_transaction_after_its_on_phrases() {
+    for colon in [":", "\n  :"] {
+        let source = format!(
+            "PROCEDURE p:\n  DO ON ERROR UNDO main, LEAVE main ON STOP UNDO main, LEAVE main TRANSACTION{colon}\n    MESSAGE \"x\".\n  END.\nEND PROCEDURE.\nMESSAGE \"after\"."
+        );
+        let stmts = assert_parses_clean(&source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        let StatementKind::Procedure { body, .. } = &stmts[0].kind else {
+            panic!("expected a procedure, got {:?}", stmts[0].kind);
+        };
+        let StatementKind::Do { transaction, .. } = &body[0].kind else {
+            panic!("expected DO, got {:?}", body[0].kind);
+        };
+        assert!(*transaction, "{source}");
+    }
+}
+
+#[test]
+fn a_method_accepts_the_package_protected_access_modifier() {
+    for source in [
+        "METHOD PACKAGE-PROTECTED VOID m():\nEND METHOD.",
+        "METHOD PACKAGE-PRIVATE VOID m():\nEND METHOD.",
+        "METHOD STATIC PACKAGE-PROTECTED INTEGER m():\n  RETURN 1.\nEND METHOD.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Method { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+    let stmts = assert_parses_clean("METHOD PACKAGE-PROTECTED VOID m():\nEND METHOD.");
+    let StatementKind::Method { access, .. } = &stmts[0].kind else {
+        unreachable!()
+    };
+    assert_eq!(*access, AccessModifier::PackageProtected);
+}
+
+#[test]
+fn an_external_procedure_accepts_its_options_in_any_order() {
+    for options in [
+        "ORDINAL 5",
+        "CDECL",
+        "PASCAL",
+        "STDCALL",
+        "PERSISTENT",
+        "THREAD-SAFE",
+        "CDECL ORDINAL 5",
+        "ORDINAL 5 CDECL",
+        "ORDINAL 5 STDCALL PERSISTENT",
+        "PERSISTENT THREAD-SAFE PASCAL ORDINAL 12",
+        "THREAD-SAFE ORDINAL {&ord} CDECL",
+    ] {
+        let source = format!(
+            "PROCEDURE p EXTERNAL \"lib.so\" {options}:\n  DEFINE INPUT PARAMETER x AS LONG.\nEND PROCEDURE.\nMESSAGE \"after\"."
+        );
+        let stmts = assert_parses_clean(&source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        let StatementKind::Procedure {
+            body, is_prototype, ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected a procedure, got {:?}", stmts[0].kind);
+        };
+        assert!(*is_prototype, "{source}");
+        assert_eq!(body.len(), 1, "{source}");
+    }
+}
+
+#[test]
+fn an_option_keyword_of_an_external_procedure_is_still_a_name() {
+    let source = "DEFINE VARIABLE ordinal AS INTEGER NO-UNDO.\nDEFINE VARIABLE cdecl AS INTEGER NO-UNDO.\nDEFINE VARIABLE pascal AS INTEGER NO-UNDO.\nDEFINE VARIABLE stdcall AS INTEGER NO-UNDO.\nordinal = cdecl + pascal * stdcall.\nMESSAGE ordinal cdecl pascal stdcall.";
+    assert_parses_clean(source);
+}
+
+fn statements_in_first_method(stmts: &[Statement]) -> &[Statement] {
+    let StatementKind::Class { body, .. } = &stmts[0].kind else {
+        panic!("expected a class, got {:?}", stmts[0].kind);
+    };
+    body.iter()
+        .find_map(|s| match &s.kind {
+            StatementKind::Method { name, body, .. } if name.name == "Run1" => {
+                Some(body.as_slice())
+            }
+            _ => None,
+        })
+        .expect("method Run1")
+}
+
+#[test]
+fn a_receiverless_call_to_a_method_named_like_a_statement_is_a_call() {
+    for name in ["Release", "Delete", "Create", "Display"] {
+        let source = format!(
+            "CLASS C:\n  METHOD PUBLIC VOID {name}(x AS INTEGER):\n  END METHOD.\n  METHOD PUBLIC VOID Run1():\n    {name}(1).\n    {name}(1) NO-ERROR.\n  END METHOD.\nEND CLASS."
+        );
+        let stmts = assert_parses_clean(&source);
+        let body = statements_in_first_method(&stmts);
+        assert_eq!(body.len(), 2, "{source}: {body:?}");
+        for stmt in body {
+            let StatementKind::ExpressionStatement(expr) = &stmt.kind else {
+                panic!("{name}: expected a call statement, got {:?}", stmt.kind);
+            };
+            assert!(
+                matches!(
+                    expr.kind,
+                    ExpressionKind::FunctionCall { .. } | ExpressionKind::MethodCall { .. }
+                ),
+                "{name}: {:?}",
+                expr.kind
+            );
+        }
+    }
+}
+
+#[test]
+fn a_method_declared_after_its_call_still_makes_the_word_a_call() {
+    let source = "CLASS C:\n  METHOD PUBLIC VOID Run1():\n    Release(1).\n  END METHOD.\n  METHOD PRIVATE VOID Release(x AS INTEGER):\n  END METHOD.\nEND CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    assert!(
+        matches!(body[0].kind, StatementKind::ExpressionStatement(_)),
+        "{:?}",
+        body[0].kind
+    );
+}
+
+#[test]
+fn a_statement_keyword_without_a_declared_method_keeps_its_statement_reading() {
+    let source = "CLASS C:\n  METHOD PUBLIC VOID Run1():\n    DISPLAY(x) WITH FRAME f.\n  END METHOD.\n  METHOD PUBLIC VOID Other():\n  END METHOD.\nEND CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    assert!(
+        !matches!(body[0].kind, StatementKind::ExpressionStatement(_)),
+        "{:?}",
+        body[0].kind
+    );
+}
+
+#[test]
+fn a_statement_keyword_with_a_space_before_the_paren_keeps_its_statement_reading() {
+    let source = "CLASS C:\n  METHOD PUBLIC VOID Display(x AS INTEGER):\n  END METHOD.\n  METHOD PUBLIC VOID Run1():\n    DISPLAY (1) WITH FRAME f.\n    DISPLAY(1) WITH FRAME f.\n  END METHOD.\nEND CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    for stmt in body {
+        assert!(
+            !matches!(stmt.kind, StatementKind::ExpressionStatement(_)),
+            "{:?}",
+            stmt.kind
+        );
+    }
+}

@@ -2048,8 +2048,16 @@ fn scan_matching_brace(source: &str, open: usize, quote_aware: bool) -> Option<u
             b'"' | b'\'' if quote_aware => {
                 let quote = bytes[i];
                 i += 1;
-                while i < bytes.len() && bytes[i] != quote {
-                    i += if bytes[i] == b'~' { 2 } else { 1 };
+                while i < bytes.len() {
+                    if bytes[i] == quote {
+                        // A doubled quote is an escaped quote, not the end.
+                        if bytes.get(i + 1) != Some(&quote) {
+                            break;
+                        }
+                        i += 2;
+                    } else {
+                        i += if bytes[i] == b'~' { 2 } else { 1 };
+                    }
                 }
             }
             b'{' => depth += 1,
@@ -2220,14 +2228,24 @@ fn read_arg_value(s: &str, i: &mut usize) -> String {
     }
 
     if bytes[*i] == b'"' || bytes[*i] == b'\'' {
-        // Quoted value — read to matching quote
+        // Quoted value — read to the matching quote. A doubled quote inside
+        // the string stands for one quote character.
         let quote = bytes[*i];
         *i += 1;
-        let start = *i;
-        while *i < bytes.len() && bytes[*i] != quote {
+        let mut value = String::new();
+        let mut start = *i;
+        while *i < bytes.len() {
+            if bytes[*i] == quote {
+                if bytes.get(*i + 1) != Some(&quote) {
+                    break;
+                }
+                *i += 1; // keep the first quote of the pair, drop the second
+                value.push_str(&s[start..*i]);
+                start = *i + 1;
+            }
             *i += 1;
         }
-        let value = s[start..*i].to_string();
+        value.push_str(&s[start..*i]);
         if *i < bytes.len() {
             *i += 1; // skip closing quote
         }
@@ -2611,6 +2629,28 @@ mod tests {
         ] {
             let result = pp.process(FileId::new(1), source).unwrap();
             assert_eq!(&*result.to_text(), text, "for {source:?}");
+            assert!(result.unresolved_includes.is_empty(), "for {source:?}");
+            assert!(result.diagnostics.is_empty(), "for {source:?}");
+        }
+    }
+
+    #[test]
+    fn a_doubled_quote_in_an_include_argument_is_one_escaped_quote() {
+        let fs = make_fs(&[("/inc/a.i", "A{1}B{2}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        for (source, text) in [
+            ("{a.i \"'\"\"x'\"}Z", "A'\"x'B"),
+            ("{a.i \"'\"\"x'\" y}Z", "A'\"x'By"),
+            ("{a.i '\"''x\"' y}Z", "A\"'x\"By"),
+            ("{a.i \"a\"\"\" y}Z", "Aa\"By"),
+            ("{a.i \"{\"\"}\"}Z", "A{\"}B"),
+            ("{a.i \"\"\"\"}Z", "A\"B"),
+        ] {
+            let source = format!("{source}\n'tail'");
+            let result = pp.process(FileId::new(1), &source).unwrap();
+            let expected = format!("{text}Z\n'tail'");
+            assert_eq!(&*result.to_text(), expected, "for {source:?}");
             assert!(result.unresolved_includes.is_empty(), "for {source:?}");
             assert!(result.diagnostics.is_empty(), "for {source:?}");
         }

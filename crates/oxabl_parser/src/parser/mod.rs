@@ -193,6 +193,9 @@ pub struct Parser<'a> {
     /// statements seen so far. A word token spelled like one of these is a class
     /// name in a type position even when it is also a keyword (`Method`).
     imported_classes: Vec<(usize, usize)>,
+    /// The token kinds of the method names declared in this token stream, built
+    /// on first use by [`declares_method_named`](Self::declares_method_named).
+    method_name_kinds: Option<Vec<Kind>>,
 }
 
 impl<'a> Parser<'a> {
@@ -215,6 +218,7 @@ impl<'a> Parser<'a> {
             errors: Vec::new(),
             stmt_start_token: current,
             imported_classes: Vec::new(),
+            method_name_kinds: None,
         }
     }
 
@@ -1035,6 +1039,11 @@ impl<'a> Parser<'a> {
                     | Kind::Private
                     | Kind::Protected
                     | Kind::PackagePrivate
+                    | Kind::PackageProtected
+                    | Kind::Ordinal
+                    | Kind::Cdecl
+                    | Kind::Pascal
+                    | Kind::Stdcall
                     | Kind::Abstract
                     | Kind::Final
                     | Kind::Override
@@ -1564,6 +1573,10 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Some(AccessModifier::PackagePrivate)
             }
+            Kind::PackageProtected => {
+                self.advance();
+                Some(AccessModifier::PackageProtected)
+            }
             _ => None,
         }
     }
@@ -1988,6 +2001,34 @@ impl<'a> Parser<'a> {
                         .is_some_and(|t| t.kind == Kind::Period)
             }
         }
+    }
+
+    /// Whether a `METHOD` declaration anywhere in the token stream names a word
+    /// of this `kind`. A statement keyword used as a method name keeps its keyword
+    /// kind, so the declared name is matched by kind, not by spelling.
+    fn declares_method_named(&mut self, kind: Kind) -> bool {
+        let tokens = self.tokens;
+        self.method_name_kinds
+            .get_or_insert_with(|| {
+                let mut kinds = Vec::new();
+                for (i, token) in tokens.iter().enumerate() {
+                    let after_end = i > 0 && tokens[i - 1].kind == Kind::End;
+                    if token.kind != Kind::Method || after_end {
+                        continue;
+                    }
+                    // The name is the word before the parameter list; a member
+                    // access `o:Method(` has the paren straight after the keyword.
+                    let name = tokens[i + 1..]
+                        .iter()
+                        .take_while(|t| !matches!(t.kind, Kind::Colon | Kind::Eof))
+                        .position(|t| t.kind == Kind::LeftParen);
+                    if let Some(offset) = name.filter(|&o| o > 0) {
+                        kinds.push(tokens[i + offset].kind);
+                    }
+                }
+                kinds
+            })
+            .contains(&kind)
     }
 
     /// Whether `token` is spelled like the short name of a `USING` import.

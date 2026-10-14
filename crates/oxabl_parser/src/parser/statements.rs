@@ -110,6 +110,48 @@ impl Parser<'_> {
         Ok(stmt)
     }
 
+    /// Whether the statement at the cursor is `word(...)` with the paren directly
+    /// against a keyword, ending the statement, where the file declares a method
+    /// named `word`. The parser has no scope information, so the declaration
+    /// check is the narrowest signal that the word is a method and not the
+    /// statement.
+    fn is_receiverless_method_call(&mut self) -> bool {
+        let tok = self.peek();
+        let (kind, end) = (tok.kind, tok.end);
+        if kind == Kind::Identifier || !self.check_at(1, Kind::LeftParen) {
+            return false;
+        }
+        if self.peek_at(1).start != end
+            || !Self::can_be_identifier(kind)
+            || !self.declares_method_named(kind)
+        {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut i = self.current + 1;
+        while let Some(t) = self.tokens.get(i) {
+            match t.kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Kind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        let after = self.tokens.get(i + 1).map(|t| t.kind);
+        let next = if after == Some(Kind::NoError) {
+            self.tokens.get(i + 2).map(|t| t.kind)
+        } else {
+            after
+        };
+        next == Some(Kind::Period)
+    }
+
     fn parse_statement_inner(&mut self) -> ParseResult<Statement> {
         // Skip empty statements
         if self.check(Kind::Period) {
@@ -120,6 +162,12 @@ impl Parser<'_> {
         // `@` opens an annotation; the field-format `@` only occurs mid-statement.
         if self.check(Kind::At) {
             return self.parse_annotation();
+        }
+
+        // A statement keyword directly followed by `(` is a call to a method of that
+        // name when the file declares one.
+        if self.is_receiverless_method_call() {
+            return self.parse_expression_statement();
         }
 
         // CATCH / FINALLY blocks — must be checked before the block-label heuristic because
@@ -767,6 +815,11 @@ impl Parser<'_> {
             return self.parse_include_arg_reference_statement();
         }
 
+        self.parse_expression_statement()
+    }
+
+    /// An assignment, or an expression evaluated for its effect (a call).
+    fn parse_expression_statement(&mut self) -> ParseResult<Statement> {
         // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
 
@@ -1009,7 +1062,11 @@ impl Parser<'_> {
                 && (p.check_at(1, Kind::Property)
                     || matches!(
                         p.peek_at(1).kind,
-                        Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+                        Kind::Public
+                            | Kind::Private
+                            | Kind::Protected
+                            | Kind::PackagePrivate
+                            | Kind::PackageProtected
                     ))
             {
                 p.advance();
@@ -2387,7 +2444,7 @@ impl Parser<'_> {
         let mut while_condition = None;
 
         // Optional TRANSACTION keyword: DO TRANSACTION:
-        let transaction = if self.check(Kind::Transaction) {
+        let mut transaction = if self.check(Kind::Transaction) {
             self.advance();
             true
         } else {
@@ -2512,7 +2569,14 @@ impl Parser<'_> {
             }
         }
 
-        let on_actions = self.parse_block_on_phrases();
+        let mut on_actions = self.parse_block_on_phrases();
+
+        // TRANSACTION may follow the ON phrases: DO ON ERROR UNDO, LEAVE TRANSACTION:
+        if self.check(Kind::Transaction) {
+            self.advance();
+            transaction = true;
+            on_actions.extend(self.parse_block_on_phrases());
+        }
 
         // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
         // The WITH clause can contain many frame options; consume everything until the
@@ -3389,8 +3453,9 @@ impl Parser<'_> {
         }
 
         let mut is_prototype = false;
-        // Skip optional EXTERNAL "dll-name" [calling-convention] [PERSISTENT] clause
-        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" cdecl:
+        // Skip optional EXTERNAL "dll-name" clause. Its options may come in any order:
+        // CDECL | PASCAL | STDCALL, ORDINAL n, PERSISTENT, THREAD-SAFE
+        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" CDECL ORDINAL 5:
         // The DLL name may also be a preprocessor reference: EXTERNAL {&DLL_NAME}
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
@@ -3402,12 +3467,26 @@ impl Parser<'_> {
             {
                 self.advance(); // consume the DLL path
             }
-            // Optional calling convention identifier (cdecl, pascal, ordinal, etc.)
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance();
-            }
-            if self.check(Kind::Persistent) {
-                self.advance();
+            loop {
+                match self.peek().kind {
+                    Kind::Cdecl
+                    | Kind::Pascal
+                    | Kind::Stdcall
+                    | Kind::Persistent
+                    | Kind::ThreadSafe => {
+                        self.advance();
+                    }
+                    Kind::Ordinal => {
+                        self.advance();
+                        if matches!(
+                            self.peek().kind,
+                            Kind::IntegerLiteral | Kind::Preprop | Kind::IncludeArgReference
+                        ) {
+                            self.advance();
+                        }
+                    }
+                    _ => break,
+                }
             }
         }
 
@@ -4367,7 +4446,12 @@ impl Parser<'_> {
         // (e.g., `function name char private (input p as char):`)
         if matches!(
             self.peek().kind,
-            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate | Kind::KwStatic
+            Kind::Public
+                | Kind::Private
+                | Kind::Protected
+                | Kind::PackagePrivate
+                | Kind::PackageProtected
+                | Kind::KwStatic
         ) {
             self.advance();
         }
@@ -5028,7 +5112,11 @@ impl Parser<'_> {
                 is_override = true;
             } else if matches!(
                 self.peek().kind,
-                Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+                Kind::Public
+                    | Kind::Private
+                    | Kind::Protected
+                    | Kind::PackagePrivate
+                    | Kind::PackageProtected
             ) {
                 // Re-parse access modifier that appears after qualifier flags
                 // (e.g. "METHOD OVERRIDE PROTECTED")
@@ -5212,6 +5300,7 @@ impl Parser<'_> {
                         | Kind::Private
                         | Kind::Protected
                         | Kind::PackagePrivate
+                        | Kind::PackageProtected
                 ) {
                     self.parse_expression().ok();
                 }
@@ -5223,7 +5312,11 @@ impl Parser<'_> {
         // Parse GET accessor (with optional leading access modifier, e.g. "protected get.")
         if matches!(
             self.peek().kind,
-            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+            Kind::Public
+                | Kind::Private
+                | Kind::Protected
+                | Kind::PackagePrivate
+                | Kind::PackageProtected
         ) && self.check_at(1, Kind::Get)
         {
             self.advance(); // consume access modifier
@@ -5279,7 +5372,11 @@ impl Parser<'_> {
         // Parse SET accessor (with optional leading access modifier, e.g. "private set.")
         if matches!(
             self.peek().kind,
-            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+            Kind::Public
+                | Kind::Private
+                | Kind::Protected
+                | Kind::PackagePrivate
+                | Kind::PackageProtected
         ) && self.check_at(1, Kind::Set)
         {
             self.advance(); // consume access modifier

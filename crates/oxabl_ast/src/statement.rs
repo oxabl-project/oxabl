@@ -789,6 +789,7 @@ pub enum AccessModifier {
     Private,
     Protected,
     PackagePrivate,
+    PackageProtected,
 }
 
 /// A class name between the angle brackets of a generic type: `pkg.Thing` in

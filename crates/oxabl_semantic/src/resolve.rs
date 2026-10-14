@@ -5746,7 +5746,8 @@ fn member_reachable(member: &MemberDescriptor, role: MemberRole) -> bool {
             AccessModifier::Public => true,
             AccessModifier::Protected
             | AccessModifier::Private
-            | AccessModifier::PackagePrivate => false,
+            | AccessModifier::PackagePrivate
+            | AccessModifier::PackageProtected => false,
         },
     }
 }
@@ -5757,6 +5758,9 @@ fn access_flag(access: AccessModifier) -> SymbolFlags {
         AccessModifier::Private => SymbolFlags::PRIVATE,
         AccessModifier::Protected => SymbolFlags::PROTECTED,
         AccessModifier::PackagePrivate => SymbolFlags::PACKAGE_PRIVATE,
+        AccessModifier::PackageProtected => {
+            SymbolFlags::PACKAGE_PRIVATE.union(SymbolFlags::PROTECTED)
+        }
     }
 }
 
