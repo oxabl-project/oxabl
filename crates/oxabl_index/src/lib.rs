@@ -184,7 +184,7 @@ fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
     }
 
     let mut imports = ImportContext::from_statements(&program.statements);
-    if include_before_header(&tokens) {
+    if include_before_header(&tokens, &program.statements) {
         imports = imports.with_unseen_imports();
     }
 
@@ -201,12 +201,25 @@ fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
     }
 }
 
-/// Whether an `{include}` stands ahead of the first class or interface header,
-/// where it could bring in `USING` statements the parse does not see.
-fn include_before_header(tokens: &[Token]) -> bool {
+/// Whether an `{include}` stands ahead of the first class or interface header
+/// statement, where it could bring in `USING` statements the parse does not see.
+///
+/// The header is found in the statements, not the tokens: `USING Progress.Lang.Class.`
+/// holds a `CLASS` token that is no header. With no header statement at file
+/// level, an include anywhere counts.
+fn include_before_header(tokens: &[Token], statements: &[Statement]) -> bool {
+    let header = statements
+        .iter()
+        .find(|stmt| {
+            matches!(
+                stmt.kind,
+                StatementKind::Class { .. } | StatementKind::Interface { .. }
+            )
+        })
+        .map_or(usize::MAX, |stmt| stmt.span.start as usize);
     tokens
         .iter()
-        .take_while(|t| !matches!(t.kind, Kind::Class | Kind::Interface))
+        .take_while(|t| t.start < header)
         .any(|t| t.kind == Kind::IncludeReference)
 }
 
