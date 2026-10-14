@@ -848,3 +848,25 @@ fn every_fixture_carrying_siblings_declares_what_they_resolve() {
         );
     }
 }
+
+/// The edges-only analysis builds the edge set the full collect does, for every
+/// row that claims one, with its siblings supplied and withheld.
+#[test]
+fn the_edges_only_analysis_builds_the_edge_sets_the_full_collect_does() {
+    for fixture in FIXTURES.iter().filter(|f| f.asserts_edges()) {
+        let config = fixture.config_under(root());
+        for (siblings, files) in [("supplied", fs(fixture)), ("withheld", empty_fs())] {
+            let full = edge_set(fixture, &config, &files);
+            let run = LintPipeline::new(&config, &files);
+            let lean = run
+                .with_file(fixture.root_path(root()))
+                .edge_set(fixture.source)
+                .unwrap_or_else(|reason| panic!("fixture `{}`: {reason}", fixture.name));
+            assert_eq!(
+                lean, full,
+                "fixture `{}` with siblings {siblings}",
+                fixture.name
+            );
+        }
+    }
+}

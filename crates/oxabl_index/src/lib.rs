@@ -37,6 +37,7 @@
 mod batch;
 mod deps;
 mod facts;
+mod producers;
 // Public because a second cache lives outside this crate: the language server's
 // salsa-backed index does its own memoization but must use the *same*
 // name-to-path policy — two spellings tried in order, exactly one match, `.i`
@@ -53,6 +54,7 @@ pub use deps::{
     UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
+pub use producers::{SharedProducers, definitions_in};
 
 use std::sync::Arc;
 
