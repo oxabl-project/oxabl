@@ -310,10 +310,11 @@ impl ProcessContext<'_> {
         // for `&` and `{` markers.
         let mut comment_depth: u32 = 0;
 
-        while i < len {
-            // Check if we're inside a disabled &IF branch
-            let emitting = if_stack.iter().all(|s| s.emitting);
+        // Whether every enclosing &IF branch is emitting; only a conditional
+        // directive changes it.
+        let mut emitting = true;
 
+        while i < len {
             // Inside a block comment: only track `/*` / `*/` to keep depth.
             if comment_depth > 0 {
                 if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
@@ -453,6 +454,7 @@ impl ProcessContext<'_> {
                                     any_branch_taken: cond_result,
                                     emitting: emitting && cond_result,
                                 });
+                                emitting = emitting && cond_result;
                                 i = directive.end;
                                 chunk_start = i as u32;
                                 continue;
@@ -489,6 +491,7 @@ impl ProcessContext<'_> {
                                         state.emitting = false;
                                     }
                                 }
+                                emitting = if_stack.iter().all(|s| s.emitting);
                                 i = directive.end;
                                 chunk_start = i as u32;
                                 continue;
@@ -505,6 +508,7 @@ impl ProcessContext<'_> {
                                     state.emitting =
                                         state.parent_emitting && !state.any_branch_taken;
                                 }
+                                emitting = if_stack.iter().all(|s| s.emitting);
                                 i = directive.end;
                                 chunk_start = i as u32;
                                 continue;
@@ -522,6 +526,7 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if_stack.pop();
+                                emitting = if_stack.iter().all(|s| s.emitting);
                                 i = directive.end;
                                 chunk_start = i as u32;
                                 continue;
