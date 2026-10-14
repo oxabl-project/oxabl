@@ -29,8 +29,8 @@ use std::sync::Arc;
 use oxabl_ast::{
     AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
     HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeSource,
-    UsingSource,
+    RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeArguments,
+    TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -85,6 +85,7 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
 fn canonical_data_type(ty: &DataType) -> String {
     match ty {
         DataType::Class(name) => format!("class:{}", name.to_ascii_lowercase()),
+        DataType::Generic(generic) => format!("class:{}", generic.class.to_ascii_lowercase()),
         DataType::PreprocIf(branches) => {
             let mut parts = vec![canonical_data_type(&branches.then_branch)];
             parts.extend(
@@ -423,6 +424,7 @@ impl<'a> Walker<'a> {
                 name,
                 return_type,
                 body,
+                ..
             } => {
                 // Empty body marks FORWARD / IN … / MAP TO prototypes (#69).
                 // Full definitions (incl. signature params from #68) have
@@ -1944,7 +1946,8 @@ impl<'a> ResolveWalker<'a> {
     }
 
     /// [`Self::note_class_name`] for every class a declared type names — both
-    /// arms of a `&IF` type included, since either may be the one compiled.
+    /// arms of a `&IF` type included, since either may be the one compiled, and
+    /// the arguments of a generic type.
     fn note_data_type(&mut self, data_type: &DataType, scope: ScopeId, site: VirtualSpan) {
         if !self.ctx.index_loaded {
             return;
@@ -1952,6 +1955,12 @@ impl<'a> ResolveWalker<'a> {
         match data_type {
             DataType::Class(name) if is_builtin_type_name(name) => {}
             DataType::Class(name) => self.note_declared_class(name, scope, site),
+            DataType::Generic(generic) => {
+                if !is_builtin_type_name(&generic.class) {
+                    self.note_declared_class(&generic.class, scope, site);
+                }
+                self.note_type_arguments(&generic.arguments, scope);
+            }
             DataType::PreprocIf(pif) => {
                 for branch in std::iter::once(&pif.then_branch)
                     .chain(pif.elseif_branches.iter().map(|(_, b)| b))
@@ -1961,6 +1970,17 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// [`Self::note_declared_class`] for each class a generic type's arguments
+    /// name, at the span of the name. An argument is read through the file's
+    /// imports like any other class name.
+    fn note_type_arguments(&mut self, arguments: &TypeArguments, scope: ScopeId) {
+        for argument in &arguments.0 {
+            let name = &argument.name;
+            self.note_declared_class(&name.name, scope, identifier_span(name));
+            self.note_type_arguments(&argument.arguments, scope);
         }
     }
 
@@ -2136,51 +2156,34 @@ impl<'a> ResolveWalker<'a> {
         out: &mut Vec<ClassTypedDecl>,
     ) {
         for stmt in stmts {
-            match &stmt.kind {
+            let upgrade = match &stmt.kind {
                 StatementKind::VariableDeclaration {
                     name,
-                    type_source: TypeSource::Explicit(DataType::Class(class_name)),
+                    type_source: TypeSource::Explicit(data_type),
                     ..
-                } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
-                        out.push(up);
-                    }
                 }
-                StatementKind::DefineParameter {
+                | StatementKind::DefineParameter {
                     param_type:
                         ParameterType::Variable {
                             name,
-                            type_source: TypeSource::Explicit(DataType::Class(class_name)),
+                            type_source: TypeSource::Explicit(data_type),
                             ..
                         },
                     ..
-                } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
-                        out.push(up);
-                    }
                 }
-                StatementKind::Property {
-                    name,
-                    data_type: DataType::Class(class_name),
-                    ..
-                } => {
-                    if let Some(up) = self.class_upgrade(class_name, scope, name) {
-                        out.push(up);
-                    }
-                }
+                | StatementKind::Property {
+                    name, data_type, ..
+                } => data_type
+                    .class_name()
+                    .and_then(|class_name| self.class_upgrade(class_name, scope, name)),
                 StatementKind::Function {
-                    name,
-                    return_type: DataType::Class(class_name),
-                    ..
-                } => {
-                    if let Some(up) =
-                        self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
-                    {
-                        out.push(up);
-                    }
-                }
-                _ => {}
-            }
+                    name, return_type, ..
+                } => return_type.class_name().and_then(|class_name| {
+                    self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
+                }),
+                _ => None,
+            };
+            out.extend(upgrade);
             // Recurse into body-bearing scopes so nested declarations also
             // get upgraded. The correct scope for body resolution is the
             // child scope declare created.
@@ -2430,8 +2433,25 @@ impl<'a> ResolveWalker<'a> {
                 name,
                 return_type,
                 body,
+                prototype_parameters,
             } => {
                 self.note_data_type(return_type, scope, identifier_span(name));
+                // A prototype has no scope to bind them in, but the compiler
+                // resolves their types all the same.
+                for param in prototype_parameters {
+                    if let StatementKind::DefineParameter {
+                        param_type:
+                            ParameterType::Variable {
+                                name,
+                                type_source: TypeSource::Explicit(dt),
+                                ..
+                            },
+                        ..
+                    } = &param.kind
+                    {
+                        self.note_data_type(dt, scope, identifier_span(name));
+                    }
+                }
                 if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
                     self.walk_block(body, fs);
                 }
@@ -3115,10 +3135,14 @@ impl<'a> ResolveWalker<'a> {
 
             ExpressionKind::New {
                 class_name,
+                type_arguments,
                 arguments,
             } => {
                 let atom = fold_atom(class_name);
                 let span = VirtualSpan::new(expr.span.start, expr.span.end);
+                if let Some(type_arguments) = type_arguments {
+                    self.note_type_arguments(type_arguments, scope);
+                }
                 // A `NEW` operand is unambiguously a type name, so unlike a
                 // receiver it gets the full workspace search and a miss is a
                 // fact about the workspace rather than a shrug.
@@ -5019,39 +5043,111 @@ fn identifier_span(id: &Identifier) -> VirtualSpan {
 struct ClassShapedRun {
     /// The name's byte range in the statement text, dots included.
     name: std::ops::Range<usize>,
-    /// `NEW name(`, which is a class and nothing else, rather than a `name:`
-    /// receiver, which may be a handle or a table field.
+    /// `NEW name(` or a type argument of one, which is a class and nothing
+    /// else, rather than a `name:` receiver, which may be a handle or a table
+    /// field.
     is_constructor: bool,
 }
 
+/// The end of the `a.b.C` name that starts at `tokens[from]`, and the index of
+/// the token after it. Identifiers joined by byte-adjacent periods lex as a
+/// dotted name.
+fn dotted_run_end(text: &str, tokens: &[oxabl_lexer::Token], from: usize) -> (usize, usize) {
+    use oxabl_lexer::Kind;
+    let mut end = tokens[from].end;
+    let mut next = from + 1;
+    while next + 1 < tokens.len()
+        && tokens[next].kind == Kind::Period
+        && tokens[next].start == end
+        && tokens[next + 1].start == tokens[next].end
+        && text[tokens[next + 1].start..tokens[next + 1].end]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        end = tokens[next + 1].end;
+        next += 2;
+    }
+    (end, next)
+}
+
+/// The class names written as the type arguments of the generic constructor
+/// call whose `NEW` is `tokens[new]`, and the index after its closing `>`.
+/// `None` when the name after `NEW` takes no type arguments or no `(` follows
+/// them. Arguments that are not identifiers, such as `INT64`, name no class.
+fn generic_new_arguments(
+    text: &str,
+    tokens: &[oxabl_lexer::Token],
+    new: usize,
+) -> Option<(Vec<std::ops::Range<usize>>, usize)> {
+    use oxabl_lexer::Kind;
+    let first = new + 1;
+    if !matches!(tokens.get(first)?.kind, Kind::Identifier | Kind::Progress) {
+        return None;
+    }
+    let (_, mut next) = dotted_run_end(text, tokens, first);
+    if tokens.get(next)?.kind != Kind::LessThan {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut arguments = Vec::new();
+    while let Some(token) = tokens.get(next) {
+        match token.kind {
+            Kind::LessThan => depth += 1,
+            Kind::GreaterThan => {
+                depth -= 1;
+                if depth == 0 {
+                    next += 1;
+                    break;
+                }
+            }
+            Kind::Identifier if tokens[next - 1].kind != Kind::Period => {
+                let (end, after) = dotted_run_end(text, tokens, next);
+                arguments.push(token.start..end);
+                next = after;
+                continue;
+            }
+            _ => {}
+        }
+        next += 1;
+    }
+    (depth == 0 && tokens.get(next)?.kind == Kind::LeftParen).then_some((arguments, next))
+}
+
 /// The `NEW name(...)` constructors and `name:` member-access receivers in the
-/// text of one statement. Only a name the lexer reads as an identifier is
-/// offered: a system handle such as `SESSION` is a keyword and never is.
+/// text of one statement, and the class names a generic constructor takes as
+/// type arguments. Only a name the lexer reads as an identifier is offered: a
+/// system handle such as `SESSION` is a keyword and never is.
 fn class_shaped_runs(text: &str) -> Vec<ClassShapedRun> {
     use oxabl_lexer::{Kind, tokenize};
     let tokens = tokenize(text);
     let mut runs = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
+        if tokens[i].kind == Kind::New
+            && let Some((arguments, after)) = generic_new_arguments(text, &tokens, i)
+        {
+            // The class being constructed is offered like `NEW name(`, unless
+            // it is in the `Progress` namespace, which is never a workspace's.
+            if tokens[i + 1].kind == Kind::Identifier {
+                let (end, _) = dotted_run_end(text, &tokens, i + 1);
+                runs.push(ClassShapedRun {
+                    name: tokens[i + 1].start..end,
+                    is_constructor: true,
+                });
+            }
+            runs.extend(arguments.into_iter().map(|name| ClassShapedRun {
+                name,
+                is_constructor: true,
+            }));
+            i = after;
+            continue;
+        }
         if tokens[i].kind != Kind::Identifier {
             i += 1;
             continue;
         }
         let start = tokens[i].start;
-        let mut end = tokens[i].end;
-        let mut next = i + 1;
-        // `a.b.C` lexes as identifiers joined by byte-adjacent periods.
-        while next + 1 < tokens.len()
-            && tokens[next].kind == Kind::Period
-            && tokens[next].start == end
-            && tokens[next + 1].start == tokens[next].end
-            && text[tokens[next + 1].start..tokens[next + 1].end]
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-        {
-            end = tokens[next + 1].end;
-            next += 2;
-        }
+        let (end, next) = dotted_run_end(text, &tokens, i);
         let after_member = i > 0
             && matches!(tokens[i - 1].kind, Kind::Colon | Kind::Period)
             && tokens[i - 1].end == start;
@@ -5287,6 +5383,11 @@ fn names_shipped_class(imports: &ImportContext, raw: &str) -> bool {
     let mut explicit = imports.explicit_all(raw).peekable();
     if explicit.peek().is_some() {
         return explicit.any(|qualified| is_system_namespace(&fold_atom(qualified)));
+    }
+    // A wildcard or the implicit import only presumes the name: an import the
+    // index never read may be an explicit one that outranks both.
+    if imports.has_unseen_imports() {
+        return false;
     }
     (!raw.contains('.')
         && imports
@@ -5768,6 +5869,7 @@ mod tests {
     #[test]
     fn function_declares_return_type() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("sum"),
             return_type: DataType::Integer,
             body: vec![],
@@ -6109,6 +6211,7 @@ mod tests {
     #[test]
     fn multiple_params_ordered_in_scope() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("calc"),
             return_type: DataType::Integer,
             body: vec![
@@ -6156,6 +6259,7 @@ mod tests {
     #[test]
     fn function_forward_then_definition_no_sem0001() {
         let def = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("getVal"),
             return_type: DataType::Character,
             body: vec![param_stmt(
@@ -6167,6 +6271,7 @@ mod tests {
         let def_id = def.id;
         let (tree, symbols, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // FORWARD prototype
@@ -6189,11 +6294,13 @@ mod tests {
     fn function_in_super_then_definition_no_sem0001() {
         let (_t, _s, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // IN SUPER prototype
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![param_stmt(
@@ -6212,6 +6319,7 @@ mod tests {
     #[test]
     fn function_prototype_only_no_sem0001() {
         let (tree, symbols, diags) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("get-value"),
             return_type: DataType::Character,
             body: vec![], // IN hMisc — external only
@@ -6224,6 +6332,7 @@ mod tests {
     #[test]
     fn function_map_to_prototype_only_no_sem0001() {
         let (tree, symbols, diags) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("mappedFn"),
             return_type: DataType::Integer,
             body: vec![], // MAP TO … IN handle
@@ -6237,11 +6346,13 @@ mod tests {
     fn function_two_full_definitions_still_sem0001() {
         let (_t, _s, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![var_stmt("x", DataType::Integer)],
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![var_stmt("y", DataType::Integer)],
@@ -6254,6 +6365,7 @@ mod tests {
     #[test]
     fn function_two_prototypes_no_sem0001() {
         let proto0 = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![],
@@ -6262,6 +6374,7 @@ mod tests {
         let (tree, symbols, diags) = run(vec![
             proto0,
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -6282,6 +6395,7 @@ mod tests {
     #[test]
     fn function_definition_then_forward_no_sem0001() {
         let def = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![var_stmt("x", DataType::Integer)],
@@ -6290,6 +6404,7 @@ mod tests {
         let (tree, symbols, diags) = run(vec![
             def,
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f"),
                 return_type: DataType::Integer,
                 body: vec![], // trailing FORWARD
@@ -6308,6 +6423,7 @@ mod tests {
     fn function_forward_and_in_super_then_definition_no_sem0001() {
         // WebSpeed/ADM common pattern: FORWARD + IN SUPER + definition.
         let def = stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("getVal"),
             return_type: DataType::Character,
             body: vec![param_stmt(
@@ -6319,11 +6435,13 @@ mod tests {
         let def_id = def.id;
         let (tree, symbols, diags) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // FORWARD prototype
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("getVal"),
                 return_type: DataType::Character,
                 body: vec![], // IN SUPER prototype
@@ -6687,6 +6805,7 @@ mod tests {
     #[test]
     fn function_symbol_and_body_scope_distinct() {
         let (tree, _s, _d) = run(vec![stmt(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("f"),
             return_type: DataType::Integer,
             body: vec![var_stmt("local", DataType::Integer)],
@@ -6708,11 +6827,13 @@ mod tests {
     fn two_functions_distinct_symbols() {
         let (tree, symbols, _) = run(vec![
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f1"),
                 return_type: DataType::Integer,
                 body: vec![],
             }),
             stmt(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("f2"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -7283,6 +7404,7 @@ mod tests {
         let call_id = call.id;
         let stmts = vec![
             stmt_n(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("calc"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -7324,6 +7446,7 @@ mod tests {
         });
         let stmts = vec![
             stmt_n(StatementKind::Function {
+                prototype_parameters: Vec::new(),
                 name: id("calc"),
                 return_type: DataType::Integer,
                 body: vec![],
@@ -7349,6 +7472,7 @@ mod tests {
     #[test]
     fn resolve_new_class_local_resolves_to_type() {
         let new_expr = expr_n(ExpressionKind::New {
+            type_arguments: None,
             class_name: "Foo".into(),
             arguments: vec![],
         });
@@ -7374,6 +7498,7 @@ mod tests {
     #[test]
     fn resolve_new_class_unknown_is_external() {
         let new_expr = expr_n(ExpressionKind::New {
+            type_arguments: None,
             class_name: "Nope".into(),
             arguments: vec![],
         });
@@ -8586,6 +8711,7 @@ mod tests {
     #[test]
     fn resolve_types_side_table_contains_function_return_type() {
         let fdecl = stmt_n(StatementKind::Function {
+            prototype_parameters: Vec::new(),
             name: id("sum"),
             return_type: DataType::Decimal,
             body: vec![],

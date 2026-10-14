@@ -734,20 +734,30 @@ fn an_explicit_using_of_a_shipped_class_beside_a_wildcard_records_nothing() {
     assert!(rows.is_empty(), "got {rows:?}");
 }
 
-/// The unresolved rows of a child of `pkg.Mid`, whose header comes after `head`
-/// and an include that may import `lib.*`. `lib.Base` exists.
-fn rows_under_a_parent_with_include_after(head: &str) -> Vec<(String, UnresolvedReason)> {
-    let mid = format!("{head}{{usings.i}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n");
+/// The unresolved rows of a child of `pkg.Mid`, whose source is `mid`.
+/// `usings.i` imports `lib.*`, `usingx.i` imports `lib.Base`, and `lib.Base` and
+/// `lib.AppError` exist.
+fn rows_under_a_parent(mid: &str) -> Vec<(String, UnresolvedReason)> {
     let (_, rows) = class_rows(
         "Child.cls",
         "CLASS Child INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
         &[
-            ("pkg/Mid.cls", &mid),
+            ("pkg/Mid.cls", mid),
             ("usings.i", "USING lib.*.\n"),
+            ("usingx.i", "USING lib.Base.\n"),
             ("lib/Base.cls", "CLASS lib.Base:\nEND CLASS.\n"),
+            ("lib/AppError.cls", "CLASS lib.AppError:\nEND CLASS.\n"),
         ],
     );
     rows
+}
+
+/// [`rows_under_a_parent`] for a parent whose header comes after `head` and an
+/// include.
+fn rows_under_a_parent_with_include_after(head: &str) -> Vec<(String, UnresolvedReason)> {
+    rows_under_a_parent(&format!(
+        "{head}{{usings.i}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n"
+    ))
 }
 
 #[test]
@@ -763,6 +773,218 @@ fn a_using_of_class_or_interface_does_not_hide_a_later_include() {
             rows.iter()
                 .any(|row| row == &("base".to_string(), UnresolvedReason::Unknowable)),
             "head {head:?}: got {rows:?}"
+        );
+    }
+}
+
+fn has_row(rows: &[(String, UnresolvedReason)], name: &str, reason: UnresolvedReason) -> bool {
+    rows.iter().any(|(n, r)| (n.as_str(), *r) == (name, reason))
+}
+
+#[test]
+fn a_shipped_import_beside_an_unseen_one_does_not_answer_for_a_parents_header() {
+    let missed: Vec<_> = [
+        ("", "usings.i", "Base", "base"),
+        ("USING Progress.Lang.*.\n", "usings.i", "Base", "base"),
+        ("USING Progress.Lang.*.\n", "usingx.i", "Base", "base"),
+        ("USING OpenEdge.Core.*.\n", "usingx.i", "Base", "base"),
+        ("", "usings.i", "AppError", "apperror"),
+    ]
+    .into_iter()
+    .filter(|(head, include, parent, row)| {
+        let rows = rows_under_a_parent(&format!(
+            "{head}{{{include}}}\nCLASS pkg.Mid INHERITS {parent}:\nEND CLASS.\n"
+        ));
+        !has_row(&rows, row, UnresolvedReason::Unknowable)
+    })
+    .collect();
+    assert!(missed.is_empty(), "no Unknowable row for {missed:?}");
+}
+
+#[test]
+fn a_shipped_name_a_parent_wrote_in_full_stays_quiet_beside_an_unseen_import() {
+    for (head, parent) in [
+        ("", "Progress.Lang.AppError"),
+        ("USING Progress.Lang.AppError.\n", "AppError"),
+    ] {
+        let rows = rows_under_a_parent(&format!(
+            "{head}{{usings.i}}\nCLASS pkg.Mid INHERITS {parent}:\nEND CLASS.\n"
+        ));
+        assert!(rows.is_empty(), "{head:?} INHERITS {parent}: got {rows:?}");
+    }
+}
+
+#[test]
+fn a_function_prototypes_parameter_types_are_class_sites() {
+    for tail in ["FORWARD", "IN SUPER", "IN h"] {
+        let found = format!("FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Thing) {tail}.\n");
+        let (targets, rows) = class_rows(
+            "p.p",
+            &found,
+            &[("pkg/Thing.cls", "CLASS pkg.Thing:\nEND CLASS.\n")],
+        );
+        assert_eq!(targets, ["pkg.thing"], "{tail}: got {rows:?}");
+
+        let lost = format!("FUNCTION g RETURNS LOGICAL (INPUT p AS pkg.Gone) {tail}.\n");
+        let (_, rows) = class_rows("p.p", &lost, &[]);
+        assert!(
+            has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+            "{tail}: got {rows:?}"
+        );
+    }
+}
+
+/// The class edges and unresolved rows of `source`, a file beside `pkg.Thing`.
+fn generic_rows(source: &str) -> (Vec<String>, Vec<(String, UnresolvedReason)>) {
+    class_rows(
+        "p.p",
+        source,
+        &[("pkg/Thing.cls", "CLASS pkg.Thing:\nEND CLASS.\n")],
+    )
+}
+
+#[test]
+fn a_generic_types_arguments_are_class_sites_at_a_declaration() {
+    let (targets, rows) = generic_rows(
+        "USING Progress.Collections.*.\n\
+         DEFINE VARIABLE l AS List<pkg.Thing> NO-UNDO.\n",
+    );
+    assert_eq!(targets, ["pkg.thing"], "got {rows:?}");
+    assert!(
+        rows.is_empty(),
+        "the shipped outer class gives no row: {rows:?}"
+    );
+
+    let (_, rows) =
+        generic_rows("DEFINE VARIABLE l AS Progress.Collections.List<pkg.Gone> NO-UNDO.\n");
+    assert!(
+        has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+        "got {rows:?}"
+    );
+}
+
+#[test]
+fn a_generic_types_arguments_are_class_sites_at_new() {
+    let (targets, _) = generic_rows(
+        "USING Progress.Collections.*.\n\
+         DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.\n\
+         o = NEW List<pkg.Thing>().\n",
+    );
+    assert_eq!(targets, ["pkg.thing"]);
+
+    let (_, rows) = generic_rows(
+        "DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.\n\
+         o = NEW Progress.Collections.List<pkg.Gone>().\n",
+    );
+    assert!(
+        has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+        "got {rows:?}"
+    );
+}
+
+#[test]
+fn a_generic_types_arguments_follow_the_files_imports() {
+    let (targets, rows) = generic_rows(
+        "USING pkg.*.\n\
+         DEFINE VARIABLE m AS Progress.Collections.HashMap<Thing, Gone> NO-UNDO.\n",
+    );
+    assert_eq!(targets, ["pkg.thing"]);
+    assert!(
+        has_row(&rows, "gone", UnresolvedReason::AbsentFromWorkspace),
+        "got {rows:?}"
+    );
+
+    let (targets, rows) = generic_rows(
+        "USING Progress.Collections.*.\n\
+         USING Progress.Lang.*.\n\
+         DEFINE VARIABLE m AS HashMap<Object, Progress.Lang.Object> NO-UNDO.\n",
+    );
+    assert!(
+        targets.is_empty() && rows.is_empty(),
+        "{targets:?} {rows:?}"
+    );
+}
+
+#[test]
+fn a_generic_new_in_an_unmodelled_statement_names_its_arguments() {
+    for statement in [
+        "EXPORT NEW Progress.Collections.List<{}>().",
+        "PUT UNFORMATTED NEW Progress.Collections.List<{}>():ToString() SKIP.",
+    ] {
+        let (targets, _) = generic_rows(&statement.replace("{}", "pkg.Thing"));
+        assert_eq!(targets, ["pkg.thing"], "{statement}");
+
+        let (_, rows) = generic_rows(&statement.replace("{}", "pkg.Gone"));
+        assert!(
+            has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+            "{statement}: got {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn a_nested_type_argument_is_a_class_site() {
+    let (targets, rows) = generic_rows(
+        "DEFINE VARIABLE m AS Progress.Collections.HashMap<pkg.Thing, \
+         Progress.Collections.List<pkg.Gone>> NO-UNDO.\n",
+    );
+    assert_eq!(targets, ["pkg.thing"]);
+    assert!(
+        has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+        "got {rows:?}"
+    );
+}
+
+#[test]
+fn a_generic_types_arguments_are_class_sites_at_every_declared_type() {
+    for source in [
+        "DEFINE INPUT PARAMETER p AS Progress.Collections.List<pkg.Gone> NO-UNDO.\n",
+        "FUNCTION g RETURNS Progress.Collections.List<pkg.Gone> ():\n  RETURN ?.\nEND FUNCTION.\n",
+        "FUNCTION g RETURNS LOGICAL (INPUT p AS Progress.Collections.List<pkg.Gone>) FORWARD.\n",
+        "DEFINE TEMP-TABLE tt NO-UNDO\n  FIELD f AS CLASS Progress.Collections.List<pkg.Gone>.\n",
+    ] {
+        let (_, rows) = generic_rows(source);
+        assert!(
+            has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+            "{source:?}: got {rows:?}"
+        );
+    }
+    let (_, rows) = class_rows(
+        "A.cls",
+        "CLASS A:\n  METHOD PUBLIC VOID m(INPUT p AS Progress.Collections.List<pkg.Gone>):\n  END METHOD.\n\
+         \n  DEFINE PUBLIC PROPERTY q AS Progress.Collections.List<pkg.Gone> NO-UNDO GET. SET.\nEND CLASS.\n",
+        &[],
+    );
+    assert!(
+        has_row(&rows, "pkg.gone", UnresolvedReason::AbsentFromWorkspace),
+        "got {rows:?}"
+    );
+}
+
+// The parser cannot read a generic type in these positions, so the set is
+// degraded; if it learns to, the argument must be an edge or a row instead.
+#[test]
+fn a_generic_type_in_a_position_the_parser_skips_is_never_silent() {
+    for source in [
+        "DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.\n\
+         o = CAST(o, Progress.Collections.List<pkg.Gone>).\n",
+        "CLASS A IMPLEMENTS Progress.Collections.IComparable<pkg.Gone>:\nEND CLASS.\n",
+    ] {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(
+            PathBuf::from("/proj/pkg/Thing.cls"),
+            "CLASS pkg.Thing:\nEND CLASS.\n",
+        );
+        let config = config("/proj");
+        let run = LintPipeline::new(&config, &fs);
+        let edges = run
+            .with_file("/proj/p.p")
+            .edge_set(source)
+            .expect("edge set");
+        let named = edges.unresolved().iter().any(|row| row.name == "pkg.gone");
+        assert!(
+            named || !edges.completeness().is_complete(),
+            "{source:?}: complete with no row"
         );
     }
 }

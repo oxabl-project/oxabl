@@ -85,7 +85,7 @@ impl ResolvedType {
             DataType::Com => ResolvedType::Primitive(PrimitiveTy::ComHandle),
             // Class type resolution requires the type namespace — deferred
             // to Phase 4a. Declare pass emits `Unknown` as a placeholder.
-            DataType::Class(_) => ResolvedType::Unknown,
+            DataType::Class(_) | DataType::Generic(_) => ResolvedType::Unknown,
             // Preprocessor `&IF` in a type position yields `Unknown` until
             // the resolve pass picks an active branch.
             DataType::PreprocIf(_) => ResolvedType::Unknown,
