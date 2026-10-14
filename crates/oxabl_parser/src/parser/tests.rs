@@ -12370,3 +12370,15 @@ fn an_override_property_with_a_computed_getter_is_a_property_statement() {
         );
     }
 }
+
+#[test]
+fn new_as_the_last_token_does_not_panic() {
+    for source in [
+        "DO ON ERROR UNDO, THROW NEW",
+        "x = new",
+        "IF NEW",
+        "y = NEW pkg.",
+    ] {
+        let _ = Parser::new(&tokenize(source), source).parse_program();
+    }
+}

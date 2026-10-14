@@ -781,6 +781,12 @@ impl Parser<'_> {
 
             // Parse dotted class name (e.g., "oe.wsdeco", "api.text", "Progress.Lang.Error").
             // Use is_word_kind() so keyword-named namespaces/types (e.g. api.text) are accepted.
+            if !Self::is_word_kind(self.peek().kind) {
+                return Err(ParseError {
+                    message: "Expected class name after NEW".to_string(),
+                    span: self.current_span(),
+                });
+            }
             let start = self.peek().start;
             self.advance(); // consume first name component
             while self.check(Kind::Period)
