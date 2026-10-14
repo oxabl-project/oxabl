@@ -733,3 +733,36 @@ fn an_explicit_using_of_a_shipped_class_beside_a_wildcard_records_nothing() {
     );
     assert!(rows.is_empty(), "got {rows:?}");
 }
+
+/// The unresolved rows of a child of `pkg.Mid`, whose header comes after `head`
+/// and an include that may import `lib.*`. `lib.Base` exists.
+fn rows_under_a_parent_with_include_after(head: &str) -> Vec<(String, UnresolvedReason)> {
+    let mid = format!("{head}{{usings.i}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n");
+    let (_, rows) = class_rows(
+        "Child.cls",
+        "CLASS Child INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
+        &[
+            ("pkg/Mid.cls", &mid),
+            ("usings.i", "USING lib.*.\n"),
+            ("lib/Base.cls", "CLASS lib.Base:\nEND CLASS.\n"),
+        ],
+    );
+    rows
+}
+
+#[test]
+fn a_using_of_class_or_interface_does_not_hide_a_later_include() {
+    for head in [
+        "",
+        "USING Progress.Lang.Object.\n",
+        "USING Progress.Lang.Class.\n",
+        "USING Progress.Reflect.Interface.\n",
+    ] {
+        let rows = rows_under_a_parent_with_include_after(head);
+        assert!(
+            rows.iter()
+                .any(|row| row == &("base".to_string(), UnresolvedReason::Unknowable)),
+            "head {head:?}: got {rows:?}"
+        );
+    }
+}
