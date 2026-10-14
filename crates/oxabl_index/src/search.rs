@@ -141,15 +141,25 @@ fn class_path_from(qualified: &str) -> PathBuf {
 /// spelled it in.
 ///
 /// A `RUN` target is written as a path already (`post-order.p`,
-/// `orders/calc-total.p`), so it is taken verbatim; [`find_unique`] is what
-/// rejects a spelling that is not a root file.
+/// `orders/calc-total.p`), so it is taken as written, bar the separator
+/// spelling; [`find_unique`] is what rejects a spelling that is not a root file.
 pub fn program_path(target: &IndexName) -> PathBuf {
-    PathBuf::from(target.as_written())
+    program_relative(target.as_written())
 }
 
 /// The same path in the folded casing — the fallback candidate.
 pub fn folded_program_path(target: &IndexName) -> PathBuf {
-    PathBuf::from(target.as_str())
+    program_relative(target.as_str())
+}
+
+/// A `RUN` target as a path. The AVM reads `\` as a separator on every
+/// platform, so `comm\expdist.p` names the file `comm/expdist.p`.
+fn program_relative(target: &str) -> PathBuf {
+    if target.contains('\\') {
+        PathBuf::from(target.replace('\\', "/"))
+    } else {
+        PathBuf::from(target)
+    }
 }
 
 /// Which of the two name-to-path conventions a lookup uses.
@@ -278,7 +288,7 @@ pub fn find_name_with<E: AsRef<str>>(
 }
 
 fn with_extension(target: &str, extension: &str) -> PathBuf {
-    PathBuf::from(format!("{target}.{extension}"))
+    program_relative(&format!("{target}.{extension}"))
 }
 
 /// The two-spellings search: `written` first, `folded` when it differs.
@@ -902,5 +912,56 @@ mod tests {
     fn a_target_with_an_extension_is_not_extended() {
         let fs = fs_with(&["/src/calc.p.w"]);
         assert_eq!(bare(&fs, "calc.p"), IndexAnswer::NotFound);
+    }
+
+    #[test]
+    fn a_backslash_run_target_finds_the_file_under_a_directory() {
+        let fs = fs_with(&["/src/comm/expdist.p", "/src/comm/other.w"]);
+        let paths = dirs(&["/src"]);
+        for (target, expected) in [
+            ("comm\\expdist.p", "/src/comm/expdist.p"),
+            ("Comm\\ExpDist.p", "/src/comm/expdist.p"),
+            ("comm\\other", "/src/comm/other.w"),
+        ] {
+            assert_eq!(
+                find_name(&fs, &paths, &IndexName::new(target), NameKind::Program),
+                IndexAnswer::Found(PathBuf::from(expected)),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_backslash_run_target_cannot_escape_the_include_paths() {
+        let fs = fs_with(&["/outside/thing.p", "/thing.p"]);
+        for target in ["..\\outside\\thing.p", "\\thing.p"] {
+            assert_eq!(
+                find_name(
+                    &fs,
+                    &dirs(&["/src"]),
+                    &IndexName::new(target),
+                    NameKind::Program
+                ),
+                IndexAnswer::NotFound,
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dotted_directory_and_a_leading_dot_slash_still_resolve() {
+        let fs = fs_with(&["/src/b.c/p.p", "/src/sub2.p", "/src/3rd/x.p"]);
+        let paths = dirs(&["/src"]);
+        for (target, expected) in [
+            ("b.c/p.p", "/src/b.c/p.p"),
+            ("./sub2.p", "/src/sub2.p"),
+            ("3rd/x.p", "/src/3rd/x.p"),
+        ] {
+            assert_eq!(
+                find_name(&fs, &paths, &IndexName::new(target), NameKind::Program),
+                IndexAnswer::Found(PathBuf::from(expected)),
+                "{target}"
+            );
+        }
     }
 }
