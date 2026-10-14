@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use oxabl_common::{LintSeverityMap, Severity};
@@ -148,6 +149,9 @@ impl LintConfig {
 /// `{&FILE-NAME}`, `{&LINE-NUMBER}` and `{&SEQUENCE}` are computed from the
 /// source and take no configuration.
 ///
+/// The `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` ask which
+/// databases are connected, which only a compile knows. `databases` states them.
+///
 /// Container-level `#[serde(default)]` lets a partial table fall back per key,
 /// and `deny_unknown_fields` makes a misspelled key a hard error rather than a
 /// silently wrong branch.
@@ -172,6 +176,22 @@ pub struct PreprocessorConfig {
     /// guess. While it is unset, an `&IF` condition that reads either form
     /// raises `PREPROC009` instead of silently deciding against an empty string.
     pub proversion: Option<String>,
+
+    /// The logical names of the databases connected when the code compiles. The
+    /// `DBTYPE`, `CONNECTED` and `LDBNAME` functions of an `&IF` answer from this
+    /// list, so `DBTYPE("ledger") NE ?` is true when `ledger` is listed.
+    ///
+    /// When the key is absent, the `[workspace.schema]` files name the databases:
+    /// the file name without `.df` is the logical name, so `schema/ledger.df`
+    /// connects `ledger`. Set the key when a logical name differs from its file
+    /// name, or to `[]` for a compile with no database connected. While neither
+    /// a list nor a schema is given, an `&IF` that calls one of these functions
+    /// raises `PREPROC010` instead of deciding on a guess.
+    pub databases: Option<Vec<String>>,
+
+    /// The `DBTYPE` of a connected database, by logical name, for example
+    /// `{ ledger = "ORACLE" }`. A database that is not named here is `PROGRESS`.
+    pub database_types: BTreeMap<String, String>,
 }
 
 impl Default for PreprocessorConfig {
@@ -182,6 +202,8 @@ impl Default for PreprocessorConfig {
             batch_mode: true,
             process_architecture: 64,
             proversion: None,
+            databases: None,
+            database_types: BTreeMap::new(),
         }
     }
 }
@@ -367,6 +389,36 @@ files = ["schema/sports2000.df"]
         assert!(pp.batch_mode);
         assert_eq!(pp.process_architecture, 64);
         assert_eq!(pp.proversion, None);
+        assert_eq!(pp.databases, None);
+        assert!(pp.database_types.is_empty());
+    }
+
+    #[test]
+    fn preprocessor_table_lists_the_connected_databases() {
+        let toml = r#"
+[workspace]
+name = "p"
+
+[workspace.preprocessor]
+databases = ["ledger", "stock"]
+database-types = { stock = "ORACLE" }
+"#;
+        let pp = WorkspaceConfig::from_toml(toml)
+            .unwrap()
+            .workspace
+            .preprocessor;
+        assert_eq!(
+            pp.databases.as_deref(),
+            Some(&["ledger".into(), "stock".into()][..])
+        );
+        assert_eq!(pp.database_types["stock"], "ORACLE");
+
+        let toml = "[workspace]\nname = \"p\"\n[workspace.preprocessor]\ndatabases = []\n";
+        let pp = WorkspaceConfig::from_toml(toml)
+            .unwrap()
+            .workspace
+            .preprocessor;
+        assert_eq!(pp.databases.as_deref(), Some(&[][..]));
     }
 
     #[test]
