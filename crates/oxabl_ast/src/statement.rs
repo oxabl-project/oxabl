@@ -140,6 +140,8 @@ pub enum StatementKind {
         /// An `EXTERNAL` or `IN ...` declaration: a signature with no ABL body,
         /// so its parameters are never referenced by name.
         is_prototype: bool,
+        /// An `EXTERNAL` declaration: an entry point of a shared library.
+        is_external: bool,
     },
 
     /// Define input/output params

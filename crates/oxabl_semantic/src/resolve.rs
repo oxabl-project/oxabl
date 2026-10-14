@@ -472,6 +472,7 @@ impl<'a> Walker<'a> {
                 name,
                 body,
                 is_prototype,
+                ..
             } => {
                 self.declare(
                     stmt,
@@ -6407,6 +6408,7 @@ mod tests {
             name: id("doThing"),
             body: vec![var_stmt("local", DataType::Integer)],
             is_prototype: false,
+            is_external: false,
         })]);
         assert!(diags.is_empty());
         let proc = find_symbol(&tree, &symbols, NamespaceId::Procedures, "doThing").unwrap();
@@ -6763,11 +6765,13 @@ mod tests {
                 name: id("a"),
                 body: vec![a_block],
                 is_prototype: false,
+                is_external: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("b"),
                 body: vec![b_block],
                 is_prototype: false,
+                is_external: false,
             }),
         ]);
         assert!(
@@ -6813,11 +6817,13 @@ mod tests {
                 name: id("p"),
                 body: vec![],
                 is_prototype: false,
+                is_external: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("p"),
                 body: vec![],
                 is_prototype: false,
+                is_external: false,
             }),
         ]);
         assert_eq!(diags.len(), 1);
@@ -9500,6 +9506,7 @@ mod tests {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
             is_prototype: false,
+            is_external: false,
         });
         let stmts = vec![var_stmt_n("outer", DataType::Integer), proc];
         let (_t, _s, refs, _) = run_full(&stmts);
@@ -9628,6 +9635,7 @@ mod tests {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(use_s))],
             is_prototype: false,
+            is_external: false,
         });
         let stmts = vec![proc];
         let (_t, symbols, refs, _) = run_full(&stmts);

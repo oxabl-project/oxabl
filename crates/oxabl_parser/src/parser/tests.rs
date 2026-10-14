@@ -4296,6 +4296,39 @@ END PROCEDURE.
 }
 
 #[test]
+fn procedure_external_is_marked_external() {
+    for (source, prototype, external) in [
+        (
+            "PROCEDURE Sleep EXTERNAL \"kernel32.dll\" STDCALL:\n  DEFINE INPUT PARAMETER n AS LONG.\nEND PROCEDURE.",
+            true,
+            true,
+        ),
+        (
+            "PROCEDURE work IN SUPER:\n  DEFINE INPUT PARAMETER h AS HANDLE.\nEND PROCEDURE.",
+            true,
+            false,
+        ),
+        ("PROCEDURE work IN SUPER.", true, false),
+        ("PROCEDURE work:\nEND PROCEDURE.", false, false),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect(source);
+        match stmt.kind {
+            StatementKind::Procedure {
+                is_prototype,
+                is_external,
+                ..
+            } => {
+                assert_eq!(is_prototype, prototype, "{source}");
+                assert_eq!(is_external, external, "{source}");
+            }
+            _ => panic!("Expected Procedure statement: {source}"),
+        }
+    }
+}
+
+#[test]
 fn parse_procedure_in_super_period_only_empty_body() {
     let source = "PROCEDURE assignDBRow IN SUPER.";
     let tokens = tokenize(source);

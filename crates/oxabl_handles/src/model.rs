@@ -283,6 +283,9 @@ pub enum OpaqueReason {
     /// A `DELETE` or `RELEASE` operand that names a holder but is not the
     /// holder itself (`DELETE OBJECT WIDGET-HANDLE(STRING(h))`).
     UnmappedFree,
+    /// The object is added with `ADD-BUFFER` to an object this unit does not
+    /// create: a dataset would own it, a query would not.
+    AddBuffer,
 }
 
 impl OpaqueReason {
@@ -300,6 +303,7 @@ impl OpaqueReason {
             OpaqueReason::OutputArgument => "output-argument",
             OpaqueReason::Callee => "callee",
             OpaqueReason::UnmappedFree => "unmapped-free",
+            OpaqueReason::AddBuffer => "add-buffer",
         }
     }
 }

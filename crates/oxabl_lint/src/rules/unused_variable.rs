@@ -767,6 +767,7 @@ mod tests {
             name: id("p"),
             body: vec![],
             is_prototype: false,
+            is_external: false,
         })]);
         assert!(diags.is_empty());
     }

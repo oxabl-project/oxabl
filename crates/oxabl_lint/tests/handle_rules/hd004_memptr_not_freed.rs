@@ -131,3 +131,18 @@ END PROCEDURE.
 ";
     assert!(check(run, src).is_empty());
 }
+
+#[test]
+fn a_memptr_passed_to_a_shared_library_is_still_reported() {
+    let src = "\
+PROCEDURE fill EXTERNAL \"lib.so\":
+    DEFINE INPUT PARAMETER pm AS MEMPTR NO-UNDO.
+END PROCEDURE.
+PROCEDURE work:
+    DEFINE VARIABLE m AS MEMPTR NO-UNDO.
+    SET-SIZE(m) = 16.
+    RUN fill (INPUT m).
+END PROCEDURE.
+";
+    assert_eq!(lines(src, &check(run, src)), [6]);
+}
