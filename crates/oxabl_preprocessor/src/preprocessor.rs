@@ -8,7 +8,7 @@ use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 use crate::PreprocVarTable;
-use crate::condition::{Environment, Gap, evaluate, skip_comment};
+use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment};
 use crate::span_tree::{
     PreprocessedFile, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
@@ -369,7 +369,7 @@ impl ProcessContext<'_> {
                                     // for the lexer, matching body-scan rules.
                                     // #65 round 4.
                                     let expanded = if !positional_args.is_empty() {
-                                        expand_positional_refs(&value, positional_args)
+                                        expand_positional_refs(&value, positional_args).into_owned()
                                     } else {
                                         value
                                     };
@@ -392,7 +392,7 @@ impl ProcessContext<'_> {
                                 }
                                 if emitting {
                                     let expanded = if !positional_args.is_empty() {
-                                        expand_positional_refs(&value, positional_args)
+                                        expand_positional_refs(&value, positional_args).into_owned()
                                     } else {
                                         value
                                     };
@@ -855,46 +855,53 @@ impl ProcessContext<'_> {
         evaluation.value
     }
 
-    fn substitute_computed_names(
+    fn substitute_computed_names<'t>(
         &mut self,
-        condition: &str,
+        condition: &'t str,
         source: &str,
         at: usize,
         site: FileSpan,
-    ) -> String {
-        if !condition.contains("{&") {
-            return condition.to_string();
-        }
-        let mut out = String::with_capacity(condition.len());
+    ) -> Cow<'t, str> {
+        // Built from the first substitution on; until then `condition` stands.
+        let mut out: Option<String> = None;
+        // How much of `condition` is already in `out`.
+        let mut copied = 0;
         let mut rest = condition;
-        while let Some(open) = rest.find("{&") {
-            out.push_str(&rest[..open]);
+        let mut rest_at = 0;
+        while let Some(open) = find_var_ref(rest) {
             let Some(close_rel) = rest[open..].find('}') else {
-                rest = &rest[open..];
                 break;
             };
             let reference = &rest[open..=open + close_rel];
             let name = &reference[2..reference.len() - 1];
+            let reference_at = rest_at + open;
             if self.vars.is_defined(name) {
-                out.push_str(reference);
+                // Kept as written.
             } else if let Some(computed) = ComputedName::from_name(name) {
-                match self.computed_value(computed, source, at) {
-                    Some(val) => out.push_str(&val),
-                    None => self.report_unknown_predefined(name, site),
-                }
-            } else {
-                if CONFIGURED_NAMES
-                    .iter()
-                    .any(|known| known.eq_ignore_ascii_case(name))
-                {
+                let value = self.computed_value(computed, source, at);
+                if value.is_none() {
                     self.report_unknown_predefined(name, site);
                 }
-                out.push_str(reference);
+                let out = out.get_or_insert_with(|| String::with_capacity(condition.len()));
+                out.push_str(&condition[copied..reference_at]);
+                out.push_str(value.as_deref().unwrap_or(""));
+                copied = reference_at + reference.len();
+            } else if CONFIGURED_NAMES
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(name))
+            {
+                self.report_unknown_predefined(name, site);
             }
             rest = &rest[open + close_rel + 1..];
+            rest_at += open + close_rel + 1;
         }
-        out.push_str(rest);
-        out
+        match out {
+            Some(mut out) => {
+                out.push_str(&condition[copied..]);
+                Cow::Owned(out)
+            }
+            None => Cow::Borrowed(condition),
+        }
     }
 
     fn report_unknown_predefined(&mut self, name: &str, site: FileSpan) {
@@ -1755,9 +1762,11 @@ fn skip_after_if_keyword(source: &str, from: usize) -> usize {
 /// Missing indices become the empty string (ABL include-arg semantics). Used
 /// when evaluating `&IF`/`&ELSEIF` conditions that contain `"{3}"`-style refs
 /// before the body scanner would see them.
-fn expand_positional_refs(text: &str, positional_args: &[String]) -> String {
-    if !text.contains('{') {
-        return text.to_string();
+fn expand_positional_refs<'t>(text: &'t str, positional_args: &[String]) -> Cow<'t, str> {
+    // Without a `{N}` there is nothing to expand. Text that is not ASCII takes
+    // the long way even so, which reads it a byte at a time.
+    if !has_positional_ref(text) && (text.is_ascii() || !text.contains('{')) {
+        return Cow::Borrowed(text);
     }
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -1781,7 +1790,14 @@ fn expand_positional_refs(text: &str, positional_args: &[String]) -> String {
         out.push(bytes[i] as char);
         i += 1;
     }
-    out
+    Cow::Owned(out)
+}
+
+/// Whether `text` holds a `{` followed by a digit.
+fn has_positional_ref(text: &str) -> bool {
+    text.as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'{' && pair[1].is_ascii_digit())
 }
 
 /// Find a keyword in uppercase text, ensuring it's at a word boundary.

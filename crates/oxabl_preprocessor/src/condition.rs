@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use oxabl_workspace::PreprocessorConfig;
 
 use crate::PreprocVarTable;
@@ -81,11 +83,14 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
 }
 
 /// Expand `{&name}` references in the condition string.
-fn expand_refs(input: &str, vars: &PreprocVarTable) -> String {
+fn expand_refs<'a>(input: &'a str, vars: &PreprocVarTable) -> Cow<'a, str> {
+    if find_var_ref(input).is_none() {
+        return Cow::Borrowed(input);
+    }
     let mut result = String::with_capacity(input.len());
     let mut rest = input;
 
-    while let Some(open) = rest.find("{&") {
+    while let Some(open) = find_var_ref(rest) {
         let Some(close) = rest[open..].find('}') else {
             break;
         };
@@ -97,7 +102,21 @@ fn expand_refs(input: &str, vars: &PreprocVarTable) -> String {
         rest = &rest[open + close + 1..];
     }
     result.push_str(rest);
-    result
+    Cow::Owned(result)
+}
+
+/// The offset of the first `{&` in `text`.
+pub(crate) fn find_var_ref(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(brace) = bytes[from..].iter().position(|b| *b == b'{') {
+        let brace = from + brace;
+        if bytes.get(brace + 1) == Some(&b'&') {
+            return Some(brace);
+        }
+        from = brace + 1;
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -297,26 +316,33 @@ fn tokenize(input: &str) -> Vec<CondToken> {
                     i += 1;
                 }
                 let word = &input[start..i];
-                match word.to_ascii_uppercase().as_str() {
-                    "DEFINED" => {
+                // The longest keyword is `DEFINED` or `MATCHES`.
+                let mut buf = [0u8; 8];
+                let upper = buf.get_mut(..word.len()).map(|upper| {
+                    upper.copy_from_slice(word.as_bytes());
+                    upper.make_ascii_uppercase();
+                    &*upper
+                });
+                match upper {
+                    Some(b"DEFINED") => {
                         let (token, end) = defined(input, i);
                         tokens.push(token);
                         i = end;
                     }
-                    "NOT" => tokens.push(CondToken::Not),
-                    "AND" => tokens.push(CondToken::And),
-                    "OR" => tokens.push(CondToken::Or),
-                    "TRUE" | "YES" => tokens.push(CondToken::True),
-                    "FALSE" | "NO" => tokens.push(CondToken::False),
-                    "EQ" => tokens.push(CondToken::Eq),
-                    "NE" => tokens.push(CondToken::Neq),
-                    "LT" => tokens.push(CondToken::Lt),
-                    "GT" => tokens.push(CondToken::Gt),
-                    "LE" => tokens.push(CondToken::Le),
-                    "GE" => tokens.push(CondToken::Ge),
-                    "MATCHES" => tokens.push(CondToken::Matches),
-                    "BEGINS" => tokens.push(CondToken::Begins),
-                    "MODULO" => tokens.push(CondToken::Modulo),
+                    Some(b"NOT") => tokens.push(CondToken::Not),
+                    Some(b"AND") => tokens.push(CondToken::And),
+                    Some(b"OR") => tokens.push(CondToken::Or),
+                    Some(b"TRUE" | b"YES") => tokens.push(CondToken::True),
+                    Some(b"FALSE" | b"NO") => tokens.push(CondToken::False),
+                    Some(b"EQ") => tokens.push(CondToken::Eq),
+                    Some(b"NE") => tokens.push(CondToken::Neq),
+                    Some(b"LT") => tokens.push(CondToken::Lt),
+                    Some(b"GT") => tokens.push(CondToken::Gt),
+                    Some(b"LE") => tokens.push(CondToken::Le),
+                    Some(b"GE") => tokens.push(CondToken::Ge),
+                    Some(b"MATCHES") => tokens.push(CondToken::Matches),
+                    Some(b"BEGINS") => tokens.push(CondToken::Begins),
+                    Some(b"MODULO") => tokens.push(CondToken::Modulo),
                     _ => tokens.push(CondToken::Ident(word.to_string())),
                 }
             }
@@ -487,14 +513,6 @@ impl<'a> CondParser<'a> {
         self.tokens.get(self.pos)
     }
 
-    fn advance(&mut self) -> Option<&CondToken> {
-        let tok = self.tokens.get(self.pos);
-        if tok.is_some() {
-            self.pos += 1;
-        }
-        tok
-    }
-
     fn eat(&mut self, expected: &CondToken) -> bool {
         if self.peek() == Some(expected) {
             self.pos += 1;
@@ -604,9 +622,11 @@ impl<'a> CondParser<'a> {
                 | CondToken::Matches
                 | CondToken::Begins,
             ) => {
-                let op = self.advance().unwrap().clone();
+                let tokens = self.tokens;
+                let op = &tokens[self.pos];
+                self.pos += 1;
                 let rhs = self.parse_additive();
-                logical(self.compare(&lhs, &op, &rhs))
+                logical(self.compare(&lhs, op, &rhs))
             }
             _ => lhs,
         }
@@ -614,10 +634,10 @@ impl<'a> CondParser<'a> {
 
     fn parse_additive(&mut self) -> CondValue {
         let mut lhs = self.parse_term();
-        while let Some(op @ (CondToken::Plus | CondToken::Minus)) = self.peek().cloned() {
+        while let Some(op @ (CondToken::Plus | CondToken::Minus)) = self.tokens.get(self.pos) {
             self.pos += 1;
             let rhs = self.parse_term();
-            let result = match (&lhs, &op, &rhs) {
+            let result = match (&lhs, op, &rhs) {
                 (CondValue::Unknown, ..) | (_, _, CondValue::Unknown) => Some(CondValue::Unknown),
                 (CondValue::Num(a), CondToken::Plus, CondValue::Num(b)) => {
                     a.checked_add(*b).map(CondValue::Num)
@@ -631,7 +651,7 @@ impl<'a> CondParser<'a> {
                 _ => None,
             };
             lhs = result.unwrap_or_else(|| {
-                self.gap(format!("the operator {}", describe(&op)));
+                self.gap(format!("the operator {}", describe(op)));
                 CondValue::Unknown
             });
         }
@@ -641,11 +661,11 @@ impl<'a> CondParser<'a> {
     fn parse_term(&mut self) -> CondValue {
         let mut lhs = self.parse_primary();
         while let Some(op @ (CondToken::Star | CondToken::Slash | CondToken::Modulo)) =
-            self.peek().cloned()
+            self.tokens.get(self.pos)
         {
             self.pos += 1;
             let rhs = self.parse_primary();
-            let result = match (&lhs, &op, &rhs) {
+            let result = match (&lhs, op, &rhs) {
                 (CondValue::Unknown, ..) | (_, _, CondValue::Unknown) => Some(CondValue::Unknown),
                 (CondValue::Num(a), CondToken::Star, CondValue::Num(b)) => {
                     a.checked_mul(*b).map(CondValue::Num)
@@ -657,7 +677,7 @@ impl<'a> CondParser<'a> {
                 _ => None,
             };
             lhs = result.unwrap_or_else(|| {
-                self.gap(format!("the operator {}", describe(&op)));
+                self.gap(format!("the operator {}", describe(op)));
                 CondValue::Unknown
             });
         }
@@ -665,12 +685,13 @@ impl<'a> CondParser<'a> {
     }
 
     fn parse_primary(&mut self) -> CondValue {
-        let Some(token) = self.advance().cloned() else {
+        let Some(token) = self.tokens.get(self.pos) else {
             self.gap("an expression that ends early".into());
             return CondValue::Unknown;
         };
+        self.pos += 1;
         match token {
-            CondToken::Defined(name) => match self.env.vars.origin(&name) {
+            CondToken::Defined(name) => match self.env.vars.origin(name) {
                 None => CondValue::Num(0),
                 Some(Origin::Global) => CondValue::Num(1),
                 Some(Origin::Argument) => CondValue::Num(2),
@@ -689,10 +710,10 @@ impl<'a> CondParser<'a> {
                 }
                 result
             }
-            CondToken::StringLit(s) => CondValue::Str(s),
+            CondToken::StringLit(s) => CondValue::Str(s.clone()),
             CondToken::Question => CondValue::Null,
-            CondToken::Number(n) => CondValue::Num(n),
-            CondToken::Decimal(text) => match Decimal::parse(&text) {
+            CondToken::Number(n) => CondValue::Num(*n),
+            CondToken::Decimal(text) => match Decimal::parse(text) {
                 Some(d) => CondValue::Dec(d),
                 None => {
                     self.gap(format!("the number '{text}'"));
@@ -712,9 +733,9 @@ impl<'a> CondParser<'a> {
                     CondValue::Unknown
                 }
             },
-            CondToken::Ident(name) => self.parse_name(&name),
+            CondToken::Ident(name) => self.parse_name(name),
             other => {
-                self.gap(format!("unexpected {}", describe(&other)));
+                self.gap(format!("unexpected {}", describe(other)));
                 CondValue::Unknown
             }
         }
