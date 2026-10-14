@@ -155,6 +155,30 @@ fn ingest(schema: &mut Schema, source: &str, file_id: FileId, diagnostics: &mut 
         merge_table(schema, table, diagnostics);
     }
 
+    for sequence in outcome.sequences {
+        if schema.sequence_count() >= LOAD_TABLE_CAP {
+            diagnostics.push(Diagnostic::error(
+                SCHEMA0031,
+                format!(
+                    "schema sequence cap exceeded (> {LOAD_TABLE_CAP} sequences); refusing to load further sequences"
+                ),
+                sequence.source,
+            ));
+            break;
+        }
+        let (name, source) = (sequence.display_name.clone(), sequence.source);
+        if let Some(previous) = schema.insert_sequence(sequence) {
+            diagnostics.push(
+                Diagnostic::warning(
+                    SCHEMA0010,
+                    format!("duplicate sequence `{name}`; last definition wins"),
+                    source,
+                )
+                .with_label(previous, "previously defined here".to_string()),
+            );
+        }
+    }
+
     for pending in outcome.fields {
         merge_field(schema, pending, diagnostics);
     }
@@ -556,5 +580,44 @@ ADD FIELD "f" OF "T" AS integer
         let (_, diags) = SchemaLoader::load_files(&paths, &fs);
         assert!(diags.iter().any(|d| d.code.0 == SCHEMA0011));
         assert!(!diags.iter().any(|d| d.code.0 == SCHEMA0012));
+    }
+
+    #[test]
+    fn sequences_are_loaded_and_looked_up_case_insensitively() {
+        let (fs, paths) = fs(&[(
+            "/a.df",
+            "ADD SEQUENCE \"Cust-Seq\"\n  INITIAL 1\n  INCREMENT 1\n",
+        )]);
+        let (schema, diags) = SchemaLoader::load_files(&paths, &fs);
+        assert!(diags.is_empty());
+        assert_eq!(schema.sequence_count(), 1);
+        assert_eq!(schema.len(), 0);
+        assert_eq!(
+            schema.sequence("CUST-SEQ").unwrap().display_name,
+            "Cust-Seq"
+        );
+        assert!(schema.sequence("other").is_none());
+        assert_eq!(schema.sequences().count(), 1);
+    }
+
+    #[test]
+    fn sequence_only_df_is_a_loaded_schema() {
+        let (fs, paths) = fs(&[("/a.df", "ADD SEQUENCE \"S\"\n")]);
+        let (schema, _) = SchemaLoader::load_files(&paths, &fs);
+        assert!(!schema.is_empty());
+        assert_eq!(schema.revision().raw(), 1);
+    }
+
+    #[test]
+    fn duplicate_sequence_warns_last_wins() {
+        let (fs, paths) = fs(&[
+            ("/a.df", "ADD SEQUENCE \"S\"\n  INITIAL 1\n"),
+            ("/b.df", "ADD SEQUENCE \"s\"\n  INITIAL 2\n"),
+        ]);
+        let (schema, diags) = SchemaLoader::load_files(&paths, &fs);
+        assert_eq!(schema.sequence_count(), 1);
+        assert_eq!(schema.sequence("s").unwrap().initial, Some(2));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.0, SCHEMA0010);
     }
 }
