@@ -150,10 +150,7 @@ impl Parser<'_> {
         // keyword (e.g. `LABEL: /* comment */\n DO:` has a Comment at peek_at(2)).
         if self.check_at(1, Kind::Colon)
             && Self::can_be_identifier(self.peek().kind)
-            && matches!(
-                self.peek_nth_non_comment(3).kind,
-                Kind::Do | Kind::Repeat | Kind::KwFor
-            )
+            && self.block_keyword_follows_label_colon()
         {
             let token = self.advance().clone(); // consume label name
             let name = self.source[token.start..token.end].to_string();
@@ -922,7 +919,7 @@ impl Parser<'_> {
                 );
             let next_is_block_label = Self::can_be_identifier(next)
                 && self.check_at(1, Kind::Colon)
-                && matches!(self.peek_at(2).kind, Kind::Do | Kind::Repeat | Kind::KwFor);
+                && self.block_keyword_follows_label_colon();
 
             if !next_is_new_statement && !next_is_block_label {
                 let _ = self.skip_to_statement_end();

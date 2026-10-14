@@ -12251,3 +12251,104 @@ fn unresolved_include_in_call_argument_position_does_not_break_the_list() {
     let program = parser.parse_program();
     assert!(program.is_ok(), "got {:?}", program.first_error());
 }
+
+/// Statement and option keywords sampled as member names.
+const KEYWORD_MEMBER_NAMES: &[&str] = &[
+    "Fetch", "Delete", "Find", "Create", "Release", "Run", "Display", "Message", "Return", "Do",
+    "If", "For", "Repeat", "Case", "End", "When", "Else", "Then", "Null", "Open", "Close", "Get",
+    "Set", "Update", "Insert", "Input", "Output", "Define", "Assign", "Leave", "Next", "Quit",
+    "Apply", "Enable", "Disable", "Export", "Import", "Put", "Read", "Trigger", "Using", "Where",
+    "Wait-For", "Disp",
+];
+
+fn assert_parses_clean(source: &str) -> Vec<Statement> {
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+    program.statements
+}
+
+#[test]
+fn a_keyword_is_a_method_name_after_a_colon() {
+    for kw in KEYWORD_MEMBER_NAMES {
+        let source = format!("r = o:{kw}(a).");
+        let stmts = assert_parses_clean(&source);
+        let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+            panic!("{source}: expected assignment, got {:?}", stmts[0].kind);
+        };
+        let ExpressionKind::MethodCall { method, .. } = &value.kind else {
+            panic!("{source}: expected a method call, got {:?}", value.kind);
+        };
+        assert_eq!(method.name, *kw, "{source}");
+    }
+}
+
+#[test]
+fn a_keyword_is_a_property_name_after_a_colon() {
+    for kw in KEYWORD_MEMBER_NAMES {
+        let source = format!("r = o:{kw}.");
+        let stmts = assert_parses_clean(&source);
+        let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+            panic!("{source}: expected assignment, got {:?}", stmts[0].kind);
+        };
+        let ExpressionKind::MemberAccess { member, .. } = &value.kind else {
+            panic!("{source}: expected member access, got {:?}", value.kind);
+        };
+        assert_eq!(member.name, *kw, "{source}");
+    }
+}
+
+#[test]
+fn a_keyword_member_parses_in_statement_condition_and_chain_positions() {
+    for kw in KEYWORD_MEMBER_NAMES {
+        for source in [
+            format!("o:{kw}(a)."),
+            format!("o:{kw} = 1."),
+            format!("MESSAGE o:{kw}(a)."),
+            format!("IF o:{kw} THEN MESSAGE \"x\"."),
+            format!("r = o:First():{kw}(a):Last()."),
+            format!("r = NEW Foo():{kw}(a):{kw}."),
+            format!("r = Foo:{kw}(a)."),
+        ] {
+            assert_parses_clean(&source);
+        }
+    }
+}
+
+#[test]
+fn a_colon_followed_by_a_space_and_a_keyword_still_ends_the_block_header() {
+    let source = "\
+FOR EACH t WHERE t.a = x: DISPLAY t.a. END.
+CASE x: WHEN 1 THEN MESSAGE \"one\". OTHERWISE MESSAGE \"other\". END CASE.
+";
+    assert_parses_clean(source);
+}
+
+#[test]
+fn a_block_keyword_member_at_statement_start_is_not_a_label() {
+    for source in ["o:Do(a).", "o:Do.", "o:For = 1.", "o:Repeat(1, 2)."] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            !matches!(stmts[0].kind, StatementKind::Label { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
+
+#[test]
+fn a_label_directly_against_its_block_keyword_is_still_a_label() {
+    for source in [
+        "lbl:DO: MESSAGE \"x\". END.",
+        "lbl: REPEAT: LEAVE lbl. END.",
+        "lbl:FOR EACH t: DISPLAY t.a. END.",
+        "lbl:\nDO.\n  MESSAGE \"x\".\nEND.",
+        "lbl :\nREPEAT .\n  LEAVE lbl.\nEND.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Label { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
