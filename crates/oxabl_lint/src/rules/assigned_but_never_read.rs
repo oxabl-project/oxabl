@@ -20,9 +20,13 @@
 //! form arriving unexamined is a false positive waiting to happen. Reported:
 //! plain assignment (including an array element), an `ASSIGN` pair,
 //! `MESSAGE ... UPDATE`/`SET` targets, `RUN ... PERSISTENT`/`ASYNCHRONOUS SET`
-//! handles, `BUFFER-COMPARE ... SAVE RESULT IN`, and `CREATE <widget> h`. A
+//! handles, `BUFFER-COMPARE ... SAVE RESULT IN`, and `CREATE <widget> h`. Each
+//! reports at its own write site, including one inside an `ON` trigger body. A
 //! stored value nobody consumes is a real finding however it was stored, so the
-//! message speaks of the value rather than of a computation. Unreachable by
+//! message speaks of the value rather than of a computation. Targets with no
+//! `NodeId` (the `MESSAGE`, `BUFFER-COMPARE` and `CREATE` names) resolve by
+//! spelling in the scope the walk is in. A candidate whose write the walk cannot
+//! locate still reports, at its declaration. Unreachable by
 //! construction and therefore not special-cased: `DO i = 1 TO n` and
 //! `INPUT-OUTPUT` arguments (credited `ReadWrite`, so they always carry a read);
 //! `BUFFER-COPY` / `CREATE <buffer>` targets and field writes (Buffer, Table and
@@ -81,9 +85,14 @@
 //!   fallback, and it is why #136 — head-parsing the forms so they credit
 //!   exactly — is scheduled rather than hoped for.
 
-use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind};
+use oxabl_ast::{
+    AssignPair, CreateTarget, Expression, ExpressionKind, Identifier, NodeId, OnAction, OnKind,
+    Statement, StatementKind,
+};
 use oxabl_common::{Diagnostic, FileSpan};
-use oxabl_semantic::{AnalysisContext, Resolution, Semantic, SymbolId, SymbolKind};
+use oxabl_semantic::{
+    AnalysisContext, NamespaceId, Resolution, ScopeId, ScopeKind, Semantic, SymbolId, SymbolKind,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::LINT0006;
@@ -117,6 +126,8 @@ pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<
         file_id: ctx.file_id,
         wanted: candidates.iter().copied().collect(),
         first_write: FxHashMap::default(),
+        scope: ScopeId::ROOT,
+        opened: opened_scopes(sem),
     };
     v.walk_block(program);
     let first_write = v.first_write;
@@ -132,11 +143,9 @@ pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<
                 SymbolKind::Parameter => "parameter",
                 _ => "symbol",
             };
-            // No located write site — the write arrived through a form the walk
-            // does not descend into (`MESSAGE ... UPDATE`, `CREATE <widget>`,
-            // and friends). Fall back to the declaration rather than drop the
-            // finding: less useful, still true. Widening the walk form-by-form
-            // is the per-shape treadmill def-use records (#126) exist to end.
+            // No located write site: the write sits in a form the walk does not
+            // reach. Fall back to the declaration rather than drop the finding:
+            // less useful, still true.
             let span = first_write
                 .get(sid)
                 .copied()
@@ -159,6 +168,23 @@ struct Visitor<'a> {
     file_id: oxabl_common::FileId,
     wanted: FxHashSet<SymbolId>,
     first_write: FxHashMap<SymbolId, FileSpan>,
+    /// Scope of the statement being walked, for names that carry no `NodeId`.
+    scope: ScopeId,
+    opened: FxHashMap<NodeId, Vec<(ScopeId, ScopeKind)>>,
+}
+
+/// Scopes by the statement that opened them.
+fn opened_scopes(sem: &Semantic) -> FxHashMap<NodeId, Vec<(ScopeId, ScopeKind)>> {
+    let mut opened: FxHashMap<NodeId, Vec<(ScopeId, ScopeKind)>> = FxHashMap::default();
+    for (id, scope) in sem.scope_tree.iter() {
+        if scope.parent.is_some() {
+            opened
+                .entry(scope.owner_node)
+                .or_default()
+                .push((id, scope.kind));
+        }
+    }
+    opened
 }
 
 impl Visitor<'_> {
@@ -168,7 +194,23 @@ impl Visitor<'_> {
         }
     }
 
+    /// Walk `f` inside the scope of `kind` that `owner` opened, when it opened one.
+    fn within(&mut self, owner: NodeId, kind: ScopeKind, f: impl FnOnce(&mut Self)) {
+        let parent = self.scope;
+        let child = self.opened.get(&owner).and_then(|scopes| {
+            scopes
+                .iter()
+                .find(|(id, k)| *k == kind && self.sem.scope_tree.get(*id).parent == Some(parent))
+        });
+        if let Some(&(id, _)) = child {
+            self.scope = id;
+        }
+        f(self);
+        self.scope = parent;
+    }
+
     fn walk_statement(&mut self, stmt: &Statement) {
+        let owner = stmt.id;
         match &stmt.kind {
             StatementKind::Assignment { target, .. } => self.record_target(target),
             StatementKind::Assign { assignments } => {
@@ -176,38 +218,89 @@ impl Visitor<'_> {
                     self.record_target(target);
                 }
             }
+            StatementKind::Message { set_targets, .. } => {
+                for target in set_targets {
+                    self.record_ident(target);
+                }
+            }
+            StatementKind::Run {
+                persistent_handle,
+                async_handle,
+                ..
+            } => {
+                for handle in [persistent_handle, async_handle].into_iter().flatten() {
+                    self.record_target(handle);
+                }
+            }
+            StatementKind::BufferCompare {
+                result_var: Some(result),
+                ..
+            } => self.record_ident(result),
+            StatementKind::Create {
+                target: CreateTarget::Handle { handle, .. },
+                ..
+            } => self.record_ident(handle),
 
             // Recurse into bodies.
-            StatementKind::Procedure { body, .. }
-            | StatementKind::Function { body, .. }
-            | StatementKind::Class { body, .. }
-            | StatementKind::Interface { body, .. }
-            | StatementKind::Destructor { body }
-            | StatementKind::Finally { body } => self.walk_block(body),
+            StatementKind::Procedure { body, .. } => {
+                self.within(owner, ScopeKind::Procedure, |v| v.walk_block(body))
+            }
+            StatementKind::Function { body, .. } => {
+                self.within(owner, ScopeKind::Function, |v| v.walk_block(body))
+            }
+            StatementKind::Class { body, .. } => {
+                self.within(owner, ScopeKind::Class, |v| v.walk_block(body))
+            }
+            StatementKind::Interface { body, .. } => {
+                self.within(owner, ScopeKind::Interface, |v| v.walk_block(body))
+            }
+            StatementKind::Destructor { body } => {
+                self.within(owner, ScopeKind::Destructor, |v| v.walk_block(body))
+            }
+            StatementKind::Finally { body } => {
+                self.within(owner, ScopeKind::Finally, |v| v.walk_block(body))
+            }
             StatementKind::Method {
                 parameters, body, ..
-            }
-            | StatementKind::Constructor {
+            } => self.within(owner, ScopeKind::Method, |v| {
+                v.walk_block(parameters);
+                v.walk_block(body);
+            }),
+            StatementKind::Constructor {
                 parameters, body, ..
-            } => {
-                self.walk_block(parameters);
-                self.walk_block(body);
+            } => self.within(owner, ScopeKind::Constructor, |v| {
+                v.walk_block(parameters);
+                v.walk_block(body);
+            }),
+            StatementKind::Catch { body, .. } => {
+                self.within(owner, ScopeKind::Catch, |v| v.walk_block(body))
             }
-            StatementKind::Catch { body, .. } => self.walk_block(body),
             StatementKind::Property {
                 get_body, set_body, ..
             } => {
                 if let Some(b) = get_body {
-                    self.walk_block(b);
+                    self.within(owner, ScopeKind::PropertyGet, |v| v.walk_block(b));
                 }
                 if let Some(b) = set_body {
-                    self.walk_block(b);
+                    self.within(owner, ScopeKind::PropertySet, |v| v.walk_block(b));
                 }
             }
-            StatementKind::Do { body, .. } | StatementKind::Repeat { body, .. } => {
-                self.walk_block(body)
+            StatementKind::Do { body, .. }
+            | StatementKind::Repeat { body, .. }
+            | StatementKind::ForEach { body, .. } => {
+                self.within(owner, ScopeKind::Block, |v| v.walk_block(body))
             }
-            StatementKind::ForEach { body, .. } => self.walk_block(body),
+            StatementKind::On {
+                kind:
+                    OnKind::UiEvent {
+                        action: OnAction::Block(body),
+                        ..
+                    }
+                    | OnKind::DbEvent {
+                        action: OnAction::Block(body),
+                        ..
+                    },
+            } => self.within(owner, ScopeKind::Trigger, |v| v.walk_statement(body)),
             StatementKind::If {
                 then_branch,
                 else_branch,
@@ -247,6 +340,28 @@ impl Visitor<'_> {
         }
     }
 
+    /// Record a statement-position name as a write site. Such a name has no
+    /// `NodeId`, so it resolves by spelling in the walk's current scope.
+    fn record_ident(&mut self, ident: &Identifier) {
+        let Some(sid) =
+            self.sem
+                .scope_tree
+                .resolve_name(self.scope, NamespaceId::Values, &ident.name)
+        else {
+            return;
+        };
+        self.note(sid, ident);
+    }
+
+    fn note(&mut self, sid: SymbolId, ident: &Identifier) {
+        if self.wanted.contains(&sid) {
+            self.first_write.entry(sid).or_insert(FileSpan {
+                file: self.file_id,
+                span: ident.span,
+            });
+        }
+    }
+
     /// Record `target` as a candidate's first write site, if it resolves to one.
     fn record_target(&mut self, target: &Expression) {
         // `arr[i] = 1` writes `arr`; the resolve pass credits the array symbol,
@@ -268,13 +383,7 @@ impl Visitor<'_> {
         let Some(Resolution::Resolved(sid)) = self.sem.references.get(node) else {
             return;
         };
-        if !self.wanted.contains(sid) {
-            return;
-        }
-        self.first_write.entry(*sid).or_insert(FileSpan {
-            file: self.file_id,
-            span: ident.span,
-        });
+        self.note(*sid, ident);
     }
 }
 
@@ -592,13 +701,10 @@ mod tests {
         assert!(lint(&stmts).is_empty(), "{:?}", lint(&stmts));
     }
 
-    // -- Audited write forms whose site the walk cannot locate (R6, R11). -----
-    // Each is a real dead store, so it fires; the span falls back to the
-    // declaration because the write is a statement-position identifier rather
-    // than an assignment target.
+    // -- Audited write forms: each reports at its own write site. -------------
 
     #[test]
-    fn fires_with_declaration_span_for_message_update_target() {
+    fn fires_at_the_message_update_target() {
         // Input collected from the user and then discarded.
         let stmts = vec![
             var_decl("answer"),
@@ -609,18 +715,15 @@ mod tests {
         ];
         let diags = lint(&stmts);
         assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(
-            diags[0].span.span.start, 0,
-            "no locatable write site — expect the declaration span: {diags:?}"
-        );
+        assert_eq!(diags[0].span.span.start, 90, "{diags:?}");
         assert!(diags[0].message.contains("answer"), "{diags:?}");
     }
 
     #[test]
-    fn fires_with_declaration_span_for_persistent_run_handle() {
-        // A persistent procedure started and its handle dropped on the floor.
+    fn fires_at_the_persistent_or_async_run_handle() {
+        // A procedure started and its handle dropped on the floor.
         for (persistent, asynchronous) in [(true, false), (false, true)] {
-            let handle = Some(Expression::new(ExpressionKind::Identifier(id_at("h", 90))));
+            let handle = Some(ident_expr("h", 90));
             let stmts = vec![
                 var_decl("h"),
                 stmt(StatementKind::Run {
@@ -637,12 +740,12 @@ mod tests {
             ];
             let diags = lint(&stmts);
             assert_eq!(diags.len(), 1, "persistent={persistent}: {diags:?}");
-            assert_eq!(diags[0].span.span.start, 0, "{diags:?}");
+            assert_eq!(diags[0].span.span.start, 90, "{diags:?}");
         }
     }
 
     #[test]
-    fn fires_with_declaration_span_for_buffer_compare_result() {
+    fn fires_at_the_buffer_compare_result() {
         let stmts = vec![
             var_decl("res"),
             stmt(StatementKind::BufferCompare {
@@ -654,11 +757,11 @@ mod tests {
         ];
         let diags = lint(&stmts);
         assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].span.span.start, 0, "{diags:?}");
+        assert_eq!(diags[0].span.span.start, 90, "{diags:?}");
     }
 
     #[test]
-    fn fires_with_declaration_span_for_created_widget_handle() {
+    fn fires_at_the_created_widget_handle() {
         let stmts = vec![
             var_decl("hWidget"),
             stmt(StatementKind::Create {
@@ -668,6 +771,41 @@ mod tests {
                     widget_pool: None,
                 },
                 no_error: false,
+            }),
+        ];
+        let diags = lint(&stmts);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].span.span.start, 90, "{diags:?}");
+    }
+
+    #[test]
+    fn fires_at_a_write_inside_an_on_trigger_body() {
+        use oxabl_ast::{OnAction, OnKind};
+        let stmts = vec![
+            var_decl("x"),
+            stmt(StatementKind::On {
+                kind: OnKind::UiEvent {
+                    clauses: vec![],
+                    anywhere: true,
+                    action: OnAction::Block(Box::new(assign("x", 60))),
+                },
+            }),
+        ];
+        let diags = lint(&stmts);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].span.span.start, 60, "{diags:?}");
+    }
+
+    #[test]
+    fn falls_back_to_the_declaration_when_the_write_site_is_not_located() {
+        // The write is credited (a `Skipped` mention never is one, but an
+        // `Expression::new` target carries no `NodeId`), yet the walk cannot find
+        // it. The finding must still be emitted, at the declaration.
+        let stmts = vec![
+            var_decl("x"),
+            stmt(StatementKind::Assignment {
+                target: Expression::new(ExpressionKind::Identifier(id_at("x", 90))),
+                value: one(1),
             }),
         ];
         let diags = lint(&stmts);

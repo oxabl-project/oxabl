@@ -281,6 +281,13 @@ impl ScopeTree {
         }
         None
     }
+
+    /// [`resolve`](Self::resolve) for a source spelling: folds `name` the way
+    /// the symbol table folds declared names. For a statement-position
+    /// identifier, which carries no `NodeId` and so no `references` entry.
+    pub fn resolve_name(&self, scope: ScopeId, ns: NamespaceId, name: &str) -> Option<SymbolId> {
+        self.resolve(scope, ns, &crate::resolve::fold_atom(name))
+    }
 }
 
 impl Default for ScopeTree {
