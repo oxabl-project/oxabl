@@ -610,6 +610,10 @@ impl ReverseGraph {
     /// A file subject is in its own rebuild set: changing a file rebuilds it. A
     /// table subject is not, having no file. Cycles terminate and each file appears
     /// once.
+    ///
+    /// The walk starts from the files whose unresolved rows name `subject`, as
+    /// well as its resolved dependents: a file that is created or renamed into
+    /// place must rebuild the files that could not find it before.
     pub fn rebuild_set(&self, subject: &Subject) -> Vec<PathBuf> {
         let mut seen: HashSet<PathBuf> = HashSet::new();
         let mut queue: VecDeque<Subject> = VecDeque::new();
@@ -620,6 +624,15 @@ impl ReverseGraph {
         }
         queue.push_back(subject.clone());
         visited.insert(subject.clone());
+
+        for row in self.unresolved_naming(subject) {
+            if seen.insert(row.file.clone()) {
+                let owner = Subject::File(row.file);
+                if visited.insert(owner.clone()) {
+                    queue.push_back(owner);
+                }
+            }
+        }
 
         while let Some(current) = queue.pop_front() {
             let Some(rows) = self.dependents.get(&current) else {
