@@ -17,12 +17,33 @@ use oxabl_flow::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::events::{self, Effect, Place, PoolRef};
-use crate::index::{FileIndex, Name};
+use crate::events::{self, Callee, Effect, Place, PoolRef};
+use crate::index::{CallableKind, FileIndex, Name};
 use crate::model::*;
 
 /// More walk states than this for one object marks it opaque.
 const STATE_LIMIT: usize = 100_000;
+
+/// More walk states than this over all the objects of a file marks the rest
+/// opaque, so a generated file with many objects stays fast.
+const FILE_STATE_BUDGET: usize = 600_000;
+
+/// The walk states a file can still spend.
+pub(crate) struct Budget(Cell<usize>);
+
+impl Budget {
+    pub(crate) fn new() -> Self {
+        Budget(Cell::new(FILE_STATE_BUDGET))
+    }
+
+    fn left(&self) -> usize {
+        self.0.get()
+    }
+
+    fn spend(&self, states: usize) {
+        self.0.set(self.0.get().saturating_sub(states));
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Into {
@@ -40,6 +61,10 @@ enum Fx {
     Free {
         var: u32,
         kind: FreeKind,
+    },
+    /// `APPLY "CLOSE"`, which frees only a persistent procedure.
+    Close {
+        var: u32,
     },
     Assign {
         to: Into,
@@ -88,12 +113,24 @@ struct Obj {
     pool: PoolRef,
     /// `CREATE ... NO-ERROR`: the object may not exist after it.
     no_error: bool,
+    /// A MEMPTR a `COPY-LOB` fills.
+    weak: bool,
+    /// A weak object the allocation of an earlier create already covers.
+    duplicate: bool,
     nodes: SmallVec<[NodeIx; 1]>,
 }
 
-pub(crate) fn analyze_unit(cfg: &Cfg, index: &FileIndex, src: &str) -> UnitHandles {
-    let mut u = UnitWalk::new(cfg, index, src);
-    let mut objects: Vec<Object> = (0..u.objs.len()).map(|o| u.object(o as u32)).collect();
+pub(crate) fn analyze_unit(
+    cfg: &Cfg,
+    index: &FileIndex,
+    src: &str,
+    budget: &Budget,
+) -> UnitHandles {
+    let mut u = UnitWalk::new(cfg, index, src, budget);
+    let live: Vec<u32> = (0..u.objs.len() as u32)
+        .filter(|&o| !u.objs[o as usize].duplicate)
+        .collect();
+    let mut objects: Vec<Object> = live.into_iter().map(|o| u.object(o)).collect();
     objects.sort_by_key(|o| o.create.span.start);
     UnitHandles {
         unit: cfg.id(),
@@ -109,6 +146,7 @@ struct UnitWalk<'c, 'i, 'a> {
     cfg: &'c Cfg,
     index: &'i FileIndex<'a>,
     src: &'i str,
+    budget: &'i Budget,
     /// Per node: 0 unknown, 1 plain, 2 runs or calls something. Read when a
     /// raise edge is taken, so most nodes are never classified.
     calls: Vec<Cell<u8>>,
@@ -126,12 +164,13 @@ struct UnitWalk<'c, 'i, 'a> {
 }
 
 impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
-    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>, src: &'i str) -> Self {
+    fn new(cfg: &'c Cfg, index: &'i FileIndex<'a>, src: &'i str, budget: &'i Budget) -> Self {
         let unit_stmt = cfg.unit().stmt;
         let mut w = UnitWalk {
             cfg,
             index,
             src,
+            budget,
             calls: vec![Cell::new(0); cfg.node_count()],
             unit_stmt,
             vars: Vec::new(),
@@ -182,6 +221,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                             into,
                             pool,
                             no_error,
+                            weak,
                         } => {
                             let into_r = match into {
                                 Some(Place::Var(v)) => Into::Var(var(v)),
@@ -204,6 +244,8 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                                     into: into_r,
                                     pool: pool.clone(),
                                     no_error: *no_error,
+                                    weak: *weak,
+                                    duplicate: false,
                                     nodes: SmallVec::new(),
                                 });
                                 w.objs.len() as u32 - 1
@@ -225,6 +267,8 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                                     into: Into::Nothing,
                                     pool: PoolRef::Default,
                                     no_error: false,
+                                    weak: false,
+                                    duplicate: false,
                                     nodes: SmallVec::new(),
                                 });
                                 w.objs.len() as u32 - 1
@@ -233,10 +277,30 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
                         Effect::Free { var: v, .. } if walkers.contains(&Name(v)) => {
                             out.push(Fx::Sweep)
                         }
+                        Effect::Free {
+                            var: v,
+                            kind: FreeKind::ApplyClose,
+                        } => out.push(Fx::Close { var: var(v) }),
                         Effect::Free { var: v, kind } => out.push(Fx::Free {
                             var: var(v),
                             kind: *kind,
                         }),
+                        Effect::Pass {
+                            var: v,
+                            callee,
+                            pos,
+                        } => match pass(index, *callee, *pos) {
+                            Passed::Borrow => {}
+                            Passed::Frees => out.push(Fx::Escape {
+                                var: var(v),
+                                kind: EscapeKind::FreedByCallee,
+                            }),
+                            Passed::Unknown => out.push(Fx::Opaque {
+                                var: var(v),
+                                reason: OpaqueReason::Callee,
+                            }),
+                        },
+                        Effect::CopyLob { .. } => {}
                         Effect::Assign { to, from } => {
                             let to = match to {
                                 Place::Var(v) => Into::Var(var(v)),
@@ -308,6 +372,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
             }
             w.fx.push(out);
         }
+        w.drop_duplicate_creates();
         // A skipped statement matters only where it names a variable that may
         // hold an object.
         for (n, names) in skipped {
@@ -321,6 +386,29 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
             }
         }
         w
+    }
+
+    /// A MEMPTR a `COPY-LOB` fills is not a second object where an earlier
+    /// create of the same variable (`SET-SIZE`, or another copy) always runs
+    /// first: that one already owns the block.
+    fn drop_duplicate_creates(&mut self) {
+        for o in 0..self.objs.len() {
+            let obj = &self.objs[o];
+            let (true, Into::Var(v)) = (obj.weak, obj.into) else {
+                continue;
+            };
+            let dom = self.dominators.get_or_insert_with(|| self.cfg.dominators());
+            let covered = obj.nodes.iter().all(|&c| {
+                self.objs.iter().enumerate().any(|(j, other)| {
+                    j != o
+                        && !other.duplicate
+                        && other.kind == ObjectKind::Memptr
+                        && matches!(other.into, Into::Var(w) if w == v)
+                        && other.nodes.iter().any(|&p| p != c && dom.dominates(p, c))
+                })
+            });
+            self.objs[o].duplicate = covered;
+        }
     }
 
     fn var(&mut self, ix: &mut FxHashMap<Name<'a>, u32>, name: &'a str) -> u32 {
@@ -392,6 +480,14 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
         }
         if matches!(obj.into, Into::Nothing) {
             out.verdict = Verdict::Uncaptured;
+            return out;
+        }
+        if self.budget.left() == 0 {
+            out.verdict = Verdict::Unknown;
+            out.opaque.push(Opaque {
+                reason: OpaqueReason::TooComplex,
+                site: out.create,
+            });
             return out;
         }
         Walker::new(self, o, out).run()
@@ -565,13 +661,15 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                 None,
             );
         }
+        let limit = STATE_LIMIT.min(u.budget.left());
         while let Some(i) = self.queue.pop_front() {
-            if self.states.len() > STATE_LIMIT {
+            if self.states.len() > limit {
                 self.too_complex();
                 break;
             }
             self.expand(i);
         }
+        u.budget.spend(self.states.len());
         self.finish()
     }
 
@@ -725,6 +823,14 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                         return Err(Some(End::Freed));
                     }
                 }
+                Fx::Close { var }
+                    if h & self.bit(*var) != 0
+                        && u.objs[self.o as usize].kind == ObjectKind::PersistentProcedure =>
+                {
+                    self.free(FreeKind::ApplyClose, n);
+                    self.end(i, st, n, End::Freed);
+                    return Err(Some(End::Freed));
+                }
                 Fx::DeletePool { name } => {
                     let hit = match (name, &self.out.placement) {
                         (None, Placement::UnitPool | Placement::FilePool) => true,
@@ -806,7 +912,11 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
                     }
                 }
                 Fx::Escape { var, kind }
-                    if (!raised || *kind == EscapeKind::DerivedHandle)
+                    if (!raised
+                        || matches!(
+                            kind,
+                            EscapeKind::DerivedHandle | EscapeKind::FreedByCallee
+                        ))
                         && h & self.bit(*var) != 0 =>
                 {
                     esc = true;
@@ -1050,5 +1160,30 @@ impl<'w, 'c, 'i, 'a> Walker<'w, 'c, 'i, 'a> {
             Verdict::Unknown
         };
         self.out
+    }
+}
+
+enum Passed {
+    /// The callee only uses the handle.
+    Borrow,
+    /// The callee frees its parameter.
+    Frees,
+    /// The file does not show what the callee does.
+    Unknown,
+}
+
+/// What an `INPUT` handle argument of a call does, from the file's own units.
+fn pass(index: &FileIndex, callee: Callee, pos: usize) -> Passed {
+    let (kind, name) = match callee {
+        Callee::Procedure(n) => (CallableKind::Procedure, n),
+        Callee::Function(n) => (CallableKind::Function, n),
+        Callee::Method(n) => (CallableKind::Method, n),
+        Callee::External => return Passed::Unknown,
+    };
+    match index.callee_frees(kind, name, pos) {
+        Some(true) => Passed::Frees,
+        Some(false) => Passed::Borrow,
+        None if kind == CallableKind::Method && events::is_builtin_method(name) => Passed::Borrow,
+        None => Passed::Unknown,
     }
 }

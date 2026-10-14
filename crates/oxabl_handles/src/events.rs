@@ -44,6 +44,9 @@ pub(crate) enum Effect<'a> {
         pool: PoolRef,
         /// `NO-ERROR`: the create may fail and make nothing.
         no_error: bool,
+        /// A MEMPTR a `COPY-LOB` fills: not an object of its own where an
+        /// earlier create of the same variable dominates it.
+        weak: bool,
     },
     /// A class instance (`NEW`, `DYNAMIC-NEW`).
     Collected,
@@ -78,6 +81,18 @@ pub(crate) enum Effect<'a> {
     },
     /// A statement the parser skips, with the names it passed over.
     Skipped(&'a [Identifier]),
+    /// `var` is the `pos`-th argument of a call, passed `INPUT`.
+    Pass {
+        var: &'a str,
+        callee: Callee<'a>,
+        pos: usize,
+    },
+    /// `COPY-LOB ... TO to`: a MEMPTR target is allocated by the copy. The
+    /// index turns it into a [`Effect::Create`] when `to` is a MEMPTR.
+    CopyLob {
+        to: Option<&'a str>,
+        no_error: bool,
+    },
     /// `recv:ADD-BUFFER(var)` or `recv:ADD-BUFFER(var:DEFAULT-BUFFER-HANDLE)`:
     /// an escape when `recv` holds a dataset.
     Attach {
@@ -98,6 +113,18 @@ pub(crate) enum Effect<'a> {
     DeletePool {
         name: Option<String>,
     },
+}
+
+/// What a call runs, as far as the statement shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Callee<'a> {
+    /// `RUN name` or `RUN name IN THIS-PROCEDURE`.
+    Procedure(&'a str),
+    Function(&'a str),
+    /// `obj:Method(...)`: the last link of the chain.
+    Method(&'a str),
+    /// `RUN name IN h`, or a call the file cannot resolve by name.
+    External,
 }
 
 pub(crate) type Effects<'a> = SmallVec<[Effect<'a>; 2]>;
@@ -134,6 +161,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 into: place_of(handle),
                 pool,
                 no_error: *no_error,
+                weak: false,
             });
             // `ASSIGN FRAME = f` or `PARENT = w`: the parent widget owns it.
             if let Some(var) = var_of(handle)
@@ -180,25 +208,19 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             };
             for t in std::iter::once(target).chain(extra_targets) {
                 scan(t, src, &mut out);
-                if let Some(var) = var_of(t) {
-                    out.push(Effect::Free { var, kind });
-                }
+                free_operand(t, kind, &mut out);
             }
         }
         SK::ReleaseObject { target, .. } => {
-            if let Some(var) = var_of(target) {
-                out.push(Effect::Free {
-                    var,
-                    kind: FreeKind::ReleaseObject,
-                });
-            }
+            scan(target, src, &mut out);
+            free_operand(target, FreeKind::ReleaseObject, &mut out);
         }
         // By convention a persistent procedure deletes itself on CLOSE.
         SK::Apply {
             event,
             target: Some(target),
         } => {
-            if let (EK::Literal(Literal::String(e)), Some(var)) = (&event.kind, var_of(target))
+            if let (EK::Literal(Literal::String(e)), Some(var)) = (&event.kind, identity_of(target))
                 && e.value.eq_ignore_ascii_case("CLOSE")
             {
                 out.push(Effect::Free {
@@ -228,9 +250,14 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                     });
                 }
             }
-            for a in arguments {
+            let callee = match (target, in_handle) {
+                (_, Some(h)) if !is_this_procedure(h) => Callee::External,
+                (oxabl_ast::RunTarget::Literal { name, .. }, _) => Callee::Procedure(name),
+                _ => Callee::External,
+            };
+            for (pos, a) in arguments.iter().enumerate() {
                 scan(&a.expression, src, &mut out);
-                let Some(var) = var_of(&a.expression) else {
+                let Some(var) = identity_of(&a.expression) else {
                     continue;
                 };
                 if dynamic {
@@ -240,6 +267,13 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                     });
                 }
                 match a.direction {
+                    // A table or dataset argument by value is a copy the callee
+                    // cannot free; the parser drops that keyword.
+                    ParameterDirection::Input
+                        if !dynamic && !copied_argument(src, a.expression.span) =>
+                    {
+                        out.push(Effect::Pass { var, callee, pos })
+                    }
                     ParameterDirection::Input => {}
                     ParameterDirection::InputOutput => {
                         out.push(Effect::Escape {
@@ -259,6 +293,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                     into: persistent_handle.as_ref().and_then(place_of),
                     pool: PoolRef::Default,
                     no_error: *no_error,
+                    weak: false,
                 });
             }
         }
@@ -272,7 +307,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
         SK::If { condition, .. } => scan(condition, src, &mut out),
         SK::Return(Some(e)) => {
             scan(e, src, &mut out);
-            if let Some(var) = var_of(e) {
+            if let Some(var) = identity_of(e) {
                 out.push(Effect::Escape {
                     var,
                     kind: EscapeKind::Return,
@@ -306,7 +341,10 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 });
             }
         }
-        SK::Skipped { names, .. } if !names.is_empty() => out.push(Effect::Skipped(names)),
+        SK::Skipped { names, .. } if !names.is_empty() => match copy_lob(s.span, names, src) {
+            Some((to, no_error)) => out.push(Effect::CopyLob { to, no_error }),
+            None => out.push(Effect::Skipped(names)),
+        },
         _ => {}
     }
     out
@@ -316,7 +354,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
 /// plain variable or literal to a plain variable, `RETURN` of one, or a test
 /// (`IF`, `CASE`, `DO WHILE`, `REPEAT WHILE`) of variables and literals only.
 pub(crate) fn cannot_raise(s: &Statement) -> bool {
-    let simple = |e: &Expression| var_of(e).is_some() || matches!(e.kind, EK::Literal(_));
+    let simple = |e: &Expression| identity_of(e).is_some() || matches!(e.kind, EK::Literal(_));
     match &s.kind {
         SK::If { condition, .. } => plain_condition(condition),
         SK::Case {
@@ -345,12 +383,20 @@ pub(crate) fn cannot_raise(s: &Statement) -> bool {
     }
 }
 
-/// A condition of variables, literals, comparisons, `AND`, `OR` and `NOT`: no
-/// call, attribute, method, arithmetic or field.
+/// A condition of variables, literals, comparisons, `AND`, `OR` and `NOT`, plus
+/// `VALID-HANDLE(v)`, `VALID-OBJECT(v)` and `ERROR-STATUS:ERROR`, which read a
+/// value without raising: no other call, attribute, method, arithmetic or
+/// field.
 fn plain_condition(e: &Expression) -> bool {
     match &e.kind {
         EK::Literal(_) => true,
-        EK::Identifier(_) => var_of(e).is_some(),
+        EK::Identifier(_) => var_of(e).is_some() || is_error_status(e),
+        EK::MemberAccess { .. } => is_error_status(e),
+        EK::FunctionCall { name, arguments } => {
+            is_validity_test(&name.name)
+                && arguments.len() == 1
+                && identity_of(&arguments[0]).is_some()
+        }
         EK::Not(a) => plain_condition(a),
         EK::And(a, b)
         | EK::Or(a, b)
@@ -392,6 +438,7 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
                 into: Some(into),
                 pool: PoolRef::Default,
                 no_error: false,
+                weak: false,
             });
         }
         return;
@@ -426,7 +473,7 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
             Some(from) => out.push(Effect::DerivedAssign { to, from }),
             None => out.push(Effect::Assign {
                 to,
-                from: var_of(value),
+                from: identity_of(value),
             }),
         }
     }
@@ -451,6 +498,9 @@ fn is_dispatch_destroy(name: &str, arguments: &[oxabl_ast::RunArgument]) -> bool
 /// The holder at the root of a chain whose last link yields a handle:
 /// `h:DEFAULT-BUFFER-HANDLE`, `h:HANDLE`, `h:GET-BUFFER-HANDLE(n)`, ...
 fn derived_root(e: &Expression) -> Option<&str> {
+    if identity_of(e).is_some() {
+        return None;
+    }
     let (root, last) = match &e.kind {
         EK::Identifier(id) => split_chain(&id.name)?,
         EK::FunctionCall { name, .. } => split_chain(&name.name)?,
@@ -506,6 +556,8 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
                 opaque_args(arguments.iter().skip(skip), out);
             } else if n.eq_ignore_ascii_case("DYNAMIC-INVOKE") {
                 opaque_args(arguments.iter().skip(2), out);
+            } else if let Some(callee) = function_callee(n) {
+                pass_args(arguments, callee, out);
             }
             for a in arguments {
                 scan(a, src, out);
@@ -546,6 +598,8 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
                         });
                     }
                 }
+            } else {
+                pass_args(arguments, Callee::Method(&method.name), out);
             }
         }
         EK::New { arguments, .. } => {
@@ -606,6 +660,175 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
     }
 }
 
+/// What a call by this name runs; `None` for a built-in function.
+fn function_callee(name: &str) -> Option<Callee<'_>> {
+    if let Some((_, last)) = name.rsplit_once(':') {
+        Some(Callee::Method(last))
+    } else if name.contains('.') {
+        Some(Callee::External)
+    } else if is_builtin_function(name) {
+        None
+    } else {
+        Some(Callee::Function(name))
+    }
+}
+
+fn is_builtin_function(name: &str) -> bool {
+    let mut buf = [0u8; 64];
+    let Some(folded) = buf.get_mut(..name.len()) else {
+        return false;
+    };
+    folded.copy_from_slice(name.as_bytes());
+    folded.make_ascii_lowercase();
+    std::str::from_utf8(folded).is_ok_and(oxabl_lexer::is_builtin_function)
+}
+
+/// Whether `name` is a method of a built-in handle type, which borrows its
+/// handle arguments: `SET-BUFFERS`, `ATTACH-DATA-SOURCE`, `FILL`, ...
+pub(crate) fn is_builtin_method(name: &str) -> bool {
+    name.contains('-')
+        || [
+            "FILL",
+            "READ",
+            "WRITE",
+            "CONNECT",
+            "DISCONNECT",
+            "INVOKE",
+            "SAVE",
+            "LOAD",
+            "PARSE",
+            "SELECT",
+        ]
+        .iter()
+        .any(|m| name.eq_ignore_ascii_case(m))
+}
+
+fn pass_args<'a>(args: &'a [Expression], callee: Callee<'a>, out: &mut Effects<'a>) {
+    for (pos, a) in args.iter().enumerate() {
+        if let Some(var) = identity_of(a) {
+            out.push(Effect::Pass { var, callee, pos });
+        }
+    }
+}
+
+/// Whether the argument is a `TABLE`, `TABLE-HANDLE`, `DATASET` or
+/// `DATASET-HANDLE` passed by value: the keyword before it is one of those, and
+/// no `BY-REFERENCE` or `BIND` follows it.
+fn copied_argument(src: &str, span: Span) -> bool {
+    let before = slice(
+        src,
+        Span {
+            start: 0,
+            end: span.start,
+        },
+    )
+    .trim_end();
+    let word = before
+        .rsplit(|c: char| c.is_whitespace() || c == '(' || c == ',')
+        .next();
+    let table = word.is_some_and(|w| {
+        ["TABLE", "TABLE-HANDLE", "DATASET", "DATASET-HANDLE"]
+            .iter()
+            .any(|k| w.eq_ignore_ascii_case(k))
+    });
+    let after = src.get(span.end as usize..).unwrap_or("");
+    let option = after.split([',', ')', '.']).next().unwrap_or("");
+    table
+        && !option
+            .split_whitespace()
+            .any(|w| w.eq_ignore_ascii_case("BY-REFERENCE") || w.eq_ignore_ascii_case("BIND"))
+}
+
+fn is_this_procedure(e: &Expression) -> bool {
+    matches!(&e.kind, EK::Identifier(id) if id.name.eq_ignore_ascii_case("THIS-PROCEDURE"))
+}
+
+/// A `DELETE` or `RELEASE` operand: a free of the variable it is the same
+/// object as, else opaque for every variable it mentions.
+fn free_operand<'a>(t: &'a Expression, kind: FreeKind, out: &mut Effects<'a>) {
+    if let Some(var) = identity_of(t) {
+        out.push(Effect::Free { var, kind });
+        return;
+    }
+    let mut names = SmallVec::<[&str; 4]>::new();
+    mentions(t, &mut names);
+    for var in names {
+        out.push(Effect::Opaque {
+            var,
+            reason: OpaqueReason::UnmappedFree,
+        });
+    }
+}
+
+/// The variables an expression names, by the root of each chain.
+fn mentions<'a>(e: &'a Expression, out: &mut SmallVec<[&'a str; 4]>) {
+    let root = |name: &'a str| name.split([':', '.']).next().filter(|r| !r.is_empty());
+    match &e.kind {
+        EK::Identifier(id) => out.extend(root(&id.name)),
+        EK::FunctionCall { name, arguments } => {
+            if name.name.contains(':') {
+                out.extend(root(&name.name));
+            }
+            for a in arguments {
+                mentions(a, out);
+            }
+        }
+        EK::MethodCall {
+            object, arguments, ..
+        } => {
+            mentions(object, out);
+            for a in arguments {
+                mentions(a, out);
+            }
+        }
+        EK::MemberAccess { object, .. } => mentions(object, out),
+        EK::ArrayAccess { array, index } => {
+            mentions(array, out);
+            mentions(index, out);
+        }
+        EK::FieldAccess { qualifier, .. } => mentions(qualifier, out),
+        EK::Add(a, b) | EK::Minus(a, b) | EK::Multiply(a, b) | EK::Divide(a, b) => {
+            mentions(a, out);
+            mentions(b, out);
+        }
+        EK::Negate(a) | EK::Not(a) => mentions(a, out),
+        _ => {}
+    }
+}
+
+/// `COPY-LOB ... TO target`: the statement's target when it is a plain
+/// variable (not `TO FILE`), and whether it has `NO-ERROR`. `None` for any
+/// other skipped statement. The parser skips the statement, so its tokens are
+/// read again here.
+fn copy_lob<'a>(span: Span, names: &'a [Identifier], src: &str) -> Option<(Option<&'a str>, bool)> {
+    let text = slice(src, span);
+    let toks: SmallVec<[_; 16]> = Lexer::new(text)
+        .filter(|t| !matches!(t.kind, Kind::Comment))
+        .take_while(|t| t.kind != Kind::Eof)
+        .collect();
+    if toks.first()?.kind != Kind::CopyLob {
+        return None;
+    }
+    let no_error = toks.iter().any(|t| t.kind == Kind::NoError);
+    let target = toks
+        .iter()
+        .position(|t| t.kind == Kind::To)
+        .and_then(|i| toks.get(i + 1))
+        .map(|t| &text[t.start..t.end])
+        .filter(|w| {
+            w.starts_with(|c: char| c.is_ascii_alphabetic())
+                && !w.contains([':', '.'])
+                && !w.eq_ignore_ascii_case("FILE")
+        })
+        .and_then(|w| {
+            names
+                .iter()
+                .map(|n| n.name.as_str())
+                .find(|n| n.eq_ignore_ascii_case(w))
+        });
+    Some((target, no_error))
+}
+
 fn opaque_args<'a>(args: impl Iterator<Item = &'a Expression>, out: &mut Effects<'a>) {
     for a in args {
         if let Some(var) = var_of(a) {
@@ -633,6 +856,27 @@ fn dynamic_function_in(args: &[Expression], src: &str) -> bool {
 pub(crate) fn var_of(e: &Expression) -> Option<&str> {
     match &e.kind {
         EK::Identifier(id) if !id.name.contains(['.', ':']) => Some(&id.name),
+        _ => None,
+    }
+}
+
+/// The variable an expression is the same object as: `h`, or `h:HANDLE`.
+pub(crate) fn identity_of(e: &Expression) -> Option<&str> {
+    match &e.kind {
+        EK::Identifier(id) => match id.name.split_once(':') {
+            None => var_of(e),
+            Some((root, rest))
+                if rest.eq_ignore_ascii_case("HANDLE")
+                    && !root.is_empty()
+                    && !root.contains('.') =>
+            {
+                Some(root)
+            }
+            _ => None,
+        },
+        EK::MemberAccess { object, member } if member.name.eq_ignore_ascii_case("HANDLE") => {
+            var_of(object)
+        }
         _ => None,
     }
 }

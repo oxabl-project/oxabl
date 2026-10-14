@@ -12,7 +12,9 @@
 //! ```
 //! With `OXABL_HANDLES_DUMP=1` and a single file, print that file's dump;
 //! `OXABL_HANDLES_EXPANDED=<path>` also writes the expanded text there.
-//! `OXABL_HANDLES_SITES=<path>` writes the distinct normal-path leak sites there.
+//! The report lists leaking objects per directory, normal-path leaks apart from
+//! those on abnormal paths only. `OXABL_HANDLES_SITES=<path>` writes the distinct
+//! normal-path leak sites there.
 //! Set `OXABL_HANDLES_VERBOSE=<n>` to print `n` sampled leaking objects (every
 //! k-th, spread over the tree) with `file:line` and their path lines, and the
 //! files that panicked or failed. Lines are in the root file; a site inside an
@@ -51,7 +53,8 @@ struct Report {
     escapes_by_kind: BTreeMap<&'static str, usize>,
     opaque_by_reason: BTreeMap<&'static str, usize>,
     placement: BTreeMap<&'static str, usize>,
-    leaks_by_dir: BTreeMap<String, usize>,
+    /// Leaking objects by directory: on a normal path, and on abnormal paths only.
+    leaks_by_dir: BTreeMap<String, [usize; 2]>,
     /// Leaking objects by distinct site: `file:line` in a root file, else the
     /// unit name and create text of an include (counted once for every root
     /// that includes it).
@@ -254,7 +257,7 @@ fn run_file(pipeline: &LintPipeline, root: &Path, file: &Path, r: &mut Report) {
         if o.verdict != Verdict::Leaks {
             continue;
         }
-        *r.leaks_by_dir.entry(dir.clone()).or_default() += 1;
+        r.leaks_by_dir.entry(dir.clone()).or_default()[usize::from(!o.leaks_on_normal_path())] += 1;
         if o.leaks_on_normal_path() {
             r.leak_objects_normal += 1;
             r.distinct_normal.insert(key.clone());
@@ -389,16 +392,17 @@ fn print_report(r: &Report, wall: Duration, verbose: usize) {
     for (k, n) in &r.placement {
         println!("  {k:<22} {n}");
     }
+    println!("leaking objects by directory (top 20 by normal path)");
+    println!("  {:>8} {:>8}  directory", "normal", "abnormal");
+    let mut dirs: Vec<_> = r.leaks_by_dir.iter().collect();
+    dirs.sort_by(|a, b| b.1.cmp(a.1));
+    for (d, [normal, abnormal]) in dirs.iter().take(20) {
+        println!("  {normal:>8} {abnormal:>8}  {d}");
+    }
     println!("expand+parse time     {:.2?}", r.expand_parse_time);
     println!("handles time          {:.2?}", r.handles_time);
     println!("wall time             {wall:.2?}");
     if verbose > 0 {
-        let mut dirs: Vec<_> = r.leaks_by_dir.iter().collect();
-        dirs.sort_by(|a, b| b.1.cmp(a.1));
-        eprintln!("leaking objects by directory (top 20)");
-        for (d, n) in dirs.iter().take(20) {
-            eprintln!("  {n:>6} {d}");
-        }
         for (path, why) in &r.failed {
             eprintln!("{why}: {}", path.display());
         }

@@ -112,7 +112,7 @@ pub enum FreeKind {
     /// `SET-SIZE(m) = 0`.
     SetSizeZero,
     /// `APPLY "CLOSE" TO hProc`: by convention a persistent procedure deletes
-    /// itself on CLOSE.
+    /// itself on CLOSE. Only a persistent procedure is freed this way.
     ApplyClose,
     /// `DELETE WIDGET-POOL` of the pool the object is in.
     DeletePool,
@@ -193,6 +193,9 @@ pub enum EscapeKind {
     /// `h:GET-BUFFER-HANDLE(n)`) is returned or stored where it outlives the
     /// unit; the root object is taken as handed over too. Low confidence.
     DerivedHandle,
+    /// Passed `INPUT` to a procedure, function or method of this file that
+    /// frees its parameter.
+    FreedByCallee,
 }
 
 impl EscapeKind {
@@ -218,6 +221,7 @@ impl EscapeKind {
             EscapeKind::FreedByOtherUnit => "freed-by-other-unit",
             EscapeKind::WidgetParent => "widget-parent",
             EscapeKind::DerivedHandle => "derived-handle",
+            EscapeKind::FreedByCallee => "freed-by-callee",
         }
     }
 }
@@ -267,6 +271,13 @@ pub enum OpaqueReason {
     /// argument: whether that replaces the pointer or fills the block is not
     /// known.
     OutputArgument,
+    /// The object is an `INPUT` argument of a call the file does not define
+    /// (`RUN x.p`, `RUN p IN h`, a function or method of another file): the
+    /// callee may delete or keep it.
+    Callee,
+    /// A `DELETE` or `RELEASE` operand that names a holder but is not the
+    /// holder itself (`DELETE OBJECT WIDGET-HANDLE(STRING(h))`).
+    UnmappedFree,
 }
 
 impl OpaqueReason {
@@ -282,6 +293,8 @@ impl OpaqueReason {
             OpaqueReason::ProcedureSweep => "procedure-sweep",
             OpaqueReason::DestroyCall => "destroy-call",
             OpaqueReason::OutputArgument => "output-argument",
+            OpaqueReason::Callee => "callee",
+            OpaqueReason::UnmappedFree => "unmapped-free",
         }
     }
 }

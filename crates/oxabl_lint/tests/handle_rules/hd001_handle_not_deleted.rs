@@ -226,3 +226,48 @@ END PROCEDURE.
 ";
     assert_eq!(check(run, src).len(), 1);
 }
+
+#[test]
+fn a_com_object_is_released_not_deleted() {
+    let src = "\
+DEFINE VARIABLE chExcel AS COM-HANDLE NO-UNDO.
+CREATE \"Excel.Application\" chExcel.
+";
+    let diags = check(run, src);
+    assert_eq!(diags.len(), 1);
+    let h = help(&diags[0]);
+    assert!(h.contains("RELEASE OBJECT"), "{h}");
+    assert!(!h.contains("DELETE OBJECT"), "{h}");
+}
+
+#[test]
+fn a_handle_passed_to_a_callee_that_deletes_it_or_that_is_unknown_is_not_reported() {
+    let freed = "\
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+CREATE QUERY hq.
+RUN cleanup (INPUT hq).
+
+PROCEDURE cleanup:
+    DEFINE INPUT PARAMETER ph AS HANDLE NO-UNDO.
+    DELETE OBJECT ph.
+END PROCEDURE.
+";
+    assert!(check(run, freed).is_empty());
+    let external = "\
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+CREATE QUERY hq.
+RUN cleanup.p (INPUT hq).
+";
+    assert!(check(run, external).is_empty());
+    let kept = "\
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+CREATE QUERY hq.
+RUN show (INPUT hq).
+
+PROCEDURE show:
+    DEFINE INPUT PARAMETER ph AS HANDLE NO-UNDO.
+    MESSAGE ph:NAME.
+END PROCEDURE.
+";
+    assert_eq!(lines(kept, &check(run, kept)), [2]);
+}

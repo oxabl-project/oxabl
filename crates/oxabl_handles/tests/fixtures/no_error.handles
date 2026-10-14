@@ -1,15 +1,12 @@
 unit u1 procedure one
-  query @3 leaks holder=h1 pool=unscoped
+  query @3 freed holder=h1 pool=unscoped
     free delete-object @5
-    leak exit-return @4 abnormal via raise(error)@4 path 3>4
 unit u2 procedure two
-  buffer @10 leaks holder=h2 pool=unscoped
+  buffer @10 freed holder=h2 pool=unscoped
     free delete-object @12
-    leak exit-return @11 abnormal via raise(error)@11 path 10>11
 unit u3 procedure three
-  persistent-procedure @17 leaks holder=h3
+  persistent-procedure @17 freed holder=h3
     free delete-procedure @19
-    leak exit-return @18 abnormal via raise(error)@18 path 17>18
 unit u4 procedure four
   query @26 leaks holder=h4 pool=unscoped
     free delete-object @29

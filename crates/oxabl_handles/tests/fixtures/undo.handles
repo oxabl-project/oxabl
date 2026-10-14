@@ -1,7 +1,5 @@
 unit u0 main
-  query @5 leaks holder=hKept pool=unscoped
+  query @5 freed holder=hKept pool=unscoped
     free delete-object @8
-    leak exit-return @8 abnormal via raise(error)@8 path 5>6>8
-  query @11 leaks holder=hLeft pool=unscoped
+  query @11 freed holder=hLeft pool=unscoped
     free delete-object @14
-    leak exit-return @14 abnormal via raise(error)@14 path 11>12>14

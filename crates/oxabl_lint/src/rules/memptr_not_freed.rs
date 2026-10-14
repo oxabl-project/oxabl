@@ -1,7 +1,8 @@
 //! `memptr-not-freed` lint (HD004), group `strict.handles`.
 //!
-//! Fires on `SET-SIZE(m) = n`, with `n` not the literal 0, when no path that
-//! raises nothing runs `SET-SIZE(m) = 0` afterwards.
+//! Fires on `SET-SIZE(m) = n`, with `n` not the literal 0, or on
+//! `COPY-LOB ... TO m`, when no path that raises nothing runs `SET-SIZE(m) = 0`
+//! afterwards.
 //!
 //! # Why
 //!
@@ -43,8 +44,10 @@
 //!   HD002, covers a free that exists).
 //!
 //! Assigning a MEMPTR copies the pointer, not the memory, so a free through
-//! either variable counts. Only `SET-SIZE` allocates here: a MEMPTR filled by
-//! `COPY-LOB ... TO m` and other statements is not tracked.
+//! either variable counts. `SET-SIZE` allocates, and so does `COPY-LOB ... TO m`
+//! when `m` is declared `AS MEMPTR` in the file and no earlier `SET-SIZE` or
+//! `COPY-LOB` of `m` always runs first. Other statements that fill a MEMPTR are
+//! not tracked.
 //!
 //! # Include files
 //!

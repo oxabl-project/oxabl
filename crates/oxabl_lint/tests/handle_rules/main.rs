@@ -5,6 +5,7 @@
 //! Synthetic ABL runs through the real lexer, parser and semantic pass, then
 //! through the rule itself.
 
+mod doc_examples;
 mod hd001_handle_not_deleted;
 mod hd002_delete_not_in_finally;
 mod hd003_persistent_procedure_leak;

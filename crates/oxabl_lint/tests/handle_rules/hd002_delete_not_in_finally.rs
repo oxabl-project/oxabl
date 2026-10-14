@@ -165,3 +165,24 @@ END PROCEDURE.
         diags[0].message
     );
 }
+
+#[test]
+fn a_validity_or_error_status_test_is_not_the_cause() {
+    let src = "\
+PROCEDURE a:
+    DEFINE VARIABLE h AS HANDLE NO-UNDO.
+    CREATE X-DOCUMENT h NO-ERROR.
+    IF ERROR-STATUS:ERROR THEN RETURN.
+    DELETE OBJECT h.
+END PROCEDURE.
+PROCEDURE b:
+    DEFINE VARIABLE h AS HANDLE NO-UNDO.
+    REPEAT:
+        CREATE QUERY h.
+        IF VALID-HANDLE(h) THEN DELETE OBJECT h.
+        LEAVE.
+    END.
+END PROCEDURE.
+";
+    assert!(check(run, src).is_empty());
+}

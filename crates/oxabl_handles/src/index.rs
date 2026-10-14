@@ -6,13 +6,14 @@
 use std::hash::{Hash, Hasher};
 
 use oxabl_ast::{
-    NodeId, OnAction, OnKind, ParameterDirection, ParameterType, Statement, StatementKind as SK,
+    DataType, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType, Statement,
+    StatementKind as SK, TypeSource,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::events::{self, Effect, Effects, Guards};
-use crate::model::EscapeKind;
+use crate::events::{self, Effect, Effects, Guards, Place, PoolRef};
+use crate::model::{EscapeKind, ObjectKind};
 
 /// How a variable name resolves from one unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,20 @@ impl Hash for Name<'_> {
             state.write_u8(b.to_ascii_lowercase());
         }
     }
+}
+
+/// What a call by name can run in this file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallableKind {
+    Procedure,
+    Function,
+    Method,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Callable {
+    kind: CallableKind,
+    unit: NodeId,
 }
 
 #[derive(Default)]
@@ -80,6 +95,13 @@ pub(crate) struct FileIndex<'a> {
     pub(crate) creating: Vec<NodeId>,
     /// Variable name to the units that free it.
     frees: FxHashMap<Name<'a>, SmallVec<[NodeId; 2]>>,
+    /// Procedures, functions and methods the file defines, by name.
+    callables: FxHashMap<Name<'a>, SmallVec<[Callable; 1]>>,
+    /// The parameter names of each unit, in order.
+    params: FxHashMap<NodeId, Vec<&'a str>>,
+    /// Variables and parameters declared `AS MEMPTR`, by name for the whole
+    /// file: the target of a `COPY-LOB` is a MEMPTR when its name is one.
+    memptrs: FxHashSet<Name<'a>>,
     /// The main block creates an unnamed widget pool.
     pub(crate) main_pool: bool,
     /// The file's class has `USE-WIDGET-POOL`.
@@ -98,6 +120,9 @@ impl<'a> FileIndex<'a> {
             scopes: FxHashMap::default(),
             creating: Vec::new(),
             frees: FxHashMap::default(),
+            callables: FxHashMap::default(),
+            params: FxHashMap::default(),
+            memptrs: FxHashSet::default(),
             main_pool: false,
             class_pool: false,
             named_pools: FxHashMap::default(),
@@ -147,11 +172,81 @@ impl<'a> FileIndex<'a> {
         Some(EscapeKind::Unresolved)
     }
 
-    /// Whether a unit other than `unit` frees a variable called `name`.
+    /// The unit whose definitions the name `name` resolves to from `unit`;
+    /// `None` when no unit of the file defines it.
+    fn defining_unit(&self, unit: NodeId, name: &str) -> Option<NodeId> {
+        let key = Name(name);
+        let mut cur = Some(unit);
+        while let Some(u) = cur {
+            let scope = self.scopes.get(&u)?;
+            if scope.defs.contains_key(&key) {
+                return Some(u);
+            }
+            cur = scope.parent;
+        }
+        None
+    }
+
+    /// Whether a unit other than `unit` frees the variable `name` resolves to
+    /// from `unit`. A same-named variable of another unit is a different
+    /// variable.
     pub(crate) fn freed_elsewhere(&self, unit: NodeId, name: &str) -> bool {
-        self.frees
-            .get(&Name(name))
-            .is_some_and(|units| units.iter().any(|&u| u != unit))
+        let here = self.defining_unit(unit, name);
+        self.frees.get(&Name(name)).is_some_and(|units| {
+            units
+                .iter()
+                .any(|&u| u != unit && self.defining_unit(u, name) == here)
+        })
+    }
+
+    /// Whether a call by name that passes a handle as its `pos`-th argument
+    /// hands it to a unit of this file that frees that parameter: `None` when
+    /// the file defines nothing of that name.
+    pub(crate) fn callee_frees(&self, kind: CallableKind, name: &str, pos: usize) -> Option<bool> {
+        let mut defined = false;
+        // A call with no receiver in a class may name one of its methods.
+        let named = |c: &&Callable| {
+            c.kind == kind || (kind == CallableKind::Function && c.kind == CallableKind::Method)
+        };
+        for c in self.callables.get(&Name(name))?.iter().filter(named) {
+            defined = true;
+            let freed = self
+                .params
+                .get(&c.unit)
+                .and_then(|p| p.get(pos))
+                .and_then(|p| self.frees.get(&Name(p)))
+                .is_some_and(|units| units.contains(&c.unit));
+            if freed {
+                return Some(true);
+            }
+        }
+        defined.then_some(false)
+    }
+
+    /// A `COPY-LOB ... TO m` of a MEMPTR allocates it; any other target
+    /// changes nothing this crate tracks.
+    fn resolve_copy_lob(&self, effects: &mut Effects<'a>) {
+        for e in effects.iter_mut() {
+            if let Effect::CopyLob { to, no_error } = *e
+                && let Some(var) = to.filter(|t| self.memptrs.contains(&Name(t)))
+            {
+                *e = Effect::Create {
+                    kind: ObjectKind::Memptr,
+                    into: Some(Place::Var(var)),
+                    pool: PoolRef::Default,
+                    no_error,
+                    weak: true,
+                };
+            }
+        }
+        effects.retain(|e| !matches!(e, Effect::CopyLob { .. }));
+    }
+
+    fn callable(&mut self, name: &'a Identifier, kind: CallableKind, unit: NodeId) {
+        self.callables
+            .entry(Name(&name.name))
+            .or_default()
+            .push(Callable { kind, unit });
     }
 
     fn define(&mut self, unit: NodeId, name: &'a str, class: VarClass) {
@@ -181,7 +276,8 @@ impl<'a> FileIndex<'a> {
     }
 
     fn visit(&mut self, s: &'a Statement, unit: NodeId, member: bool, src: &str) {
-        let effects = events::effects(s, src);
+        let mut effects = events::effects(s, src);
+        self.resolve_copy_lob(&mut effects);
         if !effects.is_empty() {
             self.note(s.id, unit, &effects);
         }
@@ -203,6 +299,7 @@ impl<'a> FileIndex<'a> {
         match &s.kind {
             SK::VariableDeclaration {
                 name,
+                type_source,
                 extent,
                 is_new_shared,
                 is_shared,
@@ -218,6 +315,9 @@ impl<'a> FileIndex<'a> {
                 } else {
                     VarClass::Local
                 };
+                if is_memptr(type_source) {
+                    self.memptrs.insert(Name(&name.name));
+                }
                 self.define(unit, &name.name, class);
             }
             SK::DefineParameter {
@@ -229,29 +329,50 @@ impl<'a> FileIndex<'a> {
                     | ParameterType::Handle { name, .. }
                     | ParameterType::Buffer { name, .. } => name,
                 };
+                if let ParameterType::Variable { type_source, .. } = param_type
+                    && is_memptr(type_source)
+                {
+                    self.memptrs.insert(Name(&name.name));
+                }
+                self.params.entry(unit).or_default().push(&name.name);
                 let class = match direction {
                     ParameterDirection::Input => VarClass::Local,
                     _ => VarClass::OutputParameter,
                 };
                 self.define(unit, &name.name, class);
             }
-            SK::Procedure { body, .. } | SK::Destructor { body } => {
+            SK::Procedure { name, body, .. } => {
+                self.callable(name, CallableKind::Procedure, s.id);
+                self.unit(s.id, unit, |ix| ix.walk(body, s.id, false, src));
+            }
+            SK::Destructor { body } => {
                 self.unit(s.id, unit, |ix| ix.walk(body, s.id, false, src));
             }
             SK::Function {
+                name,
                 body,
                 prototype_parameters,
                 ..
             } => {
+                self.callable(name, CallableKind::Function, s.id);
                 self.unit(s.id, unit, |ix| {
                     ix.walk(prototype_parameters, s.id, false, src);
                     ix.walk(body, s.id, false, src);
                 });
             }
             SK::Method {
-                parameters, body, ..
+                name,
+                parameters,
+                body,
+                ..
+            } => {
+                self.callable(name, CallableKind::Method, s.id);
+                self.unit(s.id, unit, |ix| {
+                    ix.walk(parameters, s.id, false, src);
+                    ix.walk(body, s.id, false, src);
+                });
             }
-            | SK::Constructor {
+            SK::Constructor {
                 parameters, body, ..
             } => {
                 self.unit(s.id, unit, |ix| {
@@ -366,6 +487,10 @@ impl<'a> FileIndex<'a> {
             }
         }
     }
+}
+
+fn is_memptr(t: &TypeSource) -> bool {
+    matches!(t, TypeSource::Explicit(DataType::Memptr))
 }
 
 fn trigger_block(kind: &OnKind) -> Option<&Statement> {

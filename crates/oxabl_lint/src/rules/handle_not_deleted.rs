@@ -57,8 +57,12 @@
 //!   (`memptr-not-freed`, HD004);
 //! - a class instance, which the AVM collects;
 //! - an object whose lifetime the analysis cannot see to the end: a statement
-//!   the parser skips that names the handle, a dynamic call that receives it,
-//!   or an include that was not expanded.
+//!   the parser skips that names the handle, a dynamic call that receives it, a
+//!   call the file does not define (`RUN other.p (INPUT h)`, `RUN p IN hLib
+//!   (h)`, a function or method of another file) that receives it, a delete of
+//!   something that is not the handle itself, or an include that was not
+//!   expanded. An `INPUT` handle passed to a procedure or function of the file
+//!   that deletes its parameter counts as a delete.
 //!
 //! `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` counts as a delete on every
 //! path: a live object has a valid handle.
@@ -121,9 +125,14 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
             .holder
             .as_deref()
             .map_or("The handle".to_string(), |h| format!("`{h}`"));
+        let (verb, statement) = if o.kind == ObjectKind::Automation {
+            ("Release", "RELEASE OBJECT")
+        } else {
+            ("Delete", "DELETE OBJECT")
+        };
         let help = format!(
-            "Delete the {} with `DELETE OBJECT` on every path that leaves {}, or move the delete \
-             into a `FINALLY` block. If the caller owns the object, hand it back in an `OUTPUT` \
+            "{verb} the {} with `{statement}` on every path that leaves {}, or move it into a \
+             `FINALLY` block. If the caller owns the object, hand it back in an `OUTPUT` \
              parameter.",
             noun(o.kind),
             scope(unit),

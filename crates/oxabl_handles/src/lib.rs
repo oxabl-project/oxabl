@@ -15,7 +15,8 @@
 //!   `CREATE "Excel.Application"`, `CREATE VALUE(...)`, ... ([`ObjectKind`]);
 //! * a persistent procedure: `RUN p PERSISTENT SET h`. Without `SET` no handle
 //!   is kept, and the verdict is [`Verdict::Uncaptured`];
-//! * a MEMPTR: `SET-SIZE(m) = n`, where `n` is not the literal 0;
+//! * a MEMPTR: `SET-SIZE(m) = n`, where `n` is not the literal 0, or
+//!   `COPY-LOB ... TO m` for a variable declared `AS MEMPTR`;
 //! * a class instance (`NEW`, `DYNAMIC-NEW`). The AVM counts references to
 //!   these and frees them, so they get [`Verdict::Collected`] and are not
 //!   followed. Reference cycles are out of scope.
@@ -35,7 +36,8 @@
 //!
 //! * a [`Free`] runs on a holder: `DELETE OBJECT`, `DELETE PROCEDURE`,
 //!   `DELETE WIDGET`, `RELEASE OBJECT`, `SET-SIZE(m) = 0`, `APPLY "CLOSE"` (a
-//!   persistent procedure deletes itself on CLOSE by convention), or
+//!   persistent procedure deletes itself on CLOSE by convention; no other
+//!   kind of object is freed by it), or
 //!   `DELETE WIDGET-POOL` of the pool the object is in;
 //! * the unit exits with the object live. If it escaped on that path, the
 //!   object [`Verdict::Escapes`]; if it sits in a widget pool this procedure
@@ -54,8 +56,12 @@
 //! `PARENT`), `ADD-SUPER-PROCEDURE`, a constructor argument, an
 //! `INPUT-OUTPUT` argument, a `PUBLISH` argument or a `SUBSCRIBE PROCEDURE`. A handle derived
 //! from the object (`h:DEFAULT-BUFFER-HANDLE`, `h:GET-BUFFER-HANDLE(n)`) that is returned or
-//! stored in such a place hands the object over too ([`EscapeKind::DerivedHandle`]). An `INPUT` argument of `RUN`, a function or a
-//! method is a use, not an escape: the callee borrows the handle.
+//! stored in such a place hands the object over too ([`EscapeKind::DerivedHandle`]). An `INPUT` argument
+//! of `RUN`, a function or a method is passed to a callee. If the file defines
+//! the callee and it frees that parameter, the object escapes
+//! ([`EscapeKind::FreedByCallee`]). If the file defines it and it does not, or
+//! the callee is a built-in, the callee borrows the handle: a use. Any other
+//! callee is [`OpaqueReason::Callee`].
 //!
 //! Each [`Leak`] has its path. A path is *normal* when it raises no condition
 //! and takes no `THROW` or `RETURN ERROR`. An object whose every leak is not
@@ -69,7 +75,9 @@
 //! skips that names a holder, a dynamic call with a holder as argument
 //! (`RUN VALUE`, `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`), an unexpanded include
 //! or a statement left empty by parse recovery while the object lives, or
-//! `RUN destroy... IN h` and a MEMPTR passed `OUTPUT`.
+//! `RUN destroy... IN h`, a MEMPTR passed `OUTPUT`, a handle passed to a callee
+//! the file does not define, a delete of an operand that is not the holder
+//! itself, or a walk that runs past its work budget (one object, or the file).
 //!
 //! # Widget pools
 //!
@@ -167,9 +175,10 @@ pub fn analyze_file_with(
         .collect();
     units.sort_unstable();
     units.dedup();
+    let budget = analysis::Budget::new();
     let units = units
         .into_iter()
-        .map(|u| analysis::analyze_unit(&builder.build(u), &index, source))
+        .map(|u| analysis::analyze_unit(&builder.build(u), &index, source, &budget))
         .filter(|u| !u.objects.is_empty() || !u.pools.is_empty())
         .collect();
     FileHandles { units }

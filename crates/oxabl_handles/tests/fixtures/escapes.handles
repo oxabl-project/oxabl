@@ -21,7 +21,8 @@ unit u0 main
   query @29 leaks holder=h pool=unscoped
     escape published @30
     leak exit-return @30 abnormal via raise(error)@30 path 29>30
-  query @32 leaks holder=h pool=unscoped
+  query @32 unknown holder=h pool=unscoped
+    opaque callee @33
     leak exit-return @33 normal path 32>33
 unit u1 function make
   query @37 escapes holder=hNew pool=unscoped
