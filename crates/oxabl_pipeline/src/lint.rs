@@ -82,8 +82,8 @@ use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, RuleSelection, UnresolvedInclude, collect_from_expanded_selecting,
-    expand_source_with,
+    ExpandedFile, RuleSelection, UnresolvedInclude, analyze_from_expanded,
+    collect_from_expanded_selecting, expand_source_with,
 };
 
 use oxabl_common::{
@@ -91,7 +91,7 @@ use oxabl_common::{
 };
 use oxabl_index::{
     BatchIndex, BranchKind, ConditionalBranch, ConditionalInclude, DirectIncludeInput, EdgeInputs,
-    IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
+    IncludeOriginInput, NestedUnresolvedIncludeInput, SharedProducers, UnreadableIncludeInput,
     UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
@@ -531,6 +531,41 @@ impl<'a> LintPipeline<'a> {
         self
     }
 
+    /// Answer this run's `SHARED` producer questions from a map built once for
+    /// the whole file set, instead of scanning that set in this run's own index.
+    ///
+    /// A client that analyses on several threads has one run handle per thread,
+    /// because the index is not `Sync`. [`with_known_files`](Self::with_known_files)
+    /// on each makes every thread scan the whole file set. Build the map once with
+    /// [`shared_producers`](Self::shared_producers), then give every thread's
+    /// handle a borrow of it. The answers are the same as the seeded ones.
+    ///
+    /// Apply to the **run** handle, before any lookup.
+    #[must_use]
+    pub fn with_shared_producers(mut self, producers: &'a SharedProducers) -> Self {
+        self.index = match self.index {
+            RunIndex::Owned(index) => {
+                RunIndex::Owned(Box::new((*index).with_shared_producers(producers)))
+            }
+            // As `with_known_files`: only the run handle owns an index to change,
+            // and a supplied index owns its own file set.
+            RunIndex::Shared(index) => RunIndex::Shared(index),
+            RunIndex::External(index) => RunIndex::External(index),
+        };
+        self
+    }
+
+    /// Scan `files` for the `SHARED` names they produce, under this run's
+    /// preprocessor configuration. The map is `Sync`: build it once and pass it to
+    /// every run handle with [`with_shared_producers`](Self::with_shared_producers).
+    ///
+    /// Reads every file once. A client that scans on several threads can do the
+    /// per-file work itself with [`oxabl_index::definitions_in`] and join the
+    /// results with [`SharedProducers::from_definitions`].
+    pub fn shared_producers(&self, files: &[PathBuf]) -> SharedProducers {
+        SharedProducers::build(self.fs, files, &self.config.preprocessor)
+    }
+
     /// Answer this run's cross-file questions from `index` instead of building a
     /// batch cache.
     ///
@@ -630,6 +665,16 @@ impl<'a> LintPipeline<'a> {
 
     /// The typed dependency edge set for `source`, analysed as this handle's file.
     ///
+    /// Runs the preprocessor and the semantic analysis and no lint rule, since an
+    /// edge needs the model and nothing a rule reports; see
+    /// [`analyze`](Self::analyze). Of the edge kinds, a
+    /// [`SharedProducer`](oxabl_index::EdgeKind::SharedProducer) edge is complete
+    /// only when the run's index knows the files that can produce the name: seed
+    /// it with [`with_known_files`](Self::with_known_files) or
+    /// [`with_shared_producers`](Self::with_shared_producers). An unseeded index
+    /// answers from what the run has looked at so far, so that edge depends on
+    /// the order of the run.
+    ///
     /// The whole-workspace reverse pass calls this per file. Guarded, unlike
     /// [`expand`](Self::expand) and [`collect`](Self::collect): one unparseable or
     /// panicking file out of fourteen thousand must cost that file's edges and
@@ -652,7 +697,9 @@ impl<'a> LintPipeline<'a> {
     ///
     /// The callback runs inside the per-file panic guard. This lets the daemon
     /// collect searchable declarations without analysing every workspace file a
-    /// second time, while one bad file still costs only that file's rows.
+    /// second time, while one bad file still costs only that file's rows. The
+    /// result it receives is [`analyze`](Self::analyze)'s: the model, and no lint
+    /// finding.
     pub fn edge_set_with(
         &self,
         source: &str,
@@ -660,7 +707,7 @@ impl<'a> LintPipeline<'a> {
     ) -> Result<oxabl_index::DependencyEdges, String> {
         let outcome = catch_panic(|| {
             let expansion = self.expand(source);
-            let result = self.collect(&expansion);
+            let result = self.analyze(&expansion);
             let edges = self.edges_of(&expansion, &result)?;
             inspect(&expansion, &result);
             Ok(edges)
@@ -846,6 +893,44 @@ impl<'a> LintPipeline<'a> {
     /// [`expand`](Self::expand).
     pub fn collect(&self, expansion: &Expansion) -> LintResult {
         self.collect_selecting(expansion, RuleSelection::All)
+    }
+
+    /// Phase two without the findings: parse and analyze an [`Expansion`] into a
+    /// [`LintResult`] that holds the semantic model and the parse state, with no
+    /// lint rule run and no diagnostic collected.
+    ///
+    /// For a client that reads the model alone, such as the dependency edge set
+    /// ([`edge_set`](Self::edge_set)). The model is the one
+    /// [`collect`](Self::collect) builds, except that no expression has a type:
+    /// the type-check pass is skipped, and an edge does not read it.
+    /// [`LintResult::all`] is empty, whatever the source holds, so do not read it
+    /// as "no findings".
+    ///
+    /// **Unguarded on purpose** (KTD6), like [`collect`](Self::collect).
+    pub fn analyze(&self, expansion: &Expansion) -> LintResult {
+        let dependency_paths = expansion.dependency_paths().to_vec();
+        let Ok(expanded) = &expansion.inner else {
+            return LintResult::computed(None, CollectedDiagnostics::default(), dependency_paths);
+        };
+        let source_context = if self.file().is_some_and(is_include_fragment) {
+            SourceContext::IncludeFragment
+        } else {
+            SourceContext::CompilationUnit
+        };
+        let (semantic, parse_recovered) = self.with_run_index(|index| {
+            analyze_from_expanded(
+                expanded,
+                &self.config.schema,
+                self.config.schema_loaded,
+                index,
+                source_context,
+            )
+        });
+        let diagnostics = CollectedDiagnostics {
+            diagnostics: Vec::new(),
+            parse_recovered,
+        };
+        LintResult::computed(Some(Box::new(semantic)), diagnostics, dependency_paths)
     }
 
     /// Whether any context-free rule is enabled for this handle's file.

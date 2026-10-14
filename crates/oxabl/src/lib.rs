@@ -466,8 +466,8 @@ pub mod style {
 pub mod pipeline {
     pub use oxabl_pipeline::{
         ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, LintPipeline,
-        LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID, position,
-        resolve_from_config,
+        LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID, SharedProducers,
+        definitions_in, position, resolve_from_config,
     };
 }
 
