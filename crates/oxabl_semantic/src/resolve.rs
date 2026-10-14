@@ -36,8 +36,10 @@ use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 
 use crate::index::ImportCandidate;
+use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
     LocateKind, Located, MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType,
@@ -147,7 +149,9 @@ pub enum UnresolvedReason {
     /// an inherited member the class declares but does not expose here
     /// (`PRIVATE`, or `PROTECTED` from outside the chain); a member lookup that
     /// came up empty against a class the index *did* answer for; and a file that
-    /// was located but could not be read or parsed.
+    /// was located but could not be read or parsed. One local case shares it:
+    /// an unqualified field name that two records in scope both have. ABL
+    /// rejects it as ambiguous, and the resolver does not pick one.
     ///
     /// Split out of the reason that became [`Self::AbsentFromWorkspace`], which
     /// named all of these plus the genuine misses. That was harmless while every
@@ -163,6 +167,36 @@ pub enum UnresolvedReason {
     /// [`Self::AbsentFromWorkspace`] so a rule can report the absent name
     /// without ever reporting the unknowable one.
     Unknowable,
+}
+
+/// Outcome of [`ResolveWalker::resolve_bare_block_field`].
+enum BareField {
+    /// Exactly one record at the nearest level has the field.
+    Field(SymbolId),
+    /// Two or more records at that level have it.
+    Ambiguous,
+    /// A buffer whose table is unknown may have it too.
+    Unknown,
+    /// No record in scope has it.
+    Absent,
+}
+
+/// A field found in a record: a temp-table's declared `FIELD`, or a schema
+/// field with its type.
+#[derive(Clone)]
+enum FieldHit {
+    Declared(SymbolId),
+    Schema(TableId, ResolvedType),
+}
+
+/// How a name matched the fields of one record.
+enum RecordField {
+    Exact(FieldHit),
+    /// A unique abbreviation.
+    Prefix(FieldHit),
+    /// An abbreviation of two or more fields.
+    Ambiguous,
+    NotFound,
 }
 
 /// Whether the last segment of a `RUN` target carries an extension. The last
@@ -363,13 +397,17 @@ impl<'a> Walker<'a> {
             StatementKind::DefineTempTable {
                 name,
                 fields,
+                like_table,
                 is_new_shared,
                 is_shared,
                 is_new_global_shared,
                 ..
             } => {
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
-                self.declare_temp_table(stmt, scope, name, fields, flags);
+                let like = like_table
+                    .as_ref()
+                    .and_then(|t| self.record_source_of(t, scope));
+                self.declare_temp_table(stmt, scope, name, fields, like, flags);
             }
 
             // ---- Buffer ---------------------------------------------------
@@ -384,24 +422,16 @@ impl<'a> Walker<'a> {
                 is_new_global_shared,
                 ..
             } => {
-                // Link the buffer to its backing schema table so the resolve
-                // pass can validate and type field accesses. Temp-table
-                // targets have no schema table.
-                let table_id = match target {
-                    BufferTarget::Table(table) => self.schema_table_id(table),
-                    BufferTarget::TempTable(_) => None,
+                // Link the buffer to the record it reads, so the resolve pass
+                // can validate and type field accesses through it.
+                let source = match target {
+                    BufferTarget::Table(table) => self.record_source_of(table, scope),
+                    BufferTarget::TempTable(table) => self
+                        .record_source_of(table, scope)
+                        .filter(|s| matches!(s, RecordSource::TempTable(_))),
                 };
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
-                self.declare(
-                    stmt,
-                    scope,
-                    name,
-                    NamespaceId::Buffers,
-                    SymbolKind::Buffer,
-                    None,
-                    flags,
-                    table_id,
-                );
+                self.declare_buffer(stmt, scope, name, flags, source);
             }
 
             // ---- Dataset / Data-source ------------------------------------
@@ -838,18 +868,9 @@ impl<'a> Walker<'a> {
             }
             ParameterType::Buffer { name, target } => {
                 // `DEFINE PARAMETER BUFFER b FOR <table>` — link the backing
-                // schema table like any other buffer-introducing site.
-                let table_id = self.schema_table_id(target);
-                self.declare(
-                    stmt,
-                    scope,
-                    name,
-                    NamespaceId::Buffers,
-                    SymbolKind::Buffer,
-                    None,
-                    dir_flag,
-                    table_id,
-                );
+                // record like any other buffer-introducing site.
+                let source = self.record_source_of(target, scope);
+                self.declare_buffer(stmt, scope, name, dir_flag, source);
             }
             ParameterType::Handle { kind, name, .. } => {
                 // All four handle-ish forms declare the same way — a `HANDLE`
@@ -879,6 +900,7 @@ impl<'a> Walker<'a> {
         scope: ScopeId,
         name: &Identifier,
         fields: &[oxabl_ast::TempTableField],
+        like: Option<RecordSource>,
         flags: SymbolFlags,
     ) {
         let tt_sym = self.declare(
@@ -900,10 +922,11 @@ impl<'a> Walker<'a> {
         // twice in the *same* temp-table still raises SEM0001 within this
         // scope. Namespace `Values` is a simplification for v1 — Phase 4a
         // will likely route field lookups through the temp-table symbol.
-        if tt_sym.is_none() {
+        let Some(tt_sym) = tt_sym else {
             return;
-        }
+        };
         let field_scope = self.tree.push(ScopeKind::TempTable, scope, stmt.id);
+        self.symbols.record_temp_table(tt_sym, field_scope, like);
         for field in fields {
             let data_type = match &field.type_source {
                 TypeSource::Explicit(dt) => {
@@ -942,6 +965,47 @@ impl<'a> Walker<'a> {
             SymbolFlags::empty(),
             None,
         );
+    }
+
+    /// Declare a `Buffer` symbol reading from `source`.
+    fn declare_buffer(
+        &mut self,
+        stmt: &Statement,
+        scope: ScopeId,
+        name: &Identifier,
+        flags: SymbolFlags,
+        source: Option<RecordSource>,
+    ) {
+        let table_id = match source {
+            Some(RecordSource::Schema(tid)) => Some(tid),
+            _ => None,
+        };
+        let sym = self.declare(
+            stmt,
+            scope,
+            name,
+            NamespaceId::Buffers,
+            SymbolKind::Buffer,
+            None,
+            flags,
+            table_id,
+        );
+        if let (Some(sym), Some(RecordSource::TempTable(tt))) = (sym, source) {
+            self.symbols.record_buffer_for(sym, tt);
+        }
+    }
+
+    /// The record a table name in a `FOR` / `LIKE` clause names: a temp-table
+    /// visible from `scope` wins over a schema table of the same name, as in
+    /// ABL.
+    fn record_source_of(&self, table: &Identifier, scope: ScopeId) -> Option<RecordSource> {
+        let atom = fold_atom(&table.name);
+        if let Some(sym) = self.tree.resolve(scope, NamespaceId::Buffers, &atom)
+            && self.symbols.get(sym).kind == SymbolKind::TempTable
+        {
+            return Some(RecordSource::TempTable(sym));
+        }
+        self.schema_table_id(table).map(RecordSource::Schema)
     }
 
     /// Case-insensitive schema lookup of a table-name identifier. Returns
@@ -3463,13 +3527,25 @@ impl<'a> ResolveWalker<'a> {
         // expression and lands here). Gated on `Buffers` being a candidate
         // namespace so call names (Functions/Procedures) never resolve as
         // fields, and tried only after local values, buffers, built-ins and
-        // schema table names, so a real declaration always wins.
-        if namespaces.contains(&NamespaceId::Buffers)
-            && let Some(fsym) = self.resolve_bare_block_field(&atom, id, scope)
-        {
-            self.references.insert(expr_id, Resolution::Resolved(fsym));
-            self.bump_count(fsym, mode);
-            return;
+        // schema table names, so a real declaration always wins. An ambiguous
+        // or unverifiable field is recorded with a reason no rule reports.
+        if namespaces.contains(&NamespaceId::Buffers) {
+            let reason = match self.resolve_bare_block_field(&atom, id, scope) {
+                BareField::Field(fsym) => {
+                    self.references.insert(expr_id, Resolution::Resolved(fsym));
+                    self.bump_count(fsym, mode);
+                    return;
+                }
+                BareField::Ambiguous => Some(UnresolvedReason::PresentButUnusable),
+                BareField::Unknown if self.ctx.schema_loaded => Some(UnresolvedReason::External),
+                BareField::Unknown => Some(UnresolvedReason::NoSchema),
+                BareField::Absent => None,
+            };
+            if let Some(reason) = reason {
+                self.references
+                    .insert(expr_id, Resolution::Unresolved { name: atom, reason });
+                return;
+            }
         }
         self.references.insert(
             expr_id,
@@ -4093,44 +4169,125 @@ impl<'a> ResolveWalker<'a> {
         lookup
     }
 
-    /// Try to resolve a bare identifier as an unqualified field of a buffer
-    /// visible from `scope`. Walks every buffer bound in `scope` and its
-    /// ancestors (`FOR EACH` implicit buffers, `DEFINE BUFFER`, synthesized
-    /// default buffers) and, for the first whose backing schema table has a
-    /// field matching `atom`, synthesizes (or reuses) the typed `Field`
-    /// symbol. Requires a loaded schema — field validation needs the table's
-    /// column list; without one there is nothing to check the name against.
-    /// A field shared by two in-scope buffers is technically ambiguous in
-    /// ABL, but resolving to the first match is the right call for lint: it
-    /// avoids a false `undefined-symbol`, and this pass does not adjudicate
-    /// ambiguity.
+    /// Resolve a bare identifier as an unqualified field of a record in scope.
+    ///
+    /// ABL lets a field be named without its buffer when the compiler can tell
+    /// which buffer is meant. The rule modelled here:
+    ///
+    /// * **Candidates** are the buffers bound in `scope` and its ancestors:
+    ///   `FOR EACH` buffers (bound in the loop's block scope, so the record
+    ///   phrase's buffer is the nearest), `DEFINE BUFFER` and parameter
+    ///   buffers, and temp-tables, whose default buffer is always available.
+    ///   Schema-backed and temp-table-backed buffers are searched alike.
+    /// * **The nearest level wins.** Scopes are searched innermost first; the
+    ///   first scope where any candidate has the field decides.
+    /// * **Ambiguity is never resolved.** Two different records at that level
+    ///   with the field is a compile error in ABL, so the answer is
+    ///   [`BareField::Ambiguous`], not the first match. Buffers for the same
+    ///   record count once. An exact name beats an abbreviation.
+    /// * **An unknown record blocks the answer.** A buffer whose table is not in
+    ///   the schema (or with no schema loaded) may have the field too, so a hit
+    ///   at or beyond its level is [`BareField::Unknown`].
     fn resolve_bare_block_field(
         &mut self,
         atom: &OxablAtom,
         id: &Identifier,
         scope: ScopeId,
-    ) -> Option<SymbolId> {
-        if !self.ctx.schema_loaded {
-            return None;
-        }
-        // `ctx.schema` is a shared reference copied out of `self`, keeping the
-        // field lookup independent of the `&mut self` synthesis below.
-        let schema = self.ctx.schema;
-        let mut hit: Option<(TableId, ResolvedType)> = None;
-        'scan: for sid in self.tree.ancestors(scope) {
-            let buffers = &self.tree.get(sid).bindings[NamespaceId::Buffers.index()];
-            for (_name, bsym) in buffers.iter() {
-                if let Some(tid) = self.symbols.get(bsym).table_id
-                    && let Some(table) = schema.get_by_id(tid)
-                    && let FieldResolution::Unique(f) = table.resolve_field(atom)
-                {
-                    hit = Some((tid, ResolvedType::from_schema_field(f)));
-                    break 'scan;
+    ) -> BareField {
+        let mut opaque = false;
+        for sid in self.tree.ancestors(scope) {
+            let mut records: SmallVec<[RecordSource; 4]> = SmallVec::new();
+            for (_name, bsym) in self.tree.get(sid).bindings[NamespaceId::Buffers.index()].iter() {
+                match self.symbols.record_source(bsym) {
+                    Some(r) if !records.contains(&r) => records.push(r),
+                    Some(_) => {}
+                    None => opaque = true,
                 }
             }
+            let mut exact: SmallVec<[FieldHit; 1]> = SmallVec::new();
+            let mut prefix: SmallVec<[FieldHit; 1]> = SmallVec::new();
+            let mut ambiguous = false;
+            for r in records {
+                match self.record_field(r, atom) {
+                    RecordField::Exact(hit) => exact.push(hit),
+                    RecordField::Prefix(hit) => prefix.push(hit),
+                    RecordField::Ambiguous => ambiguous = true,
+                    RecordField::NotFound => {}
+                }
+            }
+            let (hits, ambiguous) = if exact.is_empty() {
+                (prefix, ambiguous)
+            } else {
+                (exact, false)
+            };
+            if hits.is_empty() && !ambiguous {
+                continue;
+            }
+            if opaque {
+                return BareField::Unknown;
+            }
+            return match (hits.as_slice(), ambiguous) {
+                ([hit], false) => BareField::Field(self.field_hit_symbol(hit.clone(), atom, id)),
+                _ => BareField::Ambiguous,
+            };
         }
-        let (tid, ty) = hit?;
-        Some(self.synth_field_symbol(tid, atom, ty, id))
+        BareField::Absent
+    }
+
+    /// Look `atom` up among the fields of `record`. A schema table takes an
+    /// exact name, then a unique leading abbreviation. A temp-table takes its
+    /// own `FIELD`s and the fields its `LIKE` copies, by exact name only.
+    fn record_field(&self, record: RecordSource, atom: &OxablAtom) -> RecordField {
+        match record {
+            RecordSource::Schema(tid) => {
+                let Some(table) = self.ctx.schema.get_by_id(tid) else {
+                    return RecordField::NotFound;
+                };
+                match table.resolve_field(atom) {
+                    FieldResolution::Unique(f) => {
+                        let hit = FieldHit::Schema(tid, ResolvedType::from_schema_field(f));
+                        if f.name == *atom {
+                            RecordField::Exact(hit)
+                        } else {
+                            RecordField::Prefix(hit)
+                        }
+                    }
+                    FieldResolution::Ambiguous => RecordField::Ambiguous,
+                    FieldResolution::NotFound => RecordField::NotFound,
+                }
+            }
+            RecordSource::TempTable(tt) => self
+                .temp_table_field(tt, atom, 0)
+                .map_or(RecordField::NotFound, RecordField::Exact),
+        }
+    }
+
+    fn temp_table_field(&self, tt: SymbolId, atom: &OxablAtom, depth: u8) -> Option<FieldHit> {
+        if let Some(fields) = self.symbols.temp_table_fields(tt)
+            && let Some(sym) = self.tree.get(fields).get_in(NamespaceId::Values, atom)
+        {
+            return Some(FieldHit::Declared(sym));
+        }
+        // A `LIKE` chain is short; the bound only guards a malformed cycle.
+        if depth > 8 {
+            return None;
+        }
+        match self.symbols.temp_table_like(tt)? {
+            RecordSource::TempTable(like) => self.temp_table_field(like, atom, depth + 1),
+            RecordSource::Schema(tid) => {
+                let f = self.ctx.schema.get_by_id(tid)?.get_field(atom)?;
+                Some(FieldHit::Schema(tid, ResolvedType::from_schema_field(f)))
+            }
+        }
+    }
+
+    /// The symbol a field hit binds to: the temp-table's own `FIELD` symbol, or
+    /// the synthesized symbol for a schema field.
+    fn field_hit_symbol(&mut self, hit: FieldHit, atom: &OxablAtom, id: &Identifier) -> SymbolId {
+        match hit {
+            FieldHit::Declared(sym) => sym,
+            FieldHit::Schema(tid, ty) => self.synth_field_symbol(tid, atom, ty, id),
+        }
     }
 
     /// Walk an expression used as a method/member *receiver*. Unresolved
