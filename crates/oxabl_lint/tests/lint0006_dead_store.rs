@@ -175,3 +175,105 @@ DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
         "LINT0002 must stay silent: {diags:?}"
     );
 }
+
+/// `(line, message)` of each LINT0006 finding, with line numbers 1-based.
+fn dead_store_lines(src: &str) -> Vec<(usize, String)> {
+    let diags = lint_all(src, LintSeverityMap::new());
+    of_code(&diags, LINT0006)
+        .into_iter()
+        .map(|(_, msg, at)| (src[..*at as usize].matches('\n').count() + 1, msg.clone()))
+        .collect()
+}
+
+#[test]
+fn message_update_target_reports_at_its_own_line() {
+    let src = "\
+DEFINE VARIABLE v-answer AS LOGICAL NO-UNDO.
+MESSAGE \"Proceed?\" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE v-answer.
+";
+    let found = dead_store_lines(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 2, "{found:?}");
+    assert!(found[0].1.contains("v-answer"), "{found:?}");
+}
+
+#[test]
+fn persistent_and_async_run_handles_report_at_the_run() {
+    let src = "\
+DEFINE VARIABLE h-per AS HANDLE NO-UNDO.
+DEFINE VARIABLE h-async AS HANDLE NO-UNDO.
+RUN lib.p PERSISTENT SET h-per.
+RUN slow.p ASYNCHRONOUS SET h-async.
+";
+    let found = dead_store_lines(src);
+    let lines: Vec<usize> = found.iter().map(|f| f.0).collect();
+    assert_eq!(lines, vec![3, 4], "{found:?}");
+}
+
+#[test]
+fn buffer_compare_result_reports_at_the_statement() {
+    let src = "\
+DEFINE VARIABLE v-res AS CHARACTER NO-UNDO.
+DEFINE BUFFER b1 FOR customer.
+DEFINE BUFFER b2 FOR customer.
+BUFFER-COMPARE b1 TO b2 SAVE RESULT IN v-res.
+";
+    let found = dead_store_lines(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 4, "{found:?}");
+}
+
+#[test]
+fn created_handle_reports_at_the_create() {
+    let src = "\
+DEFINE VARIABLE h-qry AS HANDLE NO-UNDO.
+CREATE QUERY h-qry.
+";
+    let found = dead_store_lines(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 2, "{found:?}");
+}
+
+#[test]
+fn a_write_inside_an_on_trigger_reports_inside_the_trigger() {
+    let src = "\
+DEFINE VARIABLE v-n AS INTEGER NO-UNDO.
+ON CHOOSE OF btn-ok ANYWHERE DO:
+  v-n = 1.
+END.
+";
+    let found = dead_store_lines(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 3, "{found:?}");
+}
+
+#[test]
+fn a_statement_position_target_resolves_in_its_own_routine() {
+    // The dead `v-x` is in `a`. The `v-x` of `b` is read. Resolving by spelling
+    // alone would report the write in `b`.
+    let src = "\
+PROCEDURE b:
+  DEFINE VARIABLE v-x AS LOGICAL NO-UNDO.
+  MESSAGE \"?\" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE v-x.
+  IF v-x THEN RETURN.
+END PROCEDURE.
+PROCEDURE a:
+  DEFINE VARIABLE v-x AS LOGICAL NO-UNDO.
+  MESSAGE \"?\" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE v-x.
+END PROCEDURE.
+";
+    let found = dead_store_lines(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 8, "{found:?}");
+}
+
+#[test]
+fn a_write_inside_a_skipped_statement_is_unknown_not_dead() {
+    // `UPDATE`, `SET`, `PROMPT-FOR` and `IMPORT` are not modelled: their targets
+    // are written, but the rule cannot tell, so it stays silent.
+    for form in ["UPDATE v-x.", "SET v-x.", "PROMPT-FOR v-x.", "IMPORT v-x."] {
+        let src = format!("DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nv-x = 1.\n{form}\n");
+        let found = dead_store_lines(&src);
+        assert!(found.is_empty(), "{form}: {found:?}");
+    }
+}
