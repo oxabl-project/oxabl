@@ -899,6 +899,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether the label colon at the 2nd non-comment token ahead is followed by
+    /// a block keyword that opens a labelled block (`lbl: DO:`).
+    ///
+    /// A block keyword written directly against the colon and used like a member
+    /// (`o:Do(a)`, `o:For = 1`, `o:Repeat.`) is a member name, not a label.
+    fn block_keyword_follows_label_colon(&self) -> bool {
+        let colon = self.peek_nth_non_comment(2);
+        let keyword = self.peek_nth_non_comment(3);
+        matches!(keyword.kind, Kind::Do | Kind::Repeat | Kind::KwFor)
+            && !(keyword.start == colon.end
+                && matches!(
+                    self.peek_nth_non_comment(4).kind,
+                    Kind::LeftParen | Kind::Period | Kind::Equals
+                ))
+    }
+
     pub fn at_end(&self) -> bool {
         self.check(Kind::Eof)
     }
@@ -1268,6 +1284,22 @@ impl<'a> Parser<'a> {
                 kind,
                 Kind::Begins | Kind::Contains | Kind::Matches | Kind::Current | Kind::Null
             )
+    }
+
+    /// Whether `token` can name a member after a `:` or `::` that ended at
+    /// `colon_end`.
+    ///
+    /// A colon followed by whitespace ends a block header (`CASE x: WHEN ...`),
+    /// so only the targeted `can_be_member_name` kinds may follow one with a gap.
+    /// A word written directly against the colon is a member name whatever
+    /// keyword it spells (`o:Fetch(a)`, `JsonDataType:NULL`).
+    fn is_member_name(&self, token: &Token, colon_end: usize) -> bool {
+        Self::can_be_member_name(token.kind)
+            || (token.start == colon_end
+                && self.source[token.start..token.end]
+                    .bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_'))
     }
 
     /// Returns true if the given Kind is "word-like" — an identifier, keyword, or

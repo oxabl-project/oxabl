@@ -294,8 +294,8 @@ impl Parser<'_> {
                 // DoubleColon (::) is ABL's dynamic buffer field access operator.
                 let colon_end = self.tokens[self.current].end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_member_name(t.kind)
-                        && !self.source[colon_end..t.start].contains('\n')
+                    !self.source[colon_end..t.start].contains('\n')
+                        && self.is_member_name(t, colon_end)
                 });
                 if !next_is_member {
                     break;
@@ -320,10 +320,10 @@ impl Parser<'_> {
         // Postfix left-nesting: the node spans from the object's start through
         // the closing `)`/member token (ast-invariants §5).
         let lo = object.span.start;
-        self.advance(); // consumes ':'
+        let colon_end = self.advance().end; // consumes ':'
 
         // Expect identifier after ':'
-        if !Self::can_be_member_name(self.peek().kind) {
+        if !self.is_member_name(self.peek(), colon_end) {
             return Err(ParseError {
                 message: format!(
                     "Expected identifier after ':', found {:?}",
