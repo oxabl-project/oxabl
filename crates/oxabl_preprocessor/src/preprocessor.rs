@@ -2675,6 +2675,20 @@ mod tests {
     }
 
     #[test]
+    fn the_unknown_value_in_a_condition_is_evaluated() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF ? = ? &THEN\nequal\n&ENDIF\n\
+                      &IF \"x\" NE ? &THEN\nnot-unknown\n&ENDIF\n\
+                      &IF 1 > ? &THEN\nwrong\n&ENDIF\n\
+                      &IF NOT (1 > ?) &THEN\nwrong-not\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "equal\nnot-unknown\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
     fn an_unmodelled_function_in_a_condition_is_reported_once_per_condition() {
         let fs = make_fs(&[]);
         let pp = Preprocessor::new(&fs, &[]);

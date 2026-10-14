@@ -34,6 +34,9 @@ pub struct Evaluation {
 /// - literals: strings (with an ignored `:U`-style attribute), integers, decimals
 ///   (compared only), `TRUE`/`YES`, `FALSE`/`NO`
 /// - `=` `<>` `<` `>` `<=` `>=` (and `EQ` `NE` `LT` `GT` `LE` `GE`), `BEGINS`, `MATCHES`
+/// - `?`, the unknown value: equal only to itself, unknown in every other
+///   comparison. `NOT`, `AND` and `OR` are three-valued, and an unknown result
+///   selects no branch
 /// - `NOT`, `AND`, `OR`, parentheses
 /// - `+` `-` `*` `MODULO` on integers, `+` on strings
 /// - `DEFINED(name)` (0 undefined, 1 `&GLOBAL-DEFINE`, 2 include argument,
@@ -118,6 +121,8 @@ enum CondToken {
     Comma,
     LParen,
     RParen,
+    /// `?`, the unknown value.
+    Question,
     StringLit(String),
     Number(i64),
     /// A number with a fractional part, kept as written.
@@ -137,6 +142,7 @@ fn describe(token: &CondToken) -> String {
         CondToken::Star => "'*'".into(),
         CondToken::Slash => "'/'".into(),
         CondToken::Comma => "','".into(),
+        CondToken::Question => "'?'".into(),
         CondToken::LParen => "'('".into(),
         CondToken::RParen => "')'".into(),
         other => format!("{other:?}").to_ascii_uppercase(),
@@ -153,6 +159,7 @@ fn ends_value(token: Option<&CondToken>) -> bool {
                 | CondToken::Number(_)
                 | CondToken::Decimal(_)
                 | CondToken::Ident(_)
+                | CondToken::Question
                 | CondToken::True
                 | CondToken::False
         )
@@ -177,6 +184,10 @@ fn tokenize(input: &str) -> Vec<CondToken> {
             }
             b',' => {
                 tokens.push(CondToken::Comma);
+                i += 1;
+            }
+            b'?' => {
+                tokens.push(CondToken::Question);
                 i += 1;
             }
             b'+' => {
@@ -443,6 +454,8 @@ enum CondValue {
     Bool(bool),
     Str(String),
     Num(i64),
+    /// The ABL unknown value, `?`. As a logical it is the third truth value.
+    Null,
     /// A number known only to be above zero: `DEFINED` of a name that is more
     /// than one of a global, a scoped define and an include argument.
     Positive,
@@ -496,23 +509,29 @@ impl<'a> CondParser<'a> {
         }
     }
 
-    /// A value in a place that needs a truth value.
-    fn truth(&mut self, v: &CondValue) -> bool {
+    /// A value in a place that needs a truth value; `None` is unknown.
+    fn tri(&mut self, v: &CondValue) -> Option<bool> {
         match v {
-            CondValue::Bool(b) => *b,
-            CondValue::Num(n) => *n != 0,
-            CondValue::Dec(d) => !d.is_zero(),
-            CondValue::Unknown => false,
-            CondValue::Positive => true,
+            CondValue::Bool(b) => Some(*b),
+            CondValue::Num(n) => Some(*n != 0),
+            CondValue::Dec(d) => Some(!d.is_zero()),
+            CondValue::Unknown => Some(false),
+            CondValue::Null => None,
+            CondValue::Positive => Some(true),
             CondValue::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
-                "yes" | "true" => true,
-                "no" | "false" => false,
+                "yes" | "true" => Some(true),
+                "no" | "false" => Some(false),
                 _ => {
                     self.gap("a string used as a logical".into());
-                    !s.is_empty()
+                    Some(!s.is_empty())
                 }
             },
         }
+    }
+
+    /// The branch a value selects: an unknown one selects none.
+    fn truth(&mut self, v: &CondValue) -> bool {
+        self.tri(v).unwrap_or(false)
     }
 
     /// OR has lowest precedence.
@@ -536,30 +555,32 @@ impl<'a> CondParser<'a> {
         if self.peek() != Some(&op) {
             return first;
         }
-        let mut result = self.truth(&first);
-        let mut settled = result == settling && self.guesses == guesses;
+        let mut result = self.tri(&first);
+        let mut settled = result == Some(settling) && self.guesses == guesses;
         while self.eat(&op) {
             let (gaps, guesses) = (self.gaps.len(), self.guesses);
             let rhs = operand(self);
-            let rhs = self.truth(&rhs);
+            let rhs = self.tri(&rhs);
             if settled {
                 self.gaps.truncate(gaps);
             } else {
-                settled = rhs == settling && self.guesses == guesses;
+                settled = rhs == Some(settling) && self.guesses == guesses;
             }
-            result = if settling {
-                result || rhs
-            } else {
-                result && rhs
+            // Three-valued: an operand of the settling value decides the result,
+            // otherwise an unknown operand leaves it unknown.
+            result = match (result, rhs) {
+                (Some(a), _) | (_, Some(a)) if a == settling => Some(settling),
+                (Some(_), Some(_)) => Some(!settling),
+                _ => None,
             };
         }
-        CondValue::Bool(result)
+        logical(result)
     }
 
     fn parse_not(&mut self) -> CondValue {
         if self.eat(&CondToken::Not) {
             let v = self.parse_not();
-            return CondValue::Bool(!self.truth(&v));
+            return logical(self.tri(&v).map(|b| !b));
         }
         self.parse_comparison()
     }
@@ -579,7 +600,7 @@ impl<'a> CondParser<'a> {
             ) => {
                 let op = self.advance().unwrap().clone();
                 let rhs = self.parse_additive();
-                CondValue::Bool(self.compare(&lhs, &op, &rhs))
+                logical(self.compare(&lhs, &op, &rhs))
             }
             _ => lhs,
         }
@@ -663,6 +684,7 @@ impl<'a> CondParser<'a> {
                 result
             }
             CondToken::StringLit(s) => CondValue::Str(s),
+            CondToken::Question => CondValue::Null,
             CondToken::Number(n) => CondValue::Num(n),
             CondToken::Decimal(text) => match Decimal::parse(&text) {
                 Some(d) => CondValue::Dec(d),
@@ -740,9 +762,22 @@ impl<'a> CondParser<'a> {
         }
     }
 
-    fn compare(&mut self, lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> bool {
+    /// `None` when the comparison is unknown, which only an unknown operand makes.
+    fn compare(&mut self, lhs: &CondValue, op: &CondToken, rhs: &CondValue) -> Option<bool> {
         if matches!(lhs, CondValue::Unknown) || matches!(rhs, CondValue::Unknown) {
-            return false;
+            return Some(false);
+        }
+        // `?` equals only `?`; ordering and pattern tests against it are unknown.
+        let unknowns = [lhs, rhs]
+            .iter()
+            .filter(|v| matches!(v, CondValue::Null))
+            .count();
+        if unknowns > 0 {
+            return match op {
+                CondToken::Eq => Some(unknowns == 2),
+                CondToken::Neq => Some(unknowns != 2),
+                _ => None,
+            };
         }
         for (positive, other, flipped) in [(lhs, rhs, false), (rhs, lhs, true)] {
             if !matches!(positive, CondValue::Positive) {
@@ -751,7 +786,7 @@ impl<'a> CondParser<'a> {
             // Only a comparison with zero does not need the number itself.
             let (Some(0), true) = (as_number(other), !matches!(other, CondValue::Positive)) else {
                 self.gap("DEFINED of a name that is defined in more than one way".into());
-                return false;
+                return Some(false);
             };
             let op = match (op, flipped) {
                 (CondToken::Lt, true) => &CondToken::Gt,
@@ -760,9 +795,9 @@ impl<'a> CondParser<'a> {
                 (CondToken::Ge, true) => &CondToken::Le,
                 (op, _) => op,
             };
-            return matches!(op, CondToken::Neq | CondToken::Gt | CondToken::Ge);
+            return Some(matches!(op, CondToken::Neq | CondToken::Gt | CondToken::Ge));
         }
-        match (type_of(lhs), type_of(rhs)) {
+        Some(match (type_of(lhs), type_of(rhs)) {
             // The AVM rejects it. The branch is a guess, read the loose way.
             (Some(a), Some(b)) if a != b => {
                 self.gap(format!(
@@ -777,8 +812,13 @@ impl<'a> CondParser<'a> {
                 (CondValue::Str(l), CondValue::Str(r)) => compare_text(l, op, r),
                 _ => compare_values(lhs, op, rhs),
             },
-        }
+        })
     }
+}
+
+/// A truth value as a [`CondValue`].
+fn logical(truth: Option<bool>) -> CondValue {
+    truth.map_or(CondValue::Null, CondValue::Bool)
 }
 
 /// The data type of a value, as far as a comparison cares.
@@ -804,7 +844,7 @@ fn type_of(v: &CondValue) -> Option<ValueType> {
         CondValue::Str(_) => Some(ValueType::Text),
         CondValue::Num(_) | CondValue::Dec(_) => Some(ValueType::Number),
         CondValue::Bool(_) => Some(ValueType::Logical),
-        CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -897,7 +937,7 @@ fn as_number(v: &CondValue) -> Option<i64> {
         CondValue::Num(n) => Some(*n),
         CondValue::Str(s) => s.trim().parse().ok(),
         CondValue::Bool(b) => Some(i64::from(*b)),
-        CondValue::Dec(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Dec(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -906,7 +946,7 @@ fn as_decimal(v: &CondValue) -> Option<Decimal> {
         CondValue::Dec(d) => Some(d.clone()),
         CondValue::Num(n) => Decimal::parse(&n.to_string()),
         CondValue::Str(s) => Decimal::parse(s),
-        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -916,7 +956,7 @@ fn as_string(v: &CondValue) -> String {
         CondValue::Num(n) => n.to_string(),
         CondValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
         CondValue::Dec(d) => d.text.clone(),
-        CondValue::Positive | CondValue::Unknown => String::new(),
+        CondValue::Positive | CondValue::Unknown | CondValue::Null => String::new(),
     }
 }
 
@@ -929,7 +969,7 @@ fn text(v: &CondValue) -> Option<String> {
         CondValue::Str(s) => Some(s.clone()),
         CondValue::Num(n) => Some(n.to_string()),
         CondValue::Dec(d) => Some(d.text.clone()),
-        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -937,7 +977,11 @@ fn int(v: &CondValue) -> Option<i64> {
     match v {
         CondValue::Num(n) => Some(*n),
         CondValue::Str(s) => s.trim().parse().ok(),
-        CondValue::Bool(_) | CondValue::Dec(_) | CondValue::Positive | CondValue::Unknown => None,
+        CondValue::Bool(_)
+        | CondValue::Dec(_)
+        | CondValue::Positive
+        | CondValue::Unknown
+        | CondValue::Null => None,
     }
 }
 
@@ -969,7 +1013,7 @@ fn call(name: &str, args: &[CondValue]) -> Option<CondValue> {
             CondValue::Bool(b) => Some(CondValue::Bool(*b)),
             CondValue::Num(n) => Some(CondValue::Bool(*n != 0)),
             CondValue::Positive => Some(CondValue::Bool(true)),
-            CondValue::Dec(_) | CondValue::Unknown => None,
+            CondValue::Dec(_) | CondValue::Unknown | CondValue::Null => None,
             CondValue::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "yes" | "true" => Some(CondValue::Bool(true)),
                 "no" | "false" => Some(CondValue::Bool(false)),
@@ -1594,7 +1638,72 @@ mod tests {
     fn an_unmodelled_call_swallows_its_arguments() {
         let e = eval(r#"SEARCH("a,b.i") = ? OR TRUE"#);
         assert!(e.value);
-        assert_eq!(e.gaps.len(), 2);
+        assert_eq!(e.gaps, [Gap::Unmodelled("the function SEARCH".into())]);
+    }
+
+    #[test]
+    fn the_unknown_value_equals_only_itself() {
+        assert!(exact("? = ?"));
+        assert!(!exact("? <> ?"));
+        assert!(!exact(r#""a" = ?"#));
+        assert!(exact(r#""a" <> ?"#));
+        assert!(!exact("1 = ?"));
+        assert!(exact("? <> 1"));
+        assert!(!exact("TRUE = ?"));
+        assert!(exact(r#"LENGTH("a") NE ?"#));
+        assert!(exact("12.5 ne ?"));
+        assert!(exact("-1 <> ?"));
+        assert!(exact(r#"? EQ ?"#));
+    }
+
+    #[test]
+    fn any_other_comparison_with_the_unknown_value_is_false() {
+        for condition in [
+            "1 < ?",
+            "1 > ?",
+            "1 <= ?",
+            "? >= 1",
+            "? < ?",
+            "? >= ?",
+            r#""a" BEGINS ?"#,
+            r#"? MATCHES "*""#,
+        ] {
+            assert!(!exact(condition), "{condition}");
+        }
+    }
+
+    #[test]
+    fn the_unknown_value_is_a_third_truth_value() {
+        // An unknown comparison stays unknown through NOT, so no branch is taken.
+        assert!(!exact("NOT (1 < ?)"));
+        assert!(!exact("NOT ?"));
+        assert!(!exact("?"));
+        assert!(exact("NOT ? OR TRUE"));
+        assert!(exact("? OR TRUE"));
+        assert!(exact("TRUE OR ?"));
+        assert!(!exact("? AND FALSE"));
+        assert!(!exact("FALSE AND ?"));
+        assert!(!exact("? AND TRUE"));
+        assert!(!exact("? OR FALSE"));
+        assert!(!exact("NOT (? OR FALSE)"));
+        assert!(exact("NOT (? AND FALSE)"));
+        assert!(exact("NOT ((1 < ?) AND FALSE)"));
+    }
+
+    #[test]
+    fn the_unknown_value_in_a_function_or_arithmetic_is_a_gap() {
+        for condition in [
+            "? + 1 = 1",
+            "LENGTH(?) = 0",
+            r#"STRING(?) = "?""#,
+            "LOGICAL(?)",
+            "INTEGER(?) = 0",
+            "MAXIMUM(?, 1) = 1",
+        ] {
+            assert!(!gaps(condition).is_empty(), "{condition}");
+        }
+        // The leftover `?` after a complete expression is still reported.
+        assert_eq!(gaps(r#""a" = "a" ?"#).len(), 1);
     }
 
     #[test]
