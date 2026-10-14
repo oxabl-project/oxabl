@@ -72,6 +72,11 @@ pub struct RuleMeta {
     /// on a statement that an includer can change is lower confidence
     /// ([`fragment`](crate::fragment)).
     pub context_free: bool,
+    /// Whether a finding anchored in an include that the include's own run
+    /// cannot produce is reported at the `{...}` site in the includer, instead
+    /// of being dropped. The rule's answer needs the includer: it creates,
+    /// names or frees an object that the include alone does not see.
+    pub use_site_in_includer: bool,
 }
 
 impl RuleMeta {
@@ -92,6 +97,7 @@ impl RuleMeta {
             stability: Stability::Stable,
             requires_compilation_unit: false,
             context_free: false,
+            use_site_in_includer: false,
         }
     }
 
@@ -110,6 +116,13 @@ impl RuleMeta {
     /// Mark the rule as context-free.
     pub const fn context_free(mut self) -> Self {
         self.context_free = true;
+        self
+    }
+
+    /// Mark the rule's findings in an include as reportable at the use site
+    /// when the include's own run cannot produce them.
+    pub const fn reported_at_use_site(mut self) -> Self {
+        self.use_site_in_includer = true;
         self
     }
 
@@ -431,7 +444,8 @@ const fn handles_rule(
         RuleMeta::new(code, name, group, description)
             .with_default_severity(severity)
             .with_stability(Stability::Preview)
-            .context_free(),
+            .context_free()
+            .reported_at_use_site(),
         check,
     )
 }

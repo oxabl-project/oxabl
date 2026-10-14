@@ -4,15 +4,16 @@
 //!
 //! The tree's `oxabl.toml` is read as `check` reads it; the group is switched
 //! on in memory. Roots go through `LintPipeline::run`, and the `.i` files of the
-//! tree through `run_context_free`, so a finding in an include is reported once,
-//! in the include.
+//! tree through `run_context_free`: the routing is the one `check` has, so a
+//! finding in an include is reported once, in the include, unless the include
+//! cannot show it alone. Then it is reported in the root, at the `{...}` site.
 //!
 //! # Usage
 //! ```text
 //! OXABL_HD_CORPUS=<dir> cargo run -p oxabl --release --example hd_corpus
 //! ```
 //! `OXABL_HD_FINDINGS=<file>` also writes every finding as a tab-separated line:
-//! rule, `path:line`, whether it is lower confidence, and the message.
+//! rule, `path:line`, whether it is lower confidence or at a use site, and the message.
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
@@ -30,6 +31,7 @@ struct Finding {
     path: PathBuf,
     line: usize,
     lowered: bool,
+    use_site: bool,
     message: String,
 }
 
@@ -104,6 +106,7 @@ fn main() {
                 line: starts.partition_point(|&s| s <= d.span.span.start as usize),
                 lowered: help.ends_with(oxabl_lint::fragment::FRAGMENT_NOTE)
                     || help.ends_with(oxabl_lint::fragment::INCLUDER_NOTE),
+                use_site: help.ends_with(oxabl_lint::fragment::USE_SITE_NOTE),
                 message: d.message.clone(),
             });
         }
@@ -121,11 +124,13 @@ fn main() {
     let mut table: BTreeMap<String, [usize; 5]> = BTreeMap::new();
     let mut totals = [0usize; 5];
     let mut lowered = [0usize; 5];
+    let mut use_site = [0usize; 5];
     for f in &findings {
         let i = RULES.iter().position(|r| *r == f.rule).unwrap();
         table.entry(top(&f.path)).or_default()[i] += 1;
         totals[i] += 1;
         lowered[i] += usize::from(f.lowered);
+        use_site[i] += usize::from(f.use_site);
     }
     println!("root                  {}", root.display());
     println!("roots checked         {}", roots.len());
@@ -168,6 +173,16 @@ fn main() {
         lowered[4],
         lowered.iter().sum::<usize>()
     );
+    println!(
+        "{:<24}{:>8}{:>8}{:>8}{:>8}{:>8}{:>9}",
+        "at a use site",
+        use_site[0],
+        use_site[1],
+        use_site[2],
+        use_site[3],
+        use_site[4],
+        use_site.iter().sum::<usize>()
+    );
     println!("wall time             {wall:.2?}");
 
     if let Some(out) = std::env::var_os("OXABL_HD_FINDINGS") {
@@ -180,7 +195,13 @@ fn main() {
                 f.rule,
                 f.path.display(),
                 f.line,
-                if f.lowered { "lowered" } else { "-" },
+                if f.use_site {
+                    "use-site"
+                } else if f.lowered {
+                    "lowered"
+                } else {
+                    "-"
+                },
                 f.message
             )
             .expect("write findings");

@@ -115,6 +115,12 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
         let strict = m.group.starts_with("strict.");
         assert!(!m.description.is_empty(), "{}", m.code);
         assert_eq!(m.context_free, strict, "{}", m.code);
+        assert_eq!(
+            m.use_site_in_includer,
+            m.group == "strict.handles",
+            "{}",
+            m.code
+        );
         let stability = if strict {
             Stability::Preview
         } else {

@@ -336,10 +336,35 @@ files.
 ### Handle rules in includes (M2)
 
 HD001 to HD005 are not context-free in the strict sense: whether an object leaks can depend on the
-includer. They are registered as context-free anyway, so that they follow the shipped M1 route:
-a finding whose create or delete sits in an include is reported once, in the include, and a root's own
-run drops it. The analysis of a root runs over the expanded text, so a root that includes a create
-and frees it later has no finding.
+includer. They are registered as context-free, so that they follow the shipped M1 route: a finding
+whose create or delete sits in an include is reported once, in the include, when the include is checked
+alone. The analysis of a root runs over the expanded text, so the root sees the create in an include
+and the delete after it together. A root's finding whose anchor sits in an include is therefore not
+dropped at once. It is routed (`RuleMeta::use_site_in_includer`, set for the five rules):
+
+- The root run keeps the finding aside, with the include file, the anchor in the include's own bytes,
+  and the root's outermost `{...}` site (`CollectedDiagnostics::include_findings`).
+- `LintPipeline::run` runs the include alone (`run_context_free`, as a walk does). If that run has the
+  same rule at the same anchor, the include reports it, and the root stays silent. This is the "never
+  both" rule of recommendation 3.
+- Otherwise the include cannot see the finding. Either it creates an object whose variable the root
+  defines (alone, the name does not resolve, so the object escapes), or it deletes or overwrites an
+  object that the root creates (alone, there is no create). The root reports it at the `{...}` site, with "(in file.i:line, reached through this include)" in the message (the path
+  is relative to the working directory when it lies below it) and
+  `oxabl_lint::fragment::USE_SITE_NOTE` at the end of the help. The finding is not autofixable. Its
+  baseline key is the includer's path, as for any other finding of the root.
+- The run of one include is made once per run handle, however many roots include it.
+- An include whose own configuration has no context-free rule on is never run alone, and its findings
+  are dropped with it. This follows the per-directory overrides: a rule that the user turned off for the
+  include is not shown at the use site.
+
+Confidence: high that the two cases of the review (a create that nothing deletes, a delete of an object
+that the root creates) are reported. Medium for the comparison: it is by rule and anchor, so a finding
+that the include shows alone with another anchor is reported twice. Limits: the include has to be
+readable through the same file system and path that the preprocessor used. The editor and the daemon
+(`collect`, the incremental path) do not run the includes, so they do not show these findings. An include
+that nobody walks (given as one file to `check`, outside the walked directory, or with another extension)
+still counts as "shown alone", so the root stays silent about a finding that the include would show.
 
 An include that is checked alone cannot see its includer. Its findings are therefore lower confidence
 in two cases, with the help ending in `oxabl_lint::fragment::FRAGMENT_NOTE` (and not autofixable):
