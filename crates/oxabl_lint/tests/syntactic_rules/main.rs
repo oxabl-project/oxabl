@@ -9,6 +9,7 @@
 mod cl001_run_value;
 mod cl002_dynamic_invoke;
 mod cl005_shared_state;
+mod corpus;
 mod tx006_missing_no_undo;
 
 use oxabl_common::{Diagnostic, FileId};
