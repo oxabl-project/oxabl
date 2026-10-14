@@ -12400,3 +12400,24 @@ fn a_do_block_accepts_transaction_after_its_on_phrases() {
         assert!(*transaction, "{source}");
     }
 }
+
+#[test]
+fn a_method_accepts_the_package_protected_access_modifier() {
+    for source in [
+        "METHOD PACKAGE-PROTECTED VOID m():\nEND METHOD.",
+        "METHOD PACKAGE-PRIVATE VOID m():\nEND METHOD.",
+        "METHOD STATIC PACKAGE-PROTECTED INTEGER m():\n  RETURN 1.\nEND METHOD.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Method { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+    let stmts = assert_parses_clean("METHOD PACKAGE-PROTECTED VOID m():\nEND METHOD.");
+    let StatementKind::Method { access, .. } = &stmts[0].kind else {
+        unreachable!()
+    };
+    assert_eq!(*access, AccessModifier::PackageProtected);
+}

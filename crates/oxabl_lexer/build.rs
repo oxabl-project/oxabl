@@ -435,6 +435,7 @@ fn main() {
             "overlay",
             "override",
             "package-private",
+            "package-protected",
             "page",
             "page-bot",
             "page-bottom",

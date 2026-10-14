@@ -1009,7 +1009,11 @@ impl Parser<'_> {
                 && (p.check_at(1, Kind::Property)
                     || matches!(
                         p.peek_at(1).kind,
-                        Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+                        Kind::Public
+                            | Kind::Private
+                            | Kind::Protected
+                            | Kind::PackagePrivate
+                            | Kind::PackageProtected
                     ))
             {
                 p.advance();
@@ -4374,7 +4378,12 @@ impl Parser<'_> {
         // (e.g., `function name char private (input p as char):`)
         if matches!(
             self.peek().kind,
-            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate | Kind::KwStatic
+            Kind::Public
+                | Kind::Private
+                | Kind::Protected
+                | Kind::PackagePrivate
+                | Kind::PackageProtected
+                | Kind::KwStatic
         ) {
             self.advance();
         }
@@ -5035,7 +5044,11 @@ impl Parser<'_> {
                 is_override = true;
             } else if matches!(
                 self.peek().kind,
-                Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+                Kind::Public
+                    | Kind::Private
+                    | Kind::Protected
+                    | Kind::PackagePrivate
+                    | Kind::PackageProtected
             ) {
                 // Re-parse access modifier that appears after qualifier flags
                 // (e.g. "METHOD OVERRIDE PROTECTED")
@@ -5219,6 +5232,7 @@ impl Parser<'_> {
                         | Kind::Private
                         | Kind::Protected
                         | Kind::PackagePrivate
+                        | Kind::PackageProtected
                 ) {
                     self.parse_expression().ok();
                 }
@@ -5230,7 +5244,11 @@ impl Parser<'_> {
         // Parse GET accessor (with optional leading access modifier, e.g. "protected get.")
         if matches!(
             self.peek().kind,
-            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+            Kind::Public
+                | Kind::Private
+                | Kind::Protected
+                | Kind::PackagePrivate
+                | Kind::PackageProtected
         ) && self.check_at(1, Kind::Get)
         {
             self.advance(); // consume access modifier
@@ -5286,7 +5304,11 @@ impl Parser<'_> {
         // Parse SET accessor (with optional leading access modifier, e.g. "private set.")
         if matches!(
             self.peek().kind,
-            Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+            Kind::Public
+                | Kind::Private
+                | Kind::Protected
+                | Kind::PackagePrivate
+                | Kind::PackageProtected
         ) && self.check_at(1, Kind::Set)
         {
             self.advance(); // consume access modifier

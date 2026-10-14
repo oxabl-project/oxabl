@@ -433,6 +433,10 @@ keyword_type = "Option"
 name = "PACKAGE-PRIVATE"
 keyword_type = "Option"
 
+[[add]]
+name = "PACKAGE-PROTECTED"
+keyword_type = "Option"
+
 # Member qualifiers
 [[add]]
 name = "ABSTRACT"

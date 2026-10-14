@@ -1035,6 +1035,7 @@ impl<'a> Parser<'a> {
                     | Kind::Private
                     | Kind::Protected
                     | Kind::PackagePrivate
+                    | Kind::PackageProtected
                     | Kind::Abstract
                     | Kind::Final
                     | Kind::Override
@@ -1563,6 +1564,10 @@ impl<'a> Parser<'a> {
             Kind::PackagePrivate => {
                 self.advance();
                 Some(AccessModifier::PackagePrivate)
+            }
+            Kind::PackageProtected => {
+                self.advance();
+                Some(AccessModifier::PackageProtected)
             }
             _ => None,
         }

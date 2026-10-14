@@ -296,6 +296,7 @@ pub enum Kind {
     Private,
     Protected,
     PackagePrivate,
+    PackageProtected,
     Abstract,
     Final,
     Override,
@@ -1588,6 +1589,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         17 => match lower {
             "get buffer handle" => Some(Kind::GetBufferHandle),
+            "package-protected" => Some(Kind::PackageProtected),
             "rcode-information" => Some(Kind::RcodeInformation),
             "reposition-to-row" => Some(Kind::RepositionToRow),
             "sax-uninitialized" => Some(Kind::SaxUninitialized),
