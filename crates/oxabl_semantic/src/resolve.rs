@@ -206,11 +206,18 @@ pub fn declare_pass(
 // Walker state
 // ---------------------------------------------------------------------------
 
+/// The `&IF` statement and arm index a declaration sits in, outermost first.
+type ArmPath = Vec<(NodeId, u32)>;
+
 struct Walker<'a> {
     ctx: &'a AnalysisContext<'a>,
     tree: ScopeTree,
     symbols: SymbolTable,
     diagnostics: Vec<Diagnostic>,
+    /// Arms of the `&IF` statements being walked.
+    arm_path: ArmPath,
+    /// Arm path of each symbol declared inside an `&IF` arm.
+    decl_arms: FxHashMap<SymbolId, ArmPath>,
 }
 
 impl<'a> Walker<'a> {
@@ -223,7 +230,21 @@ impl<'a> Walker<'a> {
             tree,
             symbols,
             diagnostics: Vec::new(),
+            arm_path: Vec::new(),
+            decl_arms: FxHashMap::default(),
         }
+    }
+
+    /// Whether `prior` and a declaration made now sit in different arms of one
+    /// `&IF`. Only one such arm is compiled, so they cannot collide.
+    fn in_exclusive_arm(&self, prior: SymbolId) -> bool {
+        self.decl_arms.get(&prior).is_some_and(|prior_path| {
+            prior_path.iter().any(|(pif, arm)| {
+                self.arm_path
+                    .iter()
+                    .any(|(cur_pif, cur_arm)| cur_pif == pif && cur_arm != arm)
+            })
+        })
     }
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
@@ -669,12 +690,13 @@ impl<'a> Walker<'a> {
             // branch are visible to the resolve pass. Ties into the plan's
             // PreprocIf invariant.
             StatementKind::PreprocIf(pif) => {
-                self.walk_block(&pif.then_branch, scope);
-                for (_, branch) in &pif.elseif_branches {
+                let arms = std::iter::once(&pif.then_branch)
+                    .chain(pif.elseif_branches.iter().map(|(_, branch)| branch))
+                    .chain(pif.else_branch.as_ref());
+                for (arm, branch) in (0u32..).zip(arms) {
+                    self.arm_path.push((stmt.id, arm));
                     self.walk_block(branch, scope);
-                }
-                if let Some(eb) = &pif.else_branch {
-                    self.walk_block(eb, scope);
+                    self.arm_path.pop();
                 }
             }
 
@@ -937,6 +959,10 @@ impl<'a> Walker<'a> {
             // re-declaring `session` or `error-status` is permitted in the
             // plan's v1 cut; Phase 4a may tighten this.
             let prior_kind = self.symbols.get(prior).kind;
+            if prior_kind != SymbolKind::BuiltIn && self.in_exclusive_arm(prior) {
+                // The first arm's declaration stands in for this one.
+                return None;
+            }
             if prior_kind != SymbolKind::BuiltIn {
                 // FUNCTION prototype + definition reconciliation (#69).
                 // Methods share SymbolKind::Function but never set PROTOTYPE,
@@ -980,6 +1006,9 @@ impl<'a> Walker<'a> {
         };
         let id = self.symbols.insert(symbol);
         self.tree.get_mut(scope).bindings[ns.index()].insert(atom, id);
+        if !self.arm_path.is_empty() {
+            self.decl_arms.insert(id, self.arm_path.clone());
+        }
         Some(id)
     }
 
@@ -1019,10 +1048,15 @@ impl<'a> Walker<'a> {
             .symbols
             .method_overloads(anchor)
             .map_or_else(|| vec![anchor], |members| members.to_vec());
-        if members
+        let matching: Vec<SymbolId> = members
             .iter()
-            .any(|member| self.symbols.method_signature(*member) == Some(signature.as_slice()))
-        {
+            .copied()
+            .filter(|member| self.symbols.method_signature(*member) == Some(signature.as_slice()))
+            .collect();
+        if !matching.is_empty() {
+            if matching.iter().all(|member| self.in_exclusive_arm(*member)) {
+                return None;
+            }
             let prior_span = self.symbols.get(anchor).name_span;
             self.diagnostics.push(
                 Diagnostic::error(
@@ -1056,6 +1090,9 @@ impl<'a> Walker<'a> {
         });
         self.symbols.record_method_signature(sym, signature);
         self.symbols.record_method_overload(anchor, sym);
+        if !self.arm_path.is_empty() {
+            self.decl_arms.insert(sym, self.arm_path.clone());
+        }
         Some(sym)
     }
 
@@ -9567,5 +9604,86 @@ mod db_qualifier_tests {
         assert_eq!(strip_db_qualifier(".Customer"), None);
         assert_eq!(strip_db_qualifier("dictdb."), None);
         assert_eq!(strip_db_qualifier(""), None);
+    }
+}
+
+#[cfg(test)]
+mod preproc_arm_tests {
+    use super::*;
+    use oxabl_common::FileId;
+    use oxabl_schema::Schema;
+
+    /// `SEM0001` messages from the declare pass over `source`, preprocessing off.
+    fn sem0001_messages(source: &str) -> Vec<String> {
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(
+            program.errors.is_empty(),
+            "fixture must parse cleanly: {:?}",
+            program.errors
+        );
+        let (_, _, diags, _) = declare_pass(&program.statements, &ctx);
+        diags
+            .into_iter()
+            .filter(|d| d.code.0 == diagnostics::SEM0001)
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn same_stream_in_both_preproc_arms_is_not_a_duplicate() {
+        let src =
+            "&IF DEFINED(F) <> 0 &THEN\nDEFINE STREAM sOut.\n&ELSE\nDEFINE STREAM sOut.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn same_variable_in_both_preproc_arms_is_not_a_duplicate() {
+        let src = "&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn same_variable_in_three_preproc_arms_is_not_a_duplicate() {
+        let src = "&IF DEFINED(A) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSEIF DEFINED(B) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn duplicate_inside_one_preproc_arm_still_fires() {
+        let src = "&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn preproc_arm_declaration_colliding_with_outside_one_still_fires() {
+        let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\n&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE w AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn declaration_after_preproc_if_collides_with_an_arm_declaration() {
+        let src = "&IF DEFINED(F) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn same_variable_in_nested_preproc_arms_is_not_a_duplicate() {
+        let src = "&IF DEFINED(A) <> 0 &THEN\n&IF DEFINED(B) <> 0 &THEN\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n&ELSE\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n&ENDIF\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn same_method_in_both_preproc_arms_is_not_a_duplicate() {
+        let src = "CLASS Foo:\n&IF DEFINED(F) <> 0 &THEN\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ELSE\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ENDIF\nEND CLASS.\n";
+        assert!(sem0001_messages(src).is_empty());
+    }
+
+    #[test]
+    fn duplicate_method_inside_one_preproc_arm_still_fires() {
+        let src = "CLASS Foo:\n&IF DEFINED(F) <> 0 &THEN\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ENDIF\nEND CLASS.\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
     }
 }
