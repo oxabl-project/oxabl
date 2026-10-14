@@ -12352,3 +12352,21 @@ fn a_label_directly_against_its_block_keyword_is_still_a_label() {
         );
     }
 }
+
+#[test]
+fn an_override_property_with_a_computed_getter_is_a_property_statement() {
+    for source in [
+        "DEFINE PROTECTED OVERRIDE PROPERTY P AS CHARACTER NO-UNDO\n  GET():\n    RETURN \"x\".\n  END GET.",
+        "DEFINE OVERRIDE PROTECTED PROPERTY P AS CHARACTER NO-UNDO GET.",
+        "DEFINE PUBLIC OVERRIDE PROPERTY P AS INTEGER NO-UNDO GET. SET.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        assert!(
+            matches!(program.statements[0].kind, StatementKind::Property { .. }),
+            "{source}: {:?}",
+            program.statements[0].kind
+        );
+    }
+}

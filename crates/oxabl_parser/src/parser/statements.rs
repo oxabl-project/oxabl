@@ -1002,9 +1002,25 @@ impl Parser<'_> {
             false
         };
 
+        // OVERRIDE restates an inherited property and may sit on either side of
+        // the access modifier; like ABSTRACT, it is not recorded.
+        let skip_override = |p: &mut Self| {
+            if p.check(Kind::Override)
+                && (p.check_at(1, Kind::Property)
+                    || matches!(
+                        p.peek_at(1).kind,
+                        Kind::Public | Kind::Private | Kind::Protected | Kind::PackagePrivate
+                    ))
+            {
+                p.advance();
+            }
+        };
+        skip_override(self);
+
         // OO-ABL: DEFINE [access] [STATIC] PROPERTY/DATASET/DATA-SOURCE ...
         // Check for access modifier before PROPERTY/VARIABLE/TEMP-TABLE
         let access = self.parse_access_modifier();
+        skip_override(self);
 
         // Check for STATIC after access modifier (or before it — both orders valid)
         let is_static = if self.check(Kind::KwStatic) {

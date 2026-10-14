@@ -53,3 +53,22 @@ END CLASS."#;
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].message.contains("Nope"), "{found:?}");
 }
+
+#[test]
+fn an_override_property_does_not_hide_the_members_declared_after_it() {
+    let workspace = [(BASE_PATH, BASE), (MIDDLE_PATH, MIDDLE)];
+    let child = r#"CLASS orders.child INHERITS orders.middle:
+    DEFINE PROTECTED OVERRIDE PROPERTY Level AS INTEGER NO-UNDO
+        GET():
+            RETURN 1.
+        END GET.
+    CONSTRUCTOR PUBLIC child():
+        MESSAGE Flag("x").
+    END CONSTRUCTOR.
+    METHOD PUBLIC VOID go():
+        MESSAGE Body() Flag("x").
+    END METHOD.
+END CLASS."#;
+    let found = lint0001_with_index(child, &workspace);
+    assert!(found.is_empty(), "unexpected LINT0001: {found:?}");
+}
