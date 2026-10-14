@@ -146,6 +146,24 @@ fn the_rebuild_set_of_a_leaf_is_itself() {
     );
 }
 
+// A file created into place rebuilds the files whose unresolved rows name it, and
+// what depends on those.
+#[test]
+fn the_rebuild_set_includes_the_owners_of_rows_naming_the_subject() {
+    let ws = Workspace::new(&[
+        ("hopeful.p", "{nowhere.i}\nMESSAGE 1.\n"),
+        ("caller.p", "{hopeful.p}\n"),
+        ("other.p", "MESSAGE 2.\n"),
+    ]);
+    let config = ws.config();
+    let graph = ws.graph(&config);
+
+    let rebuild = graph.rebuild_set(&Subject::file(proj("nowhere.i")));
+    assert!(rebuild.contains(&proj("hopeful.p")), "got {rebuild:?}");
+    assert!(rebuild.contains(&proj("caller.p")), "got {rebuild:?}");
+    assert!(!rebuild.contains(&proj("other.p")), "got {rebuild:?}");
+}
+
 // The rebuild set is the transitive closure, and it is a distinct answer from the
 // direct dependents.
 #[test]

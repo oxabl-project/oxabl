@@ -358,6 +358,29 @@ fn run_set(source: &str) -> oxabl_pipeline::DependencyEdges {
 }
 
 #[test]
+fn an_unclosed_generic_bracket_degrades_the_set_but_keeps_later_edges() {
+    let edges = run_set("DEFINE VARIABLE l AS List<pkg.Thing NO-UNDO.\nRUN sub.p.\n");
+
+    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+    assert!(
+        edges
+            .completeness()
+            .reasons()
+            .contains(&DegradedReason::ParseRecovered),
+        "got {:?}",
+        edges.completeness()
+    );
+    assert!(
+        edges.unresolved().iter().all(|row| row.name != "no-undo"),
+        "got {:?}",
+        edges.unresolved()
+    );
+
+    let edges = run_set("DEFINE VARIABLE l AS List<pkg.> NO-UNDO.\nRUN sub.p.\n");
+    assert_eq!(edges.of_kind(EdgeKind::ProgramReference).count(), 1);
+}
+
+#[test]
 fn a_run_through_a_handle_is_neither_an_edge_nor_a_row() {
     // `sub` is a real file beside the handle calls, so a lookup by name would
     // link it.
