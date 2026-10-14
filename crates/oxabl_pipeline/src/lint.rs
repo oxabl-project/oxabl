@@ -75,6 +75,7 @@
 //! clients (CLI text output, the browser wire shape) share one position helper
 //! instead.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
@@ -821,12 +822,17 @@ impl<'a> LintPipeline<'a> {
                 } else {
                     SourceContext::CompilationUnit
                 };
+                // Per-directory lint overrides apply only once the file is known.
+                let lint_severities = match self.file() {
+                    Some(path) => Cow::Owned(self.config.lint_severities.for_path(path)),
+                    None => Cow::Borrowed(&self.config.lint_severities),
+                };
                 let (semantic, diagnostics) = self.with_run_index(|index| {
                     collect_from_expanded_with_source_context(
                         expanded,
                         &self.config.schema,
                         self.config.schema_loaded,
-                        &self.config.lint_severities,
+                        &lint_severities,
                         index,
                         source_context,
                     )
@@ -891,11 +897,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    /// Spelled out rather than imported: this crate does not depend on
-    /// `oxabl_lint` directly — it reaches the rules through `oxabl_analyze` — and
-    /// a dev-dependency edge added for one string in one assertion would be a
-    /// worse trade than the literal.
-    const LINT0004: &str = "LINT0004";
+    use oxabl_lint::LINT0004;
 
     /// Silence the default panic hook for the duration of a deliberately
     /// panicking test, so a green run does not print a backtrace.
@@ -1257,6 +1259,45 @@ mod tests {
             .find(|d| d.diagnostic.code.0 == "LINT0002")
             .expect("LINT0002 present");
         assert_eq!(d.diagnostic.severity, Severity::Info);
+    }
+
+    #[test]
+    fn lint_overrides_apply_to_the_file_the_run_names() {
+        let parsed = oxabl_workspace::WorkspaceConfig::from_toml(
+            "[workspace]\nname = \"p\"\n\
+             [[workspace.lint.overrides]]\nfiles = [\"legacy\"]\nunused-variable = \"off\"\n\
+             [[workspace.lint.overrides]]\nfiles = [\"src/**/*.p\"]\nLINT0002 = \"error\"\n",
+        )
+        .unwrap();
+        let (config, warnings) = crate::resolve_from_config(
+            &parsed,
+            Path::new("/ws"),
+            &crate::ConfigOverrides::default(),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let fs = InMemoryFileSystem::new();
+        let run = LintPipeline::new(&config, &fs);
+        let src = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n";
+        let severity = |result: &LintResult| {
+            result
+                .all()
+                .find(|d| d.diagnostic.code.0 == "LINT0002")
+                .map(|d| d.diagnostic.severity)
+        };
+
+        assert_eq!(severity(&run.run(src)), Some(Severity::Warning), "no file");
+        assert_eq!(
+            severity(&run.with_file("/ws/other/a.p").run(src)),
+            Some(Severity::Warning)
+        );
+        assert_eq!(
+            severity(&run.with_file("/ws/legacy/deep/a.p").run(src)),
+            None
+        );
+        assert_eq!(
+            severity(&run.with_file("/ws/src/a/b.p").run(src)),
+            Some(Severity::Error)
+        );
     }
 
     #[test]

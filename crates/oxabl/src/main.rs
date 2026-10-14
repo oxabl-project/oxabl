@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+mod baseline;
+
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
 use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
@@ -34,8 +36,9 @@ enum Cli {
     /// A config error means an `oxabl.toml` this run could not **use** — which is
     /// broader than malformed TOML. Parsing is strict (unknown fields are
     /// rejected), so a syntactically valid file naming a key oxabl does not know —
-    /// a misspelled or not-yet-released `[workspace.lint]` rule, say — is a config
-    /// error too. Alone among the subcommands, `check` refuses to run on one rather
+    /// a misspelled `[workspace.style]` key, say — is a config error too. An
+    /// unknown `[workspace.lint]` rule or group name is only a warning: that one
+    /// entry is ignored and the rest of the table still applies. Alone among the subcommands, `check` refuses to run on one rather
     /// than degrading to defaults: those defaults would drop the project's
     /// `[workspace.lint]` severities, `off` included, so the gate would report
     /// findings for switched-off rules and could still exit 0 — a wrong answer
@@ -102,6 +105,25 @@ enum Cli {
         /// Suppress the format-drift channel: report lint findings only (R16).
         #[arg(long)]
         no_format: bool,
+
+        /// Do not report findings recorded in this baseline file, so the gate
+        /// fails only on new ones.
+        ///
+        /// A finding matches by rule code, workspace-relative path and a hash
+        /// of the flagged source line, so edits elsewhere in the file do not
+        /// unmatch it. Counts of new, baselined and stale (fixed) entries go to
+        /// stderr. A missing or unreadable file is a usage error (exit 2).
+        #[arg(long, value_name = "FILE")]
+        baseline: Option<PathBuf>,
+
+        /// Write every current finding to the `--baseline` file, then report
+        /// none of them.
+        ///
+        /// Entries for files outside this run are kept, and entries for fixed
+        /// findings are removed. Format drift and per-file failures still set
+        /// the exit code.
+        #[arg(long, requires = "baseline", conflicts_with = "no_lint")]
+        update_baseline: bool,
     },
     /// Walk a tree and report the parser's conformance: how many files parse,
     /// which ones fail and where, and the ranked error patterns behind the
@@ -389,6 +411,8 @@ fn main() -> ExitCode {
             schema,
             no_lint,
             no_format,
+            baseline,
+            update_baseline,
         } => run_check(
             &path,
             json,
@@ -400,6 +424,7 @@ fn main() -> ExitCode {
             schema.as_deref(),
             no_lint,
             no_format,
+            baseline.as_deref().map(|file| (file, update_baseline)),
         ),
         Cli::Conformance {
             path,
@@ -747,6 +772,10 @@ struct CheckJsonReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     fragment_roots: Vec<String>,
     failures: Vec<CheckJsonFailure>,
+    /// Present only with `--baseline`; `diagnostics` then holds new findings
+    /// only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline: Option<baseline::Report>,
 }
 
 /// One lint finding, carrying the pipeline's **byte** span and, when the span is
@@ -853,6 +882,7 @@ struct CheckJsonFailure {
 /// unguarded on purpose so the language server's cancellation can travel as an
 /// unwind; a non-incremental caller like this one wants the guard, and it is
 /// what makes "report and continue" possible at all.
+#[allow(clippy::too_many_arguments)]
 fn run_check(
     path: &Path,
     json_output: bool,
@@ -861,6 +891,7 @@ fn run_check(
     schema_path: Option<&Path>,
     no_lint: bool,
     no_format: bool,
+    baseline_file: Option<(&Path, bool)>,
 ) -> ExitCode {
     // Discovery through the shared walker: a named file is checked regardless of
     // extension, a directory is walked under the root-extension policy. A
@@ -899,11 +930,10 @@ fn run_check(
     // LSP keep degrading with a warning: none of them answers a pass/fail
     // question, so none of them can answer it wrongly.
     //
-    // "Could not use" is broader than "malformed TOML": `LintConfig` and
-    // `StyleGuide` deny unknown fields, so a syntactically valid file naming a key
-    // oxabl does not know — a typo'd or not-yet-released rule name — lands here
-    // too. That is the intended answer, for the same reason: the gate would
-    // otherwise run on a configuration the user never wrote.
+    // "Could not use" is broader than "malformed TOML": `StyleGuide` denies
+    // unknown fields, so a syntactically valid file naming a key oxabl does not
+    // know lands here too. An unknown lint rule or group name does not: it is a
+    // `ConfigWarning::Lint`, and the rest of `[workspace.lint]` still applies.
     //
     // Every other warning stays a warning. A `.df` that would not load, or a
     // `--schema` directory that matched nothing (A2), leaves the rest of the
@@ -918,6 +948,16 @@ fn run_check(
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
+
+    let mut baseline =
+        match baseline_file.map(|(file, update)| baseline::Run::open(file, update, path)) {
+            None => None,
+            Some(Ok(run)) => Some(run),
+            Some(Err(msg)) => {
+                eprintln!("error: {msg}");
+                return ExitCode::from(2);
+            }
+        };
 
     // Absolute spellings of the discovered files, for the index alone. The
     // display paths below stay exactly as the user typed them; these exist
@@ -1015,6 +1055,10 @@ fn run_check(
             } else {
                 reported
             };
+            let reported = match baseline.as_mut() {
+                Some(run) => run.filter(indexed_path, &source, reported),
+                None => reported,
+            };
             if !reported.diagnostics.is_empty() {
                 if !json_output {
                     let resolver =
@@ -1069,6 +1113,22 @@ fn run_check(
         }
     }
 
+    let baseline = match baseline.map(|run| run.finish(!no_lint)) {
+        None => None,
+        Some(Ok(report)) => {
+            surface_baseline(&report);
+            Some(report)
+        }
+        Some(Err(msg)) => {
+            eprintln!("error: {msg}");
+            failures.push(CheckJsonFailure {
+                path: baseline_file.map_or_else(String::new, |(f, _)| f.display().to_string()),
+                reason: msg,
+            });
+            None
+        }
+    };
+
     if json_output {
         let report = CheckJsonReport {
             // 2: `preproc_diagnostics` became `preproc`, matching `analyze`'s
@@ -1087,6 +1147,7 @@ fn run_check(
             unjudged_symbols: unjudged,
             fragment_roots,
             failures,
+            baseline,
         };
         match serde_json::to_string_pretty(&report) {
             Ok(s) => println!("{s}"),
@@ -1145,6 +1206,28 @@ fn run_check(
     }
 
     check_exit_code(diagnostics.len(), drifted.len(), failures.len())
+}
+
+/// The baseline counts, on stderr: they qualify the run like the coverage notes
+/// do, so `--json` stdout stays one document.
+fn surface_baseline(report: &baseline::Report) {
+    let stale = report.stale.unwrap_or(0);
+    if report.updated {
+        eprintln!(
+            "baseline: updated {} ({} added, {stale} removed)",
+            report.path, report.new
+        );
+        return;
+    }
+    let stale_note = match report.stale {
+        None => "stale not counted under --no-lint".to_string(),
+        Some(0) => "0 stale".to_string(),
+        Some(n) => format!("{n} stale (fixed; run with --update-baseline to remove them)"),
+    };
+    eprintln!(
+        "baseline: {} new, {} baselined, {stale_note}",
+        report.new, report.baselined
+    );
 }
 
 /// `check`'s exit code (R15): `1` when either channel produced something or a

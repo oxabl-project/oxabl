@@ -1029,6 +1029,7 @@ name = "oxabl_common"
 version = "1.1.0"
 dependencies = [
  "codspeed-criterion-compat",
+ "glob",
  "oxabl_ast",
  "serde",
  "serde_json",
@@ -1171,6 +1172,7 @@ dependencies = [
  "oxabl_formatter",
  "oxabl_index",
  "oxabl_lexer",
+ "oxabl_lint",
  "oxabl_parser",
  "oxabl_schema",
  "oxabl_semantic",

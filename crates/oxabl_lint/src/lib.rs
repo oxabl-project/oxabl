@@ -4,12 +4,12 @@
 //! Each rule is implemented as a standalone function that walks the program +
 //! semantic result and returns a `Vec<Diagnostic>`:
 //!
-//! | Code     | Name                       | Severity | What it fires on                                        |
+//! | Code     | Name                       | Default  | What it fires on                                        |
 //! |----------|----------------------------|----------|--------------------------------------------------------|
 //! | LINT0001 | `undefined-symbol`         | Error    | [`Resolution::Unresolved { reason: NotInScope }`]      |
 //! | LINT0002 | `unused-variable`          | Warning  | Variables / Parameters never referenced at all          |
-//! | LINT0003 | `unknown-table-or-field`   | Error    | Field references under `schema_loaded == true`         |
-//! | LINT0004 | `type-mismatch-assignment` | Err/Warn | Assignment type mismatches / narrowing conversions     |
+//! | LINT0003 | `unknown-table-or-field`   | Warning  | Field references under `schema_loaded == true`         |
+//! | LINT0004 | `type-mismatch-assignment` | Warning  | Assignment type mismatches / narrowing conversions     |
 //! | LINT0005 | `block-var-used-outside`   | Info     | Block-defined variable read outside its block, unset   |
 //! | LINT0006 | `assigned-but-never-read`  | Warning  | Dead store: written, never read; at the write site      |
 //!
@@ -18,77 +18,44 @@
 //! diagnostic. A project that had silenced `unused-variable` therefore needs to
 //! silence `assigned-but-never-read` as well to keep the write-only half quiet.
 //!
-//! Per-rule severity (including *off*) is configured through
-//! `[workspace.lint]` in `oxabl.toml` and applied via
-//! [`AnalysisContext::lint_severities`] without touching the per-rule
-//! function signatures.
+//! # Registry, groups and configuration
+//!
+//! Every rule is registered in a [`Registry`] with its [`RuleMeta`]: code,
+//! kebab name, group, description, default severity and stability.
+//! [`Registry::builtin`] holds the rules above; a consumer adds its own with
+//! [`Registry::register`] and runs a subset with [`Registry::run_where`].
+//! [`lint_file`] runs the built-in registry.
+//!
+//! The rules above are in the always-on `default` group. The `strict.*`
+//! groups ([`BUILTIN_GROUPS`]) are opt-in. Which rules run, and at what
+//! severity, comes from [`AnalysisContext::lint_severities`], which
+//! `[workspace.lint]` in `oxabl.toml` configures globally and per directory.
+//! The per-rule function signatures do not change.
 
 use oxabl_ast::Statement;
 use oxabl_common::Diagnostic;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
+mod registry;
 mod rules;
 
+pub use registry::{
+    BUILTIN_GROUPS, BUILTIN_RULES, FnRule, Registry, RegistryError, Rule, RuleFn, RuleGroup,
+    RuleMeta, Stability, groups,
+};
 pub use rules::{
     LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, assigned_but_never_read,
     block_var_used_outside, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
     unused_variable,
 };
 
-/// Run every lint rule over `program` + `sem` and return a combined list
-/// of diagnostics, in a stable per-rule order (LINT0001 → LINT0006). Each
-/// rule is independent; callers who need finer control can invoke the
-/// individual rule functions directly.
+/// Run every built-in rule that `ctx.lint_severities` enables over `program`
+/// + `sem` and return the combined diagnostics, in registry order.
 ///
-/// The per-rule severity surface (`ctx.lint_severities`, KTD6) is applied
-/// here without touching the individual rule signatures: a rule whose code is
-/// configured *off* is skipped entirely, and a rule configured with an
-/// explicit severity has every diagnostic it emits remapped to that level.
-/// For LINT0004 — which emits both an error and a warning variant — a single
-/// configured severity overrides *both* (documented, intended behavior).
+/// Each diagnostic is reported at its rule's resolved severity: the configured
+/// one, else the rule's default. For LINT0004, which emits both an error and a
+/// warning variant, that one severity applies to both. Callers who need a
+/// subset or their own rules use [`Registry`] directly.
 pub fn lint_file(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    run_rule(&mut diags, LINT0001, ctx, || {
-        undefined_symbol::run(program, sem, ctx)
-    });
-    let counts_are_complete = !ctx.source_context.is_include_fragment();
-    if counts_are_complete {
-        run_rule(&mut diags, LINT0002, ctx, || {
-            unused_variable::run(program, sem, ctx)
-        });
-    }
-    run_rule(&mut diags, LINT0003, ctx, || {
-        unknown_table_or_field::run(program, sem, ctx)
-    });
-    run_rule(&mut diags, LINT0004, ctx, || {
-        type_mismatch_assignment::run(program, sem, ctx)
-    });
-    if counts_are_complete {
-        run_rule(&mut diags, LINT0005, ctx, || {
-            block_var_used_outside::run(program, sem, ctx)
-        });
-        run_rule(&mut diags, LINT0006, ctx, || {
-            assigned_but_never_read::run(program, sem, ctx)
-        });
-    }
-    diags
-}
-
-/// Run a rule only if it is enabled, then append its diagnostics to `out`,
-/// remapping each to the configured severity when one is set. A rule
-/// configured *off* is not executed at all. The per-rule function signatures
-/// stay untouched — the severity surface is applied entirely here (KTD6).
-fn run_rule(
-    out: &mut Vec<Diagnostic>,
-    code: &'static str,
-    ctx: &AnalysisContext,
-    produce: impl FnOnce() -> Vec<Diagnostic>,
-) {
-    if !ctx.lint_severities.is_enabled(code) {
-        return;
-    }
-    for mut d in produce() {
-        d.severity = ctx.lint_severities.effective(d.code.0, d.severity);
-        out.push(d);
-    }
+    Registry::builtin_shared().run(program, sem, ctx)
 }

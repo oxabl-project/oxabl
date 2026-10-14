@@ -52,8 +52,9 @@ use oxabl_workspace::{
 #[non_exhaustive]
 pub enum ConfigWarning {
     /// An `oxabl.toml` was found but could not be read or parsed (including an
-    /// unknown key in `[workspace.lint]` or `[workspace.style]`, both of which
-    /// use `deny_unknown_fields`). Every configured surface degrades to its
+    /// unknown key in `[workspace.style]` or `[workspace.preprocessor]`, which
+    /// use `deny_unknown_fields`, or a `[workspace.lint]` value that is not a
+    /// severity). Every configured surface degrades to its
     /// default; caller overrides still apply.
     ///
     /// Exactly one of these is produced per resolution, however many surfaces
@@ -83,6 +84,12 @@ pub enum ConfigWarning {
     /// (empty, or holding a path separator). The entry is dropped; without this
     /// warning a bare `RUN` name would simply stop linking.
     RunExtension(String),
+
+    /// A `[workspace.lint]` entry that cannot take effect: a rule or group name
+    /// the rule registry does not know, a toggle of the always-on `default`
+    /// group, or an override pattern that is not a valid glob. The entry is
+    /// ignored and the rest of the table applies.
+    Lint(String),
 }
 
 impl std::fmt::Display for ConfigWarning {
@@ -95,6 +102,7 @@ impl std::fmt::Display for ConfigWarning {
                 f,
                 "run_extensions: ignoring `{entry}`, which cannot be a file extension"
             ),
+            ConfigWarning::Lint(msg) => write!(f, "lint: {msg}"),
         }
     }
 }
@@ -133,8 +141,9 @@ pub struct PipelineConfig {
     /// Absolute include search directories, first-match-wins, duplicate-free.
     pub include_paths: Vec<PathBuf>,
 
-    /// Per-rule lint severities, already lowered from `[workspace.lint]`'s
-    /// user-facing five-level surface to the application form.
+    /// Lint settings lowered from `[workspace.lint]`: rule severities, group
+    /// toggles and per-directory overrides anchored at the workspace root.
+    /// [`LintPipeline`](crate::LintPipeline) resolves them per file.
     pub lint_severities: LintSeverityMap,
 
     /// The resolved formatter style.
@@ -167,28 +176,15 @@ pub struct PipelineConfig {
 
 impl Default for PipelineConfig {
     /// The configuration of a project with no `oxabl.toml`: no include paths, the
-    /// **documented default** lint severities, the safe non-mangling base style,
-    /// and no schema.
+    /// default lint settings, the safe non-mangling base style, and no schema.
     ///
-    /// # Why the severity map is not simply empty (R19)
+    /// # One table of default severities (R19)
     ///
-    /// An empty [`LintSeverityMap`] is not "the defaults" — it means *no rule has
-    /// a configured severity*, so each diagnostic keeps whatever severity
-    /// `oxabl_lint` happens to construct it with. For two rules
-    /// (`unknown-table-or-field` and `type-mismatch-assignment`) that built-in
-    /// value is `Error`, while `[workspace.lint]`'s documented default is `Warn`.
-    ///
-    /// [`resolve`](PipelineConfig::resolve) materializes the documented defaults
-    /// even when no config file exists, so leaving this map empty gave the two
-    /// clients that build a config directly — the browser, and any embedding
-    /// caller — a *different answer for the same input* than every
-    /// filesystem-backed client. That is precisely what R19 forbids: the client
-    /// is not allowed to be a variable in the answer. The cross-client parity
-    /// suite caught it, and the fix is that both paths now read one table.
-    ///
-    /// Deriving from [`LintConfig::default`] rather than restating the severities
-    /// here is deliberate: a restatement is a second table that can drift, which
-    /// is the bug this doc comment exists to explain.
+    /// Every client must give the same answer for the same input, so default
+    /// severities live in one place: each rule's registry entry in `oxabl_lint`.
+    /// Both this value and [`resolve`](PipelineConfig::resolve) with no config
+    /// file lower [`LintConfig::default`], which configures nothing, so both
+    /// report each rule at its registry default.
     fn default() -> Self {
         PipelineConfig {
             include_paths: Vec::new(),
@@ -345,7 +341,14 @@ fn derive(
         .clone()
         .unwrap_or_else(|| config.workspace.style.clone());
 
-    let lint_severities = config.workspace.lint.to_severity_map();
+    let (lint_severities, rejected_patterns) = config.workspace.lint.to_severity_map_at(root);
+    warnings.extend(rejected_patterns.into_iter().map(|r| {
+        ConfigWarning::Lint(format!(
+            "ignoring override pattern `{}`: {}",
+            r.pattern, r.reason
+        ))
+    }));
+    warnings.extend(lint_name_warnings(&config.workspace.lint));
     let preprocessor = config.workspace.preprocessor.clone();
     let run_extensions = normalize_run_extensions(&config.workspace.sources.run_extensions);
     warnings.extend(
@@ -419,6 +422,36 @@ fn derive(
         },
         warnings,
     )
+}
+
+/// A warning for each `[workspace.lint]` name the built-in rule registry does
+/// not know, and for each attempt to toggle an always-on group.
+fn lint_name_warnings(lint: &LintConfig) -> Vec<ConfigWarning> {
+    let registry = oxabl_lint::Registry::builtin_shared();
+    let mut warnings = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for rule in lint.rule_selectors() {
+        if registry.rule(rule).is_none() && seen.insert(("rule", rule)) {
+            warnings.push(ConfigWarning::Lint(format!("unknown rule `{rule}`")));
+        }
+    }
+    for group in lint.group_selectors() {
+        let selected = registry.groups_selected_by(group);
+        let message = if selected.is_empty() {
+            format!("unknown rule group `{group}`")
+        } else if selected.iter().any(|g| !g.toggleable) {
+            format!(
+                "rule group `{group}` is always on and cannot be enabled or disabled; \
+                 set its rules to `off` one by one"
+            )
+        } else {
+            continue;
+        };
+        if seen.insert(("group", group)) {
+            warnings.push(ConfigWarning::Lint(message));
+        }
+    }
+    warnings
 }
 
 /// Expand one schema entry — a `--schema` path or a `[workspace.schema].files`
@@ -513,6 +546,57 @@ mod tests {
         fs::write(dir.join(name), contents).unwrap();
     }
 
+    /// The severity a built-in rule resolves to under `config`'s global lint
+    /// settings, or `None` when it is off.
+    fn rule_severity(config: &PipelineConfig, code: &str) -> Option<Severity> {
+        let registry = oxabl_lint::Registry::builtin_shared();
+        registry.severity_for(registry.rule(code).unwrap(), &config.lint_severities)
+    }
+
+    fn lint_warnings(toml: &str) -> Vec<String> {
+        let parsed =
+            WorkspaceConfig::from_toml(&format!("[workspace]\nname = \"p\"\n{toml}")).unwrap();
+        let (_, warnings) =
+            resolve_from_config(&parsed, Path::new("/ws"), &ConfigOverrides::default());
+        warnings
+            .into_iter()
+            .map(|w| {
+                assert!(matches!(w, ConfigWarning::Lint(_)), "{w:?}");
+                w.to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn known_lint_names_resolve_without_warnings() {
+        let warnings = lint_warnings(
+            "[workspace.lint]\nenable = [\"strict\", \"strict.calls\"]\n\
+             LINT0002 = \"off\"\nUnused-Variable = \"info\"\n\
+             [[workspace.lint.overrides]]\nfiles = [\"legacy\"]\ndisable = [\"strict.nulls\"]\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn unknown_lint_names_are_warnings_not_errors() {
+        let warnings = lint_warnings(
+            "[workspace.lint]\nenable = [\"strict.speed\"]\nno-such-rule = \"off\"\n\
+             [[workspace.lint.overrides]]\nfiles = [\"a/[\"]\nno-such-rule = \"error\"\n\
+             disable = [\"default\"]\n",
+        );
+        assert_eq!(
+            warnings,
+            [
+                "lint: ignoring override pattern `a/[`: Pattern syntax error near position 2: \
+                 invalid range pattern",
+                "lint: unknown rule `no-such-rule`",
+                "lint: unknown rule group `strict.speed`",
+                "lint: rule group `default` is always on and cannot be enabled or disabled; \
+                 set its rules to `off` one by one",
+            ]
+        );
+    }
+
     /// One call resolves all three configured surfaces — the whole point of
     /// collapsing three helpers into one resolution (R6, KTD3).
     #[test]
@@ -534,10 +618,10 @@ mod tests {
 
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(config.include_paths, vec![root.join("inc")]);
-        assert_eq!(config.lint_severities.get("LINT0002"), Some(None), "off");
+        assert_eq!(rule_severity(&config, "LINT0002"), None, "off");
         assert_eq!(
-            config.lint_severities.get("LINT0001"),
-            Some(Some(Severity::Error)),
+            rule_severity(&config, "LINT0001"),
+            Some(Severity::Error),
             "unspecified rules keep their default"
         );
         assert_eq!(config.style.indent_size, 2);
@@ -646,10 +730,7 @@ mod tests {
 
         // Overrides survive; every configured surface degrades to its default.
         assert_eq!(config.include_paths, vec![PathBuf::from("/flag")]);
-        assert_eq!(
-            config.lint_severities.get("LINT0001"),
-            Some(Some(Severity::Error))
-        );
+        assert_eq!(rule_severity(&config, "LINT0001"), Some(Severity::Error));
         assert_eq!(
             config.style.to_toml().unwrap(),
             StyleGuide::default_base().to_toml().unwrap()
@@ -691,10 +772,7 @@ mod tests {
             config.style.to_toml().unwrap(),
             StyleGuide::default_base().to_toml().unwrap()
         );
-        assert_eq!(
-            config.lint_severities.get("LINT0005"),
-            Some(Some(Severity::Info))
-        );
+        assert_eq!(rule_severity(&config, "LINT0005"), Some(Severity::Info));
     }
 
     /// `check <dir>` and `analyze <dir>/file.p` must see the same configuration.
@@ -1060,7 +1138,7 @@ mod tests {
 
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(config.include_paths, vec![root.join("inc")]);
-        assert_eq!(config.lint_severities.get("LINT0001"), Some(None));
+        assert_eq!(rule_severity(&config, "LINT0001"), None);
         assert_eq!(config.style.indent_size, 7);
     }
 

@@ -41,7 +41,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Linter
   - Lint rule engine
   - Public API for creating new lint rules and submitting them upstream for inclusion in oxabl's default rule set
-  - Status: a first set of rules ships today — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003, live under a loaded `.df` schema), `type-mismatch-assignment` (LINT0004), `block-var-used-outside` (LINT0005), and `assigned-but-never-read` (LINT0006) — configurable per-project via `oxabl.toml`. LINT0002 and LINT0006 divide one population between them: a variable never referenced at all is LINT0002's, while one that is written and never read is a dead store reported by LINT0006 at the assignment, so silencing `unused-variable` alone no longer silences the write-only half. Around thirty ABL statement forms are recognized by the parser but not modelled (`PUT`, `EXPORT`, `UPDATE`, `ENABLE`, embedded SQL, …); their identifiers are now harvested lexically and best-effort-resolved, so all three count-gated rules stay quiet about a variable one of them touches rather than reporting it wrongly. That suppression is coarse — per-symbol and file-wide — so `oxabl analyze` reports how many symbols it could not fully judge. The handful of forms that name a *table* without reading a field of it (`DEFINE BUFFER`, `DEFINE PARAMETER BUFFER`, `EMPTY TEMP-TABLE`, `DEFINE QUERY`, `OPEN QUERY`) are treated more precisely: they credit a real read on the table, so a temp-table used only that way no longer looks untouched. Surfaced in-editor through the VS Code extension and as diagnostics from `oxabl check`. Still experimental; no public API for extending yet.
+  - Status: a first set of rules ships today — `undefined-symbol` (LINT0001), `unused-variable` (LINT0002), `unknown-table-or-field` (LINT0003, live under a loaded `.df` schema), `type-mismatch-assignment` (LINT0004), `block-var-used-outside` (LINT0005), and `assigned-but-never-read` (LINT0006) — configurable per-project via `oxabl.toml`. LINT0002 and LINT0006 divide one population between them: a variable never referenced at all is LINT0002's, while one that is written and never read is a dead store reported by LINT0006 at the assignment, so silencing `unused-variable` alone no longer silences the write-only half. Around thirty ABL statement forms are recognized by the parser but not modelled (`PUT`, `EXPORT`, `UPDATE`, `ENABLE`, embedded SQL, …); their identifiers are now harvested lexically and best-effort-resolved, so all three count-gated rules stay quiet about a variable one of them touches rather than reporting it wrongly. That suppression is coarse — per-symbol and file-wide — so `oxabl analyze` reports how many symbols it could not fully judge. The handful of forms that name a *table* without reading a field of it (`DEFINE BUFFER`, `DEFINE PARAMETER BUFFER`, `EMPTY TEMP-TABLE`, `DEFINE QUERY`, `OPEN QUERY`) are treated more precisely: they credit a real read on the table, so a temp-table used only that way no longer looks untouched. Surfaced in-editor through the VS Code extension and as diagnostics from `oxabl check`. Still experimental. `oxabl_lint::Registry` lists the rules with their metadata (code, name, group, description, default severity, stability), accepts your own rules, and runs a subset; `lint_file` stays the run-everything entry point. See [Lint configuration](#lint-configuration) for rule groups, per-directory settings and baselines.
   - **An `.i` opened directly is analyzed as a fragment.** Names its missing includer could supply stay silent, as do the three whole-unit count rules, while parse errors and locally provable findings still surface. The CLI and analyze coverage channels say that the includer was absent; an `.i` expanded through a `.p`/`.w`/`.cls`/`.v` root remains ordinary textual input to that complete compilation unit.
   - **`undefined-symbol` now reports names absent from your configured search paths.** With a workspace index attached — which is every `oxabl check` run — a `USING` import, a `NEW`, or a literal `RUN` target that no configured path supplies is reported at error severity. ABL cannot reference a symbol or a procedure whose code is not on the PROPATH, so the name genuinely is undefined rather than merely unseen. Set your paths in `[workspace.sources].include_paths` in `oxabl.toml` (relative to that file, searched in order, first match wins), or pass directories with `-I`; every such finding carries a help line naming that configuration, because a missing source root produces the same finding as missing code. Four things stay deliberately silent: names in the `Progress.*`, `OpenEdge.*`, `System.*`, and `Microsoft.*` namespaces, which ship with the AVM and have no source on any path; a runtime-computed `RUN VALUE(...)` target, which no indexing could resolve; a member a class declares but does not expose to the caller, which exists and so is an access question rather than a missing name; and every cross-file name at all when no path is configured, since "we did not look" is then the only truthful answer. The `AS CLASS pkg.Missing` declaration spelling is also silent for now — the AST carries no span for that name, so there is nothing to underline.
   - **The preprocessor answers the AVM's predefined names from `[workspace.preprocessor]` in `oxabl.toml`.** The AVM reads `{&OPSYS}`, `{&WINDOW-SYSTEM}`, `{&BATCH-MODE}`, `{&PROCESS-ARCHITECTURE}` and `{&PROVERSION}` from the machine that compiles. oxabl has no such machine, so you state the environment and every `&IF` over these names decides against it. The defaults describe a 64-bit Unix batch compile with a character UI: `opsys = "UNIX"`, `window-system = "TTY"`, `batch-mode = true` (expands to `yes`), `process-architecture = 64`. You can override each key (for example `opsys = "WIN32"`, `window-system = "MS-WINDOWS"`, `batch-mode = false`). `proversion` has no default because a tool cannot guess it: set it (for example `proversion = "12.8"`), or an `&IF` condition that reads `{&PROVERSION}` raises the always-loud warning `PREPROC009` instead of silently deciding against an empty string. `{&FILE-NAME}` (the name the file was analysed under, or the include name as written), `{&LINE-NUMBER}` (the line in the current file) and `{&SEQUENCE}` (0, 1, 2, … per reference, shared by the whole compilation unit) are computed from the source and need no configuration. An include reference with whitespace inside the braces (`{ name.i }`) expands like `{name.i}`; one whose brace never closes raises `PREPROC008` and is reported as an unresolved include.
@@ -95,6 +95,61 @@ Requirements:
   - CLI-only dependencies live behind the `oxabl` crate's default-on `cli` feature so the library compiles for `wasm32`; a CI job builds the wasm target on every push.
 
 Current Work: continued dogfood-driven trust-hardening, and typing `:`-qualified member and method-call expressions — the half of the cross-file population the type lattice still does not judge. Shipped: the semantic layer, the layout formatter (CLI + LSP), the language server, the VS Code extension, the curated `oxabl` public API, the browser WASM playground, the shared lint/format pipelines every client now drives, and cross-file/workspace resolution — inheritance chains, `USING` imports, literal `RUN` targets, and `SHARED` producers now link across files, with the CLI and the editor reaching identical answers from the same shared index. (The browser playground stays single-file: its exports take one source and no sibling files, so there is nothing for an index to look at.)
+
+### Lint configuration
+
+Lint rules are in groups. The `LINT` rules are in the `default` group, which is always on. The `strict.transactions`, `strict.locks`, `strict.access`, `strict.handles`, `strict.nulls` and `strict.calls` groups are off until you enable them. Their rules have codes such as `TX006` and `CL001` (see `docs/design/strict-analysis-plan.md`).
+
+Configure lint in `[workspace.lint]` in `oxabl.toml`:
+
+```toml
+[workspace.lint]
+enable = ["strict.calls"]       # turn on groups; "strict" selects every strict.* group
+unused-variable = "info"        # a rule by kebab name ...
+LINT0006 = "off"                # ... or by code
+
+[[workspace.lint.overrides]]
+files = ["legacy/**", "old/report.p"]
+disable = ["strict"]            # turn off groups for these files
+undefined-symbol = "warn"
+
+[[workspace.lint.overrides]]
+files = ["legacy/new"]          # a directory selects every file under it
+enable = ["strict.calls"]
+```
+
+- **Severities:** `off`, `hint`, `info`, `warn` (or `warning`) and `error`. A rule that you do not configure uses its default severity.
+- **Patterns:** globs relative to the directory that holds `oxabl.toml`, written with `/` and matched case-insensitively. `*` stays in one directory and `**` crosses directories.
+- **Precedence**, lowest first: the rule default, then `[workspace.lint]`, then each override whose `files` match, in file order. A later override wins, so put broad patterns before narrow ones. In one table, a setting for a rule wins over a setting for its group, and `disable` wins over `enable`. A group toggle turns rules on or off but keeps the severity that an earlier table set. A severity on a rule turns the rule on, also when its group is off.
+- **Mistakes:** an unknown rule or group name, a toggle of the `default` group, and a bad pattern are warnings. oxabl ignores that entry and applies the rest. A value that is not a severity is a config error.
+
+The CLI, the language server and the daemon apply the same settings to each file.
+
+#### Baseline
+
+Use a baseline to adopt a rule on existing code. The gate then fails only on new findings:
+
+```sh
+oxabl check src --baseline oxabl-baseline.json --update-baseline   # record the current findings
+oxabl check src --baseline oxabl-baseline.json                     # fail only on new findings
+```
+
+- A finding matches an entry by rule code, workspace-relative path, a hash of the flagged line and span (whitespace collapsed), and an occurrence number for identical findings. The file has no line numbers, so edits that move a finding to a different line do not change the match.
+- `check` writes the counts to stderr: `new`, `baselined`, and `stale` (fixed findings that are still in the file). With `--json`, the report has a `baseline` key with the same counts, and `diagnostics` holds only new findings.
+- `--update-baseline` adds the new findings and removes the stale entries. It keeps the entries of files that the run did not check. It cannot be used with `--no-lint`.
+- Exit codes do not change: `1` for a new finding, format drift or a failed file, `2` for a missing or malformed baseline. Stale entries do not fail the run.
+- The file is pretty-printed JSON, sorted by path, code, hash and occurrence:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "path": "src/orders.p", "code": "LINT0002", "hash": "5f0c3a5e9d2b7c11", "occurrence": 0, "message": "..." }
+  ]
+}
+```
+
+The `message` field is only for the reader; matching does not use it.
 
 ### WebAssembly browser package
 

@@ -223,11 +223,10 @@ fn a_format_panic_is_a_check_failure_and_a_bail_is_neither_drift_nor_failure() {
 /// code for a run whose configuration it silently ignored. A gate that answers
 /// the wrong question must not answer it successfully.
 ///
-/// "Cannot use" is broader than "malformed": `LintConfig` and `StyleGuide` deny
-/// unknown fields, so syntactically valid TOML naming a key oxabl does not know —
-/// a typo'd or not-yet-released rule — is discarded the same way and gets the same
-/// exit 2. Asserted here so nobody reads the exit-2 contract as a TOML-syntax
-/// check.
+/// "Cannot use" is broader than "malformed": `StyleGuide` denies unknown fields,
+/// so syntactically valid TOML naming a style key oxabl does not know is
+/// discarded the same way and gets the same exit 2. Asserted here so nobody
+/// reads the exit-2 contract as a TOML-syntax check.
 #[test]
 fn check_exits_2_on_a_config_it_cannot_use() {
     // Malformed TOML.
@@ -247,7 +246,7 @@ fn check_exits_2_on_a_config_it_cannot_use() {
     let (dir, file) = one_file("a.p", CLEAN);
     write(
         &dir.path().join("oxabl.toml"),
-        "[workspace]\nname = \"p\"\n[workspace.lint]\nfuture-rule = \"off\"\n",
+        "[workspace]\nname = \"p\"\n[workspace.style]\nfuture-key = 1\n",
     );
 
     let (exit, _stdout, stderr) = run(&[s("check"), file.as_os_str()]);
@@ -260,6 +259,35 @@ fn check_exits_2_on_a_config_it_cannot_use() {
     assert!(
         stderr.contains("oxabl.toml"),
         "and the error must still name the file: {stderr}"
+    );
+}
+
+/// An unknown `[workspace.lint]` rule or group name is a **warning**: the entry
+/// is ignored and the rest of the table, every `off` included, still applies,
+/// so the gate still answers the question the user asked.
+#[test]
+fn check_warns_on_an_unknown_lint_name_and_keeps_the_rest_of_the_table() {
+    let (dir, file) = one_file("a.p", "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n");
+    write(
+        &dir.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n[workspace.lint]\nenable = [\"strict.future\"]\n\
+         future-rule = \"off\"\nunused-variable = \"off\"\n",
+    );
+
+    let (exit, _stdout, stderr) = run(&[s("check"), s("--no-format"), file.as_os_str()]);
+
+    assert_eq!(
+        exit,
+        Some(0),
+        "the switched-off finding stays off: {stderr}"
+    );
+    assert!(
+        stderr.contains("warning: lint: unknown rule `future-rule`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("warning: lint: unknown rule group `strict.future`"),
+        "{stderr}"
     );
 }
 
