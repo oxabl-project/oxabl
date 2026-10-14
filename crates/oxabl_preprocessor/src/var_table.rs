@@ -23,12 +23,14 @@ struct Entry {
 /// How a name came to be defined; the `DEFINED` function tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
-    /// `&SCOPED-DEFINE`, `&GLOBAL-DEFINE` or a predefined name.
-    Define,
+    /// `&GLOBAL-DEFINE` or a predefined name.
+    Global,
+    /// `&SCOPED-DEFINE`.
+    Scoped,
     /// A named argument of the include being expanded.
     Argument,
-    /// Both of the above at once.
-    Both,
+    /// More than one of the above at once.
+    Mixed,
 }
 
 /// Case-insensitive key: stores the lowercase form for hashing/comparison.
@@ -46,9 +48,14 @@ impl PreprocVarTable {
         Self::default()
     }
 
-    /// Define a preprocessor variable (from `&SCOPED-DEFINE` or `&GLOBAL-DEFINE`).
+    /// Define a preprocessor variable as `&SCOPED-DEFINE` does.
     pub fn define(&mut self, name: &str, value: &str) {
-        self.insert(name, value, Origin::Define);
+        self.insert(name, value, Origin::Scoped);
+    }
+
+    /// Define a preprocessor variable as `&GLOBAL-DEFINE` does.
+    pub fn define_global(&mut self, name: &str, value: &str) {
+        self.insert(name, value, Origin::Global);
     }
 
     /// Define a named include argument (`{file.i &name=value}`).
@@ -59,7 +66,7 @@ impl PreprocVarTable {
     fn insert(&mut self, name: &str, value: &str, origin: Origin) {
         let key = AsciiLowerName::new(name);
         let origin = match self.vars.get(&key).map(|e| e.origin) {
-            Some(prev) if prev != origin => Origin::Both,
+            Some(prev) if prev != origin => Origin::Mixed,
             _ => origin,
         };
         self.vars.insert(
