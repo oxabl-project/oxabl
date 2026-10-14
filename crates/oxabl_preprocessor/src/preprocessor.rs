@@ -151,7 +151,6 @@ impl<'fs> Preprocessor<'fs> {
             predefined: &predefined.config,
             file_names: FileNames::new(name),
             sequence: 0,
-            global_vars: PreprocVarTable::new(),
             dependencies: Vec::new(),
             unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
@@ -166,9 +165,6 @@ impl<'fs> Preprocessor<'fs> {
         };
 
         let tree = ctx.process_source(file, source, 0, &[]);
-
-        // Merge global vars into the final var table
-        ctx.vars.merge_globals(&ctx.global_vars);
 
         if ctx
             .diagnostics
@@ -243,8 +239,6 @@ struct ProcessContext<'a> {
     file_names: FileNames<'a>,
     /// The next value of `{&SEQUENCE}`, shared by the whole compilation unit.
     sequence: u32,
-    /// Variables set via `&GLOBAL-DEFINE` — propagated back to parent.
-    global_vars: PreprocVarTable,
     dependencies: Vec<FileId>,
     /// Include references that named no locatable file — the symbol loss
     /// PREPROC007 reports, kept as data so a dependency edge set can report the
@@ -401,7 +395,6 @@ impl ProcessContext<'_> {
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
                                     self.vars.define_global(&name, &expanded);
-                                    self.global_vars.define_global(&name, &expanded);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -417,7 +410,6 @@ impl ProcessContext<'_> {
                                 }
                                 if emitting {
                                     self.vars.undefine(name);
-                                    self.global_vars.undefine(name);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -1502,10 +1494,9 @@ impl ProcessContext<'_> {
         self.file_names.pop();
         self.site_stack.pop();
 
-        // Restore vars (named args don't leak to parent)
-        // But preserve any &GLOBAL-DEFINE changes
+        // Restore vars (named args don't leak to parent), but keep what the
+        // include defined or undefined with `&GLOBAL-DEFINE` and `&UNDEFINE`
         self.vars.end_scope(scope);
-        self.vars.merge_globals(&self.global_vars);
 
         self.include_stack.remove(&path);
 
@@ -3852,6 +3843,87 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "VER=42");
+    }
+
+    /// An include that defines nothing cannot change what a name means.
+    #[test]
+    fn an_empty_include_leaves_a_scoped_name_over_a_global_one() {
+        let fs = make_fs(&[
+            ("/inc/empty.i", ""),
+            ("/inc/s.i", "from-scoped\n"),
+            ("/inc/gfile.i", "from-global\n"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let run = |between: &str| {
+            let source = format!(
+                "&GLOBAL-DEFINE inc gfile.i\n&SCOPED-DEFINE inc s.i\n{between}\
+                 [{{&inc}}]\n{{{{&inc}}}}&IF DEFINED(inc) = 3 &THEN\nscoped-defined\n&ENDIF\n"
+            );
+            Preprocessor::new(&fs, &include_paths)
+                .process(FileId::new(1), &source)
+                .unwrap()
+        };
+
+        let without = run("");
+        let with = run("{empty.i}");
+        assert_eq!(&*without.to_text(), "[s.i]\nfrom-scoped\n");
+        assert_eq!(&*with.to_text(), &*without.to_text());
+        // The name is a global and a scoped one, so DEFINED is a guess either way.
+        assert_eq!(with.diagnostics.len(), without.diagnostics.len());
+        assert_eq!(
+            with.text_losses.iter().map(|l| l.kind).collect::<Vec<_>>(),
+            without
+                .text_losses
+                .iter()
+                .map(|l| l.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_nested_include_leaves_an_argument_over_a_global_name() {
+        let fs = make_fs(&[("/inc/outer.i", "{empty.i}[{&a}]"), ("/inc/empty.i", "")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&GLOBAL-DEFINE a global\n{outer.i &a=argument}[{&a}]";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "[argument][global]");
+    }
+
+    #[test]
+    fn a_global_from_a_nested_include_reaches_every_caller_that_does_not_shadow_it() {
+        let fs = make_fs(&[
+            ("/inc/outer.i", "{inner.i}[{&g}]"),
+            (
+                "/inc/inner.i",
+                "&GLOBAL-DEFINE g global\n&GLOBAL-DEFINE h global\n",
+            ),
+            ("/inc/shadow.i", "&SCOPED-DEFINE g scoped\n{inner.i}[{&g}]"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{outer.i}[{&g}][{&h}]\n{shadow.i}[{&g}]";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(
+            &*result.to_text(),
+            "[global][global][global]\n[scoped][global]"
+        );
+    }
+
+    #[test]
+    fn a_global_undefined_in_an_include_stays_undefined() {
+        let fs = make_fs(&[("/inc/undef.i", "&UNDEFINE g\n&UNDEFINE s\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&GLOBAL-DEFINE g 1\n&SCOPED-DEFINE s 1\n{undef.i}\
+                      &IF DEFINED(g) = 0 &THEN\ng-undefined\n&ENDIF\n\
+                      &IF DEFINED(s) = 3 &THEN\ns-kept\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "g-undefined\ns-kept\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 
     #[test]

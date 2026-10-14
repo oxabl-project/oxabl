@@ -7,7 +7,8 @@ use rustc_hash::FxBuildHasher;
 ///
 /// `&SCOPED-DEFINE` variables are file-local — they do not propagate to the
 /// file that included them. `&GLOBAL-DEFINE` variables propagate upward to all
-/// callers in the include chain.
+/// callers in the include chain, except into a scope that has a scoped name or an
+/// include argument of the same name: that one takes precedence there.
 ///
 /// All lookups are case-insensitive (ABL preprocessor variables are
 /// case-insensitive).
@@ -23,11 +24,25 @@ pub struct PreprocVarTable {
     journal: Vec<(Arc<[u8]>, Option<Slot>)>,
     /// How many scopes are open; nothing is journaled at zero.
     scopes: usize,
+    /// The global defines and undefines made while a scope is open (`None`: the
+    /// name was undefined), newest last. Closing a scope applies its share to the
+    /// scope around it, which the journal has just restored.
+    globals: Vec<GlobalChange>,
+}
+
+/// Where a scope started, as [`PreprocVarTable::begin_scope`] gives it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScopeMark {
+    journal: usize,
+    globals: usize,
 }
 
 /// A change to a name of the base: its new entry, or `None` for a name of the
 /// base that was undefined.
 type Slot = Option<Entry>;
+
+/// A global define (with its value) or undefine (`None`) of a folded name.
+type GlobalChange = (Arc<[u8]>, Option<Arc<str>>);
 
 /// The names a table starts with.
 #[derive(Debug, Clone)]
@@ -100,6 +115,14 @@ impl PreprocVarTable {
     /// Define a preprocessor variable as `&GLOBAL-DEFINE` does.
     pub fn define_global(&mut self, name: &str, value: &str) {
         self.insert(name, value, Origin::Global);
+        if self.scopes > 0 {
+            with_folded(name, |key| {
+                if let Some((shared, Some(entry))) = self.vars.get_key_value(key) {
+                    self.globals
+                        .push((Arc::clone(shared), Some(Arc::clone(&entry.value))));
+                }
+            });
+        }
     }
 
     /// Define a named include argument (`{file.i &name=value}`).
@@ -166,16 +189,21 @@ impl PreprocVarTable {
     }
 
     /// Open a scope: every change from here until [`Self::end_scope`] is undone
-    /// by it. Scopes nest.
-    pub(crate) fn begin_scope(&mut self) -> usize {
+    /// by it, except the global defines and undefines. Scopes nest.
+    pub(crate) fn begin_scope(&mut self) -> ScopeMark {
         self.scopes += 1;
-        self.journal.len()
+        ScopeMark {
+            journal: self.journal.len(),
+            globals: self.globals.len(),
+        }
     }
 
     /// Close the scope that [`Self::begin_scope`] opened as `mark`, restoring
-    /// the table to how it was then.
-    pub(crate) fn end_scope(&mut self, mark: usize) {
-        while self.journal.len() > mark {
+    /// the table to how it was then. The names the scope defined with
+    /// `&GLOBAL-DEFINE` stay defined, and the ones it undefined stay undefined,
+    /// unless the table has a scoped name or an include argument of that name.
+    pub(crate) fn end_scope(&mut self, mark: ScopeMark) {
+        while self.journal.len() > mark.journal {
             let Some((key, old)) = self.journal.pop() else {
                 break;
             };
@@ -189,6 +217,32 @@ impl PreprocVarTable {
             }
         }
         self.scopes -= 1;
+        for n in mark.globals..self.globals.len() {
+            let (key, value) = self.globals[n].clone();
+            self.apply_global(&key, value);
+        }
+        // An outer scope applies them again when it ends; nothing else will.
+        if self.scopes == 0 {
+            self.globals.clear();
+        }
+    }
+
+    /// Define the folded name `key` as a global with `value` (`None` undefines
+    /// it), unless a scoped name or an include argument holds it.
+    fn apply_global(&mut self, key: &Arc<[u8]>, value: Option<Arc<str>>) {
+        let current = self.entry(key);
+        match (current.map(|e| e.origin), value) {
+            (Some(Origin::Scoped | Origin::Mixed | Origin::Argument), _) | (None, None) => {}
+            (Some(Origin::Global), Some(value)) if current.is_some_and(|e| e.value == value) => {}
+            (_, Some(value)) => {
+                let entry = Entry {
+                    value,
+                    origin: Origin::Global,
+                };
+                self.store(key, Some(key), Some(entry));
+            }
+            (Some(Origin::Global), None) => self.store(key, None, None),
+        }
     }
 
     /// How `name` was defined; `None` if it is not defined.
@@ -198,7 +252,12 @@ impl PreprocVarTable {
 
     /// Remove a preprocessor variable (from `&UNDEFINE`).
     pub fn undefine(&mut self, name: &str) {
-        with_folded(name, |key| self.store(key, None, None));
+        with_folded(name, |key| {
+            if self.scopes > 0 && self.entry(key).is_some_and(|e| e.origin == Origin::Global) {
+                self.globals.push((Arc::from(key), None));
+            }
+            self.store(key, None, None);
+        });
     }
 
     /// Look up a variable's value. Returns `None` if not defined.
@@ -213,14 +272,18 @@ impl PreprocVarTable {
 
     /// Merge all variables from `other` into `self`.
     ///
-    /// Used to propagate `&GLOBAL-DEFINE` variables from an included file
-    /// back to the parent.
+    /// A scoped name or an include argument of `self` is kept: it takes
+    /// precedence over a global name of the same name in its scope.
     pub fn merge_globals(&mut self, other: &PreprocVarTable) {
         for (key, theirs) in other.names() {
-            let unchanged = self
-                .entry(key)
-                .is_some_and(|ours| ours.origin == theirs.origin && ours.value == theirs.value);
-            if !unchanged {
+            let ours = self.entry(key);
+            let shadowed = matches!(
+                ours.map(|e| e.origin),
+                Some(Origin::Scoped | Origin::Mixed | Origin::Argument)
+            );
+            let unchanged =
+                ours.is_some_and(|ours| ours.origin == theirs.origin && ours.value == theirs.value);
+            if !shadowed && !unchanged {
                 self.store(key, Some(key), Some(theirs.clone()));
             }
         }
@@ -281,11 +344,11 @@ mod tests {
     #[test]
     fn merge_globals() {
         let mut parent = PreprocVarTable::new();
-        parent.define("A", "1");
+        parent.define_global("A", "1");
 
         let mut child = PreprocVarTable::new();
-        child.define("B", "2");
-        child.define("A", "overridden");
+        child.define_global("B", "2");
+        child.define_global("A", "overridden");
 
         parent.merge_globals(&child);
         assert_eq!(parent.get("A").map(|v| &**v), Some("overridden"));
@@ -293,10 +356,35 @@ mod tests {
     }
 
     #[test]
+    fn merge_globals_keeps_a_scoped_name_an_argument_and_a_mixed_name() {
+        let mut parent = PreprocVarTable::new();
+        parent.define("S", "scoped");
+        parent.define_argument("ARG", "argument");
+        parent.define("M", "mixed");
+        parent.define_global("M", "mixed");
+        parent.define_global("G", "global");
+
+        let mut child = PreprocVarTable::new();
+        for name in ["S", "ARG", "M", "G"] {
+            child.define_global(name, "other");
+        }
+
+        parent.merge_globals(&child);
+        let value = |name| parent.get(name).map(|v| &**v);
+        assert_eq!(value("S"), Some("scoped"));
+        assert_eq!(value("ARG"), Some("argument"));
+        assert_eq!(value("M"), Some("mixed"));
+        assert_eq!(value("G"), Some("other"));
+        assert_eq!(parent.origin("S"), Some(Origin::Scoped));
+        assert_eq!(parent.origin("ARG"), Some(Origin::Argument));
+        assert_eq!(parent.origin("M"), Some(Origin::Mixed));
+    }
+
+    #[test]
     fn end_scope_restores_changed_removed_and_added_names() {
         let mut table = PreprocVarTable::new();
         table.define("KEPT", "1");
-        table.define_global("GONE", "2");
+        table.define("GONE", "2");
         let outer = table.begin_scope();
         table.define("kept", "changed");
         table.undefine("GONE");
@@ -312,7 +400,137 @@ mod tests {
         assert_eq!(table.get("GONE").map(|v| &**v), Some("2"));
         assert!(!table.is_defined("ADDED"));
         assert_eq!(table.origin("KEPT"), Some(Origin::Scoped));
-        assert_eq!(table.origin("GONE"), Some(Origin::Global));
+        assert_eq!(table.origin("GONE"), Some(Origin::Scoped));
+    }
+
+    fn value<'t>(table: &'t PreprocVarTable, name: &str) -> Option<&'t str> {
+        table.get(name).map(|v| &**v)
+    }
+
+    #[test]
+    fn a_global_define_in_a_scope_outlives_it() {
+        let mut table = PreprocVarTable::new();
+        table.define_global("G", "old");
+        let scope = table.begin_scope();
+        table.define_global("G", "new");
+        table.define_global("H", "added");
+        table.define("S", "scoped");
+        table.end_scope(scope);
+        assert_eq!(value(&table, "G"), Some("new"));
+        assert_eq!(value(&table, "H"), Some("added"));
+        assert_eq!(table.origin("H"), Some(Origin::Global));
+        assert!(!table.is_defined("S"));
+    }
+
+    #[test]
+    fn a_global_undefine_in_a_scope_outlives_it() {
+        let mut table = PreprocVarTable::new();
+        table.define_global("G", "1");
+        table.define("S", "1");
+        let scope = table.begin_scope();
+        table.undefine("G");
+        table.undefine("S");
+        table.end_scope(scope);
+        assert!(!table.is_defined("G"));
+        assert_eq!(value(&table, "S"), Some("1"));
+    }
+
+    #[test]
+    fn the_last_global_change_of_a_scope_wins() {
+        let mut table = PreprocVarTable::new();
+        let scope = table.begin_scope();
+        table.define_global("A", "1");
+        table.undefine("A");
+        table.define_global("B", "1");
+        table.undefine("B");
+        table.define_global("B", "2");
+        table.end_scope(scope);
+        assert!(!table.is_defined("A"));
+        assert_eq!(value(&table, "B"), Some("2"));
+    }
+
+    #[test]
+    fn a_global_from_a_scope_does_not_replace_a_scoped_name_or_an_argument() {
+        let mut table = PreprocVarTable::new();
+        table.define("S", "scoped");
+        table.define_argument("ARG", "argument");
+        table.define("M", "scoped");
+        table.define_global("M", "mixed");
+        let scope = table.begin_scope();
+        for name in ["S", "ARG", "M", "FREE"] {
+            table.define_global(name, "global");
+        }
+        table.end_scope(scope);
+        assert_eq!(value(&table, "S"), Some("scoped"));
+        assert_eq!(value(&table, "ARG"), Some("argument"));
+        assert_eq!(value(&table, "M"), Some("mixed"));
+        assert_eq!(value(&table, "FREE"), Some("global"));
+        assert_eq!(table.origin("S"), Some(Origin::Scoped));
+        assert_eq!(table.origin("ARG"), Some(Origin::Argument));
+        assert_eq!(table.origin("M"), Some(Origin::Mixed));
+    }
+
+    #[test]
+    fn a_global_undefine_does_not_remove_a_scoped_name_or_an_argument() {
+        let mut table = PreprocVarTable::new();
+        table.define_global("S", "global");
+        let scope = table.begin_scope();
+        table.undefine("S");
+        table.end_scope(scope);
+        assert!(!table.is_defined("S"));
+
+        table.define("S", "scoped");
+        table.define_argument("ARG", "argument");
+        let scope = table.begin_scope();
+        table.undefine("S");
+        table.undefine("ARG");
+        table.end_scope(scope);
+        assert_eq!(value(&table, "S"), Some("scoped"));
+        assert_eq!(value(&table, "ARG"), Some("argument"));
+    }
+
+    #[test]
+    fn a_global_shows_again_where_the_scoped_name_that_hid_it_ends() {
+        let mut table = PreprocVarTable::new();
+        let outer = table.begin_scope();
+        table.define("G", "scoped");
+        let middle = table.begin_scope();
+        let inner = table.begin_scope();
+        table.define_global("G", "global");
+        table.end_scope(inner);
+        assert_eq!(value(&table, "G"), Some("scoped"));
+        table.end_scope(middle);
+        assert_eq!(value(&table, "G"), Some("scoped"));
+        table.end_scope(outer);
+        assert_eq!(value(&table, "G"), Some("global"));
+        assert_eq!(table.origin("G"), Some(Origin::Global));
+    }
+
+    #[test]
+    fn a_global_outlives_every_scope_around_it() {
+        let mut table = PreprocVarTable::new();
+        let outer = table.begin_scope();
+        let inner = table.begin_scope();
+        table.define_global("G", "global");
+        table.end_scope(inner);
+        assert_eq!(value(&table, "G"), Some("global"));
+        table.end_scope(outer);
+        assert_eq!(value(&table, "G"), Some("global"));
+        assert_eq!(table.origin("G"), Some(Origin::Global));
+    }
+
+    #[test]
+    fn a_global_that_a_scope_outlives_is_not_applied_again_after_the_last_scope() {
+        let mut table = PreprocVarTable::new();
+        let scope = table.begin_scope();
+        table.define_global("G", "1");
+        table.end_scope(scope);
+        // The root scope redefines it as scoped; a later scope must not undo that.
+        table.define("G", "2");
+        let scope = table.begin_scope();
+        table.end_scope(scope);
+        assert_eq!(value(&table, "G"), Some("2"));
+        assert_eq!(table.origin("G"), Some(Origin::Mixed));
     }
 
     #[test]
@@ -387,11 +605,10 @@ mod tests {
     }
 
     #[test]
-    fn end_scope_restores_a_base_name_that_was_hidden_or_changed() {
+    fn end_scope_restores_a_base_name_that_was_changed() {
         let base = base_of(&[("A", "1"), ("B", "2")]);
         let mut table = PreprocVarTable::over(&base);
         let scope = table.begin_scope();
-        table.undefine("A");
         table.define("B", "changed");
         table.define("C", "3");
         table.end_scope(scope);
@@ -399,6 +616,16 @@ mod tests {
         assert_eq!(table.get("B").map(|v| &**v), Some("2"));
         assert_eq!(table.origin("B"), Some(Origin::Global));
         assert!(!table.is_defined("C"));
+    }
+
+    #[test]
+    fn a_base_name_that_a_scope_undefines_stays_hidden() {
+        let base = base_of(&[("A", "1")]);
+        let mut table = PreprocVarTable::over(&base);
+        let scope = table.begin_scope();
+        table.undefine("A");
+        table.end_scope(scope);
+        assert!(!table.is_defined("A"));
     }
 
     #[test]
