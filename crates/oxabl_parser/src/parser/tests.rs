@@ -10109,6 +10109,7 @@ fn parse_on_persistent_run() {
             OnAction::PersistentRun {
                 procedure,
                 arguments,
+                ..
             } => {
                 assert_eq!(procedure.name, "myProc");
                 assert!(arguments.is_empty());
@@ -12720,6 +12721,136 @@ fn create_buffer_keeps_its_for_table_operand() {
                 ..
             } => assert!(for_table.is_some(), "{source}"),
             other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn object_and_widget_stay_usable_as_names() {
+    for source in [
+        "DEFINE VARIABLE object AS CHARACTER NO-UNDO.",
+        "DEFINE VARIABLE widget AS CHARACTER NO-UNDO.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD widget AS CHARACTER FIELD object AS INTEGER.",
+        "object = widget.",
+        "MESSAGE object widget.",
+        "x = tt.widget + h:object.",
+        "DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.",
+        "PROCEDURE object:\n  RETURN.\nEND PROCEDURE.",
+        "RUN widget.",
+        "DELETE object.",
+        "DELETE OBJECT object.",
+        "DELETE WIDGET widget.",
+        "DELETE OBJECT h:object.",
+        "RELEASE OBJECT object.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
+fn delete_and_release_object_forms_keep_their_kind() {
+    let stmts = parse_clean("DELETE OBJECT object.\nDELETE WIDGET widget.\nRELEASE OBJECT object.");
+    assert!(matches!(
+        stmts[0].kind,
+        StatementKind::DeleteObject {
+            kind: DeleteObjectKind::Object,
+            ..
+        }
+    ));
+    assert!(matches!(
+        stmts[1].kind,
+        StatementKind::DeleteObject {
+            kind: DeleteObjectKind::Widget,
+            ..
+        }
+    ));
+    assert!(matches!(stmts[2].kind, StatementKind::ReleaseObject { .. }));
+}
+
+#[test]
+fn create_buffer_accepts_buffer_name() {
+    for tail in [
+        "FOR TABLE \"x\" BUFFER-NAME \"y\"",
+        "FOR TABLE cTable BUFFER-NAME cName NO-ERROR",
+        "FOR TABLE hTt:DEFAULT-BUFFER-HANDLE BUFFER-NAME cName IN WIDGET-POOL \"p\"",
+    ] {
+        let source = format!("CREATE BUFFER h {tail}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        match &stmts[0].kind {
+            StatementKind::Create {
+                target:
+                    CreateTarget::Handle {
+                        kind: CreateTargetKind::Buffer,
+                        for_table,
+                        assignments,
+                        ..
+                    },
+                ..
+            } => {
+                assert!(for_table.is_some(), "{source}");
+                assert_eq!(assignments.len(), 1, "{source}");
+                assert!(
+                    assignments[0].attribute.name.eq_ignore_ascii_case("BUFFER-NAME"),
+                    "{source}"
+                );
+            }
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn buffer_name_stays_usable_as_a_member_name() {
+    let source = format!("cName = hBuf:BUFFER-NAME.{NEXT_STMT}");
+    let stmts = parse_clean(&source);
+    assert_next_stmt_survives(&stmts, &source);
+}
+
+#[test]
+fn on_persistent_run_takes_in_handle_and_path_names() {
+    for (tail, name, has_in, args) in [
+        ("PERSISTENT RUN p IN THIS-PROCEDURE.", "p", true, 0),
+        ("PERSISTENT RUN p IN hLib (INPUT x).", "p", true, 1),
+        ("PERSISTENT RUN dir/file.p.", "dir/file.p", false, 0),
+        ("PERSISTENT RUN dir/file.p IN hLib (x, y).", "dir/file.p", true, 2),
+    ] {
+        let on = format!("ON CHOOSE OF btn {tail}{NEXT_STMT}");
+        let stmts = parse_clean(&on);
+        assert_next_stmt_survives(&stmts, &on);
+        match &stmts[0].kind {
+            StatementKind::On {
+                kind:
+                    OnKind::UiEvent {
+                        action:
+                            OnAction::PersistentRun {
+                                procedure,
+                                in_handle,
+                                arguments,
+                            },
+                        ..
+                    },
+            } => {
+                assert_eq!(procedure.name, name, "{on}");
+                assert_eq!(in_handle.is_some(), has_in, "{on}");
+                assert_eq!(arguments.len(), args, "{on}");
+            }
+            other => panic!("{on}: got {other:?}"),
+        }
+
+        let trig = format!(
+            "CREATE BUTTON h\n  TRIGGERS:\n    ON CHOOSE {tail}\n  END TRIGGERS.{NEXT_STMT}"
+        );
+        let stmts = parse_clean(&trig);
+        assert_next_stmt_survives(&stmts, &trig);
+        match &stmts[0].kind {
+            StatementKind::Create {
+                target: CreateTarget::Handle { triggers, .. },
+                ..
+            } => assert_eq!(triggers.len(), 1, "{trig}"),
+            other => panic!("{trig}: got {other:?}"),
         }
     }
 }

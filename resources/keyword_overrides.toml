@@ -954,3 +954,24 @@ keyword_type = "Type"
 name = "TOGGLE-BOX"
 reserved = false
 keyword_type = "Type"
+
+# =============================================================================
+# DELETE/RELEASE OBJECT TARGETS
+# Words that follow DELETE and RELEASE. Unreserved: they stay valid names.
+# =============================================================================
+
+[[add]]
+name = "OBJECT"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "WIDGET"
+reserved = false
+keyword_type = "Type"
+
+# CREATE BUFFER ... BUFFER-NAME
+[[add]]
+name = "BUFFER-NAME"
+reserved = false
+keyword_type = "Option"

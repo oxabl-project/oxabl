@@ -3622,9 +3622,7 @@ impl Parser<'_> {
             } else if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
                 // ON SERVER name — or ON handle (AppServer targeting)
                 self.advance(); // consume ON
-                let next_tok = self.peek();
-                let next_is_server =
-                    self.source[next_tok.start..next_tok.end].eq_ignore_ascii_case("server");
+                let next_is_server = self.check(Kind::Server);
                 self.advance(); // consume SERVER or handle name
                 if next_is_server && Self::can_be_identifier(self.peek().kind) {
                     self.advance(); // consume server name after SERVER keyword
@@ -3732,9 +3730,7 @@ impl Parser<'_> {
         loop {
             if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
                 self.advance();
-                let next_tok = self.peek();
-                let next_is_server =
-                    self.source[next_tok.start..next_tok.end].eq_ignore_ascii_case("server");
+                let next_is_server = self.check(Kind::Server);
                 self.advance();
                 if next_is_server && Self::can_be_identifier(self.peek().kind) {
                     self.advance();
@@ -5678,6 +5674,17 @@ impl Parser<'_> {
             } else if self.check(Kind::Assign) {
                 self.advance(); // consume ASSIGN
                 self.parse_create_assignments(&mut assignments)?;
+            } else if self.check(Kind::BufferName) {
+                let token = self.advance().clone();
+                let attribute = Identifier {
+                    span: Span {
+                        start: token.start as u32,
+                        end: token.end as u32,
+                    },
+                    name: self.source[token.start..token.end].to_string(),
+                };
+                let value = self.parse_expression()?;
+                assignments.push(CreateAssignment { attribute, value });
             } else if self.check(Kind::Triggers) {
                 triggers = self.parse_widget_triggers()?;
             } else if self.check(Kind::Connect) {
@@ -5884,17 +5891,16 @@ impl Parser<'_> {
     /// `SERVER` also name tables, so they need an operand after them.
     fn match_delete_object_kind(&self) -> Option<DeleteObjectKind> {
         let token = self.peek();
-        let text = &self.source[token.start..token.end];
         let kind = if token.kind == Kind::Procedure {
             DeleteObjectKind::Procedure
         } else if token.kind == Kind::Server {
             DeleteObjectKind::Server
-        } else if token.kind == Kind::Identifier && text.eq_ignore_ascii_case("object") {
+        } else if token.kind == Kind::Object {
             // The operand may be parenthesized or a preprocessor reference.
             let next = self.peek_at(1).kind;
             return (!matches!(next, Kind::Period | Kind::NoError | Kind::Eof))
                 .then_some(DeleteObjectKind::Object);
-        } else if token.kind == Kind::Identifier && text.eq_ignore_ascii_case("widget") {
+        } else if token.kind == Kind::Widget {
             DeleteObjectKind::Widget
         } else {
             return None;
@@ -5909,15 +5915,12 @@ impl Parser<'_> {
 
         // RELEASE OBJECT com-handle [NO-ERROR]. — release a COM object
         // RELEASE EXTERNAL PROCEDURE "name". — release a loaded external procedure
-        if Self::can_be_identifier(self.peek().kind) {
-            let tok = &self.tokens[self.current];
-            if self.source[tok.start..tok.end].eq_ignore_ascii_case("object") {
-                let resume = (self.current, self.errors.len());
-                self.advance(); // consume OBJECT
-                return Ok(self
-                    .parse_release_object()
-                    .unwrap_or_else(|_| self.recover_release_as_skipped(resume)));
-            }
+        if self.check(Kind::Object) {
+            let resume = (self.current, self.errors.len());
+            self.advance(); // consume OBJECT
+            return Ok(self
+                .parse_release_object()
+                .unwrap_or_else(|_| self.recover_release_as_skipped(resume)));
         }
         if self.check(Kind::External) {
             self.advance(); // consume EXTERNAL
@@ -6819,7 +6822,14 @@ impl Parser<'_> {
         if self.check(Kind::Persistent) {
             self.advance();
             self.expect_kind(Kind::Run, "Expected RUN after PERSISTENT")?;
-            let procedure = self.parse_identifier()?;
+            let (name, span) = self.parse_procedure_name()?;
+            let procedure = Identifier { span, name };
+            let in_handle = if self.check(Kind::KwIn) {
+                self.advance();
+                Some(self.parse_run_in_handle()?)
+            } else {
+                None
+            };
             let arguments = if self.check(Kind::LeftParen) {
                 self.parse_persistent_run_args()?
             } else {
@@ -6828,6 +6838,7 @@ impl Parser<'_> {
             self.expect_period("Expected '.' after PERSISTENT RUN")?;
             return Ok(OnAction::PersistentRun {
                 procedure,
+                in_handle,
                 arguments,
             });
         }

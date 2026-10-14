@@ -151,8 +151,8 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         StatementKind::On { kind } => match kind {
             OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action {
                 OnAction::Block(body) => walk_statement(v, body),
-                OnAction::PersistentRun { arguments, .. } => {
-                    for a in arguments {
+                OnAction::PersistentRun { in_handle, arguments, .. } => {
+                    for a in in_handle.iter().chain(arguments) {
                         walk_expression(v, a);
                     }
                 }
@@ -288,8 +288,8 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 for t in triggers {
                     match &t.action {
                         OnAction::Block(body) => walk_statement(v, body),
-                        OnAction::PersistentRun { arguments, .. } => {
-                            for a in arguments {
+                        OnAction::PersistentRun { in_handle, arguments, .. } => {
+                            for a in in_handle.iter().chain(arguments) {
                                 walk_expression(v, a);
                             }
                         }

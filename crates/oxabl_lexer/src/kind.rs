@@ -337,6 +337,7 @@ pub enum Kind {
     External,
     Size,
     NoApply,
+    BufferName,
 
     // Phrases
     Editing,
@@ -389,6 +390,8 @@ pub enum Kind {
     Slider,
     SubMenu,
     ToggleBox,
+    Object,
+    Widget,
 
     // Handles
     Clipboard,
@@ -942,6 +945,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "no-map" => Some(Kind::NoMap),
             "no-mes" => Some(Kind::NoMessage),
             "no-val" => Some(Kind::NoValidate),
+            "object" => Some(Kind::Object),
             "option" => Some(Kind::Option),
             "os-dir" => Some(Kind::OsDir),
             "output" => Some(Kind::Output),
@@ -974,6 +978,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "userid" => Some(Kind::Userid),
             "values" => Some(Kind::Values),
             "variab" => Some(Kind::Variable),
+            "widget" => Some(Kind::Widget),
             "window" => Some(Kind::Window),
             _ => None,
         },
@@ -1387,6 +1392,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "before hide" => Some(Kind::BeforeHide),
             "block-level" => Some(Kind::BlockLevel),
             "buffer-copy" => Some(Kind::BufferCopy),
+            "buffer-name" => Some(Kind::BufferName),
             "case sensit" => Some(Kind::CaseSensitive),
             "case-sensit" => Some(Kind::CaseSensitive),
             "column labe" => Some(Kind::ColumnLabel),

@@ -2838,8 +2838,8 @@ impl<'a> ResolveWalker<'a> {
                             .unwrap_or(scope);
                         self.walk_statement(body, ts);
                     }
-                    OnAction::PersistentRun { arguments, .. } => {
-                        for arg in arguments {
+                    OnAction::PersistentRun { in_handle, arguments, .. } => {
+                        for arg in in_handle.iter().chain(arguments) {
                             self.walk_expression(arg, scope, AccessMode::Read);
                         }
                     }
@@ -3134,8 +3134,8 @@ impl<'a> ResolveWalker<'a> {
                         for trigger in triggers {
                             match &trigger.action {
                                 OnAction::Block(body) => self.walk_statement(body, ts),
-                                OnAction::PersistentRun { arguments, .. } => {
-                                    for arg in arguments {
+                                OnAction::PersistentRun { in_handle, arguments, .. } => {
+                                    for arg in in_handle.iter().chain(arguments) {
                                         self.walk_expression(arg, scope, AccessMode::Read);
                                     }
                                 }

@@ -268,8 +268,8 @@ impl<'a> CheckWalker<'a> {
                             .unwrap_or(scope);
                         self.walk_statement(body, s);
                     }
-                    OnAction::PersistentRun { arguments, .. } => {
-                        for arg in arguments {
+                    OnAction::PersistentRun { in_handle, arguments, .. } => {
+                        for arg in in_handle.iter().chain(arguments) {
                             self.check_expression(arg, scope);
                         }
                     }
@@ -425,8 +425,8 @@ impl<'a> CheckWalker<'a> {
                         for trigger in triggers {
                             match &trigger.action {
                                 OnAction::Block(body) => self.walk_statement(body, ts),
-                                OnAction::PersistentRun { arguments, .. } => {
-                                    for arg in arguments {
+                                OnAction::PersistentRun { in_handle, arguments, .. } => {
+                                    for arg in in_handle.iter().chain(arguments) {
                                         self.check_expression(arg, scope);
                                     }
                                 }

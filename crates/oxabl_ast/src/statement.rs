@@ -1386,9 +1386,10 @@ pub enum OnAction {
     Block(Box<Statement>),
     /// REVERT -- removes the trigger.
     Revert,
-    /// PERSISTENT RUN procedure [(args)].
+    /// PERSISTENT RUN procedure [IN handle] [(args)].
     PersistentRun {
         procedure: Identifier,
+        in_handle: Option<Expression>,
         arguments: Vec<Expression>,
     },
 }

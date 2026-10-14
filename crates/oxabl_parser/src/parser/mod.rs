@@ -1184,6 +1184,9 @@ impl<'a> Parser<'a> {
                     | Kind::FrameField
                     | Kind::FrameIndex
                     // Dynamic-object and widget type keywords of CREATE (unreserved)
+                    | Kind::Object
+                    | Kind::Widget
+                    | Kind::BufferName
                     | Kind::XDocument
                     | Kind::XNoderef
                     | Kind::SaxReader

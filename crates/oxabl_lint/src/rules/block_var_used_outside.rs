@@ -620,8 +620,8 @@ mod paths {
                     for t in triggers {
                         match &t.action {
                             OnAction::Block(b) => self.stmt(b),
-                            OnAction::PersistentRun { arguments, .. } => {
-                                for e in arguments {
+                            OnAction::PersistentRun { in_handle, arguments, .. } => {
+                                for e in in_handle.iter().chain(arguments) {
                                     read(self, e);
                                 }
                             }
@@ -633,8 +633,8 @@ mod paths {
                     OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action
                     {
                         OnAction::Block(b) => self.stmt(b),
-                        OnAction::PersistentRun { arguments, .. } => {
-                            for e in arguments {
+                        OnAction::PersistentRun { in_handle, arguments, .. } => {
+                            for e in in_handle.iter().chain(arguments) {
                                 read(self, e);
                             }
                         }
