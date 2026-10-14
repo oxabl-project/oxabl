@@ -259,6 +259,19 @@
           },
           "type": "array"
         },
+        "root_extensions": {
+          "default": [
+            "p",
+            "w",
+            "cls",
+            "v"
+          ],
+          "description": "Extensions that make a file an ABL *root* when a directory is walked, written without the dot and matched case-insensitively. Default `[\"p\", \"w\", \"cls\", \"v\"]`.\n\nUse it for shop conventions such as `.pp` or `.cgi`. It decides which files `oxabl check` and the other directory walks pick up; a file named on the command line is always accepted. A leading dot is ignored. An entry that is empty, holds a path separator, or is `i` is dropped with a warning: an include fragment is never a root. The list replaces the default, so keep the defaults you still need.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "run_extensions": {
           "default": [
             "p",

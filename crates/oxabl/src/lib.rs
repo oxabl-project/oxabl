@@ -491,6 +491,7 @@ pub mod workspace {
     pub use oxabl_workspace::{
         FileSystem, InMemoryFileSystem, LintConfig, LintOverride, LintRuleSettings, LintSeverity,
         PreprocessorConfig, ROOT_EXTENSIONS, RealFileSystem, RejectedLintPattern, Workspace,
-        WorkspaceConfig, discover_path, find_workspace_root, is_root_file, walk_directory,
+        WorkspaceConfig, discover_path, discover_path_in, find_workspace_root, is_root_file,
+        is_root_file_in, walk_directory, walk_directory_in,
     };
 }

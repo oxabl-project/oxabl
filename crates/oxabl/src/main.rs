@@ -15,7 +15,7 @@ use oxabl_pipeline::{
 };
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{RealFileSystem, discover_path, walk_include_fragments};
+use oxabl_workspace::{RealFileSystem, discover_path, discover_path_in, walk_include_fragments};
 use serde::Serialize;
 
 #[derive(ClapParser)]
@@ -646,7 +646,7 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 
     // Discovery through the shared walker (exit 2 on path-not-found / no ABL
     // files, matching `check`).
-    let files = match discover_path(path) {
+    let files = match discover_path_in(path, &config.root_extensions) {
         Ok(files) => files,
         Err(e) => {
             eprintln!("error: {e}");
@@ -899,18 +899,6 @@ fn run_check(
     no_format: bool,
     baseline_file: Option<(&Path, bool)>,
 ) -> ExitCode {
-    // Discovery through the shared walker: a named file is checked regardless of
-    // extension, a directory is walked under the root-extension policy. A
-    // missing path and an empty tree are distinct facts but the same usage
-    // error (exit 2).
-    let files = match discover_path(path) {
-        Ok(files) => files,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::from(2);
-        }
-    };
-
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
     // `.df` it names, so doing it inside the loop would re-parse the schema for
     // every file in the tree.
@@ -950,6 +938,18 @@ fn run_check(
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
+
+    // Discovery through the shared walker: a named file is checked regardless of
+    // extension, a directory is walked under the configured root extensions
+    // (`[workspace.sources].root_extensions`). A missing path and an empty tree
+    // are distinct facts but the same usage error (exit 2).
+    let files = match discover_path_in(path, &config.root_extensions) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
     let mut baseline =
         match baseline_file.map(|(file, update)| baseline::Run::open(file, update, path)) {
