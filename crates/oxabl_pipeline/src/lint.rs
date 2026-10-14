@@ -291,11 +291,7 @@ impl LintResult {
     /// on a failed run — check [`failure`](Self::failure) before reading silence
     /// as cleanliness.
     pub fn diagnostics(&self) -> &CollectedDiagnostics {
-        static NONE: &CollectedDiagnostics = &CollectedDiagnostics {
-            diagnostics: Vec::new(),
-            parse_recovered: false,
-            include_findings: Vec::new(),
-        };
+        static NONE: &CollectedDiagnostics = &CollectedDiagnostics::new(Vec::new());
         match &self.outcome {
             Outcome::Computed { diagnostics, .. } => diagnostics,
             Outcome::Failed(_) => NONE,
@@ -901,8 +897,8 @@ impl<'a> LintPipeline<'a> {
             // Fatal preprocessing failure: no model, and the preprocessor's own
             // loud errors are the whole diagnostic set.
             Err(preproc_errors) => {
-                let diagnostics = CollectedDiagnostics {
-                    diagnostics: preproc_errors
+                let diagnostics = CollectedDiagnostics::new(
+                    preproc_errors
                         .iter()
                         .filter(|_| selection == RuleSelection::All)
                         .map(|d| CollectedDiagnostic {
@@ -910,9 +906,7 @@ impl<'a> LintPipeline<'a> {
                             source: DiagnosticSource::Preproc,
                         })
                         .collect(),
-                    parse_recovered: false,
-                    include_findings: Vec::new(),
-                };
+                );
                 LintResult::computed(None, diagnostics, dependency_paths)
             }
         }

@@ -180,3 +180,151 @@ fn delete_object_and_widget_keep_their_keyword_recasing() {
     let lower = "delete object hQ.\ndelete widget hW.\nrelease object hC.\ndelete procedure this-procedure.\n";
     assert_formats(src, upper, lower);
 }
+
+#[test]
+fn class_names_in_type_positions_keep_their_spelling() {
+    let src = "\
+Using pkg.*.
+Class pkg2.Client Inherits Server Implements pkg.IFoo, Socket, Image:
+  Method Public Void Go(Input o As Progress.Lang.Object):
+    Define Variable s As Server No-Undo.
+    s = Cast(o, Server).
+    If Type-Of(o, Socket) Then Message \"x\".
+    Message Get-Class(Image):TypeName.
+    s = Dynamic-Cast(o, Menu).
+    s = New Server().
+    Menu:StaticCall().
+  End Method.
+End Class.
+";
+    let upper = "\
+USING pkg.*.
+CLASS pkg2.Client INHERITS Server IMPLEMENTS pkg.IFoo, Socket, Image:
+  METHOD PUBLIC VOID Go(INPUT o AS Progress.Lang.Object):
+    DEFINE VARIABLE s AS Server NO-UNDO.
+    s = CAST(o, Server).
+    IF Type-Of(o, Socket) THEN MESSAGE \"x\".
+    MESSAGE Get-Class(Image):TypeName.
+    s = Dynamic-Cast(o, Menu).
+    s = NEW Server().
+    Menu:StaticCall().
+  END METHOD.
+END CLASS.
+";
+    let lower = "\
+using pkg.*.
+class pkg2.Client inherits Server implements pkg.IFoo, Socket, Image:
+  method public void Go(input o as Progress.Lang.Object):
+    define variable s as Server no-undo.
+    s = cast(o, Server).
+    if Type-Of(o, Socket) then message \"x\".
+    message Get-Class(Image):TypeName.
+    s = Dynamic-Cast(o, Menu).
+    s = new Server().
+    Menu:StaticCall().
+  end method.
+end class.
+";
+    assert_formats(src, upper, lower);
+}
+
+#[test]
+fn widget_operand_keywords_are_recased_after_create_define_and_view_as() {
+    let src = "\
+Define Button bOk Label \"Ok\".
+Define Image iLogo File \"a.bmp\".
+Define Variable cTxt As Character View-As Editor Size 10 By 2.
+Define Variable lTgl As Logical View-As Toggle-Box.
+Create Server hServer.
+Create Socket hSock.
+Delete Object hSock.
+";
+    let upper = "\
+DEFINE BUTTON bOk LABEL \"Ok\".
+DEFINE IMAGE iLogo File \"a.bmp\".
+DEFINE VARIABLE cTxt AS CHARACTER VIEW-AS EDITOR SIZE 10 BY 2.
+DEFINE VARIABLE lTgl AS LOGICAL VIEW-AS TOGGLE-BOX.
+CREATE SERVER hServer.
+CREATE SOCKET hSock.
+DELETE OBJECT hSock.
+";
+    let lower = "\
+define button bOk label \"Ok\".
+define image iLogo File \"a.bmp\".
+define variable cTxt as character view-as editor size 10 by 2.
+define variable lTgl as logical view-as toggle-box.
+create server hServer.
+create socket hSock.
+delete object hSock.
+";
+    assert_formats(src, upper, lower);
+}
+
+#[test]
+fn a_new_keyword_that_names_a_table_keeps_its_spelling() {
+    let src = "\
+Define Temp-Table Image No-Undo Field id As Integer.
+Create Image.
+Delete Image.
+Create Button hb.
+";
+    let upper = "\
+DEFINE TEMP-TABLE Image NO-UNDO FIELD id AS INTEGER.
+CREATE Image.
+DELETE Image.
+CREATE BUTTON hb.
+";
+    assert_eq!(fmt(src, KeywordCase::Uppercase), upper);
+}
+
+#[test]
+fn system_handle_receivers_are_recased() {
+    let src = "\
+Message log-manager:logfile-name security-policy:xml-schema profiler:enabled.
+Message audit-control:appl-context-id rcode-info:file-name error-status:error.
+";
+    let upper = "\
+MESSAGE LOG-MANAGER:logfile-name SECURITY-POLICY:xml-schema PROFILER:enabled.
+MESSAGE AUDIT-CONTROL:appl-context-id RCODE-INFO:file-name ERROR-STATUS:error.
+";
+    assert_eq!(fmt(src, KeywordCase::Uppercase), upper);
+}
+
+#[test]
+fn built_in_members_after_a_colon_are_recased() {
+    let src = "\
+Define Variable hq As Handle No-Undo.
+Define Variable hb As Handle No-Undo.
+hq:Num-Results = hb:Label + hb:Title + hb:Num-Entries.
+hb:Screen-Value = String(hq:Handle).
+";
+    let upper = "\
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+hq:Num-Results = hb:LABEL + hb:TITLE + hb:NUM-ENTRIES.
+hb:Screen-Value = String(hq:HANDLE).
+";
+    assert_eq!(fmt(src, KeywordCase::Uppercase), upper);
+}
+
+#[test]
+fn keywords_are_recased_even_when_a_field_has_their_spelling() {
+    let src = "\
+Define Temp-Table tt No-Undo Field name As Character Field label As Character.
+Display tt.name Label \"Name\".
+Message label.
+";
+    let upper = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD name AS CHARACTER FIELD LABEL AS CHARACTER.
+DISPLAY tt.name LABEL \"Name\".
+MESSAGE LABEL.
+";
+    assert_eq!(fmt(src, KeywordCase::Uppercase), upper);
+}
+
+#[test]
+fn a_field_named_like_an_introducer_does_not_protect_the_next_word() {
+    let src = "If b.Class Eq \"x\" Then Message \"y\".\nRun fill.p.\nRun Fill.p (Input 1).\n";
+    let upper = "IF b.CLASS EQ \"x\" THEN MESSAGE \"y\".\nRUN fill.p.\nRUN Fill.p (INPUT 1).\n";
+    assert_eq!(fmt(src, KeywordCase::Uppercase), upper);
+}
