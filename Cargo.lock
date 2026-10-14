@@ -1204,6 +1204,7 @@ dependencies = [
  "oxabl_ast",
  "oxabl_common",
  "oxabl_workspace",
+ "rustc-hash",
 ]
 
 [[package]]
