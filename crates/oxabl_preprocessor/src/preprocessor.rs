@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
@@ -11,6 +11,7 @@ use crate::condition::{Environment, Gap, evaluate, skip_comment};
 use crate::span_tree::{
     PreprocessedFile, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
+use crate::var_table::BaseVars;
 
 /// Preprocessor for ABL source code.
 ///
@@ -23,8 +24,39 @@ use crate::span_tree::{
 pub struct Preprocessor<'fs> {
     fs: &'fs dyn FileSystem,
     include_paths: &'fs [PathBuf],
-    predefined: PreprocessorConfig,
+    /// `None` is the default [`PreprocessorConfig`], which is built once.
+    predefined: Option<Predefined>,
 }
+
+/// A [`PreprocessorConfig`] with the names it defines, which every run starts
+/// with and shares rather than builds.
+struct Predefined {
+    config: PreprocessorConfig,
+    vars: BaseVars,
+}
+
+impl Predefined {
+    fn new(config: PreprocessorConfig) -> Self {
+        let mut vars = PreprocVarTable::new();
+        vars.define_global("OPSYS", &config.opsys);
+        vars.define_global("WINDOW-SYSTEM", &config.window_system);
+        vars.define_global("BATCH-MODE", if config.batch_mode { "yes" } else { "no" });
+        vars.define_global(
+            "PROCESS-ARCHITECTURE",
+            &config.process_architecture.to_string(),
+        );
+        if let Some(version) = &config.proversion {
+            vars.define_global("PROVERSION", version);
+        }
+        Predefined {
+            config,
+            vars: vars.into_base(),
+        }
+    }
+}
+
+static DEFAULT_PREDEFINED: LazyLock<Predefined> =
+    LazyLock::new(|| Predefined::new(PreprocessorConfig::default()));
 
 /// The predefined names whose value comes from [`PreprocessorConfig`].
 const CONFIGURED_NAMES: [&str; 5] = [
@@ -57,20 +89,6 @@ impl ComputedName {
     }
 }
 
-/// Define the predefined names that [`PreprocessorConfig`] answers.
-fn define_configured_names(vars: &mut PreprocVarTable, config: &PreprocessorConfig) {
-    vars.define_global("OPSYS", &config.opsys);
-    vars.define_global("WINDOW-SYSTEM", &config.window_system);
-    vars.define_global("BATCH-MODE", if config.batch_mode { "yes" } else { "no" });
-    vars.define_global(
-        "PROCESS-ARCHITECTURE",
-        &config.process_architecture.to_string(),
-    );
-    if let Some(version) = &config.proversion {
-        vars.define_global("PROVERSION", version);
-    }
-}
-
 /// Maximum include depth to prevent runaway recursion from very deep (but
 /// non-cyclic) include chains.
 const MAX_INCLUDE_DEPTH: usize = 64;
@@ -80,7 +98,7 @@ impl<'fs> Preprocessor<'fs> {
         Preprocessor {
             fs,
             include_paths,
-            predefined: PreprocessorConfig::default(),
+            predefined: None,
         }
     }
 
@@ -90,7 +108,7 @@ impl<'fs> Preprocessor<'fs> {
     /// Without this the defaults of [`PreprocessorConfig`] apply: a 64-bit Unix
     /// batch compile with a TTY window system and no known `PROVERSION`.
     pub fn with_predefined(mut self, predefined: &PreprocessorConfig) -> Self {
-        self.predefined = predefined.clone();
+        self.predefined = Some(Predefined::new(predefined.clone()));
         self
     }
 
@@ -124,14 +142,13 @@ impl<'fs> Preprocessor<'fs> {
         name: Option<&str>,
         source: &str,
     ) -> Result<PreprocessedFile, Vec<Diagnostic>> {
-        let mut vars = PreprocVarTable::with_capacity(16);
-        define_configured_names(&mut vars, &self.predefined);
+        let predefined = self.predefined.as_ref().unwrap_or(&DEFAULT_PREDEFINED);
         let mut ctx = ProcessContext {
             fs: self.fs,
             include_paths: self.include_paths,
-            vars,
-            predefined: self.predefined.clone(),
-            file_names: vec![name.map(str::to_string)],
+            vars: PreprocVarTable::over(&predefined.vars),
+            predefined: &predefined.config,
+            file_names: FileNames::new(name),
             sequence: 0,
             global_vars: PreprocVarTable::new(),
             dependencies: Vec::new(),
@@ -175,15 +192,54 @@ impl<'fs> Preprocessor<'fs> {
     }
 }
 
-struct ProcessContext<'fs> {
-    fs: &'fs dyn FileSystem,
-    include_paths: &'fs [PathBuf],
+/// The names `{&FILE-NAME}` reports for the files being processed: the root's
+/// as the caller gave it (none when it gave none), then one include name per
+/// include being expanded, innermost last.
+struct FileNames<'a> {
+    root: Option<&'a str>,
+    /// The include names end to end; `ends[n]` is where the nth stops.
+    text: String,
+    ends: Vec<usize>,
+}
+
+impl<'a> FileNames<'a> {
+    fn new(root: Option<&'a str>) -> Self {
+        FileNames {
+            root,
+            text: String::new(),
+            ends: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, name: &str) {
+        self.text.push_str(name);
+        self.ends.push(self.text.len());
+    }
+
+    fn pop(&mut self) {
+        self.ends.pop();
+        self.text.truncate(self.ends.last().copied().unwrap_or(0));
+    }
+
+    fn last(&self) -> Option<&str> {
+        match self.ends.as_slice() {
+            [] => self.root,
+            [.., end] => {
+                let start = self.ends.iter().rev().nth(1).copied().unwrap_or(0);
+                Some(&self.text[start..*end])
+            }
+        }
+    }
+}
+
+struct ProcessContext<'a> {
+    fs: &'a dyn FileSystem,
+    include_paths: &'a [PathBuf],
     vars: PreprocVarTable,
     /// What the functions of an `&IF` condition answer from.
-    predefined: PreprocessorConfig,
-    /// The name `{&FILE-NAME}` reports for each file being processed, innermost
-    /// last. The root's is `None` when the caller supplied no name.
-    file_names: Vec<Option<String>>,
+    predefined: &'a PreprocessorConfig,
+    /// The name `{&FILE-NAME}` reports for the file being processed.
+    file_names: FileNames<'a>,
     /// The next value of `{&SEQUENCE}`, shared by the whole compilation unit.
     sequence: u32,
     /// Variables set via `&GLOBAL-DEFINE` — propagated back to parent.
@@ -218,7 +274,7 @@ struct ProcessContext<'fs> {
     file_id_counter: u32,
 }
 
-impl<'fs> ProcessContext<'fs> {
+impl ProcessContext<'_> {
     fn next_file_id(&mut self) -> FileId {
         let id = FileId::new(self.file_id_counter);
         self.file_id_counter += 1;
@@ -738,7 +794,7 @@ impl<'fs> ProcessContext<'fs> {
     /// `source`. `None` for `{&FILE-NAME}` when the root file has no name.
     fn computed_value(&mut self, name: ComputedName, source: &str, at: usize) -> Option<Arc<str>> {
         match name {
-            ComputedName::FileName => self.file_names.last()?.as_deref().map(Arc::from),
+            ComputedName::FileName => self.file_names.last().map(Arc::from),
             ComputedName::LineNumber => {
                 let starts = self
                     .line_starts
@@ -788,7 +844,7 @@ impl<'fs> ProcessContext<'fs> {
             &condition,
             &Environment {
                 vars: &self.vars,
-                config: &self.predefined,
+                config: self.predefined,
             },
         );
         let mut unmodelled = Vec::new();
@@ -1426,7 +1482,7 @@ impl<'fs> ProcessContext<'fs> {
         // The site is on the stack for the duration, so anything unresolvable
         // below here can name the chain that reached it.
         self.site_stack.push(site);
-        self.file_names.push(Some(include_name.to_string()));
+        self.file_names.push(include_name);
         let children = self.process_source(include_file_id, &content, depth + 1, &args.positional);
         self.file_names.pop();
         self.site_stack.pop();
