@@ -738,6 +738,18 @@ impl<'a> Walker<'a> {
                     OnKind::KeyRemap { .. } => {}
                 }
             }
+            // A widget create's TRIGGERS phrase: one scope for all its trigger bodies.
+            StatementKind::Create {
+                target: CreateTarget::Handle { triggers, .. },
+                ..
+            } if !triggers.is_empty() => {
+                let ts = self.tree.push(ScopeKind::Trigger, scope, stmt.id);
+                for trigger in triggers {
+                    if let oxabl_ast::OnAction::Block(body) = &trigger.action {
+                        self.walk_statement(body, ts);
+                    }
+                }
+            }
             StatementKind::TriggerProcedure { .. } => {
                 // Opens an implicit trigger-procedure scope for the file
                 // body that follows. Currently just records the scope
@@ -2986,8 +2998,30 @@ impl<'a> ResolveWalker<'a> {
             // head-parsing the form: skipping it harvested every identifier it
             // passed over and marked them touched-by-something-unmodelled, which
             // silenced the count-gated rules for the rest of the file.
-            StatementKind::DeleteObject { target, .. } => {
+            StatementKind::DeleteObject {
+                target,
+                extra_targets,
+                ..
+            } => {
                 self.walk_expression(target, scope, AccessMode::Read);
+                for t in extra_targets {
+                    self.walk_expression(t, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::CreateWidgetPool { name, .. }
+            | StatementKind::DeleteWidgetPool { name, .. } => {
+                if let Some(n) = name {
+                    self.walk_expression(n, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::ReleaseObject { target, .. } => {
+                self.walk_expression(target, scope, AccessMode::Read);
+            }
+            StatementKind::Apply { event, target } => {
+                self.walk_lenient_operand(event, scope);
+                if let Some(t) = target {
+                    self.walk_lenient_operand(t, scope);
+                }
             }
             StatementKind::Delete { buffer, .. }
             | StatementKind::Release { buffer, .. }
@@ -3061,16 +3095,41 @@ impl<'a> ResolveWalker<'a> {
                 CreateTarget::Handle {
                     handle,
                     widget_pool,
+                    class,
+                    assignments,
+                    triggers,
+                    connect,
+                    for_table,
                     ..
                 } => {
-                    self.resolve_statement_ident(
-                        handle,
-                        scope,
-                        &[NamespaceId::Values],
-                        AccessMode::Write,
-                    );
-                    if let Some(wp) = widget_pool {
-                        self.walk_expression(wp, scope, AccessMode::Read);
+                    self.walk_expression(handle, scope, AccessMode::Write);
+                    if let Some(t) = for_table {
+                        self.walk_lenient_operand(t, scope);
+                    }
+                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                        self.walk_expression(e, scope, AccessMode::Read);
+                    }
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                        self.walk_expression(file, scope, AccessMode::Read);
+                    }
+                    for a in assignments {
+                        self.walk_expression(&a.value, scope, AccessMode::Read);
+                    }
+                    if !triggers.is_empty() {
+                        let ts = self
+                            .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
+                            .unwrap_or(scope);
+                        for trigger in triggers {
+                            match &trigger.action {
+                                OnAction::Block(body) => self.walk_statement(body, ts),
+                                OnAction::PersistentRun { arguments, .. } => {
+                                    for arg in arguments {
+                                        self.walk_expression(arg, scope, AccessMode::Read);
+                                    }
+                                }
+                                OnAction::Revert => {}
+                            }
+                        }
                     }
                 }
             },
@@ -4458,6 +4517,19 @@ impl<'a> ResolveWalker<'a> {
             },
         };
         self.references.insert(operand.id, resolution);
+    }
+
+    /// Read an operand whose bare name may not be a variable: a static widget,
+    /// frame or browse (`APPLY "CHOOSE" TO btnOk`) or a table (`CREATE BUFFER h
+    /// FOR TABLE Customer`). A bare name that does not resolve is not an error;
+    /// anything compound resolves as an expression.
+    fn walk_lenient_operand(&mut self, e: &Expression, scope: ScopeId) {
+        match &e.kind {
+            ExpressionKind::Identifier(id) => {
+                self.resolve_statement_ident(id, scope, &[NamespaceId::Values], AccessMode::Read);
+            }
+            _ => self.walk_expression(e, scope, AccessMode::Read),
+        }
     }
 
     /// Resolve an `Identifier` in a **statement** position (buffer name in

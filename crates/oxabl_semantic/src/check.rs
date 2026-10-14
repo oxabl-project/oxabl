@@ -358,8 +358,30 @@ impl<'a> CheckWalker<'a> {
             // Typed like any other expression statement: the operand is an
             // expression, and a handle-typed one is what makes `DELETE OBJECT
             // ttbl:HANDLE` legal.
-            StatementKind::DeleteObject { target, .. } => {
+            StatementKind::DeleteObject {
+                target,
+                extra_targets,
+                ..
+            } => {
                 self.check_expression(target, scope);
+                for t in extra_targets {
+                    self.check_expression(t, scope);
+                }
+            }
+            StatementKind::CreateWidgetPool { name, .. }
+            | StatementKind::DeleteWidgetPool { name, .. } => {
+                if let Some(n) = name {
+                    self.check_expression(n, scope);
+                }
+            }
+            StatementKind::ReleaseObject { target, .. } => {
+                self.check_expression(target, scope);
+            }
+            StatementKind::Apply { event, target } => {
+                self.check_expression(event, scope);
+                if let Some(t) = target {
+                    self.check_expression(t, scope);
+                }
             }
             StatementKind::Delete { .. }
             | StatementKind::Release { .. }
@@ -372,10 +394,46 @@ impl<'a> CheckWalker<'a> {
             }
             StatementKind::BufferCompare { .. } => {}
             StatementKind::Create { target, .. } => {
-                if let CreateTarget::Handle { widget_pool, .. } = target
-                    && let Some(e) = widget_pool
+                if let CreateTarget::Handle {
+                    handle,
+                    widget_pool,
+                    class,
+                    assignments,
+                    triggers,
+                    connect,
+                    for_table,
+                    ..
+                } = target
                 {
-                    self.check_expression(e, scope);
+                    self.check_expression(handle, scope);
+                    if let Some(t) = for_table {
+                        self.check_expression(t, scope);
+                    }
+                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                        self.check_expression(e, scope);
+                    }
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                        self.check_expression(file, scope);
+                    }
+                    for a in assignments {
+                        self.check_expression(&a.value, scope);
+                    }
+                    if !triggers.is_empty() {
+                        let ts = self
+                            .find_child_scope(scope, stmt, ScopeKind::Trigger)
+                            .unwrap_or(scope);
+                        for trigger in triggers {
+                            match &trigger.action {
+                                OnAction::Block(body) => self.walk_statement(body, ts),
+                                OnAction::PersistentRun { arguments, .. } => {
+                                    for arg in arguments {
+                                        self.check_expression(arg, scope);
+                                    }
+                                }
+                                OnAction::Revert => {}
+                            }
+                        }
+                    }
                 }
             }
 

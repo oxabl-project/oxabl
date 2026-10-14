@@ -176,7 +176,23 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         }
         StatementKind::ExpressionStatement(e)
         | StatementKind::Throw(e)
-        | StatementKind::DeleteObject { target: e, .. } => walk_expression(v, e),
+        | StatementKind::ReleaseObject { target: e, .. } => walk_expression(v, e),
+        StatementKind::DeleteObject {
+            target,
+            extra_targets,
+            ..
+        } => {
+            walk_expression(v, target);
+            for e in extra_targets {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::CreateWidgetPool { name, .. }
+        | StatementKind::DeleteWidgetPool { name, .. } => walk_opt(v, name.as_ref()),
+        StatementKind::Apply { event, target } => {
+            walk_expression(v, event);
+            walk_opt(v, target.as_ref());
+        }
         StatementKind::Return(e) => walk_opt(v, e.as_ref()),
         StatementKind::Display { items, .. } => {
             for item in items {
@@ -250,8 +266,36 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
             StreamOperation::Close => {}
         },
         StatementKind::Create { target, .. } => {
-            if let CreateTarget::Handle { widget_pool, .. } = target {
+            if let CreateTarget::Handle {
+                handle,
+                widget_pool,
+                class,
+                assignments,
+                triggers,
+                connect,
+                for_table,
+                ..
+            } = target
+            {
+                walk_expression(v, handle);
+                walk_opt(v, for_table.as_ref());
                 walk_opt(v, widget_pool.as_ref());
+                walk_opt(v, class.as_ref());
+                walk_opt(v, connect.as_ref().and_then(|c| c.file.as_ref()));
+                for a in assignments {
+                    walk_expression(v, &a.value);
+                }
+                for t in triggers {
+                    match &t.action {
+                        OnAction::Block(body) => walk_statement(v, body),
+                        OnAction::PersistentRun { arguments, .. } => {
+                            for a in arguments {
+                                walk_expression(v, a);
+                            }
+                        }
+                        OnAction::Revert => {}
+                    }
+                }
             }
         }
         StatementKind::DefineParameter { .. }

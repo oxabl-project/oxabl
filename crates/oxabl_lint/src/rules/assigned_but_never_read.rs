@@ -239,7 +239,7 @@ impl Visitor<'_> {
             StatementKind::Create {
                 target: CreateTarget::Handle { handle, .. },
                 ..
-            } => self.record_ident(handle),
+            } => self.record_target(handle),
 
             // Recurse into bodies.
             StatementKind::Procedure { body, .. } => {
@@ -770,8 +770,13 @@ mod tests {
             stmt(StatementKind::Create {
                 target: CreateTarget::Handle {
                     kind: CreateTargetKind::Widget,
-                    handle: id_at("hWidget", 90),
+                    handle: ident_expr("hWidget", 90),
                     widget_pool: None,
+                    class: None,
+                    assignments: Vec::new(),
+                    triggers: Vec::new(),
+                    connect: None,
+                    for_table: None,
                 },
                 no_error: false,
             }),

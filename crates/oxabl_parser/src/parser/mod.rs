@@ -1182,6 +1182,32 @@ impl<'a> Parser<'a> {
                     | Kind::FrameFile
                     | Kind::FrameField
                     | Kind::FrameIndex
+                    // Dynamic-object and widget type keywords of CREATE (unreserved)
+                    | Kind::XDocument
+                    | Kind::XNoderef
+                    | Kind::SaxReader
+                    | Kind::SaxWriter
+                    | Kind::SaxAttributes
+                    | Kind::Socket
+                    | Kind::ServerSocket
+                    | Kind::Server
+                    | Kind::SoapHeader
+                    | Kind::SoapHeaderEntryref
+                    | Kind::ClientPrincipal
+                    | Kind::Button
+                    | Kind::ComboBox
+                    | Kind::ControlFrame
+                    | Kind::DialogBox
+                    | Kind::Editor
+                    | Kind::FillIn
+                    | Kind::Image
+                    | Kind::Menu
+                    | Kind::MenuItem
+                    | Kind::RadioSet
+                    | Kind::SelectionList
+                    | Kind::Slider
+                    | Kind::SubMenu
+                    | Kind::ToggleBox
                     // Widget/data keywords commonly used as class/type name components
                     | Kind::Text
                     | Kind::Rectangle

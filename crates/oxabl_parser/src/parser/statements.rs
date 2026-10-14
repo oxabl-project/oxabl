@@ -8,13 +8,14 @@
 
 use oxabl_ast::{
     AccessModifier, Annotation, AnnotationAttribute, AnnotationValue, AssignPair, BufferTarget,
-    CreateTarget, CreateTargetKind, DataRelation, DataSourceBuffer, DataSourceKeys, DbTriggerEvent,
-    DisplayItem, Expression, ExpressionKind, FindType, HandleParamKind, HandlePassingOptions,
-    Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
-    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SortDirection, Span,
-    Statement, StatementKind, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget,
+    CreateAssignment, CreateConnect, CreateTarget, CreateTargetKind, DataRelation,
+    DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DeleteObjectKind, DisplayItem, Expression,
+    ExpressionKind, FindType, HandleParamKind, HandlePassingOptions, Identifier, IndexField,
+    Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection, ParameterType,
+    ParentIdRelation, PreprocIf, RunArgument, RunTarget, SortDirection, Span, Statement,
+    StatementKind, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget,
     TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource,
-    UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
+    UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef, WidgetTrigger,
     XmlSerializeOptions,
 };
 use oxabl_lexer::Kind;
@@ -453,6 +454,10 @@ impl Parser<'_> {
             return self.parse_assign_statement();
         }
 
+        if self.check(Kind::Apply) {
+            return self.parse_apply_statement();
+        }
+
         // Database manipulation statements
         if self.check(Kind::Create) {
             return self.parse_create_statement();
@@ -663,7 +668,6 @@ impl Parser<'_> {
             || self.check(Kind::Accum) // abbreviation of ACCUMULATE
             || self.check(Kind::Down)
             || self.check(Kind::Open)
-            || self.check(Kind::Apply)
             || self.check(Kind::Status)
             || self.check(Kind::Get)
             || self.check(Kind::Clear)
@@ -1121,7 +1125,7 @@ impl Parser<'_> {
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
         // etc. that are not separately handled. Skip the whole DEFINE statement.
-        if self.check(Kind::Browse) || self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
+        if self.check(Kind::Identifier) || Self::is_widget_type_kind(self.peek().kind) {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
@@ -5529,125 +5533,280 @@ impl Parser<'_> {
     // =========================================================================
 
     // CREATE buffer-name [NO-ERROR].
-    // CREATE DATASET/DATA-SOURCE/TEMP-TABLE handle [IN WIDGET-POOL pool] [NO-ERROR].
+    // CREATE type handle [IN WIDGET-POOL pool] [ASSIGN attr = expr ...]
+    //     [TRIGGERS: ON event block ... END TRIGGERS] [NO-ERROR].
+    // CREATE "com.class" | VALUE(expr) handle [CONNECT [TO file]] [NO-ERROR].
+    // CREATE WIDGET-POOL [pool] [PERSISTENT] [NO-ERROR].
     fn parse_create_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CREATE
+        let resume = (self.current, self.errors.len());
 
-        let target = if let Some(kind) = self.match_create_target_kind() {
+        if self.check(Kind::WidgetPool) {
+            return Ok(self
+                .parse_create_widget_pool()
+                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+        }
+        if let Some(kind) = self.match_create_target_kind() {
             self.advance(); // consume the type keyword
-            let mut handle = self.parse_identifier()?;
-            // Handle member-access references: CREATE DATASET THIS-OBJECT:myDataset
-            // — consume ':member' suffix and extend the handle name.
-            // Also consume '.field' suffix: CREATE BUFFER t-buf.bh FOR TABLE(...).
-            while (self.check(Kind::Colon) || self.check(Kind::Period))
-                && Self::can_be_identifier(self.peek_at(1).kind)
-            {
-                let sep_end = self.tokens[self.current].end;
-                let next_start = self.tokens[self.current + 1].start;
-                if self.source[sep_end..next_start].contains('\n') {
-                    break;
-                }
-                let sep = if self.check(Kind::Colon) { ':' } else { '.' };
-                self.advance(); // consume ':' or '.'
-                let seg = self.advance().clone();
-                handle.name.push(sep);
-                handle.name.push_str(&self.source[seg.start..seg.end]);
-                handle.span.end = seg.end as u32;
+            return Ok(self
+                .parse_create_handle(kind, None)
+                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+        }
+        if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
+            return Ok(self
+                .parse_create_computed_type()
+                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+        }
+        if self.check(Kind::StringLiteral) {
+            return Ok(self
+                .parse_create_automation()
+                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+        }
+        if !Self::can_be_identifier(self.peek().kind) {
+            // Forms with no handle or record name to model. Skip to end.
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+        if self.check(Kind::Alias) {
+            // CREATE ALIAS name FOR DATABASE value(expr). — database alias creation.
+            let (_, hi) = self.skip_to_statement_end_triggers_aware();
+            return Ok(self.skipped_stmt(hi));
+        }
+
+        let name = self.parse_identifier()?;
+        // A second identifier means the first was a type keyword we do not model.
+        if Self::can_be_identifier(self.peek().kind)
+            && !self.check(Kind::NoError)
+            && !self.check(Kind::Period)
+        {
+            self.current = resume.0;
+            let (_, hi) = self.skip_to_statement_end_triggers_aware();
+            return Ok(self.skipped_stmt(hi));
+        }
+        let no_error = self.parse_no_error();
+        self.expect_period("Expected '.' after CREATE statement")?;
+        Ok(self.stmt(StatementKind::Create {
+            target: CreateTarget::Name(name),
+            no_error,
+        }))
+    }
+
+    /// Skip the rest of a CREATE whose tail did not parse, so the statement
+    /// after it is not swallowed. The names in it are still harvested.
+    fn recover_create_as_skipped(&mut self, (resume, error_count): (usize, usize)) -> Statement {
+        self.errors.truncate(error_count);
+        self.current = resume;
+        let (_, hi) = self.skip_to_statement_end_triggers_aware();
+        self.skipped_stmt(hi)
+    }
+
+    // CREATE WIDGET-POOL [pool-name] [PERSISTENT] [NO-ERROR].
+    fn parse_create_widget_pool(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume WIDGET-POOL
+        let name = if self.check(Kind::Period)
+            || self.check(Kind::Persistent)
+            || self.check(Kind::NoError)
+            || self.at_end()
+        {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        let mut persistent = false;
+        let mut no_error = false;
+        loop {
+            if self.check(Kind::Persistent) {
+                self.advance();
+                persistent = true;
+            } else if self.check(Kind::NoError) {
+                self.advance();
+                no_error = true;
+            } else {
+                break;
             }
-            // Consume optional array subscript on the handle: CREATE TEMP-TABLE x[depth].
-            if self.check(Kind::LeftBracket) {
-                self.advance(); // consume '['
-                self.parse_expression().ok();
-                if self.check(Kind::RightBracket) {
-                    self.advance(); // consume ']'
-                }
+        }
+        self.expect_period("Expected '.' after CREATE WIDGET-POOL statement")?;
+        Ok(self.stmt(StatementKind::CreateWidgetPool {
+            name,
+            persistent,
+            no_error,
+        }))
+    }
+
+    // CREATE VALUE(type-expr) handle ...
+    fn parse_create_computed_type(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume VALUE
+        self.advance(); // consume '('
+        let class = self.parse_expression()?;
+        self.expect_kind(Kind::RightParen, "Expected ')' after CREATE VALUE(")?;
+        self.parse_create_handle(CreateTargetKind::Dynamic, Some(class))
+    }
+
+    // CREATE "com.class" handle [CONNECT [TO file]] [NO-ERROR].
+    fn parse_create_automation(&mut self) -> ParseResult<Statement> {
+        // A primary, not an expression: implicit string concatenation would
+        // otherwise read the handle name as part of the class.
+        let class = self.parse_primary()?;
+        self.parse_create_handle(CreateTargetKind::Automation, Some(class))
+    }
+
+    // The part of CREATE type handle ... after the type keyword.
+    fn parse_create_handle(
+        &mut self,
+        kind: CreateTargetKind,
+        class: Option<Expression>,
+    ) -> ParseResult<Statement> {
+        let handle = self.parse_postfix()?;
+        let mut widget_pool = None;
+        let mut assignments = Vec::new();
+        let mut triggers = Vec::new();
+        let mut connect = None;
+        let mut no_error = false;
+
+        // CREATE BUFFER handle FOR TABLE table-name | table-handle-expr
+        let for_table = if self.check(Kind::KwFor) {
+            self.advance(); // consume FOR
+            self.expect_kind(Kind::Table, "Expected TABLE after FOR")?;
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        loop {
+            if self.check(Kind::KwIn) {
+                widget_pool = self.parse_optional_widget_pool()?;
+            } else if self.check(Kind::Assign) {
+                self.advance(); // consume ASSIGN
+                self.parse_create_assignments(&mut assignments)?;
+            } else if self.check(Kind::Triggers) {
+                triggers = self.parse_widget_triggers()?;
+            } else if self.check(Kind::Connect) {
+                self.advance(); // consume CONNECT
+                let file = if self.check(Kind::To) {
+                    self.advance(); // consume TO
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                connect = Some(CreateConnect { file });
+            } else if self.check(Kind::NoError) {
+                self.advance();
+                no_error = true;
+            } else {
+                break;
             }
-            // CREATE BUFFER handle FOR TABLE(expr) or FOR TABLE tablename
-            if self.check(Kind::KwFor) {
-                self.advance(); // consume FOR
-                // TABLE keyword (static or dynamic)
-                if self.check(Kind::Table) {
-                    self.advance();
-                    // Dynamic: TABLE(expr), TABLE tablename, or TABLE "string"
-                    if self.check(Kind::LeftParen) {
-                        self.advance();
-                        self.parse_expression().ok();
-                        if self.check(Kind::RightParen) {
-                            self.advance();
-                        }
-                    } else {
-                        self.parse_expression().ok();
-                    }
-                }
-            }
-            let widget_pool = self.parse_optional_widget_pool()?;
-            CreateTarget::Handle {
+        }
+
+        self.expect_period("Expected '.' after CREATE statement")?;
+        Ok(self.stmt(StatementKind::Create {
+            target: CreateTarget::Handle {
                 kind,
                 handle,
                 widget_pool,
-            }
-        } else if self.check(Kind::WidgetPool) {
-            // CREATE WIDGET-POOL "pool-name". — named pool creation
-            self.advance(); // consume WIDGET-POOL
-            if self.check(Kind::StringLiteral) {
-                self.advance(); // consume pool name string
-            }
-            CreateTarget::Name(Identifier {
-                span: Span { start: 0, end: 0 },
-                name: String::new(),
-            })
-        } else if !Self::can_be_identifier(self.peek().kind) {
-            // CREATE WINDOW / CREATE SERVER / CREATE X-DOCUMENT etc. — complex UI/handle
-            // creation forms with ASSIGN clauses we don't fully model.  Skip to end.
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
-        } else if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
-            // CREATE VALUE(class-expr) handle NO-ERROR. — dynamic COM/OO object creation.
-            // Skip the VALUE(expr) part and consume the handle name.
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
-        } else {
-            let name = self.parse_identifier()?;
-            // If a second identifier follows (e.g. CREATE SERVER hService or CREATE X-document hXML),
-            // the first token was a type prefix — discard it and use the second as the handle name.
-            if Self::can_be_identifier(self.peek().kind)
-                && !self.check(Kind::NoError)
-                && !self.check(Kind::Period)
-            {
-                let _ = self.parse_identifier()?;
-            }
-            // CREATE handle ASSIGN prop = val ... — UI widget creation with property list;
-            // skip the ASSIGN block entirely. Use the TRIGGERS-aware variant so that
-            // CREATE widget ASSIGN ... TRIGGERS: ... END TRIGGERS. is skipped atomically
-            // (otherwise the first period inside the trigger sub-block stops the scan
-            // prematurely, leaving block nesting misaligned).
-            // CREATE ALIAS name FOR DATABASE value(expr). — database alias creation;
-            // skip the FOR DATABASE ... clause entirely.
-            if self.check(Kind::Assign) || self.check(Kind::KwFor) {
-                let (_, hi) = self.skip_to_statement_end_triggers_aware();
-                return Ok(self.skipped_stmt(hi));
-            }
-            CreateTarget::Name(name)
-        };
+                class,
+                assignments,
+                triggers,
+                connect,
+                for_table,
+            },
+            no_error,
+        }))
+    }
 
-        let no_error = self.parse_no_error();
-        self.expect_period("Expected '.' after CREATE statement")?;
-        Ok(self.stmt(StatementKind::Create { target, no_error }))
+    // attribute = expression ... — runs to the next clause keyword or the period.
+    fn parse_create_assignments(&mut self, out: &mut Vec<CreateAssignment>) -> ParseResult<()> {
+        while !(self.check(Kind::Period)
+            || self.check(Kind::Triggers)
+            || self.check(Kind::NoError)
+            || self.check(Kind::KwIn)
+            || self.at_end())
+        {
+            let token = self.advance().clone();
+            let attribute = Identifier {
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+                name: self.source[token.start..token.end].to_string(),
+            };
+            self.expect_kind(Kind::Equals, "Expected '=' after CREATE ASSIGN attribute")?;
+            let value = self.parse_expression()?;
+            out.push(CreateAssignment { attribute, value });
+        }
+        Ok(())
+    }
+
+    // TRIGGERS: { ON event-list trigger-block } ... END TRIGGERS
+    fn parse_widget_triggers(&mut self) -> ParseResult<Vec<WidgetTrigger>> {
+        self.advance(); // consume TRIGGERS
+        if self.check(Kind::Colon) {
+            self.advance();
+        }
+        let mut triggers = Vec::new();
+        while self.check(Kind::On) {
+            self.advance(); // consume ON
+            let events = self.parse_trigger_event_list()?;
+            let action = self.parse_trigger_action()?;
+            triggers.push(WidgetTrigger { events, action });
+        }
+        self.expect_kind(Kind::End, "Expected END TRIGGERS")?;
+        self.expect_kind(Kind::Triggers, "Expected TRIGGERS after END")?;
+        Ok(triggers)
+    }
+
+    /// The keywords that name a widget type in `CREATE` and `DEFINE`.
+    fn is_widget_type_kind(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Browse
+                | Kind::Button
+                | Kind::ComboBox
+                | Kind::ControlFrame
+                | Kind::DialogBox
+                | Kind::Editor
+                | Kind::FillIn
+                | Kind::Frame
+                | Kind::Image
+                | Kind::Menu
+                | Kind::MenuItem
+                | Kind::RadioSet
+                | Kind::Rectangle
+                | Kind::SelectionList
+                | Kind::Slider
+                | Kind::SubMenu
+                | Kind::Text
+                | Kind::ToggleBox
+                | Kind::Window
+        )
     }
 
     fn match_create_target_kind(&self) -> Option<CreateTargetKind> {
-        match self.peek().kind {
-            Kind::Dataset => Some(CreateTargetKind::Dataset),
-            Kind::DataSource => Some(CreateTargetKind::DataSource),
-            Kind::TempTable => Some(CreateTargetKind::TempTable),
-            Kind::Buffer => Some(CreateTargetKind::Buffer),
-            Kind::Query => Some(CreateTargetKind::Query),
-            // `CREATE call.` can also be a record create on a table named `call`.
-            Kind::Call if Self::can_be_identifier(self.peek_at(1).kind) => {
-                Some(CreateTargetKind::Call)
-            }
-            _ => None,
-        }
+        let kind = match self.peek().kind {
+            Kind::Dataset => return Some(CreateTargetKind::Dataset),
+            Kind::DataSource => return Some(CreateTargetKind::DataSource),
+            Kind::TempTable => return Some(CreateTargetKind::TempTable),
+            Kind::Buffer => return Some(CreateTargetKind::Buffer),
+            Kind::Query => return Some(CreateTargetKind::Query),
+            Kind::Call => CreateTargetKind::Call,
+            Kind::XDocument => CreateTargetKind::XDocument,
+            Kind::XNoderef => CreateTargetKind::XNodeRef,
+            Kind::SaxReader => CreateTargetKind::SaxReader,
+            Kind::SaxWriter => CreateTargetKind::SaxWriter,
+            Kind::SaxAttributes => CreateTargetKind::SaxAttributes,
+            Kind::Socket => CreateTargetKind::Socket,
+            Kind::ServerSocket => CreateTargetKind::ServerSocket,
+            Kind::Server => CreateTargetKind::Server,
+            Kind::SoapHeader => CreateTargetKind::SoapHeader,
+            Kind::SoapHeaderEntryref => CreateTargetKind::SoapHeaderEntryRef,
+            Kind::ClientPrincipal => CreateTargetKind::ClientPrincipal,
+            kind if Self::is_widget_type_kind(kind) => CreateTargetKind::Widget,
+            _ => return None,
+        };
+        // `CREATE call.` can also be a record create on a table named `call`,
+        // and the same holds for every other unreserved type keyword.
+        let next = self.peek_at(1).kind;
+        (Self::can_be_identifier(next) && next != Kind::NoError && next != Kind::Assign)
+            .then_some(kind)
     }
 
     fn parse_optional_widget_pool(&mut self) -> ParseResult<Option<Expression>> {
@@ -5661,51 +5820,46 @@ impl Parser<'_> {
     }
 
     // DELETE buffer-name [NO-ERROR].
+    // DELETE OBJECT | PROCEDURE | WIDGET | SERVER handle [NO-ERROR].
+    // DELETE WIDGET-POOL [pool-name] [NO-ERROR].
     fn parse_delete_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DELETE
-        // DELETE WIDGET-POOL "name" — pool deletion
         if self.check(Kind::WidgetPool) {
             self.advance(); // consume WIDGET-POOL
-            if self.check(Kind::StringLiteral) {
-                self.advance(); // consume pool name
-            }
+            let name = if self.check(Kind::Period) || self.check(Kind::NoError) || self.at_end() {
+                None
+            } else {
+                Some(self.parse_expression()?)
+            };
             let no_error = self.parse_no_error();
-            self.expect_period("Expected '.' after DELETE statement")?;
-            return Ok(self.stmt(StatementKind::Delete {
-                buffer: Identifier {
-                    span: Span { start: 0, end: 0 },
-                    name: String::new(),
-                },
-                no_error,
-            }));
+            self.expect_period("Expected '.' after DELETE WIDGET-POOL statement")?;
+            return Ok(self.stmt(StatementKind::DeleteWidgetPool { name, no_error }));
         }
-        // Skip optional type prefixes: OBJECT, PROCEDURE, WIDGET, SERVER, ALIAS, etc.
-        // DELETE OBJECT handle [NO-ERROR]. — delete a COM/OO object handle
-        // The handle may be a complex expression; skip to period.
-        // e.g., DELETE PROCEDURE hproc., DELETE SERVER hService., DELETE ALIAS dictdb.
         if self.check(Kind::Alias) {
             // DELETE ALIAS name. — delete a database alias; skip to period.
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
-        if Self::can_be_identifier(self.peek().kind) {
-            let token = &self.tokens[self.current];
-            let text = self.source[token.start..token.end].to_ascii_lowercase();
-            if matches!(text.as_str(), "object") {
-                self.advance(); // consume OBJECT
-                // The operand is an expression, which is why this used to skip:
-                // `DELETE OBJECT ttbl:HANDLE.` and `DELETE OBJECT hArray[i].` are
-                // both ordinary ABL and neither is an identifier.
-                let target = self.parse_expression()?;
-                let no_error = self.parse_no_error();
-                self.expect_period("Expected '.' after DELETE OBJECT statement")?;
-                return Ok(self.stmt(StatementKind::DeleteObject { target, no_error }));
+        if let Some(kind) = self.match_delete_object_kind() {
+            self.advance(); // consume the type keyword
+            // The operand is an expression: `DELETE OBJECT ttbl:HANDLE.` and
+            // `DELETE OBJECT hArray[i].` are both ordinary ABL and neither is
+            // an identifier.
+            let target = self.parse_expression()?;
+            let mut extra_targets = Vec::new();
+            if kind == DeleteObjectKind::Widget {
+                while !(self.check(Kind::Period) || self.check(Kind::NoError) || self.at_end()) {
+                    extra_targets.push(self.parse_expression()?);
+                }
             }
-            if matches!(text.as_str(), "procedure" | "widget" | "server")
-                && Self::can_be_identifier(self.peek_at(1).kind)
-            {
-                self.advance(); // skip the type prefix
-            }
+            let no_error = self.parse_no_error();
+            self.expect_period("Expected '.' after DELETE statement")?;
+            return Ok(self.stmt(StatementKind::DeleteObject {
+                kind,
+                target,
+                extra_targets,
+                no_error,
+            }));
         }
         let buffer = self.parse_identifier()?;
         // Skip optional VALIDATE(...) clause: DELETE table VALIDATE(true, "msg").
@@ -5726,19 +5880,43 @@ impl Parser<'_> {
         Ok(self.stmt(StatementKind::Delete { buffer, no_error }))
     }
 
+    /// The handle-delete keyword at the cursor. `PROCEDURE`, `WIDGET` and
+    /// `SERVER` also name tables, so they need an operand after them.
+    fn match_delete_object_kind(&self) -> Option<DeleteObjectKind> {
+        let token = self.peek();
+        let text = &self.source[token.start..token.end];
+        let kind = if token.kind == Kind::Procedure {
+            DeleteObjectKind::Procedure
+        } else if token.kind == Kind::Server {
+            DeleteObjectKind::Server
+        } else if token.kind == Kind::Identifier && text.eq_ignore_ascii_case("object") {
+            // The operand may be parenthesized or a preprocessor reference.
+            let next = self.peek_at(1).kind;
+            return (!matches!(next, Kind::Period | Kind::NoError | Kind::Eof))
+                .then_some(DeleteObjectKind::Object);
+        } else if token.kind == Kind::Identifier && text.eq_ignore_ascii_case("widget") {
+            DeleteObjectKind::Widget
+        } else {
+            return None;
+        };
+        let next = self.peek_at(1).kind;
+        (Self::can_be_identifier(next) && next != Kind::NoError).then_some(kind)
+    }
+
     // RELEASE buffer-name [NO-ERROR].
     fn parse_release_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume RELEASE
 
-        // RELEASE OBJECT handle [NO-ERROR]. — release a COM/OO object
+        // RELEASE OBJECT com-handle [NO-ERROR]. — release a COM object
         // RELEASE EXTERNAL PROCEDURE "name". — release a loaded external procedure
         if Self::can_be_identifier(self.peek().kind) {
             let tok = &self.tokens[self.current];
-            let text = self.source[tok.start..tok.end].to_ascii_lowercase();
-            if text == "object" {
+            if self.source[tok.start..tok.end].eq_ignore_ascii_case("object") {
+                let resume = (self.current, self.errors.len());
                 self.advance(); // consume OBJECT
-                let (_, hi) = self.skip_to_statement_end();
-                return Ok(self.skipped_stmt(hi));
+                return Ok(self
+                    .parse_release_object()
+                    .unwrap_or_else(|_| self.recover_release_as_skipped(resume)));
             }
         }
         if self.check(Kind::External) {
@@ -5751,6 +5929,41 @@ impl Parser<'_> {
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after RELEASE statement")?;
         Ok(self.stmt(StatementKind::Release { buffer, no_error }))
+    }
+
+    fn parse_release_object(&mut self) -> ParseResult<Statement> {
+        let target = self.parse_expression()?;
+        let no_error = self.parse_no_error();
+        self.expect_period("Expected '.' after RELEASE OBJECT statement")?;
+        Ok(self.stmt(StatementKind::ReleaseObject { target, no_error }))
+    }
+
+    fn recover_release_as_skipped(&mut self, (resume, error_count): (usize, usize)) -> Statement {
+        self.errors.truncate(error_count);
+        self.current = resume;
+        let (_, hi) = self.skip_to_statement_end();
+        self.skipped_stmt(hi)
+    }
+
+    // APPLY event [TO widget-or-handle].
+    fn parse_apply_statement(&mut self) -> ParseResult<Statement> {
+        let resume = (self.current, self.errors.len());
+        self.advance(); // consume APPLY
+        Ok(self
+            .parse_apply_operands()
+            .unwrap_or_else(|_| self.recover_release_as_skipped(resume)))
+    }
+
+    fn parse_apply_operands(&mut self) -> ParseResult<Statement> {
+        let event = self.parse_expression()?;
+        let target = if self.check(Kind::To) {
+            self.advance(); // consume TO
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        self.expect_period("Expected '.' after APPLY statement")?;
+        Ok(self.stmt(StatementKind::Apply { event, target }))
     }
 
     // VALIDATE buffer-name [NO-ERROR].

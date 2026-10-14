@@ -1466,7 +1466,8 @@ impl<'a> Builder<'a> {
             | SK::Display { .. }
             | SK::StreamIo { .. }
             | SK::Publish { .. }
-            | SK::Unsubscribe { .. } => Shape::plain(!self.no_error_text(s)),
+            | SK::Unsubscribe { .. }
+            | SK::Apply { .. } => Shape::plain(!self.no_error_text(s)),
             SK::Message { set_targets, .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: !set_targets.is_empty(),
@@ -1497,7 +1498,10 @@ impl<'a> Builder<'a> {
             SK::Create { no_error, .. }
             | SK::Delete { no_error, .. }
             | SK::DeleteObject { no_error, .. }
+            | SK::CreateWidgetPool { no_error, .. }
+            | SK::DeleteWidgetPool { no_error, .. }
             | SK::Release { no_error, .. }
+            | SK::ReleaseObject { no_error, .. }
             | SK::Validate { no_error, .. }
             | SK::BufferCopy { no_error, .. }
             | SK::BufferCompare { no_error, .. }
