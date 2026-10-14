@@ -365,6 +365,8 @@ impl Visitor<'_> {
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
             | StatementKind::Empty
+            // Annotation names and attributes are metadata, not symbols.
+            | StatementKind::Annotation(_)
             // Recognized-but-unmodelled. Harvested names are resolved
             // best-effort by the resolve pass and never recorded as
             // references, so this rule must stay silent about them —

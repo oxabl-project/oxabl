@@ -424,6 +424,8 @@ impl<'a> CheckWalker<'a> {
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
             | StatementKind::Empty
+            // Annotation names and attributes are metadata, not expressions.
+            | StatementKind::Annotation(_)
             // Recognized-but-unmodelled: the harvested names are lexical
             // candidates, not typed expressions, so there is nothing here to
             // type-check.
