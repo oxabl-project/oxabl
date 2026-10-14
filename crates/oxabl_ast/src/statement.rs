@@ -53,6 +53,11 @@ pub enum StatementKind {
         is_new_global_shared: bool,
     },
 
+    /// `VAR <type> a [= x], b [= y].` — one declaration per name, sharing the
+    /// type. Each child is a [`StatementKind::VariableDeclaration`] spanning
+    /// `name [= initial]`. A single-name `VAR` is a plain `VariableDeclaration`.
+    VariableDeclarationList(Vec<Statement>),
+
     /// Assignment
     Assignment {
         target: Expression,

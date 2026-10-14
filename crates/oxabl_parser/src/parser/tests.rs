@@ -11961,3 +11961,102 @@ fn define_work_table_is_skipped_like_workfile() {
         ));
     }
 }
+
+fn parse_clean(source: &str) -> Vec<Statement> {
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+    program.statements
+}
+
+#[test]
+fn using_import_makes_keyword_named_class_a_data_type() {
+    let stmts = parse_clean(
+        "USING Progress.Reflect.Method.\n\
+         USING Progress.Reflect.Property.\n\
+         DEFINE VARIABLE oMethod AS Method NO-UNDO.\n\
+         DEFINE VARIABLE aProps AS Property EXTENT NO-UNDO.\n\
+         DEFINE VARIABLE oLower AS method NO-UNDO.",
+    );
+    let types: Vec<_> = stmts
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StatementKind::VariableDeclaration {
+                type_source: TypeSource::Explicit(t),
+                ..
+            } => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        types,
+        [
+            DataType::Class("Method".into()),
+            DataType::Class("Property".into()),
+            DataType::Class("method".into()),
+        ]
+    );
+}
+
+#[test]
+fn keyword_named_class_without_using_is_still_rejected() {
+    let source = "DEFINE VARIABLE oMethod AS Method NO-UNDO.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
+fn using_import_keyword_class_in_var_statement() {
+    let stmts = parse_clean("USING Progress.Reflect.Method.\nVAR Method oMethod.");
+    assert!(matches!(
+        &stmts[1].kind,
+        StatementKind::VariableDeclaration {
+            type_source: TypeSource::Explicit(DataType::Class(c)),
+            ..
+        } if c == "Method"
+    ));
+}
+
+#[test]
+fn var_statement_comma_separated_names() {
+    let source = "VAR LOGICAL a, b = TRUE, c.";
+    let stmts = parse_clean(source);
+    assert_eq!(stmts.len(), 1);
+    let StatementKind::VariableDeclarationList(decls) = &stmts[0].kind else {
+        panic!("expected a list, got {:?}", stmts[0].kind);
+    };
+    let names: Vec<_> = decls
+        .iter()
+        .map(|d| match &d.kind {
+            StatementKind::VariableDeclaration {
+                name,
+                type_source: TypeSource::Explicit(DataType::Logical),
+                initial_value,
+                no_undo: true,
+                ..
+            } => (name.name.as_str(), initial_value.is_some()),
+            other => panic!("expected a logical declaration, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, [("a", false), ("b", true), ("c", false)]);
+    assert_eq!(
+        &source[decls[1].span.start as usize..decls[1].span.end as usize],
+        "b = TRUE"
+    );
+}
+
+#[test]
+fn var_statement_class_type() {
+    let stmts = parse_clean("VAR CLASS Foo.Bar baz.\nVAR CLASS Foo.Bar x, y.");
+    assert!(matches!(
+        &stmts[0].kind,
+        StatementKind::VariableDeclaration {
+            type_source: TypeSource::Explicit(DataType::Class(c)),
+            name,
+            ..
+        } if c == "Foo.Bar" && name.name == "baz"
+    ));
+    assert!(matches!(
+        &stmts[1].kind,
+        StatementKind::VariableDeclarationList(d) if d.len() == 2
+    ));
+}

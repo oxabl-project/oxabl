@@ -69,6 +69,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         | StatementKind::Finally { body }
         | StatementKind::Catch { body, .. }
         | StatementKind::Block(body)
+        | StatementKind::VariableDeclarationList(body)
         | StatementKind::Method { body, .. }
         | StatementKind::Constructor { body, .. } => walk_block(v, body),
         StatementKind::Do {

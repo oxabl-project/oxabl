@@ -578,6 +578,7 @@ mod paths {
                 },
                 SK::Label { body, .. } => self.stmt(body),
                 SK::Block(body)
+                | SK::VariableDeclarationList(body)
                 | SK::Procedure { body, .. }
                 | SK::Function { body, .. }
                 | SK::Class { body, .. }
