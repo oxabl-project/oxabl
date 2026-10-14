@@ -2464,42 +2464,7 @@ impl Parser<'_> {
             }
         }
 
-        // Skip DO/REPEAT block-header ON phrases: ON ERROR UNDO, RETRY / LEAVE / etc.
-        // These are complex error-handling annotations on block headers; we consume them
-        // without building AST nodes for now.
-        while self.check(Kind::On) {
-            self.advance(); // consume ON
-            // consume the condition (e.g., ERROR, ENDKEY, STOP, QUIT — keyword or identifier)
-            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
-                self.advance(); // consume condition keyword/identifier
-            }
-            // consume UNDO and optional label: UNDO [label]
-            if self.check(Kind::Undo) {
-                self.advance();
-                // consume optional block label after UNDO (e.g. UNDO TRANS-BLOCK, ...)
-                if Self::can_be_identifier(self.peek().kind)
-                    && !self.check(Kind::Colon)
-                    && !self.check(Kind::Comma)
-                {
-                    self.advance();
-                }
-            }
-            // consume optional action after comma: , LEAVE / RETRY / NEXT / RETURN [label]
-            if self.check(Kind::Comma) {
-                self.advance(); // consume ','
-                // consume action keyword (LEAVE, RETRY, NEXT, RETURN, THROW)
-                if matches!(
-                    self.peek().kind,
-                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn | Kind::Throw
-                ) {
-                    self.advance();
-                    // consume optional label or throw expression
-                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
-                        self.advance();
-                    }
-                }
-            }
-        }
+        let on_actions = self.parse_block_on_phrases();
 
         // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
         // The WITH clause can contain many frame options; consume everything until the
@@ -2527,6 +2492,7 @@ impl Parser<'_> {
             by,
             while_condition,
             transaction,
+            on_actions,
             body,
         }))
     }
@@ -2684,34 +2650,7 @@ impl Parser<'_> {
             None
         };
 
-        // Consume ON phrase(s) same as DO (ON ERROR UNDO [label] [, action [label]])
-        while self.check(Kind::On) {
-            self.advance();
-            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
-                self.advance();
-            }
-            if self.check(Kind::Undo) {
-                self.advance();
-                if Self::can_be_identifier(self.peek().kind)
-                    && !self.check(Kind::Colon)
-                    && !self.check(Kind::Comma)
-                {
-                    self.advance();
-                }
-            }
-            if self.check(Kind::Comma) {
-                self.advance();
-                if matches!(
-                    self.peek().kind,
-                    Kind::Leave | Kind::Retry | Kind::Next | Kind::KwReturn | Kind::Throw
-                ) {
-                    self.advance();
-                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
-                        self.advance();
-                    }
-                }
-            }
-        }
+        let on_actions = self.parse_block_on_phrases();
 
         // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:)
         if self.check(Kind::Transaction) {
@@ -2787,6 +2726,7 @@ impl Parser<'_> {
 
         Ok(self.stmt(StatementKind::Repeat {
             while_condition,
+            on_actions,
             body,
         }))
     }
@@ -2805,6 +2745,69 @@ impl Parser<'_> {
     /// Parse the expression after RETURN/THROW unless the statement ends first.
     fn parse_optional_value(&mut self) -> Option<Expression> {
         if self.check(Kind::Period) || self.at_end() {
+            return None;
+        }
+        self.parse_expression().ok()
+    }
+
+    /// Parse the `ON {ERROR|ENDKEY|STOP|QUIT} [UNDO [label]] [, action]` phrases of a
+    /// block header. Returns the expression of each `RETURN`/`THROW` action; the
+    /// flow builder reads the rest of the phrase from the tokens.
+    fn parse_block_on_phrases(&mut self) -> Vec<Expression> {
+        let mut actions = Vec::new();
+        while self.check(Kind::On) {
+            self.advance(); // consume ON
+            // the condition (ERROR, ENDKEY, STOP, QUIT: keyword or identifier)
+            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
+                self.advance();
+            }
+            if self.check(Kind::Undo) {
+                self.advance();
+                // optional block label: UNDO TRANS-BLOCK, ...
+                if Self::can_be_identifier(self.peek().kind)
+                    && !self.check(Kind::Colon)
+                    && !self.check(Kind::Comma)
+                {
+                    self.advance();
+                }
+            }
+            if !self.check(Kind::Comma) {
+                continue;
+            }
+            self.advance(); // consume ','
+            match self.peek().kind {
+                Kind::Leave | Kind::Retry | Kind::Next => {
+                    self.advance();
+                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
+                        self.advance();
+                    }
+                }
+                Kind::KwReturn => {
+                    self.advance();
+                    if !self.eat_error_modifier() && self.check(Kind::NoApply) {
+                        self.advance();
+                    }
+                    actions.extend(self.parse_on_action_value());
+                }
+                Kind::Throw => {
+                    self.advance();
+                    actions.extend(self.parse_on_action_value());
+                }
+                _ => {}
+            }
+        }
+        actions
+    }
+
+    /// The value of an `ON` phrase `RETURN`/`THROW` action, absent when the phrase
+    /// or the header ends first.
+    fn parse_on_action_value(&mut self) -> Option<Expression> {
+        if self.at_end()
+            || matches!(
+                self.peek().kind,
+                Kind::Colon | Kind::Period | Kind::On | Kind::With | Kind::Transaction
+            )
+        {
             return None;
         }
         self.parse_expression().ok()
@@ -3004,7 +3007,9 @@ impl Parser<'_> {
             }
         }
 
-        // Handle optional BREAK, GROUP, BY, TRANSACTION, and WHILE clauses in any order.
+        let mut on_actions = Vec::new();
+
+        // Handle optional BREAK, GROUP, BY, TRANSACTION, WHILE and ON clauses in any order.
         // ABL allows these interleaved, e.g. TRANSACTION BY field: or BY field TRANSACTION:
         // GROUP BY is a less common sort grouping clause that behaves like BREAK BY.
         loop {
@@ -3025,6 +3030,8 @@ impl Parser<'_> {
                 self.parse_expression().ok(); // parse the condition
             } else if self.check(Kind::Transaction) {
                 self.advance();
+            } else if self.check(Kind::On) {
+                on_actions.append(&mut self.parse_block_on_phrases());
             } else {
                 break;
             }
@@ -3066,6 +3073,7 @@ impl Parser<'_> {
             of_relation,
             where_clause,
             lock_type,
+            on_actions,
             body,
         }))
     }

@@ -418,27 +418,41 @@ mod paths {
                     to,
                     by,
                     while_condition,
+                    on_actions,
                     body,
                     ..
                 } => {
                     for e in [from, to, by, while_condition].into_iter().flatten() {
                         read(self, e);
                     }
+                    for e in on_actions {
+                        read(self, e);
+                    }
                     self.walk(body);
                 }
                 SK::Repeat {
                     while_condition,
+                    on_actions,
                     body,
                 } => {
                     if let Some(e) = while_condition {
                         read(self, e);
                     }
+                    for e in on_actions {
+                        read(self, e);
+                    }
                     self.walk(body);
                 }
                 SK::ForEach {
-                    where_clause, body, ..
+                    where_clause,
+                    on_actions,
+                    body,
+                    ..
                 } => {
                     if let Some(e) = where_clause {
+                        read(self, e);
+                    }
+                    for e in on_actions {
                         read(self, e);
                     }
                     self.walk(body);
@@ -830,6 +844,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
+            on_actions: Vec::new(),
             body,
         })
     }

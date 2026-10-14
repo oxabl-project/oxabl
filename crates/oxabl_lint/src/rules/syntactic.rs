@@ -76,25 +76,39 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
             to,
             by,
             while_condition,
+            on_actions,
             body,
             ..
         } => {
             for e in [from, to, by, while_condition].into_iter().flatten() {
                 walk_expression(v, e);
             }
+            for e in on_actions {
+                walk_expression(v, e);
+            }
             walk_block(v, body);
         }
         StatementKind::Repeat {
             while_condition,
+            on_actions,
             body,
         } => {
             walk_opt(v, while_condition.as_ref());
+            for e in on_actions {
+                walk_expression(v, e);
+            }
             walk_block(v, body);
         }
         StatementKind::ForEach {
-            where_clause, body, ..
+            where_clause,
+            on_actions,
+            body,
+            ..
         } => {
             walk_opt(v, where_clause.as_ref());
+            for e in on_actions {
+                walk_expression(v, e);
+            }
             walk_block(v, body);
         }
         StatementKind::Find {

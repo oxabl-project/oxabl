@@ -78,6 +78,8 @@ pub enum StatementKind {
         while_condition: Option<Expression>,
         /// Whether the block runs inside a transaction (DO TRANSACTION:)
         transaction: bool,
+        /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
+        on_actions: Vec<Expression>,
         body: Vec<Statement>,
     },
 
@@ -91,6 +93,8 @@ pub enum StatementKind {
     /// REPEAT block
     Repeat {
         while_condition: Option<Expression>,
+        /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
+        on_actions: Vec<Expression>,
         body: Vec<Statement>,
     },
 
@@ -101,6 +105,8 @@ pub enum StatementKind {
         of_relation: Option<Identifier>,
         where_clause: Option<Expression>,
         lock_type: LockType,
+        /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
+        on_actions: Vec<Expression>,
         body: Vec<Statement>,
     },
 
