@@ -278,13 +278,6 @@ pub struct ReverseGraph {
     unnameable: Vec<UnnameableEdge>,
     /// Normalised paths of every file the pass covered.
     files: Vec<PathBuf>,
-    /// Folded stems that two or more covered files share, computed once per pass.
-    ///
-    /// A bare stem is how ABL spells an unqualified `RUN` target or class
-    /// reference, so it has to be a candidate. It stops being usable evidence the
-    /// moment two files answer to it: the reference genuinely may name either, and
-    /// attributing it to both invents a dependent for one of them.
-    ambiguous_stems: HashSet<String>,
     /// Total resolved edges, for the ratio below.
     edge_count: usize,
     /// Total unresolved references.
@@ -397,7 +390,6 @@ impl ReverseGraph {
             degraded: Vec::new(),
             unnameable: Vec::new(),
             files: files.iter().map(|p| normalize_lexically(p)).collect(),
-            ambiguous_stems: HashSet::new(),
             edge_count: 0,
             unresolved_count: 0,
             include_roots: pipeline
@@ -523,18 +515,6 @@ impl ReverseGraph {
         self.unnameable.dedup();
         self.files.sort();
         self.files.dedup();
-
-        // Once per pass, not once per query: a query only asks whether one stem is
-        // in the set.
-        let mut seen: HashSet<String> = HashSet::new();
-        for path in &self.files {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let folded = stem.to_ascii_lowercase();
-                if !seen.insert(folded.clone()) {
-                    self.ambiguous_stems.insert(folded);
-                }
-            }
-        }
     }
 
     /// Every file whose compilation can change when `subject` changes (R1).
@@ -591,12 +571,11 @@ impl ReverseGraph {
                     names.push((name.to_ascii_lowercase(), NameShape::Include));
                 }
                 if let Some(stem) = path.file_stem().and_then(|n| n.to_str()) {
-                    let folded = stem.to_ascii_lowercase();
-                    // Dropped when two covered files share it — see
-                    // `ambiguous_stems`.
-                    if !self.ambiguous_stems.contains(&folded) {
-                        names.push((folded, NameShape::Reference));
-                    }
+                    // Kept when two files share it: the row is an unresolved
+                    // reference that genuinely may name either, and a row
+                    // attributed to both costs a rebuild where a dropped one
+                    // costs a missed dependent.
+                    names.push((stem.to_ascii_lowercase(), NameShape::Reference));
                 }
                 // The dotted spelling a qualified class or `RUN` target uses, for
                 // each configured root this file sits under.
