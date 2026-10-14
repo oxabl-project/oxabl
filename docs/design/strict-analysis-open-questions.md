@@ -268,8 +268,8 @@ includer:
   client. Replace it with a typed field when a diagnostic gains one.
 
 What counts (`IncludeDependence::scan` and `IncludeDependence::dependence`, in the fragment's own
-text; a statement ends at a period, at a colon followed by white space, at the end of a
-`&SCOPED-DEFINE` or `&GLOBAL-DEFINE` line, or at a reference alone on its line):
+text; a statement ends at a period, at a colon followed by white space, where a
+`&SCOPED-DEFINE` or `&GLOBAL-DEFINE` line starts, or at a reference alone on its line):
 
 - `{&name}`, `{n}`, `{*}` and `{file.i <args>}` always count, and so does a statement that starts
   under an `&IF` or has an `&IF` inside it. The condition of an `&IF` is not part of a statement.
@@ -278,8 +278,23 @@ text; a statement ends at a period, at a colon followed by white space, at the e
   file (`ExpansionProbe`). Confidence high that the rest expands the same in every includer: the
   expansion is textual, and an includer's `&GLOBAL-DEFINE` reaches a nested include only through a
   reference or an `&IF`, which count. The check does not follow includes nested in that include.
+- A comment is not part of a statement. A reference alone on its line is decided from the next
+  token that is not a comment, and `&UNDEFINE` takes only its name token (it has no end-of-line
+  token in the lexer, so it never opens a define line). Confidence high.
+- A `{&name}` after a `&SCOPED-DEFINE name ...` of the same fragment, at `&IF` depth 0 and with a
+  value that holds no reference, is not a reference: it is the innermost definition, so no
+  includer changes it. A later `&UNDEFINE`, or a redefinition under an `&IF` or with a reference,
+  makes it count again. A TX006 finding whose slot holds only such references keeps the help that
+  the rule chose from the expanded text. Confidence high.
+- A `{&name}` after a `&GLOBAL-DEFINE name ...` of the same fragment still counts. Reading: an
+  includer's `&SCOPED-DEFINE` of the same name, made before the include, may be found first and
+  shadow the global definition, so the text is not the same in every includer. Confidence low
+  (no OpenEdge install here; the precedence of a scoped over a global name is not confirmed, and
+  neither is whether a scoped name of the includer reaches an include file). A later correction
+  shows as a snapshot diff in `a_reference_to_a_name_the_fragment_defines_is_not_a_dependence`.
 - An include guard is not a dependence: an `&IF DEFINED(x) = 0 &THEN` (or `NOT DEFINED(x)`) that
-  encloses the whole file, has no `&ELSE`, and defines `x` inside. Confidence medium: it gives one
+  encloses the whole file, has no `&ELSE`, and defines `x` inside; or `&IF DEFINED(x) &THEN &ELSE`
+  with an empty `&THEN` and the define in the `&ELSE`. Confidence medium: it gives one
   answer for every includer that includes the file once, and an includer that already defined `x`
   gets no text at all, which is the purpose of a guard.
 - `RUN VALUE(...)` (CL001) counts only for a reference or `&IF` in its target, up to the matching
@@ -289,9 +304,11 @@ text; a statement ends at a period, at a colon followed by white space, at the e
   not separable without parsing the fragment, and a fragment often does not parse.
 
 On a large real corpus (counts only), the lowered share of
-include findings went from 1,938 of 25,531 (7.6 %) to 1,380 (5.4 %). CL001 went from 509 of 527 to
-none, because the nested include sat in the argument list after the target. TX006 kept 1,098 of
-24,373 lowered (80 with the shared help, 101 with the third help). Findings themselves did not
+include findings went from 1,938 of 25,531 (7.6 %) to 711 (2.8 %). CL001 went from 509 of 527 to
+none, because the nested include sat in the argument list after the target. TX006 kept 439 of
+24,373 lowered (76 with the shared help, 101 with the third help, 262 with the plain help); CL005
+269 of 279 and CL002 3. Comments in the scan caused most of the drop in TX006 (1,098 to 502), and
+local scoped defines the rest (to 439). Findings themselves did not
 change. Pinned by `a_nested_include_without_arguments_lowers_a_finding_only_when_it_may_change`,
 `an_include_guard_does_not_lower_the_findings_inside_it`,
 `a_define_line_does_not_lower_the_definition_after_it` and

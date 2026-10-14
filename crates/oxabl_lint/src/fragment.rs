@@ -20,11 +20,17 @@
 //!   in the target counts. The definition rules (TX006, CL005) read the
 //!   modifier slot, the type and the options, so a reference anywhere in the
 //!   statement counts;
+//! - a `{&name}` that an earlier `&SCOPED-DEFINE` in the fragment defined at
+//!   `&IF` depth 0, with a value that holds no reference, is no reference: every
+//!   includer sees the same text. A `&GLOBAL-DEFINE` does not get this, because
+//!   an includer's scoped define may shadow it (not confirmed);
 //! - a statement under an `&IF` counts, except under an include guard (an
-//!   `&IF DEFINED(x) = 0 &THEN` around the whole file that defines `x`);
-//! - a statement ends at a period, a block-header colon, the end of a
+//!   `&IF DEFINED(x) = 0 &THEN` around the whole file that defines `x`, or
+//!   `&IF DEFINED(x) &THEN &ELSE` with the define in the `&ELSE`);
+//! - a comment is not part of any statement;
+//! - a statement ends at a period, a block-header colon, the start of a
 //!   `&SCOPED-DEFINE` or `&GLOBAL-DEFINE` line, or a reference alone on its
-//!   line.
+//!   line (the next code token, not a comment, is on a later line).
 //!
 //! [`lower_confidence`] then changes a finding in such a statement:
 //!
@@ -33,7 +39,9 @@
 //!   producer-and-consumers help, because the definition is one side of a
 //!   pair in every includer; a reference or `&IF` in the slot gets a third help
 //!   (an includer may make it `SHARED`); never the plain help from a modifier
-//!   that a reference supplies;
+//!   that a reference supplies. When every reference in the slot is a local
+//!   scoped define ([`Slot::Expanded`]), the help stays the one the rule chose
+//!   from the expanded text;
 //! - it is **not autofixable**: [`autofixable`] is `false` for it. A fix edits
 //!   the fragment for every includer, and this run saw none of them.
 //!
@@ -127,6 +135,9 @@ pub enum Slot {
     /// It holds a reference or an `&IF`, and no literal `SHARED`: an includer
     /// may make the definition `SHARED`.
     Reference,
+    /// Its only references name a `&SCOPED-DEFINE` that the fragment made
+    /// earlier at `&IF` depth 0, so every includer sees the same text there.
+    Expanded,
 }
 
 /// The statements of one include fragment whose text can change with the
@@ -150,6 +161,18 @@ enum Run {
     },
 }
 
+/// The `&SCOPED-DEFINE` or `&GLOBAL-DEFINE` line that the scan is in.
+#[derive(Default)]
+struct DefineLine {
+    scoped: bool,
+    /// Under an `&IF`, where the directive began.
+    conditional: bool,
+    /// Lower case; `None` until the name token.
+    name: Option<String>,
+    /// The value holds a reference, so the name is not a fixed text.
+    reference: bool,
+}
+
 /// The words after `DEFINE`, until the one that says what is defined.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SlotScan {
@@ -166,6 +189,7 @@ struct Current {
     includes: Vec<Include>,
     literal_shared: bool,
     slot_reference: bool,
+    slot_local: bool,
     shareable: bool,
     /// `&IF` depth at the `DEFINE`: a `SHARED` deeper is conditional text.
     define_depth: usize,
@@ -177,8 +201,9 @@ impl IncludeDependence {
     /// under an `&IF`.
     ///
     /// A statement ends at a period, at a colon followed by white space (the
-    /// end of a block header), at the end of a `&SCOPED-DEFINE` or
-    /// `&GLOBAL-DEFINE` line, and at a reference that stands alone on its line.
+    /// end of a block header), where a `&SCOPED-DEFINE` or `&GLOBAL-DEFINE`
+    /// line starts, and at a reference that stands alone on its line. Comments
+    /// are skipped. `&UNDEFINE` takes its name token and nothing more.
     /// That is a lexical reading: it does not need the fragment to parse.
     ///
     /// An include guard is no dependence: an `&IF DEFINED(x) = 0 &THEN` that
@@ -191,7 +216,7 @@ impl IncludeDependence {
     ///
     /// [`dependence`]: Self::dependence
     pub fn scan(source: &str) -> Self {
-        let tokens: Vec<Token> = Lexer::new(source).collect();
+        let (tokens, line_ends) = significant_tokens(source);
         let guard = find_guard(source, &tokens);
         let skipped = |i: usize| guard.is_some_and(|g| i <= g.then || i == g.endif);
 
@@ -204,9 +229,15 @@ impl IncludeDependence {
         // A `&SCOPED-DEFINE` or `&GLOBAL-DEFINE` line, apart from the statement
         // it may interrupt.
         let mut define_line = false;
+        let mut define = DefineLine::default();
+        // The name token of an `&UNDEFINE`.
+        let mut undefined: Option<usize> = None;
+        // Names that a `&SCOPED-DEFINE` at `&IF` depth 0 gave a fixed value
+        // (lower case): no includer can change a `{&name}` after it.
+        let mut local: Vec<String> = Vec::new();
 
         for (i, token) in tokens.iter().enumerate() {
-            if skipped(i) {
+            if skipped(i) || undefined == Some(i) {
                 continue;
             }
             let text = &source[token.start..token.end];
@@ -240,19 +271,51 @@ impl IncludeDependence {
                     continue;
                 }
                 _ if condition => continue,
-                Kind::PreprocGlobalDefine | Kind::PreprocScopedDefine | Kind::PreprocUndefine => {
+                Kind::PreprocGlobalDefine | Kind::PreprocScopedDefine => {
+                    // The line ends the statement that it interrupts.
+                    if cur.start.is_some() {
+                        out.finish(&mut cur, token.start);
+                        run = Run::Outside;
+                        slot = SlotScan::Closed;
+                    }
                     define_line = true;
+                    define = DefineLine {
+                        scoped: token.kind == Kind::PreprocScopedDefine,
+                        conditional: depth > 0,
+                        ..DefineLine::default()
+                    };
+                    continue;
+                }
+                // `&UNDEFINE name` has no end-of-line token: only its name
+                // belongs to the directive.
+                Kind::PreprocUndefine => {
+                    if let Some(name) = tokens.get(i + 1).filter(|_| !line_ends[i]) {
+                        let name = source[name.start..name.end].to_ascii_lowercase();
+                        local.retain(|n| *n != name);
+                        undefined = Some(i + 1);
+                    }
                     continue;
                 }
                 Kind::PreprocEnd => {
                     define_line = false;
+                    if let (true, Some(name)) = (define.scoped, define.name.take()) {
+                        local.retain(|n| *n != name);
+                        if !define.conditional && !define.reference {
+                            local.push(name);
+                        }
+                    }
                     continue;
                 }
                 _ => {}
             }
 
+            if define_line && define.name.is_none() {
+                define.name = Some(text.to_ascii_lowercase());
+                continue;
+            }
             let reference = match token.kind {
-                Kind::Preprop | Kind::IncludeArgReference => true,
+                Kind::Preprop => !local.iter().any(|n| n == &reference_name(text)),
+                Kind::IncludeArgReference => true,
                 // `{*}` is three tokens.
                 Kind::LeftBrace => tokens.get(i + 1).is_some_and(|t| t.kind == Kind::Star),
                 Kind::IncludeReference => include_has_arguments(text),
@@ -260,6 +323,7 @@ impl IncludeDependence {
             };
             if define_line {
                 out.touched |= reference;
+                define.reference |= reference;
                 continue;
             }
             let argless_include = token.kind == Kind::IncludeReference && !reference;
@@ -267,15 +331,8 @@ impl IncludeDependence {
 
             // A reference that stands alone on its line is a statement of its
             // own. Nothing in it is a finding.
-            if (reference || argless_include) && cur.start.is_none() {
-                let rest = &source[token.end..];
-                if rest
-                    .lines()
-                    .next()
-                    .is_none_or(|line| line.trim().is_empty())
-                {
-                    continue;
-                }
+            if (reference || argless_include) && cur.start.is_none() && line_ends[i] {
+                continue;
             }
 
             let in_run_target = match run {
@@ -320,7 +377,15 @@ impl IncludeDependence {
                     in_run_target,
                 });
             }
-            scan_slot(&mut cur, &mut slot, token.kind, reference, depth);
+            let local_reference = token.kind == Kind::Preprop && !reference;
+            scan_slot(
+                &mut cur,
+                &mut slot,
+                token.kind,
+                reference,
+                local_reference,
+                depth,
+            );
 
             let ends_statement = match token.kind {
                 Kind::Period => true,
@@ -345,9 +410,15 @@ impl IncludeDependence {
         if !(done.under_if || done.reference || !done.includes.is_empty()) {
             return;
         }
-        let slot = match (done.shareable, done.literal_shared, done.slot_reference) {
-            (true, true, _) => Slot::LiteralShared,
-            (true, false, true) => Slot::Reference,
+        let slot = match (
+            done.shareable,
+            done.literal_shared,
+            done.slot_reference,
+            done.slot_local,
+        ) {
+            (true, true, ..) => Slot::LiteralShared,
+            (true, false, true, _) => Slot::Reference,
+            (true, false, false, true) => Slot::Expanded,
             _ => Slot::Plain,
         };
         self.statements.push(Dependent {
@@ -409,13 +480,21 @@ impl IncludeDependence {
 }
 
 /// Track the modifier slot of the `DEFINE` the statement holds.
-fn scan_slot(cur: &mut Current, slot: &mut SlotScan, kind: Kind, reference: bool, depth: usize) {
+fn scan_slot(
+    cur: &mut Current,
+    slot: &mut SlotScan,
+    kind: Kind,
+    reference: bool,
+    local_reference: bool,
+    depth: usize,
+) {
     /// More words than any modifier list holds.
     const MAX_WORDS: u8 = 8;
     if kind == Kind::Define {
         *slot = SlotScan::Open { words: 0 };
         cur.literal_shared = false;
         cur.slot_reference = false;
+        cur.slot_local = false;
         cur.shareable = false;
         cur.define_depth = depth;
         return;
@@ -432,12 +511,50 @@ fn scan_slot(cur: &mut Current, slot: &mut SlotScan, kind: Kind, reference: bool
         _ => {
             cur.literal_shared |= kind == Kind::Shared && depth == cur.define_depth;
             cur.slot_reference |= reference;
+            cur.slot_local |= local_reference;
             *words += 1;
             if *words > MAX_WORDS {
                 *slot = SlotScan::Closed;
             }
         }
     }
+}
+
+/// The tokens of `source` without comments, and for each whether a line break
+/// (outside a comment) follows it before the next one. The last token before
+/// the end of the file counts as followed by one.
+fn significant_tokens(source: &str) -> (Vec<Token>, Vec<bool>) {
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut line_ends: Vec<bool> = Vec::new();
+    let mut prev_end = 0usize;
+    let mut break_seen = false;
+    for token in Lexer::new(source) {
+        break_seen |= source
+            .get(prev_end..token.start)
+            .is_some_and(|gap| gap.contains('\n'));
+        prev_end = token.end;
+        if token.kind == Kind::Comment {
+            // A line comment takes its line break.
+            break_seen |= source[token.start..token.end].ends_with('\n');
+            continue;
+        }
+        if let Some(last) = line_ends.last_mut() {
+            *last = break_seen || token.kind == Kind::Eof;
+        }
+        break_seen = false;
+        tokens.push(token);
+        line_ends.push(true);
+    }
+    (tokens, line_ends)
+}
+
+/// The lower-case name in a `{&name}` reference.
+fn reference_name(text: &str) -> String {
+    text.trim_start_matches('{')
+        .trim_end_matches('}')
+        .trim_start_matches('&')
+        .trim()
+        .to_ascii_lowercase()
 }
 
 /// Whether an include reference has arguments (`{file.i &a=1}`, `{file.i x}`)
@@ -459,11 +576,11 @@ fn include_has_arguments(text: &str) -> bool {
 }
 
 /// The token indexes of an include guard: `&IF DEFINED(x) = 0 &THEN` (or `&IF
-/// NOT DEFINED(x) &THEN`) as the first token, its `&ENDIF` as the last, no
-/// `&ELSE` between, and a `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` of `x` inside.
+/// NOT DEFINED(x) &THEN`, or `&IF DEFINED(x) &THEN &ELSE`) as the first token,
+/// its `&ENDIF` as the last, no other `&ELSE` between, and a `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` of `x` inside.
 #[derive(Clone, Copy)]
 struct Guard {
-    /// The `&THEN`: the guard is every token up to it, the `&IF` and the
+    /// The `&THEN` (the `&ELSE` of the empty-`&THEN` form): the guard is every token up to it, the `&IF` and the
     /// condition included.
     then: usize,
     endif: usize,
@@ -473,7 +590,7 @@ fn find_guard(source: &str, tokens: &[Token]) -> Option<Guard> {
     if tokens.first()?.kind != Kind::PreprocIf {
         return None;
     }
-    let then = tokens.iter().position(|t| t.kind == Kind::PreprocThen)?;
+    let mut then = tokens.iter().position(|t| t.kind == Kind::PreprocThen)?;
     let condition: String = tokens[1..then]
         .iter()
         .map(|t| source[t.start..t.end].to_ascii_uppercase())
@@ -483,13 +600,23 @@ fn find_guard(source: &str, tokens: &[Token]) -> Option<Guard> {
         .or_else(|| condition.strip_prefix("DEFINED("))?;
     let (name, tail) = name.split_once(')')?;
     let negated = condition.starts_with("NOT");
+    // `&IF DEFINED(x) &THEN &ELSE <define x> &ENDIF` is the same guard, spelled
+    // with an empty `&THEN` part.
+    let empty_then = !negated
+        && tail.is_empty()
+        && tokens
+            .get(then + 1)
+            .is_some_and(|t| t.kind == Kind::PreprocElse);
     let tail_ok = if negated {
         tail.is_empty()
     } else {
-        matches!(tail, "=0" | "EQ0")
+        empty_then || matches!(tail, "=0" | "EQ0")
     };
     if !tail_ok || name.is_empty() {
         return None;
+    }
+    if empty_then {
+        then += 1;
     }
 
     let mut depth = 0usize;
@@ -497,6 +624,7 @@ fn find_guard(source: &str, tokens: &[Token]) -> Option<Guard> {
     for (i, t) in tokens.iter().enumerate() {
         match t.kind {
             Kind::PreprocIf => depth += 1,
+            Kind::PreprocElse if depth == 1 && empty_then && i == then => {}
             Kind::PreprocElse | Kind::PreprocElseif if depth == 1 => return None,
             Kind::PreprocEndif => {
                 depth = depth.checked_sub(1)?;
@@ -531,6 +659,8 @@ fn find_guard(source: &str, tokens: &[Token]) -> Option<Guard> {
 ///   is unsafe;
 /// - a reference or an `&IF` in the slot, and no literal `SHARED`, gets
 ///   [`MAYBE_SHARED_HELP`]: an includer may make the definition `SHARED`;
+/// - when every reference in the slot is a local scoped define, the help that
+///   the rule chose from the expanded text;
 /// - otherwise the plain help.
 ///
 /// The plain help is never chosen from a modifier that a reference supplies.
@@ -539,6 +669,8 @@ pub fn lower_confidence(mut d: Diagnostic, dependence: Dependence) -> Diagnostic
         let help = match dependence.slot {
             Slot::LiteralShared => SHARED_HELP,
             Slot::Reference => MAYBE_SHARED_HELP,
+            // The rule saw the same modifier text that every includer sees.
+            Slot::Expanded => d.help.as_deref().unwrap_or(missing_no_undo::HELP),
             Slot::Plain => missing_no_undo::HELP,
         };
         d.help = Some(help.to_string());
@@ -710,6 +842,171 @@ DEFINE VARIABLE b AS INTEGER.
         assert!(covered(src, crate::TX006, ALWAYS).is_empty());
         // The line holds a reference, so the text depends on the includer.
         assert!(IncludeDependence::scan(src).has_reference());
+    }
+
+    #[test]
+    fn a_comment_is_not_statement_text() {
+        let def = "DEFINE VARIABLE b AS INTEGER.";
+        // A comment before a reference on its own line, or after it.
+        for head in [
+            "/* hdr */\n{plain.i x y}",
+            "{&foo} /* c */",
+            "{&foo} // c",
+            "def var a as integer no-undo. /* c */\n{&foo}",
+            "&IF DEFINED(x) &THEN /* c */ &ENDIF",
+            "{&foo} /* a\n b */",
+        ] {
+            let src = format!("{head}\n{def}\n");
+            assert!(covered(&src, crate::TX006, ALWAYS).is_empty(), "{head}");
+        }
+        // A comment that ends on the line of the next token does not make the
+        // reference stand alone.
+        let src = format!("{{&foo}} /* a\n b */ {def}\n");
+        assert!(!covered(&src, crate::TX006, ALWAYS).is_empty());
+        // A comment inside a statement is not part of its words.
+        let run = "RUN /* c */ VALUE(x{&p}).\n";
+        assert_eq!(covered(run, crate::CL001, NEVER).len(), 1);
+        let slot = "DEFINE /* c */ {&m} /* d */ VARIABLE v AS INTEGER.";
+        assert_eq!(slot_of(slot), Slot::Reference);
+    }
+
+    #[test]
+    fn a_comment_does_not_hide_an_include_guard() {
+        let src = "/* header */\n&IF DEFINED(once) = 0 &THEN\n&GLOBAL-DEFINE once 1 /* c */\n\
+                   /* body */\nDEFINE {&m} VARIABLE a AS INTEGER.\n&ENDIF\n// end\n";
+        let found = IncludeDependence::scan(src);
+        assert!(covered(src, crate::TX006, ALWAYS) == ["DEFINE {&m} VARIABLE a AS INTEGER."]);
+        assert!(found.has_reference());
+        // The same file without the guard is under an `&IF`.
+        let open = src.replace("&GLOBAL-DEFINE once 1", "");
+        assert_eq!(covered(&open, crate::TX006, ALWAYS).len(), 1);
+        assert!(IncludeDependence::scan(&src.replace("{&m} ", "")).is_empty());
+    }
+
+    #[test]
+    fn a_define_line_ends_an_open_statement() {
+        let src = "{&x} /* c */\n&SCOPED-DEFINE p 1\nDEFINE VARIABLE a AS INTEGER.\n";
+        assert!(covered(src, crate::TX006, ALWAYS).is_empty());
+        // The statement before the line stops at it, with no period.
+        let open = "DEFINE VARIABLE a AS INTEGER\n&GLOBAL-DEFINE p 1\n  NO-UNDO {&x}.\n";
+        assert_eq!(covered(open, crate::TX006, ALWAYS).len(), 1);
+        let apart = "DEFINE VARIABLE a AS INTEGER {&x}\n&GLOBAL-DEFINE p 1\n  NO-UNDO.\n";
+        assert_eq!(covered(apart, crate::TX006, ALWAYS).len(), 1);
+        let ended =
+            "DEFINE VARIABLE a AS INTEGER\n&GLOBAL-DEFINE p 1\nDEFINE VARIABLE b AS {&x}.\n";
+        assert_eq!(
+            covered(ended, crate::TX006, ALWAYS),
+            ["DEFINE VARIABLE b AS {&x}."]
+        );
+    }
+
+    #[test]
+    fn an_empty_then_guard_is_a_guard() {
+        let src = "&IF DEFINED(g) &THEN\n&ELSE\n&GLOBAL-DEFINE g\n\
+                   DEFINE VARIABLE b AS INTEGER.\n&ENDIF\n";
+        let found = IncludeDependence::scan(src);
+        assert!(found.is_empty() && !found.has_reference());
+        // Not a guard: another name, text in the `&THEN`, or text after it.
+        for src in [
+            src.replace("&GLOBAL-DEFINE g", "&GLOBAL-DEFINE h"),
+            src.replace("&THEN\n&ELSE", "&THEN\nRUN a.\n&ELSE"),
+            format!("{src}RUN b.\n"),
+        ] {
+            assert!(!IncludeDependence::scan(&src).is_empty(), "{src}");
+        }
+    }
+
+    #[test]
+    fn an_undefine_line_ends_with_its_name() {
+        let tail = "DEFINE {1} VARIABLE s AS INTEGER.\n";
+        let plain = covered(tail, crate::TX006, NEVER);
+        assert_eq!(plain.len(), 1);
+        for head in [
+            "&UNDEFINE zz\n",
+            "&undef zz\n&IF DEFINED(a) &THEN\n&ENDIF\n",
+        ] {
+            let src = format!("{head}{tail}");
+            assert_eq!(covered(&src, crate::TX006, NEVER), plain, "{head}");
+            assert_eq!(
+                IncludeDependence::scan(&src)
+                    .dependence(
+                        crate::TX006,
+                        Span {
+                            start: head.len() as u32,
+                            end: head.len() as u32 + 1
+                        },
+                        NEVER
+                    )
+                    .map(|d| d.slot),
+                Some(Slot::Reference)
+            );
+        }
+        // A reference after the line still counts when the name is last in the
+        // file.
+        assert!(IncludeDependence::scan("&UNDEFINE zz").is_empty());
+    }
+
+    #[test]
+    fn a_reference_to_a_name_the_fragment_defines_is_not_a_dependence() {
+        let define = |kind: &str, line: &str| {
+            let src = format!("{kind} NGS NEW GLOBAL SHARED\n{line}\n");
+            let at = src.find("\nDEFINE").unwrap() as u32 + 1;
+            IncludeDependence::scan(&src).dependence(
+                crate::TX006,
+                Span {
+                    start: at,
+                    end: at + 1,
+                },
+                NEVER,
+            )
+        };
+        let line = "DEFINE {&NGS} VARIABLE g AS INTEGER.";
+        // A scoped define at depth 0 gives every includer the same text.
+        assert_eq!(define("&SCOPED-DEFINE", line), None);
+        assert_eq!(
+            define("&SCOPED-DEFINE", "DEFINE {&ngs} VARIABLE g AS {&t}.").map(|d| d.slot),
+            Some(Slot::Expanded)
+        );
+        // A global may be shadowed by an includer's scoped define: counted.
+        assert_eq!(
+            define("&GLOBAL-DEFINE", line).map(|d| d.slot),
+            Some(Slot::Reference)
+        );
+        // A value with a reference is not a fixed text, nor is a define under
+        // an `&IF`, nor one after an `&UNDEFINE`, nor a name that is not defined.
+        for src in [
+            "&SCOPED-DEFINE NGS {1}\nDEFINE {&NGS} VARIABLE g AS INTEGER.\n",
+            "&IF DEFINED(a) &THEN &SCOPED-DEFINE NGS 1 &ENDIF\nDEFINE {&NGS} VARIABLE g AS INTEGER.\n",
+            "&SCOPED-DEFINE NGS 1\n&UNDEFINE NGS\nDEFINE {&NGS} VARIABLE g AS INTEGER.\n",
+            "&SCOPED-DEFINE OTHER 1\nDEFINE {&NGS} VARIABLE g AS INTEGER.\n",
+            "DEFINE {&NGS} VARIABLE g AS INTEGER.\n&SCOPED-DEFINE NGS 1\n",
+        ] {
+            assert_eq!(covered(src, crate::TX006, NEVER).len(), 1, "{src}");
+        }
+    }
+
+    #[test]
+    fn an_expanded_slot_keeps_the_help_of_the_rule() {
+        let d = |help: &str| {
+            let mut d = Diagnostic::warning(
+                "TX006",
+                "m".to_string(),
+                oxabl_common::FileSpan::from((
+                    oxabl_common::FileId::UNKNOWN,
+                    Span { start: 0, end: 0 },
+                )),
+            );
+            d.help = Some(help.to_string());
+            d
+        };
+        let with = Dependence {
+            slot: Slot::Expanded,
+        };
+        for help in [SHARED_HELP, missing_no_undo::HELP] {
+            let lowered = lower_confidence(d(help), with);
+            assert_eq!(lowered.help, Some(format!("{help} {INCLUDER_NOTE}")));
+            assert!(!autofixable(&lowered));
+        }
     }
 
     #[test]
