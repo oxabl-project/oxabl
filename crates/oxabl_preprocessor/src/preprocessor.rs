@@ -4040,6 +4040,36 @@ ELSE
         );
     }
 
+    /// A global defined over a scoped name gives the same value in the file that
+    /// defines it as in the file that includes the define.
+    #[test]
+    fn a_global_defined_over_a_scoped_name_has_one_value_wherever_it_is_read() {
+        let fs = make_fs(&[("/inc/defg.i", "&GLOBAL-DEFINE x g.i\n[{&x}]")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+
+        let same = "&SCOPED-DEFINE x s.i\n&GLOBAL-DEFINE x g.i\n[{&x}]";
+        let same = pp.process(FileId::new(1), same).unwrap();
+        let via = "&SCOPED-DEFINE x s.i\n{defg.i}\n[{&x}]";
+        let via = pp.process(FileId::new(1), via).unwrap();
+
+        assert_eq!(&*same.to_text(), "[s.i]");
+        assert_eq!(&*via.to_text(), "[s.i]\n[s.i]");
+    }
+
+    #[test]
+    fn a_global_defined_over_an_include_argument_has_one_value_wherever_it_is_read() {
+        let fs = make_fs(&[
+            ("/inc/inc.i", "&GLOBAL-DEFINE a y\n[{&a}]"),
+            ("/inc/wrap.i", "{inc.i}[{&a}]"),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp.process(FileId::new(1), "{wrap.i &a=x}[{&a}]").unwrap();
+
+        assert_eq!(&*result.to_text(), "[x][x][y]");
+    }
+
     #[test]
     fn a_nested_include_leaves_an_argument_over_a_global_name() {
         let fs = make_fs(&[("/inc/outer.i", "{empty.i}[{&a}]"), ("/inc/empty.i", "")]);
