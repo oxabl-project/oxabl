@@ -1,0 +1,13 @@
+unit u0 main
+  query @7 leaks holder=h1 pool=unscoped
+    free delete-object @12
+    leak exit-return @8 abnormal via raise(error)@8 path 7>8
+  query @8 leaks holder=h2 pool=unscoped
+    free delete-object @13
+    leak exit-return @9 abnormal via raise(error)@9 path 8>9
+  query @9 leaks holder=h3 pool=unscoped
+    free delete-object @15
+    leak exit-return @10 abnormal via raise(error)@10 path 9>10
+  query @10 leaks holder=h4 pool=unscoped
+    free delete-object @17
+    leak exit-return @17 normal path 10>12>13>14>17

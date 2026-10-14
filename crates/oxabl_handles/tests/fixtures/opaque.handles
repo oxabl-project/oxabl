@@ -1,0 +1,9 @@
+unit u0 main
+  query @8 unknown holder=hQuery pool=unscoped
+    opaque dynamic-call @9
+    leak exit-return @17 normal path 8>9>12>13>16>17
+  persistent-procedure @12 leaks holder=hProc
+    leak exit-return @17 normal path 12>13>16>17
+  query @16 unknown holder=hOther pool=unscoped
+    opaque dynamic-call @17
+    leak exit-return @17 normal path 16>17

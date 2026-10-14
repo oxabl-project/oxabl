@@ -1,0 +1,6 @@
+unit u0 main
+  memptr @5 leaks holder=mData
+    free set-size-0 @7
+    leak exit-return @6 abnormal via raise(error)@6 path 5>6
+  memptr @9 leaks holder=mLeak
+    leak exit-return @9 normal path 9

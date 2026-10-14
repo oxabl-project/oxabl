@@ -971,6 +971,7 @@ dependencies = [
  "oxabl_daemon_protocol",
  "oxabl_flow",
  "oxabl_formatter",
+ "oxabl_handles",
  "oxabl_lexer",
  "oxabl_lint",
  "oxabl_lsp",
@@ -1090,6 +1091,18 @@ dependencies = [
  "oxabl_lexer",
  "oxabl_parser",
  "oxabl_style",
+]
+
+[[package]]
+name = "oxabl_handles"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_flow",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]

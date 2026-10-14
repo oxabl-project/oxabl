@@ -1,0 +1,38 @@
+DEFINE VARIABLE lFail AS LOGICAL NO-UNDO.
+
+PROCEDURE in-finally:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    DO ON ERROR UNDO, THROW:
+        CREATE QUERY hQuery.
+        hQuery:QUERY-PREPARE("for each customer").
+        FINALLY:
+            DELETE OBJECT hQuery NO-ERROR.
+        END FINALLY.
+    END.
+END PROCEDURE.
+
+PROCEDURE success-only:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    CREATE QUERY hQuery.
+    hQuery:QUERY-PREPARE("for each customer").
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+
+PROCEDURE early-return:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    CREATE QUERY hQuery.
+    IF lFail THEN RETURN.
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+
+PROCEDURE return-error:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    CREATE QUERY hQuery.
+    IF lFail THEN RETURN ERROR "failed".
+    DELETE OBJECT hQuery.
+END PROCEDURE.
+
+PROCEDURE never-freed:
+    DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+    CREATE QUERY hQuery.
+END PROCEDURE.
