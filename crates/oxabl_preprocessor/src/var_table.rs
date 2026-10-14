@@ -154,7 +154,11 @@ impl PreprocVarTable {
     fn insert(&mut self, name: &str, value: &str, origin: Origin) {
         with_folded(name, |key| {
             let prev = self.entry(key);
-            let global = prev.and_then(|e| e.global.clone());
+            // A global that the new name shadows is held behind it.
+            let global = match prev {
+                Some(e) if e.origin == Origin::Global => Some(Arc::clone(&e.value)),
+                _ => prev.and_then(|e| e.global.clone()),
+            };
             let origin = match prev.map(|e| e.origin) {
                 Some(prev) if prev != origin => Origin::Mixed,
                 _ => origin,

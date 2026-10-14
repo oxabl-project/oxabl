@@ -4117,6 +4117,21 @@ ELSE
     }
 
     #[test]
+    fn a_scoped_define_and_a_global_define_of_one_name_agree_whatever_their_order() {
+        let fs = make_fs(&[]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+
+        let global_first = "&GLOBAL-DEFINE x g\n&SCOPED-DEFINE x s\n&UNDEFINE x\n[{&x}]";
+        let global_first = pp.process(FileId::new(1), global_first).unwrap();
+        let scoped_first = "&SCOPED-DEFINE x s\n&GLOBAL-DEFINE x g\n&UNDEFINE x\n[{&x}]";
+        let scoped_first = pp.process(FileId::new(1), scoped_first).unwrap();
+
+        assert_eq!(&*global_first.to_text(), "[g]");
+        assert_eq!(&*scoped_first.to_text(), "[g]");
+    }
+
+    #[test]
     fn no_args_still_works() {
         // Include with no args should work as before
         let fs = make_fs(&[("/inc/plain.i", "plain content")]);
