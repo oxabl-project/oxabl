@@ -1099,6 +1099,8 @@ pub enum CreateTargetKind {
     Buffer,
     Query,
     Widget,
+    /// `CREATE CALL handle` — a dynamic call object.
+    Call,
 }
 
 // =============================================================================

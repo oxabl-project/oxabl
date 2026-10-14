@@ -5529,6 +5529,10 @@ impl Parser<'_> {
             Kind::TempTable => Some(CreateTargetKind::TempTable),
             Kind::Buffer => Some(CreateTargetKind::Buffer),
             Kind::Query => Some(CreateTargetKind::Query),
+            // `CREATE call.` can also be a record create on a table named `call`.
+            Kind::Call if Self::can_be_identifier(self.peek_at(1).kind) => {
+                Some(CreateTargetKind::Call)
+            }
             _ => None,
         }
     }
