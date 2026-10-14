@@ -699,3 +699,74 @@ fn for_first_and_for_last_run_their_body_once() {
     let (end, kind) = only_edge(cfg, next);
     assert_eq!((kind, cfg.node(end).kind), (EdgeKind::Next, NodeKind::End));
 }
+
+/// The kinds of the `Raise(Stop)` edges out of `n`, with their targets.
+fn stop_targets(cfg: &Cfg, n: NodeIx) -> Vec<NodeKind> {
+    cfg.successors(n)
+        .filter(|e| e.kind == EdgeKind::Raise(Condition::Stop))
+        .map(|e| cfg.node(e.to).kind)
+        .collect()
+}
+
+#[test]
+fn stop_after_and_waiting_statements_may_raise_stop() {
+    let p = parse(include_str!("fixtures/stop.p"));
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let handled = [NodeKind::Handler(Condition::Stop)];
+
+    // Every statement of a STOP-AFTER block raises, and its ON STOP phrase
+    // is live; without a phrase the STOP leaves the unit.
+    let after = cfg.node(p.nodes(cfg, "DO STOP-AFTER 5 ON STOP")[0]).block;
+    assert!(cfg.block(after).stop_after);
+    assert!(cfg.block(after).handling(Condition::Stop).is_some());
+    let slow = p.nodes(cfg, "RUN slow.p.");
+    for n in [
+        p.node(cfg, "CREATE QUERY h."),
+        slow[0],
+        p.node(cfg, "DELETE OBJECT h."),
+    ] {
+        assert_eq!(stop_targets(cfg, n), handled);
+    }
+    assert_eq!(
+        stop_targets(cfg, p.node(cfg, "i = 1.")),
+        [NodeKind::Exit(ExitKind::Stop)]
+    );
+
+    // A call, a lock wait and WAIT-FOR raise where a handler acts on it.
+    let runs = p.nodes(cfg, "RUN other.p.");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(stop_targets(cfg, runs[0]), handled);
+    let finds = p.nodes(cfg, "FIND FIRST Customer");
+    assert_eq!(finds.len(), 3);
+    assert_eq!(stop_targets(cfg, finds[0]), handled);
+    assert_eq!(stop_targets(cfg, finds[1]), []);
+    let for_each = p.node(cfg, "FOR EACH Customer EXCL");
+    assert_eq!(stop_targets(cfg, for_each), handled);
+    let no_lock = p.node(cfg, "FOR EACH Customer NO-LOCK");
+    assert_eq!(stop_targets(cfg, no_lock), []);
+    assert_eq!(stop_targets(cfg, p.node(cfg, "WAIT-FOR")), handled);
+
+    // Nowhere else: an unhandled STOP is not modelled for them.
+    assert_eq!(stop_targets(cfg, runs[1]), []);
+    assert_eq!(stop_targets(cfg, finds[2]), []);
+
+    // The STOP leaves the block through its FINALLY.
+    let guarded = cfg
+        .blocks()
+        .find(|(_, b)| b.stop_after && b.finally.is_some())
+        .expect("STOP-AFTER block with a FINALLY")
+        .0;
+    assert_eq!(stop_targets(cfg, slow[1]), handled);
+    let finally = p.nodes(cfg, "i = 4.");
+    assert!(cfg.runs_on_every_exit(guarded, &finally));
+    let stop_edge = cfg
+        .successors(slow[1])
+        .find(|e| e.kind == EdgeKind::Raise(Condition::Stop))
+        .expect("stop edge");
+    let handler = stop_edge.to;
+    // The handler's LEAVE goes to a copy of the FINALLY.
+    let (via, _) = only_edge(cfg, handler);
+    assert_eq!(cfg.node(via).kind, NodeKind::Head);
+    assert!(cfg.successors(via).any(|e| finally.contains(&e.to)));
+}

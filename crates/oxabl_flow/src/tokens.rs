@@ -412,6 +412,11 @@ pub(crate) fn skipped_input(src: &str, span: Span) -> Input {
     }
 }
 
+/// Whether a skipped statement is `WAIT-FOR`, which the user can interrupt.
+pub(crate) fn skipped_waits(src: &str, span: Span) -> bool {
+    Toks::new(src, span, 1).kind(0) == Some(Kind::WaitFor)
+}
+
 /// Whether the statement text ends in `NO-ERROR` (before the period). For
 /// statement forms whose AST does not record the option.
 pub(crate) fn ends_with_no_error(src: &str, span: Span) -> bool {

@@ -32,6 +32,21 @@
 //! statements, so the builder reads them from the lexer's tokens over each
 //! statement's span. That is why [`build_file`] takes the source text.
 //!
+//! # Conditions
+//!
+//! A statement may raise ERROR unless it has `NO-ERROR`, and ENDKEY when it
+//! reads input. QUIT comes only from the `QUIT` statement. STOP comes from:
+//!
+//! * the `STOP` statement;
+//! * every statement under `STOP-AFTER`, the header of an iterating block
+//!   included. An unhandled one leaves the unit;
+//! * `RUN`, a `FIND` or `FOR` that takes a lock (no `NO-LOCK`), and `WAIT-FOR`,
+//!   but only where a block or `CATCH` of the unit handles STOP. An unhandled
+//!   STOP from these leaves the unit, and that path is not modelled.
+//!
+//! Not modelled: STOP from a function or method call, a user interrupt, or a
+//! lock wait inside `CREATE`, `UPDATE` and the like.
+//!
 //! # `UNDO`
 //!
 //! An `UNDO` statement undoes the block it names, else the closest block with

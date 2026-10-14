@@ -9,7 +9,9 @@
 
 use std::mem;
 
-use oxabl_ast::{FindType, NodeId, OnAction, OnKind, Span, Statement, StatementKind as SK};
+use oxabl_ast::{
+    FindType, LockType, NodeId, OnAction, OnKind, Span, Statement, StatementKind as SK,
+};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -368,6 +370,9 @@ enum Shape<'a> {
         raises: bool,
         /// Reads input, so may raise ENDKEY.
         endkey: bool,
+        /// Runs other code, waits for a lock or waits for an event, so may
+        /// raise STOP.
+        waits: bool,
         opaque: Option<OpaqueReason>,
     },
     Leave(Option<&'a str>),
@@ -390,6 +395,7 @@ impl Shape<'_> {
         Shape::Plain {
             raises,
             endkey: false,
+            waits: false,
             opaque: None,
         }
     }
@@ -873,6 +879,26 @@ impl<'a> Builder<'a> {
         0
     }
 
+    /// Whether the code being built is in a block with `STOP-AFTER`.
+    fn under_stop_after(&self) -> bool {
+        self.frames
+            .iter()
+            .any(|f| self.cfg.blocks[f.block.index()].stop_after)
+    }
+
+    /// `n` may raise STOP. Every node under `STOP-AFTER` may. A node that runs
+    /// other code, waits for a lock or waits for an event (`waits`) may too,
+    /// but that is modelled only where this unit handles STOP: an unhandled
+    /// STOP leaves the unit, and that path is modelled only for `STOP-AFTER`
+    /// and the `STOP` statement.
+    fn may_stop(&mut self, n: NodeIx, waits: bool) {
+        let top = self.top();
+        if self.under_stop_after() || (waits && self.handler_frame(top, Condition::Stop).is_some())
+        {
+            self.raise(n, Condition::Stop, EdgeKind::Raise(Condition::Stop));
+        }
+    }
+
     fn unhandled_exit(condition: Condition) -> ExitKind {
         match condition {
             Condition::Error => ExitKind::Error,
@@ -1034,6 +1060,9 @@ impl<'a> Builder<'a> {
         });
         if tests {
             self.raise(head, Condition::Error, EdgeKind::Raise(Condition::Error));
+            let waits =
+                matches!(&s.kind, SK::ForEach { lock_type, .. } if *lock_type != LockType::NoLock);
+            self.may_stop(head, waits);
             let after = self.after_node(self.top());
             self.edge(head, after, EdgeKind::LoopDone);
         }
@@ -1167,6 +1196,7 @@ impl<'a> Builder<'a> {
                 };
                 let n = self.place(NodeKind::Stmt, s, span);
                 self.raise(n, Condition::Error, EdgeKind::Raise(Condition::Error));
+                self.may_stop(n, false);
                 self.pending.push((n, EdgeKind::True));
                 self.stmt(then_branch);
                 let then_out = mem::take(&mut self.pending);
@@ -1183,6 +1213,7 @@ impl<'a> Builder<'a> {
             } => {
                 let n = self.place(NodeKind::Stmt, s, s.span);
                 self.raise(n, Condition::Error, EdgeKind::Raise(Condition::Error));
+                self.may_stop(n, false);
                 let mut out = Vec::new();
                 for (i, w) in when_branches.iter().enumerate() {
                     self.pending.push((n, EdgeKind::When(i as u32)));
@@ -1232,6 +1263,7 @@ impl<'a> Builder<'a> {
             Shape::Plain {
                 raises,
                 endkey,
+                waits,
                 opaque,
             } => {
                 if let Some(reason) = opaque {
@@ -1243,6 +1275,7 @@ impl<'a> Builder<'a> {
                 if endkey {
                     self.raise(n, Condition::Endkey, EdgeKind::Raise(Condition::Endkey));
                 }
+                self.may_stop(n, waits);
                 self.pending.push((n, EdgeKind::Normal));
             }
             Shape::Leave(label) => {
@@ -1258,6 +1291,7 @@ impl<'a> Builder<'a> {
             Shape::Return { raises } => {
                 if raises {
                     self.raise(n, Condition::Error, EdgeKind::Raise(Condition::Error));
+                    self.may_stop(n, false);
                 }
                 self.jump(n, Target::Exit(ExitKind::Return), EdgeKind::Return);
             }
@@ -1316,6 +1350,7 @@ impl<'a> Builder<'a> {
                 Control::Unrecognized => Shape::Plain {
                     raises: false,
                     endkey: false,
+                    waits: false,
                     opaque: Some(OpaqueReason::UnrecognizedStatement),
                 },
             },
@@ -1335,23 +1370,31 @@ impl<'a> Builder<'a> {
             SK::Message { set_targets, .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: !set_targets.is_empty(),
+                waits: false,
                 opaque: None,
             },
             // A FIND NEXT/PREV past the last record ends the classic
             // `REPEAT: FIND NEXT ...` loop. Whether ABL raises ERROR or ENDKEY
-            // there is not modelled, so both are possible.
+            // there is not modelled, so both are possible. A FIND with a lock
+            // can wait for it.
             SK::Find {
-                find_type: FindType::Next | FindType::Prev,
-                no_error: false,
+                find_type,
+                no_error,
+                lock_type,
                 ..
             } => Shape::Plain {
-                raises: true,
-                endkey: true,
+                raises: !no_error,
+                endkey: !no_error && matches!(find_type, FindType::Next | FindType::Prev),
+                waits: *lock_type != LockType::NoLock,
                 opaque: None,
             },
-            SK::Find { no_error, .. }
-            | SK::Run { no_error, .. }
-            | SK::Create { no_error, .. }
+            SK::Run { no_error, .. } => Shape::Plain {
+                raises: !no_error,
+                endkey: false,
+                waits: true,
+                opaque: None,
+            },
+            SK::Create { no_error, .. }
             | SK::Delete { no_error, .. }
             | SK::DeleteObject { no_error, .. }
             | SK::Release { no_error, .. }
@@ -1364,12 +1407,14 @@ impl<'a> Builder<'a> {
                 _ => Shape::Plain {
                     raises: !self.no_error_text(s),
                     endkey: tokens::skipped_input(self.src, s.span) != Input::None,
+                    waits: tokens::skipped_waits(self.src, s.span),
                     opaque: Some(OpaqueReason::SkippedStatement),
                 },
             },
             SK::IncludeReference { .. } | SK::IncludeArgReference { .. } => Shape::Plain {
                 raises: true,
                 endkey: false,
+                waits: false,
                 opaque: Some(OpaqueReason::UnexpandedInclude),
             },
             SK::Leave(label) => Shape::Leave(label.as_deref()),
