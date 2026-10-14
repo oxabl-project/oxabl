@@ -130,8 +130,7 @@ impl<'fs> Preprocessor<'fs> {
             fs: self.fs,
             include_paths: self.include_paths,
             vars,
-            opsys: self.predefined.opsys.clone(),
-            proversion: self.predefined.proversion.clone(),
+            predefined: self.predefined.clone(),
             file_names: vec![name.map(str::to_string)],
             sequence: 0,
             global_vars: PreprocVarTable::new(),
@@ -180,9 +179,8 @@ struct ProcessContext<'fs> {
     fs: &'fs dyn FileSystem,
     include_paths: &'fs [PathBuf],
     vars: PreprocVarTable,
-    /// What the `OPSYS` and `PROVERSION` functions answer in a condition.
-    opsys: String,
-    proversion: Option<String>,
+    /// What the functions of an `&IF` condition answer from.
+    predefined: PreprocessorConfig,
     /// The name `{&FILE-NAME}` reports for each file being processed, innermost
     /// last. The root's is `None` when the caller supplied no name.
     file_names: Vec<Option<String>>,
@@ -790,8 +788,7 @@ impl<'fs> ProcessContext<'fs> {
             &condition,
             &Environment {
                 vars: &self.vars,
-                opsys: &self.opsys,
-                proversion: self.proversion.as_deref(),
+                config: &self.predefined,
             },
         );
         let mut unmodelled = Vec::new();
@@ -2687,6 +2684,39 @@ mod tests {
 
         assert_eq!(&*result.to_text(), "equal\nnot-unknown\n");
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn the_database_functions_read_the_listed_databases_or_report_a_guess() {
+        let fs = make_fs(&[]);
+        let source = "&IF DBTYPE(\"ledger\") NE ? &THEN\nconnected\n&ELSE\nabsent\n&ENDIF\n";
+        let with = |databases: Option<Vec<String>>| {
+            let config = PreprocessorConfig {
+                databases,
+                ..PreprocessorConfig::default()
+            };
+            Preprocessor::new(&fs, &[])
+                .with_predefined(&config)
+                .process(FileId::new(1), source)
+                .unwrap()
+        };
+
+        let result = with(Some(vec!["ledger".into()]));
+        assert_eq!(&*result.to_text(), "connected\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+
+        let result = with(Some(vec![]));
+        assert_eq!(&*result.to_text(), "absent\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+
+        let result = with(None);
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code.0, "PREPROC010");
+        assert!(result.diagnostics[0].message.contains("DBTYPE"));
+        assert_eq!(
+            result.text_losses[0].kind,
+            TextLossKind::UnmodelledCondition
+        );
     }
 
     #[test]

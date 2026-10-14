@@ -1,13 +1,14 @@
+use oxabl_workspace::PreprocessorConfig;
+
 use crate::PreprocVarTable;
 use crate::var_table::Origin;
 
 /// What an `&IF` condition is evaluated against.
 pub struct Environment<'a> {
     pub vars: &'a PreprocVarTable,
-    /// The `OPSYS` function. Unlike `{&OPSYS}` a `&SCOPED-DEFINE` cannot shadow it.
-    pub opsys: &'a str,
-    /// The `PROVERSION` function; `None` when the environment does not say.
-    pub proversion: Option<&'a str>,
+    /// The compile environment behind `OPSYS`, `PROVERSION` and the database
+    /// functions. Unlike `{&OPSYS}`, a `&SCOPED-DEFINE` cannot shadow them.
+    pub config: &'a PreprocessorConfig,
 }
 
 /// A part of a condition that was not decided from facts.
@@ -44,6 +45,11 @@ pub struct Evaluation {
 ///   `DECIMAL` (integral values only), `STRING`, `SUBSTRING`, `LENGTH`, `TRIM`,
 ///   `LEFT-TRIM`, `RIGHT-TRIM`, `LC`, `INDEX`, `R-INDEX`, `ENTRY`,
 ///   `NUM-ENTRIES`, `LOOKUP`, `ABSOLUTE`, `MAXIMUM`, `MINIMUM`
+/// - `DBTYPE`, `CONNECTED` and `LDBNAME` of a logical database name, from the
+///   databases the environment lists: `DBTYPE` is `PROGRESS` unless the
+///   environment says otherwise, and `?` for an unlisted name. They are a [`Gap`]
+///   while no list is known, and for a sequence number, which depends on the
+///   order of connection.
 ///
 /// Comparisons are case-insensitive (ABL semantics). Two strings compare as text
 /// and two numbers as numbers; a string against a number, or either against a
@@ -719,8 +725,8 @@ impl<'a> CondParser<'a> {
         let upper = name.to_ascii_uppercase();
         if self.peek() != Some(&CondToken::LParen) {
             return match upper.as_str() {
-                "OPSYS" => CondValue::Str(self.env.opsys.to_string()),
-                "PROVERSION" => match self.env.proversion {
+                "OPSYS" => CondValue::Str(self.env.config.opsys.clone()),
+                "PROVERSION" => match self.env.config.proversion.as_deref() {
                     Some(version) => CondValue::Str(version.to_string()),
                     None => {
                         self.record(Gap::UnsetProversion);
@@ -753,12 +759,57 @@ impl<'a> CondParser<'a> {
         if args.iter().any(|a| matches!(a, CondValue::Unknown)) {
             return CondValue::Unknown;
         }
+        if matches!(upper.as_str(), "DBTYPE" | "CONNECTED" | "LDBNAME") {
+            return self.database_call(&upper, &args);
+        }
         match call(&upper, &args) {
             Some(v) => v,
             None => {
                 self.gap(format!("the function {upper}"));
                 CondValue::Unknown
             }
+        }
+    }
+
+    /// `DBTYPE`, `CONNECTED` or `LDBNAME` of a logical database name, answered
+    /// from the databases the environment lists.
+    fn database_call(&mut self, name: &str, args: &[CondValue]) -> CondValue {
+        let config = self.env.config;
+        let Some(databases) = config.databases.as_deref() else {
+            self.gap(format!(
+                "the function {name}, with no connected databases known \
+                 (list them under `databases` in [workspace.preprocessor] or configure [workspace.schema])"
+            ));
+            return CondValue::Unknown;
+        };
+        let wanted = match args {
+            [CondValue::Str(wanted)] => wanted,
+            [CondValue::Num(_)] => {
+                self.gap(format!(
+                    "the function {name} with a sequence number, which depends on the order of connection"
+                ));
+                return CondValue::Unknown;
+            }
+            _ => {
+                self.gap(format!(
+                    "the function {name} with something other than a database name"
+                ));
+                return CondValue::Unknown;
+            }
+        };
+        let connected = databases.iter().find(|d| d.eq_ignore_ascii_case(wanted));
+        match (name, connected) {
+            ("CONNECTED", connected) => CondValue::Bool(connected.is_some()),
+            (_, None) => CondValue::Null,
+            ("LDBNAME", Some(db)) => CondValue::Str(db.clone()),
+            (_, Some(db)) => CondValue::Str(
+                config
+                    .database_types
+                    .iter()
+                    .find(|(listed, _)| listed.eq_ignore_ascii_case(db))
+                    .map_or("PROGRESS", |(_, kind)| kind)
+                    .to_string(),
+            ),
         }
     }
 
@@ -1147,12 +1198,15 @@ mod tests {
     use super::*;
 
     fn eval_in(condition: &str, vars: &PreprocVarTable, proversion: Option<&str>) -> Evaluation {
+        let config = PreprocessorConfig {
+            proversion: proversion.map(str::to_string),
+            ..PreprocessorConfig::default()
+        };
         super::evaluate(
             condition,
             &Environment {
                 vars,
-                opsys: "UNIX",
-                proversion,
+                config: &config,
             },
         )
     }
@@ -1385,10 +1439,14 @@ mod tests {
     fn opsys_and_proversion_come_from_the_environment() {
         let vars = PreprocVarTable::new();
         let win = |c: &str| {
+            let config = PreprocessorConfig {
+                opsys: "WIN32".into(),
+                proversion: Some("12.8".into()),
+                ..PreprocessorConfig::default()
+            };
             let env = Environment {
                 vars: &vars,
-                opsys: "WIN32",
-                proversion: Some("12.8"),
+                config: &config,
             };
             let e = super::evaluate(c, &env);
             assert!(e.gaps.is_empty(), "{c}: {:?}", e.gaps);
@@ -1704,6 +1762,98 @@ mod tests {
         }
         // The leftover `?` after a complete expression is still reported.
         assert_eq!(gaps(r#""a" = "a" ?"#).len(), 1);
+    }
+
+    fn eval_databases(condition: &str, databases: Option<&[&str]>) -> Evaluation {
+        let config = PreprocessorConfig {
+            databases: databases.map(|d| d.iter().map(|d| d.to_string()).collect()),
+            database_types: [("STOCK".to_string(), "ORACLE".to_string())].into(),
+            ..PreprocessorConfig::default()
+        };
+        let vars = PreprocVarTable::new();
+        super::evaluate(
+            condition,
+            &Environment {
+                vars: &vars,
+                config: &config,
+            },
+        )
+    }
+
+    #[test]
+    fn the_database_functions_answer_from_the_listed_databases() {
+        let listed = Some(&["ledger_db", "Stock"][..]);
+        let exact = |condition: &str| {
+            let e = eval_databases(condition, listed);
+            assert!(e.gaps.is_empty(), "{condition}: {:?}", e.gaps);
+            e.value
+        };
+        assert!(exact(r#"DBTYPE("ledger_db") NE ?"#));
+        assert!(exact(r#"DBTYPE("LEDGER_DB") = "PROGRESS""#));
+        assert!(exact(r#"DBTYPE("stock") = "ORACLE""#));
+        assert!(!exact(r#"DBTYPE("other") NE ?"#));
+        assert!(exact(r#"DBTYPE("other") = ?"#));
+        assert!(exact(r#"CONNECTED("ledger_db")"#));
+        assert!(exact(r#"CONNECTED("STOCK") AND NOT CONNECTED("other")"#));
+        assert!(exact(r#"LDBNAME("STOCK") = "Stock""#));
+        assert!(exact(r#"LDBNAME("other") = ?"#));
+        assert!(!exact(r#"LDBNAME("other") NE ?"#));
+        assert!(exact(
+            r#"DBTYPE("ledger_db") = "progress" AND DBTYPE("x") = ?"#
+        ));
+        // No branch is taken on an unknown answer.
+        assert!(!exact(r#"DBTYPE("other") > "A""#));
+        assert!(!exact(r#"NOT (DBTYPE("other") > "A")"#));
+    }
+
+    #[test]
+    fn an_empty_database_list_connects_nothing() {
+        let e = eval_databases(r#"CONNECTED("ledger_db")"#, Some(&[]));
+        assert!(!e.value && e.gaps.is_empty());
+        let e = eval_databases(r#"DBTYPE("ledger_db") NE ?"#, Some(&[]));
+        assert!(!e.value && e.gaps.is_empty());
+    }
+
+    #[test]
+    fn the_database_functions_are_a_gap_without_a_list() {
+        for condition in [
+            r#"DBTYPE("ledger_db") NE ?"#,
+            r#"CONNECTED("ledger_db")"#,
+            r#"LDBNAME("ledger_db") = "ledger_db""#,
+        ] {
+            let e = eval_databases(condition, None);
+            assert_eq!(e.gaps.len(), 1, "{condition}");
+            let Gap::Unmodelled(what) = &e.gaps[0] else {
+                panic!("{:?}", e.gaps)
+            };
+            assert!(what.contains("`databases`"), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_sequence_number_or_a_non_name_is_a_gap_whatever_is_listed() {
+        for condition in [
+            "LDBNAME(1) = \"ledger_db\"",
+            "DBTYPE(1) = \"PROGRESS\"",
+            "CONNECTED(TRUE)",
+            "CONNECTED()",
+            r#"CONNECTED("a", "b")"#,
+            "DBTYPE(?) = ?",
+        ] {
+            let e = eval_databases(condition, Some(&["ledger_db"]));
+            assert_eq!(e.gaps.len(), 1, "{condition}: {:?}", e.gaps);
+        }
+    }
+
+    #[test]
+    fn a_decided_condition_never_asks_for_the_database_list() {
+        for (condition, value) in [
+            (r#"TRUE OR DBTYPE("x") NE ?"#, true),
+            (r#"FALSE AND DBTYPE("x") NE ?"#, false),
+        ] {
+            let e = eval_databases(condition, None);
+            assert_eq!((e.value, e.gaps.is_empty()), (value, true), "{condition}");
+        }
     }
 
     #[test]
