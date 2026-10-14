@@ -12582,3 +12582,8 @@ fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
     assert!(matches!(stmts[0].kind, StatementKind::Assign { .. }));
     assert_eq!(tail_names(&stmts[0]), ["v-target"]);
 }
+
+#[test]
+fn harvest_drops_a_dynamic_buffer_field() {
+    assert_eq!(harvest("PUT hbuf::company."), vec!["hbuf"]);
+}

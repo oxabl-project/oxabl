@@ -811,10 +811,11 @@ impl<'a> Parser<'a> {
     ///    indistinguishable. The resolve pass's non-diagnostic lookup is the real
     ///    filter — a harvested keyword suppresses nothing unless a same-named
     ///    variable is actually in scope.
-    /// 3. **Drop tokens byte-adjacent to a preceding `.`, `:` or `/`** —
+    /// 3. **Drop tokens byte-adjacent to a preceding `.`, `:`, `::` or `/`** —
     ///    adjacency, not mere precedence, mirroring `consume_widget_name`'s
     ///    `next.start != name_end` test. That reduces `table.field` to `table`,
-    ///    `obj:attr` to `obj`, and `/usr/tmp/log.txt` to nothing, while keeping
+    ///    `obj:attr` to `obj`, `hbuf::field` to `hbuf`, and `/usr/tmp/log.txt`
+    ///    to nothing, while keeping
     ///    spaced division operands (`PUT v-total / v-count.`) and the
     ///    statement-leading names inside an `EDITING:` block, which follow a
     ///    terminating period and a space.
@@ -831,8 +832,10 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let prev = &self.tokens[i - 1];
-            if matches!(prev.kind, Kind::Period | Kind::Colon | Kind::Slash)
-                && prev.end == tok.start
+            if matches!(
+                prev.kind,
+                Kind::Period | Kind::Colon | Kind::DoubleColon | Kind::Slash
+            ) && prev.end == tok.start
             {
                 continue;
             }
