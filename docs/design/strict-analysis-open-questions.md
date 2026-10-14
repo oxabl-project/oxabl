@@ -9,7 +9,7 @@ date: 2026-10-14
 This note answers two of the three open questions in
 [`strict-analysis-plan.md`](strict-analysis-plan.md): where annotations may appear, and where
 diagnostics inside include files are reported. The third (PROPATH and include resolution parity
-with the AVM) stays open.
+with the AVM) stays open. Section 4 records one ABL fact that a rule depends on.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -124,15 +124,15 @@ attribute values compile.
 
 oxabl reports a diagnostic that comes from an include **nowhere** when it checks the file that
 includes it. It reports the diagnostic in the include only when someone checks the include as its
-own root.
+own root. Since M1, a directory walk does that for the context-free strict rules.
 
 - **Dropped at the includer.** The pipeline lints the expanded text, then maps each span back to
-  real bytes. `resolve_diagnostic` (`crates/oxabl_analyze/src/collect.rs:971`) returns `None`
+  real bytes. `resolve_diagnostic` (`crates/oxabl_analyze/src/collect.rs:1020`) returns `None`
   for any span whose first byte is not in the root file, and `resolve_span`
-  (`collect.rs:407`) is where that origin check happens. A semantic or lint finding inside an
+  (`collect.rs:408`) is where that origin check happens. A semantic or lint finding inside an
   include is therefore dropped. So is a label that points into an include. A parse error inside
-  an include is dropped at the same place (`collect.rs:925-926`), although the recovery flag is
-  set first (`collect.rs:922`). The edge set still learns that the parse recovered, and the CLI
+  an include is dropped at the same place (`collect.rs:965-966`), although the recovery flag is
+  set first (`collect.rs:962`). The edge set still learns that the parse recovered, and the CLI
   suppresses format drift for the file, but no diagnostic is shown.
 - **Preprocessor diagnostics follow the same rule.** Only loud diagnostics whose own span is in
   the root file are kept (`collect.rs:529`, `collect.rs:604`).
@@ -144,10 +144,12 @@ own root.
   (`collect.rs:318`) maps any expanded span to the root-level `{...}` that brought it in, at any
   depth. The dependency section uses it for `include_site` on every edge row
   (`crates/oxabl_analyze/src/lib.rs:135`, `:832`).
-- **Walks do not check includes.** `.i` is not a root extension, so `oxabl check <dir>` and
-  workspace discovery skip include files (`crates/oxabl_workspace/src/discovery.rs:44-47`, the
-  reasoning in the module docs, "R9"). A path named on the command line, or a buffer open in the
-  language server, is a root regardless (`discovery.rs:54`).
+- **Walks do not check includes as roots.** `.i` is not a root extension, so `oxabl check <dir>`
+  and workspace discovery do not volunteer include files as roots
+  (`crates/oxabl_workspace/src/discovery.rs:44-47`, the reasoning in the module docs, "R9"). A path
+  named on the command line, or a buffer open in the language server, is a root regardless
+  (`discovery.rs:54`). Since M1, `check <dir>` also lints the `.i` files of the walked tree for
+  context-free rules only (see "What shipped in M1" below).
 - **Checking an include as a root is deliberately quieter.** The pipeline marks it
   `SourceContext::IncludeFragment` (`crates/oxabl_pipeline/src/lint.rs:819`). Unresolved local
   names count as external, and the unused-variable, dead-store and block-variable rules stay
@@ -158,10 +160,12 @@ Confirmed on a synthetic example: an unused variable, an undefined name and a sy
 an include produce no finding when the includer is checked. The syntax error appears only when
 the include is named directly.
 
-**Net effect.** In a directory run, a finding that lives in an include is never shown. For the
-current rules that is an acceptable loss, because the rules are noisy in fragments. For strict
-rules it is not. `RUN VALUE`, a shared variable, or a missing `NO-UNDO` in a widely included
-file is the kind of thing the strict groups exist to find.
+**Net effect, before the context-free rules.** In a directory run, a finding that lives in an
+include was never shown. For the current rules that is an acceptable loss, because the rules are
+noisy in fragments. For strict rules it is not. `RUN VALUE`, a shared variable, or a missing
+`NO-UNDO` in a widely included file is the kind of thing the strict groups exist to find. On a
+large real corpus, about two thirds of the `RUN VALUE` sites sit in `.i` files (verified, as a
+text count).
 
 ### Recommendation (proposed)
 
@@ -192,10 +196,63 @@ Split by whether the finding depends on the code around the include.
 Work this needs, in order: carry the origin file on a finding instead of discarding it in
 `resolve_diagnostic`; let the strict rule groups declare whether each rule is context-free;
 collect the include set from the expansions of one run; add the "via" text for use-site
-findings. None of this is needed before M1 ends. The three syntactic rules in M1 can report at
-the root file first and move to the include later, so long as the baseline key is chosen as
-above from the start.
+findings.
+
+### What shipped in M1 (verified)
+
+Recommendation 1 is implemented in a simpler form, and recommendations 2 and 3 are not needed yet,
+because all four M1 rules are context-free (CL001, CL002, CL005 and TX006 read only the tokens of
+their own file; `RuleMeta::context_free` is set for each).
+
+- `oxabl check <dir>` also walks the `.i` files of the tree (`walk_include_fragments`). It checks
+  each one as a file of its own, with `SourceContext::IncludeFragment`, and reports **only** the
+  findings of context-free rules. Preprocessor, parse, semantic and every other lint finding of
+  the fragment is dropped, so a fragment that does not parse or resolve alone adds no noise
+  (`RuleSelection::ContextFree` in `oxabl_analyze`, `LintPipeline::run_context_free`).
+- It reads an include file only when some context-free rule is enabled for that file under the
+  configuration, so a tree without strict rules pays nothing.
+- A finding in an include is reported once, in the include, at the include's own path and line,
+  however many programs include it. A root's own run still drops findings that come from an
+  include (`resolve_diagnostic` is unchanged), so nothing is reported twice.
+- The baseline keys such a finding by the include's path.
+- In the language server and the daemon, an open `.i` buffer is a root and is linted with its
+  per-path configuration, so it shows the context-free findings (and the other fragment-safe
+  rules, as before).
+- The set of included files is the `.i` files under the walked directory, not the includes
+  reachable from the roots. The reasons: it needs no second expansion pass, and it does not depend
+  on include path resolution. The limits follow.
+
+Limits of the shipped form:
+
+- An include outside the walked directory (found through an include path that points elsewhere)
+  is not checked. Neither is any include when `check` is given one file instead of a directory.
+- Only the `.i` extension counts. Include files with another extension are not found.
+- An include that no program includes is checked all the same.
+- `files_checked` in the JSON report still counts roots. `include_files_checked` counts the
+  include files, and is omitted when it is zero.
 
 Open points for later: how the language server shows an include finding while the includer is
-open, and how an include with several roots in one run picks its context for rules that are
-"mostly" context-free.
+open, how an include with several roots in one run picks its context for rules that are "mostly"
+context-free, and whether to follow includes reachable from the roots instead of walking `.i`
+files.
+
+## 4. Shared definitions and `NO-UNDO`
+
+TX006 reports a variable or temp-table defined without `NO-UNDO`, and its help used to say "add
+`NO-UNDO` to the definition". A `SHARED` definition must match its `NEW SHARED` (or `NEW GLOBAL
+SHARED`) producer in another file.
+
+- **Recalled, uncertain.** The compiler checks that a `SHARED` variable or temp-table
+  has the same data type and the same field list as its producer. Whether it also compares
+  `NO-UNDO` is not confirmed. A mismatch would be a compile error or, for a producer in a
+  procedure found at run time, a run-time error.
+- **Proposed.** Assume the check includes `NO-UNDO`. For a shared definition the help is "Add
+  `NO-UNDO` to the `NEW SHARED` producer and to every `SHARED` consumer", and the finding is **not
+  autofixable**, because a fix would edit every consumer and the rule sees one file. The finding is
+  still reported on the producer and on each consumer. If the compiler does not compare `NO-UNDO`,
+  the finding becomes a plain one again, and the autofix can apply.
+- The reading is pinned by `a_shared_definition_asks_for_the_producer_and_every_consumer` in
+  `crates/oxabl_lint/tests/syntactic_rules/tx006_missing_no_undo.rs`; a correction shows as a
+  change to that test.
+- **Still to check against a licensed install:** compile a producer with `NO-UNDO` and a consumer
+  without it, and the reverse, for a variable and for a temp-table.

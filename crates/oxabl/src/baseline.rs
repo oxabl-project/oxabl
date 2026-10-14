@@ -8,7 +8,7 @@
 //!
 //! ```json
 //! {
-//!   "version": 1,
+//!   "version": 2,
 //!   "entries": [
 //!     {
 //!       "path": "src/orders.p",
@@ -27,15 +27,40 @@
 //!
 //! - `path` is relative to the workspace root (the directory holding
 //!   `oxabl.toml`, else the directory holding the baseline file), with `/`.
+//!   `.` and `..` are resolved lexically first, so `src/sub/../a.p` and
+//!   `src/a.p` are one file. A finding in a file outside the root has no such
+//!   path: it is reported but never recorded. On Windows the root is matched
+//!   against the file without regard to case; the rest of the path keeps the
+//!   case the file system gives it.
 //! - `hash` is a 64-bit FNV-1a hash, in hex, of the flagged line and the first
-//!   line of the flagged span, each with whitespace runs collapsed. A finding
-//!   reported inside an include has no text in the root file, so its message is
-//!   hashed instead.
+//!   line of the flagged span, each with whitespace runs collapsed and ASCII
+//!   letters folded to lower case, so a change of keyword case (`DEFINE` to
+//!   `define`) keeps the match. A finding reported inside an include has no
+//!   text in the root file, so its message is hashed instead. A finding in an
+//!   include file that was checked as a file of its own (strict rules that are
+//!   context-free) is keyed by that include's path like any other file.
 //! - `occurrence` numbers findings that share `path`, `code` and `hash`, in
 //!   source order, from 0.
+//!
+//! # A limit of the occurrence number
+//!
+//! The file has no line numbers, so identical findings in one file (same rule,
+//! same text) are told apart only by their order. Add a third identical line
+//! *above* two baselined ones and the new line takes occurrence 0, so the
+//! finding reported as new is the old last one, at occurrence 2. The count is
+//! right; the line may be wrong. A nearest-line match would need line numbers
+//! in the file, which would make every edit that moves code change the file.
+//! The hash makes the case rare: it needs the same text on both lines.
+//!
+//! # Versions
+//!
+//! Version 2 folds the case of the hashed text. A version 1 file hashes it
+//! with case kept, so its entries cannot match and are not read: `check`
+//! reports an error that names the fix, which is to delete the file and record
+//! it again with `--update-baseline`.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_common::Diagnostic;
@@ -43,7 +68,7 @@ use oxabl_pipeline::ROOT_FILE_ID;
 use serde::{Deserialize, Serialize};
 
 /// The format version this build reads and writes.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// One recorded finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +113,14 @@ impl Baseline {
     pub fn parse(text: &str) -> Result<Self, String> {
         let file: BaselineFile =
             serde_json::from_str(text).map_err(|e| format!("not a baseline file: {e}"))?;
+        if file.version == 1 {
+            return Err(
+                "baseline version 1 hashes the flagged text with its case kept, which \
+                 this build no longer matches; delete the file and record it again with \
+                 --update-baseline"
+                    .to_string(),
+            );
+        }
         if file.version != VERSION {
             return Err(format!(
                 "baseline version {} is not supported (expected {VERSION})",
@@ -169,6 +202,14 @@ pub struct Report {
     pub stale: Option<usize>,
     /// Whether this run rewrote the file.
     pub updated: bool,
+    /// Findings in files outside the workspace root. They are reported, never
+    /// recorded or matched.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub outside_root: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// One `check` run's use of a baseline file.
@@ -181,6 +222,7 @@ pub struct Run {
     current: Vec<Entry>,
     new: usize,
     baselined: usize,
+    outside_root: usize,
 }
 
 impl Run {
@@ -193,7 +235,8 @@ impl Run {
             Err(e) if update && e.kind() == std::io::ErrorKind::NotFound => Baseline::default(),
             Err(e) => return Err(format!("cannot read baseline {}: {e}", file.display())),
         };
-        let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+        let absolute =
+            |p: &Path| lexical(&std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()));
         let target = absolute(target);
         let start = if target.is_dir() {
             target.clone()
@@ -214,19 +257,24 @@ impl Run {
             current: Vec::new(),
             new: 0,
             baselined: 0,
+            outside_root: 0,
         })
     }
 
     /// Record the findings of one checked file and keep only those the
     /// baseline does not cover. With `--update-baseline` nothing is kept: every
-    /// finding is about to be recorded.
+    /// finding is about to be recorded. A file outside the root has no
+    /// baseline path, so all its findings are kept and none is recorded.
     pub fn filter(
         &mut self,
         file: &Path,
         source: &str,
         mut reported: CollectedDiagnostics,
     ) -> CollectedDiagnostics {
-        let path = relative_path(&self.root, file);
+        let Some(path) = relative_path(&self.root, file) else {
+            self.outside_root += reported.diagnostics.len();
+            return reported;
+        };
         let entries = fingerprint(&path, source, reported.all().map(|c| &c.diagnostic));
         let mut keep = entries.iter().map(|e| !self.baseline.contains(e));
         reported.diagnostics.retain(|_| keep.next().unwrap_or(true));
@@ -257,6 +305,7 @@ impl Run {
             baselined: self.baselined,
             stale,
             updated: self.update,
+            outside_root: self.outside_root,
         })
     }
 }
@@ -309,14 +358,50 @@ pub fn fingerprint<'a>(
         .collect()
 }
 
-/// The workspace-relative spelling of `file` under `root`, with `/`.
-pub fn relative_path(root: &Path, file: &Path) -> String {
-    let relative = file.strip_prefix(root).unwrap_or(file);
-    relative
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+/// The workspace-relative spelling of `file` under `root`, with `/`, or `None`
+/// when `file` is not below `root`.
+pub fn relative_path(root: &Path, file: &Path) -> Option<String> {
+    relative_key(root, file, cfg!(windows))
+}
+
+/// [`relative_path`], with the case of the `root` match chosen by the caller.
+fn relative_key(root: &Path, file: &Path, fold_case: bool) -> Option<String> {
+    let (root, file) = (lexical(root), lexical(file));
+    let same = |a: Component, b: Component| {
+        a == b
+            || fold_case
+                && a.as_os_str().to_string_lossy().to_lowercase()
+                    == b.as_os_str().to_string_lossy().to_lowercase()
+    };
+    let mut rest = file.components();
+    for want in root.components() {
+        if !rest.next().is_some_and(|got| same(want, got)) {
+            return None;
+        }
+    }
+    let parts: Vec<_> = rest.map(|c| c.as_os_str().to_string_lossy()).collect();
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// `path` with `.` removed and `..` resolved against the component before it,
+/// without touching the file system. A `..` that has nothing to climb out of
+/// stays in a relative path and is dropped at the root.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The text a diagnostic's hash is taken over.
@@ -336,8 +421,13 @@ fn content(source: &str, d: &Diagnostic) -> String {
     format!("{}\0{}", normalize(line), normalize(flagged))
 }
 
+/// Whitespace runs collapsed and ASCII letters folded: ABL keywords are
+/// case-insensitive, and the formatter can change their case.
 fn normalize(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 /// 64-bit FNV-1a: small, and stable across platforms and Rust versions.
@@ -464,15 +554,103 @@ mod tests {
 
     #[test]
     fn a_wrong_version_or_shape_is_an_error() {
-        assert!(Baseline::parse("{\"version\": 2, \"entries\": []}").is_err());
+        assert!(Baseline::parse("{\"version\": 3, \"entries\": []}").is_err());
         assert!(Baseline::parse("[]").is_err());
     }
 
     #[test]
     fn relative_paths_use_forward_slashes() {
         assert_eq!(
-            relative_path(Path::new("/ws"), Path::new("/ws/src/a.p")),
-            "src/a.p"
+            relative_path(Path::new("/ws"), Path::new("/ws/src/a.p")).as_deref(),
+            Some("src/a.p")
         );
+    }
+
+    #[test]
+    fn dot_and_dot_dot_are_resolved_before_the_root_is_removed() {
+        for file in [
+            "/ws/src/sub/../a.p",
+            "/ws/./src/a.p",
+            "/ws/src/../src/./a.p",
+            "/ws/../ws/src/a.p",
+        ] {
+            assert_eq!(
+                relative_path(Path::new("/ws"), Path::new(file)).as_deref(),
+                Some("src/a.p"),
+                "{file}"
+            );
+        }
+        assert_eq!(
+            relative_path(Path::new("/ws/./x/.."), Path::new("/ws/a.p")).as_deref(),
+            Some("a.p")
+        );
+    }
+
+    #[test]
+    fn a_file_outside_the_root_has_no_path() {
+        for file in [
+            "/other/a.p",
+            "/ws/../other/a.p",
+            "/ws",
+            "/wsx/a.p",
+            "/ws/..",
+        ] {
+            assert_eq!(
+                relative_path(Path::new("/ws"), Path::new(file)),
+                None,
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_root_match_folds_case_only_when_asked() {
+        let (root, file) = (Path::new("/WS/Src"), Path::new("/ws/src/Sub/A.p"));
+        assert_eq!(relative_key(root, file, false), None);
+        assert_eq!(relative_key(root, file, true).as_deref(), Some("Sub/A.p"));
+    }
+
+    #[test]
+    fn a_fingerprint_survives_a_keyword_case_change() {
+        let upper = "DEFINE VARIABLE c AS CHARACTER.\nRUN VALUE(c).\n";
+        let lower = "define variable c as character.\nrun value(c).\n";
+        let before = fingerprint("a.p", upper, &[diag("CL001", upper, "RUN VALUE", 0)]);
+        let after = fingerprint("a.p", lower, &[diag("CL001", lower, "run value", 0)]);
+        assert_eq!(before[0].hash, after[0].hash);
+        assert_eq!(before[0].key(), after[0].key());
+    }
+
+    #[test]
+    fn a_version_1_file_is_refused_with_the_fix() {
+        let err = Baseline::parse("{\"version\": 1, \"entries\": []}").unwrap_err();
+        assert!(err.contains("--update-baseline"), "{err}");
+    }
+
+    // Two baselined copies, then a third identical line above them: the count
+    // is right, and the reported finding is the last one, not the new one.
+    #[test]
+    fn identical_findings_match_by_order_so_a_line_added_above_shifts_the_report() {
+        let old = "x = 1.\nx = 1.\n";
+        let new = "x = 1.\nx = 1.\nx = 1.\n";
+        let recorded = fingerprint(
+            "a.p",
+            old,
+            &[diag("LINT0006", old, "x", 0), diag("LINT0006", old, "x", 1)],
+        );
+        let baseline = Baseline::default().updated(&HashSet::new(), &recorded);
+        let now = fingerprint(
+            "a.p",
+            new,
+            &(0..3)
+                .map(|n| diag("LINT0006", new, "x", n))
+                .collect::<Vec<_>>(),
+        );
+        let fresh: Vec<usize> = now
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !baseline.contains(e))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(fresh, [2], "one new finding, reported at the last copy");
     }
 }

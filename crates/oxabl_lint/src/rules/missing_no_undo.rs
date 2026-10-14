@@ -25,10 +25,25 @@
 //!     FIELD ItemNum AS INTEGER.
 //! ```
 //!
-//! The fix is always to add `NO-UNDO` after the type (after the name, for a
+//! The fix is to add `NO-UNDO` after the type (after the name, for a
 //! temp-table). The diagnostic's `help` says so; an autofix is planned and
-//! will need no analysis beyond what this rule already does. Add the keyword
-//! by hand wherever the program does depend on `UNDO` restoring a value.
+//! will need no analysis beyond what this rule already does, except for a
+//! shared definition (below). Add the keyword by hand wherever the program
+//! does depend on `UNDO` restoring a value.
+//!
+//! # Shared definitions
+//!
+//! A `NEW SHARED` or `NEW GLOBAL SHARED` definition and each `SHARED`
+//! definition that binds to it live in different files. The AVM requires the
+//! two to agree, and it is assumed (recalled, not checked against an install;
+//! see the open-questions note) that `NO-UNDO` is part of what must agree. Adding
+//! `NO-UNDO` on one side alone would then turn a warning into a compile or
+//! run-time mismatch. So for a shared definition:
+//!
+//! - the `help` says to add `NO-UNDO` to the producer and every consumer;
+//! - the finding is **not autofixable**: a fix would have to edit every file
+//!   that consumes the producer, and this rule sees one file;
+//! - the finding is still reported, on the producer and on each consumer.
 //!
 //! # What is reported
 //!
@@ -116,14 +131,21 @@ fn type_is_exempt(type_source: &TypeSource) -> bool {
 }
 
 impl Definitions<'_> {
-    fn report(&mut self, name: &Identifier, noun: &str) {
+    fn report(&mut self, name: &Identifier, noun: &str, shared: bool) {
+        let help = if shared {
+            // The AVM expects the producer and its consumers to match.
+            "Add `NO-UNDO` to the `NEW SHARED` producer and to every `SHARED` consumer; \
+             changing one side alone makes the definitions disagree."
+        } else {
+            "Add `NO-UNDO` to the definition."
+        };
         self.diags.push(
             Diagnostic::warning(
                 TX006,
                 format!("{noun} `{}` is defined without NO-UNDO", name.name),
                 file_span(self.ctx, name.span),
             )
-            .with_help("Add `NO-UNDO` to the definition.".to_string()),
+            .with_help(help.to_string()),
         );
     }
 
@@ -162,7 +184,7 @@ impl Definitions<'_> {
         if modifiers.contains(&Kind::Abstract) {
             return;
         }
-        self.report(name, "property");
+        self.report(name, "property", false);
     }
 }
 
@@ -175,13 +197,27 @@ impl Visitor for Definitions<'_> {
                 name,
                 type_source,
                 no_undo: false,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
                 ..
-            } if !type_is_exempt(type_source) => self.report(name, "variable"),
+            } if !type_is_exempt(type_source) => self.report(
+                name,
+                "variable",
+                *is_new_shared || *is_shared || *is_new_global_shared,
+            ),
             StatementKind::DefineTempTable {
                 name,
                 no_undo: false,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
                 ..
-            } => self.report(name, "temp-table"),
+            } => self.report(
+                name,
+                "temp-table",
+                *is_new_shared || *is_shared || *is_new_global_shared,
+            ),
             StatementKind::DefineParameter {
                 param_type:
                     ParameterType::Variable {
@@ -194,7 +230,7 @@ impl Visitor for Definitions<'_> {
                 // A signature parameter is stored as the same statement but
                 // has no `DEFINE`, and no place to write `NO-UNDO`.
                 if self.leading(stmt).first() == Some(&Kind::Define) {
-                    self.report(name, "parameter");
+                    self.report(name, "parameter", false);
                 }
             }
             StatementKind::Property { .. } => self.property(stmt),

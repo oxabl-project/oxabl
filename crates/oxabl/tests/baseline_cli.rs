@@ -70,7 +70,7 @@ fn a_baselined_tree_passes_and_only_a_new_finding_fails() {
     );
     let written = fs::read_to_string(root.join("b.json")).unwrap();
     let doc = json(&written);
-    assert_eq!(doc["version"], 1);
+    assert_eq!(doc["version"], 2);
     let paths: Vec<_> = doc["entries"]
         .as_array()
         .unwrap()
@@ -257,4 +257,101 @@ fn a_strict_finding_round_trips_through_a_baseline() {
         report["diagnostics"][0]["start"]["line"] == 7,
         "the new call on line 7 is the one reported: {message}"
     );
+}
+
+/// Run `check` on `files` from `dir` with `--baseline b.json`, as JSON.
+fn baselined(dir: &Path, files: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    let mut args = vec!["--baseline", "b.json", "--json"];
+    args.extend_from_slice(files);
+    let (exit, stdout, stderr) = check(dir, &args);
+    (exit, json(&stdout), stderr)
+}
+
+#[test]
+fn a_keyword_case_change_keeps_the_baseline() {
+    let dir = strict_workspace();
+    let root = dir.path();
+    check(root, &[".", "--baseline", "b.json", "--update-baseline"]);
+
+    write(
+        &root.join("strict/a.p"),
+        "define variable c as character no-undo initial \"x.p\".\nrun value(c).\n",
+    );
+    let (exit, report, stderr) = baselined(root, &["."]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert_eq!(report["baseline"]["new"], 0, "{report}");
+    assert_eq!(report["baseline"]["baselined"], 1);
+    assert_eq!(report["baseline"]["stale"], 0);
+}
+
+#[test]
+fn a_path_with_dot_dot_is_the_same_file() {
+    let dir = workspace();
+    let root = dir.path();
+    check(root, &["src", "--baseline", "b.json", "--update-baseline"]);
+
+    // `sub` must exist for the OS to resolve `sub/..`.
+    fs::create_dir_all(root.join("src/sub")).unwrap();
+    for spelling in ["src/sub/../a.p", "./src/a.p", "src/../src/a.p"] {
+        let (exit, report, stderr) = baselined(root, &[spelling]);
+        assert_eq!(exit, Some(0), "{spelling}: {stderr}");
+        assert_eq!(report["baseline"]["new"], 0, "{spelling}: {report}");
+        assert_eq!(report["baseline"]["baselined"], 1, "{spelling}");
+        assert_eq!(report["baseline"]["stale"], 0, "{spelling}");
+    }
+}
+
+#[test]
+fn a_crlf_file_matches_its_lf_baseline() {
+    let dir = workspace();
+    let root = dir.path();
+    check(root, &["src", "--baseline", "b.json", "--update-baseline"]);
+
+    let crlf = fs::read_to_string(root.join("src/a.p"))
+        .unwrap()
+        .replace('\n', "\r\n");
+    write(&root.join("src/a.p"), &crlf);
+    let (exit, report, stderr) = baselined(root, &["src"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert_eq!(report["baseline"]["new"], 0, "{report}");
+    assert_eq!(report["baseline"]["stale"], 0);
+}
+
+#[test]
+fn a_file_outside_the_root_is_reported_and_never_recorded() {
+    // The target has no `oxabl.toml` above it, so the baseline file's own
+    // directory is the root, and the target is not under it.
+    let dir = workspace();
+    let root = dir.path();
+    let outside = TempDir::new().unwrap();
+    write(
+        &outside.path().join("o.p"),
+        "DEFINE VARIABLE v-out AS INTEGER NO-UNDO.\n",
+    );
+    let target = outside.path().join("o.p");
+    let target = target.to_str().unwrap();
+
+    let (exit, _, stderr) = check(root, &[target, "--baseline", "b.json", "--update-baseline"]);
+    assert_eq!(exit, Some(1), "the outside finding is reported: {stderr}");
+    assert!(stderr.contains("outside the baseline root"), "{stderr}");
+    let doc = json(&fs::read_to_string(root.join("b.json")).unwrap());
+    assert!(
+        doc["entries"].as_array().unwrap().is_empty(),
+        "no machine path is stored: {doc}"
+    );
+
+    let (exit, report, _) = baselined(root, &[target]);
+    assert_eq!(exit, Some(1));
+    assert_eq!(report["baseline"]["outside_root"], 1);
+    assert_eq!(report["baseline"]["new"], 0);
+}
+
+#[test]
+fn a_version_1_baseline_is_refused_with_the_fix() {
+    let dir = workspace();
+    let root = dir.path();
+    write(&root.join("old.json"), "{\"version\": 1, \"entries\": []}");
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "old.json"]);
+    assert_eq!(exit, Some(2), "{stderr}");
+    assert!(stderr.contains("--update-baseline"), "{stderr}");
 }

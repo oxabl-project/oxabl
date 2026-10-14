@@ -63,7 +63,9 @@ Existing crates also change:
 
 - `oxabl_index`: static call graph with `RUN` targets resolved over PROPATH; reads intent
   annotations and declaration files for legacy code.
-- `oxabl_lint`: rule groups with per-directory enablement, severity config and a baseline file.
+- `oxabl_lint`: rule groups with per-directory enablement and severity config. The baseline
+  file is not here: it lives in the `oxabl` CLI (`check --baseline`), so the language server and
+  the daemon show baselined findings. Moving it to a shared crate is open.
 - `oxabl_analyze`: a new summaries section (below), additive with an envelope version bump.
 - `oxabl_lsp`: hover and code lens showing each procedure's summary.
 
@@ -181,8 +183,8 @@ where annotations proved clumsy are written down. Those notes define strictabl's
 Ordered by pain point (leaks first, then round trips, then unknowns), with cheap syntactic wins
 up front. Each milestone ends with a run over a large real corpus.
 
-1. **M1, foundation:** `oxabl_flow`; rule groups, severity config and baseline file in
-   `oxabl_lint`; CL001, CL002, CL005 and TX006 (syntactic, no flow needed). Exit: CFGs for every
+1. **M1, foundation:** `oxabl_flow`; rule groups and severity config in `oxabl_lint`, and the
+   baseline file in the `oxabl` CLI; CL001, CL002, CL005 and TX006 (syntactic, no flow needed). Exit: CFGs for every
    corpus file with no panics.
 2. **M2, leaks:** `oxabl_handles` and HD001 to HD005. Exit: leak count per directory reported;
    false positives triaged.

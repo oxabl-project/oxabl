@@ -23,6 +23,24 @@
 //! layer wins. Within one layer a setting for the rule itself (by code or by
 //! name) beats a setting for its group, and `disable` beats `enable`.
 //!
+//! A group toggle is weaker than a rule setting. It overrides an earlier
+//! explicit setting for the rule only when its layer is *more specific* than
+//! the layer that holds that setting. A scope is more specific than the base;
+//! two scopes are equally specific, because their patterns cannot be ranked.
+//! So a toggle never undoes a setting for the rule itself made in the same
+//! layer or in an earlier scope, whatever the file order. A rule setting
+//! always beats everything earlier. Examples, for `CL001` in group
+//! `strict.calls`:
+//!
+//! - base has `CL001 = "off"` and `enable = ["strict"]`: off, because a rule
+//!   setting beats a group toggle in the same layer.
+//! - base has `CL001 = "off"`, scope `a/**` has `enable = ["strict.calls"]`:
+//!   on under `a/`. The scope is more specific than the base.
+//! - scope `a/**` has `CL001 = "off"`, a later scope `**/*.p` has
+//!   `enable = ["strict.calls"]`: off. The scopes are equally specific.
+//! - scope `a/**` has `CL001 = "off"`, a later scope `a/b/**` has
+//!   `CL001 = "warn"`: on. A rule setting beats everything earlier.
+//!
 //! Enablement and severity are separate: a group toggle turns a rule on or off
 //! but keeps the severity an earlier layer chose. Setting a rule to a severity
 //! turns it on even when its group is off; setting it to *off* turns it off.
@@ -273,8 +291,14 @@ impl LintSeverityMap {
     pub fn severity_for(&self, rule: &LintRuleRef<'_>) -> Option<Severity> {
         let mut enabled = rule.enabled_by_default;
         let mut severity = rule.default_severity;
-        for layer in std::iter::once(&self.base).chain(&self.applied) {
-            if let Some(group) = rule.group {
+        // The most specific level that set the rule itself so far: the base is
+        // level 0, every scope level 1.
+        let mut set_at: Option<u8> = None;
+        let layers = std::iter::once((0, &self.base)).chain(self.applied.iter().map(|l| (1, l)));
+        for (level, layer) in layers {
+            if let Some(group) = rule.group
+                && set_at.is_none_or(|set| set < level)
+            {
                 if layer.enable.iter().any(|s| selects_group(s, group)) {
                     enabled = true;
                 }
@@ -283,10 +307,14 @@ impl LintSeverityMap {
                 }
             }
             match layer.rule(rule.code).or_else(|| layer.rule(rule.name)) {
-                Some(None) => enabled = false,
+                Some(None) => {
+                    enabled = false;
+                    set_at = Some(level);
+                }
                 Some(Some(sev)) => {
                     enabled = true;
                     severity = sev;
+                    set_at = Some(level);
                 }
                 None => {}
             }
@@ -452,6 +480,59 @@ mod tests {
         assert_eq!(legacy.severity_for(&STRICT), None);
         let revived = m.for_path(Path::new("/ws/legacy/new/a.p"));
         assert_eq!(revived.severity_for(&STRICT), Some(Severity::Error));
+    }
+
+    #[test]
+    fn a_scope_toggle_beats_an_explicit_off_in_the_base() {
+        let mut m = LintSeverityMap::new();
+        m.set("CL001", None);
+        let mut layer = LintLayer::new();
+        layer.enable_group("strict.calls");
+        scoped(&mut m, "a/**", layer);
+        let inside = m.for_path(Path::new("/ws/a/x.p"));
+        assert_eq!(inside.severity_for(&STRICT), Some(Severity::Warning));
+        let outside = m.for_path(Path::new("/ws/b/x.p"));
+        assert_eq!(outside.severity_for(&STRICT), None);
+    }
+
+    #[test]
+    fn a_later_scope_toggle_does_not_undo_an_earlier_scopes_rule_setting() {
+        let mut m = LintSeverityMap::new();
+        m.base_mut().enable_group("strict");
+        let mut off = LintLayer::new();
+        off.set_rule("CL001", None);
+        scoped(&mut m, "a/**", off);
+        let mut toggle = LintLayer::new();
+        toggle.enable_group("strict.calls");
+        scoped(&mut m, "**/*.p", toggle);
+        let both = m.for_path(Path::new("/ws/a/x.p"));
+        assert_eq!(both.severity_for(&STRICT), None, "equal specificity");
+        let only_toggle = m.for_path(Path::new("/ws/b/x.p"));
+        assert_eq!(only_toggle.severity_for(&STRICT), Some(Severity::Warning));
+
+        // A later rule setting still wins.
+        let mut m = LintSeverityMap::new();
+        let mut off = LintLayer::new();
+        off.set_rule("CL001", None);
+        scoped(&mut m, "a/**", off);
+        let mut on = LintLayer::new();
+        on.set_rule("run-value", Some(Severity::Error));
+        scoped(&mut m, "a/b/**", on);
+        let resolved = m.for_path(Path::new("/ws/a/b/x.p"));
+        assert_eq!(resolved.severity_for(&STRICT), Some(Severity::Error));
+    }
+
+    #[test]
+    fn a_scope_disable_still_beats_a_base_severity() {
+        let mut m = LintSeverityMap::new();
+        m.set("CL001", Some(Severity::Error));
+        let mut layer = LintLayer::new();
+        layer.disable_group("strict");
+        scoped(&mut m, "legacy/**", layer);
+        let legacy = m.for_path(Path::new("/ws/legacy/x.p"));
+        assert_eq!(legacy.severity_for(&STRICT), None);
+        let other = m.for_path(Path::new("/ws/src/x.p"));
+        assert_eq!(other.severity_for(&STRICT), Some(Severity::Error));
     }
 
     #[test]

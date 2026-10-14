@@ -109,6 +109,15 @@ Lint rules are in groups. The `LINT` rules are in the `default` group, which is 
 
 These four rules are context-free: each finding depends only on the text of its own file.
 
+**Include files.** A strict rule reports code from an include in the include file, once, and never in the program that includes it. `oxabl check <dir>` therefore also checks the `.i` files of the tree, but only for context-free rules, and only where the configuration enables one for that file. Other findings of a fragment (parse errors, undefined names, unused variables) stay hidden, because a fragment often does not parse or resolve alone. A baseline keys such a finding by the include's path. Limits:
+
+- `oxabl check <file>` checks that one file. It does not check the includes of a program. Name the `.i` file to check it.
+- `check` does not find an include outside the directory that it walks, or an include with an extension other than `.i`.
+- In the editor, an open `.i` file shows its context-free findings.
+- The text summary and `--json` count these files apart from the roots (`include_files_checked`).
+
+See `docs/design/strict-analysis-open-questions.md` for the reasons and for the plan for rules that depend on the includer.
+
 Configure lint in `[workspace.lint]` in `oxabl.toml`:
 
 ```toml
@@ -129,8 +138,8 @@ enable = ["strict.calls"]
 
 - **Severities:** `off`, `hint`, `info`, `warn` (or `warning`) and `error`. A rule that you do not configure uses its default severity.
 - **Patterns:** globs relative to the directory that holds `oxabl.toml`, written with `/` and matched case-insensitively. `*` stays in one directory and `**` crosses directories.
-- **Precedence**, lowest first: the rule default, then `[workspace.lint]`, then each override whose `files` match, in file order. A later override wins, so put broad patterns before narrow ones. In one table, a setting for a rule wins over a setting for its group, and `disable` wins over `enable`. A group toggle turns rules on or off but keeps the severity that an earlier table set. A severity on a rule turns the rule on, also when its group is off.
-- **Mistakes:** an unknown rule or group name, a toggle of the `default` group, and a bad pattern are warnings. oxabl ignores that entry and applies the rest. A value that is not a severity is a config error.
+- **Precedence**, lowest first: the rule default, then `[workspace.lint]`, then each override whose `files` match, in file order. A later override wins, so put broad patterns before narrow ones. In one table, a setting for a rule wins over a setting for its group, and `disable` wins over `enable`. A group toggle turns rules on or off but keeps the severity that an earlier table set. A severity on a rule turns the rule on, also when its group is off. A group toggle in an override replaces a setting for a single rule in `[workspace.lint]`, because an override is more specific than the global table. It does not replace a setting for a single rule in the same override or in an earlier override: overrides rank equal, so that setting stands, whatever the order. A later rule setting always wins. Example: with `CL001 = "off"` in `[workspace.lint]`, an override that enables `strict.calls` turns `CL001` on for its files. With `CL001 = "off"` in an override for `a/**`, a later override for `**/*.p` that enables `strict.calls` leaves `CL001` off in `a/`.
+- **Mistakes:** an unknown rule or group name, a toggle of the `default` group, a bad pattern, and an override with no `files` patterns are warnings. oxabl ignores that entry and applies the rest. A value that is not a severity is a config error.
 
 The CLI, the language server and the daemon apply the same settings to each file.
 
@@ -143,7 +152,9 @@ oxabl check src --baseline oxabl-baseline.json --update-baseline   # record the 
 oxabl check src --baseline oxabl-baseline.json                     # fail only on new findings
 ```
 
-- A finding matches an entry by rule code, workspace-relative path, a hash of the flagged line and span (whitespace collapsed), and an occurrence number for identical findings. The file has no line numbers, so edits that move a finding to a different line do not change the match.
+- A finding matches an entry by rule code, workspace-relative path, a hash of the flagged line and span, and an occurrence number for identical findings. Whitespace runs are collapsed and letters are folded to lower case before hashing, so a change of keyword case does not change the match. The file has no line numbers, so edits that move a finding to a different line do not change the match.
+- Paths are made relative to the workspace root (the directory with `oxabl.toml`, else the directory with the baseline file) after `.` and `..` are resolved, so `src/sub/../a.p` and `src/a.p` are one file. On Windows the root is matched without regard to case. A finding in a file outside the root is reported but never recorded; `check` says how many.
+- Identical findings in one file (same rule, same text) are told apart by their order only. If you add a third identical line above two baselined ones, the count of new findings is right, but the finding that `check` shows as new is the last copy, not the line that you added.
 - `check` writes the counts to stderr: `new`, `baselined`, and `stale` (fixed findings that are still in the file). With `--json`, the report has a `baseline` key with the same counts, and `diagnostics` holds only new findings.
 - `--update-baseline` adds the new findings and removes the stale entries. It keeps the entries of files that the run did not check. It cannot be used with `--no-lint`.
 - Exit codes do not change: `1` for a new finding, format drift or a failed file, `2` for a missing or malformed baseline. Stale entries do not fail the run.
@@ -151,14 +162,14 @@ oxabl check src --baseline oxabl-baseline.json                     # fail only o
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "entries": [
     { "path": "src/orders.p", "code": "LINT0002", "hash": "5f0c3a5e9d2b7c11", "occurrence": 0, "message": "..." }
   ]
 }
 ```
 
-The `message` field is only for the reader; matching does not use it.
+The `message` field is only for the reader; matching does not use it. A version 1 file (which hashed the text with its case kept) is refused with an error: delete it and record the baseline again with `--update-baseline`.
 
 ### WebAssembly browser package
 

@@ -80,7 +80,7 @@ use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    UnresolvedInclude, collect_from_expanded_with_source_context, expand_source_with,
+    RuleSelection, UnresolvedInclude, collect_from_expanded_selecting, expand_source_with,
 };
 
 use oxabl_common::{
@@ -814,6 +814,46 @@ impl<'a> LintPipeline<'a> {
     /// **Unguarded on purpose** (KTD6), for the same reason as
     /// [`expand`](Self::expand).
     pub fn collect(&self, expansion: &Expansion) -> LintResult {
+        self.collect_selecting(expansion, RuleSelection::All)
+    }
+
+    /// Whether any context-free rule is enabled for this handle's file.
+    ///
+    /// A walk asks before it reads an include file: with every context-free
+    /// rule off there is nothing to find, and the file costs a full analysis.
+    /// A handle with no file asks about the global settings alone.
+    pub fn context_free_rules_enabled(&self) -> bool {
+        let severities = match self.file() {
+            Some(path) => Cow::Owned(self.config.lint_severities.for_path(path)),
+            None => Cow::Borrowed(&self.config.lint_severities),
+        };
+        let registry = oxabl_lint::Registry::builtin_shared();
+        registry
+            .rules()
+            .filter(|rule| rule.meta().context_free)
+            .any(|rule| registry.severity_for(rule, &severities).is_some())
+    }
+
+    /// [`run`](Self::run), reporting only the findings of context-free lint
+    /// rules.
+    ///
+    /// For an include file checked as a file of its own: those rules answer
+    /// from the file's own tokens, so the finding is the same whichever file
+    /// includes it, and is reported here once. Preprocessor, parse, semantic and
+    /// context-dependent findings are left out, since an include fragment often
+    /// does not parse or resolve alone.
+    pub fn run_context_free(&self, source: &str) -> LintResult {
+        match catch_panic(|| {
+            let expansion = self.expand(source);
+            self.collect_selecting(&expansion, RuleSelection::ContextFree)
+        }) {
+            Ok(result) => result,
+            Err(panic) => LintResult::failed(panic),
+        }
+    }
+
+    /// [`collect`](Self::collect) with a choice of what to report.
+    fn collect_selecting(&self, expansion: &Expansion, selection: RuleSelection) -> LintResult {
         let dependency_paths = expansion.dependency_paths().to_vec();
         match &expansion.inner {
             Ok(expanded) => {
@@ -828,13 +868,14 @@ impl<'a> LintPipeline<'a> {
                     None => Cow::Borrowed(&self.config.lint_severities),
                 };
                 let (semantic, diagnostics) = self.with_run_index(|index| {
-                    collect_from_expanded_with_source_context(
+                    collect_from_expanded_selecting(
                         expanded,
                         &self.config.schema,
                         self.config.schema_loaded,
                         &lint_severities,
                         index,
                         source_context,
+                        selection,
                     )
                 });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
@@ -845,6 +886,7 @@ impl<'a> LintPipeline<'a> {
                 let diagnostics = CollectedDiagnostics {
                     diagnostics: preproc_errors
                         .iter()
+                        .filter(|_| selection == RuleSelection::All)
                         .map(|d| CollectedDiagnostic {
                             diagnostic: d.clone(),
                             source: DiagnosticSource::Preproc,
@@ -1297,6 +1339,86 @@ mod tests {
         assert_eq!(
             severity(&run.with_file("/ws/src/a/b.p").run(src)),
             Some(Severity::Error)
+        );
+    }
+
+    fn strict_under_strict_dir() -> PipelineConfig {
+        let parsed = oxabl_workspace::WorkspaceConfig::from_toml(
+            "[workspace]\nname = \"p\"\n\
+             [[workspace.lint.overrides]]\nfiles = [\"strict\"]\nenable = [\"strict.calls\"]\n",
+        )
+        .unwrap();
+        crate::resolve_from_config(
+            &parsed,
+            Path::new("/ws"),
+            &crate::ConfigOverrides::default(),
+        )
+        .0
+    }
+
+    // An include fragment opened by itself, as the editor does, shows the
+    // context-free findings its configuration enables.
+    #[test]
+    fn an_include_opened_as_a_root_shows_context_free_findings() {
+        let config = strict_under_strict_dir();
+        let fs = InMemoryFileSystem::new();
+        let run = LintPipeline::new(&config, &fs);
+        let src = "RUN VALUE(c).\n";
+        assert!(codes(&run.with_file("/ws/strict/x.i").run(src)).contains(&"CL001"));
+        assert!(!codes(&run.with_file("/ws/other/x.i").run(src)).contains(&"CL001"));
+    }
+
+    #[test]
+    fn a_context_free_run_reports_only_context_free_findings() {
+        let config = strict_under_strict_dir();
+        let fs = InMemoryFileSystem::new();
+        let run = LintPipeline::new(&config, &fs);
+        let src = "RUN missing-program.p.\n@ @ @\nRUN VALUE(c).\n";
+        let handle = run.with_file("/ws/strict/x.i");
+
+        let full = handle.run(src);
+        let all = codes(&full);
+        assert!(
+            all.contains(&"PARSE001") && all.contains(&"CL001"),
+            "{all:?}"
+        );
+
+        let result = handle.run_context_free(src);
+        assert_eq!(codes(&result), ["CL001"]);
+        assert!(
+            result.diagnostics().parse_recovered,
+            "recovery is still noted"
+        );
+        assert!(!result.failed_run());
+    }
+
+    #[test]
+    fn context_free_rules_are_enabled_per_file() {
+        let config = strict_under_strict_dir();
+        let fs = InMemoryFileSystem::new();
+        let run = LintPipeline::new(&config, &fs);
+        assert!(
+            run.with_file("/ws/strict/deep/x.i")
+                .context_free_rules_enabled()
+        );
+        assert!(!run.with_file("/ws/legacy/x.i").context_free_rules_enabled());
+        assert!(
+            !run.context_free_rules_enabled(),
+            "global settings: all off"
+        );
+
+        let everywhere = PipelineConfig {
+            lint_severities: {
+                let mut map = LintSeverityMap::new();
+                map.base_mut().enable_group("strict.transactions");
+                map
+            },
+            ..PipelineConfig::default()
+        };
+        assert!(
+            LintPipeline::new(&everywhere, &fs)
+                .with_file("/ws/a.i")
+                .context_free_rules_enabled()
         );
     }
 

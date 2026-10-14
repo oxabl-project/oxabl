@@ -11,6 +11,7 @@ pub use config::{
 };
 pub use discovery::{
     ROOT_EXTENSIONS, discover_path, is_include_fragment, is_root_file, walk_directory,
+    walk_include_fragments,
 };
 pub use file_system::{FileSystem, InMemoryFileSystem, RealFileSystem};
 pub use include_paths::find_workspace_root;
