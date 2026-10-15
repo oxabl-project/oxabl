@@ -35,6 +35,7 @@
 //! predefined names (`{&OPSYS}` and friends), which is what both caches need.
 
 mod batch;
+pub mod calls;
 mod deps;
 mod facts;
 // Public because a second cache lives outside this crate: the language server's
