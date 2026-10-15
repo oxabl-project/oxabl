@@ -134,3 +134,8 @@ END PROCEDURE.
     assert_eq!(lines(src, &diags), [5]);
     assert!(!help(&diags[0]).contains("NO-LOCK"), "{}", help(&diags[0]));
 }
+
+#[test]
+fn share_abbreviates_share_lock() {
+    assert!(check(run, "FIND FIRST Order SHARE.\nFIND FIRST Item EXCLUSIVE.\n").is_empty());
+}

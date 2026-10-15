@@ -574,6 +574,7 @@ fn main() {
             "set-attr-call-type",
             "setuser",
             "setuserid",
+            "share",
             "share-lock",
             "shared",
             "show-stat",

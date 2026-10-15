@@ -1948,28 +1948,17 @@ end."#;
     }
 
     #[test]
-    fn lock_type_standalone_words_are_identifiers() {
-        // "share" alone (without -lock suffix) is an identifier.
+    fn lock_type_standalone_words() {
+        // SHARE and its longer prefixes abbreviate SHARE-LOCK; SHARED is a
+        // keyword of its own.
+        for source in ["share", "SHARE", "share-l", "Share-Loc"] {
+            let tokens = collect_tokens(source);
+            assert_eq!(tokens.len(), 2, "{source}");
+            assert_eq!(tokens[0].kind, Kind::ShareLock, "{source}");
+        }
+        assert_eq!(collect_tokens("shared")[0].kind, Kind::Shared);
         // Bare "no"/"NO" is Kind::No (boolean literal); NO LOCK still uses
         // space-separated lock lookahead before keyword matching.
-        let identifier_cases = vec!["share", "SHARE"];
-        for source in identifier_cases {
-            let tokens = collect_tokens(source);
-            assert_eq!(
-                tokens.len(),
-                2,
-                "Expected 2 tokens for '{}', got {}",
-                source,
-                tokens.len()
-            );
-            assert_eq!(
-                tokens[0].kind,
-                Kind::Identifier,
-                "Expected Identifier for '{}', got {:?}",
-                source,
-                tokens[0].kind
-            );
-        }
         for source in ["no", "NO"] {
             let tokens = collect_tokens(source);
             assert_eq!(tokens.len(), 2);

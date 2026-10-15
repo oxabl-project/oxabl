@@ -176,11 +176,11 @@ keyword_type = "Statement"
 name = "exclusive lock"
 keyword_type = "Statement"
 
-# Override lock types to require exact match (no abbreviation)
-# share-lock and no-lock exist in reserved keywords, so override their abbreviations
+# NO-LOCK has no abbreviation. SHARE-LOCK abbreviates to SHARE, as the
+# reserved-keyword index says; SHARED is a keyword of its own.
 [[override]]
 name = "share-lock"
-min_abbreviation = "share-lock"
+min_abbreviation = "share"
 
 [[override]]
 name = "no-lock"
