@@ -745,6 +745,7 @@ impl<'a> Resolver<'a> {
                         buffer: None,
                         at: read.at,
                         lock: lock_for(&table),
+                        table,
                         written: Written::No,
                     });
                     continue;
@@ -762,7 +763,8 @@ impl<'a> Resolver<'a> {
                 }
             };
             for (b, name) in targets {
-                let mut lock = lock_for(&self.out.buffers[b.index()].table);
+                let table = self.out.buffers[b.index()].table.clone();
+                let mut lock = lock_for(&table);
                 if read.kind == ReadKind::Get && lock == Lock::Default {
                     lock = self.opened_with(read, &name);
                 }
@@ -787,6 +789,7 @@ impl<'a> Resolver<'a> {
                     kind: read.kind,
                     name,
                     buffer: Some(b),
+                    table,
                     at: read.at,
                     lock,
                     written: Written::No,
