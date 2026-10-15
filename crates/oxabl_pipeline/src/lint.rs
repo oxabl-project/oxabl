@@ -997,8 +997,8 @@ impl LintPipeline<'_> {
     /// includer's diagnostics. The include is run alone, as a walk runs it. When
     /// that run produces the finding (same rule, same anchor), the include
     /// reports it and the includer stays silent. Otherwise the include cannot
-    /// see it, because the object is created, named or freed in the includer,
-    /// and it is reported here with a lower-confidence note. An include whose
+    /// see it (it depends on the includer, or the include does not parse
+    /// alone), and it is reported here with a lower-confidence note. An include whose
     /// own configuration has no context-free rule on is never run, so the
     /// finding is dropped with it.
     fn report_include_findings(&self, mut result: LintResult) -> LintResult {

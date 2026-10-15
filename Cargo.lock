@@ -979,6 +979,7 @@ dependencies = [
  "oxabl_pipeline",
  "oxabl_preprocessor",
  "oxabl_schema",
+ "oxabl_scope",
  "oxabl_semantic",
  "oxabl_style",
  "oxabl_workspace",
@@ -1145,6 +1146,7 @@ dependencies = [
  "oxabl_parser",
  "oxabl_preprocessor",
  "oxabl_schema",
+ "oxabl_scope",
  "oxabl_semantic",
  "oxabl_workspace",
  "rust_decimal",
@@ -1232,6 +1234,19 @@ dependencies = [
  "oxabl_workspace",
  "rustc-hash",
  "tempfile",
+]
+
+[[package]]
+name = "oxabl_scope"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_flow",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "oxabl_schema",
+ "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]

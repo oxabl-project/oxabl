@@ -132,6 +132,16 @@ pub struct AnalysisContext<'a> {
     /// Whether the parser recovered from an error in this file. A rule that
     /// needs the file's statements to be where the author put them reads this.
     pub parse_recovered: bool,
+    /// The tokens [`source`](Self::source) was parsed from, when the caller
+    /// has them; empty otherwise, and a pass that needs them lexes again.
+    pub tokens: &'a [oxabl_lexer::Token],
+    /// Offsets in [`source`](Self::source) where the preprocessor replaced a
+    /// reference with no text (an include it did not find, a `{&name}` with
+    /// no value), sorted. The compiler may see text there.
+    pub elided: &'a [u32],
+    /// The offsets of [`elided`](Self::elided) where an include did not
+    /// arrive, sorted. Statements the include held may sit there.
+    pub elided_includes: &'a [u32],
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -154,7 +164,30 @@ impl<'a> AnalysisContext<'a> {
             source_context: SourceContext::CompilationUnit,
             include_regions: &[],
             parse_recovered: false,
+            tokens: &[],
+            elided: &[],
+            elided_includes: &[],
         }
+    }
+
+    /// Attach the tokens the source was parsed from (builder-style).
+    pub fn with_tokens(mut self, tokens: &'a [oxabl_lexer::Token]) -> Self {
+        self.tokens = tokens;
+        self
+    }
+
+    /// Record where the preprocessor replaced a reference with no text
+    /// (builder-style). `offsets` must be sorted.
+    pub fn with_elided(mut self, offsets: &'a [u32]) -> Self {
+        self.elided = offsets;
+        self
+    }
+
+    /// Record where an include did not arrive (builder-style). `offsets` must
+    /// be sorted.
+    pub fn with_elided_includes(mut self, offsets: &'a [u32]) -> Self {
+        self.elided_includes = offsets;
+        self
     }
 
     /// Record that the parser recovered from an error in the file

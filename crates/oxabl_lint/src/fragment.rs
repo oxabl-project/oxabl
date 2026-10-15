@@ -86,8 +86,9 @@ pub const FRAGMENT_NOTE: &str = "This file is an include. The including file, wh
 /// reported at the `{...}` site in the includer, because the include alone
 /// cannot show it.
 pub const USE_SITE_NOTE: &str = "This finding is in an include. The include does not show it \
-     when it is checked alone, because the object is created, named or freed in the including \
-     file. Check the include and each includer before you change it.";
+     when it is checked alone, because it depends on the including file (an object created, \
+     named or freed there, or a table, buffer or block it defines), or the include does not \
+     parse alone. Check the include and each includer before you change it.";
 
 /// Answers what only the file system and the expansion know: whether an
 /// argument-less `{file.i}` can change with the includer.

@@ -1,0 +1,35 @@
+unit u0 main
+  b0 main @1 buffers=Customer,Order,Item,OrderLine
+unit u1 procedure plain
+  b0 procedure @5 tx=implicit(assign @8 Customer)
+unit u2 procedure in-frame
+  b0 procedure @11 tx=implicit(assign @14 Order)
+unit u3 procedure input
+  b0 procedure @17 tx=implicit(assign @19 Item)
+unit u4 procedure record
+  b0 procedure @22 tx=implicit(assign @24 OrderLine)
+unit u5 procedure mixed
+  b0 procedure @27 tx=implicit(assign @30 bCust) buffers=bCust
+unit u6 procedure pairs-only
+  b0 procedure @33 buffers=bItem
+unit u7 procedure sum-pairs
+  b0 procedure @39 tx=implicit(assign @41 Customer)
+buffer bCust defined db:Customer owner=u5 @28 refs=3
+  scope u5/b0 free @29 refs=3
+buffer bItem defined db:Item owner=u6 @34 refs=3
+  scope u6/b0 free @35 refs=3
+buffer Customer default db:Customer owner=u0 refs=6
+  scope u0/b0 raised @6 refs=6
+buffer Order default db:Order owner=u0 refs=5
+  scope u0/b0 raised @12 refs=5
+buffer Item default db:Item owner=u0 refs=3
+  scope u0/b0 raised @18 refs=3
+buffer OrderLine default db:OrderLine owner=u0 refs=3
+  scope u0/b0 raised @23 refs=3
+read find Customer @6 u1/b0 lock=default(share-lock) written
+read find Order @12 u2/b0 lock=default(share-lock) written
+read find Item @18 u3/b0 lock=default(share-lock) written
+read find OrderLine @23 u4/b0 lock=default(share-lock) written
+read find bCust @29 u5/b0 lock=default(share-lock) written
+read find bItem @35 u6/b0 lock=no-lock
+read find Customer @40 u7/b0 lock=default(share-lock) written

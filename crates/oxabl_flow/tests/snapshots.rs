@@ -12,7 +12,14 @@ fn dump(source: &str) -> String {
         "fixture does not parse cleanly: {:?}",
         program.errors
     );
-    oxabl_flow::build_file(&program.statements, source).dump(source)
+    let dump = oxabl_flow::build_file(&program.statements, source).dump(source);
+    let options = oxabl_flow::FlowOptions::default();
+    assert_eq!(
+        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &options).dump(source),
+        dump,
+        "reading the parser's tokens must build the same CFGs as lexing each header"
+    );
+    dump
 }
 
 #[test]

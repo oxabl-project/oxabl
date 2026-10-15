@@ -10,6 +10,9 @@
 //! Skips (captured as tests below):
 //! - Either side `Unknown` or `Error` (suppresses cascades; `?` is ABL's
 //!   universal bottom).
+//! - An assignment with a reference the preprocessor replaced with no text
+//!   inside it: the text around the gap may not be the statement the file
+//!   holds (`c = {&none}` followed by `d = "x".` reads as `c = (d = "x")`).
 //! - The value side bound to an *unresolved* cross-file reference (`External`,
 //!   `AbsentFromWorkspace`, `PresentButUnusable`, `Unknowable`) — there is no
 //!   symbol behind it, so no verdict is possible. A cross-file reference that
@@ -56,7 +59,7 @@ impl<'a> Visitor<'a> {
                 type_source: TypeSource::Explicit(_),
                 initial_value: Some(init),
                 ..
-            } => {
+            } if !self.holds_elided(stmt.span) => {
                 // Target type = the symbol's data_type (on the declaration
                 // stmt.id slot of the types side table).
                 let target_ty = self.sem.types.get(stmt.id).cloned();
@@ -65,12 +68,18 @@ impl<'a> Visitor<'a> {
                     self.check_pair(&from, &to, init.id, &init_span(init));
                 }
             }
-            StatementKind::Assignment { target, value } => {
+            StatementKind::Assignment { target, value } if !self.holds_elided(stmt.span) => {
                 self.check_assignment(target, value);
             }
             StatementKind::Assign { assignments } => {
                 for AssignPair { target, value } in assignments {
-                    self.check_assignment(target, value);
+                    let pair = oxabl_ast::Span {
+                        start: target.span.start,
+                        end: value.span.end,
+                    };
+                    if !self.holds_elided(pair) {
+                        self.check_assignment(target, value);
+                    }
                 }
             }
 
@@ -142,6 +151,13 @@ impl<'a> Visitor<'a> {
             }
             _ => {}
         }
+    }
+
+    /// Whether a reference that the preprocessor replaced with no text lies
+    /// inside `span`.
+    fn holds_elided(&self, span: oxabl_ast::Span) -> bool {
+        let from = self.ctx.elided.partition_point(|&o| o <= span.start);
+        self.ctx.elided.get(from).is_some_and(|&o| o < span.end)
     }
 
     fn check_assignment(&mut self, target: &Expression, value: &Expression) {

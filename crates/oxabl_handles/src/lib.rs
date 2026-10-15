@@ -133,7 +133,8 @@ pub use model::{
 };
 
 use oxabl_ast::Statement;
-use oxabl_flow::{FlowOptions, UnitBuilder, UnitId};
+use oxabl_flow::{FileFlow, FlowOptions, UnitBuilder, UnitId};
+use oxabl_lexer::Token;
 
 /// The dynamic objects of one file, by unit.
 #[derive(Debug, Clone, Default)]
@@ -178,22 +179,65 @@ pub fn analyze_file_with(
     source: &str,
     options: &FlowOptions,
 ) -> FileHandles {
+    analyze(program, source, &[], options, None)
+}
+
+/// [`analyze_file_with`] with the tokens the statements were parsed from
+/// (`oxabl_lexer::tokenize(source)`), so block headers are not lexed again.
+pub fn analyze_tokens(
+    program: &[Statement],
+    source: &str,
+    tokens: &[Token],
+    options: &FlowOptions,
+) -> FileHandles {
+    analyze(program, source, tokens, options, None)
+}
+
+/// [`analyze_tokens`] over the file's CFGs, already built with the default
+/// flow options (`oxabl_flow::build_file_tokens`), so no unit is built again.
+pub fn analyze_flow(
+    program: &[Statement],
+    source: &str,
+    tokens: &[Token],
+    flow: &FileFlow,
+) -> FileHandles {
+    analyze(program, source, tokens, &FlowOptions::default(), Some(flow))
+}
+
+fn analyze(
+    program: &[Statement],
+    source: &str,
+    tokens: &[Token],
+    options: &FlowOptions,
+    flow: Option<&FileFlow>,
+) -> FileHandles {
     let index = index::FileIndex::build(program, source);
     if index.creating.is_empty() {
         return FileHandles::default();
     }
-    let builder = UnitBuilder::new(program, source, options);
+    let builder = std::cell::OnceCell::new();
+    let builder =
+        || builder.get_or_init(|| UnitBuilder::with_tokens(program, source, tokens, options));
+    // A statement with nodes is in the unit that has them; the builder
+    // answers for the others.
     let mut units: Vec<UnitId> = index
         .creating
         .iter()
-        .filter_map(|&s| builder.unit_of(s))
+        .filter_map(|&s| {
+            flow.and_then(|f| f.find_stmt(s))
+                .map(|(cfg, _)| cfg.id())
+                .or_else(|| builder().unit_of(s))
+        })
         .collect();
     units.sort_unstable();
     units.dedup();
     let budget = analysis::Budget::new();
     let units = units
         .into_iter()
-        .map(|u| analysis::analyze_unit(&builder.build(u), &index, source, &budget))
+        .map(|u| match flow {
+            Some(flow) => analysis::analyze_unit(flow.unit(u), &index, source, &budget),
+            None => analysis::analyze_unit(&builder().build(u), &index, source, &budget),
+        })
         .filter(|u| !u.objects.is_empty() || !u.pools.is_empty())
         .collect();
     FileHandles { units }

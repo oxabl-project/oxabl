@@ -108,6 +108,39 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ),
             ("HD004", "memptr-not-freed", "strict.handles", warning),
             ("HD005", "missing-widget-pool", "strict.handles", warning),
+            ("LK001", "default-lock", "strict.locks", warning),
+            (
+                "LK002",
+                "lock-outlives-transaction",
+                "strict.locks",
+                warning
+            ),
+            ("LK003", "lock-upgrade-in-loop", "strict.locks", warning),
+            (
+                "TX001",
+                "implicit-transaction",
+                "strict.transactions",
+                warning
+            ),
+            (
+                "TX002",
+                "procedure-wide-transaction",
+                "strict.transactions",
+                warning
+            ),
+            (
+                "TX003",
+                "transaction-spans-ui",
+                "strict.transactions",
+                warning
+            ),
+            (
+                "TX004",
+                "transaction-spans-call",
+                "strict.transactions",
+                warning
+            ),
+            ("TX005", "scope-widened", "strict.transactions", warning),
         ]
     );
     for rule in registry.rules() {
@@ -117,7 +150,9 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
         assert_eq!(m.context_free, strict, "{}", m.code);
         assert_eq!(
             m.use_site_in_includer,
-            m.group == "strict.handles",
+            m.group == "strict.handles"
+                || m.group == "strict.locks"
+                || (m.group == "strict.transactions" && m.code != "TX006"),
             "{}",
             m.code
         );

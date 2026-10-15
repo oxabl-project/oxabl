@@ -10,8 +10,9 @@ This note answers two of the three open questions in
 [`strict-analysis-plan.md`](strict-analysis-plan.md): where annotations may appear, and where
 diagnostics inside include files are reported. The third (PROPATH and include resolution parity
 with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
-lists the block semantics that the flow graph (`oxabl_flow`) models without a reference, and
-section 6 the handle semantics that `oxabl_handles` relies on.
+lists the block semantics that the flow graph (`oxabl_flow`) models without a reference,
+section 6 the handle semantics that `oxabl_handles` relies on, and section 7 the buffer-scope,
+transaction and lock semantics that `oxabl_scope` relies on.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -505,3 +506,294 @@ file is counted once per includer, so the corpus runner also counts distinct sit
 
 **Still to verify against a licensed install:** H6 and H7 (pool scope, and the persistent
 procedure case), H8 for the less common object kinds, H11 for a MEMPTR passed `OUTPUT`, H12, and H15.
+
+## 7. Buffer scopes and transactions: the semantics `oxabl_scope` relies on
+
+`oxabl_scope` replays the compiler's decisions for one file: the block each buffer is scoped to,
+the blocks that are transaction blocks, and the lock each record read takes. The `COMPILE ...
+LISTING` output is the oracle (plan, M3 exit gate), and no OpenEdge install was available while
+this was written. This section therefore uses its own marks:
+
+- **Documented** — the OpenEdge documentation says this, and the wording is remembered with high
+  confidence. It is still not checked on this host.
+- **Recalled** — remembered with less certainty, or remembered as behaviour rather than read.
+- **Inferred** — derived from the other rows, or a choice oxabl makes where the source is silent.
+
+Each row has a fixture in `crates/oxabl_scope/tests/fixtures/` (re-bless with
+`OXABL_BLESS=1 cargo test -p oxabl_scope --test snapshots`). The LISTING harness
+(`crates/oxabl/examples/scope_listing.rs`, section 7.5) measures every row that the listing shows.
+Where the model cannot decide, the answer is **Unknown** with a reason, never a guess.
+
+`oxabl_scope` resolves buffer and field names itself, against the file's definitions and the
+schema, rather than through `oxabl_semantic`. The semantic resolver binds a name through the
+scope tree of the file; the compiler's choice of a buffer for an unqualified field follows the
+record phrases and record blocks around the reference (S11), which the scope tree does not
+carry.
+
+### 7.1 Buffers
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| B1 | Every database table and every temp-table has a default buffer with the table's name. A table name in a record phrase, a field qualifier or a buffer position (`DISPLAY t`, `AVAILABLE t`, `BUFFER t:HANDLE`, `RELEASE t`) names that buffer. `db.table` names the same buffer as `table`. | Documented. | `free.p` |
+| B2 | A default buffer belongs to the procedure file, not to the internal procedure, function or trigger that uses it. A free reference in an internal procedure to a buffer the procedure does not define therefore scopes the buffer to the main procedure block, and the record stays in the buffer after the call returns. A `FOR` block in the internal procedure still scopes the buffer to that block, unless a scope at the main block absorbs it (S5). The same holds for a buffer the main block defines with `DEFINE BUFFER`. | Recalled, medium. The "define a buffer in every internal procedure" practice rests on it. | `units.p` |
+| B3 | In a class, a default buffer, or a buffer the class body defines, that a method uses belongs to the class: the method's free references scope it to the class's main block. | Inferred, low: the class rule is the procedure rule carried over. | `class.cls` |
+| B4 | `DEFINE BUFFER b FOR t` makes a new buffer owned by the unit that defines it. Its scopes lie in that unit (or, for a main-block definition, as in B2). `FOR TEMP-TABLE tt` and a `t` that names a temp-table of the file give a temp-table buffer; otherwise `t` is a database table. | Documented. | `buffer_kinds.p` |
+| B5 | A buffer parameter (`DEFINE PARAMETER BUFFER b FOR t`) and the buffers of a database trigger (`TRIGGER PROCEDURE FOR WRITE OF t NEW BUFFER n OLD BUFFER o`, the table's own buffer included) and of an `ON WRITE OF t NEW BUFFER n` trigger hold the caller's record. Their scope is the caller's: the model gives them no scope (`external`). | Recalled, medium. | `buffer_kinds.p` |
+| B6 | `DEFINE SHARED BUFFER b` uses the producer's buffer, and its scope is the producer's (`external`). `DEFINE NEW SHARED BUFFER b` and `NEW GLOBAL SHARED` are scoped to the main block of the procedure that defines them, whatever the references. | Recalled, medium for `SHARED`; low for `NEW SHARED`. | `buffer_kinds.p` |
+| B7 | Temp-table buffers are scoped by the same rules as database buffers. A temp-table write never makes a block a transaction block (T3). A temp-table without `NO-UNDO` is undone with the transaction or sub-transaction that changed it; one with `NO-UNDO` is not. | Documented for scoping; Recalled, medium, that temp-table writes start no transaction. | `temp_tables.p` |
+| B8 | Dynamic buffers (`CREATE BUFFER h FOR TABLE ...`) are run-time objects: they have no compile-time scope and are not modelled. A dynamic method on a handle (`h:BUFFER-CREATE()`, `h:FIND-FIRST(..., EXCLUSIVE-LOCK)`, `h:BUFFER-FIELD(...):BUFFER-VALUE = v`) may update a database record that the compiler cannot see (T7). | Documented that the compiler cannot see the table; the effect on transactions is Inferred. | `opaque.p` |
+
+### 7.2 Scopes
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| S1 | **Strong scope.** `DO FOR b` and `REPEAT FOR b` scope `b` to the block. Every reference to `b` inside the block, a `FOR EACH b` included, belongs to that scope. | Documented. | `strong.p` |
+| S2 | **Weak scope.** A `FOR` block scopes the buffer of each of its record phrases (`EACH`, `FIRST`, `LAST`, joined phrases included) to the block. A reference to `b` inside the block body belongs to that scope. | Documented. | `weak.p` |
+| S3 | **Free reference.** Any other reference: `FIND`, `CREATE`, `DELETE`, `RELEASE`, `VALIDATE`, `BUFFER-COPY`, `BUFFER-COMPARE`, a field (qualified or not), a buffer name in an expression (`AVAILABLE b`, `BUFFER b:HANDLE`, `RUN p (BUFFER b)`), a statement the parser skips that names the buffer or one of its fields (`UPDATE`, `PUT`, `EXPORT`, `ENABLE`), and `OPEN QUERY` / `GET` (S10). Definitions are no reference: `FORM`, `DEFINE FRAME`, `DEFINE BROWSE`, `DEFINE QUERY`, `DEFINE DATA-SOURCE`, `LIKE`. The field list of `BUFFER-COPY` and `BUFFER-COMPARE` (`USING`, `EXCEPT`) names fields, not references. | Documented for the statement forms; Inferred for the skipped forms and the definitions. | `free.p` |
+| S4 | A free reference scopes the buffer to the nearest enclosing block that has record scoping: the routine block (procedure, function, method, constructor, destructor, property accessor, trigger), a `REPEAT`, a `FOR`, or a `DO FOR` / `REPEAT FOR` of that buffer (for other buffers it is a plain `DO` or `REPEAT`). A plain `DO` has no record scoping, also with `TRANSACTION` or an `ON ERROR` phrase, so its free references go to the block around it. `CATCH` and `FINALLY` have none either. | Documented for `REPEAT`, `FOR` and the routine block; Recalled, medium, that `DO TRANSACTION` and `DO ON ERROR` do not scope records (the other reading gives them record scoping; the harness will tell); Inferred for `CATCH` and `FINALLY`. | `free.p`, `raise.p` |
+| S5 | **Raising.** The scopes of one buffer never overlap. When the block of a free-reference scope encloses another scope of the same buffer (a weak scope, or the scope of free references in a deeper block), the outer scope absorbs the inner one: the buffer is scoped once, to the outer block. A free reference at procedure level thus raises every weak scope of that buffer in the procedure to the procedure. The model reports the scope as `raised` and names the free reference that holds it there. | Documented for a weak scope raised by a free reference; Inferred for the general merge. | `raise.p` |
+| S6 | Two scopes whose blocks do not nest stay separate: two `FOR EACH b` in a row, or `FIND b` in two sibling `REPEAT` blocks, give two scopes. | Documented for `FOR`; Recalled for `REPEAT`. | `weak.p`, `raise.p` |
+| S7 | **Conflicts.** A free-reference scope that would absorb a strong scope (a reference to `b` outside a `DO FOR b` whose scope encloses it), a strong scope nested in a weak scope of the same buffer, and a weak scope nested in another weak scope of the same buffer are compile errors, as far as remembered. The model answers Unknown (`conflict`) for that buffer. | Recalled, low. | `conflict.p` |
+| S8 | The header of a block (`WHERE`, `OF`, `WHILE`, `BY`) runs before the body. A reference there to a buffer that is not one of the block's own record phrases belongs to the enclosing block, so `FOR EACH o OF c` is a free reference to `c` in the block around the `FOR`. | Inferred. | `weak.p` |
+| S9 | `CAN-FIND` reads with a buffer of its own: it is no reference to `b` and changes no scope. References to other buffers inside it (its `WHERE`) are free references. | Recalled, high. | `locks.p` |
+| S10 | `OPEN QUERY q FOR EACH b` and `GET ... q` are free references to `b` where they stand; `GET` reads every buffer `DEFINE QUERY q FOR ...` names. `DEFINE QUERY` itself is none. | Inferred, low. | `queries.p` |
+| S11 | **Unqualified fields.** A field written without its buffer resolves, in order, to the record phrases of its own statement (`FIND`, `FOR`, `CAN-FIND`, the target of `BUFFER-COPY ... ASSIGN`); then to the buffers of the enclosing `FOR`, `DO FOR` and `REPEAT FOR` blocks, innermost first; then to the buffers the file names. At each level, one buffer with the field (exact name before abbreviation) wins; two are ambiguous, which the model answers Unknown (`ambiguous-field`) for those buffers. An abbreviation counts only at the first two levels, and a word the lexer reads as a keyword (`ROW`, `AVAILABLE`) only by its exact name: on a large real corpus, abbreviations against every buffer of the file were mostly keywords and frame options. A declared variable, parameter or property of the same name wins over a field. A field of a table no buffer of the file names is not found. A table the loaded schema does not have makes its buffer Unknown (`unknown-table`) where one of its fields could be meant; with no schema loaded, every unresolved name does (`no-schema`). | Recalled, low (the compiler's search order is not remembered exactly; an ambiguous name is a compile error). | `fields.p`, `no_schema.p` |
+| S12 | A buffer with no reference has no scope. A `DEFINE BUFFER` alone is no reference. `DEFINE VARIABLE v LIKE t.f` is no reference. | Recalled, medium. | `buffer_kinds.p` |
+
+### 7.3 Transactions
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| T1 | **Explicit.** A `DO`, `REPEAT` or `FOR` block with the `TRANSACTION` keyword is a transaction block. | Documented. | `txn_explicit.p` |
+| T2 | **Implicit.** A routine block, a `FOR`, a `REPEAT`, and a `DO` with an `ON ERROR` or `ON ENDKEY` phrase is a transaction block when it *directly* updates the database or directly reads with `EXCLUSIVE-LOCK`. Directly: the statement is in the block, or in plain `DO` blocks inside it, and not inside a nested block that is itself transaction-capable. A plain `DO` hands its statements to the block around it. A `FOR ... EXCLUSIVE-LOCK` makes its own block a transaction block (the read is part of each iteration). | Documented for the procedure, `FOR EACH`, `REPEAT` and `DO ON ERROR`; Recalled for `ON ENDKEY`; Inferred for functions, methods, constructors, destructors, property accessors and `ON ... DO` triggers (taken as procedure blocks). | `txn_implicit.p` |
+| T3 | **Updates.** `CREATE b`, `DELETE b`, an assignment to a field (`=`, `ASSIGN`, the first argument of `ENTRY`, `SUBSTRING` or `OVERLAY` on the left of `=`), `BUFFER-COPY ... TO b`, `UPDATE`, `SET`, `INSERT` and `IMPORT` naming a field or buffer, `COPY-LOB ... TO b.f`, and `FIND`, `FOR`, `OPEN QUERY`, `GET` or `FIND CURRENT` with `EXCLUSIVE-LOCK`, where `b` is a database buffer. Writes to temp-table buffers do not count. `PROMPT-FOR` only reads input into the frame. A statement form the model does not know (`RAW-TRANSFER` among them) that names a database buffer gives Unknown (T7). | Documented for the database statements; Recalled, medium, for temp-tables; Inferred for `PROMPT-FOR` and `COPY-LOB`. | `txn_implicit.p`, `temp_tables.p`, `opaque.p` |
+| T3a | **The screen form of `ASSIGN`.** An `ASSIGN` element with no `=` moves the screen value into the record: `ASSIGN b.f`, `ASSIGN FRAME fr b.f`, `ASSIGN INPUT b.f`, `ASSIGN BROWSE br b.f`, and `ASSIGN b [EXCEPT b.f ...]` for every field of the record. Each such field or record is an update, like `b.f = v`. The fields after `EXCEPT` are not. Where the text after an `=` or `WHEN` cannot be read as an expression, the rest of the statement is read as a form the model does not know: a database buffer it names gives Unknown for the block's transaction and for `written` (L3). | Documented. | `screen_assign.p` |
+| T4 | **Sub-transactions.** A transaction block inside an active transaction is a sub-transaction: `UNDO` of it undoes only its own changes, and the commit happens at the end of the outermost transaction block. The model records, for each transaction block, the closest enclosing transaction block of the same unit (`in`). | Documented. | `txn_nested.p` |
+| T5 | **Calls.** A procedure, function or method called while a transaction is active runs inside it; its own transaction blocks become sub-transactions. The `TRANSACTION` function is true when a transaction is active. The compiler cannot see the caller, so it decides each unit as if no transaction were active, and the model does the same. | Documented for the inheritance; Inferred for the listing. | `txn_nested.p` |
+| T6 | **The listing's `Tran` column** is taken to say "this block is a transaction block", nested or not. The other reading (only the outermost block of each unit) is reported by the harness too. | Inferred, low. | (harness) |
+| T7 | **Unknown.** A transaction-capable block that is not a transaction block is Unknown when its direct statements include a dynamic buffer method that may update (B8, reason `dynamic-buffer`), a statement whose form the model does not know and that names a database buffer (`skipped-statement`), an unexpanded include (`unexpanded-include`), a write to a table the loaded schema does not have (`unknown-table`), or, with no schema loaded, an assignment to a name that resolves to nothing (`no-schema`). The compiler does not see the first: the listing then says `No`, and the harness counts the block as unknown, not as a disagreement. A recovered parse makes every capable block that is not a transaction block Unknown (`recovered-parse`). | Inferred. | `opaque.p` |
+| T8 | `UNDO` restores the database records, the temp-tables without `NO-UNDO` and the variables without `NO-UNDO` changed in the undone transaction or sub-transaction. Section 5 (F5-F8) says which block an `UNDO` undoes. | Documented. | (section 5) |
+
+### 7.4 Locks
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| L1 | `FIND`, a `FOR` record phrase, `OPEN QUERY` and `CAN-FIND` without a lock phrase read with `SHARE-LOCK` (the model's `default share`). A `GET` without one takes the lock its query was opened with: the last `OPEN QUERY` of that query before it in the file, else Unknown (`query-lock`). The `-NL` startup option, if remembered right, makes the default `NO-LOCK` for some of them; the model does not read startup options. | Documented for `FIND` and `FOR`; Recalled for `CAN-FIND`, `OPEN QUERY` and `GET`; Recalled, low, for `-NL`. | `locks.p`, `queries.p` |
+| L2 | Temp-table records have no locks: the lock of a read on a temp-table buffer is `n/a`, whatever the phrase. | Documented. | `locks.p` |
+| L3 | A record read with `SHARE-LOCK` and then changed in a transaction is upgraded to `EXCLUSIVE-LOCK` at the change. A change to a record read with `NO-LOCK` is a run-time error. The model marks a read `written` when a write to the same buffer, in the same scope of that buffer, may run after the read: the input LK001 needs to know whether `NO-LOCK` is a safe fix. A write in the read's routine may run after it when it comes later in the text, or when an iterating block (`REPEAT`, `FOR`, `DO WHILE`, `DO ... TO`) inside the scope holds both the read and the write: the next iteration writes the record the read gave. The scope block itself counts as iterating, on purpose: when a `REPEAT` or `FOR` scopes the buffer, the record may be released at the end of each iteration, so the earlier write could not touch it (Recalled, to be confirmed by the `LISTING`/oracle gate), but the model does not rely on that. The cost is a `written` that is Yes where No is true, so LK001 suggests `EXCLUSIVE-LOCK` where `NO-LOCK` is safe: the safe direction. A write in another routine of a scope raised across routines (B2) runs whenever that routine is called, so the answer is Unknown (`unit-order`). When no such write exists but the buffer is passed to a call that may run after the read (`RUN p (BUFFER b)`, `f(BUFFER b)`), or it is a shared buffer and such a `RUN` is in the unit, the answer is Unknown (`callee`); a statement form the model does not know that names the buffer gives Unknown (`skipped-statement`). | Recalled, medium; the `written` test is Inferred (it reads blocks, not paths). | `locks.p`, `written_order.p` |
+| L4 | **Lifetime.** A lock taken in a transaction is held until the transaction ends. If the buffer's scope is still open then, an `EXCLUSIVE-LOCK` is downgraded to `SHARE-LOCK`, held until the scope ends, the buffer reads another record, or `RELEASE`. A `SHARE-LOCK` taken outside a transaction is released when the buffer's record changes or its scope ends. This is why LK002 compares a buffer's scope with its transaction block. | Documented for the end of the transaction; Recalled, medium, for the downgrade. | LK002 tests in `oxabl_lint` |
+| L5 | A lock phrase that the text does not show gives Unknown (`unexpanded-include`). That is a read with no visible lock phrase where, after the record phrase, the preprocessor replaced a reference with nothing (an include it did not find, a `{&name}` with no value, a `{N}` with no argument; not inside a string), or a reference stays unexpanded (`--no-preprocess`). The hidden text may be `EXCLUSIVE-LOCK`, so the block's transaction is Unknown too unless an update decides it. In an include checked alone, such a reference anywhere in the read does the same, because the includer's definitions are missing. An undefined `{&name}` expands to nothing in the compiler as well; it still counts, because the author put the reference where a lock phrase goes. | Inferred. | `hidden_lock.p` |
+
+### 7.5 What `COMPILE ... LISTING` shows
+
+The harness parses the listing. The text format below is remembered, not read from a real
+listing on this host, so the parser is lenient: it finds the table by its header, reads each row
+from its words rather than fixed columns, and skips page headers. The listings in
+`crates/oxabl_scope/tests/listings/` are **synthetic**: they were written from this description.
+
+| # | The format | Confidence |
+|---|---|---|
+| X1 | `COMPILE f.p LISTING f.lst` writes the source with three left columns: the include level (`{}`), the line number in the file the line comes from, and the block depth (`Blk`). Lines from an include file carry the include's own line numbers. Each page starts with a header line (file name, date and time, `PROGRESS(R) Page n`), and pages are separated by a form feed. | Recalled, medium. |
+| X2 | After the source comes the block table, with the header `File Name  Line Blk. Type  Tran  Blk. Label` and a line of dashes. Each block of the file is one row: the file the block statement is written in (an include's path for a block in an include), its line in that file, the block type, `Yes` or `No` in `Tran`, and the label. The main procedure block is a row with line `0`. | Recalled, medium. |
+| X3 | Block types: `Procedure` (the main block and each internal procedure), `Function`, `Method`, `Constructor`, `Destructor`, `Property`, `Trigger`, `Do`, `For`, `Repeat`, `Catch`, `Finally`, `Editing`. The label column holds the block label, or the routine's kind and name (`Procedure ip-name`). | Recalled, low for the routine kinds and the label column. |
+| X4 | Under a row, `    Buffers: db.table` lists the buffers scoped to that block, and `    Frames:  name` the frames. A second buffer is either on the same line after a comma or alone on the next line, under the first. Named and temp-table buffers are written without the database name (`bCust`, `ttOrder`), default database buffers with it (`sports2000.Customer`). | Recalled, low for the separator and the database prefix; the harness compares the last dotted segment, case-insensitively. |
+| X5 | The header and its dashes repeat on each page of the table. | Recalled, medium. |
+
+### 7.6 Corpus check
+
+Verified, proportions only. Over the compilation units (`.p`, `.w`, `.cls`) of two large real
+corpora, with their schemas loaded, the engine ran without a panic, in about the time of
+expanding and parsing the same files.
+
+- **Buffers.** 85 % (first corpus) and 68 % (second) of the buffers have a known scope; 4 % and
+  32 % belong to the caller or producer (parameters, shared buffers, and the buffers of session
+  triggers, which a common include defines in most programs of the second corpus). Unknown
+  answers are 10.5 % and 0.2 % of the buffers. In the first corpus most come from the 7 % of
+  files whose parse was recovered; then a table the schema does not have, an unexpanded
+  include, and an unqualified field that two buffers have.
+- **Scopes.** Of the known scopes, about 60 % (first) and 77 % (second) are raised, and 75 % and
+  87 % of those only because a unit other than the owner references the buffer (B2). Weak scopes
+  are 12 % and 9 %, strong scopes almost none. B2 is therefore the rule that decides most
+  answers, and the first one to check against a listing.
+- **Transactions.** Implicit transaction blocks outnumber explicit ones, by 1.6 times and 5.6
+  times. In the second corpus most implicit ones are the routine blocks of session triggers
+  (`ON WRITE OF t ... DO:`) brought in by a common include, counted once per program. Apart from
+  recovered parses, Unknown transaction answers come mostly from dynamic buffer methods (B8): on
+  reading, most of those methods work on temp-table handles, which the model cannot tell apart
+  from database handles without following the handle.
+- **Locks.** Explicit `NO-LOCK` dominates; reads with the default `SHARE-LOCK` are under 1 % of
+  `FIND` and `FOR` reads, but 70 % and 85 % of `CAN-FIND` reads on database tables.
+
+Reading 15 sampled answers per corpus against the code: 14 of the 30 follow from the documented
+rules (S1, S2, S4, S5, T1, T2) and look right; 13 follow from B2 (an internal procedure, a
+function or a UI trigger that uses the file's default buffer or temp-table, scoped to the main
+block); 2 follow from B3 (a class method). One looked doubtful: a free reference in one internal
+procedure raises the scope to the main block and so absorbs the `FOR EACH` scopes of the same
+buffer in sibling internal procedures. That is what B2 with S5 gives, but it is the case to check
+first. One sample showed a bug, now fixed: a variable named like a buffer hid the buffer in
+`buffer.field`.
+
+**Still to verify against a licensed install**, in this order, because each changes many
+answers: B2 (default buffers in internal procedures and triggers, and whether a raise absorbs
+scopes in sibling procedures), S4 (`DO TRANSACTION` and `DO ON ERROR` without record scoping), T6
+(the meaning of `Tran`), X3 and X4 (the format), then B3, S7, S10 and S11.
+`scripts/gen-scope-listings.sh` writes the listings, and the harness reports each disagreement
+with both sides.
+
+### 7.7 The lock rules (M3)
+
+LK001, LK002 and LK003 (`strict.locks`, preview, warning) select findings from `oxabl_scope`;
+`oxabl_lint` computes one analysis per file through `RunShared`, and only when one of the three
+rules is enabled. They are routed like the `HD` rules (section 3, "Handle rules in includes").
+
+Common to the three rules:
+
+- **Unknown is silent.** A file with a file-level Unknown (recovered parse, unexpanded include,
+  past the work budget) gets no finding. A buffer whose scope is Unknown or external gets no LK002
+  finding and no `NO-LOCK` suggestion in LK001.
+- **Database tables only.** A read counts only when its table is in the loaded schema
+  (`RecordRead::table` is `Table::Database`). With no schema, every table is `Unknown` and the
+  rules are silent: the name can be a temp-table that the file does not show.
+
+LK001 rests on L1 and L2. Its help suggests `NO-LOCK` only when `written` is No (L3) and the
+buffer's scope is known; it suggests `EXCLUSIVE-LOCK` when `written` is Yes, and no lock when
+`written` is Unknown. No autofix yet. `GET` is not reported (it takes the lock of its query). A
+`CAN-FIND` keeps no record, so its lock outlives nothing; its cost is the wait while another
+session holds the record with `EXCLUSIVE-LOCK` (Recalled, high). `NO-LOCK` answers without the
+wait, but may see a change another session has not committed (a dirty read; Recalled, high), so
+its answer can differ from the committed one for an "already exists" check. Its message names
+the wait, and its help always suggests `NO-LOCK` and says so. A read whose lock phrase the text may hide (L5) is not
+reported. An include that did not arrive (`PREPROC007`) after a read, in its scope or in an
+iterating block of it, may write the record: `written` is Unknown (`unexpanded-include`), so the
+help suggests no lock. The rest of the file is judged as before. LK002 is not reported for a
+transaction that holds such an include after its last read: the include may `RELEASE` the
+record.
+
+LK002 rests on L4 (Documented, and Recalled medium for the downgrade), S1, S2, S4 (Recalled
+medium for `DO TRANSACTION`), the documented half of S5 (a weak scope raised by a free
+reference), B2 (Recalled medium), T1 and the documented half of T2. Those meet the bar
+"Documented, or Recalled with medium confidence or more", so the rule ships. Findings that need
+an inferred rule are left out: the general merge of S5 (a free scope absorbed by an outer free
+scope), B3 (classes), and T2 for functions, methods, property accessors and `ON ... DO` triggers.
+Also left out: a transaction whose last read into the buffer is `NO-LOCK`, or that releases or
+deletes the record after it; a transaction whose last read is a `FOR EACH` or `PRESELECT` phrase
+(whether the buffer still holds a record after the last iteration is not decided); a scope in
+which nothing runs after the transaction block. A record that `CREATE` makes is held the same way
+but is not reported. Medium confidence overall: B2 and S4 decide most findings, and section 7.6
+lists both as the first to check against a listing.
+
+LK003 uses the flow graph of the unit (`oxabl_flow::UnitBuilder`, built only when a candidate
+exists). The upgrade is `FIND CURRENT b EXCLUSIVE-LOCK` or `FIND b2 WHERE ROWID(b2) = ROWID(b)
+EXCLUSIVE-LOCK` (or `RECID`) after a `NO-LOCK` read of `b` in the same loop (its own record
+phrase, or a `FIND` or `GET` before it). "Every iteration": the end of the loop body is reachable
+from its start on normal edges, but not around the upgrade. An upgrade with `NO-WAIT` is not
+reported: the loop then skips records that another session holds, which a loop that reads with
+`EXCLUSIVE-LOCK` cannot do.
+
+**Corpus check (verified, counts only).** Over two large real corpora, with their schemas, the
+three rules ran with no panic. LK001 gave 5,321 and 466 findings, 96 % and 82 % of them on
+`CAN-FIND`. LK002 gave 1,013 and 270; LK003 119 and 32. Fifteen findings per rule per corpus were
+read against the code:
+
+- LK001: 30 of 30 correct (one on a dictionary table, `_File`, counted unsure).
+- LK002: in a first sample, 25 correct and 5 unsure, all with a `FOR EACH` phrase as the last
+  read; the rule now leaves those out. A second sample: 30 of 30 correct, if B2 and S4 hold. Most
+  are an internal procedure of a persistent or server-side procedure that locks the file's default
+  buffer, so the record stays `SHARE-LOCK`ed after the call returns.
+- LK003: in a first sample, 9 of 30 were deliberate: `NO-WAIT` with a `LOCKED` test that skips
+  records another session holds. The rule now leaves those out. A second sample: 30 of 30
+  correct.
+
+A finding in an include that does not parse alone is reported at each `{...}` site: one widely
+included fragment gave 1,131 of the 1,164 use-site findings of LK001 in the first corpus.
+
+After the review fixes (the screen form of `ASSIGN`, `written` by blocks rather than text order,
+the lock phrase that unexpanded text may hide, the CAN-FIND message), the counts are LK001 5,323
+and 466 (1,173 at use sites in the first corpus), the others unchanged. In the first corpus, 7
+LK001 findings in includes checked alone moved to 9 use sites: each `CAN-FIND` there has a `{1}`
+or `{&name}` after its table, which the include alone cannot read and its includers give a value.
+The help changed for 29 and 5 LK001 findings, from a lock suggestion to none: most have a write in
+another routine of a scope raised across routines (`unit-order`). No write that only the loop
+rule or the screen form of `ASSIGN` sees changed a finding on these corpora.
+
+### 7.8 The transaction rules (M3)
+
+TX001 to TX005 (`strict.transactions`, preview, warning) select findings from the same
+`oxabl_scope` analysis as the lock rules, made once per file through `RunShared`. They are routed
+like the `HD` and `LK` rules. TX006, in the same group, is syntactic and does not use the analysis.
+
+Common to the five rules:
+
+- **Unknown is silent.** A file with a file-level Unknown gets no finding. A buffer whose scope
+  is Unknown or external gets no TX005 finding. A block inside a block whose transaction status
+  is Unknown gets no TX001 finding.
+- **Which blocks are transactions.** A block counts when T1 makes it one (`TRANSACTION`), or the
+  documented half of T2 (a procedure or main block, a `FOR`, a `REPEAT`, a `DO ON ERROR` or
+  `DO ON ENDKEY`) with a first update of a table of the loaded schema. The implicit routine
+  blocks of functions, methods, property accessors and `ON ... DO` triggers are inferred and do
+  not count. With no schema, only `TRANSACTION` blocks count.
+- **Include files.** In an include checked alone, the main block is not judged: the includer
+  decides which block its statements are in.
+
+| # | The model | Confidence |
+|---|---|---|
+| U1 | `WAIT-FOR`, `UPDATE`, `SET`, `PROMPT-FOR`, `INSERT` (the screen form), `CHOOSE` and `READKEY` wait for the user. `PAUSE` with no time waits for a key; `PAUSE n` waits at most `n` seconds; `PAUSE ... BEFORE-HIDE` sets an option. `MESSAGE ... VIEW-AS ALERT-BOX` shows a modal box, and `MESSAGE ... SET` or `UPDATE` waits for input. | Documented for the statements; Recalled, high, for the `MESSAGE` forms. |
+| U2 | In a session with no user (batch, AppServer) the statements of U1 do not wait: an alert box is written to the log. | Recalled, medium. |
+| U3 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run the callee in another session, outside the caller's transaction. `RUN ... ON [SERVER] SESSION` names the local session: the callee runs in the caller's transaction. | Documented. |
+
+- **TX001** rests on T2 and T3. One finding per block, at its first update, for a block that no
+  other transaction block of its routine encloses (a sub-transaction is not reported). The main
+  block is left to TX002, a `TRIGGER PROCEDURE` to the transaction of the write that fires it.
+- **TX002** is the main block of a procedure file that is a transaction block, once per file. An
+  internal procedure that is one is reported by TX001.
+- **TX003** rests on U1 with the transaction blocks above. The statement must be in the
+  transaction block or in a block inside it of the same routine: a trigger or an internal
+  procedure that the transaction calls is not followed. `PAUSE n` is not reported: lock-retry
+  loops sleep with it.
+- **TX004** rests on T5 and U3. The workspace index tells which file a literal `RUN` target names,
+  but it holds no facts about what the file does. Every callee outside the file (another
+  program, `RUN ... IN h`, `RUN VALUE`, a super procedure) is therefore unknown, whether the index
+  finds it or not. An internal procedure with a body, and one declared `EXTERNAL`, are known. In
+  an include checked alone, a bare name may be an internal procedure of the includer and is not
+  reported.
+- **TX005** rests on S2, S4, the documented half of S5 (a weak scope raised by a free reference)
+  and B2 (Recalled, medium). It is reported when the raising reference and the `FOR` block are in
+  the same routine, or the reference is in the main block and the `FOR` block in a routine inside
+  it. Left out: a reference in one internal procedure that raises a `FOR` block in another (B2
+  with S5, the case section 7.6 marks to check first), the general merge of S5, a raise held by a
+  reference in a block header (S8) or in a statement the parser skips (S3; `DISABLE TRIGGERS FOR
+  LOAD OF t` among them), a raise to a block other than a routine block, and class files (B3).
+
+**Overlap with LK002.** A raised scope that keeps a record locked after a transaction gives both
+a TX005 finding, at the reference that raises the scope, and an LK002 finding, at the read in the
+transaction. Both are kept: one shows the cause, the other the lock. The help of LK002 names TX005
+when TX005 reports the raise, and the help of TX005 names LK002.
+
+**Overlap with LK003.** The fix LK003 suggests, `FOR EACH ... EXCLUSIVE-LOCK`, makes the block a
+transaction block implicitly, which TX001 reports. The fixed example of LK003 therefore adds
+`TRANSACTION`.
+
+**Corpus check (verified, counts only).** Over the same two corpora, with their schemas, the five
+rules ran with no panic. TX001 gave 4,738 and 1,089 findings, TX002 250 and 73, TX003 342 and 184,
+TX004 6,391 and 3,043, TX005 1,410 and 309. The LK counts did not change. Fifteen findings per
+rule per corpus were read against the code, then the false-positive classes were fixed and a new
+sample of 15 was read for each rule that changed:
+
+- TX001: 29 of 30 correct. One was a `COPY-LOB ... TO FILE` that the engine read as a write to a
+  field; `oxabl_scope` now reads `TO FILE` as no write. A second sample of 15: 15 correct.
+- TX002: 30 of 30 correct.
+- TX003: 22 of 30 correct; 8 were `PAUSE n` sleeps in lock-retry loops, now left out. A second
+  sample: 30 of 30 correct by the rule. About 70 % of all TX003 findings are `MESSAGE ...
+  VIEW-AS ALERT-BOX`, and many of those are in code that runs on an AppServer, where U2 says the
+  box does not wait.
+- TX004: 26 of 30 correct; 4 were a `RUN` of a bare name in an include checked alone, which the
+  includer defines, now left out. A second sample of 15: 15 correct. About 30 % (first corpus)
+  and 78 % (second) are `RUN ... IN h`; in the second, most of those call one error-dialog
+  procedure, which is itself user interaction in a transaction.
+- TX005: 26 of 30 correct. Three were `DISABLE TRIGGERS FOR LOAD OF t` and one an `OUTPUT TO
+  t.d` whose file name the engine read as a field of `t`. `oxabl_scope` now reads an `OUTPUT`
+  or `INPUT` target written without `VALUE` as a file name, and TX005 leaves out raises held by a
+  skipped statement. A second sample: 30 of 30 correct, if B2 holds.
+
+Medium confidence overall: B2 and S4 decide most TX005 findings, and T2 for internal procedures
+(the largest share of TX001) is documented but not yet checked against a listing.

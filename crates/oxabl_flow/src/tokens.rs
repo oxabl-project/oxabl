@@ -3,28 +3,65 @@
 //! The AST drops what the CFG needs here: block headers keep no `ON` phrases,
 //! `FOR` keeps no qualifier and `REPEAT`/`FOR` no `TRANSACTION`, and `UNDO`,
 //! `QUIT` and `STOP` become empty or expression statements. So the lexer runs
-//! again over the statement's own span. The span is in the same (expanded)
-//! text the parser saw.
+//! again over the statement's own span, or its tokens are taken from the
+//! parser's when the caller has them. The span is in the same (expanded) text
+//! the parser saw.
 
 use oxabl_ast::Span;
-use oxabl_lexer::{Kind, Lexer, Token};
+use oxabl_lexer::{Kind, Lexer, Token as LexToken};
 use smallvec::SmallVec;
 
 use crate::model::{Action, Condition, ErrorDirective, ForQualifier, Handling, Origin, ReturnKind};
 
+/// The text the statements were parsed from, with its tokens
+/// (`oxabl_lexer::tokenize(text)`) or none.
+#[derive(Clone, Copy)]
+pub(crate) struct Src<'s> {
+    pub text: &'s str,
+    pub tokens: &'s [LexToken],
+}
+
+/// A token's kind and offsets, relative to the span it was read from.
+#[derive(Clone, Copy)]
+struct Token {
+    kind: Kind,
+    start: usize,
+    end: usize,
+}
+
 /// The significant (non-comment) tokens of a span.
 pub(crate) struct Toks<'s> {
     text: &'s str,
-    toks: Vec<Token>,
+    toks: SmallVec<[Token; 16]>,
 }
 
 impl<'s> Toks<'s> {
-    /// Lex `span` of `src`, keeping at most `limit` tokens.
-    pub(crate) fn new(src: &'s str, span: Span, limit: usize) -> Self {
-        let text = slice(src, span);
+    /// The tokens of `span` of `src`, keeping at most `limit`.
+    pub(crate) fn new(src: Src<'s>, span: Span, limit: usize) -> Self {
+        let text = slice(src.text, span);
+        let significant = |t: &LexToken| !matches!(t.kind, Kind::Comment | Kind::Eof);
+        if let Some(range) = token_range(src.tokens, span) {
+            let base = span.start as usize;
+            let toks = src.tokens[range]
+                .iter()
+                .filter(|t| significant(t))
+                .take(limit)
+                .map(|t| Token {
+                    kind: t.kind,
+                    start: t.start - base,
+                    end: t.end - base,
+                })
+                .collect();
+            return Toks { text, toks };
+        }
         let toks = Lexer::new(text)
-            .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
+            .filter(significant)
             .take(limit)
+            .map(|t| Token {
+                kind: t.kind,
+                start: t.start,
+                end: t.end,
+            })
             .collect();
         Toks { text, toks }
     }
@@ -161,6 +198,21 @@ impl<'s> Toks<'s> {
     }
 }
 
+/// The indices of the tokens that lie wholly inside `span`, when no token
+/// crosses either end of it (lexing the span alone gives the same tokens).
+/// `None` without tokens.
+fn token_range(tokens: &[LexToken], span: Span) -> Option<std::ops::Range<usize>> {
+    let (start, end) = (span.start as usize, span.end as usize);
+    if tokens.is_empty() || start > end {
+        return None;
+    }
+    let lo = tokens.partition_point(|t| t.start < start);
+    let hi = tokens.partition_point(|t| t.start < end);
+    let clean_start = lo == 0 || tokens[lo - 1].end <= start;
+    let clean_end = hi == lo || tokens[hi - 1].end <= end;
+    (clean_start && clean_end).then_some(lo..hi)
+}
+
 fn slice(src: &str, span: Span) -> &str {
     let end = (span.end as usize).min(src.len());
     let start = (span.start as usize).min(end);
@@ -184,7 +236,7 @@ pub(crate) struct Header {
 }
 
 /// Read the header of the block statement whose header occupies `span`.
-pub(crate) fn read_header(src: &str, span: Span) -> Header {
+pub(crate) fn read_header(src: Src<'_>, span: Span) -> Header {
     let t = Toks::new(src, span, usize::MAX);
     let mut h = Header::default();
     let for_block = t.kind(0) == Some(Kind::KwFor);
@@ -351,7 +403,7 @@ pub(crate) enum Control {
 }
 
 /// Classify the statement at `span`.
-pub(crate) fn read_control(src: &str, span: Span) -> Control {
+pub(crate) fn read_control(src: Src<'_>, span: Span) -> Control {
     let t = Toks::new(src, span, 16);
     match t.kind(0) {
         None | Some(Kind::Period) => Control::Plain,
@@ -395,7 +447,7 @@ pub(crate) enum Input {
     Blocking,
 }
 
-pub(crate) fn skipped_input(src: &str, span: Span) -> Input {
+pub(crate) fn skipped_input(src: Src<'_>, span: Span) -> Input {
     let t = Toks::new(src, span, 2);
     match t.kind(0) {
         Some(
@@ -413,7 +465,7 @@ pub(crate) fn skipped_input(src: &str, span: Span) -> Input {
 }
 
 /// Whether a skipped statement is `WAIT-FOR`, which the user can interrupt.
-pub(crate) fn skipped_waits(src: &str, span: Span) -> bool {
+pub(crate) fn skipped_waits(src: Src<'_>, span: Span) -> bool {
     Toks::new(src, span, 1).kind(0) == Some(Kind::WaitFor)
 }
 
@@ -458,8 +510,26 @@ mod tests {
         }
     }
 
+    /// `src` without tokens, so each span is lexed, and with the parser's.
+    fn both(src: &str) -> [Src<'_>; 2] {
+        let tokens = Box::leak(oxabl_lexer::tokenize(src).into_boxed_slice());
+        [
+            Src {
+                text: src,
+                tokens: &[],
+            },
+            Src { text: src, tokens },
+        ]
+    }
+
     fn header(src: &str) -> Header {
-        read_header(src, span(src))
+        let [lexed, parsed] = both(src);
+        let h = read_header(lexed, span(src));
+        assert_eq!(
+            format!("{h:?}"),
+            format!("{:?}", read_header(parsed, span(src)))
+        );
+        h
     }
 
     #[test]
@@ -547,7 +617,12 @@ mod tests {
 
     #[test]
     fn control_statements() {
-        let c = |s: &str| read_control(s, span(s));
+        let c = |s: &str| {
+            let [lexed, parsed] = both(s);
+            let c = read_control(lexed, span(s));
+            assert_eq!(c, read_control(parsed, span(s)));
+            c
+        };
         assert_eq!(c("."), Control::Plain);
         assert_eq!(c("END."), Control::Plain);
         assert_eq!(c("QUIT."), Control::Quit);
@@ -612,7 +687,12 @@ mod tests {
 
     #[test]
     fn input_statements() {
-        let i = |s: &str| skipped_input(s, span(s));
+        let i = |s: &str| {
+            let [lexed, parsed] = both(s);
+            let i = skipped_input(lexed, span(s));
+            assert_eq!(i, skipped_input(parsed, span(s)));
+            i
+        };
         assert_eq!(i("UPDATE x."), Input::Blocking);
         assert_eq!(i("INSERT Customer."), Input::Blocking);
         assert_eq!(i("INSERT INTO t VALUES (1)."), Input::None);

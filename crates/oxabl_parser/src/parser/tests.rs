@@ -12783,6 +12783,50 @@ fn object_and_widget_stay_usable_as_names() {
 }
 
 #[test]
+fn choose_is_a_skipped_statement_and_still_a_name() {
+    let stmts = parse_clean("CHOOSE FIELD c AUTO-RETURN WITH FRAME f.\nCHOOSE ROW b.\n");
+    assert_eq!(stmts.len(), 2);
+    for s in &stmts {
+        assert!(
+            matches!(s.kind, StatementKind::Skipped { .. }),
+            "{:?}",
+            s.kind
+        );
+    }
+    for source in [
+        "DEFINE VARIABLE choose AS INTEGER NO-UNDO.",
+        "choose = 1.",
+        "ON CHOOSE OF b DO:\nEND.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
+fn aggregate_words_and_file_stay_usable_as_names() {
+    for source in [
+        "DEFINE VARIABLE total AS DECIMAL NO-UNDO.",
+        "DEFINE VARIABLE file AS CHARACTER NO-UNDO.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD count AS INTEGER FIELD average AS DECIMAL.",
+        "total = count + average.",
+        "x = tt.total + tt.sub-total.",
+        "x = MAXIMUM(1, 2) + MINIMUM(3, 4).",
+        "MESSAGE file maximum minimum.",
+        "ASSIGN sub-count = 1 sub-average = 2 sub-maximum = 3 sub-minimum = 4.",
+        "DISPLAY qty (TOTAL) price (SUB-AVERAGE).",
+        "COPY-LOB FROM x TO FILE \"y.txt\".",
+        "PROCEDURE total:\n  RETURN.\nEND PROCEDURE.",
+        "RUN count.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
 fn delete_and_release_object_forms_keep_their_kind() {
     let stmts = parse_clean("DELETE OBJECT object.\nDELETE WIDGET widget.\nRELEASE OBJECT object.");
     assert!(matches!(
@@ -12920,5 +12964,161 @@ fn unreserved_keywords_are_valid_class_type_names() {
         };
         let stmts = parse_clean(&full);
         assert!(stmts.len() >= 2, "{full}");
+    }
+}
+
+#[test]
+fn strong_scope_headers_keep_their_bodies() {
+    for (source, transaction) in [
+        ("DO FOR b TRANSACTION:\n  FIND FIRST b.\nEND.", true),
+        (
+            "DO TRANSACTION FOR b, sports.c:\n  FIND FIRST b.\nEND.",
+            true,
+        ),
+        ("DO FOR b, c:\n  FIND FIRST b.\nEND.", false),
+        (
+            "DO FOR b ON ERROR UNDO, LEAVE TRANSACTION:\n  FIND FIRST b.\nEND.",
+            true,
+        ),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let program = parser.parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        match &program.statements[0].kind {
+            StatementKind::Do {
+                body,
+                transaction: t,
+                ..
+            } => {
+                assert_eq!(body.len(), 1, "{source}");
+                assert_eq!(*t, transaction, "{source}");
+            }
+            other => panic!("{source}: expected DO, got {other:?}"),
+        }
+    }
+    for source in [
+        "REPEAT FOR b:\n  FIND NEXT b.\nEND.",
+        "REPEAT FOR b, sports.c TRANSACTION:\n  FIND NEXT b.\nEND.",
+        "REPEAT TRANSACTION FOR b ON ERROR UNDO, LEAVE:\n  FIND NEXT b.\nEND.",
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let program = parser.parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        match &program.statements[0].kind {
+            StatementKind::Repeat { body, .. } => assert_eq!(body.len(), 1, "{source}"),
+            other => panic!("{source}: expected REPEAT, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn record_statements_take_database_qualified_names() {
+    for (source, expected) in [
+        ("CREATE sports.customer.", "sports.customer"),
+        ("DELETE sports.customer NO-ERROR.", "sports.customer"),
+        ("RELEASE sports.customer.", "sports.customer"),
+        ("VALIDATE sports.customer.", "sports.customer"),
+        ("RELEASE customer.", "customer"),
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        let name = match &program.statements[0].kind {
+            StatementKind::Create {
+                target: CreateTarget::Name(n),
+                ..
+            } => &n.name,
+            StatementKind::Delete { buffer, .. }
+            | StatementKind::Release { buffer, .. }
+            | StatementKind::Validate { buffer, .. } => &buffer.name,
+            other => panic!("{source}: {other:?}"),
+        };
+        assert_eq!(name, expected, "{source}");
+    }
+    let source = "BUFFER-COPY sports.customer TO sports.cust2.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    match &program.statements[..] {
+        [s] => match &s.kind {
+            StatementKind::BufferCopy { source, target, .. } => {
+                assert_eq!(source.name, "sports.customer");
+                assert_eq!(target.name, "sports.cust2");
+            }
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn buffer_definitions_take_database_qualified_tables() {
+    for source in [
+        "DEFINE BUFFER b FOR sports.customer.",
+        "DEFINE BUFFER b FOR sports.customer .",
+        "DEFINE PARAMETER BUFFER b FOR sports.customer.",
+        "DEFINE INPUT PARAMETER BUFFER b FOR sports.customer.",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        let target = match &program.statements[0].kind {
+            StatementKind::DefineBuffer {
+                target: BufferTarget::Table(t),
+                ..
+            } => &t.name,
+            StatementKind::DefineParameter {
+                param_type: ParameterType::Buffer { target, .. },
+                ..
+            } => &target.name,
+            other => panic!("{source}: {other:?}"),
+        };
+        assert_eq!(target, "sports.customer", "{source}");
+    }
+}
+
+#[test]
+fn temp_table_like_takes_a_database_qualified_table() {
+    let source = "DEFINE TEMP-TABLE tt NO-UNDO LIKE sports.customer FIELD x AS INTEGER.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 1);
+    match &program.statements[0].kind {
+        StatementKind::DefineTempTable {
+            like_table: Some(like),
+            fields,
+            ..
+        } => {
+            assert_eq!(like.name, "sports.customer");
+            assert_eq!(fields.len(), 1);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn block_headers_cut_at_the_end_of_the_file_do_not_panic() {
+    for source in [
+        "DO ON",
+        "DO ON ERROR",
+        "DO ON ERROR UNDO",
+        "DO ON ERROR UNDO,",
+        "REPEAT TRANSACTION ON",
+        "DO FOR customer TRANSACTION ON",
+        "DO TRANSACTION",
+        "REPEAT FOR",
+        "DO FOR sports.",
+        "FOR EACH customer ON",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(!program.errors.is_empty(), "{source}");
     }
 }

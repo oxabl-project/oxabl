@@ -103,7 +103,7 @@ pub fn run(
     if hazards.is_empty() {
         return Vec::new();
     }
-    let paths = paths::Paths::new(program, ctx.source);
+    let paths = paths::Paths::new(program, ctx.source, ctx.tokens);
     let cleared = paths.assigned_before_every_outside_read(&hazards, sem);
     hazards
         .iter()
@@ -216,9 +216,14 @@ mod paths {
     }
 
     impl<'a> Paths<'a> {
-        pub(super) fn new(program: &'a [Statement], source: &'a str) -> Self {
+        /// `tokens` are the ones `program` was parsed from, or none.
+        pub(super) fn new(
+            program: &'a [Statement],
+            source: &'a str,
+            tokens: &'a [oxabl_lexer::Token],
+        ) -> Self {
             let mut paths = Paths {
-                units: UnitBuilder::new(program, source, &FlowOptions::default()),
+                units: UnitBuilder::with_tokens(program, source, tokens, &FlowOptions::default()),
                 uses: FxHashMap::default(),
                 no_undo: FxHashSet::default(),
                 literal_writes: FxHashSet::default(),
