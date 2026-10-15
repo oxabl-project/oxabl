@@ -18,7 +18,7 @@
 //! * **Locks.** Each `FIND`, `FOR` phrase, `CAN-FIND`, `OPEN QUERY` and `GET`
 //!   with the lock it takes ([`RecordRead`]): explicit, the `SHARE-LOCK`
 //!   default, or none for a temp-table; and whether a write to the buffer
-//!   follows in the same scope.
+//!   may run after it in the same scope.
 //!
 //! The ABL rules this follows, with confidence marks, are in
 //! `docs/design/strict-analysis-open-questions.md`, section 7. The oracle is
@@ -137,6 +137,35 @@ impl FileScopes {
     }
 }
 
+/// Whether a statement of the read's unit at `at`, in `block`, may run after
+/// the read while the scope that ends at `bound` is open: it comes later in
+/// the text, or an iterating block inside the scope holds both.
+fn runs_after(
+    flow: &oxabl_flow::FileFlow,
+    read: &RecordRead,
+    at: u32,
+    block: oxabl_flow::BlockId,
+    bound: Option<(UnitId, oxabl_flow::BlockId)>,
+) -> bool {
+    if at > read.at.start {
+        return true;
+    }
+    let cfg = flow.unit(read.unit);
+    let bound = bound.filter(|(u, _)| *u == read.unit).map(|(_, b)| b);
+    let mut b = Some(read.block);
+    while let Some(id) = b {
+        let blk = cfg.block(id);
+        if blk.iterating && cfg.block_contains(id, block) {
+            return true;
+        }
+        if Some(id) == bound {
+            return false;
+        }
+        b = blk.parent;
+    }
+    false
+}
+
 /// Analyse a parsed file. `source` must be the text the statements were
 /// parsed from; `schema` is `None` when no schema is loaded.
 pub fn analyze_file(program: &[Statement], source: &str, schema: Option<&Schema>) -> FileScopes {
@@ -211,12 +240,13 @@ pub fn analyze_tokens(
         b.unknown.dedup_by_key(|u| u.reason);
     }
 
-    // Writes after each read, in the same scope; else a call that may write.
+    // Writes that may run after each read, in the same scope; else a call or
+    // a statement that may write.
     let mut ref_at: FxHashMap<(BufferId, u32), usize> = FxHashMap::default();
     let mut later: FxHashMap<BufferId, Vec<usize>> = FxHashMap::default();
     for (i, r) in res.refs.iter().enumerate() {
         ref_at.entry((r.buffer, r.at.start)).or_insert(i);
-        if r.write.is_some() || r.passed {
+        if r.write.is_some() || r.passed || r.opaque {
             later.entry(r.buffer).or_default().push(i);
         }
     }
@@ -225,35 +255,52 @@ pub fn analyze_tokens(
             continue;
         };
         let scope = ref_at.get(&(b, read.at.start)).and_then(|&i| scope_of[i]);
-        let after = |i: usize| {
-            let r = &res.refs[i];
-            r.at.start > read.at.start
-                && match scope {
-                    Some(s) => scope_of[i] == Some(s),
-                    None => r.unit == read.unit,
-                }
-        };
+        let bound = scope.map(|s| {
+            let s = &res.buffers[b.index()].seen[s];
+            (s.unit, s.block)
+        });
         let refs = later.get(&b).map_or(&[][..], Vec::as_slice);
+        let mut written = Written::No;
+        for &i in refs {
+            let r = &res.refs[i];
+            let same = match scope {
+                Some(s) => scope_of[i] == Some(s),
+                None => r.unit == read.unit,
+            };
+            if !same {
+                continue;
+            }
+            let reason = if r.unit != read.unit {
+                // Another routine of the scope: it runs when it is called.
+                UnknownReason::UnitOrder
+            } else if !runs_after(&flow, read, r.at.start, r.block, bound) {
+                continue;
+            } else if r.write.is_some() {
+                written = Written::Yes;
+                break;
+            } else if r.passed {
+                UnknownReason::Callee
+            } else {
+                UnknownReason::SkippedStatement
+            };
+            if written == Written::No {
+                written = Written::Unknown(reason);
+            }
+        }
         let shared = matches!(
             res.buffers[b.index()].kind,
             BufferKind::Shared | BufferKind::NewShared
         );
-        read.written = if refs
-            .iter()
-            .any(|&i| res.refs[i].write.is_some() && after(i))
+        if written == Written::No
+            && shared
+            && res
+                .runs
+                .iter()
+                .any(|&(u, block, at)| u == read.unit && runs_after(&flow, read, at, block, bound))
         {
-            Written::Yes
-        } else if refs.iter().any(|&i| res.refs[i].passed && after(i))
-            || shared
-                && res
-                    .runs
-                    .iter()
-                    .any(|&(u, at)| u == read.unit && at > read.at.start)
-        {
-            Written::Unknown(UnknownReason::Callee)
-        } else {
-            Written::No
-        };
+            written = Written::Unknown(UnknownReason::Callee);
+        }
+        read.written = written;
     }
     res.reads.sort_by_key(|r| r.at.start);
 

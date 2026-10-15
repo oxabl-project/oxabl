@@ -166,8 +166,8 @@ pub(crate) struct Collected {
     /// Folded names of the `CAN-FIND` buffers, with their unit.
     pub privates: Vec<(UnitId, String)>,
     pub queries: Vec<Query>,
-    /// Every `RUN`: its unit and where it starts.
-    pub runs: Vec<(UnitId, u32)>,
+    /// Every `RUN`: its unit, its block and where it starts.
+    pub runs: Vec<(UnitId, BlockId, u32)>,
     /// `(unit, folded name)` of the query each `GET` reads.
     pub query_uses: Vec<(UnitId, String)>,
     /// Block statements whose header names buffers: `(unit, block)` to the
@@ -554,7 +554,7 @@ impl<'a> Collector<'a> {
             }
             SK::Run { target, .. } => {
                 let context = self.context(enclosing);
-                self.out.runs.push((unit, s.span.start));
+                self.out.runs.push((unit, block, s.span.start));
                 // The target names a procedure, not a record.
                 let name: SmallVec<[Span; 1]> = match target {
                     RunTarget::Literal { name_span, .. } => smallvec::smallvec![*name_span],
@@ -602,19 +602,40 @@ impl<'a> Collector<'a> {
             }
             SK::Assign { assignments } => {
                 let context = self.context(enclosing);
-                let writes: SmallVec<[(Span, UpdateKind); 4]> = assignments
+                let mut writes: SmallVec<[(Span, UpdateKind); 4]> = assignments
                     .iter()
                     .filter_map(|p| write_span(&p.target))
                     .map(|w| (w, UpdateKind::Assign))
                     .collect();
                 let targets: SmallVec<[Span; 4]> =
                     assignments.iter().map(|p| p.target.span).collect();
+                // The parser keeps only the `=` pairs before the first element
+                // without `=`; the screen form that follows assigns fields too.
+                let tail = assignments.last().map_or(s.span.start + 1, |p| {
+                    p.value.span.end.max(p.target.span.end)
+                });
+                let opaque = self.screen_assign(tail, s.span, &mut writes);
                 let spans = Spans {
                     writes: &writes,
                     targets: &targets,
                     ..Spans::default()
                 };
-                self.scan_stmt(s.span, place, spans, context);
+                let known = Span {
+                    start: s.span.start,
+                    end: opaque.unwrap_or(s.span.end),
+                };
+                self.scan_stmt(known, place, spans, context);
+                if let Some(from) = opaque {
+                    let rest = Span {
+                        start: from,
+                        end: s.span.end,
+                    };
+                    let place = Place {
+                        form: Form::UnknownSkipped,
+                        ..place
+                    };
+                    self.scan_stmt(rest, place, Spans::default(), context);
+                }
             }
             // A word the parser did not know, followed by more: a statement
             // form the model does not know either.
@@ -631,6 +652,135 @@ impl<'a> Collector<'a> {
             _ => {
                 let context = self.context(enclosing);
                 self.scan_stmt(s.span, place, Spans::default(), context);
+            }
+        }
+    }
+
+    /// The screen form of `ASSIGN` from `from` to the end of `stmt`:
+    /// `[INPUT] [FRAME f | BROWSE b] field ...` and `record [EXCEPT field ...]`.
+    /// Each field or record is a write. Returns where the text stops being
+    /// that form (an `=` or `WHEN` whose expression has no known end).
+    fn screen_assign(
+        &self,
+        from: u32,
+        stmt: Span,
+        writes: &mut SmallVec<[(Span, UpdateKind); 4]>,
+    ) -> Option<u32> {
+        let range = self.range(Span {
+            start: from,
+            end: stmt.end,
+        });
+        let mut except = false;
+        let mut i = range.start;
+        while i < range.end {
+            let t = &self.tokens[i];
+            match t.kind {
+                Kind::Period | Kind::NoError | Kind::Input => i += 1,
+                Kind::Frame | Kind::Browse => i += 2,
+                Kind::KwIn
+                    if matches!(
+                        self.tokens.get(i + 1).map(|t| t.kind),
+                        Some(Kind::Frame | Kind::Browse)
+                    ) =>
+                {
+                    i += 3
+                }
+                Kind::Except => {
+                    except = true;
+                    i += 1;
+                }
+                Kind::When | Kind::Equals => match self.skip_expression(i + 1, range.end) {
+                    Some(end) => i = end,
+                    None => return Some(t.start as u32),
+                },
+                k if is_word(k, self.text(t)) => {
+                    let mut end = self.skip_name(&self.tokens, i);
+                    if self.tokens.get(end).map(|t| t.kind) == Some(Kind::LeftBracket) {
+                        end = close_bracket(&self.tokens, end);
+                    }
+                    if !except {
+                        let last = &self.tokens[end.min(self.tokens.len()) - 1];
+                        writes.push((
+                            Span {
+                                start: t.start as u32,
+                                end: last.end as u32,
+                            },
+                            UpdateKind::Assign,
+                        ));
+                    }
+                    i = end;
+                }
+                _ => return Some(t.start as u32),
+            }
+        }
+        None
+    }
+
+    /// The index after the expression that starts at `i`, read as operands
+    /// and binary operators; `None` when a token fits neither.
+    fn skip_expression(&self, mut i: usize, limit: usize) -> Option<usize> {
+        let kind = |i: usize| self.tokens.get(i).filter(|_| i < limit).map(|t| t.kind);
+        loop {
+            while matches!(
+                kind(i),
+                Some(
+                    Kind::Not
+                        | Kind::Minus
+                        | Kind::Plus
+                        | Kind::Available
+                        | Kind::Locked
+                        | Kind::Ambiguous
+                        | Kind::New
+                        | Kind::Input
+                )
+            ) {
+                i += 1;
+            }
+            match kind(i)? {
+                Kind::LeftParen => i = close_paren(&self.tokens, i),
+                Kind::StringLiteral
+                | Kind::IntegerLiteral
+                | Kind::BigIntLiteral
+                | Kind::DecimalLiteral
+                | Kind::Question => i += 1,
+                Kind::KwIf => return None,
+                k if is_word(k, self.text(&self.tokens[i])) => i = self.skip_name(&self.tokens, i),
+                _ => return None,
+            }
+            loop {
+                match kind(i) {
+                    Some(Kind::LeftParen) => i = close_paren(&self.tokens, i),
+                    Some(Kind::LeftBracket) => i = close_bracket(&self.tokens, i),
+                    Some(Kind::Colon | Kind::DoubleColon) => i += 2,
+                    _ => break,
+                }
+            }
+            match kind(i) {
+                Some(
+                    Kind::Equals
+                    | Kind::Eq
+                    | Kind::Ne
+                    | Kind::Lt
+                    | Kind::Le
+                    | Kind::Gt
+                    | Kind::Ge
+                    | Kind::LessThan
+                    | Kind::GreaterThan
+                    | Kind::LessThanOrEqual
+                    | Kind::GreaterThanOrEqual
+                    | Kind::NotEqual
+                    | Kind::Plus
+                    | Kind::Minus
+                    | Kind::Star
+                    | Kind::Slash
+                    | Kind::Modulo
+                    | Kind::And
+                    | Kind::Or
+                    | Kind::Begins
+                    | Kind::Matches
+                    | Kind::Contains,
+                ) => i += 1,
+                _ => return Some(i.min(limit)),
             }
         }
     }
@@ -1685,6 +1835,24 @@ fn phrase_lock(toks: &[Token], range: std::ops::Range<usize>) -> Option<LockMode
         }
     }
     None
+}
+
+/// The index after the bracket that closes the one at `open`.
+fn close_bracket(toks: &[Token], open: usize) -> usize {
+    let mut depth = 0i32;
+    for (j, t) in toks.iter().enumerate().skip(open) {
+        match t.kind {
+            Kind::LeftBracket => depth += 1,
+            Kind::RightBracket => {
+                depth -= 1;
+                if depth == 0 {
+                    return j + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    toks.len()
 }
 
 /// The index after the parenthesis that closes the one at `open`.

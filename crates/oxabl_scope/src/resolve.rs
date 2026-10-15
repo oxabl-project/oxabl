@@ -34,6 +34,9 @@ pub(crate) struct Ref {
     pub write: Option<UpdateKind>,
     /// Passed to a call as `BUFFER b`.
     pub passed: bool,
+    /// In a statement of a form the model does not know, which may change
+    /// the record.
+    pub opaque: bool,
 }
 
 #[derive(Debug, Default)]
@@ -47,8 +50,8 @@ pub(crate) struct Resolved {
     pub tx_unknowns: Vec<(UnitId, BlockId, Unknown)>,
     /// Things that make the scopes of one buffer Unknown.
     pub buffer_unknowns: Vec<(BufferId, Unknown)>,
-    /// Every `RUN`: its unit and where it starts.
-    pub runs: Vec<(UnitId, u32)>,
+    /// Every `RUN`: its unit, its block and where it starts.
+    pub runs: Vec<(UnitId, BlockId, u32)>,
     /// Things that make the scopes of every buffer visible in a unit Unknown,
     /// with the tables that may be affected: all (`None`), or database ones.
     pub unit_unknowns: Vec<(UnitId, Unknown)>,
@@ -691,6 +694,7 @@ impl<'a> Resolver<'a> {
                 at: r.at,
                 write: r.write,
                 passed: r.passed,
+                opaque: r.form == Form::UnknownSkipped && database,
             });
         }
     }
@@ -777,6 +781,7 @@ impl<'a> Resolver<'a> {
                         at: read.at,
                         write: None,
                         passed: false,
+                        opaque: false,
                     });
                 }
                 if read.lock == Some(LockMode::ExclusiveLock) {

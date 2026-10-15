@@ -141,6 +141,9 @@ pub enum UnknownReason {
     /// A call the file does not show gets the buffer (a `BUFFER b`
     /// argument, or a shared buffer) and may change its record.
     Callee,
+    /// A write to the buffer in another routine of the scope: whether it runs
+    /// after the read depends on when the routine is called.
+    UnitOrder,
     /// The parser recovered from an error, so statements may be missing.
     RecoveredParse,
     /// The file has more references than the work budget allows.
@@ -160,6 +163,7 @@ impl UnknownReason {
             UnknownReason::UnknownTable => "unknown-table",
             UnknownReason::QueryLock => "query-lock",
             UnknownReason::Callee => "callee",
+            UnknownReason::UnitOrder => "unit-order",
             UnknownReason::RecoveredParse => "recovered-parse",
             UnknownReason::TooComplex => "too-complex",
         }
@@ -407,17 +411,21 @@ pub struct RecordRead {
     pub table: Table,
     pub at: Span,
     pub lock: Lock,
-    /// Whether the record is changed later in the same scope (for a `FOR`
-    /// phrase, in its block): a `SHARE-LOCK` is then upgraded, and `NO-LOCK`
-    /// is no safe fix.
+    /// Whether the record may be changed after the read in the same scope:
+    /// later in the text, or anywhere in an iterating block of the scope that
+    /// holds the read. A `SHARE-LOCK` is then upgraded, and `NO-LOCK` is no
+    /// safe fix.
     pub written: Written,
 }
 
-/// Whether a record read is followed by a write to its buffer in its scope.
+/// Whether a write to a record read's buffer may run after the read, in its
+/// scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Written {
     No,
     Yes,
-    /// A call may write it ([`UnknownReason::Callee`]).
+    /// A call may write it ([`UnknownReason::Callee`]), a statement the model
+    /// does not read may ([`UnknownReason::SkippedStatement`]), or another
+    /// routine of the scope writes it ([`UnknownReason::UnitOrder`]).
     Unknown(UnknownReason),
 }

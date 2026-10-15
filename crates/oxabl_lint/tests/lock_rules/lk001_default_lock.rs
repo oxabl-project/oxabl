@@ -90,3 +90,47 @@ END.
 ";
     assert!(check_recovered(run, src).is_empty());
 }
+
+#[test]
+fn the_screen_form_of_assign_writes_the_record() {
+    let src = "\
+FIND FIRST Customer WHERE Customer.CustNum = 1.
+PROMPT-FOR Customer.Name.
+ASSIGN Customer.Name.
+FIND FIRST Item.
+ASSIGN INPUT Item.Price.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [1, 4]);
+    for d in &diags {
+        assert!(help(d).contains("`EXCLUSIVE-LOCK`"), "{}", help(d));
+    }
+}
+
+#[test]
+fn a_write_earlier_in_a_loop_writes_the_record_of_the_next_read() {
+    let src = "\
+REPEAT:
+    IF AVAILABLE Customer THEN Customer.Balance = 0.
+    FIND NEXT Customer.
+END.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert!(help(&diags[0]).contains("`EXCLUSIVE-LOCK`"));
+}
+
+#[test]
+fn a_write_in_another_routine_of_the_scope_gets_no_lock_suggestion() {
+    let src = "\
+PROCEDURE upd:
+    Order.CustNum = 1.
+END PROCEDURE.
+PROCEDURE rd:
+    FIND FIRST Order.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [5]);
+    assert!(!help(&diags[0]).contains("NO-LOCK"), "{}", help(&diags[0]));
+}
