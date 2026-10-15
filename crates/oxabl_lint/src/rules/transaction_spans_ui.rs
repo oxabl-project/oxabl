@@ -98,13 +98,16 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     }
     let fragment = ctx.source_context.is_include_fragment();
     let mut diags = Vec::new();
-    for span in waits(program, ctx.source) {
+    for (span, candidate) in candidates(program) {
         let Some((unit, block)) = locate(scopes, span.start) else {
             continue;
         };
         let Some(tx) = enclosing_transaction(scopes, unit, block, fragment) else {
             continue;
         };
+        if !candidate.waits(ctx.source, span) {
+            continue;
+        }
         diags.push(warning(
             ctx,
             TX003,
@@ -122,37 +125,47 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     diags
 }
 
-/// The statements that wait for the user, in source order.
-fn waits(program: &[Statement], source: &str) -> Vec<Span> {
-    struct Waits<'a> {
-        source: &'a str,
-        out: Vec<Span>,
-    }
-    impl Visitor for Waits<'_> {
-        fn statement(&mut self, stmt: &Statement) -> bool {
-            let waits = match &stmt.kind {
-                StatementKind::Skipped { .. } => skipped_waits(&tokens(self.source, stmt.span)),
-                StatementKind::Message { set_targets, .. } => {
-                    !set_targets.is_empty()
-                        || tokens(self.source, stmt.span)
-                            .iter()
-                            .any(|t| t.kind == Kind::ViewAs)
-                }
-                _ => false,
-            };
-            if waits {
-                self.out.push(stmt.span);
+/// A statement that may wait for the user.
+enum Candidate {
+    /// A statement the parser skips.
+    Skipped,
+    /// `MESSAGE`, with `SET` or `UPDATE` targets or none.
+    Message { set: bool },
+}
+
+impl Candidate {
+    /// Whether the statement at `span` waits for the user. Lexes the
+    /// statement, so it is asked only inside a transaction.
+    fn waits(&self, source: &str, span: Span) -> bool {
+        match self {
+            Candidate::Skipped => skipped_waits(&tokens(source, span)),
+            Candidate::Message { set } => {
+                *set || tokens(source, span).iter().any(|t| t.kind == Kind::ViewAs)
             }
+        }
+    }
+}
+
+/// The statements that may wait for the user, in source order.
+fn candidates(program: &[Statement]) -> Vec<(Span, Candidate)> {
+    struct Candidates(Vec<(Span, Candidate)>);
+    impl Visitor for Candidates {
+        fn statement(&mut self, stmt: &Statement) -> bool {
+            let candidate = match &stmt.kind {
+                StatementKind::Skipped { .. } => Candidate::Skipped,
+                StatementKind::Message { set_targets, .. } => Candidate::Message {
+                    set: !set_targets.is_empty(),
+                },
+                _ => return true,
+            };
+            self.0.push((stmt.span, candidate));
             true
         }
     }
-    let mut v = Waits {
-        source,
-        out: Vec::new(),
-    };
+    let mut v = Candidates(Vec::new());
     walk_block(&mut v, program);
-    v.out.sort_by_key(|s| s.start);
-    v.out
+    v.0.sort_by_key(|(s, _)| s.start);
+    v.0
 }
 
 /// The tokens of a statement, without comments.
