@@ -344,6 +344,13 @@ pub enum Kind {
     Browse,
     External,
     Size,
+    SizeChars,
+    SizePixels,
+    Row,
+    Column,
+    Bgcolor,
+    Fgcolor,
+    NoTabStop,
     NoApply,
     BeforeHide,
     UnlessHidden,
@@ -743,6 +750,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (3, 99) => match lower {
             "chr" => Some(Kind::Chr),
+            "col" => Some(Kind::Column),
             _ => None,
         },
         (3, 100) => match lower {
@@ -796,6 +804,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (3, 114) => match lower {
             "raw" => Some(Kind::Raw),
+            "row" => Some(Kind::Row),
             "run" => Some(Kind::Run),
             _ => None,
         },
@@ -829,6 +838,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "cast" => Some(Kind::Cast),
             "char" => Some(Kind::Character),
             "clob" => Some(Kind::Clob),
+            "colu" => Some(Kind::Column),
             "comp" => Some(Kind::Compile),
             "curs" => Some(Kind::Cursor),
             _ => None,
@@ -989,6 +999,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "close" => Some(Kind::Close),
             "colon" => Some(Kind::Colon),
             "color" => Some(Kind::Color),
+            "colum" => Some(Kind::Column),
             "compi" => Some(Kind::Compile),
             "count" => Some(Kind::Count),
             "curso" => Some(Kind::Cursor),
@@ -1139,6 +1150,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "center" => Some(Kind::Centered),
             "charac" => Some(Kind::Character),
             "choose" => Some(Kind::Choose),
+            "column" => Some(Kind::Column),
             "compil" => Some(Kind::Compile),
             "create" => Some(Kind::Create),
             "cursor" => Some(Kind::Cursor),
@@ -1298,6 +1310,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         (7, 98) => match lower {
             "backgro" => Some(Kind::Background),
             "between" => Some(Kind::Between),
+            "bgcolor" => Some(Kind::Bgcolor),
             _ => None,
         },
         (7, 99) => match lower {
@@ -1331,6 +1344,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (7, 102) => match lower {
+            "fgcolor" => Some(Kind::Fgcolor),
             "fill-in" => Some(Kind::FillIn),
             "finally" => Some(Kind::Finally),
             "from ch" => Some(Kind::FromChars),
@@ -1898,6 +1912,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "share-lock" => Some(Kind::ShareLock),
             "show-stats" => Some(Kind::ShowStats),
             "single-run" => Some(Kind::SingleRun),
+            "size-chars" => Some(Kind::SizeChars),
             _ => None,
         },
         (10, 116) => match lower {
@@ -2003,6 +2018,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "no-attr-lis" => Some(Kind::NoAttrList),
             "no-attr-spa" => Some(Kind::NoAttrSpace),
             "no-prefetch" => Some(Kind::NoPrefetch),
+            "no-tab-stop" => Some(Kind::NoTabStop),
             "no-validate" => Some(Kind::NoValidate),
             "num-aliases" => Some(Kind::NumAliases),
             "num-entries" => Some(Kind::NumEntries),
@@ -2028,6 +2044,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "sax-complet" => Some(Kind::SaxComplete),
             "sax-running" => Some(Kind::SaxRunning),
             "search-self" => Some(Kind::SearchSelf),
+            "size-pixels" => Some(Kind::SizePixels),
             "soap-header" => Some(Kind::SoapHeader),
             "sub-average" => Some(Kind::SubAverage),
             "sub-maximum" => Some(Kind::SubMaximum),

@@ -13052,11 +13052,13 @@ fn form_is_head_parsed_with_items_and_format_options() {
 #[test]
 fn form_leaves_unmodelled_item_options_to_the_tail() {
     for (source, modelled, tail) in [
-        // A name followed by a number is an option the lexer does not classify.
-        ("FORM v-a BGCOLOR 3 v-b.", 1, "v-b"),
-        ("FORM v-a AT ROW 2 COL 5 v-b.", 1, "v-b"),
+        // A name followed by a number is an option this parser does not know.
+        ("FORM v-a QTY 3 v-b.", 1, "v-b"),
+        // An AT whose operand is not a number is not modelled.
         ("FORM v-a AT v-col v-b.", 1, "v-b"),
-        ("FORM v-a VIEW-AS FILL-IN v-b WITH FRAME f.", 1, "v-b"),
+        ("FORM v-a AT X 5 Y 3 v-b.", 1, "v-b"),
+        // A VIEW-AS with no known widget type is not modelled.
+        ("FORM v-a VIEW-AS v-b WITH FRAME f.", 1, "v-b"),
     ] {
         let stmts = assert_parses_clean(source);
         let StatementKind::Form { items, .. } = &stmts[0].kind else {
@@ -13064,6 +13066,115 @@ fn form_leaves_unmodelled_item_options_to_the_tail() {
         };
         assert_eq!(items.len(), modelled, "{source}: {items:?}");
         assert!(tail_names(&stmts[0]).contains(&tail), "{source}");
+    }
+}
+
+#[test]
+fn form_keeps_parsing_items_after_widget_and_position_options() {
+    for (source, count) in [
+        ("FORM v-a VIEW-AS FILL-IN v-b WITH FRAME f.", 2),
+        ("FORM v-a VIEW-AS TOGGLE-BOX v-b WITH FRAME f.", 2),
+        ("FORM v-a VIEW-AS EDITOR SIZE 40 BY 3 v-b WITH FRAME f.", 2),
+        ("FORM v-a SIZE 20 BY 1 v-b WITH FRAME f.", 2),
+        ("FORM v-a SIZE-CHARS 20 BY 1 v-b WITH FRAME f.", 2),
+        ("FORM v-a SIZE-PIXELS 20 BY 1 v-b WITH FRAME f.", 2),
+        ("FORM v-a AT ROW 2 COLUMN 5 v-b WITH FRAME f.", 2),
+        ("FORM v-a AT ROW 2 COL 5 v-b WITH FRAME f.", 2),
+        ("FORM v-a AT COLUMN 5 v-b WITH FRAME f.", 2),
+        ("FORM v-a AT 10 v-b WITH FRAME f.", 2),
+        ("FORM v-a COLON 20 v-b WITH FRAME f.", 2),
+        ("FORM v-a BGCOLOR 8 FGCOLOR 1 FONT 2 v-b WITH FRAME f.", 2),
+        ("FORM v-a NO-LABEL v-b WITH FRAME f.", 2),
+        ("FORM v-a HELP \"h\" v-b WITH FRAME f.", 2),
+        ("FORM v-a AUTO-RETURN NO-TAB-STOP v-b WITH FRAME f.", 2),
+        ("FORM v-a FORMAT v-fmt v-b WITH FRAME f.", 3),
+        ("FORM v-a LABEL v-lbl v-b WITH FRAME f.", 3),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Form { items, .. } = &stmts[0].kind else {
+            panic!("{source}: expected Form, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(items.len(), count, "{source}: {items:?}");
+        let tail = tail_names(&stmts[0]);
+        assert!(tail.contains(&"f"), "{source}: {tail:?}");
+        assert!(!tail.contains(&"v-b"), "{source}: {tail:?}");
+    }
+}
+
+#[test]
+fn update_set_keep_items_and_when_after_widget_options() {
+    for source in [
+        "UPDATE a VIEW-AS FILL-IN SIZE 10 BY 1 b WHEN c > 0 WITH FRAME f.",
+        "SET a VIEW-AS FILL-IN SIZE 10 BY 1 b WHEN c > 0 WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let (StatementKind::Update {
+            targets, options, ..
+        }
+        | StatementKind::Set {
+            targets, options, ..
+        }) = &stmts[0].kind
+        else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        assert_eq!(targets.len(), 2, "{source}: {targets:?}");
+        assert_eq!(options.len(), 1, "{source}: {options:?}");
+        let tail = tail_names(&stmts[0]);
+        assert!(tail.contains(&"f"), "{source}: {tail:?}");
+        assert!(
+            !tail.contains(&"b") && !tail.contains(&"c"),
+            "{source}: {tail:?}"
+        );
+    }
+}
+
+#[test]
+fn form_and_enable_keep_items_and_when_after_widget_options() {
+    for source in [
+        "FORM a VIEW-AS FILL-IN SIZE 10 BY 1 b WHEN c > 0 WITH FRAME f.",
+        "ENABLE a VIEW-AS FILL-IN SIZE 10 BY 1 b WHEN c > 0 WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let (StatementKind::Form { items, .. } | StatementKind::Enable { items }) = &stmts[0].kind
+        else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        // a, b, and the WHEN expression.
+        assert_eq!(items.len(), 3, "{source}: {items:?}");
+        let tail = tail_names(&stmts[0]);
+        assert!(tail.contains(&"f"), "{source}: {tail:?}");
+        assert!(
+            !tail.contains(&"b") && !tail.contains(&"c"),
+            "{source}: {tail:?}"
+        );
+    }
+}
+
+#[test]
+fn format_option_keywords_stay_valid_names() {
+    for name in [
+        "row",
+        "column",
+        "col",
+        "bgcolor",
+        "fgcolor",
+        "no-tab-stop",
+        "size-chars",
+        "size-pixels",
+    ] {
+        let source = format!("DEFINE VARIABLE {name} AS INTEGER NO-UNDO. {name} = 1.");
+        let stmts = assert_parses_clean(&source);
+        let StatementKind::VariableDeclaration { name: got, .. } = &stmts[0].kind else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        assert_eq!(got.name, name, "{source}");
+        let StatementKind::Assignment { target, .. } = &stmts[1].kind else {
+            panic!("{source}: got {:?}", stmts[1].kind);
+        };
+        let ExpressionKind::Identifier(id) = &target.kind else {
+            panic!("{source}: got {:?}", target.kind);
+        };
+        assert_eq!(id.name, name, "{source}");
     }
 }
 

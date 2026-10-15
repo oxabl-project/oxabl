@@ -741,6 +741,48 @@ name = "SIZE"
 keyword_type = "Option"
 
 # =============================================================================
+# FORMAT-PHRASE ITEM OPTIONS
+# `UPDATE ... VIEW-AS FILL-IN SIZE n BY m AT ROW n COLUMN n BGCOLOR n`.
+# Unreserved: they stay valid names.
+# =============================================================================
+
+[[add]]
+name = "SIZE-CHARS"
+reserved = false
+keyword_type = "Option"
+
+[[add]]
+name = "SIZE-PIXELS"
+reserved = false
+keyword_type = "Option"
+
+[[add]]
+name = "ROW"
+reserved = false
+keyword_type = "Option"
+
+[[add]]
+name = "COLUMN"
+reserved = false
+keyword_type = "Option"
+min_abbreviation = "COL"
+
+[[add]]
+name = "BGCOLOR"
+reserved = false
+keyword_type = "Option"
+
+[[add]]
+name = "FGCOLOR"
+reserved = false
+keyword_type = "Option"
+
+[[add]]
+name = "NO-TAB-STOP"
+reserved = false
+keyword_type = "Option"
+
+# =============================================================================
 # THROW keyword
 # =============================================================================
 
