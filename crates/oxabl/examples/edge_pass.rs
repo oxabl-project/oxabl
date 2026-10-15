@@ -19,6 +19,15 @@
 //! `--closure on` adds the closure of the conditional includes to every set.
 //! `--root-relative .,rf` replaces the tree's root-relative include paths.
 //!
+//! `--reading-include path --from-dump file` selects the roots whose direct or
+//! transitive include edges in a previous full dump name `path`. A relative
+//! include path is relative to the tree. Producer seeding still uses every file.
+//! `--roots-from file` instead reads one absolute root path per line.
+//! `--limit N` limits discovery before seeding, for small profiler samples.
+//!
+//! `OXABL_EDGE_PROFILE=1` prints phase times in nanoseconds on stderr. Run with
+//! one thread to add the times without lock contention or overlapping work.
+//!
 //! # Usage
 //! ```text
 //! cargo run -p oxabl --release --example edge_pass -- \
@@ -47,6 +56,25 @@ fn edge_set(
     source: &str,
     full: bool,
 ) -> Result<oxabl_pipeline::DependencyEdges, String> {
+    if std::env::var_os("OXABL_EDGE_PROFILE").is_some() {
+        let t = Instant::now();
+        let expansion = pipeline.expand(source);
+        let expanded = t.elapsed();
+        let result = if full {
+            pipeline.collect(&expansion)
+        } else {
+            pipeline.analyze(&expansion)
+        };
+        let analyzed = t.elapsed();
+        let edges = pipeline.edges_of(&expansion, &result);
+        eprintln!(
+            "ROOTPHASE expand={} analyze={} edges={}",
+            expanded.as_nanos(),
+            (analyzed - expanded).as_nanos(),
+            (t.elapsed() - analyzed).as_nanos()
+        );
+        return edges;
+    }
     if !full {
         return pipeline.edge_set(source);
     }
@@ -61,6 +89,10 @@ fn main() {
         eprintln!("usage: edge_pass <root> [--threads N] [--seeding MODE] [--dump FILE]");
         std::process::exit(2);
     };
+    let mut roots_from: Option<PathBuf> = None;
+    let mut reading_include: Option<PathBuf> = None;
+    let mut selection_dump: Option<PathBuf> = None;
+    let mut limit = None;
     let mut threads = 1usize;
     let mut seeding = Seeding::Shared;
     let mut full = false;
@@ -70,6 +102,10 @@ fn main() {
     while let Some(flag) = args.next() {
         let value = args.next().unwrap_or_default();
         match flag.as_str() {
+            "--roots-from" => roots_from = Some(PathBuf::from(value)),
+            "--reading-include" => reading_include = Some(PathBuf::from(value)),
+            "--from-dump" => selection_dump = Some(PathBuf::from(value)),
+            "--limit" => limit = value.parse::<usize>().ok(),
             "--threads" => threads = value.parse().unwrap_or(1).max(1),
             "--seeding" => {
                 seeding = match value.as_str() {
@@ -101,7 +137,7 @@ fn main() {
         }
     }
 
-    let files: Vec<PathBuf> = match discover_path(&root) {
+    let mut files: Vec<PathBuf> = match discover_path(&root) {
         Ok(files) => files
             .iter()
             .map(|f| std::path::absolute(f).unwrap_or_else(|_| f.clone()))
@@ -111,18 +147,66 @@ fn main() {
             std::process::exit(2);
         }
     };
+    files.sort();
+    if let Some(limit) = limit {
+        files.truncate(limit);
+    }
     let (mut config, _) = PipelineConfig::resolve(&root, &ConfigOverrides::default());
     if let Some(paths) = root_relative {
         config.root_relative_include_paths = paths;
     }
     let fs = RealFileSystem;
 
+    let selected: Option<std::collections::HashSet<PathBuf>> = if let Some(list) = roots_from {
+        Some(
+            std::fs::read_to_string(list)
+                .expect("read root list")
+                .lines()
+                .map(PathBuf::from)
+                .collect(),
+        )
+    } else if let Some(include) = reading_include {
+        let dump =
+            std::fs::read_to_string(selection_dump.expect("--reading-include needs --from-dump"))
+                .expect("read selection dump");
+        let include = if include.is_absolute() {
+            include
+        } else {
+            std::path::absolute(root.join(include)).expect("absolute include path")
+        };
+        let mut selected = std::collections::HashSet::new();
+        let mut current = None;
+        for line in dump.lines() {
+            if let Some(path) = line.strip_prefix("ROOT ") {
+                current = Some(PathBuf::from(path));
+            }
+            if let Some(edge) = line
+                .strip_prefix("E DirectInclude ")
+                .or_else(|| line.strip_prefix("E TransitiveInclude "))
+                && edge
+                    .split(" | ")
+                    .next()
+                    .is_some_and(|p| std::path::Path::new(p) == include)
+                && let Some(path) = &current
+            {
+                selected.insert(path.clone());
+            }
+        }
+        Some(selected)
+    } else {
+        None
+    };
     let started = Instant::now();
     // Counted in the wall time: it is the price of the shared strategy. Scanned
     // on the run's threads, as a client that has them would.
     let producers = (seeding == Seeding::Shared)
         .then(|| LintPipeline::new(&config, &fs).shared_producers_parallel(&files, threads));
     let setup = started.elapsed();
+    let roots: Vec<_> = files
+        .iter()
+        .filter(|path| selected.as_ref().is_none_or(|s| s.contains(*path)))
+        .cloned()
+        .collect();
 
     let next = AtomicUsize::new(0);
     let mut rows: Vec<(usize, String)> = Vec::new();
@@ -140,7 +224,7 @@ fn main() {
                     let mut mine = Vec::new();
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(path) = files.get(i) else { break };
+                        let Some(path) = roots.get(i) else { break };
                         let mut text = String::new();
                         let _ = writeln!(text, "ROOT {}", path.display());
                         match std::fs::read_to_string(path) {
