@@ -614,3 +614,82 @@ fn graph_size_includes_owned_rows_and_paths() {
     let graph = ws.graph(&ws.config());
     assert!(graph.estimated_heap_bytes() > std::mem::size_of_val(&graph));
 }
+
+// A pass spread over workers builds the serial pass's graph, though each worker's
+// index mints its own file ids, and hands back what it inspected in file order.
+#[test]
+fn a_parallel_pass_builds_the_serial_graph() {
+    let mut sources: Vec<(String, String)> = vec![
+        (
+            "base.i".into(),
+            "DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n".into(),
+        ),
+        (
+            "middle.i".into(),
+            "{base.i}\nDEFINE VARIABLE v-mid AS INTEGER NO-UNDO.\n".into(),
+        ),
+        (
+            "pkg/calc-base.cls".into(),
+            "CLASS pkg.calc-base:\n\
+             METHOD PUBLIC INTEGER calc-total():\n\
+             RETURN 0.\n\
+             END METHOD.\n\
+             END CLASS.\n"
+                .into(),
+        ),
+        ("worker.p".into(), "{base.i}\nMESSAGE v-base.\n".into()),
+    ];
+    for n in 0..24 {
+        sources.push((
+            format!("pkg/child{n}.cls"),
+            caller_inheriting("pkg.calc-base")
+                .replace("CLASS caller", &format!("CLASS pkg.child{n}")),
+        ));
+        sources.push((
+            format!("caller{n}.p"),
+            "{middle.i}\nRUN worker.p.\nMESSAGE v-mid.\n".into(),
+        ));
+        sources.push((
+            format!("reader{n}.p"),
+            "FOR EACH Customer NO-LOCK:\nDISPLAY Customer.Name.\nEND.\n".into(),
+        ));
+        sources.push((format!("hopeful{n}.p"), "{nowhere.i}\nMESSAGE 1.\n".into()));
+    }
+    let borrowed: Vec<(&str, &str)> = sources
+        .iter()
+        .map(|(name, source)| (name.as_str(), source.as_str()))
+        .collect();
+    let ws = Workspace::new(&borrowed);
+    let mut files = ws.files.clone();
+    files.insert(files.len() / 2, proj("ghost.p"));
+    let config = ws.with_schema();
+
+    let serial = ReverseGraph::build(
+        &LintPipeline::new(&config, &ws.fs).with_known_files(&files),
+        &files,
+    );
+    assert!(serial.edge_count() > 0 && serial.unresolved_count() > 0);
+    assert_eq!(serial.unanalysed().len(), 1);
+    assert!(
+        !serial
+            .dependents(&Subject::file(proj("pkg/calc-base.cls")))
+            .is_empty(),
+        "the fixture has edges to indexed files"
+    );
+    let analysed: Vec<PathBuf> = files
+        .iter()
+        .filter(|f| **f != proj("ghost.p"))
+        .cloned()
+        .collect();
+
+    for jobs in [1, 2, 7] {
+        let (parallel, inspected) = ReverseGraph::build_with(
+            &files,
+            jobs,
+            || LintPipeline::new(&config, &ws.fs).with_known_files(&files),
+            |path, _, _| path.to_path_buf(),
+        );
+        assert_eq!(parallel, serial, "at {jobs} jobs");
+        assert_eq!(inspected, analysed, "at {jobs} jobs");
+    }
+}
