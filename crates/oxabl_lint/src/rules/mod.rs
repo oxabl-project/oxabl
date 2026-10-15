@@ -8,6 +8,7 @@ pub mod block_var_used_outside;
 pub mod default_lock;
 pub mod delete_not_in_finally;
 pub mod dynamic_invoke;
+pub mod field_after_failed_find;
 pub mod find_in_loop;
 pub mod handle_not_deleted;
 pub mod implicit_transaction;
@@ -88,3 +89,6 @@ pub const LK003: &str = "LK003";
 
 /// Diagnostic code for `find-in-loop` (DB001).
 pub const DB001: &str = "DB001";
+
+/// Diagnostic code for `field-after-failed-find` (NL003).
+pub const NL003: &str = "NL003";

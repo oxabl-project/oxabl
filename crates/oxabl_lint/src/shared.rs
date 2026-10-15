@@ -7,6 +7,7 @@ use oxabl_effects::{EffectOptions, FileEffects};
 use oxabl_flow::{FileFlow, FlowOptions};
 use oxabl_handles::FileHandles;
 use oxabl_index::calls::FileCalls;
+use oxabl_nulls::{FileNulls, NullOptions};
 use oxabl_scope::{FileScopes, ScopeOptions};
 use oxabl_semantic::AnalysisContext;
 
@@ -24,6 +25,7 @@ pub struct RunShared<'a> {
     flow: OnceCell<FileFlow>,
     scopes: OnceCell<FileScopes>,
     effects: OnceCell<FileEffects>,
+    nulls: OnceCell<FileNulls>,
 }
 
 /// Answers in expanded byte coordinates. Missing and partial answers are Unknown.
@@ -94,6 +96,21 @@ impl<'a> RunShared<'a> {
                 &calls,
                 schema,
                 &EffectOptions { elided: ctx.elided },
+            )
+        })
+    }
+
+    /// The failed finds of the file and the field references they reach,
+    /// analysed once over [`scopes`](Self::scopes).
+    pub fn nulls(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
+        self.nulls.get_or_init(|| {
+            let scopes = self.scopes(program, ctx);
+            oxabl_nulls::analyze_file(
+                ctx.source,
+                self.tokens(ctx),
+                self.flow(program, ctx),
+                scopes,
+                &NullOptions { elided: ctx.elided },
             )
         })
     }
