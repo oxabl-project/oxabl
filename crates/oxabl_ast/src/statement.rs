@@ -317,6 +317,16 @@ pub enum StatementKind {
         target: Option<Expression>,
     },
 
+    /// WAIT-FOR statement — blocks until an event occurs on a widget.
+    ///
+    /// The widgets of each `OF` list are modelled; event names are not symbols
+    /// and are dropped. `FRAME f`, `FOCUS`, `PAUSE` and a form without `OF`
+    /// stay in [`Statement::skipped_tail`].
+    WaitFor {
+        /// Widgets and handles waited on, in source order.
+        widgets: Vec<Expression>,
+    },
+
     /// ENABLE statement — enables widgets for input.
     ///
     /// The widgets (fields, variables, buttons, ...) are modelled with their

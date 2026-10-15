@@ -251,6 +251,7 @@ impl Visitor<'_> {
             | StatementKind::Put { items, .. }
             | StatementKind::Form { items }
             | StatementKind::Enable { items }
+            | StatementKind::WaitFor { widgets: items }
             | StatementKind::Disable { items }
             | StatementKind::Hide { items, .. }
             | StatementKind::View { items, .. } => {

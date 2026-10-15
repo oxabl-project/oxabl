@@ -720,6 +720,11 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt_value_operands(hi));
         }
 
+        // WAIT-FOR events OF widgets [OR ...] — head-parsed; options stay a skipped tail.
+        if self.check(Kind::WaitFor) {
+            return self.parse_wait_for_statement();
+        }
+
         // APPLY event [TO widget] — head-parsed; options stay a skipped tail.
         if self.check(Kind::Apply) {
             return self.parse_apply_statement();
@@ -750,8 +755,6 @@ impl Parser<'_> {
             // CONNECT/DISCONNECT — database connection management statements.
             || self.check(Kind::Connect)
             || self.check(Kind::Disconnect)
-            // WAIT-FOR event OF widget. — ABL UI event loop.
-            || self.check(Kind::WaitFor)
             // COLOR statement — terminal color settings (e.g. COLOR DISPLAY NORMAL ... WITH FRAME name.)
             || self.check(Kind::Color)
             // READKEY [PAUSE n]. — reads next keypress from keyboard.
@@ -4114,6 +4117,48 @@ impl Parser<'_> {
         let items = self.parse_frame_items(false);
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+    }
+
+    /// `WAIT-FOR event-list OF widget-list [OR event-list OF widget-list]...`.
+    /// Event names are not symbols and are dropped; `FRAME f`, `FOCUS`, `PAUSE`
+    /// and a form without `OF` (`WAIT-FOR obj:ShowDialog()`) stay in the skipped tail.
+    fn parse_wait_for_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume WAIT-FOR
+        let mut widgets = Vec::new();
+        'lists: loop {
+            let events = self.current;
+            while !self.check(Kind::Of) {
+                if self.at_end() || self.check(Kind::Period) || self.check(Kind::LeftParen) {
+                    self.current = events;
+                    break 'lists;
+                }
+                self.advance();
+            }
+            self.advance(); // consume OF
+            loop {
+                if matches!(self.peek().kind, Kind::Frame | Kind::Browse | Kind::Period) {
+                    break 'lists;
+                }
+                let mark = self.current;
+                match self.parse_comparison() {
+                    Ok(e) if self.current > mark => widgets.push(e),
+                    _ => {
+                        self.current = mark;
+                        break 'lists;
+                    }
+                }
+                if !self.check(Kind::Comma) {
+                    break;
+                }
+                self.advance();
+            }
+            if !self.check(Kind::Or) {
+                break;
+            }
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::WaitFor { widgets }, tail))
     }
 
     /// `APPLY event [TO widget]`. A target that is not an expression (`FRAME f`,

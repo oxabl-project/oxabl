@@ -396,15 +396,10 @@ pub(crate) enum Input {
 pub(crate) fn skipped_input(src: &str, span: Span) -> Input {
     let t = Toks::new(src, span, 2);
     match t.kind(0) {
-        Some(Kind::PromptFor | Kind::WaitFor | Kind::Readkey | Kind::Choose) => Input::Blocking,
+        Some(Kind::PromptFor | Kind::Readkey | Kind::Choose) => Input::Blocking,
         Some(Kind::Insert) if t.kind(1) != Some(Kind::Into) => Input::Blocking,
         _ => Input::None,
     }
-}
-
-/// Whether a skipped statement is `WAIT-FOR`, which the user can interrupt.
-pub(crate) fn skipped_waits(src: &str, span: Span) -> bool {
-    Toks::new(src, span, 1).kind(0) == Some(Kind::WaitFor)
 }
 
 /// Whether the statement text ends in `NO-ERROR` (before the period). For

@@ -3046,6 +3046,7 @@ impl<'a> ResolveWalker<'a> {
             }
             StatementKind::Form { items }
             | StatementKind::Enable { items }
+            | StatementKind::WaitFor { widgets: items }
             | StatementKind::Disable { items } => {
                 for e in items {
                     self.walk_expression(e, scope, AccessMode::Read);

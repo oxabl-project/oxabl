@@ -524,6 +524,7 @@ mod paths {
                 | SK::Put { items, .. }
                 | SK::Form { items }
                 | SK::Enable { items }
+                | SK::WaitFor { widgets: items }
                 | SK::Disable { items }
                 | SK::Hide { items, .. }
                 | SK::View { items, .. } => {
