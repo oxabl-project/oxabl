@@ -283,12 +283,19 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   and message and the `DOWN`/`UP` line count are modelled; the option clauses after them
   (`FORMAT`, `EXCEPT`, `NO-LOBS`, `IN WINDOW`, the frame phrase, ...) ride on
   `Statement::skipped_tail`. A `FORM` item list ends at the first token that does not
-  start an item (`VIEW-AS`, `AT ROW`, an unclassified option such as `BGCOLOR 3`, a
-  `name AS type` declaration), so an option the parser does not know is never read as a
-  name.
+  start an item (`VIEW-AS`, `AT ROW`, an unclassified option such as `BGCOLOR 3`), so an
+  option the parser does not know is never read as a name. A `FORM` item `name AS type`
+  or `name LIKE field` declares a frame field: it goes to `fields`, not `items`, and the
+  list goes on. In the other forms it still ends the list.
   **Invariant:** an `IMPORT` or `SET` target is credited as a write, an `UPDATE` target as
   a read and a write, and every other head operand as a read. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
   in the tail; the form never falls back to `Skipped`.
+
+- **Frame fields are declarations.** The `name AS type` / `name LIKE field` items of a
+  `FORM` and of a `DEFINE FRAME` body are `FrameField`s in the variant's `fields`. The
+  rest of a `DEFINE FRAME` body stays unparsed. The semantic layer declares each one as a
+  variable, scoped like `DEFINE VARIABLE`, unless a variable of that name is already in
+  scope.
 
 - **Static widget definitions declare their name.** `DEFINE BUTTON`, `BROWSE`,
   `RECTANGLE`, `IMAGE`, `MENU` and `SUB-MENU` parse to `StatementKind::DefineWidget`, and

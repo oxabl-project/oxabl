@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
+    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, FrameField,
     HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
     RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeArguments,
     TypeSource, UsingSource,
@@ -325,9 +325,11 @@ impl<'a> Walker<'a> {
             StatementKind::DefineStream { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Streams, SymbolKind::Stream);
             }
-            StatementKind::DefineFrame { name, .. } => {
+            StatementKind::DefineFrame { name, fields, .. } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
+                self.declare_frame_fields(stmt, scope, fields);
             }
+            StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
             StatementKind::DefineWidget { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
             }
@@ -850,6 +852,25 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Declare the variables that `name AS type` / `name LIKE field` frame
+    /// items define, scoped like `DEFINE VARIABLE`. An item whose name already
+    /// names a variable in scope uses that variable rather than declaring one,
+    /// as the same field in a second frame does.
+    fn declare_frame_fields(&mut self, stmt: &Statement, scope: ScopeId, fields: &[FrameField]) {
+        for field in fields {
+            let atom = fold_atom(&field.name.name);
+            if self
+                .tree
+                .resolve(scope, NamespaceId::Values, &atom)
+                .is_some_and(|sym| self.symbols.get(sym).kind != SymbolKind::BuiltIn)
+            {
+                continue;
+            }
+            let flags = SymbolFlags::empty();
+            self.declare_variable(stmt, scope, &field.name, &field.type_source, None, flags);
+        }
+    }
+
     fn declare_parameter(
         &mut self,
         stmt: &Statement,
@@ -1027,9 +1048,10 @@ impl<'a> Walker<'a> {
         self.schema_table_id(table).map(RecordSource::Schema)
     }
 
-    /// Case-insensitive schema lookup of a table-name identifier. Returns
-    /// `None` when the table is absent from the schema (or no schema is
-    /// loaded — an empty schema yields `None` here by construction).
+    /// Case-insensitive schema lookup of a table-name identifier, which may be
+    /// a unique abbreviation of the table name. Returns `None` when the table
+    /// is absent from the schema (or no schema is loaded — an empty schema
+    /// yields `None` here by construction).
     ///
     /// A record phrase may qualify the table with the database it lives in —
     /// `sports.Customer`, `dictdb._file` — and the parser hands that through
@@ -1038,10 +1060,10 @@ impl<'a> Walker<'a> {
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
         self.ctx
             .schema
-            .table_id(&fold_atom(&table.name))
+            .resolve_table(&fold_atom(&table.name))
             .or_else(|| {
                 let bare = strip_db_qualifier(&table.name)?;
-                self.ctx.schema.table_id(&fold_atom(bare))
+                self.ctx.schema.resolve_table(&fold_atom(bare))
             })
     }
 
@@ -2598,8 +2620,11 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             StatementKind::DefineStream { .. } | StatementKind::DefineWidget { .. } => {}
-            StatementKind::DefineFrame { raw_span, .. } => {
+            StatementKind::DefineFrame {
+                raw_span, fields, ..
+            } => {
                 self.note_unmodelled_text(*raw_span, scope);
+                self.note_frame_field_sources(fields, scope);
             }
             StatementKind::DefineEvent { parameters, .. } => {
                 if let Some(ev) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
@@ -3044,8 +3069,13 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, mode);
                 }
             }
-            StatementKind::Form { items }
-            | StatementKind::Enable { items }
+            StatementKind::Form { items, fields } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+                self.note_frame_field_sources(fields, scope);
+            }
+            StatementKind::Enable { items }
             | StatementKind::WaitFor { widgets: items }
             | StatementKind::Disable { items } => {
                 for e in items {
@@ -3798,6 +3828,16 @@ impl<'a> ResolveWalker<'a> {
             if let Some(reason) = reason {
                 self.references
                     .insert(expr_id, Resolution::Unresolved { name: atom, reason });
+                return;
+            }
+            // An abbreviated table name, tried last so that any field of a
+            // record in scope wins over it.
+            if self.ctx.schema_loaded
+                && let Some(tid) = self.ctx.schema.resolve_table(&atom)
+            {
+                let bsym = self.synth_table_buffer_symbol(tid, &atom, id);
+                self.references.insert(expr_id, Resolution::Resolved(bsym));
+                self.bump_count(bsym, mode);
                 return;
             }
         }
@@ -4759,7 +4799,7 @@ impl<'a> ResolveWalker<'a> {
             .into_iter()
             .flatten()
             .map(fold_atom)
-            .find_map(|atom| Some((schema.table_id(&atom)?, atom)))?;
+            .find_map(|atom| Some((schema.resolve_table(&atom)?, atom)))?;
         Some(self.synth_table_buffer_symbol(tid, &atom, id))
     }
 
@@ -4790,6 +4830,15 @@ impl<'a> ResolveWalker<'a> {
             .is_none()
         {
             self.schema_default_buffer(&table);
+        }
+    }
+
+    /// Note the tables the `LIKE` frame fields copy.
+    fn note_frame_field_sources(&mut self, fields: &[FrameField], scope: ScopeId) {
+        for field in fields {
+            if let TypeSource::Like { source } = &field.type_source {
+                self.note_like_source(source, scope, false);
+            }
         }
     }
 
@@ -5071,7 +5120,7 @@ impl<'a> ResolveWalker<'a> {
                 // references were a double false positive (LINT0001 on the
                 // qualifier *and* LINT0003 on the field).
                 if self.ctx.schema_loaded
-                    && let Some(tid) = self.ctx.schema.table_id(&qatom)
+                    && let Some(tid) = self.ctx.schema.resolve_table(&qatom)
                 {
                     let bsym = self.synth_table_buffer_symbol(tid, &qatom, qid);
                     self.references
@@ -5180,7 +5229,7 @@ impl<'a> ResolveWalker<'a> {
         }
 
         let table_atom = fold_atom(&table.name);
-        let Some(tid) = self.ctx.schema.table_id(&table_atom) else {
+        let Some(tid) = self.ctx.schema.resolve_table(&table_atom) else {
             return false;
         };
 
@@ -5763,6 +5812,12 @@ impl<'a> ResolveWalker<'a> {
         if let Some(sym) = self.synth_buffers.get(&tid) {
             return *sym;
         }
+        // The table's own name, not an abbreviation the use site wrote.
+        let table_atom = self
+            .ctx
+            .schema
+            .get_by_id(tid)
+            .map_or(table_atom, |t| &t.name);
         let sym = self.symbols.insert(Symbol {
             // The one deviation from the convention, and the reason this helper
             // exists: the link is what makes field accesses through the default
@@ -6773,6 +6828,7 @@ mod tests {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineFrame {
             name: id("f1"),
             raw_span: Span { start: 0, end: 0 },
+            fields: Vec::new(),
         })]);
         let s = find_symbol(&tree, &symbols, NamespaceId::Frames, "f1").unwrap();
         assert_eq!(s.kind, SymbolKind::Frame);

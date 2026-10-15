@@ -1824,7 +1824,7 @@ impl<'a> Parser<'a> {
                         if self.check(Kind::TempTable) {
                             self.advance();
                         }
-                        if let Ok(table) = self.parse_identifier() {
+                        if let Ok(table) = self.parse_qualified_identifier() {
                             target = table;
                         }
                     }

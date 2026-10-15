@@ -186,7 +186,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         }
         StatementKind::Message { items, .. }
         | StatementKind::Put { items, .. }
-        | StatementKind::Form { items }
+        | StatementKind::Form { items, .. }
         | StatementKind::Enable { items }
         | StatementKind::WaitFor { widgets: items }
         | StatementKind::Disable { items }
