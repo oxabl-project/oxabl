@@ -238,7 +238,20 @@ pub fn analyze_tokens(
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
     let flow = oxabl_flow::build_file_tokens(program, source, tokens, &options.flow);
-    let collected = collect::collect(program, source, tokens, &flow, options);
+    analyze_flow(program, source, tokens, &flow, schema, options)
+}
+
+/// [`analyze_tokens`] over the file's CFGs, already built from the same
+/// statements with `options.flow` (`oxabl_flow::build_file_tokens`).
+pub fn analyze_flow(
+    program: &[Statement],
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    flow: &oxabl_flow::FileFlow,
+    schema: Option<&Schema>,
+    options: &ScopeOptions<'_>,
+) -> FileScopes {
+    let collected = collect::collect(program, source, tokens, flow, options);
     let mut file_unknown: Vec<Unknown> = Vec::new();
     if options.parse_recovered {
         file_unknown.push(Unknown {
@@ -252,8 +265,8 @@ pub fn analyze_tokens(
             at: Span::DUMMY,
         });
     }
-    let mut res = resolve::resolve(&collected, &flow, schema);
-    let scope_of = scopes::assign(&mut res, &flow);
+    let mut res = resolve::resolve(&collected, flow, schema);
+    let scope_of = scopes::assign(&mut res, flow);
 
     // Unknowns: per buffer, per unit (every buffer the unit can see), file.
     for (b, u) in std::mem::take(&mut res.buffer_unknowns) {
@@ -316,7 +329,7 @@ pub fn analyze_tokens(
                 continue;
             }
             let same_unit = r.unit == read.unit;
-            if same_unit && !runs_after(&flow, read, r.at.start, r.block, bound) {
+            if same_unit && !runs_after(flow, read, r.at.start, r.block, bound) {
                 continue;
             }
             let reason = if r.write.is_some() {
@@ -344,12 +357,12 @@ pub fn analyze_tokens(
             && res
                 .runs
                 .iter()
-                .any(|&(u, block, at)| u == read.unit && runs_after(&flow, read, at, block, bound))
+                .any(|&(u, block, at)| u == read.unit && runs_after(flow, read, at, block, bound))
         {
             written = Written::Unknown(UnknownReason::Callee);
         }
         if written == Written::No
-            && include_may_run_after(&flow, read, bound, options.elided_includes)
+            && include_may_run_after(flow, read, bound, options.elided_includes)
         {
             written = Written::Unknown(UnknownReason::UnexpandedInclude);
         }
@@ -358,7 +371,7 @@ pub fn analyze_tokens(
     res.reads.sort_by_key(|r| r.at.start);
 
     let extra = file_unknown.first().copied();
-    let tx = txn::transactions(&flow, &res, extra);
+    let tx = txn::transactions(flow, &res, extra);
     let mut units: Vec<UnitScopes> = flow
         .units()
         .iter()

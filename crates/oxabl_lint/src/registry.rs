@@ -149,6 +149,13 @@ pub trait Rule: Send + Sync {
     /// Run the rule over `program` and its semantic model.
     fn run(&self, program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic>;
 
+    /// Whether the rule reads the buffer scopes of the file
+    /// ([`RunShared::scopes`]). A run with such a rule builds the file's CFGs
+    /// once for the scopes and the dynamic objects. The default is `false`.
+    fn reads_scopes(&self) -> bool {
+        false
+    }
+
     /// [`run`](Self::run) with the facts that one registry run shares between
     /// rules. The default ignores them.
     fn run_shared(
@@ -226,6 +233,10 @@ impl Rule for FnRule {
         self.run_shared(program, sem, ctx, &RunShared::default())
     }
 
+    fn reads_scopes(&self) -> bool {
+        matches!(self.body, Body::Scopes(_))
+    }
+
     fn run_shared(
         &self,
         program: &[Statement],
@@ -235,7 +246,7 @@ impl Rule for FnRule {
     ) -> Vec<Diagnostic> {
         match self.body {
             Body::Plain(run) => run(program, sem, ctx),
-            Body::Handles(check) => check(shared.handles(program, ctx.source), ctx),
+            Body::Handles(check) => check(shared.handles(program, ctx), ctx),
             Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
         }
     }
@@ -743,16 +754,17 @@ impl Registry {
         select: impl Fn(&RuleMeta) -> bool,
     ) -> Vec<Diagnostic> {
         let fragment = ctx.source_context.is_include_fragment();
-        let shared = RunShared::default();
+        let enabled: Vec<(&dyn Rule, Severity)> = self
+            .rules()
+            .filter(|rule| {
+                let meta = rule.meta();
+                select(meta) && !(fragment && meta.requires_compilation_unit)
+            })
+            .filter_map(|rule| Some((rule, self.severity_for(rule, &ctx.lint_severities)?)))
+            .collect();
+        let shared = RunShared::new(enabled.iter().any(|(rule, _)| rule.reads_scopes()));
         let mut out = Vec::new();
-        for rule in self.rules() {
-            let meta = rule.meta();
-            if !select(meta) || (fragment && meta.requires_compilation_unit) {
-                continue;
-            }
-            let Some(severity) = self.severity_for(rule, &ctx.lint_severities) else {
-                continue;
-            };
+        for (rule, severity) in enabled {
             out.extend(
                 rule.run_shared(program, sem, ctx, &shared)
                     .into_iter()
