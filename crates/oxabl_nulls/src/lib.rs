@@ -13,10 +13,13 @@
 //! * **Guards** narrow on both edges of an `IF` and of a `WHILE` header:
 //!   `AVAILABLE b`, `NOT`, `AND`, `OR`, and `ERROR-STATUS:ERROR` right after
 //!   the `FIND`. An arm that leaves (`LEAVE`, `NEXT`, `RETURN`, `UNDO, ...`)
-//!   is the flow graph's business. A guard of `c` also proves every buffer
-//!   whose fields the criteria of a `FIND c ... NO-ERROR` read.
+//!   is the flow graph's business. A guard of `c` also proves the buffers
+//!   whose fields the criteria of the `FIND c ... NO-ERROR` that filled it
+//!   read, when `c` was empty before that `FIND`.
 //! * **Refills**: `FIND` without `NO-ERROR`, `CREATE`, a field reference that
-//!   completed, a `FOR` or query that reads the buffer.
+//!   completed, a `FOR` or query that reads the buffer. A frame-field
+//!   reference (`@ b.f`, `b.f:SCREEN-VALUE`, `ENABLE b.f`) neither reads nor
+//!   proves a record.
 //! * **Error paths** are not followed: on a raise edge every failed find is
 //!   forgotten.
 //! * Buffers resolve through `oxabl_scope`: its names, default buffers and its
@@ -32,7 +35,8 @@
 //! passed to code it cannot see, a call that may change a shared buffer or
 //! one another routine of the file names, an unexpanded `{...}` or an elided
 //! `{&name}` in the statement, a statement form it does not know that names
-//! the buffer. A file with a file-level Unknown of the scope analysis (a
+//! the buffer, a test of `ERROR-STATUS` it cannot read or that follows a
+//! call. A file with a file-level Unknown of the scope analysis (a
 //! recovered parse, an unexpanded include, past the work budget) gets no
 //! answer at all ([`FileNulls::unknown`]), and a buffer whose table the
 //! schema does not have is never judged.

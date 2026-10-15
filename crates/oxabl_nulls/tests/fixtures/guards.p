@@ -63,15 +63,22 @@ PROCEDURE shadowed:
     c = Customer.Name.
 END PROCEDURE.
 
-/* G9: a find whose criteria read the buffer proves it. */
+/* G9: a find whose criteria read the buffer, run while its own buffer was
+   empty, proves it. Customer may still hold a record here: no proof. */
+DEFINE BUFFER bFirst FOR Customer.
+DEFINE BUFFER bSecond FOR Customer.
+FIND FIRST Order NO-LOCK NO-ERROR.
+FIND bFirst WHERE bFirst.CustNum = Order.CustNum NO-LOCK NO-ERROR.
+IF NOT AVAILABLE bFirst THEN RETURN.
+c = STRING(Order.OrderNum).
+FIND FIRST Order NO-LOCK NO-ERROR.
+FIND bSecond WHERE bSecond.CustNum = Order.CustNum NO-LOCK NO-ERROR.
+c = bSecond.Name.                               /* missing; a use proves it too */
+c = STRING(Order.OrderNum).
 FIND FIRST Order NO-LOCK NO-ERROR.
 FIND Customer WHERE Customer.CustNum = Order.CustNum NO-LOCK NO-ERROR.
 IF NOT AVAILABLE Customer THEN RETURN.
-c = STRING(Order.OrderNum).
-FIND FIRST Order NO-LOCK NO-ERROR.
-FIND Customer WHERE Customer.CustNum = Order.CustNum NO-LOCK NO-ERROR.
-c = Customer.Name.                              /* missing; a use proves it too */
-c = STRING(Order.OrderNum).
+c = STRING(Order.OrderNum).                     /* missing */
 
 /* Section 9.5: a branch of an undecided &IF may never be compiled. */
 FIND FIRST Order NO-LOCK NO-ERROR.
