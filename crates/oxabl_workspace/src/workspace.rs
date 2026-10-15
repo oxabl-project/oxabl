@@ -6,7 +6,7 @@ use oxabl_common::FileSet;
 use crate::config::WorkspaceConfig;
 use crate::config::normalize_root_extensions;
 use crate::discovery::{is_root_file_in, walk_directory_in};
-use crate::file_system::{FileSystem, InMemoryFileSystem, RealFileSystem};
+use crate::file_system::{EncodedFileSystem, FileSystem, InMemoryFileSystem};
 
 /// Top-level handle combining configuration, file identity, and file I/O.
 ///
@@ -39,7 +39,7 @@ impl Workspace {
     /// [`is_root_file`]: crate::is_root_file
     pub fn from_path(root: &Path) -> Result<Self, String> {
         let config = WorkspaceConfig::from_path(root)?;
-        let fs = Arc::new(RealFileSystem);
+        let fs = Arc::new(EncodedFileSystem::new(config.workspace.sources.decoding()));
         let file_set = discover_files(root, &config);
         Ok(Workspace {
             config,

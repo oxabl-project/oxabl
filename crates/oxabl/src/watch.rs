@@ -17,7 +17,7 @@ use oxabl_pipeline::{
     ConfigOverrides, ConfigWarning, FormatPipeline, LintPipeline, PipelineConfig, ReverseGraph,
     Subject,
 };
-use oxabl_workspace::{RealFileSystem, discover_path_in, walk_include_fragments};
+use oxabl_workspace::{discover_path_in, walk_include_fragments};
 
 use crate::{CheckPass, Task};
 
@@ -187,7 +187,7 @@ fn cycle(
     }
 
     let files = discover_path_in(opts.path, &config.root_extensions)?;
-    let fs = RealFileSystem;
+    let fs = config.file_system();
     let indexed: Vec<PathBuf> = files.iter().map(|f| canonical(f)).collect();
     let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, opts.jobs);
     let lint = LintPipeline::new(&config, &fs)
@@ -236,6 +236,7 @@ fn cycle(
         include_findings: opts.include_findings,
         baseline: None,
         format: &format,
+        decoding: config.decoding,
     };
     let tasks: Vec<Task<'_>> = files
         .iter()
@@ -262,6 +263,7 @@ fn cycle(
     let mut results: Vec<String> = Vec::with_capacity(tasks.len());
     crate::run_ordered(
         opts.jobs.min(tasks.len()),
+        config.decoding,
         &lint,
         || {
             LintPipeline::new(&config, &fs)

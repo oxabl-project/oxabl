@@ -41,9 +41,9 @@ use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, default_root_extensions,
-    default_run_extensions, find_workspace_root, normalize_root_extensions,
-    normalize_run_extensions,
+    EncodedFileSystem, LintConfig, PreprocessorConfig, SourceDecoding, WorkspaceConfig,
+    default_root_extensions, default_run_extensions, find_workspace_root,
+    normalize_root_extensions, normalize_run_extensions,
 };
 
 /// A non-fatal problem hit while resolving configuration.
@@ -193,6 +193,12 @@ pub struct PipelineConfig {
     /// Resolve classes and `RUN` targets ignoring case when the exact spellings
     /// miss (`[workspace.sources].case_insensitive_lookup`). Default `false`.
     pub case_insensitive_lookup: bool,
+
+    /// How source files read from disk become text
+    /// (`[workspace.sources].encoding` and `fallback_encoding`). Default UTF-8.
+    /// [`file_system`](Self::file_system) builds the filesystem that honours it.
+    pub decoding: SourceDecoding,
+
     /// Extensions that make a file in a walked directory an ABL root, without the
     /// dot (`[workspace.sources].root_extensions`). Default `p`, `w`, `cls`, `v`.
     pub root_extensions: Vec<String>,
@@ -220,12 +226,19 @@ impl Default for PipelineConfig {
             preprocessor: PreprocessorConfig::default(),
             run_extensions: default_run_extensions(),
             case_insensitive_lookup: false,
+            decoding: SourceDecoding::default(),
             root_extensions: default_root_extensions(),
         }
     }
 }
 
 impl PipelineConfig {
+    /// The disk filesystem for this configuration: every file it reads is decoded
+    /// as [`decoding`](Self::decoding).
+    pub fn file_system(&self) -> EncodedFileSystem {
+        EncodedFileSystem::new(self.decoding)
+    }
+
     /// The search paths of the file at `file`: each root-relative path resolved
     /// against its directory, then [`include_paths`](Self::include_paths), each
     /// once. The include paths alone with no file or no root-relative path.
@@ -416,6 +429,7 @@ fn derive(
             .map(ConfigWarning::RootExtension),
     );
     let root_extensions = root_extensions.extensions;
+    let decoding = config.workspace.sources.decoding();
 
     let schema_path = match schema_loading {
         SchemaLoading::Load => overrides.schema_path.as_ref(),
@@ -437,6 +451,7 @@ fn derive(
                     preprocessor,
                     run_extensions,
                     case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
+                    decoding,
                     root_extensions,
                 },
                 warnings,
@@ -476,7 +491,7 @@ fn derive(
         if preprocessor.databases.is_none() {
             preprocessor.inferred_databases = Some(logical_database_names(&files));
         }
-        let (schema, diags) = SchemaLoader::load_files(&files, &RealFileSystem);
+        let (schema, diags) = SchemaLoader::load_files(&files, &EncodedFileSystem::new(decoding));
         warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
         (schema, true)
     };
@@ -496,6 +511,7 @@ fn derive(
             preprocessor,
             run_extensions,
             case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
+            decoding,
             root_extensions,
         },
         warnings,
@@ -1340,6 +1356,40 @@ mod tests {
         assert_eq!(config.include_paths, vec![root.join("inc")]);
         assert_eq!(rule_severity(&config, "LINT0001"), None);
         assert_eq!(config.style.indent_size, 7);
+    }
+
+    #[test]
+    fn the_source_encoding_reaches_the_config_and_the_schema_files() {
+        use oxabl_workspace::SourceEncoding;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("ledger.df"),
+            b"ADD TABLE \"cust\"\n  DESCRIPTION \"caf\xe9\"\nADD FIELD \"id\" OF \"cust\" AS integer\n",
+        )
+        .unwrap();
+        let toml = |sources: &str| {
+            format!(
+                "[workspace]\nname = \"p\"\n[workspace.sources]\n{sources}\
+                 [workspace.schema]\nfiles = [\"ledger.df\"]\n"
+            )
+        };
+
+        fs::write(root.join("oxabl.toml"), toml("")).unwrap();
+        let (config, warnings) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+        assert_eq!(config.decoding, SourceDecoding::default());
+        assert!(!warnings.is_empty(), "invalid UTF-8 is a schema warning");
+        assert!(config.schema.is_empty());
+
+        fs::write(
+            root.join("oxabl.toml"),
+            toml("encoding = \"windows-1252\"\n"),
+        )
+        .unwrap();
+        let (config, warnings) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+        assert_eq!(config.decoding.encoding, SourceEncoding::Windows1252);
+        assert_eq!(warnings, []);
+        assert!(!config.schema.is_empty());
     }
 
     #[test]

@@ -10,6 +10,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_workspace"
 oxabl_common = { path = "../oxabl_common", version = "1.2.0" }
 oxabl_ast = { path = "../oxabl_ast", version = "2.0.0" }
 oxabl_style = { path = "../oxabl_style", version = "0.2.0" }
+encoding_rs = "0.8"
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
 serde_json = "1"
