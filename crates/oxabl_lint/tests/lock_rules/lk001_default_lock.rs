@@ -139,3 +139,13 @@ END PROCEDURE.
 fn share_abbreviates_share_lock() {
     assert!(check(run, "FIND FIRST Order SHARE.\nFIND FIRST Item EXCLUSIVE.\n").is_empty());
 }
+
+#[test]
+fn a_can_find_names_the_wait_and_suggests_no_lock() {
+    let src = "IF CAN-FIND(FIRST Item WHERE Item.ItemNum = 1) THEN MESSAGE \"x\".\n";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [1]);
+    assert!(diags[0].message.contains("waits while another session"));
+    assert!(help(&diags[0]).contains("keeps no record"));
+    assert!(help(&diags[0]).contains("`NO-LOCK`"));
+}

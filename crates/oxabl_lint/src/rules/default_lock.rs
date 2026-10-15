@@ -13,6 +13,11 @@
 //! and a `SHARE-LOCK` that is upgraded later can deadlock with another session
 //! that does the same. Writing the lock says which one the code means.
 //!
+//! A `CAN-FIND` keeps no record, so it holds no lock after it. Its
+//! `SHARE-LOCK` costs a wait instead: while another session holds the record
+//! with `EXCLUSIVE-LOCK`, the `CAN-FIND` waits for it. `NO-LOCK` gives the
+//! same answer without the wait.
+//!
 //! ```abl
 //! FIND FIRST Customer WHERE Customer.CustNum = 1.
 //! DISPLAY Customer.Name.
@@ -29,10 +34,13 @@
 //!
 //! One diagnostic per record phrase, on the table name. The message names the
 //! default, `SHARE-LOCK`. The help suggests `NO-LOCK` only when nothing changes
-//! the record later in the buffer's scope; when a change follows, it suggests
-//! `EXCLUSIVE-LOCK`. When a call may change the record (the buffer is passed to
-//! it, or is shared), or the buffer's scope is not known, the help suggests no
-//! lock. No autofix is offered yet.
+//! the record after the read in the buffer's scope; when a change may follow
+//! (later in the text, or anywhere in a loop of the scope that holds the
+//! read), it suggests `EXCLUSIVE-LOCK`. When a call may change the record (the
+//! buffer is passed to it, or is shared), another routine of the scope changes
+//! it, a statement the analysis does not read names it, or the buffer's scope
+//! is not known, the help suggests no lock. For a `CAN-FIND` the message names
+//! the wait and the help suggests `NO-LOCK`. No autofix is offered yet.
 //!
 //! Not reported:
 //!
@@ -98,11 +106,16 @@ pub fn check(
         {
             continue;
         }
+        let wait = if read.kind == ReadKind::CanFind {
+            ": it waits while another session holds the record with EXCLUSIVE-LOCK"
+        } else {
+            ""
+        };
         diags.push(warning(
             ctx,
             LK001,
             format!(
-                "{} reads `{}` with no lock phrase, so it takes SHARE-LOCK, the default",
+                "{} reads `{}` with no lock phrase, so it takes SHARE-LOCK, the default{wait}",
                 read_form(read.kind),
                 read.name
             ),
@@ -114,6 +127,11 @@ pub fn check(
 }
 
 fn help(scopes: &FileScopes, read: &RecordRead) -> String {
+    if read.kind == ReadKind::CanFind {
+        return "A `CAN-FIND` keeps no record, so it needs no lock: add `NO-LOCK`, and it \
+                answers without waiting for a record another session is changing."
+            .to_string();
+    }
     let buffer = read.buffer.map(|b| scopes.buffer(b));
     let known = buffer.is_none_or(|b| b.scopes().is_some());
     match read.written {

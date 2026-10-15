@@ -657,7 +657,11 @@ Common to the three rules:
 
 LK001 rests on L1 and L2. Its help suggests `NO-LOCK` only when `written` is No (L3) and the
 buffer's scope is known; it suggests `EXCLUSIVE-LOCK` when `written` is Yes, and no lock when
-`written` is Unknown. No autofix yet. `GET` is not reported (it takes the lock of its query).
+`written` is Unknown. No autofix yet. `GET` is not reported (it takes the lock of its query). A
+`CAN-FIND` keeps no record, so its lock outlives nothing; its cost is the wait while another
+session holds the record with `EXCLUSIVE-LOCK` (Recalled, high). Its message names that wait,
+and its help always suggests `NO-LOCK`. A read whose lock phrase the text may hide (L5) is not
+reported.
 
 LK002 rests on L4 (Documented, and Recalled medium for the downgrade), S1, S2, S4 (Recalled
 medium for `DO TRANSACTION`), the documented half of S5 (a weak scope raised by a free
