@@ -12,8 +12,9 @@ diagnostics inside include files are reported. The third (PROPATH and include re
 with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
 lists the block semantics that the flow graph (`oxabl_flow`) models without a reference,
 section 6 the handle semantics that `oxabl_handles` relies on, section 7 the buffer-scope,
-transaction and lock semantics that `oxabl_scope` relies on, and section 8 the database effects,
-index selection and call graph that `oxabl_effects` and `oxabl_index` rely on.
+transaction and lock semantics that `oxabl_scope` relies on, section 8 the database effects,
+index selection and call graph that `oxabl_effects` and `oxabl_index` rely on, and section 9 the
+unknown-value and record-availability semantics that `oxabl_nulls` relies on.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -1022,3 +1023,130 @@ What the later slices need:
 - **Still needed: LSP code lens.** Read the daemon's cached graph and map unit positions back
   through the expansion. Add capability handling and a `textDocument/codeLens` renderer.
   If summaries become an `oxabl/*` wire method, add fields and bump the protocol version.
+
+## 9. Unknown values and records that may be missing
+
+`oxabl_nulls` follows two things through the flow graph of each unit (`oxabl_flow`): the unknown
+value `?` (later slices) and records a `FIND ... NO-ERROR` may have failed to find (the first
+slice). Buffers resolve through `oxabl_scope` (section 7): its names, its default buffers and its
+reading of unqualified fields. No OpenEdge install was available while this was written, so the
+marks of section 7 apply: **Documented**, **Recalled**, **Inferred**; a design choice of oxabl is
+**Proposed**.
+
+Each row the first slice models has a fixture in `crates/oxabl_nulls/tests/fixtures/` (re-bless
+with `OXABL_BLESS=1 cargo test -p oxabl_nulls --test snapshots`). Where the model cannot decide,
+the answer is **Unknown**, which never makes a finding.
+
+### 9.1 The unknown value
+
+These rows are not modelled yet. They are the input of NL001, NL002 and NL004 (section 9.7).
+
+| # | ABL | Confidence |
+|---|---|---|
+| V1 | `?` is the unknown value. A variable, field or parameter of any data type can hold it. | Documented. |
+| V2 | **Sources.** The literal `?`; `INITIAL ?`; the default of a `DATE`, `DATETIME`, `DATETIME-TZ`, `HANDLE`, `ROWID`, `RECID` and object-reference variable (the other types start at `0`, `""` or `no`); a database field whose stored value is `?` (any field that is not `MANDATORY`, and a field whose schema `INITIAL` is `?`); a user-defined function that ends without `RETURN` a value; `ROWID(b)` and `RECID(b)` with no record in `b`; an `OUTPUT` parameter the callee does not set. | Documented for the literal, `INITIAL ?`, the `DATE` and `HANDLE` defaults and non-mandatory fields; Recalled, medium, for the other defaults, function returns and `ROWID`/`RECID`. |
+| V3 | **Arithmetic propagates.** `+`, `-`, `*`, `/`, `MODULO` and unary `-` with a `?` operand give `?`. Division by zero gives `?`, not an error. | Documented for `?` operands; Recalled, medium, for division by zero. |
+| V4 | **String `+` propagates.** `"a" + ?` is `?`, not `"a"` or `"a?"`. | Documented. |
+| V5 | **`=` and `<>` absorb.** `? = ?` is `yes`; `x = ?` is `yes` exactly when `x` is `?`; `<>` is the negation. They never give `?`. | Documented. |
+| V6 | **Ordering propagates.** `<`, `<=`, `>`, `>=`, `BEGINS`, `MATCHES` and `CONTAINS` with a `?` operand give `?`. | Recalled, low. |
+| V7 | **Logic.** `NOT ?` is `?`. `AND` and `OR` are three-valued: `? AND no` is `no`, `? AND yes` is `?`, `? OR yes` is `yes`, `? OR no` is `?`. | Recalled, low. |
+| V8 | **Conditions.** An `IF` statement whose condition is `?` runs its `ELSE` branch (or nothing); `DO WHILE ?` and `REPEAT WHILE ?` end the loop; a `WHERE` that is `?` for a record does not select it. `?` behaves as `no` there, so a comparison that silently gives `?` (V6) skips code. | Recalled, medium. |
+| V9 | **`IF ... THEN ... ELSE` as a function** takes the `ELSE` value when its condition is `?` (V8). The result is `?` only when the chosen value is. | Recalled, medium. |
+| V10 | **Built-ins.** Most built-in functions give `?` when an argument is `?`: `ENTRY`, `NUM-ENTRIES`, `LOOKUP`, `SUBSTRING`, `LENGTH`, `TRIM`, `CAPS`, `INDEX`, `REPLACE`, `MAXIMUM`, `MINIMUM`, `ABSOLUTE`, `ROUND`, `TRUNCATE`, `INTEGER`, `DECIMAL`, `DATE` and the date parts. | Recalled, medium for the general rule; low for each function. |
+| V11 | **Built-ins that absorb.** `STRING(?)` is the string `"?"`; `VALID-HANDLE(?)` and `VALID-OBJECT(?)` are `no`; `AVAILABLE`, `CAN-FIND` and `LOCKED` never give `?`; `SUBSTITUTE` writes `?` for an unknown argument. | Recalled, high for `STRING` and `VALID-HANDLE`; low for `SUBSTITUTE`. |
+| V12 | **Errors are not `?`.** A conversion that cannot read its argument (`INTEGER("abc")`, `DATE("x")`) and `ENTRY` past the end of a list raise ERROR; they do not give `?`. | Recalled, medium. |
+| V13 | **Mandatory fields.** Assigning `?` to a `MANDATORY` field raises ERROR when the record is validated (at the latest when it is written), not at the assignment. | Recalled, medium. |
+
+### 9.2 A failed `FIND`
+
+| # | ABL | Confidence | Fixture |
+|---|---|---|---|
+| N1 | `FIND` (unique, `FIRST`, `LAST`, `NEXT`, `PREV`) that finds no record raises ERROR (`** <table> record not on file`), and so does a unique `FIND` that matches two records. With `NO-ERROR` it raises nothing, and the buffer has no record: `AVAILABLE b` is `no`. | Documented. | `finds.p` |
+| N2 | The record the buffer held before a failed `FIND` is released: after the statement the buffer is empty, whatever it held. | Recalled, medium. | `finds.p` |
+| N3 | **A field of an empty buffer is an error, not `?`.** Reading or assigning `b.f` when `b` has no record raises ERROR (`** No <table> record is available`). | Documented. | `finds.p` |
+| N4 | `NO-WAIT NO-ERROR` on a record another session locks leaves the buffer empty, with `LOCKED b` true. | Recalled, medium. | — |
+| N5 | `FIND NEXT` and `FIND PREV` with `NO-ERROR` past the last record leave the buffer empty (the usual end of a `REPEAT` that walks an index). | Documented. | `loops.p` |
+| N6 | `FIND CURRENT b NO-ERROR` fails, and leaves the buffer empty, when `b` has no record or another session deleted it. | Recalled, low. | `finds.p` |
+| N7 | `NO-ERROR` on a statement also suppresses the error of N3: `ASSIGN x = b.f NO-ERROR` with no record raises nothing, and `x` is unchanged. | Recalled, medium. | `finds.p` |
+| N8 | **`ERROR-STATUS`.** Each statement with `NO-ERROR` resets `ERROR-STATUS`; a statement without it leaves it alone. After a `FIND ... NO-ERROR` that found no record, `ERROR-STATUS:ERROR` is `yes`; after one that found a record, `no`. | Recalled, medium. | `guards.p` |
+| N9 | `CAN-FIND` reads with a buffer of its own (S9): it neither fills nor empties `b`. | Recalled, high. | `guards.p` |
+| N10 | `AND` and `OR` stop early: `AVAILABLE b AND b.f = x` does not read `b.f` when `b` is empty. | Recalled, medium. | `guards.p` |
+| N11 | `RELEASE b` and `DELETE b` also leave the buffer empty. | Documented. | — |
+
+### 9.3 Guards
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| G1 | `AVAILABLE b`, `AVAIL b` and `AVAILABLE(b)` in the condition of an `IF` statement: on the `THEN` edge `b` has a record; on the `ELSE` edge (taken with or without an `ELSE`) it is empty. `NOT` swaps the edges. | Documented. | `guards.p` |
+| G2 | `AND` and `OR` combine: the `THEN` edge of `A AND B` has what either side gives; its `ELSE` edge only what both give on their `ELSE` edges. `OR` is the dual. Parentheses are looked through. | Inferred from G1. | `guards.p` |
+| G3 | `DO WHILE` and `REPEAT WHILE` guard the body by their condition; the edge that leaves the loop is guarded by the negation only when the header has no `TO` (a `TO` limit leaves too). | Inferred from G1. | `loops.p` |
+| G4 | An arm that does not reach the code after the `IF` (`LEAVE`, `NEXT`, `RETURN`, `RETURN ERROR`, `UNDO, ...`, `THROW`, `STOP`, `QUIT`, a `DO` block that ends with one) guards the rest: the flow graph only reaches it from the other arm. An arm that rejoins keeps the buffer maybe empty. | Documented (the flow graph's block semantics, section 5). | `guards.p` |
+| G5 | `ERROR-STATUS:ERROR` in a condition: when on every path the last statement with `NO-ERROR` is a `FIND` of `b`, the `ERROR-STATUS:ERROR` false edge has a record in `b` (N8). Any other `NO-ERROR` statement in between breaks the link. | Inferred from N8. | `guards.p` |
+| G6 | `CAN-FIND` is no guard (N9). `LOCKED b` being true says `b` is empty; being false says nothing. | Recalled, high. | `guards.p` |
+| G7 | A condition that names `b` at record level in a form the model does not read (`ROWID(b) = ?`, `RECID(b) <> ?`, `BUFFER b:AVAILABLE`, `AVAILABLE b = no`, `LOCKED b`, `NEW b`) counts as a guard of `b` on both edges: Unknown. | Proposed. | `guards.p` |
+| G8 | **Inside one statement.** A field of `b` in a statement that also tests `AVAILABLE b` anywhere (the `IF ... THEN ... ELSE` function, `AND`, `OR`, `DISPLAY ... WHEN`) is taken as guarded (N10). The test is by statement, not by operand, so `NOT AVAILABLE b AND b.f = x` is missed. | Proposed (conservative). | `guards.p` |
+
+### 9.4 Where a record comes back
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| K1 | `FIND` without `NO-ERROR` completes only with a record (N1): after it, on the normal edge, `b` has one. Its raise edge keeps what held before. | Documented. | `finds.p` |
+| K2 | `CREATE b` and `INSERT b` give `b` a new record. | Documented. | `finds.p` |
+| K3 | A field reference to `b` in a statement without `NO-ERROR` that completes proves a record (N3): after it `b` has one, so a missing record is reported once per path, at its first use. | Documented (from N3). | `finds.p` |
+| K4 | A `FOR` or `PRESELECT` phrase of `b`, an `OPEN QUERY` or `GET` that reads `b`, and any other write to `b` as a whole (`BUFFER-COPY ... TO b`, `DELETE b`, `RELEASE b`): Unknown. The `FOR` body has a record; after the block, and after a `GET`, whether it has one is not decided, so the model forgets the failed `FIND`. | Documented for the `FOR` body; Inferred for the rest. | `loops.p` |
+| K5 | A statement that may change `b` where the file does not show it: `b` passed as `BUFFER b` to a call, a statement form the model does not know that names `b`, a dynamic method on any handle (`FIND-*`, `GET-*`, `BUFFER-CREATE`, `BUFFER-COPY`, `FILL`, `QUERY-OPEN`, `REPOSITION-*`, `SYNCHRONIZE`, `RAW-TRANSFER`: the handle may be `BUFFER b:HANDLE`), and an unexpanded `{...}` or an elided `{&name}` in the statement. Unknown for `b`, or for every buffer when the target cannot be told. | Inferred. | `unknown.p` |
+| K6 | A statement that runs other code of the file or another program (`RUN`, a user-defined or dynamic function, `SUPER`, a method call, `PUBLISH`, `APPLY`, `WAIT-FOR`, an input statement whose triggers may run) may change a shared buffer and any buffer another routine of the file names: Unknown for those. | Inferred. | `unknown.p` |
+| K7 | Each routine starts with no failed `FIND` known: a buffer of the main block that an internal procedure uses may hold any record when the procedure is called. | Proposed (conservative). | `units.p` |
+
+### 9.5 What the model leaves Unknown
+
+- **The whole file,** when the scope analysis has a file-level Unknown (section 7.7): a recovered
+  parse, an unexpanded include, or a file past the work budget.
+- **A buffer** whose table the loaded schema does not have. With no schema, database buffers are
+  never judged (a name may be a temp-table the file does not show); temp-table buffers are.
+- **A statement** that holds an elided reference (an undefined `{&name}`, a `{N}` with no
+  argument): it may hide `NO-ERROR`, a guard or a write. The model forgets every failed `FIND` there
+  and reports nothing in it.
+- Everything in K4 to K7.
+
+### 9.6 The rule NL003 (M5, first slice)
+
+NL003 `field-after-failed-find` (`strict.nulls`, preview, warning) selects findings from
+`oxabl_nulls`; `oxabl_lint` computes one analysis per file through `RunShared`, over the scope
+analysis the `LK`, `TX` and `DB` rules use, and only when the rule is enabled. It is routed like
+them.
+
+A field of `b` is reported where `b` may be empty because a `FIND ... NO-ERROR` of `b` may have
+failed (N1, N5, N6) and no guard (G1-G8) or refill (K1-K7) lies on some path between them. It
+rests on N1, N3 (Documented) and N7, N10 (Recalled, medium). The message quotes the `FIND`. One
+finding per field reference; a reference in a `FINALLY` block counts once.
+
+Left out:
+
+- a reference in a statement with `NO-ERROR` (N7), and the search criteria of a `FIND`, `FOR`,
+  `CAN-FIND` or `OPEN QUERY` of `b` itself;
+- record-level uses of an empty buffer (`DISPLAY b`, `BUFFER-COPY b TO c`, `DELETE b`), which
+  raise the same error: a later slice may add them;
+- a `FOR FIRST` or `FOR LAST` that finds nothing (it runs no iteration, so no field is read);
+- `RELEASE` and `DELETE` as sources (N11);
+- everything section 9.5 leaves Unknown.
+
+### 9.7 What NL001, NL002 and NL004 need
+
+- **NL001** (unknown in a comparison or condition): a forward dataflow of "may be `?`" per
+  variable, parameter and field, with the sources of V2 (the schema's `MANDATORY` flag and
+  `INITIAL` value are in `oxabl_schema`; the data type of each variable decides its default) and
+  the propagation of V3-V11 through the AST of each expression (the scope analysis reads tokens,
+  so this needs an expression walk of its own). Sinks: the operators of V6 and the conditions of
+  V8. V6 and V7 are Recalled, low: check them on a licensed install before the rule ships. A
+  comparison with `?` written in the text (`x = ?`) is a test, not a sink (V5), and narrows like
+  a guard.
+- **NL002** (unknown propagation): the same facts; sinks are arithmetic (V3) and string `+` (V4),
+  where `?` replaces the whole result. The absorbing built-ins (V11) end a chain. Assignments to
+  `MANDATORY` fields (V13) are the strongest sinks.
+- **NL004** (nullable database field): the schema facts of V2 and the uses NL001 and NL002 treat
+  as sinks, applied to non-mandatory fields read straight from a record. Most fields are not
+  mandatory, so it needs a narrower trigger first (a field whose schema `INITIAL` is `?`, or one
+  that has held `?` per an annotation, `@strict.nullable`), or it reports most field reads.
+- **All three** need user-defined function returns (V2) across the call graph (section 8.5) and
+  `OUTPUT` parameters of internal procedures; until then a call result is Unknown.
