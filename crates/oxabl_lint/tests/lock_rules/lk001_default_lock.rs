@@ -148,4 +148,5 @@ fn a_can_find_names_the_wait_and_suggests_no_lock() {
     assert!(diags[0].message.contains("waits while another session"));
     assert!(help(&diags[0]).contains("keeps no record"));
     assert!(help(&diags[0]).contains("`NO-LOCK`"));
+    assert!(help(&diags[0]).contains("has not committed"));
 }
