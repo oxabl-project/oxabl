@@ -13294,18 +13294,47 @@ fn form_declares_frame_fields_and_keeps_parsing_items() {
 }
 
 #[test]
-fn update_and_enable_do_not_declare_frame_fields() {
+fn update_and_set_declare_frame_fields_and_keep_parsing_items() {
     for source in [
-        "UPDATE v-a v-new AS CHARACTER v-b.",
-        "ENABLE v-a v-new AS CHARACTER v-b.",
+        "UPDATE v-a v-new AS CHARACTER FORMAT \"x(8)\" v-b\n  v-qty LIKE item.qty LABEL \"Qty\" v-c\n  WITH FRAME f.",
+        "SET v-a v-new AS CHARACTER FORMAT \"x(8)\" v-b\n  v-qty LIKE item.qty LABEL \"Qty\" v-c\n  WITH FRAME f.",
     ] {
         let stmts = assert_parses_clean(source);
+        let (StatementKind::Update {
+            targets, fields, ..
+        }
+        | StatementKind::Set {
+            targets, fields, ..
+        }) = &stmts[0].kind
+        else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        assert_eq!(targets.len(), 3, "{source}: v-a, v-b, v-c: {targets:?}");
+        assert_eq!(
+            frame_field_names(fields),
+            vec![
+                ("v-new", "Character".to_string()),
+                ("v-qty", "like item.qty".to_string()),
+            ],
+            "{source}"
+        );
+        let tail = tail_names(&stmts[0]);
         assert!(
-            tail_names(&stmts[0]).contains(&"v-new"),
-            "{source}: {:?}",
-            stmts[0]
+            !tail.contains(&"v-new") && !tail.contains(&"v-c"),
+            "{source}: {tail:?}"
         );
     }
+}
+
+#[test]
+fn enable_does_not_declare_frame_fields() {
+    let source = "ENABLE v-a v-new AS CHARACTER v-b.";
+    let stmts = assert_parses_clean(source);
+    assert!(
+        tail_names(&stmts[0]).contains(&"v-new"),
+        "{source}: {:?}",
+        stmts[0]
+    );
 }
 
 #[test]
@@ -13443,8 +13472,12 @@ fn update_and_set_keep_the_expressions_of_their_format_options() {
         "SET v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
     ] {
         let stmts = assert_parses_clean(source);
-        let (StatementKind::Update { targets, options } | StatementKind::Set { targets, options }) =
-            &stmts[0].kind
+        let (StatementKind::Update {
+            targets, options, ..
+        }
+        | StatementKind::Set {
+            targets, options, ..
+        }) = &stmts[0].kind
         else {
             panic!("{source}: got {:?}", stmts[0].kind);
         };
@@ -13455,10 +13488,16 @@ fn update_and_set_keep_the_expressions_of_their_format_options() {
 
     let stmts =
         assert_parses_clean("UPDATE v-a VALIDATE(v-a > 0, \"bad\") v-b WHEN v-a = 1 WITH FRAME f.");
-    let StatementKind::Update { targets, options } = &stmts[0].kind else {
+    let StatementKind::Update {
+        targets,
+        options,
+        fields,
+    } = &stmts[0].kind
+    else {
         panic!("expected Update, got {:?}", stmts[0].kind);
     };
     assert_eq!((targets.len(), options.len()), (2, 2), "{stmts:?}");
+    assert!(fields.is_empty(), "no AS/LIKE item here");
 }
 
 #[test]

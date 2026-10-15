@@ -305,6 +305,9 @@ pub enum StatementKind {
         /// Non-literal expressions of the format options (`VALIDATE`, `WHEN`,
         /// `AT`, ...), read, in source order.
         options: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than read one. They are not in `targets`.
+        fields: Vec<FrameField>,
     },
 
     /// SET statement — prompts for fields and variables and assigns the input.
@@ -314,6 +317,9 @@ pub enum StatementKind {
         targets: Vec<Expression>,
         /// Non-literal expressions of the format options, read, in source order.
         options: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than assign one. They are not in `targets`.
+        fields: Vec<FrameField>,
     },
 
     /// APPLY statement — sends an event to a widget or procedure.

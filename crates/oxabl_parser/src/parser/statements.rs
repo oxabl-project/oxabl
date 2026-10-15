@@ -4243,21 +4243,31 @@ impl Parser<'_> {
         Ok(self.stmt_with_tail(kind, tail))
     }
 
-    /// `UPDATE` / `SET` `[UNLESS-HIDDEN] {field [format-phrase] | ^ | constant}... [frame-phrase]
-    /// [EDITING: ... END]`. The editing block is part of the skipped tail.
+    /// `UPDATE` / `SET` `[UNLESS-HIDDEN] {field [format-phrase] | name AS type |
+    /// name LIKE field | ^ | constant}... [frame-phrase] [EDITING: ... END]`.
+    /// The editing block is part of the skipped tail.
     fn parse_update_set_statement(&mut self) -> ParseResult<Statement> {
         let update = self.check(Kind::Update);
         self.advance(); // consume UPDATE / SET
         if self.check(Kind::UnlessHidden) {
             self.advance();
         }
-        let (targets, options) = self.parse_frame_items(true, None);
+        let mut fields = Vec::new();
+        let (targets, options) = self.parse_frame_items(true, Some(&mut fields));
         let range = self.skip_to_statement_end_editing_aware();
         let tail = self.skipped_tail(range);
         let kind = if update {
-            StatementKind::Update { targets, options }
+            StatementKind::Update {
+                targets,
+                options,
+                fields,
+            }
         } else {
-            StatementKind::Set { targets, options }
+            StatementKind::Set {
+                targets,
+                options,
+                fields,
+            }
         };
         Ok(self.stmt_with_tail(kind, tail))
     }
