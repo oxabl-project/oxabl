@@ -223,12 +223,14 @@ fn file_key(file: &str) -> String {
 }
 
 /// Whether two paths name the same file: the components of the shorter one
-/// (without `.`) end the longer one, case-insensitively. The listing writes
-/// an include as the compiler found it, the model as it resolved it.
+/// (without `.` and leading `..`) end the longer one, case-insensitively. The
+/// listing writes an include as the compiler found it, the model as it
+/// resolved it.
 fn same_file(a: &str, b: &str) -> bool {
     let parts = |p: &'_ str| -> Vec<String> {
         p.split(['/', '\\'])
             .filter(|c| !c.is_empty() && *c != ".")
+            .skip_while(|c| *c == "..")
             .map(str::to_ascii_lowercase)
             .collect()
     };
@@ -413,6 +415,9 @@ mod tests {
         assert!(same_file("x.i", "/proj/ms/x.i"));
         assert!(same_file(".\\a.p", "a.p"));
         assert!(!same_file("/proj/ms/x.i", "inc/x.i"));
+        assert!(same_file("../inc/x.i", "/proj/inc/x.i"));
+        assert!(same_file("..\\..\\inc\\x.i", "/proj/inc/x.i"));
+        assert!(!same_file("../ms/x.i", "/proj/inc/x.i"));
     }
 
     #[test]
