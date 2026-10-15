@@ -344,6 +344,7 @@ pub enum Kind {
     Size,
     NoApply,
     BeforeHide,
+    UnlessHidden,
 
     // Phrases
     Editing,
@@ -1511,6 +1512,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "search-targer" => Some(Kind::SearchTarger),
             "stream-handle" => Some(Kind::StreamHandle),
             "system-dialog" => Some(Kind::SystemDialog),
+            "unless-hidden" => Some(Kind::UnlessHidden),
             "value-changed" => Some(Kind::ValueChanged),
             "window-maximi" => Some(Kind::WindowMaximized),
             "window-minimi" => Some(Kind::WindowMinimized),

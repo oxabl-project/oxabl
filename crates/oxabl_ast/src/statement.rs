@@ -287,6 +287,25 @@ pub enum StatementKind {
         items: Vec<Expression>,
     },
 
+    /// UPDATE statement — displays fields and variables and lets the user
+    /// change them.
+    ///
+    /// The targets are modelled, with their format options consumed; constants
+    /// and `^` are passed over. The list ends at the first token that is not a
+    /// target or a literal option, and the rest, the frame phrase and any
+    /// `EDITING` block stay in [`Statement::skipped_tail`].
+    Update {
+        /// Fields, variables or records read and written, in source order.
+        targets: Vec<Expression>,
+    },
+
+    /// SET statement — prompts for fields and variables and assigns the input.
+    /// Same shape as [`StatementKind::Update`].
+    Set {
+        /// Fields, variables or records written, in source order.
+        targets: Vec<Expression>,
+    },
+
     /// UP statement — moves the cursor of a down frame back. Same shape as
     /// [`StatementKind::Down`].
     Up {

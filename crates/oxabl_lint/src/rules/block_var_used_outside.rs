@@ -538,6 +538,11 @@ mod paths {
                     }
                 }
                 SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
+                SK::Update { targets } | SK::Set { targets } => {
+                    for e in targets {
+                        self.target(e, id);
+                    }
+                }
                 SK::Import {
                     delimiter, targets, ..
                 } => {

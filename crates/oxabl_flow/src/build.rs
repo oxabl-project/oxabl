@@ -338,6 +338,7 @@ fn is_unit_stmt(s: &Statement) -> bool {
 fn contains_input(stmts: &[Statement], src: &str) -> bool {
     stmts.iter().any(|s| match &s.kind {
         SK::Skipped { .. } => tokens::skipped_input(src, s.span) == Input::Blocking,
+        SK::Update { .. } | SK::Set { .. } => true,
         SK::Message { set_targets, .. } => !set_targets.is_empty(),
         _ if is_unit_stmt(s) => false,
         _ => child_lists(s).iter().any(|l| contains_input(l, src)),
@@ -1475,12 +1476,14 @@ impl<'a> Builder<'a> {
             | SK::Unsubscribe { .. } => Shape::plain(!self.no_error_text(s)),
             // Reading past the end of the input, or a key pressed during a
             // pause, raises ENDKEY.
-            SK::Import { .. } | SK::Pause { .. } => Shape::Plain {
-                raises: !self.no_error_text(s),
-                endkey: true,
-                waits: false,
-                opaque: None,
-            },
+            SK::Import { .. } | SK::Pause { .. } | SK::Update { .. } | SK::Set { .. } => {
+                Shape::Plain {
+                    raises: !self.no_error_text(s),
+                    endkey: true,
+                    waits: false,
+                    opaque: None,
+                }
+            }
             SK::Message { set_targets, .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: !set_targets.is_empty(),

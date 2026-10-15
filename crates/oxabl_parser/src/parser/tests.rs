@@ -11494,7 +11494,7 @@ fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
 /// period *and a space*, so the adjacency filter does not eat it.
 #[test]
 fn skipped_editing_block_names_survive_the_harvest() {
-    let names = harvest("UPDATE v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
+    let names = harvest("PROMPT-FOR v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
     assert!(names.contains(&"v-name".to_string()), "got {names:?}");
     assert!(names.contains(&"v-x".to_string()), "got {names:?}");
     assert!(names.contains(&"v-y".to_string()), "got {names:?}");
@@ -11505,7 +11505,7 @@ fn skipped_editing_block_names_survive_the_harvest() {
 /// anchor the outer harvest range would start at the last inner statement.
 #[test]
 fn skipped_editing_block_does_not_clobber_the_outer_harvest_anchor() {
-    let names = harvest("UPDATE v-first WITH FRAME f-main EDITING: v-x = 1. END.");
+    let names = harvest("PROMPT-FOR v-first WITH FRAME f-main EDITING: v-x = 1. END.");
     assert_eq!(
         names.first().map(String::as_str),
         Some("v-first"),
@@ -13040,4 +13040,24 @@ fn a_widget_definition_declares_its_name() {
         };
         assert_eq!(got.name, name, "{source}");
     }
+}
+
+#[test]
+fn update_and_set_are_head_parsed_with_targets() {
+    let source = "UPDATE UNLESS-HIDDEN v-a AUTO-RETURN LABEL \"A\" HELP \"h\" ^ \"note\" AT 5 tt.b v-c[2] GO-ON(F1) WITH FRAME f EDITING: v-x = 1. END.";
+    let stmts = assert_parses_clean(source);
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    let StatementKind::Update { targets } = &stmts[0].kind else {
+        panic!("expected Update, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 3, "{targets:?}");
+    let tail = tail_names(&stmts[0]);
+    assert!(tail.contains(&"f") && tail.contains(&"v-x"), "{tail:?}");
+
+    let stmts = assert_parses_clean("SET v-a = v-b + 1.");
+    let StatementKind::Set { targets } = &stmts[0].kind else {
+        panic!("expected Set, got {:?}", stmts[0].kind);
+    };
+    assert!(targets.is_empty(), "an assignment form stays in the tail");
+    assert!(tail_names(&stmts[0]).contains(&"v-b"));
 }

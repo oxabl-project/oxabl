@@ -345,6 +345,11 @@ impl<'a> CheckWalker<'a> {
                     self.check_expression(e, scope);
                 }
             }
+            StatementKind::Update { targets } | StatementKind::Set { targets } => {
+                for e in targets {
+                    self.check_expression(e, scope);
+                }
+            }
             StatementKind::Pause { duration, message } => {
                 for e in duration.iter().chain(message) {
                     self.check_expression(e, scope);

@@ -678,10 +678,16 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
-        // UPDATE / SET / PROMPT-FOR — may contain an EDITING: ... END. sub-block.
+        // UPDATE / SET — head-parsed; the frame phrase and EDITING block stay a
+        // skipped tail.
+        if self.check(Kind::Update) || self.check(Kind::Set) {
+            return self.parse_update_set_statement();
+        }
+
+        // PROMPT-FOR — may contain an EDITING: ... END. sub-block.
         // Skip tokens until a statement-ending period, but if we encounter EDITING:
         // along the way, parse the editing block body before consuming the outer END.
-        if self.check(Kind::Update) || self.check(Kind::Set) || self.check(Kind::PromptFor) {
+        if self.check(Kind::PromptFor) {
             let (_, hi) = self.skip_to_statement_end_editing_aware();
             return Ok(self.skipped_stmt(hi));
         }
@@ -4105,18 +4111,57 @@ impl Parser<'_> {
     /// `FORM [item ...] [{HEADER | BACKGROUND} item ...] [EXCEPT ...] [frame-phrase]`.
     fn parse_form_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume FORM
+        let items = self.parse_frame_items(false);
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+    }
+
+    /// `UPDATE` / `SET` `[UNLESS-HIDDEN] {field [format-phrase] | ^ | constant}... [frame-phrase]
+    /// [EDITING: ... END]`. The editing block is part of the skipped tail.
+    fn parse_update_set_statement(&mut self) -> ParseResult<Statement> {
+        let update = self.check(Kind::Update);
+        self.advance(); // consume UPDATE / SET
+        if self.check(Kind::UnlessHidden) {
+            self.advance();
+        }
+        let targets = self.parse_frame_items(true);
+        let range = self.skip_to_statement_end_editing_aware();
+        let tail = self.skipped_tail(range);
+        let kind = if update {
+            StatementKind::Update { targets }
+        } else {
+            StatementKind::Set { targets }
+        };
+        Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// The items of a FORM, UPDATE or SET list, each with its format options.
+    /// The list ends at the first token that does not start an item. With
+    /// `targets`, only fields, variables and records are items (constants and
+    /// `^` are passed over), and an option operand that is not a literal ends
+    /// the list.
+    fn parse_frame_items(&mut self, targets: bool) -> Vec<Expression> {
         let mut items = Vec::new();
         'items: loop {
-            if self.check(Kind::Header) || self.check(Kind::Background) {
+            if !targets && (self.check(Kind::Header) || self.check(Kind::Background)) {
+                self.advance();
+                continue;
+            }
+            if targets && self.check(Kind::Caret) {
                 self.advance();
                 continue;
             }
             if self.check(Kind::Skip) || self.check(Kind::Space) {
+                let mark = self.current;
                 self.advance();
                 if self.check(Kind::LeftParen) {
                     match self.parse_head_item(|_| false) {
-                        Some(e) => Self::push_unless_literal(&mut items, e),
-                        None => break,
+                        Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
+                        Some(e) if !targets => items.push(e),
+                        _ => {
+                            self.current = mark;
+                            break;
+                        }
                     }
                 } else if self.check(Kind::IntegerLiteral) {
                     self.advance();
@@ -4135,7 +4180,17 @@ impl Parser<'_> {
                 self.current = mark;
                 break;
             }
-            items.push(item);
+            match item.kind {
+                ExpressionKind::Literal(_) if targets => {}
+                ExpressionKind::Identifier(_)
+                | ExpressionKind::FieldAccess { .. }
+                | ExpressionKind::ArrayAccess { .. } => items.push(item),
+                _ if targets => {
+                    self.current = mark;
+                    break;
+                }
+                _ => items.push(item),
+            }
             loop {
                 match self.peek().kind {
                     Kind::Format | Kind::Form | Kind::Label | Kind::ColumnLabel | Kind::Help => {
@@ -4150,8 +4205,9 @@ impl Parser<'_> {
                         let at = self.current;
                         self.advance();
                         match self.parse_head_item(|_| false) {
-                            Some(e) => Self::push_unless_literal(&mut items, e),
-                            None => {
+                            Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
+                            Some(e) if !targets => items.push(e),
+                            _ => {
                                 self.current = at;
                                 break 'items;
                             }
@@ -4166,15 +4222,18 @@ impl Parser<'_> {
                         self.advance();
                         self.advance();
                     }
-                    Kind::NoLabels | Kind::NoAttrSpace => {
+                    Kind::NoLabels
+                    | Kind::NoAttrSpace
+                    | Kind::AutoReturn
+                    | Kind::Deblank
+                    | Kind::Blank => {
                         self.advance();
                     }
                     _ => break,
                 }
             }
         }
-        let tail = self.skip_tail_to_statement_end();
-        Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+        items
     }
 
     /// Whether the cursor starts a FORM item. A name followed by a number is an
@@ -4192,12 +4251,6 @@ impl Parser<'_> {
                 Kind::IntegerLiteral | Kind::DecimalLiteral
             ),
             _ => false,
-        }
-    }
-
-    fn push_unless_literal(items: &mut Vec<Expression>, e: Expression) {
-        if !matches!(e.kind, ExpressionKind::Literal(_)) {
-            items.push(e);
         }
     }
 

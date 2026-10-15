@@ -203,6 +203,11 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_expression(v, e);
             }
         }
+        StatementKind::Update { targets } | StatementKind::Set { targets } => {
+            for e in targets {
+                walk_expression(v, e);
+            }
+        }
         StatementKind::Pause { duration, message } => {
             for e in duration.iter().chain(message) {
                 walk_expression(v, e);

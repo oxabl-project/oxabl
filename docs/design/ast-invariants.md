@@ -221,7 +221,7 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 - Around thirty statement forms are matched by their leading keyword and then skipped
   wholesale by one of the four skip helpers (`skip_to_period`, `skip_to_statement_end`,
   `skip_to_statement_end_editing_aware`, `skip_to_statement_end_triggers_aware`):
-  `UPDATE`, `SET`, `ENABLE`, `DISABLE`, `APPLY`, embedded SQL, and the rest.
+  `PROMPT-FOR`, `ENABLE`, `DISABLE`, `APPLY`, embedded SQL, and the rest.
 - **Invariant:** these emit `Statement::Skipped`, never `Empty`. The distinction is
   load-bearing — these forms carry real variable traffic in both directions, so a consumer
   that reasons about whether a variable was touched must not read them as "nothing happened".
@@ -277,16 +277,16 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
   operands earn a head-parse, path-shaped ones earn an empty name list.
 
-- **`PUT`, `EXPORT`, `IMPORT`, `PAUSE`, `DOWN`, `UP` and `FORM` are head-parsed** into
-  their own variants. The stream, the delimiter, the item expressions, the `PAUSE` duration
+- **`PUT`, `EXPORT`, `IMPORT`, `PAUSE`, `DOWN`, `UP`, `FORM`, `UPDATE` and `SET` are
+  head-parsed** into their own variants. The stream, the delimiter, the item expressions, the `PAUSE` duration
   and message and the `DOWN`/`UP` line count are modelled; the option clauses after them
   (`FORMAT`, `EXCEPT`, `NO-LOBS`, `IN WINDOW`, the frame phrase, ...) ride on
   `Statement::skipped_tail`. A `FORM` item list ends at the first token that does not
   start an item (`VIEW-AS`, `AT ROW`, an unclassified option such as `BGCOLOR 3`, a
   `name AS type` declaration), so an option the parser does not know is never read as a
   name.
-  **Invariant:** an `IMPORT` target is credited as a write and every other head operand as a
-  read. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
+  **Invariant:** an `IMPORT` or `SET` target is credited as a write, an `UPDATE` target as
+  a read and a write, and every other head operand as a read. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
   in the tail; the form never falls back to `Skipped`.
 
 - **Static widget definitions declare their name.** `DEFINE BUTTON`, `BROWSE`,

@@ -110,11 +110,11 @@ PUT v-only-put.
 /// the fix as well as after, and R7 would be untested. See
 /// `ae3_fixture_is_non_vacuous` below.
 #[test]
-fn ae3_set_write_outside_block_is_not_a_block_var_hazard() {
+fn ae3_skipped_write_outside_block_is_not_a_block_var_hazard() {
     let diags = lint_all(AE3_SRC, LintSeverityMap::new());
     assert!(
         of_code(&diags, LINT0005).is_empty(),
-        "SET write outside the block must suppress the hazard: {diags:?}"
+        "GET-KEY-VALUE write outside the block must suppress the hazard: {diags:?}"
     );
 }
 
@@ -123,7 +123,7 @@ DO:
   DEFINE VARIABLE v-choice AS CHARACTER NO-UNDO.
   v-choice = \"a\".
 END.
-SET v-choice WITH FRAME f-main.
+GET-KEY-VALUE SECTION \"s\" KEY \"k\" VALUE v-choice.
 DISPLAY v-choice.
 ";
 
@@ -156,13 +156,15 @@ fn ae3_fixture_is_non_vacuous() {
     );
     assert!(
         !sym.flags.contains(SymbolFlags::WRITE_OUTSIDE_BLOCK),
-        "the SET write must remain invisible to the counts — that is the whole \
-         premise; if the parser started modelling SET this fixture is obsolete"
+        "the GET-KEY-VALUE write must remain invisible to the counts — that is \
+         the whole premise; if the parser started modelling GET-KEY-VALUE this \
+         fixture is obsolete"
     );
     assert!(
         sym.flags
             .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT),
-        "the SET must mark the symbol — otherwise AE3 passes for the wrong reason"
+        "the GET-KEY-VALUE must mark the symbol — otherwise AE3 passes for the \
+         wrong reason"
     );
 }
 

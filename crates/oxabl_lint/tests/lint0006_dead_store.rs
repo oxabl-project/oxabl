@@ -269,9 +269,12 @@ END PROCEDURE.
 
 #[test]
 fn a_write_inside_a_skipped_statement_is_unknown_not_dead() {
-    // `UPDATE`, `SET` and `PROMPT-FOR` are not modelled: their targets are
-    // written, but the rule cannot tell, so it stays silent.
-    for form in ["UPDATE v-x.", "SET v-x.", "PROMPT-FOR v-x."] {
+    // `PROMPT-FOR` and `GET-KEY-VALUE` are not modelled: the rule cannot tell
+    // what they do to `v-x`, so it stays silent.
+    for form in [
+        "PROMPT-FOR v-x.",
+        "GET-KEY-VALUE SECTION \"s\" KEY \"k\" VALUE v-x.",
+    ] {
         let src = format!("DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nv-x = 1.\n{form}\n");
         let found = dead_store_lines(&src);
         assert!(found.is_empty(), "{form}: {found:?}");
@@ -287,4 +290,15 @@ fn an_import_target_is_a_write() {
 
     let src = "DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\nIMPORT STREAM s ^ v-x.\nMESSAGE v-x.\n";
     assert!(dead_store_lines(src).is_empty());
+}
+
+#[test]
+fn update_reads_its_targets_and_set_only_writes_them() {
+    let src = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nv-x = 1.\nUPDATE v-x WITH FRAME f.\n";
+    assert!(dead_store_lines(src).is_empty());
+
+    let src = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nSET v-x WITH FRAME f.\n";
+    let found = dead_store_lines(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 2, "{found:?}");
 }
