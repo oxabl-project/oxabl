@@ -1,0 +1,18 @@
+unit main
+  @5 read Customer find no-lock once index CustNum whole-index (primary)
+  @6 read Customer for no-lock once index CustNum whole-index (primary)
+  @7 read Order find no-lock per-row index CustOrder eq=1 (equality)
+  @8 read Order for no-lock per-row index CustOrder eq=1 (equality)
+  @9 read Item find no-lock nested(2) index ItemNum eq=1 (unique-equality)
+  @11 read Item can-find share-lock(default) per-row index ItemNum eq=1 (unique-equality)
+  @14 read Customer for no-lock once index CustNum whole-index (primary)
+  @15 read Order find no-lock once index CustOrder eq=1 (equality)
+  @19 read Item find no-lock once index ItemNum eq=1 (unique-equality)
+  @22 read Order open-query no-lock once index OrderNum whole-index (primary)
+  @24 read Order get no-lock once
+  @26 read Customer find no-lock per-row index CustNum eq=1 (unique-equality)
+  @29 read Item find no-lock once index ItemNum whole-index (primary)
+  @31 read OrderLine find no-lock per-row index ItemNum eq=1 (equality)
+  @32 read Item find no-lock once index ItemNum whole-index (primary)
+  @35 read Order for exclusive-lock once index OrderNum whole-index (primary)
+  @36 update Order per-row

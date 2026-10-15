@@ -1,0 +1,16 @@
+/* Writes and what hides them. */
+DEFINE VARIABLE hq AS HANDLE NO-UNDO.
+DEFINE VARIABLE hb AS HANDLE NO-UNDO.
+
+DO TRANSACTION:
+    CREATE Order.
+    Order.OrderNum = 1.
+    FIND FIRST Customer EXCLUSIVE-LOCK.
+    DELETE Customer.
+END.
+
+PROCEDURE dyn:
+    CREATE QUERY hq.
+    hq:QUERY-PREPARE("FOR EACH Customer").
+    hb:BUFFER-CREATE().
+END PROCEDURE.

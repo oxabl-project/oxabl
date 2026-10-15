@@ -1,0 +1,18 @@
+/* Temp-table indexes (I13). */
+DEFINE TEMP-TABLE ttA NO-UNDO
+    FIELD k AS INTEGER
+    FIELD v AS CHARACTER
+    INDEX ixV v
+    INDEX ixK IS UNIQUE k.
+DEFINE TEMP-TABLE ttB NO-UNDO
+    FIELD k AS INTEGER.
+DEFINE TEMP-TABLE ttC NO-UNDO LIKE Customer.
+
+FIND ttA WHERE ttA.k = 1 NO-ERROR.
+FIND FIRST ttA NO-ERROR.
+FIND FIRST ttB WHERE ttB.k = 1 NO-ERROR.
+FIND ttC WHERE ttC.CustNum = 1 NO-ERROR.
+FOR EACH ttA:
+    FIND FIRST Customer WHERE Customer.CustNum = ttA.k NO-LOCK NO-ERROR.
+    ttA.v = "x".
+END.

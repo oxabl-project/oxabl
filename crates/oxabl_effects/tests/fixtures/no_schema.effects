@@ -1,0 +1,3 @@
+unit main
+  @2 read ?:Customer find no-lock once index unknown(no-schema)
+  @3 update ?:Customer once
