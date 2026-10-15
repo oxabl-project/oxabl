@@ -186,6 +186,7 @@ enum Body {
     Handles(HandlesFn),
     Scopes(ScopesFn),
     Effects(EffectsFn),
+    Shared(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
 }
 
 /// A [`Rule`] made of metadata and a plain function — how every built-in rule
@@ -251,6 +252,7 @@ impl Rule for FnRule {
         shared: &RunShared,
     ) -> Vec<Diagnostic> {
         match self.body {
+            Body::Shared(check) => check(program, ctx, shared),
             Body::Plain(run) => run(program, sem, ctx),
             Body::Handles(check) => check(shared.handles(program, ctx.source), ctx),
             Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
@@ -500,14 +502,19 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         transaction_spans_ui::DEFAULT_SEVERITY,
         transaction_spans_ui::check,
     ),
-    scopes_rule(
-        TX004,
-        transaction_spans_call::NAME,
-        transaction_spans_call::GROUP,
-        transaction_spans_call::DESCRIPTION,
-        transaction_spans_call::DEFAULT_SEVERITY,
-        transaction_spans_call::check,
-    ),
+    FnRule {
+        meta: RuleMeta::new(
+            TX004,
+            transaction_spans_call::NAME,
+            transaction_spans_call::GROUP,
+            transaction_spans_call::DESCRIPTION,
+        )
+        .with_default_severity(transaction_spans_call::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        body: Body::Shared(transaction_spans_call::check_shared),
+    },
     scopes_rule(
         TX005,
         scope_widened::NAME,
@@ -792,8 +799,19 @@ impl Registry {
         ctx: &AnalysisContext,
         select: impl Fn(&RuleMeta) -> bool,
     ) -> Vec<Diagnostic> {
+        self.run_where_shared(program, sem, ctx, select, &RunShared::default())
+    }
+
+    /// Run selected rules with caller-supplied lazy facts.
+    pub fn run_where_shared(
+        &self,
+        program: &[Statement],
+        sem: &Semantic,
+        ctx: &AnalysisContext,
+        select: impl Fn(&RuleMeta) -> bool,
+        shared: &RunShared,
+    ) -> Vec<Diagnostic> {
         let fragment = ctx.source_context.is_include_fragment();
-        let shared = RunShared::default();
         let mut out = Vec::new();
         for rule in self.rules() {
             let meta = rule.meta();
@@ -804,7 +822,7 @@ impl Registry {
                 continue;
             };
             out.extend(
-                rule.run_shared(program, sem, ctx, &shared)
+                rule.run_shared(program, sem, ctx, shared)
                     .into_iter()
                     .map(|mut d| {
                         d.severity = severity;

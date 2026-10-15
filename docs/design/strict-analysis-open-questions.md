@@ -751,12 +751,11 @@ Common to the five rules:
   transaction block or in a block inside it of the same routine: a trigger or an internal
   procedure that the transaction calls is not followed. `PAUSE n` is not reported: lock-retry
   loops sleep with it.
-- **TX004** rests on T5 and U3. The workspace index tells which file a literal `RUN` target names,
-  but it holds no facts about what the file does. Every callee outside the file (another
-  program, `RUN ... IN h`, `RUN VALUE`, a super procedure) is therefore unknown, whether the index
-  finds it or not. An internal procedure with a body, and one declared `EXTERNAL`, are known. In
-  an include checked alone, a bare name may be an internal procedure of the includer and is not
-  reported.
+- **TX004** rests on T5 and U3. The shared summary provider (8.6) suppresses calls whose
+  complete transitive summary has no database writes. Missing and partial summaries remain
+  Unknown; known writes retain the warning. Direct file-only entry points have no provider.
+  An internal procedure with a body, and one declared `EXTERNAL`, keep their local exemption.
+  In an include checked alone, a bare name may belong to the includer and is not reported.
 - **TX005** rests on S2, S4, the documented half of S5 (a weak scope raised by a free reference)
   and B2 (Recalled, medium). It is reported when the raising reference and the `FOR` block are in
   the same routine, or the reference is in the main block and the `FOR` block in a routine inside
@@ -902,6 +901,28 @@ be missing: a call whose target is Unknown (C2-C6, by reason), a unit whose own 
 in part (O3), or a bound. Recursion alone does not make a summary partial (the fixed point covers it);
 it is flagged `recursive`. Temp-table effects are left out.
 
+
+**Built in slice 2.** `LintPipeline` builds a lazy `WorkspaceEffects` over the run's batch index.
+It uses the known compilation units and follows reachable programs outside that set.
+Each file supplies direct facts once. `summary::summarize` solves the graph once for the run.
+The first root uses the supplied expansion, including unsaved text. A changed root expansion
+invalidates that run cache. Unreadable files, missing targets, lost include text, recovered parses,
+and call-site bounds cannot produce a complete answer. Remote calls do not add local effects.
+
+The lint registry accepts `RunShared` with a `CalleeSummaries` provider. TX004 asks by expanded
+call-site offset. It suppresses a finding only for a complete summary without database writes.
+A missing or partial answer is Unknown and cannot suppress a finding. Known writes retain the
+warning. Direct file-only rule entry points keep their conservative result.
+
+The daemon caches the reachable graph in a tracked query per buffer revision. It records disk
+revisions for callee bodies, expanded includes, and every existence check, including failed search
+candidates. A body change, include change, or newly created target invalidates the dependent graph.
+The schema revision and preprocessor environment also invalidate it. Cycles are solved in the
+shared pipeline, outside recursive tracked queries. The daemon protocol is unchanged.
+
+With TX004 off, a normal lint run builds no graph or summaries. The other strict analyses keep
+their existing lazy rule gates. `explain` explicitly requests summaries, regardless of lint settings.
+
 ### 8.7 Corpus check
 
 Verified, counts only. Over the compilation units (`.p`, `.w`, `.cls`) of the two large real
@@ -945,10 +966,12 @@ on the row at all (a lookup that a read before the loop would answer once).
 silence TX004. Of the TX004 findings in the programs' own text (4,927 and 2,909), the callee of 631
 (12.8 %) and 322 (11.1 %) has a complete summary with no create, update or delete; 2,163 and 283 have
 a callee that writes; 1,204 and 91 a partial one; 929 and 2,213 an Unknown callee. Most of the
-second corpus's silenced findings are label-printing procedures of a persistent library. TX004 is
-not changed in this slice: the lint runs per file and cannot see another file's summary. It needs a
-summary provider (an index query, or the daemon's cache) first; see "What the later slices need"
-below.
+second corpus's silenced findings are label-printing procedures of a persistent library.
+Slice 2 now applies this test through the shared provider. With every strict group enabled,
+the second corpus gives 3,311 TX004 findings before and 2,976 after (335 removed, 10.1 %).
+All other strict findings are unchanged. These totals include fragments and include use sites.
+Ten removed findings were read against the caller and callee source; all ten have no database
+writes, including transitive calls. `strict_corpus` measures this through the actual lint pipeline.
 
 ### 8.8 The access rules (M4)
 
@@ -972,7 +995,19 @@ What the later slices need:
   index gives the order; `SORT-ACCESS` rows (R7) are its oracle.
 - **DB004** (missing fields list): the fields used in the scope of each read (the `ACCESS` rows, R5,
   are the oracle) and which code runs client-server.
-- **Summaries in `analyze`, `oxabl explain`, LSP code lens:** a whole-workspace pass that resolves
-  every file's calls (`effects_corpus` does this in a batch run), and a way for a per-file client to
-  ask for callee summaries: an index query or a daemon cache. The envelope change is additive, with a
-  version bump.
+- **Built: `oxabl explain <file>[:line]`.** Prints each unit's direct database effects and
+  transitive summary. Direct effects include the table, operation, lock, access shape, likely
+  index and selection reason. Partial summaries list all reasons. The optional one-based line
+  selects the innermost unit in root coordinates; output lines refer to expanded text.
+  `--json` uses an independent document with `version: 1`, `file`, `coordinates`, and `units`.
+  Each unit has `kind`, `name`, `line`, `effects`, and `summary`. A summary has `complete`,
+  `partial`, `recursive`, and `effects`. An effect has `table`, `operation`, `lock`, `shape`,
+  `line`, `index`, `reason`, and `via`. Inherited effects have no search site or index;
+  `via` names the first callee. Unknown indexes have a null index and an explicit reason.
+  Direct temp-table reads use the `tt:` prefix; summaries exclude temp-table effects.
+  This new document does not change the existing analyze or check envelopes.
+- **Still needed: summaries in `analyze`.** Add a section from the shared provider, with an
+  additive envelope change and a section version bump.
+- **Still needed: LSP code lens.** Read the daemon's cached graph and map unit positions back
+  through the expansion. Add capability handling and a `textDocument/codeLens` renderer.
+  If summaries become an `oxabl/*` wire method, add fields and bump the protocol version.

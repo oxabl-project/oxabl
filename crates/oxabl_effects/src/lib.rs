@@ -264,6 +264,11 @@ pub fn analyze_file(
             None => list.push((reason, at)),
         }
     };
+    if calls.truncated {
+        for cfg in flow.units() {
+            unknown(cfg.id(), EffectUnknown::TooComplex, cfg.unit().span);
+        }
+    }
     for w in scopes.write_unknowns() {
         if let Some(r) = effect_unknown(w.unknown.reason) {
             unknown(w.unit, r, w.unknown.at);

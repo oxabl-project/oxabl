@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 mod baseline;
+mod explain;
 
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -202,6 +203,20 @@ enum Cli {
 
         /// Path to a `.df` schema file driving schema-backed resolution
         /// (field validation, field types, unknown-table/field lint).
+        #[arg(long = "schema")]
+        schema: Option<PathBuf>,
+    },
+    /// Show direct database effects and transitive summaries of each unit.
+    Explain {
+        /// ABL file, optionally followed by a one-based root line number.
+        file: String,
+        /// Output a versioned JSON document.
+        #[arg(long)]
+        json: bool,
+        /// Include search path (repeatable).
+        #[arg(long = "include-path", short = 'I')]
+        include_paths: Vec<PathBuf>,
+        /// Schema file or directory.
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
     },
@@ -449,6 +464,12 @@ fn main() -> ExitCode {
             &include_paths,
             schema.as_deref(),
         ),
+        Cli::Explain {
+            file,
+            json,
+            include_paths,
+            schema,
+        } => explain::run(&file, json, &include_paths, schema.as_deref()),
         Cli::Format {
             path,
             check,

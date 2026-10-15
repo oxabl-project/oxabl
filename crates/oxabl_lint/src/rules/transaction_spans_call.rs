@@ -38,12 +38,15 @@
 //! in its routine (the transaction blocks `transaction-spans-ui`, TX003,
 //! counts).
 //!
-//! "Not in the file" is decided from the file alone. The workspace index can
-//! say which file a literal target names, but it holds no facts about what
-//! that file does, so a callee in another file counts as unknown whether the
-//! index finds it or not.
+//! The shared pipeline supplies cross-file callee summaries. A complete
+//! transitive summary with no create, update or delete suppresses the finding.
+//! Missing and partial summaries remain Unknown. Calls with known writes keep
+//! the finding. The direct `run` and `check` entry points have no provider and
+//! retain the conservative file-only result.
 //!
 //! Not reported:
+//!
+//! - a callee with a complete transitive summary and no database writes;
 //!
 //! - a `RUN` of an internal procedure the file defines with a body (also with
 //!   `IN THIS-PROCEDURE`): its statements are in the file, and the other
@@ -94,6 +97,22 @@ pub fn run(
     ctx: &AnalysisContext,
 ) -> Vec<Diagnostic> {
     check(&crate::shared::analyze_scopes(program, ctx), program, ctx)
+}
+
+/// Shared entry point with optional cross-file callee summaries.
+pub fn check_shared(
+    program: &[Statement],
+    ctx: &AnalysisContext,
+    shared: &crate::RunShared,
+) -> Vec<Diagnostic> {
+    check(shared.scopes(program, ctx), program, ctx)
+        .into_iter()
+        .filter(|d| {
+            !shared
+                .callee_summary(d.span.span.start)
+                .is_some_and(|s| s.known_no_writes())
+        })
+        .collect()
 }
 
 /// What a `RUN` calls, when its statements are not in the file.

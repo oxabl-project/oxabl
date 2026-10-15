@@ -99,7 +99,7 @@ pub use rules::{
     scope_widened, shared_state, transaction_spans_call, transaction_spans_ui,
     type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
-pub use shared::RunShared;
+pub use shared::{CalleeSummaries, RunShared};
 
 /// Run every built-in rule that `ctx.lint_severities` enables over `program`
 /// + `sem` and return the combined diagnostics, in registry order.
