@@ -21,3 +21,12 @@ END PROCEDURE.
 PROCEDURE rd:
   FIND FIRST Order.
 END PROCEDURE.
+
+/* The reason is the other routine's own: a call that may write. */
+PROCEDURE pass-it:
+  RUN ext.p (BUFFER OrderLine).
+END PROCEDURE.
+
+PROCEDURE rd2:
+  FIND FIRST OrderLine.
+END PROCEDURE.

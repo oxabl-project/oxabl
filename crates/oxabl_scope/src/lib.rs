@@ -278,14 +278,17 @@ pub fn analyze_tokens(
             if !same {
                 continue;
             }
-            let reason = if r.unit != read.unit {
+            let same_unit = r.unit == read.unit;
+            if same_unit && !runs_after(&flow, read, r.at.start, r.block, bound) {
+                continue;
+            }
+            let reason = if r.write.is_some() {
+                if same_unit {
+                    written = Written::Yes;
+                    break;
+                }
                 // Another routine of the scope: it runs when it is called.
                 UnknownReason::UnitOrder
-            } else if !runs_after(&flow, read, r.at.start, r.block, bound) {
-                continue;
-            } else if r.write.is_some() {
-                written = Written::Yes;
-                break;
             } else if r.passed {
                 UnknownReason::Callee
             } else {

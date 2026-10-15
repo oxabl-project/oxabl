@@ -1,17 +1,24 @@
 unit u0 main
-  b0 main @1 tx=implicit(assign @11 bItem) buffers=bItem,Order
+  b0 main @1 tx=implicit(assign @11 bItem) buffers=bItem,Order,OrderLine
   b1 repeat @6 tx=implicit(assign @7 Customer) within=b0 buffers=Customer
   b2 do @12 within=b0
 unit u1 procedure upd
   b0 procedure @17 tx=implicit(assign @18 Order)
 unit u2 procedure rd
   b0 procedure @21
+unit u3 procedure pass-it
+  b0 procedure @26
+unit u4 procedure rd2
+  b0 procedure @30
 buffer bItem defined db:Item owner=u0 @4 refs=2
   scope u0/b0 free @11 refs=2
 buffer Customer default db:Customer owner=u0 refs=3
   scope u0/b1 free @7 refs=3
 buffer Order default db:Order owner=u0 refs=2
   scope u0/b0 raised @18 refs=2
+buffer OrderLine default db:OrderLine owner=u0 refs=2
+  scope u0/b0 raised @27 refs=2
 read find Customer @8 u0/b1 lock=default(share-lock) written
 read find bItem @13 u0/b2 lock=default(share-lock)
 read find Order @22 u2/b0 lock=default(share-lock) written=unknown(unit-order)
+read find OrderLine @31 u4/b0 lock=default(share-lock) written=unknown(callee)
