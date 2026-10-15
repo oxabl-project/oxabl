@@ -1070,7 +1070,7 @@ impl Parser<'_> {
         };
 
         // OVERRIDE restates an inherited property and may sit on either side of
-        // the access modifier; like ABSTRACT, it is not recorded.
+        // the access modifier or of ABSTRACT; like ABSTRACT, it is not recorded.
         let skip_override = |p: &mut Self| {
             if p.check(Kind::Override)
                 && (p.check_at(1, Kind::Property)
@@ -1081,6 +1081,7 @@ impl Parser<'_> {
                             | Kind::Protected
                             | Kind::PackagePrivate
                             | Kind::PackageProtected
+                            | Kind::Abstract
                     ))
             {
                 p.advance();
@@ -1115,6 +1116,7 @@ impl Parser<'_> {
         } else {
             false
         };
+        skip_override(self);
 
         // Skip preprocessor/include-arg references that expand to modifiers at
         // compile time (e.g. `DEF SHARED {2} {3} TEMP-TABLE`).  The first skip

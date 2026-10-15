@@ -12768,3 +12768,20 @@ fn a_do_block_takes_while_transaction_and_on_phrases_in_any_order() {
         assert!(while_condition.is_some() || to.is_some(), "{source}");
     }
 }
+
+#[test]
+fn override_and_abstract_on_a_property_come_in_either_order() {
+    for source in [
+        "DEFINE PUBLIC ABSTRACT OVERRIDE PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+        "DEFINE PUBLIC OVERRIDE ABSTRACT PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+        "DEFINE OVERRIDE PUBLIC ABSTRACT PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 1, "{source}");
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Property { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
